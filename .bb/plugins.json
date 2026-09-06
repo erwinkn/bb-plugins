@@ -4,12 +4,8 @@
   "name": "erwin-plugins",
   "plugins": [
     {
-      "name": "erwin-hello",
-      "source": "./plugins/hello"
-    },
-    {
-      "name": "erwin-provider-branding",
-      "source": "./plugins/provider-branding"
+      "name": "erwin-devin",
+      "source": "./plugins/devin"
     }
   ]
 }
