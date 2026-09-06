@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildDevinModels, FAMILY_PREFIX } from "./models";
+import { buildDevinModels, DEFAULT_MODEL_ID, FAMILY_PREFIX } from "./models";
 import { withDevinModels } from "./model-bridge";
 import type { ProviderBridgeEntry } from "@get-bb/plugin-sdk/provider-bridge";
 const variant = (model_uid: string, label: string, max_context_tokens = 200000) => ({ model_uid, label, max_context_tokens });
@@ -11,7 +11,9 @@ function group(catalog: ReturnType<typeof buildDevinModels>, name = "GPT") { ret
 test("group by native family, resolve opaque IDs and retain saved variants", () => {
   const c = buildDevinModels(fixture), m = group(c);
   assert.equal(c.models.length, 2);
-  assert.equal(c.models[0].id, "default");
+  assert.equal(c.models[0].id, DEFAULT_MODEL_ID);
+  assert.equal(c.models[0].id, "acp-default", "the SDK ACP bridge sends no model selection only for this ID");
+  assert.equal(c.resolve(DEFAULT_MODEL_ID), DEFAULT_MODEL_ID);
   assert.deepEqual(m.supportedReasoningEfforts.map(e => e.reasoningEffort), ["low", "medium"]);
   assert.equal(c.resolve(m.id, "low", "fast"), "opaque-c");
   assert.equal(c.resolve(m.id), "opaque-b");
@@ -25,6 +27,11 @@ test("no fast fallback; separate context, unknown effort, and binary thinking", 
   assert.deepEqual(m.supportedReasoningEfforts.map(e => e.reasoningEffort), ["none", "medium"]);
   assert.equal(c.resolve(m.id, "none"), "off");
   assert.equal(c.resolve(group(c, "Claude 1M").id, "medium"), "on1m");
+  // Fast and 1M suffixes join the 1M group in either order.
+  const order = buildDevinModels({ families: [family("claude", "Claude", [variant("off1m", "Claude 1M", 1000000), variant("on1m", "Claude Thinking 1M", 1000000), variant("on1mfast", "Claude Thinking 1M Fast", 1000000), variant("off1mfast", "Claude Fast 1M", 1000000)])] });
+  assert.equal(order.resolve(group(order, "Claude 1M").id, "medium", "fast"), "on1mfast");
+  assert.equal(order.resolve(group(order, "Claude 1M").id, "none", "fast"), "off1mfast");
+  assert.equal(order.models.length, 2);
   assert.throws(() => c.resolve(m.id, "medium", "fast"), /does not offer/);
   assert(c.models.some(m => m.id === "min"));
 });

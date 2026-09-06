@@ -3,7 +3,8 @@
 import { mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-if (process.argv[2] !== "acp" || realpathSync(process.cwd()) !== realpathSync(process.env.XDG_CACHE_HOME)) process.exit(2);
+// Bridge runtime variables must not reach the CLI.
+if (process.argv[2] !== "acp" || realpathSync(process.cwd()) !== realpathSync(process.env.XDG_CACHE_HOME) || "ELECTRON_RUN_AS_NODE" in process.env) process.exit(2);
 createInterface({ input: process.stdin }).on("line", line => {
   const request = JSON.parse(line);
   if (request.method !== "initialize") process.exit(3);

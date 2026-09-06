@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
+import { withoutBridgeRuntimeEnv } from "@get-bb/plugin-sdk/provider-bridge";
 import { decodeCachedUserStatus } from "./usage-codec";
 
 const TIMEOUT_MS = 15_000;
@@ -27,10 +28,13 @@ export async function readFreshUsageCache(cache: string): Promise<unknown | unde
 export async function probeDevinUsage(command: string): Promise<unknown> {
   // mkdtemp is private. No existing cache or credential file is copied into it.
   const cache = await mkdtemp(join(tmpdir(), "bb-devin-usage-"));
-  const child = spawn(command, ["acp"], {
-    cwd: cache, env: { ...process.env, XDG_CACHE_HOME: cache },
-    stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
-  });
+  let child;
+  try {
+    child = spawn(command, ["acp"], {
+      cwd: cache, env: { ...withoutBridgeRuntimeEnv(process.env), XDG_CACHE_HOME: cache },
+      stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+    });
+  } catch (error) { await rm(cache, { recursive: true, force: true }); throw error; }
   let exited = false, failed = false, initialized = false;
   let pending = "";
   const exit = new Promise<void>(resolve => { child.once("close", () => { exited = true; resolve(); }); });

@@ -49,8 +49,10 @@ export function normalizeUsage(raw: unknown): ProviderUsage {
 
 export async function getDevinUsage(command: string, deps = { executable: resolveExecutablePath, probe: probeDevinUsage }): Promise<ProviderUsageResult> {
   try {
-    if (await deps.executable(command) === null) return { supported: true, usage: { status: "not_installed" } };
-    return { supported: true, usage: normalizeUsage(await deps.probe(command)) };
+    // Probe the same resolved executable that the existence check found.
+    const executable = await deps.executable(command);
+    if (executable === null) return { supported: true, usage: { status: "not_installed" } };
+    return { supported: true, usage: normalizeUsage(await deps.probe(executable)) };
   } catch {
     // CLI failures may contain credential-bearing inputs. Do not echo them.
     return { supported: true, usage: errorUsage("Devin account usage could not be loaded. Check devin auth status on this machine, then try again.") };

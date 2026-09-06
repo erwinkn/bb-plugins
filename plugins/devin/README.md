@@ -71,9 +71,10 @@ machine. The shared BB usage UI can show daily and weekly percentage bars and
 reset times. For accounts with an ACU limit, it can also show billing-cycle ACU
 usage. It respects Devin's flags that hide daily or weekly quotas.
 
-For each refresh, the handler starts the configured `devin acp` executable with
-an empty private `XDG_CACHE_HOME`, sends only ACP `initialize`, and reads the
-fresh `user_status` protobuf cache written by that process. It then stops the
+For each refresh, the handler starts the resolved `devin acp` executable with
+an empty private `XDG_CACHE_HOME` and without bb's bridge runtime variables,
+sends only ACP `initialize`, and reads the fresh `user_status` protobuf cache
+written by that process. Overlapping refreshes share one probe. It then stops the
 process and removes the temporary cache. It does not create a session, send a
 prompt, copy credentials, or read an old shared cache. Devin handles its own
 login, account selection, and request authentication.

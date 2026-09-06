@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { AvailableModel, ReasoningLevel, ServiceTier } from "@get-bb/plugin-sdk/provider-bridge";
 
 export const FAMILY_PREFIX = "devin-family:";
+export const DEFAULT_MODEL_ID = "acp-default";
 const variantSchema = z.object({ model_uid: z.string().min(1), label: z.string().min(1), max_context_tokens: z.number().int().positive().optional() });
 const catalogSchema = z.object({ families: z.array(z.object({
   family_uid: z.string().min(1), family_label: z.string().min(1), variants: z.array(variantSchema).min(1),
@@ -35,10 +36,13 @@ export function buildDevinModels(input: unknown) {
       raw.set(variant.model_uid, rawModel(variant));
       if (!variant.label.startsWith(base.family_label)) continue;
       let tail = variant.label.slice(base.family_label.length).trim();
-      const contextLabel = tail.endsWith("1M") ? " 1M" : "";
-      if (contextLabel) tail = tail.slice(0, -2).trim();
-      const fast = tail === "Fast" || tail.endsWith(" Fast");
-      if (fast) tail = tail.slice(0, -4).trim();
+      // "1M" and "Fast" are suffixes in either order.
+      let contextLabel = "", fast = false;
+      for (let stripped = true; stripped;) {
+        stripped = false;
+        if (!contextLabel && tail.endsWith("1M")) { contextLabel = " 1M"; tail = tail.slice(0, -2).trim(); stripped = true; }
+        if (!fast && (tail === "Fast" || tail.endsWith(" Fast"))) { fast = true; tail = tail.slice(0, -4).trim(); stripped = true; }
+      }
       // Unknown values (for example Minimal) stay as native rows, never
       // silently equated with a different effort.
       if (tail !== "" && efforts[tail] === undefined) continue;
@@ -73,7 +77,8 @@ export function buildDevinModels(input: unknown) {
     for (const c of choices) grouped.add(c.variant.model_uid);
   }
   models.push(...[...raw.values()].filter(m => !grouped.has(m.id)));
-  models.unshift({ id: "default", model: "default", displayName: "Devin default", description: "Use the default model configured in Devin CLI.",
+  // The SDK ACP bridge sends no model selection only for this exact ID.
+  models.unshift({ id: DEFAULT_MODEL_ID, model: DEFAULT_MODEL_ID, displayName: "Devin default", description: "Use the default model configured in Devin CLI.",
     defaultReasoningEffort: "medium", supportedReasoningEfforts: [], isDefault: true });
   return {
     models,
