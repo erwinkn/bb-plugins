@@ -168,7 +168,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     colorIntensity: {
       type: "select",
-      label: "Syntax color intensity (full matches BB's preview)",
+      label: "Syntax color intensity (full matches BB's preview; soft and muted desaturate)",
       options: ["full", "soft", "muted"],
       default: "full",
     },

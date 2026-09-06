@@ -7,6 +7,7 @@ import {
   monacoThemeName,
   normalizeFontStyle,
   normalizeHex,
+  scaleChroma,
   softenTheme,
   themeFingerprint,
   toMonacoTheme,
@@ -88,12 +89,26 @@ test("themeFingerprint separates documents that share a name", () => {
   assert.equal(themeFingerprint(a), themeFingerprint({ ...a, colors: { "editor.background": "#000000" } }));
 });
 
-test("softenTheme pulls token colors toward the foreground and renames the theme", () => {
-  const source = theme({ fg: "#000000", tokenColors: [{ scope: "keyword", settings: { foreground: "#ff0000aa" } }] });
+test("softenTheme desaturates token colors, keeps grays and alpha, and renames the theme", () => {
+  const source = theme({
+    fg: "#000000",
+    tokenColors: [
+      { scope: "keyword", settings: { foreground: "#ff678daa" } },
+      { scope: "comment", settings: { foreground: "#636363" } },
+    ],
+  });
   assert.equal(softenTheme(source, 1), source);
-  const soft = softenTheme(source, 0.5);
-  assert.equal(soft.tokenColors[0]!.settings.foreground, "#800000aa");
+  const soft = softenTheme(source, 0.55);
+  assert.equal(soft.tokenColors[0]!.settings.foreground, "#da8797aa");
+  assert.equal(soft.tokenColors[1]!.settings.foreground, "#636363");
   assert.notEqual(soft.name, source.name);
+  assert.notEqual(softenTheme(source, 0.3).name, soft.name);
+});
+
+test("scaleChroma keeps lightness and hue while pulling chroma toward gray", () => {
+  assert.equal(scaleChroma("ff678d", 1), "ff678d");
+  assert.equal(scaleChroma("9d6afb", 0.3), "9187b0");
+  assert.equal(scaleChroma("636363", 0.3), "636363");
 });
 
 test("workbenchColors with BB tokens paints chrome from the app surfaces", () => {

@@ -39,7 +39,7 @@ export function prefsFrom(values: Record<string, unknown> | null | undefined): E
   const diagnostics = values?.typescriptDiagnostics;
   const bool = (key: keyof EditorPrefs & ("wordWrap" | "lineNumbers" | "minimap" | "formatOnSave")) =>
     typeof values?.[key] === "boolean" ? (values[key] as boolean) : DEFAULT_PREFS[key];
-  const intensity = { full: 1, soft: 0.85, muted: 0.7 }[String(values?.colorIntensity)] ?? DEFAULT_PREFS.colorIntensity;
+  const intensity = { full: 1, soft: 0.55, muted: 0.3 }[String(values?.colorIntensity)] ?? DEFAULT_PREFS.colorIntensity;
   return {
     fontSize: Number.isFinite(fontSize) && fontSize >= 9 && fontSize <= 24 ? Math.round(fontSize) : DEFAULT_PREFS.fontSize,
     colorIntensity: intensity,
