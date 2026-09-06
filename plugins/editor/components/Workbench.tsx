@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
+import { toast } from "sonner";
 import { useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { FlatEntry } from "@/lib/file-tree";
@@ -14,10 +15,10 @@ import {
   storeTreeWidth,
 } from "@/lib/layout-storage";
 import { cn } from "@/lib/utils";
-import { EditorPane, NoticeAction, NoticeRow, type EditorPaneHandle } from "./EditorPane";
-import { FileTree } from "./FileTree";
+import { EditorPane, NoticeAction, NoticeRow, type EditorPaneHandle, type PrefToggle } from "./EditorPane";
+import { FileTree, type CreateKind } from "./FileTree";
 import { QuickOpen } from "./QuickOpen";
-import { FolderIcon, PanelLeftOpenIcon } from "./icons";
+import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
 
 export type Surface = "opener" | "panel";
 
@@ -30,6 +31,8 @@ export interface WorkbenchProps {
   workspaceKey: string;
   label: string;
   prefs: EditorPrefs;
+  /** Optimistic preference write; the settings store confirms it. */
+  onSetPref: (key: PrefToggle | "autoSave", value: boolean | "off" | "afterDelay") => void;
   Original?: ComponentType;
 }
 
@@ -44,17 +47,21 @@ interface TreeState {
 const EMPTY_TREE: TreeState = { entries: [], root: "", truncated: false, isLoading: false, error: null };
 const COMPACT_BREAKPOINT_PX = 420;
 const KEYBOARD_RESIZE_STEP_PX = 24;
+const HISTORY_LIMIT = 50;
 
-export function Workbench({ surface, source, initialPath, workspaceKey, label, prefs, Original }: WorkbenchProps) {
+export function Workbench({ surface, source, initialPath, workspaceKey, label, prefs, onSetPref, Original }: WorkbenchProps) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const paneId = useId().replace(/[^a-zA-Z0-9]/g, "");
   const rootRef = useRef<HTMLDivElement | null>(null);
   const paneRef = useRef<EditorPaneHandle | null>(null);
 
-  const [activePath, setActivePath] = useState<string | null>(
-    () => initialPath ?? (surface === "panel" ? readLastFile(workspaceKey) : null),
-  );
+  const firstPath = initialPath ?? (surface === "panel" ? readLastFile(workspaceKey) : null);
+  const [activePath, setActivePath] = useState<string | null>(firstPath);
+  const [history, setHistory] = useState<{ paths: string[]; index: number }>(() => ({
+    paths: firstPath === null ? [] : [firstPath],
+    index: firstPath === null ? -1 : 0,
+  }));
   const [pendingOpen, setPendingOpen] = useState<{ path: string } | null>(null);
   const [treeOpen, setTreeOpen] = useState(() => readTreeOpen(surface));
   const [treeWidth, setTreeWidth] = useState(readTreeWidth);
@@ -64,8 +71,20 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const [focusNonce, setFocusNonce] = useState(0);
   const treeRequested = useRef(false);
 
+  const show = useCallback((path: string, options: { record: boolean }) => {
+    setActivePath(path);
+    setFocusNonce((nonce) => nonce + 1);
+    if (!options.record) return;
+    setHistory((current) => {
+      const paths = [...current.paths.slice(0, current.index + 1), path].slice(-HISTORY_LIMIT);
+      return { paths, index: paths.length - 1 };
+    });
+  }, []);
+
   useEffect(() => {
-    if (initialPath !== null) setActivePath(initialPath);
+    if (initialPath !== null) show(initialPath, { record: true });
+    // Only external path changes (a new file opened into this tab) re-run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPath]);
 
   useEffect(() => {
@@ -87,17 +106,14 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   const loadTree = useCallback(() => {
     setTree((current) => ({ ...current, isLoading: true, error: null }));
-    void rpc
+    return rpc
       .call("tree", { source })
       .then((result) => {
         setTree({ entries: result.entries, root: result.root, truncated: result.truncated, isLoading: false, error: null });
       })
       .catch((error: unknown) => {
         treeRequested.current = false;
-        setTree({
-          ...EMPTY_TREE,
-          error: error instanceof Error ? error.message : "Could not list files",
-        });
+        setTree({ ...EMPTY_TREE, error: error instanceof Error ? error.message : "Could not list files" });
       });
   }, [rpc, source]);
 
@@ -105,7 +121,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   useEffect(() => {
     if (!needTree || treeRequested.current) return;
     treeRequested.current = true;
-    loadTree();
+    void loadTree();
   }, [needTree, loadTree]);
 
   const openInTab = useCallback(
@@ -119,9 +135,8 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     [navigate, source],
   );
 
-  const openFile = useCallback(
-    (path: string, options: { newTab: boolean }) => {
-      if (options.newTab && openInTab(path)) return;
+  const guardedShow = useCallback(
+    (path: string, options: { record: boolean }) => {
       if (path === activePath) {
         paneRef.current?.focus();
         return;
@@ -130,11 +145,43 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         setPendingOpen({ path });
         return;
       }
-      setActivePath(path);
-      setFocusNonce((nonce) => nonce + 1);
+      show(path, options);
       if (compact) setTreeOpen(false);
     },
-    [activePath, compact, openInTab],
+    [activePath, compact, show],
+  );
+
+  const openFile = useCallback(
+    (path: string, options: { newTab: boolean }) => {
+      if (options.newTab && openInTab(path)) return;
+      guardedShow(path, { record: true });
+    },
+    [guardedShow, openInTab],
+  );
+
+  const goBack = () => {
+    if (history.index <= 0) return;
+    const path = history.paths[history.index - 1];
+    if (path === undefined) return;
+    setHistory({ ...history, index: history.index - 1 });
+    guardedShow(path, { record: false });
+  };
+  const goForward = () => {
+    if (history.index >= history.paths.length - 1) return;
+    const path = history.paths[history.index + 1];
+    if (path === undefined) return;
+    setHistory({ ...history, index: history.index + 1 });
+    guardedShow(path, { record: false });
+  };
+
+  const createEntry = useCallback(
+    async (path: string, kind: CreateKind) => {
+      await rpc.call("create", { path, source, kind });
+      await loadTree();
+      if (kind === "file") guardedShow(path, { record: true });
+      else toast.success(`Created ${path}/`);
+    },
+    [guardedShow, loadTree, rpc, source],
   );
 
   const toggleTree = useCallback(() => {
@@ -145,9 +192,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   }, [surface]);
 
   const resizeStart = useRef(treeWidth);
+  const treeOnRight = prefs.fileTreeSide === "right";
   const resizeBy = (delta: number) => {
-    const next = clampTreeWidth(resizeStart.current + delta, width);
-    setTreeWidth(next);
+    setTreeWidth(clampTreeWidth(resizeStart.current + (treeOnRight ? -delta : delta), width));
   };
   const resizeEnd = () => {
     resizeStart.current = treeWidth;
@@ -170,9 +217,89 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     }
   };
 
-  const showTree = treeOpen;
   const showEditor = !compact || !treeOpen;
   const canOpenInTab = source.kind === "workspace" && source.environmentId !== null;
+
+  const treeColumn = treeOpen ? (
+    <div
+      style={{ width: effectiveTreeWidth }}
+      className={cn("relative flex h-full shrink-0 flex-col", !compact && (treeOnRight ? "border-l border-border/60" : "border-r border-border/60"))}
+    >
+      <FileTree
+        entries={tree.entries}
+        root={tree.root}
+        label={label || (tree.root === "" ? "Files" : tree.root.split(/[\\/]/).at(-1) || "Files")}
+        isLoading={tree.isLoading}
+        error={tree.error}
+        truncated={tree.truncated}
+        activePath={activePath}
+        onOpenFile={openFile}
+        onRefresh={() => void loadTree()}
+        onCreate={createEntry}
+      />
+      {compact ? null : (
+        <ResizeHandle
+          side={treeOnRight ? "left" : "right"}
+          onResizeStart={() => {
+            resizeStart.current = treeWidth;
+          }}
+          onResize={resizeBy}
+          onResizeEnd={resizeEnd}
+        />
+      )}
+    </div>
+  ) : null;
+
+  const editorColumn = showEditor ? (
+    activePath === null ? (
+      <EmptyState treeOpen={treeOpen} treeOnRight={treeOnRight} onShowTree={toggleTree} onQuickOpen={() => setQuickOpen(true)} />
+    ) : (
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {pendingOpen !== null ? (
+          <NoticeRow tone="warning">
+            Open {pendingOpen.path.split("/").at(-1)} and discard your unsaved changes?
+            <NoticeAction
+              onClick={() => {
+                const next = pendingOpen.path;
+                setPendingOpen(null);
+                void paneRef.current?.save().then((saved) => {
+                  if (saved) show(next, { record: true });
+                });
+              }}
+            >
+              Save and open
+            </NoticeAction>
+            <NoticeAction
+              onClick={() => {
+                const next = pendingOpen.path;
+                setPendingOpen(null);
+                show(next, { record: true });
+              }}
+            >
+              Discard and open
+            </NoticeAction>
+            <NoticeAction onClick={() => setPendingOpen(null)}>Cancel</NoticeAction>
+          </NoticeRow>
+        ) : null}
+        <EditorPane
+          ref={paneRef}
+          paneId={paneId}
+          source={source}
+          path={activePath}
+          prefs={prefs}
+          treeOpen={treeOpen}
+          treeSide={prefs.fileTreeSide}
+          onToggleTree={toggleTree}
+          onQuickOpen={() => setQuickOpen(true)}
+          onOpenInTab={canOpenInTab ? () => void openInTab(activePath) : null}
+          history={{ canBack: history.index > 0, canForward: history.index < history.paths.length - 1, back: goBack, forward: goForward }}
+          onSetPref={onSetPref}
+          Original={Original}
+          focusNonce={focusNonce}
+        />
+      </div>
+    )
+  ) : null;
 
   return (
     <div
@@ -181,92 +308,38 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       onKeyDown={onKeyDown}
       data-surface={surface}
     >
-      {showTree ? (
-        <div style={{ width: effectiveTreeWidth }} className="relative flex h-full shrink-0 flex-col">
-          <FileTree
-            entries={tree.entries}
-            root={tree.root}
-            label={label || (tree.root === "" ? "Files" : tree.root.split(/[\\/]/).at(-1) || "Files")}
-            isLoading={tree.isLoading}
-            error={tree.error}
-            truncated={tree.truncated}
-            activePath={activePath}
-            onOpenFile={openFile}
-            onClose={toggleTree}
-            onRefresh={loadTree}
-          />
-          {compact ? null : (
-            <ResizeHandle
-              onResizeStart={() => {
-                resizeStart.current = treeWidth;
-              }}
-              onResize={resizeBy}
-              onResizeEnd={resizeEnd}
-            />
-          )}
-        </div>
-      ) : null}
-      {showEditor ? (
-        activePath === null ? (
-          <EmptyState treeOpen={treeOpen} onShowTree={toggleTree} onQuickOpen={() => setQuickOpen(true)} />
-        ) : (
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {pendingOpen !== null ? (
-              <NoticeRow tone="warning">
-                Open {pendingOpen.path.split("/").at(-1)} and discard your unsaved changes?
-                <NoticeAction
-                  onClick={() => {
-                    const next = pendingOpen.path;
-                    setPendingOpen(null);
-                    void paneRef.current?.save().then((saved) => {
-                      if (saved) {
-                        setActivePath(next);
-                        setFocusNonce((nonce) => nonce + 1);
-                      }
-                    });
-                  }}
-                >
-                  Save and open
-                </NoticeAction>
-                <NoticeAction
-                  onClick={() => {
-                    const next = pendingOpen.path;
-                    setPendingOpen(null);
-                    setActivePath(next);
-                    setFocusNonce((nonce) => nonce + 1);
-                  }}
-                >
-                  Discard and open
-                </NoticeAction>
-                <NoticeAction onClick={() => setPendingOpen(null)}>Cancel</NoticeAction>
-              </NoticeRow>
-            ) : null}
-            <EditorPane
-              ref={paneRef}
-              paneId={paneId}
-              source={source}
-              path={activePath}
-              prefs={prefs}
-              treeOpen={treeOpen}
-              onToggleTree={toggleTree}
-              onQuickOpen={() => setQuickOpen(true)}
-              onOpenInTab={canOpenInTab ? () => void openInTab(activePath) : null}
-              Original={Original}
-              focusNonce={focusNonce}
-            />
-          </div>
-        )
-      ) : null}
+      {treeOnRight ? (
+        <>
+          {editorColumn}
+          {treeColumn}
+        </>
+      ) : (
+        <>
+          {treeColumn}
+          {editorColumn}
+        </>
+      )}
       {quickOpen ? <QuickOpen entries={tree.entries} onOpen={openFile} onClose={() => setQuickOpen(false)} /> : null}
     </div>
   );
 }
 
-function EmptyState({ treeOpen, onShowTree, onQuickOpen }: { treeOpen: boolean; onShowTree: () => void; onQuickOpen: () => void }) {
+function EmptyState({
+  treeOpen,
+  treeOnRight,
+  onShowTree,
+  onQuickOpen,
+}: {
+  treeOpen: boolean;
+  treeOnRight: boolean;
+  onShowTree: () => void;
+  onQuickOpen: () => void;
+}) {
+  const TreeGlyph = treeOnRight ? SidebarRightGlyph : SidebarLeftGlyph;
   return (
     <div className="flex min-w-0 flex-1 flex-col">
       {treeOpen ? null : (
-        <div className="flex h-9 shrink-0 items-center border-b border-border/60 bg-surface-raised pl-1">
+        <div className={cn("flex h-9 shrink-0 items-center border-b border-border/60 bg-background px-1.5", treeOnRight && "justify-end")}>
           <button
             type="button"
             onClick={onShowTree}
@@ -274,12 +347,12 @@ function EmptyState({ treeOpen, onShowTree, onQuickOpen }: { treeOpen: boolean; 
             aria-label="Show file tree"
             className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground"
           >
-            <PanelLeftOpenIcon />
+            <TreeGlyph />
           </button>
         </div>
       )}
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-muted-foreground">
-        <FolderIcon className="size-6 text-subtle-foreground" />
+        <FolderIcon className="size-5 text-subtle-foreground" />
         <p className="text-sm">Select a file to edit</p>
         <button
           type="button"
@@ -297,10 +370,13 @@ function EmptyState({ treeOpen, onShowTree, onQuickOpen }: { treeOpen: boolean; 
 }
 
 function ResizeHandle({
+  side,
   onResizeStart,
   onResize,
   onResizeEnd,
 }: {
+  /** Edge of the tree column the handle sits on. */
+  side: "left" | "right";
   onResizeStart: () => void;
   onResize: (deltaX: number) => void;
   onResizeEnd: () => void;
@@ -331,6 +407,7 @@ function ResizeHandle({
     target.addEventListener("pointerup", finish);
     target.addEventListener("pointercancel", finish);
   };
+  const grow = side === "right" ? 1 : -1;
   return (
     <div
       role="separator"
@@ -338,14 +415,15 @@ function ResizeHandle({
       aria-orientation="vertical"
       tabIndex={0}
       onKeyDown={(event) => {
-        if (event.key === "ArrowLeft") onResize(-KEYBOARD_RESIZE_STEP_PX);
-        else if (event.key === "ArrowRight") onResize(KEYBOARD_RESIZE_STEP_PX);
+        if (event.key === "ArrowLeft") onResize(-KEYBOARD_RESIZE_STEP_PX * grow);
+        else if (event.key === "ArrowRight") onResize(KEYBOARD_RESIZE_STEP_PX * grow);
         else return;
         event.preventDefault();
         onResizeEnd();
       }}
       className={cn(
-        "absolute top-0 right-0 z-10 h-full w-px bg-border transition-colors",
+        "absolute top-0 z-10 h-full w-px bg-transparent transition-colors",
+        side === "right" ? "-right-px" : "-left-px",
         "hover:bg-ring/50 focus-visible:bg-ring focus-visible:outline-none",
         dragging && "bg-ring/60",
       )}
@@ -353,7 +431,7 @@ function ResizeHandle({
       <div
         aria-hidden
         onPointerDown={handlePointerDown}
-        className="absolute top-0 -right-1 h-full w-2.5 cursor-col-resize touch-none bg-transparent"
+        className={cn("absolute top-0 h-full w-2.5 cursor-col-resize touch-none bg-transparent", side === "right" ? "-right-1" : "-left-1")}
       />
     </div>
   );

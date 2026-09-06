@@ -69,6 +69,23 @@ export const rpcContract = defineRpcContract({
       z.object({ outcome: z.literal("conflict"), currentSha256: z.string().nullable() }),
     ]),
   },
+  /** Create an empty file or a directory; refuses to replace an existing path. */
+  create: {
+    input: fileSchema.extend({ kind: z.enum(["file", "directory"]) }),
+    output: z.object({ path: z.string() }),
+  },
+  /** Persist one editor preference from the toolbar menu. */
+  setSetting: {
+    input: z.discriminatedUnion("key", [
+      z.object({ key: z.literal("wordWrap"), value: z.boolean() }),
+      z.object({ key: z.literal("minimap"), value: z.boolean() }),
+      z.object({ key: z.literal("lineNumbers"), value: z.boolean() }),
+      z.object({ key: z.literal("formatOnSave"), value: z.boolean() }),
+      z.object({ key: z.literal("autoSave"), value: z.enum(["off", "onBlur", "afterDelay"]) }),
+      z.object({ key: z.literal("fileTreeSide"), value: z.enum(["left", "right"]) }),
+    ]),
+    output: z.null(),
+  },
 });
 
 /**
@@ -135,12 +152,20 @@ export default async function plugin(bb: BbPluginApi) {
       default: 13,
     },
     wordWrap: { type: "boolean", label: "Wrap long lines", default: false },
+    lineNumbers: { type: "boolean", label: "Show line numbers", default: true },
     minimap: { type: "boolean", label: "Show minimap", default: false },
     autoSave: {
       type: "select",
       label: "Auto save",
       options: ["off", "onBlur", "afterDelay"],
       default: "off",
+    },
+    formatOnSave: { type: "boolean", label: "Format on save (languages with a formatter)", default: false },
+    fileTreeSide: {
+      type: "select",
+      label: "File tree side",
+      options: ["left", "right"],
+      default: "right",
     },
     typescriptDiagnostics: {
       type: "select",
@@ -149,7 +174,6 @@ export default async function plugin(bb: BbPluginApi) {
       default: "syntax",
     },
   });
-  void settings;
 
   let assetLease: { baseUrl: string; expiresAtMs: number } | null = null;
 
@@ -278,6 +302,35 @@ export default async function plugin(bb: BbPluginApi) {
       return result.outcome === "written"
         ? { outcome: "written" as const, sha256: result.sha256 }
         : { outcome: "conflict" as const, currentSha256: result.currentSha256 };
+    },
+
+    async create({ path: filePath, source, kind }) {
+      if (/(^|[\\/])\.\.([\\/]|$)/.test(filePath)) throw new Error("The name cannot contain '..'");
+      const target = await resolveTarget(source, filePath);
+      const hostId = target.hostId === undefined ? {} : { hostId: target.hostId };
+      const exists = await bb.sdk.files
+        .read({ path: target.path, ...hostId })
+        .then(() => true)
+        .catch(() => false);
+      if (exists) throw new Error(`${filePath} already exists`);
+      if (kind === "directory") {
+        await bb.sdk.files.mkdir({ path: target.path, recursive: true, ...hostId });
+      } else {
+        const result = await bb.sdk.files.write({
+          path: target.path,
+          content: "",
+          contentEncoding: "utf8",
+          createParents: true,
+          ...hostId,
+        });
+        if (result.outcome !== "written") throw new Error(`${filePath} already exists`);
+      }
+      return { path: filePath };
+    },
+
+    async setSetting(input) {
+      await settings.experimental_set({ [input.key]: input.value });
+      return null;
     },
   });
 }

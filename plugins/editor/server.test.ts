@@ -35,13 +35,34 @@ test("workspace without a thread or project asks for a project", async (t) => {
   await assert.rejects(() => harness.behavior.callRpc("workspace", { threadId: null, projectId: null }), /Select a project/);
 });
 
-test("contract exposes the five methods the frontend calls", () => {
-  assert.deepEqual(Object.keys(rpcContract).sort(), ["assets", "read", "tree", "workspace", "write"]);
+test("contract exposes the methods the frontend calls", () => {
+  assert.deepEqual(Object.keys(rpcContract).sort(), ["assets", "create", "read", "setSetting", "tree", "workspace", "write"]);
+});
+
+test("create refuses parent traversal and setSetting refuses unknown keys", async (t) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
+  await assert.rejects(() => harness.behavior.callRpc("create", { path: "../x", source, kind: "file" }), /cannot contain/);
+  await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "fontSize", value: 40 }));
+  await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "wordWrap", value: "yes" }));
 });
 
 test("plugin uses only public SDK imports and declared packages", () => {
   const scan = experimental_scanPublicSdkOnly(here, {
-    allow: [/^react(-dom)?$/, /^sonner$/, /^clsx$/, /^tailwind-merge$/, /^monaco-editor(\/|$)/, /^shiki\//, /^@shikijs\/langs\//, /^esbuild$/, /^@\//],
+    allow: [
+      /^react(-dom)?$/,
+      /^sonner$/,
+      /^clsx$/,
+      /^tailwind-merge$/,
+      /^@hugeicons\//,
+      /^monaco-editor(\/|$)/,
+      /^shiki\//,
+      /^@shikijs\/langs\//,
+      /^esbuild$/,
+      /^@\//,
+    ],
   });
   assert.deepEqual(scan.privateDependencies, []);
   const dynamic = scan.violations.filter((violation) => violation.reason === "dynamic-specifier");

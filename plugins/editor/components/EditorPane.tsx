@@ -11,9 +11,11 @@ import {
   setTypeScriptDiagnostics,
   type EditorRuntime,
 } from "@/lib/monaco-loader";
-import { AUTO_SAVE_DELAY_MS, baseEditorOptions, prefEditorOptions, type EditorPrefs } from "@/lib/editor-options";
-import { forgetEditor, markEditorActive } from "@/lib/editor-commands";
+import { AUTO_SAVE_DELAY_MS, baseEditorOptions, prefEditorOptions, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
+import { copyText, forgetEditor, markEditorActive } from "@/lib/editor-commands";
+import { resolveBbTokens } from "@/lib/bb-tokens";
 import { cn } from "@/lib/utils";
+import type { MenuItem } from "./ContextMenu";
 import { Toolbar, type SaveIndicator } from "./Toolbar";
 
 export type SaveState =
@@ -35,15 +37,20 @@ export interface EditorPaneHandle {
   focus(): void;
 }
 
+export type PrefToggle = "wordWrap" | "minimap" | "lineNumbers" | "formatOnSave";
+
 export interface EditorPaneProps {
   paneId: string;
   source: PluginFileOpenerSource;
   path: string;
   prefs: EditorPrefs;
   treeOpen: boolean;
+  treeSide: TreeSide;
   onToggleTree: () => void;
   onQuickOpen: (() => void) | null;
   onOpenInTab: (() => void) | null;
+  history: { canBack: boolean; canForward: boolean; back: () => void; forward: () => void };
+  onSetPref: (key: PrefToggle | "autoSave", value: boolean | "off" | "afterDelay") => void;
   /** BB's preview for this file; rendered when the file is not editable text. */
   Original?: ComponentType;
   /** Changes when the user opened the file deliberately; the editor takes focus. */
@@ -60,7 +67,7 @@ interface OpenFile {
 }
 
 export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function EditorPane(
-  { paneId, source, path, prefs, treeOpen, onToggleTree, onQuickOpen, onOpenInTab, Original, focusNonce = 0 },
+  { paneId, source, path, prefs, treeOpen, treeSide, onToggleTree, onQuickOpen, onOpenInTab, history, onSetPref, Original, focusNonce = 0 },
   ref,
 ) {
   const rpc = useRpc<typeof rpcContract>();
@@ -73,8 +80,6 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
   const saveStateRef = useRef<SaveState>({ kind: "clean" });
   const [saveState, setSaveStateValue] = useState<SaveState>({ kind: "clean" });
   const [status, setStatus] = useState<Status>({ kind: "loading" });
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [pendingDiscard, setPendingDiscard] = useState(false);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const latest = useRef({ prefs, onToggleTree, onQuickOpen, codeTheme, focusNonce });
@@ -90,6 +95,11 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     async (expectedSha256: string | null): Promise<boolean> => {
       const file = fileRef.current;
       if (file === null || saveStateRef.current.kind === "saving") return false;
+      if (latest.current.prefs.formatOnSave) {
+        // No-op for languages without a formatter; the TS/JSON/CSS/HTML workers provide one.
+        await editorRef.current?.getAction("editor.action.formatDocument")?.run();
+        if (fileRef.current !== file) return false;
+      }
       const versionId = file.model.getAlternativeVersionId();
       setSaveState({ kind: "saving" });
       try {
@@ -126,7 +136,6 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
   const reloadFromDisk = useCallback(async () => {
     const file = fileRef.current;
     if (file === null) return;
-    setIsRefreshing(true);
     try {
       const result = await rpc.call("read", { path: file.path, source });
       if (fileRef.current !== file || result.kind !== "text") return;
@@ -136,18 +145,8 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
       setSaveState({ kind: "clean" });
     } catch (error) {
       setSaveState({ kind: "error", message: error instanceof Error ? error.message : "Reload failed" });
-    } finally {
-      setIsRefreshing(false);
     }
   }, [rpc, setSaveState, source]);
-
-  const requestRefresh = useCallback(() => {
-    if (saveStateRef.current.kind === "dirty" || saveStateRef.current.kind === "error") {
-      setPendingDiscard(true);
-      return;
-    }
-    void reloadFromDisk();
-  }, [reloadFromDisk]);
 
   useImperativeHandle(
     ref,
@@ -172,7 +171,12 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
         runtimeRef.current = runtime;
         const { monaco } = runtime;
         const theme = latest.current.codeTheme;
-        const themeName = theme.theme === null ? (theme.mode === "dark" ? "vs-dark" : "vs") : await runtime.shiki.applyTheme(theme.theme);
+        const themeName =
+          theme.theme === null
+            ? theme.mode === "dark"
+              ? "vs-dark"
+              : "vs"
+            : await runtime.shiki.applyTheme(theme.theme, resolveBbTokens(container));
         if (disposed) return;
         setOverflowWidgetsTheme(theme.theme?.type === "light" ? "vs" : theme.mode === "light" ? "vs" : "vs-dark");
         const editor = monaco.editor.create(container, {
@@ -239,7 +243,6 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     const editor = editorRef.current;
     if (runtime === null || editor === null) return;
     let cancelled = false;
-    setPendingDiscard(false);
     void (async () => {
       try {
         const result = await rpc.call("read", { path, source });
@@ -309,12 +312,13 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     if (runtime === null || status.kind === "loading") return;
     let cancelled = false;
     void (async () => {
+      const host = containerRef.current;
       const name =
         codeTheme.theme === null
           ? codeTheme.mode === "dark"
             ? "vs-dark"
             : "vs"
-          : await runtime.shiki.applyTheme(codeTheme.theme);
+          : await runtime.shiki.applyTheme(codeTheme.theme, host === null ? null : resolveBbTokens(host));
       if (cancelled) return;
       runtime.monaco.editor.setTheme(name);
       setOverflowWidgetsTheme((codeTheme.theme?.type ?? codeTheme.mode) === "light" ? "vs" : "vs-dark");
@@ -330,31 +334,43 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     if (runtime !== null) setTypeScriptDiagnostics(runtime.monaco, prefs.typescriptDiagnostics);
   }, [prefs, status.kind]);
 
+  const dirty = saveState.kind === "dirty" || saveState.kind === "error";
+  const menuItems: MenuItem[] = [
+    { label: "Save file", shortcut: "⌘S", disabled: !dirty, onSelect: () => void save() },
+    { label: "Discard changes", disabled: !dirty, onSelect: () => void reloadFromDisk() },
+    { label: "Reload from disk", disabled: dirty, onSelect: () => void reloadFromDisk() },
+    { type: "separator" },
+    ...(onOpenInTab === null ? [] : [{ label: "Open in new tab", onSelect: onOpenInTab }]),
+    { label: "Copy relative path", onSelect: () => void copyText(fileRef.current?.relativePath ?? path, "Relative path copied") },
+    { label: "Copy absolute path", onSelect: () => void copyText(fileRef.current?.absolutePath ?? path, "Absolute path copied") },
+    { type: "separator" },
+    { type: "toggle", label: "Line numbers", checked: prefs.lineNumbers, onToggle: (next) => onSetPref("lineNumbers", next) },
+    { type: "toggle", label: "Word wrap", checked: prefs.wordWrap, onToggle: (next) => onSetPref("wordWrap", next) },
+    { type: "toggle", label: "Minimap", checked: prefs.minimap, onToggle: (next) => onSetPref("minimap", next) },
+    { type: "toggle", label: "Auto save", checked: prefs.autoSave !== "off", onToggle: (next) => onSetPref("autoSave", next ? "afterDelay" : "off") },
+    { type: "toggle", label: "Format on save", checked: prefs.formatOnSave, onToggle: (next) => onSetPref("formatOnSave", next) },
+  ];
+
   const unsupported = status.kind === "unsupported";
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <Toolbar
         path={path}
         indicator={indicatorFor(saveState, status)}
-        isRefreshing={isRefreshing}
-        onRefresh={requestRefresh}
-        treeOpen={treeOpen}
-        onToggleTree={onToggleTree}
-        onOpenInTab={onOpenInTab}
-        onSave={saveState.kind === "dirty" || saveState.kind === "error" ? () => void save() : null}
-      />
-      <Notice
-        status={status}
-        saveState={saveState}
-        pendingDiscard={pendingDiscard}
-        onDiscardCancel={() => setPendingDiscard(false)}
-        onDiscardConfirm={() => {
-          setPendingDiscard(false);
-          void reloadFromDisk();
+        canGoBack={history.canBack}
+        canGoForward={history.canForward}
+        onBack={history.back}
+        onForward={history.forward}
+        onFind={() => {
+          editorRef.current?.focus();
+          void editorRef.current?.getAction("actions.find")?.run();
         }}
-        onOverwrite={() => void overwrite()}
-        onReload={() => void reloadFromDisk()}
+        menuItems={menuItems}
+        treeOpen={treeOpen}
+        treeSide={treeSide}
+        onToggleTree={onToggleTree}
       />
+      <Notice status={status} saveState={saveState} onOverwrite={() => void overwrite()} onReload={() => void reloadFromDisk()} />
       <div className="relative min-h-0 flex-1">
         <div ref={containerRef} className={cn("absolute inset-0", unsupported && "invisible")} />
         {unsupported ? (
@@ -399,17 +415,11 @@ function indicatorFor(saveState: SaveState, status: Status): SaveIndicator {
 function Notice({
   status,
   saveState,
-  pendingDiscard,
-  onDiscardCancel,
-  onDiscardConfirm,
   onOverwrite,
   onReload,
 }: {
   status: Status;
   saveState: SaveState;
-  pendingDiscard: boolean;
-  onDiscardCancel: () => void;
-  onDiscardConfirm: () => void;
   onOverwrite: () => void;
   onReload: () => void;
 }) {
@@ -420,15 +430,6 @@ function Notice({
         This file changed on disk since you opened it.
         <NoticeAction onClick={onReload}>Reload</NoticeAction>
         <NoticeAction onClick={onOverwrite}>Overwrite</NoticeAction>
-      </NoticeRow>
-    );
-  }
-  if (pendingDiscard) {
-    return (
-      <NoticeRow tone="warning">
-        Reload from disk and discard your unsaved changes?
-        <NoticeAction onClick={onDiscardConfirm}>Discard</NoticeAction>
-        <NoticeAction onClick={onDiscardCancel}>Cancel</NoticeAction>
       </NoticeRow>
     );
   }

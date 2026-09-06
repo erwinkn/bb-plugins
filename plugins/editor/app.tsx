@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   definePluginApp,
   useRpc,
@@ -10,13 +10,44 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { CLAIMED_EXTENSIONS } from "@/lib/languages";
-import { prefsFrom } from "@/lib/editor-options";
+import { prefsFrom, type EditorPrefs } from "@/lib/editor-options";
 import { EDITOR_COMMANDS, isCommandAvailable, runEditorCommand } from "@/lib/editor-commands";
-import { Workbench } from "@/components/Workbench";
+import { Workbench, type WorkbenchProps } from "@/components/Workbench";
 
-function usePrefs() {
+type SetPref = WorkbenchProps["onSetPref"];
+
+/**
+ * Effective preferences plus a writer. A toolbar toggle applies at once and
+ * persists through the plugin's settings; the settings store then confirms
+ * it (or the override is dropped if the write fails).
+ */
+function usePrefs(): { prefs: EditorPrefs; setPref: SetPref } {
+  const rpc = useRpc<typeof rpcContract>();
   const { values } = useSettings();
-  return useMemo(() => prefsFrom(values as Record<string, unknown> | null | undefined), [values]);
+  const [overrides, setOverrides] = useState<Record<string, unknown>>({});
+  const prefs = useMemo(
+    () => prefsFrom({ ...(values as Record<string, unknown> | null | undefined), ...overrides }),
+    [values, overrides],
+  );
+  useEffect(() => {
+    setOverrides((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([key, value]) => (values as Record<string, unknown>)?.[key] !== value));
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [values]);
+  const setPref = useCallback<SetPref>(
+    (key, value) => {
+      setOverrides((current) => ({ ...current, [key]: value }));
+      void rpc.call("setSetting", { key, value } as Parameters<typeof rpc.call<"setSetting">>[1]).catch(() => {
+        setOverrides((current) => {
+          const { [key]: _dropped, ...rest } = current;
+          return rest;
+        });
+      });
+    },
+    [rpc],
+  );
+  return { prefs, setPref };
 }
 
 function workspaceKeyFor(source: PluginFileOpenerSource): string {
@@ -25,7 +56,7 @@ function workspaceKeyFor(source: PluginFileOpenerSource): string {
 
 /** The `fileOpener`: BB opens matching files here instead of its preview. */
 function FileOpener({ path, source, Original }: PluginFileOpenerProps) {
-  const prefs = usePrefs();
+  const { prefs, setPref } = usePrefs();
   return (
     <Workbench
       surface="opener"
@@ -34,6 +65,7 @@ function FileOpener({ path, source, Original }: PluginFileOpenerProps) {
       workspaceKey={workspaceKeyFor(source)}
       label=""
       prefs={prefs}
+      onSetPref={setPref}
       Original={Original}
     />
   );
@@ -74,7 +106,7 @@ function pathParam(params: unknown): string | null {
 }
 
 function FilesPanelBody({ workspace, initialPath }: { workspace: WorkspaceState; initialPath: string | null }) {
-  const prefs = usePrefs();
+  const { prefs, setPref } = usePrefs();
   if (workspace.kind === "loading") {
     return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading workspace…</div>;
   }
@@ -89,6 +121,7 @@ function FilesPanelBody({ workspace, initialPath }: { workspace: WorkspaceState;
       workspaceKey={workspaceKeyFor(workspace.source)}
       label={workspace.label}
       prefs={prefs}
+      onSetPref={setPref}
     />
   );
 }

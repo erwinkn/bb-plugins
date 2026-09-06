@@ -7,20 +7,30 @@ disable that one before you install this one.
 
 ## What it adds
 
-- **Files panel.** Open the right panel, select **+**, then **Files**. A
-  file tree sits on the left and the editor on the right, like Cursor. The
-  tree collapses (`⌘B`), resizes by drag, and remembers its width and the
-  last file per workspace. On the New thread screen, **Files** browses the
-  project's default checkout.
+- **Files panel.** Open the right panel, select **+**, then **Files**. The
+  editor sits next to a file tree (on the right by default, like Cursor and
+  super.engineering; a setting moves it left). The tree collapses (`⌘B`),
+  resizes by drag, and remembers its width and the last file per workspace.
+  Hover the tree header or a folder for **refresh**, **new file**, and
+  **new folder**; names are typed inline. On the New thread screen, **Files**
+  browses the project's default checkout.
+- **Toolbar.** Back and forward through the files you opened, the path
+  (click to copy), then `⋯` (save, discard, reload, open in new tab, copy
+  paths, and toggles for line numbers, word wrap, minimap, auto save, format
+  on save), find in file, and the tree toggle. Toggles persist as plugin
+  settings.
 - **Editor tabs.** BB opens claimed file types in this editor instead of its
   read-only preview: file links in chat, the panel file search, and
-  `bb thread open`. The tree toggle works there too.
+  `bb thread open`. The same toolbar and tree are there.
 - **Quick open** with `⌘P` inside the editor or tree: fuzzy search over the
   workspace file list. `⌘` + click, or **Open in new tab** in the tree's
   context menu, opens a file as its own host tab.
-- **Colors that match BB.** Files tokenize with Shiki's TextMate grammars
+- **One surface with BB.** Files tokenize with Shiki's TextMate grammars
   and BB's current VS Code theme document, the same inputs BB's preview uses,
-  so colors match token for token. Theme and light/dark switches apply live.
+  so token colors match BB's. The editor chrome (background, gutter, line
+  highlight, widgets, scrollbars) takes BB's own surface colors, and icons
+  are BB's Hugeicons at BB's size, so the editor reads as part of the panel.
+  Theme and light/dark switches apply live.
 - **Language services.** Completions, hover, signature help, go to
   definition, rename, formatting, and outline for TypeScript, JavaScript,
   JSON, CSS/SCSS/Less, and HTML. The TypeScript checker sees only the open
@@ -45,10 +55,13 @@ Extensions → Editor:
 | Setting                | Default  | Notes                                                   |
 | ---------------------- | -------- | ------------------------------------------------------- |
 | Font size              | 13       | 9 to 24                                                 |
-| Wrap long lines        | off      |                                                         |
-| Show minimap           | off      |                                                         |
-| Auto save              | off      | `onBlur` saves when the editor loses focus; `afterDelay` one second after typing stops |
+| Wrap long lines        | off      | Also in the `⋯` menu                                    |
+| Show line numbers      | on       | Also in the `⋯` menu                                    |
+| Show minimap           | off      | Also in the `⋯` menu                                    |
+| Auto save              | off      | `onBlur` saves when the editor loses focus; `afterDelay` one second after typing stops. The `⋯` toggle switches off/afterDelay |
+| Format on save         | off      | Uses Monaco's formatter where one exists (TS, JS, JSON, CSS, HTML) |
 | TypeScript diagnostics | syntax   | `semantic` adds type errors minus module-resolution codes |
+| File tree side         | right    |                                                         |
 
 ## Install
 
@@ -97,7 +110,8 @@ Layout:
   save state machine. `FileTree.tsx`, `QuickOpen.tsx`, `Toolbar.tsx`.
 - `lib/shiki-monaco.ts` tokenizes Monaco models with Shiki and maps colors
   back to theme scopes; `lib/monaco-theme.ts` converts BB's theme document
-  into a Monaco theme and derives chrome colors the document omits.
+  into a Monaco theme; `lib/bb-tokens.ts` resolves BB's surface colors from
+  live CSS (composited on a canvas) for the editor chrome.
 - `lib/languages.ts` is the one table of Monaco id, Shiki grammar, and file
   patterns. `monaco-bundle/editor.js` must list a loader for every grammar
   it names; `lib/languages.test.ts` checks that.
@@ -116,7 +130,7 @@ grammar, and five workers, all loaded on demand.
 - Live reload when the agent edits an open file (needs a workspace watch).
 - Git gutter and an editable diff view against HEAD or the base branch.
 - Review comments on lines that the agent can read.
-- Renaming, creating, and deleting files from the tree.
+- Renaming and deleting files from the tree (creating works).
 - Hidden files never appear in the tree; BB's path listing excludes them.
 - A file opened from the tree inside an editor tab keeps that tab's original
   title; plugins cannot retitle a host tab yet.

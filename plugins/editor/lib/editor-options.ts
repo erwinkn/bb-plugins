@@ -3,20 +3,28 @@ import type { TypeScriptDiagnostics } from "./monaco-loader.js";
 
 export type AutoSave = "off" | "onBlur" | "afterDelay";
 
+export type TreeSide = "left" | "right";
+
 export interface EditorPrefs {
   fontSize: number;
   wordWrap: boolean;
+  lineNumbers: boolean;
   minimap: boolean;
   autoSave: AutoSave;
+  formatOnSave: boolean;
   typescriptDiagnostics: TypeScriptDiagnostics;
+  fileTreeSide: TreeSide;
 }
 
 export const DEFAULT_PREFS: EditorPrefs = {
   fontSize: 13,
   wordWrap: false,
+  lineNumbers: true,
   minimap: false,
   autoSave: "off",
+  formatOnSave: false,
   typescriptDiagnostics: "syntax",
+  fileTreeSide: "right",
 };
 
 export const AUTO_SAVE_DELAY_MS = 1000;
@@ -26,12 +34,17 @@ export function prefsFrom(values: Record<string, unknown> | null | undefined): E
   const fontSize = Number(values?.fontSize);
   const autoSave = values?.autoSave;
   const diagnostics = values?.typescriptDiagnostics;
+  const bool = (key: keyof EditorPrefs & ("wordWrap" | "lineNumbers" | "minimap" | "formatOnSave")) =>
+    typeof values?.[key] === "boolean" ? (values[key] as boolean) : DEFAULT_PREFS[key];
   return {
     fontSize: Number.isFinite(fontSize) && fontSize >= 9 && fontSize <= 24 ? Math.round(fontSize) : DEFAULT_PREFS.fontSize,
-    wordWrap: typeof values?.wordWrap === "boolean" ? values.wordWrap : DEFAULT_PREFS.wordWrap,
-    minimap: typeof values?.minimap === "boolean" ? values.minimap : DEFAULT_PREFS.minimap,
+    wordWrap: bool("wordWrap"),
+    lineNumbers: bool("lineNumbers"),
+    minimap: bool("minimap"),
     autoSave: autoSave === "onBlur" || autoSave === "afterDelay" ? autoSave : "off",
+    formatOnSave: bool("formatOnSave"),
     typescriptDiagnostics: diagnostics === "off" || diagnostics === "semantic" ? diagnostics : "syntax",
+    fileTreeSide: values?.fileTreeSide === "left" ? "left" : "right",
   };
 }
 
@@ -46,6 +59,8 @@ export function prefEditorOptions(prefs: EditorPrefs): MonacoNs.editor.IEditorOp
     fontSize: prefs.fontSize,
     lineHeight: Math.round(prefs.fontSize * 1.4),
     wordWrap: prefs.wordWrap ? "on" : "off",
+    lineNumbers: prefs.lineNumbers ? "on" : "off",
+    lineDecorationsWidth: prefs.lineNumbers ? 8 : 12,
     minimap: { enabled: prefs.minimap, renderCharacters: false, maxColumn: 80, showSlider: "mouseover" },
   };
 }
@@ -59,9 +74,7 @@ export function baseEditorOptions(
     automaticLayout: true,
     fontFamily: monoFontFamily(),
     fontLigatures: true,
-    lineNumbers: "on",
     lineNumbersMinChars: 3,
-    lineDecorationsWidth: 8,
     glyphMargin: false,
     folding: true,
     foldingHighlight: false,

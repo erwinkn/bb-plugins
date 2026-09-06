@@ -1,5 +1,6 @@
 import type * as MonacoNs from "monaco-editor";
 import type { PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
+import type { BbTokens } from "./bb-tokens.js";
 
 const HEX = /^([0-9A-Fa-f]{6})([0-9A-Fa-f]{2})?$/;
 
@@ -78,73 +79,72 @@ export function tokenRules(theme: PluginCodeThemeData): MonacoNs.editor.ITokenTh
 }
 
 /**
- * Workbench colors: the theme document's own, completed with values derived
- * from its editor background and foreground for the chrome Monaco draws
- * (gutter, line highlight, guides, widgets, scrollbars) when the document
- * does not declare them. Derived colors keep the editor coherent inside BB
- * instead of falling back to VS Code's stock grays.
+ * Workbench colors. Token colors come from the code theme, but the chrome
+ * Monaco draws (editor surface, gutter, line highlight, guides, widgets,
+ * scrollbars) takes BB's own surfaces when `tokens` resolve, so the editor is
+ * one piece with the panel around it instead of a foreign theme inside it.
+ * Without tokens, the chrome derives from the theme's editor background and
+ * foreground.
  */
-export function workbenchColors(theme: PluginCodeThemeData): Record<string, string> {
-  const colors: Record<string, string> = {};
+export function workbenchColors(theme: PluginCodeThemeData, tokens: BbTokens | null = null): Record<string, string> {
+  const declared: Record<string, string> = {};
   for (const [id, value] of Object.entries(theme.colors)) {
     const hex = normalizeHex(typeof value === "string" ? value : undefined);
-    if (hex !== undefined) colors[id] = `#${hex}`;
+    if (hex !== undefined) declared[id] = `#${hex}`;
   }
-  const bg = normalizeHex(colors["editor.background"] ?? theme.bg)?.slice(0, 6);
-  const fg = normalizeHex(colors["editor.foreground"] ?? theme.fg)?.slice(0, 6);
-  if (bg === undefined || fg === undefined) return colors;
-  colors["editor.background"] ??= `#${bg}`;
-  colors["editor.foreground"] ??= `#${fg}`;
-
+  const themeBg = normalizeHex(declared["editor.background"] ?? theme.bg)?.slice(0, 6);
+  const fg = normalizeHex(declared["editor.foreground"] ?? theme.fg)?.slice(0, 6);
+  if (themeBg === undefined || fg === undefined) return declared;
   const dark = theme.type !== "light";
-  const raised = `#${mixHex(bg, fg, dark ? 0.06 : 0.04)}`;
-  const border = withAlpha(fg, 0.14);
-  const defaults: Record<string, string> = {
+  const bg = tokens === null ? themeBg : tokens.background.slice(1);
+  const surface = tokens === null ? `#${mixHex(bg, fg, dark ? 0.06 : 0.04)}` : tokens.popover;
+  const border = tokens === null ? withAlpha(fg, 0.14) : tokens.border;
+  const hover = tokens === null ? withAlpha(fg, 0.1) : tokens.stateHover;
+  const lineNumber = tokens === null ? withAlpha(fg, 0.35) : tokens.subtleForeground;
+  const lineNumberActive = tokens === null ? withAlpha(fg, 0.8) : tokens.mutedForeground;
+  const focus = tokens === null ? withAlpha(fg, 0.35) : tokens.ring;
+
+  const chrome: Record<string, string> = {
+    "editor.background": `#${bg}`,
+    "editor.foreground": `#${fg}`,
     "editorGutter.background": `#${bg}`,
-    "editorLineNumber.foreground": withAlpha(fg, 0.35),
-    "editorLineNumber.activeForeground": withAlpha(fg, 0.8),
-    "editor.lineHighlightBackground": withAlpha(fg, 0.05),
+    "editorLineNumber.foreground": lineNumber,
+    "editorLineNumber.activeForeground": lineNumberActive,
+    "editor.lineHighlightBackground": withAlpha(fg, 0.04),
     "editor.lineHighlightBorder": "#00000000",
-    "editorIndentGuide.background1": withAlpha(fg, 0.1),
-    "editorIndentGuide.activeBackground1": withAlpha(fg, 0.28),
+    "editorIndentGuide.background1": tokens === null ? withAlpha(fg, 0.1) : withAlpha(tokens.border.slice(1), 0.7),
+    "editorIndentGuide.activeBackground1": tokens === null ? withAlpha(fg, 0.28) : withAlpha(fg, 0.3),
     "editorWhitespace.foreground": withAlpha(fg, 0.18),
     "editorCursor.foreground": `#${fg}`,
-    "editor.selectionBackground": withAlpha(fg, dark ? 0.2 : 0.16),
-    "editor.inactiveSelectionBackground": withAlpha(fg, 0.1),
-    "editor.selectionHighlightBackground": withAlpha(fg, 0.1),
-    "editor.wordHighlightBackground": withAlpha(fg, 0.1),
-    "editor.wordHighlightStrongBackground": withAlpha(fg, 0.14),
-    "editor.findMatchBackground": withAlpha(fg, 0.3),
-    "editor.findMatchHighlightBackground": withAlpha(fg, 0.14),
     "editorBracketMatch.background": withAlpha(fg, 0.1),
     "editorBracketMatch.border": withAlpha(fg, 0.3),
     "editorOverviewRuler.border": "#00000000",
-    "editorWidget.background": raised,
+    "editorWidget.background": surface,
     "editorWidget.border": border,
     "editorWidget.foreground": `#${fg}`,
-    "editorSuggestWidget.background": raised,
+    "editorSuggestWidget.background": surface,
     "editorSuggestWidget.border": border,
-    "editorSuggestWidget.selectedBackground": withAlpha(fg, 0.12),
+    "editorSuggestWidget.selectedBackground": hover,
     "editorSuggestWidget.highlightForeground": `#${fg}`,
-    "editorHoverWidget.background": raised,
+    "editorHoverWidget.background": surface,
     "editorHoverWidget.border": border,
-    "input.background": withAlpha(fg, 0.06),
+    "input.background": tokens === null ? withAlpha(fg, 0.06) : tokens.surfaceRecessed,
     "input.border": border,
     "input.foreground": `#${fg}`,
-    "input.placeholderForeground": withAlpha(fg, 0.45),
-    focusBorder: withAlpha(fg, 0.35),
+    "input.placeholderForeground": lineNumber,
+    focusBorder: focus,
     "scrollbar.shadow": "#00000000",
-    "scrollbarSlider.background": withAlpha(fg, 0.12),
-    "scrollbarSlider.hoverBackground": withAlpha(fg, 0.2),
-    "scrollbarSlider.activeBackground": withAlpha(fg, 0.28),
+    "scrollbarSlider.background": withAlpha(fg, 0.08),
+    "scrollbarSlider.hoverBackground": withAlpha(fg, 0.16),
+    "scrollbarSlider.activeBackground": withAlpha(fg, 0.24),
     "editorStickyScroll.background": `#${bg}`,
-    "editorStickyScroll.shadow": withAlpha(fg, 0.12),
-    "editorStickyScrollHover.background": withAlpha(fg, 0.06),
-    "list.hoverBackground": withAlpha(fg, 0.06),
-    "list.focusBackground": withAlpha(fg, 0.12),
-    "list.activeSelectionBackground": withAlpha(fg, 0.12),
+    "editorStickyScroll.shadow": border,
+    "editorStickyScrollHover.background": hover,
+    "list.hoverBackground": hover,
+    "list.focusBackground": hover,
+    "list.activeSelectionBackground": hover,
     "list.activeSelectionForeground": `#${fg}`,
-    "quickInput.background": raised,
+    "quickInput.background": surface,
     "quickInput.foreground": `#${fg}`,
     "pickerGroup.border": border,
     "widget.shadow": withAlpha("000000", dark ? 0.4 : 0.15),
@@ -155,20 +155,38 @@ export function workbenchColors(theme: PluginCodeThemeData): Record<string, stri
     "diffEditorGutter.insertedLineBackground": dark ? "#2ea04333" : "#1a7f3733",
     "diffEditorGutter.removedLineBackground": dark ? "#f8514933" : "#cf222e33",
   };
-  for (const [id, value] of Object.entries(defaults)) colors[id] ??= value;
+  // Selection and highlight colors are part of the code theme's design and
+  // read fine on BB's surface, so declared values win there; the chrome above
+  // wins over declared workbench colors when BB tokens resolved.
+  const selection: Record<string, string> = {
+    "editor.selectionBackground": withAlpha(fg, dark ? 0.2 : 0.16),
+    "editor.inactiveSelectionBackground": withAlpha(fg, 0.1),
+    "editor.selectionHighlightBackground": withAlpha(fg, 0.1),
+    "editor.wordHighlightBackground": withAlpha(fg, 0.1),
+    "editor.wordHighlightStrongBackground": withAlpha(fg, 0.14),
+    "editor.findMatchBackground": withAlpha(fg, 0.3),
+    "editor.findMatchHighlightBackground": withAlpha(fg, 0.14),
+  };
+  const colors: Record<string, string> = { ...selection, ...declared };
+  if (tokens === null) {
+    for (const [id, value] of Object.entries(chrome)) colors[id] ??= value;
+  } else {
+    Object.assign(colors, chrome);
+    colors["editorCursor.foreground"] = declared["editorCursor.foreground"] ?? `#${fg}`;
+  }
   return colors;
 }
 
-export function editorBackground(theme: PluginCodeThemeData | null): string | null {
+export function editorBackground(theme: PluginCodeThemeData | null, tokens: BbTokens | null = null): string | null {
   if (theme === null) return null;
-  return workbenchColors(theme)["editor.background"] ?? null;
+  return workbenchColors(theme, tokens)["editor.background"] ?? null;
 }
 
-export function toMonacoTheme(theme: PluginCodeThemeData): MonacoNs.editor.IStandaloneThemeData {
+export function toMonacoTheme(theme: PluginCodeThemeData, tokens: BbTokens | null = null): MonacoNs.editor.IStandaloneThemeData {
   return {
     base: theme.type === "light" ? "vs" : "vs-dark",
     inherit: true,
     rules: tokenRules(theme),
-    colors: workbenchColors(theme),
+    colors: workbenchColors(theme, tokens),
   };
 }

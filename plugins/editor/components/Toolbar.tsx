@@ -1,45 +1,60 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { ExternalIcon, FileIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, RotateIcon } from "./icons";
+import { ContextMenu, menuAt, type MenuItem, type MenuState } from "./ContextMenu";
+import { ArrowLeftIcon, ArrowRightIcon, FileIcon, MoreIcon, SearchIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
 
 export type SaveIndicator = "clean" | "dirty" | "saving" | "error";
 
 export interface ToolbarProps {
   path: string;
   indicator: SaveIndicator;
-  isRefreshing: boolean;
-  onRefresh: () => void;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  onBack: () => void;
+  onForward: () => void;
+  onFind: () => void;
+  menuItems: MenuItem[];
   treeOpen: boolean;
+  treeSide: "left" | "right";
   onToggleTree: () => void;
-  onOpenInTab: (() => void) | null;
-  onSave: (() => void) | null;
 }
 
-export function Toolbar({ path, indicator, isRefreshing, onRefresh, treeOpen, onToggleTree, onOpenInTab, onSave }: ToolbarProps) {
+/**
+ * The row above the editor: history, the file, and on the right the menu,
+ * find, and the single file-tree toggle (the tree header has none).
+ */
+export function Toolbar({ path, indicator, canGoBack, canGoForward, onBack, onForward, onFind, menuItems, treeOpen, treeSide, onToggleTree }: ToolbarProps) {
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const TreeGlyph = treeSide === "right" ? SidebarRightGlyph : SidebarLeftGlyph;
   return (
-    <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/60 bg-surface-raised pr-2 pl-1">
-      <ToolbarButton label={treeOpen ? "Hide file tree (⌘B)" : "Show file tree (⌘B)"} onClick={onToggleTree} pressed={treeOpen}>
-        {treeOpen ? <PanelLeftCloseIcon /> : <PanelLeftOpenIcon />}
+    <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border/60 bg-background pr-1.5 pl-1">
+      <ToolbarButton label="Back" onClick={onBack} disabled={!canGoBack}>
+        <ArrowLeftIcon />
       </ToolbarButton>
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 pl-1">
-        <FileIcon path={path} className="text-subtle-foreground" />
-        <Breadcrumbs path={path} />
+      <ToolbarButton label="Forward" onClick={onForward} disabled={!canGoForward}>
+        <ArrowRightIcon />
+      </ToolbarButton>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 pl-1.5">
+        <FileIcon path={path} className="text-muted-foreground" />
+        <FilePath path={path} />
+        <SaveDot indicator={indicator} />
       </div>
-      <SaveDot indicator={indicator} onSave={onSave} />
-      <ToolbarButton label={isRefreshing ? "Reloading file" : "Reload from disk"} onClick={onRefresh} disabled={isRefreshing}>
-        <RotateIcon className={cn(isRefreshing && "animate-spin")} />
+      <ToolbarButton label="More actions" onClick={(event) => setMenu(menuAt(event.currentTarget, menuItems))} pressed={menu !== null}>
+        <MoreIcon />
       </ToolbarButton>
-      {onOpenInTab ? (
-        <ToolbarButton label="Open in a new tab" onClick={onOpenInTab}>
-          <ExternalIcon />
-        </ToolbarButton>
-      ) : null}
+      <ToolbarButton label="Find in file (⌘F)" onClick={onFind}>
+        <SearchIcon />
+      </ToolbarButton>
+      <ToolbarButton label={treeOpen ? "Hide file tree (⌘B)" : "Show file tree (⌘B)"} onClick={onToggleTree} pressed={treeOpen}>
+        <TreeGlyph />
+      </ToolbarButton>
+      <ContextMenu state={menu} onClose={() => setMenu(null)} />
     </div>
   );
 }
 
-function Breadcrumbs({ path }: { path: string }) {
+function FilePath({ path }: { path: string }) {
   const segments = path.split("/").filter((segment) => segment !== "");
   const copy = useCallback(() => {
     void navigator.clipboard
@@ -54,12 +69,12 @@ function Breadcrumbs({ path }: { path: string }) {
       title={`${path}\nClick to copy`}
       aria-label={`Copy path ${path}`}
       className={cn(
-        "flex min-w-0 cursor-pointer items-center rounded-sm text-left font-mono text-xs leading-5",
+        "block min-w-0 cursor-pointer truncate rounded-sm text-left font-mono text-xs leading-5",
         "hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
       )}
-      style={{ direction: "rtl" }}
+      style={{ direction: "rtl", textAlign: "left" }}
     >
-      <bdi className="truncate">
+      <bdi>
         {segments.map((segment, index) => {
           const last = index === segments.length - 1;
           return (
@@ -74,19 +89,12 @@ function Breadcrumbs({ path }: { path: string }) {
   );
 }
 
-function SaveDot({ indicator, onSave }: { indicator: SaveIndicator; onSave: (() => void) | null }) {
+function SaveDot({ indicator }: { indicator: SaveIndicator }) {
   if (indicator === "clean") return null;
   const label =
     indicator === "saving" ? "Saving…" : indicator === "error" ? "Could not save — unsaved changes" : "Unsaved changes (⌘S to save)";
   return (
-    <button
-      type="button"
-      onClick={onSave ?? undefined}
-      disabled={onSave === null}
-      title={label}
-      aria-label={label}
-      className="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors hover:bg-state-hover disabled:cursor-default"
-    >
+    <span className="flex size-3.5 shrink-0 items-center justify-center" title={label} role="status" aria-label={label}>
       <span
         className={cn(
           "size-2 rounded-full transition-colors",
@@ -95,7 +103,7 @@ function SaveDot({ indicator, onSave }: { indicator: SaveIndicator; onSave: (() 
           indicator === "error" && "bg-destructive",
         )}
       />
-    </button>
+    </span>
   );
 }
 
@@ -104,12 +112,14 @@ export function ToolbarButton({
   onClick,
   disabled,
   pressed,
+  className,
   children,
 }: {
   label: string;
-  onClick: () => void;
+  onClick: (event: React.MouseEvent<HTMLButtonElement>) => void;
   disabled?: boolean;
   pressed?: boolean;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -124,7 +134,9 @@ export function ToolbarButton({
         "flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md",
         "text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground",
         "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
-        "disabled:pointer-events-none disabled:opacity-50",
+        "disabled:pointer-events-none disabled:opacity-40",
+        pressed && "bg-state-hover text-foreground",
+        className,
       )}
     >
       {children}

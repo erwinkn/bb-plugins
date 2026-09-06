@@ -14,6 +14,7 @@ import type * as MonacoNs from "monaco-editor";
 import type { PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
 import type { EditorBundle } from "./monaco-loader.js";
 import type { LanguageDef } from "./languages.js";
+import type { BbTokens } from "./bb-tokens.js";
 import { monacoThemeName, normalizeFontStyle, normalizeHex, toMonacoTheme } from "./monaco-theme.js";
 
 type Highlighter = Awaited<ReturnType<EditorBundle["createHighlighterCore"]>>;
@@ -68,12 +69,14 @@ export class ShikiTokenization {
   }
 
   /**
-   * Registers `theme` with Shiki and Monaco (once per document) and makes it
-   * current. Returns the Monaco theme name to pass to `setTheme`.
+   * Registers `theme` with Shiki (once per document) and (re)defines the
+   * Monaco theme with BB's current surface tokens, then makes it current.
+   * Returns the Monaco theme name to pass to `setTheme`.
    */
-  async applyTheme(theme: PluginCodeThemeData): Promise<string> {
+  async applyTheme(theme: PluginCodeThemeData, tokens: BbTokens | null): Promise<string> {
     const name = monacoThemeName(theme.name);
-    if (!this.highlighter.getLoadedThemes().includes(name)) {
+    const loaded = this.highlighter.getLoadedThemes().includes(name);
+    if (!loaded) {
       // Shiki's raw theme shape is VS Code's: `settings` is the pre-1.0 name of
       // `tokenColors`, and it normalizes the rest itself.
       await this.highlighter.loadTheme({
@@ -87,8 +90,10 @@ export class ShikiTokenization {
           settings: { ...rule.settings },
         })),
       });
-      this.monaco.editor.defineTheme(name, toMonacoTheme(theme));
     }
+    // Chrome colors follow BB's palette, which can change without the code
+    // theme changing, so the Monaco theme is rebuilt on every apply.
+    this.monaco.editor.defineTheme(name, toMonacoTheme(theme, tokens));
     if (this.themeName === name) return name;
     this.themeName = name;
     const { colorMap } = this.highlighter.setTheme(name);
