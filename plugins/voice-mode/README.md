@@ -72,12 +72,18 @@ announcement uses a separate response with tools disabled. Thread titles and
 results stay out of the main conversation. If a result is missing, Voice reports
 the status and says that details are unavailable; ask for details to read the thread.
 
+A disconnected network connection gets up to 10 seconds to recover. Voice
+shows a reconnecting notice during this period. A failed connection ends the
+call immediately.
+
 ## Mobile views beside the call
 
 On mobile, “show that thread” opens a drawer without leaving the voice call.
 “Show all my running threads” keeps them in the drawer's thread switcher.
 These are views inside one drawer, not separate native bb tabs. Closing a view
-does not stop its thread or the call.
+does not stop its thread or the call. To start a thread during a mobile call,
+dictate its prompt. A request without a prompt asks for one and keeps the call
+on screen.
 
 Behavior → Mobile thread drawer controls whether a new thread replaces the
 shown one or joins the switcher. “Always keep threads in the mobile drawer”

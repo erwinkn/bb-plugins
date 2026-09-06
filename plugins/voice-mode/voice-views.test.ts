@@ -164,3 +164,27 @@ test("page and composer bindings take priority over app-wide fallback through na
     assert.equal((await f.execute("read_thread", { thread_id: "target" })).status, "success");
   } finally { global(); }
 });
+
+
+test("promptless mobile starts keep live and muted calls in place; desktop still opens the draft", async () => {
+  for (const state of ["live", "muted"]) {
+    const f = fixture();
+    f.internal.state = state;
+    let opened = false;
+    f.agent.bind({ ...f.base, openNewThread() { opened = true; } });
+    const result = await f.execute("start_thread", { project_id: "p" });
+    assert.equal(result.status, "error");
+    assert.match(result.output, /Ask the user to dictate a prompt/);
+    assert.equal(opened, false);
+    assert.equal(f.calls.some(call => call.method === "runTool"), false);
+    assert.equal(f.internal.state, state);
+    const prompted = await f.execute("start_thread", { project_id: "p", prompt: "Build the page" });
+    assert.equal(prompted.status, "success");
+    assert.equal(f.calls.find(call => call.method === "runTool")?.args.args.focus, false);
+  }
+  const desktop = fixture(false);
+  let project: string | null = null;
+  desktop.agent.bind({ ...desktop.base, openNewThread(id) { project = id; } });
+  assert.equal((await desktop.execute("start_thread", { project_id: "p" })).status, "success");
+  assert.equal(project, "p");
+});

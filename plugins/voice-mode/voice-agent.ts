@@ -110,6 +110,8 @@ export interface ThreadEventNotice {
 
 const NOTICE_DUPLICATE_WINDOW_MS = 30_000;
 const NOTICE_QUIET_MS = 2000;
+/** Allow brief network handoffs, but do not leave an unreachable call live indefinitely. */
+const DISCONNECT_GRACE_MS = 10_000;
 
 /** Build separate display text and model instructions from grounded thread results. */
 export function formatThreadNotices(entries: ThreadEventNotice[]): {
@@ -220,6 +222,7 @@ export class VoiceAgent {
   private assistantSpeaking = false;
   /** Aborts a session that never reaches "live", so it can't hang connecting. */
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
+  private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** When the call first went live (ms), for elapsed-duration UI; null if not. */
   private liveStartedAt: number | null = null;
   /**
@@ -954,6 +957,8 @@ export class VoiceAgent {
     const endedNonce = this.nonce;
     if (endedNonce) this.log("session.stopped");
     this.clearConnectWatchdog();
+    if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
+    this.disconnectTimer = null;
     this.stopPresenceHeartbeat();
     this.liveStartedAt = null;
     const session = this.session;
@@ -1037,6 +1042,9 @@ export class VoiceAgent {
         name === "start_thread" &&
         !(typeof args.prompt === "string" && args.prompt.trim())
       ) {
+        if (clientDescriptor.mobile && (this.state === "live" || this.state === "muted")) {
+          throw new Error("Ask the user to dictate a prompt for the new thread. Opening the New thread screen during a mobile call can interrupt the microphone.");
+        }
         // No dictated prompt: never fabricate one — open bb's New thread screen
         // with the project preselected and let the user type it themselves.
         const projectId =
@@ -1253,12 +1261,24 @@ export class VoiceAgent {
         );
       };
       pc.onconnectionstatechange = () => {
+        if (this.session?.pc !== pc) return;
         this.logDiag("conn.state", { state: pc.connectionState });
-        if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
-          if (this.session?.pc === pc) {
-            toast.error("Aide: voice connection lost");
-            this.stop();
-          }
+        if (pc.connectionState === "connected") {
+          if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
+          this.disconnectTimer = null;
+        } else if (pc.connectionState === "failed") {
+          toast.error("Aide: voice connection lost");
+          this.stop();
+        } else if (pc.connectionState === "disconnected" && !this.disconnectTimer) {
+          toast.info("Aide: connection interrupted — waiting to reconnect");
+          this.disconnectTimer = setTimeout(() => {
+            this.disconnectTimer = null;
+            if (this.session?.pc === pc && pc.connectionState !== "connected") {
+              toast.error("Aide: voice connection lost");
+              this.stop();
+            }
+          }, DISCONNECT_GRACE_MS);
+          maybeUnref(this.disconnectTimer);
         }
       };
       pc.oniceconnectionstatechange = () => {

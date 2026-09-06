@@ -215,6 +215,7 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"] });
   const originals = ["navigator", "RTCPeerConnection", "Audio"].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const channels: FakeDataChannel[] = [];
+  const peers: FakePeerConnection[] = [];
   class FakeDataChannel {
     readyState = "open";
     sent: Record<string, any>[] = [];
@@ -232,6 +233,8 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
     responses() { return this.sent.filter(event => event.type === "response.create"); }
   }
   class FakePeerConnection {
+    constructor() { peers.push(this); }
+    onconnectionstatechange: (() => void) | null = null;
     iceGatheringState = "complete";
     connectionState = "connected";
     localDescription: RTCSessionDescriptionInit | null = null;
@@ -277,7 +280,7 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
     return channels.at(-1)!;
   };
   const dc = await start();
-  return { agent, dc, start, tick: (ms: number) => t.mock.timers.tick(ms) };
+  return { agent, dc, start, peers, tick: (ms: number) => t.mock.timers.tick(ms) };
 }
 
 function userTurn(dc: { emit(type: string, event?: Record<string, unknown>): void }, id: string) {
@@ -721,4 +724,34 @@ test("presence queries and rebinds cannot announce a call before its claim compl
   await settleVoice();
   assert.equal(agent.getState(), "live");
   assert.deepEqual(phases, ["connecting", "live"]);
+});
+
+
+test("transient disconnection recovers, but a prolonged disconnect or failure ends the call", async (t) => {
+  const { agent, peers, tick, start } = await liveVoiceFixture(t);
+  const change = (state: string) => { const peer = peers.at(-1)!; peer.connectionState = state; peer.onconnectionstatechange?.(); };
+  change("disconnected");
+  tick(5000);
+  assert.equal(agent.getState(), "live");
+  change("connected");
+  tick(11000);
+  assert.equal(agent.getState(), "live");
+  change("disconnected");
+  tick(11000);
+  assert.equal(agent.getState(), "idle");
+  await start();
+  change("failed");
+  assert.equal(agent.getState(), "idle");
+});
+
+test("a stopped call's disconnect timer cannot stop a replacement call", async (t) => {
+  const { agent, peers, tick, start } = await liveVoiceFixture(t);
+  const old = peers.at(-1)!;
+  old.connectionState = "disconnected";
+  old.onconnectionstatechange?.();
+  agent.stop();
+  await start();
+  old.onconnectionstatechange?.();
+  tick(11000);
+  assert.equal(agent.getState(), "live");
 });
