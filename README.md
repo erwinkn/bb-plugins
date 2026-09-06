@@ -2,6 +2,10 @@
 
 A private GitHub collection of BB plugins.
 
+`erwin-activity` adds a status-first thread list: Needs Attention, Unread,
+Working, Draft, and Done. It also supports project grouping. See
+[Threads](plugins/activity/README.md) for local installation and draft limits.
+
 `erwin-devin` adds **Devin** as a provider, with a native icon, sign-in
 help, executable setting, account usage, and live ACP model catalog. It preserves the provider
 ID `acp-devin`. See [Devin provider](plugins/devin/README.md) for configuration,

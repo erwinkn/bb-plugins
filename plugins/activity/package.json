@@ -1,0 +1,42 @@
+{
+  "name": "bb-plugin-erwin-activity",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "bb": ">=0.42.1",
+    "bbPluginSdk": ">=0.4.47"
+  },
+  "bb": {
+    "name": "Threads",
+    "description": "Threads grouped by status, with pending input separate from unread replies.",
+    "branding": {
+      "icon": "Activity"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "bb plugin build"
+  },
+  "overrides": {
+    "jsdom": {
+      "nwsapi": "2.2.25"
+    }
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.47",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "@radix-ui/react-dropdown-menu": "^2.1.20",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@testing-library/react": "^16.3.0",
+    "vitest": "^3.2.0",
+    "jsdom": "^26.1.0"
+  }
+}
