@@ -3,10 +3,15 @@ import type { TypeScriptDiagnostics } from "./monaco-loader.js";
 
 export type AutoSave = "off" | "onBlur" | "afterDelay";
 
+import { normalizeThemeSetting } from "./themes.js";
+
 export type TreeSide = "left" | "right";
 
 export interface EditorPrefs {
   fontSize: number;
+  /** Theme id from `lib/themes.ts`, or `bb` to follow BB, per BB color mode. */
+  darkTheme: string;
+  lightTheme: string;
   wordWrap: boolean;
   lineNumbers: boolean;
   minimap: boolean;
@@ -18,6 +23,8 @@ export interface EditorPrefs {
 
 export const DEFAULT_PREFS: EditorPrefs = {
   fontSize: 13,
+  darkTheme: "bb",
+  lightTheme: "bb",
   wordWrap: false,
   lineNumbers: true,
   minimap: false,
@@ -38,6 +45,8 @@ export function prefsFrom(values: Record<string, unknown> | null | undefined): E
     typeof values?.[key] === "boolean" ? (values[key] as boolean) : DEFAULT_PREFS[key];
   return {
     fontSize: Number.isFinite(fontSize) && fontSize >= 9 && fontSize <= 24 ? Math.round(fontSize) : DEFAULT_PREFS.fontSize,
+    darkTheme: normalizeThemeSetting(values?.darkTheme, "dark"),
+    lightTheme: normalizeThemeSetting(values?.lightTheme, "light"),
     wordWrap: bool("wordWrap"),
     lineNumbers: bool("lineNumbers"),
     minimap: bool("minimap"),

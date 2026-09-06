@@ -19,6 +19,7 @@
   "dependencies": {
     "@hugeicons/core-free-icons": "4.3.0",
     "@hugeicons/react": "1.1.10",
+    "@pierre/theme": "2.0.0",
     "@shikijs/langs": "4.4.3",
     "esbuild": "0.28.2",
     "monaco-editor": "0.56.0",

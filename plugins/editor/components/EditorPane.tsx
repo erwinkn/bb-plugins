@@ -14,6 +14,7 @@ import {
 import { AUTO_SAVE_DELAY_MS, baseEditorOptions, prefEditorOptions, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
 import { copyText, forgetEditor, markEditorActive } from "@/lib/editor-commands";
 import { resolveBbTokens } from "@/lib/bb-tokens";
+import { FOLLOW_BB } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 import type { MenuItem } from "./ContextMenu";
 import { Toolbar, type SaveIndicator } from "./Toolbar";
@@ -38,6 +39,9 @@ export interface EditorPaneHandle {
 }
 
 export type PrefToggle = "wordWrap" | "minimap" | "lineNumbers" | "formatOnSave";
+/** A preference write from the editor chrome: key and the value it takes. */
+export type PrefWrite = [PrefToggle, boolean] | ["autoSave", "off" | "afterDelay"] | ["darkTheme" | "lightTheme", string];
+export type SetPref = (...write: PrefWrite) => void;
 
 export interface EditorPaneProps {
   paneId: string;
@@ -50,7 +54,10 @@ export interface EditorPaneProps {
   onQuickOpen: (() => void) | null;
   onOpenInTab: (() => void) | null;
   history: { canBack: boolean; canForward: boolean; back: () => void; forward: () => void };
-  onSetPref: (key: PrefToggle | "autoSave", value: boolean | "off" | "afterDelay") => void;
+  onSetPref: SetPref;
+  /** A theme id being previewed by the picker; null shows the saved preference. */
+  themePreview: string | null;
+  onPickTheme: () => void;
   /** BB's preview for this file; rendered when the file is not editable text. */
   Original?: ComponentType;
   /** Changes when the user opened the file deliberately; the editor takes focus. */
@@ -67,7 +74,7 @@ interface OpenFile {
 }
 
 export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function EditorPane(
-  { paneId, source, path, prefs, treeOpen, treeSide, onToggleTree, onQuickOpen, onOpenInTab, history, onSetPref, Original, focusNonce = 0 },
+  { paneId, source, path, prefs, treeOpen, treeSide, onToggleTree, onQuickOpen, onOpenInTab, history, onSetPref, themePreview, onPickTheme, Original, focusNonce = 0 },
   ref,
 ) {
   const rpc = useRpc<typeof rpcContract>();
@@ -82,8 +89,10 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const latest = useRef({ prefs, onToggleTree, onQuickOpen, codeTheme, focusNonce });
-  latest.current = { prefs, onToggleTree, onQuickOpen, codeTheme, focusNonce };
+  // The theme to show: the picker's preview, else the saved choice for BB's mode.
+  const themeChoice = themePreview ?? (codeTheme.mode === "dark" ? prefs.darkTheme : prefs.lightTheme);
+  const latest = useRef({ prefs, onToggleTree, onQuickOpen, codeTheme, themeChoice, focusNonce });
+  latest.current = { prefs, onToggleTree, onQuickOpen, codeTheme, themeChoice, focusNonce };
   const focusedNonce = useRef(focusNonce);
 
   const setSaveState = useCallback((next: SaveState) => {
@@ -170,15 +179,9 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
         if (disposed) return;
         runtimeRef.current = runtime;
         const { monaco } = runtime;
-        const theme = latest.current.codeTheme;
-        const themeName =
-          theme.theme === null
-            ? theme.mode === "dark"
-              ? "vs-dark"
-              : "vs"
-            : await runtime.shiki.applyTheme(theme.theme, resolveBbTokens(container));
+        const { name: themeName, type: themeType } = await resolveTheme(runtime, latest.current.codeTheme, latest.current.themeChoice, container);
         if (disposed) return;
-        setOverflowWidgetsTheme(theme.theme?.type === "light" ? "vs" : theme.mode === "light" ? "vs" : "vs-dark");
+        setOverflowWidgetsTheme(themeType === "light" ? "vs" : "vs-dark");
         const editor = monaco.editor.create(container, {
           ...baseEditorOptions(latest.current.prefs, overflowWidgetsNode()),
           theme: themeName,
@@ -306,29 +309,26 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorReady, paneId, path, rpc, setSaveState, source]);
 
-  // Follow BB's code theme, including light/dark switches and palette changes.
+  // Follow the chosen theme: BB's own (with light/dark switches and palette
+  // changes), a bundled one, or the picker's preview.
   useEffect(() => {
     const runtime = runtimeRef.current;
     if (runtime === null || status.kind === "loading") return;
     let cancelled = false;
     void (async () => {
-      const host = containerRef.current;
-      const name =
-        codeTheme.theme === null
-          ? codeTheme.mode === "dark"
-            ? "vs-dark"
-            : "vs"
-          : await runtime.shiki.applyTheme(codeTheme.theme, host === null ? null : resolveBbTokens(host));
+      const { name, type } = await resolveTheme(runtime, codeTheme, themeChoice, containerRef.current);
       if (cancelled) return;
       runtime.monaco.editor.setTheme(name);
-      setOverflowWidgetsTheme((codeTheme.theme?.type ?? codeTheme.mode) === "light" ? "vs" : "vs-dark");
-    })();
+      setOverflowWidgetsTheme(type === "light" ? "vs" : "vs-dark");
+    })().catch((error: unknown) => {
+      console.warn("[erwin-editor] could not apply the code theme", error);
+    });
     return () => {
       cancelled = true;
     };
     // The hook may hand back the previous document while a switch is in
     // flight, so the name and mode are dependencies of their own.
-  }, [codeTheme, codeTheme.name, codeTheme.mode, codeTheme.theme, status.kind]);
+  }, [codeTheme, codeTheme.name, codeTheme.mode, codeTheme.theme, themeChoice, status.kind]);
 
   useEffect(() => {
     editorRef.current?.updateOptions(prefEditorOptions(prefs));
@@ -345,6 +345,8 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     ...(onOpenInTab === null ? [] : [{ label: "Open in new tab", onSelect: onOpenInTab }]),
     { label: "Copy relative path", onSelect: () => void copyText(fileRef.current?.relativePath ?? path, "Relative path copied") },
     { label: "Copy absolute path", onSelect: () => void copyText(fileRef.current?.absolutePath ?? path, "Absolute path copied") },
+    { type: "separator" },
+    { label: "Theme…", onSelect: onPickTheme },
     { type: "separator" },
     { type: "toggle", label: "Line numbers", checked: prefs.lineNumbers, onToggle: (next) => onSetPref("lineNumbers", next) },
     { type: "toggle", label: "Word wrap", checked: prefs.wordWrap, onToggle: (next) => onSetPref("wordWrap", next) },
@@ -463,4 +465,30 @@ export function NoticeAction({ children, onClick }: { children: React.ReactNode;
       {children}
     </button>
   );
+}
+
+/**
+ * Registers and returns the Monaco theme for `choice`: `bb` (or an unknown
+ * or unloadable id) paints with BB's document; otherwise the bundled theme.
+ * Without any document, Monaco's built-in themes stand in.
+ */
+async function resolveTheme(
+  runtime: EditorRuntime,
+  bb: ReturnType<typeof experimental_useCodeTheme>,
+  choice: string,
+  host: HTMLElement | null,
+): Promise<{ name: string; type: "dark" | "light" }> {
+  let document = bb.theme;
+  if (choice !== FOLLOW_BB) {
+    const bundled = await runtime.loadTheme(choice).catch((error: unknown) => {
+      console.warn(`[erwin-editor] theme "${choice}" did not load`, error);
+      return null;
+    });
+    if (bundled !== null) document = bundled;
+  }
+  if (document === null) {
+    return bb.mode === "dark" ? { name: "vs-dark", type: "dark" } : { name: "vs", type: "light" };
+  }
+  const name = await runtime.shiki.applyTheme(document, host === null ? null : resolveBbTokens(host));
+  return { name, type: document.type };
 }

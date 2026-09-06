@@ -34,9 +34,10 @@ disable that one before you install this one.
   are BB's Hugeicons at BB's size, so the editor reads as part of the panel.
   Like BB's preview there are no indentation or bracket guides, no bracket
   colors, and no current-line band (the active line number is the cue).
-  Theme and light/dark switches apply live. For a calmer palette, pick one
-  app-wide in BB (a custom theme can name `pierre-dark-soft` in its
-  `theme.json`), and the editor follows.
+  Theme and light/dark switches apply live. The `⋯` menu's **Theme…**
+  picker swaps in another theme for the editor only, previewing as you move
+  through the list: BB's own Pierre family (dark/light, soft, vibrant) and
+  Shiki's bundled VS Code themes, chosen per BB color mode.
 - **Language services.** Completions, hover, signature help, go to
   definition, rename, formatting, and outline for TypeScript, JavaScript,
   JSON, CSS/SCSS/Less, and HTML. The TypeScript checker sees only the open
@@ -61,6 +62,8 @@ Extensions → Editor:
 | Setting                | Default  | Notes                                                   |
 | ---------------------- | -------- | ------------------------------------------------------- |
 | Font size              | 13       | 9 to 24                                                 |
+| Code theme in dark mode | bb      | `bb` follows BB's code theme; or a theme id from the `⋯ → Theme…` picker |
+| Code theme in light mode | bb     | Same, for BB's light mode                               |
 | Wrap long lines        | off      | Also in the `⋯` menu                                    |
 | Show line numbers      | on       | Also in the `⋯` menu                                    |
 | Show minimap           | off      | Also in the `⋯` menu                                    |

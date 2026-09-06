@@ -2,7 +2,8 @@ import type * as MonacoNs from "monaco-editor";
 import type { createHighlighterCore } from "shiki/core";
 import type { createOnigurumaEngine } from "shiki/engine/oniguruma";
 import type { EncodedTokenMetadata, FontStyle, INITIAL } from "shiki/textmate";
-import type { LanguageRegistration, WebAssemblyInstantiator } from "shiki/core";
+import type { LanguageRegistration, ThemeRegistrationRaw, WebAssemblyInstantiator } from "shiki/core";
+import type { PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
 import { EXTRA_LANGUAGES } from "./languages.js";
 import { ShikiTokenization } from "./shiki-monaco.js";
 
@@ -16,12 +17,15 @@ export interface EditorBundle {
   FontStyle: typeof FontStyle;
   INITIAL: typeof INITIAL;
   grammars: Record<string, (() => Promise<{ default: LanguageRegistration[] }>) | undefined>;
+  themes: Record<string, (() => Promise<{ default: ThemeRegistrationRaw }>) | undefined>;
   attachTypeScriptFeatures: (languageId: string) => Promise<void>;
 }
 
 export interface EditorRuntime {
   monaco: typeof MonacoNs;
   shiki: ShikiTokenization;
+  /** A bundled theme as BB hands themes to plugins, or null for an unknown id. Cached. */
+  loadTheme: (id: string) => Promise<PluginCodeThemeData | null>;
 }
 
 export type TypeScriptDiagnostics = "off" | "syntax" | "semantic";
@@ -46,7 +50,7 @@ async function boot(baseUrl: string): Promise<EditorRuntime> {
       }),
   };
   const bundle = (await import(/* @vite-ignore */ `${baseUrl}/editor.js`)) as Partial<EditorBundle>;
-  if (!bundle.monaco || !bundle.createHighlighterCore || !bundle.grammars || !bundle.attachTypeScriptFeatures) {
+  if (!bundle.monaco || !bundle.createHighlighterCore || !bundle.grammars || !bundle.themes || !bundle.attachTypeScriptFeatures) {
     throw new Error("the editor bundle did not expose its API");
   }
   const runtime = bundle as EditorBundle;
@@ -59,7 +63,54 @@ async function boot(baseUrl: string): Promise<EditorRuntime> {
   void runtime.attachTypeScriptFeatures("typescriptreact").catch((error: unknown) => {
     console.warn("[erwin-editor] TypeScript features for .tsx did not attach", error);
   });
-  return { monaco, shiki };
+  const themeCache = new Map<string, Promise<PluginCodeThemeData | null>>();
+  const loadTheme = (id: string) => {
+    let pending = themeCache.get(id);
+    if (pending === undefined) {
+      const loader = runtime.themes[id];
+      pending =
+        loader === undefined
+          ? Promise.resolve(null)
+          : loader().then((module) => toThemeData(id, module.default)).catch((error: unknown) => {
+              themeCache.delete(id);
+              throw error;
+            });
+      themeCache.set(id, pending);
+    }
+    return pending;
+  };
+  return { monaco, shiki, loadTheme };
+}
+
+/**
+ * A Shiki/VS Code theme registration in the shape BB's `useCodeTheme` returns,
+ * so bundled themes go through the same path as BB's own document. Shiki's
+ * registrations may carry `settings` (VS Code's old name for `tokenColors`)
+ * and may omit `fg`/`bg`, which then come from the workbench colors.
+ */
+export function toThemeData(id: string, theme: ThemeRegistrationRaw): PluginCodeThemeData {
+  const type = theme.type === "light" ? "light" : "dark";
+  const colors: Record<string, string> = {};
+  for (const [key, value] of Object.entries(theme.colors ?? {})) {
+    if (typeof value === "string") colors[key] = value;
+  }
+  const rules = theme.tokenColors ?? theme.settings ?? [];
+  const tokenColors: PluginCodeThemeData["tokenColors"][number][] = [];
+  for (const rule of rules) {
+    const settings: { foreground?: string; background?: string; fontStyle?: string } = {};
+    if (typeof rule.settings?.foreground === "string") settings.foreground = rule.settings.foreground;
+    if (typeof rule.settings?.background === "string") settings.background = rule.settings.background;
+    if (typeof rule.settings?.fontStyle === "string") settings.fontStyle = rule.settings.fontStyle;
+    tokenColors.push(rule.scope === undefined ? { settings } : { scope: rule.scope, settings });
+  }
+  return {
+    name: id,
+    type,
+    fg: theme.fg ?? colors["editor.foreground"] ?? (type === "dark" ? "#d4d4d4" : "#333333"),
+    bg: theme.bg ?? colors["editor.background"] ?? (type === "dark" ? "#1e1e1e" : "#ffffff"),
+    colors,
+    tokenColors,
+  };
 }
 
 function workerFor(label: string): "editor" | "typescript" | "json" | "css" | "html" {

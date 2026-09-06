@@ -36,7 +36,7 @@ function usePrefs(): { prefs: EditorPrefs; setPref: SetPref } {
     });
   }, [values]);
   const setPref = useCallback<SetPref>(
-    (key, value) => {
+    (...[key, value]) => {
       setOverrides((current) => ({ ...current, [key]: value }));
       void rpc.call("setSetting", { key, value } as Parameters<typeof rpc.call<"setSetting">>[1]).catch(() => {
         setOverrides((current) => {

@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { FOLLOW_BB, themeSettingOptions } from "./lib/themes.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
 const MAX_TREE_ENTRIES = 10_000;
@@ -93,6 +94,8 @@ export const rpcContract = defineRpcContract({
       z.object({ key: z.literal("formatOnSave"), value: z.boolean() }),
       z.object({ key: z.literal("autoSave"), value: z.enum(["off", "onBlur", "afterDelay"]) }),
       z.object({ key: z.literal("fileTreeSide"), value: z.enum(["left", "right"]) }),
+      z.object({ key: z.literal("darkTheme"), value: z.enum(themeSettingOptions("dark")) }),
+      z.object({ key: z.literal("lightTheme"), value: z.enum(themeSettingOptions("light")) }),
     ]),
     output: z.null(),
   },
@@ -165,6 +168,18 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Font size",
       experimental_schema: z.number().int().min(9).max(24),
       default: 13,
+    },
+    darkTheme: {
+      type: "select",
+      label: "Code theme in dark mode (bb follows BB's code theme)",
+      options: themeSettingOptions("dark"),
+      default: FOLLOW_BB,
+    },
+    lightTheme: {
+      type: "select",
+      label: "Code theme in light mode (bb follows BB's code theme)",
+      options: themeSettingOptions("light"),
+      default: FOLLOW_BB,
     },
     wordWrap: { type: "boolean", label: "Wrap long lines", default: false },
     lineNumbers: { type: "boolean", label: "Show line numbers", default: true },

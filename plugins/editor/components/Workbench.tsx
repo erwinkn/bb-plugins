@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { toast } from "sonner";
-import { useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
+import { experimental_useCodeTheme, useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { FlatEntry } from "@/lib/file-tree";
 import type { EditorPrefs } from "@/lib/editor-options";
@@ -15,9 +15,10 @@ import {
   storeTreeWidth,
 } from "@/lib/layout-storage";
 import { cn } from "@/lib/utils";
-import { EditorPane, NoticeAction, NoticeRow, type EditorPaneHandle, type PrefToggle } from "./EditorPane";
+import { EditorPane, NoticeAction, NoticeRow, type EditorPaneHandle, type SetPref } from "./EditorPane";
 import { FileTree, type CreateKind } from "./FileTree";
 import { QuickOpen } from "./QuickOpen";
+import { ThemePicker } from "./ThemePicker";
 import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
 
 export type Surface = "opener" | "panel";
@@ -32,7 +33,7 @@ export interface WorkbenchProps {
   label: string;
   prefs: EditorPrefs;
   /** Optimistic preference write; the settings store confirms it. */
-  onSetPref: (key: PrefToggle | "autoSave", value: boolean | "off" | "afterDelay") => void;
+  onSetPref: SetPref;
   Original?: ComponentType;
 }
 
@@ -68,6 +69,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const [width, setWidth] = useState(0);
   const [tree, setTree] = useState<TreeState>(EMPTY_TREE);
   const [quickOpen, setQuickOpen] = useState(false);
+  const [themePicker, setThemePicker] = useState(false);
+  const [themePreview, setThemePreview] = useState<string | null>(null);
+  const bbTheme = experimental_useCodeTheme();
   const [focusNonce, setFocusNonce] = useState(0);
   const treeRequested = useRef(false);
 
@@ -326,6 +330,8 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           onOpenInTab={canOpenInTab ? () => void openInTab(activePath) : null}
           history={{ canBack: history.index > 0, canForward: history.index < history.paths.length - 1, back: goBack, forward: goForward }}
           onSetPref={onSetPref}
+          themePreview={themePreview}
+          onPickTheme={() => setThemePicker(true)}
           Original={Original}
           focusNonce={focusNonce}
         />
@@ -352,6 +358,23 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         </>
       )}
       {quickOpen ? <QuickOpen entries={tree.entries} onOpen={openFile} onClose={() => setQuickOpen(false)} /> : null}
+      {themePicker ? (
+        <ThemePicker
+          mode={bbTheme.mode}
+          bbThemeName={bbTheme.name}
+          current={bbTheme.mode === "dark" ? prefs.darkTheme : prefs.lightTheme}
+          onPreview={setThemePreview}
+          onChoose={(id) => {
+            setThemePreview(null);
+            onSetPref(bbTheme.mode === "dark" ? "darkTheme" : "lightTheme", id);
+          }}
+          onClose={() => {
+            setThemePreview(null);
+            setThemePicker(false);
+            paneRef.current?.focus();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
