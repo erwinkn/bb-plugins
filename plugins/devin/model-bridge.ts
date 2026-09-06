@@ -62,7 +62,7 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
   }
   function close() { abort.abort(); inflight.clear(); }
   return experimental_defineProviderBridge({
-    start(context) { store = fileCatalogStore(context.dataDir); acp.start?.(context); },
+    start(context) { store = fileCatalogStore(context.dataDir); return acp.start?.(context); },
     onClose() { close(); return acp.onClose?.(); },
     onSigterm() { close(); return acp.onSigterm?.(); },
     onSigint() { close(); return acp.onSigint?.(); },

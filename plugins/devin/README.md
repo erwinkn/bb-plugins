@@ -173,12 +173,14 @@ Rules for a grouped selection (`devin-family:` model IDs):
 - The `Devin default` row and native variant IDs bypass the catalog as before.
 
 The cache entry is bound to an identity fingerprint: a SHA-256 of the resolved
-executable's real path, size, and modification time, of the size and
-modification time of the Devin credentials file that `devin auth status`
-reports (`$XDG_DATA_HOME/devin/credentials.toml`, default `~/.local/share`),
-and of `devin.org_id` from `~/.config/devin/config.json`. No credential
-content is read or stored. A CLI update, a new sign-in, a sign-out, or an
-organization change gives a different fingerprint and the old entry is ignored.
+executable's real path, size, and modification time, of a SHA-256 digest of
+the Devin credentials file that `devin auth status` reports
+(`$XDG_DATA_HOME/devin/credentials.toml`, default `~/.local/share`), and of
+`devin.org_id` from `~/.config/devin/config.json`. The credentials file is
+hashed in memory only; no credential content, and no digest of the key alone,
+is stored or logged. A CLI update, a new sign-in, a sign-out, or an
+organization change gives a different fingerprint and the old entry is ignored,
+even when the rewritten file keeps its size and timestamps.
 When the fingerprint cannot be computed (no credentials file, `WINDSURF_API_KEY`
 set in the bridge environment, or an executable that is not found), the bridge
 does not use the persistent cache and runs a live lookup each time, as before.

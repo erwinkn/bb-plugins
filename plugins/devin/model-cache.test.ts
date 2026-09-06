@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ProviderBridgeEntry } from "@get-bb/plugin-sdk/provider-bridge";
-import { devinIdentity, fileCatalogStore, FRESH_MS, MAX_AGE_MS } from "./model-cache";
+import { devinIdentity, fileCatalogStore, FRESH_MS, MAX_AGE_MS, MAX_CATALOG_BYTES } from "./model-cache";
 import { withDevinModels } from "./model-bridge";
 import { buildDevinModels } from "./models";
 
@@ -139,6 +139,21 @@ test("an identity change, corrupt data, and the wrong schema are misses that get
   }
 });
 
+test("a catalog at the probe size limit still round-trips through the cache", async (t) => {
+  const dir = tempDir(t);
+  const store = fileCatalogStore(dir);
+  const bare = JSON.stringify({ ...fixture, padding: "" });
+  const raw = { ...fixture, padding: "x".repeat(MAX_CATALOG_BYTES - bare.length) };
+  assert.equal(JSON.stringify(raw).length, MAX_CATALOG_BYTES, "raw catalog exactly at the probe limit");
+  await store.write({ version: 1, identity: "id-1", fetchedAt: T0, catalog: raw });
+  assert.ok(readFileSync(cachePath(dir)).length > MAX_CATALOG_BYTES, "the envelope is larger than the raw catalog");
+  const entry = await store.read();
+  assert.equal(entry?.identity, "id-1");
+  assert.deepEqual(buildDevinModels(entry!.catalog).models.map(m => m.id), buildDevinModels(fixture).models.map(m => m.id));
+  writeFileSync(cachePath(dir), "x".repeat(MAX_CATALOG_BYTES + 64 * 1024 + 1));
+  assert.equal(await store.read(), undefined, "anything beyond the documented overhead is a miss");
+});
+
 test("concurrent writers leave one complete file and no temp files", async (t) => {
   const dir = tempDir(t);
   const store = fileCatalogStore(dir);
@@ -198,10 +213,12 @@ test("identity follows the executable and the local sign-in state without readin
   const signedIn = await devinIdentity(binary, env);
   assert.match(signedIn!, /^[a-f0-9]{64}$/);
   assert.equal(await devinIdentity(binary, env), signedIn, "identity is stable across calls");
+  // Same size and same timestamps: only the content differs.
   writeFileSync(credentials, "api_key = \"secret-two\"\n");
-  utimesSync(credentials, new Date(T0 + 1000), new Date(T0 + 1000));
+  utimesSync(credentials, new Date(T0), new Date(T0));
   const reLogin = await devinIdentity(binary, env);
   assert.notEqual(reLogin, signedIn, "a new sign-in changes the identity");
+  assert.doesNotMatch(reLogin!, /secret/);
   writeFileSync(config, JSON.stringify({ version: 1, devin: { org_id: "org-b" } }));
   const otherOrg = await devinIdentity(binary, env);
   assert.notEqual(otherOrg, reLogin, "another organization changes the identity");

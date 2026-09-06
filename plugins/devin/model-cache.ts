@@ -9,7 +9,10 @@ import { experimental_resolveExecutablePath as resolveExecutablePath } from "@ge
 // used, with a background refresh. Older data blocks for a live lookup.
 export const FRESH_MS = 60 * 60 * 1000;
 export const MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const MAX_CACHE_BYTES = 2 * 1024 * 1024;
+// The probe accepts up to MAX_CATALOG_BYTES of raw JSON; the persisted envelope
+// adds a fixed header, so the reader allows that overhead on top.
+export const MAX_CATALOG_BYTES = 2 * 1024 * 1024;
+const MAX_CACHE_BYTES = MAX_CATALOG_BYTES + 64 * 1024;
 const entrySchema = z.object({ version: z.literal(1), identity: z.string().min(1), fetchedAt: z.number().finite(), catalog: z.unknown() });
 export type CatalogEntry = z.infer<typeof entrySchema>;
 export interface CatalogStore {
@@ -50,8 +53,9 @@ async function readOrgId(path: string): Promise<string | null> {
 }
 
 // Fingerprint of the resolved executable and the local sign-in state that the
-// CLI documents (`devin auth status` reports the credentials file). Only paths,
-// sizes, and modification times are hashed; no credential content is read.
+// CLI documents (`devin auth status` reports the credentials file). The
+// credentials file is hashed, never stored or logged, so a sign-in change is
+// detected even when size and timestamps stay equal.
 // An unknown identity disables the persistent cache instead of guessing.
 export async function devinIdentity(command: string, env: NodeJS.ProcessEnv = process.env): Promise<string | undefined> {
   if (env.WINDSURF_API_KEY) return undefined;
@@ -60,9 +64,10 @@ export async function devinIdentity(command: string, env: NodeJS.ProcessEnv = pr
   const dataHome = env.XDG_DATA_HOME || join(homedir(), ".local", "share");
   const configHome = env.XDG_CONFIG_HOME || join(homedir(), ".config");
   try {
-    const [binary, binaryStat, credentialStat, orgId] = await Promise.all([
-      realpath(executable), stat(executable), stat(join(dataHome, "devin", "credentials.toml")), readOrgId(join(configHome, "devin", "config.json")),
+    const [binary, binaryStat, credentials, orgId] = await Promise.all([
+      realpath(executable), stat(executable), readFile(join(dataHome, "devin", "credentials.toml")), readOrgId(join(configHome, "devin", "config.json")),
     ]);
-    return createHash("sha256").update(JSON.stringify([binary, binaryStat.size, binaryStat.mtimeMs, credentialStat.size, credentialStat.mtimeMs, orgId])).digest("hex");
+    const signIn = createHash("sha256").update(credentials).digest("hex");
+    return createHash("sha256").update(JSON.stringify([binary, binaryStat.size, binaryStat.mtimeMs, signIn, orgId])).digest("hex");
   } catch { return undefined; }
 }
