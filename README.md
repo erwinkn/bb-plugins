@@ -2,6 +2,11 @@
 
 A private GitHub collection of BB plugins.
 
+`erwin-provider-branding` adds optional icons and labels for exact provider IDs.
+Its source-controlled mapping includes Devin CLI. See
+[Provider Branding](plugins/provider-branding/README.md) for configuration,
+label limits, tests, and migration from the earlier local Devin plugin.
+
 `erwin-hello` adds **Erwin Hello** to the sidebar. Select **Say hello** to
 send a request to the BB server. The page shows the server message and UTC
 time. The plugin uses no storage, credentials, host entry, or background work.
@@ -16,6 +21,17 @@ a token in the repository URL.
 ```sh
 bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin erwin-hello
 ```
+
+To install Provider Branding from a reviewed commit, replace `COMMIT_SHA` with
+that commit's full SHA:
+
+```sh
+bb plugin install git:https://github.com/erwinkn/bb-plugins.git@COMMIT_SHA --plugin erwin-provider-branding
+```
+
+This selects only Provider Branding and leaves the Hello installation intact.
+Its package lives at `plugins/provider-branding`. Follow its migration steps
+before disabling the earlier local `devin-branding` plugin.
 
 The collection index is `.bb/plugins.json`. The plugin package is
 `plugins/hello/package.json`, with package name `bb-plugin-erwin-hello` and

@@ -2,5 +2,14 @@
   "$schema": "https://getbb.app/schemas/plugins.schema.json",
   "schemaVersion": 1,
   "name": "erwin-plugins",
-  "plugins": [{ "name": "erwin-hello", "source": "./plugins/hello" }]
+  "plugins": [
+    {
+      "name": "erwin-hello",
+      "source": "./plugins/hello"
+    },
+    {
+      "name": "erwin-provider-branding",
+      "source": "./plugins/provider-branding"
+    }
+  ]
 }
