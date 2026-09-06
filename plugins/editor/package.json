@@ -1,0 +1,47 @@
+{
+  "name": "bb-plugin-erwin-editor",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.42.1",
+    "bbPluginSdk": ">=0.4.47"
+  },
+  "bb": {
+    "name": "Editor",
+    "description": "Monaco file editor with a Files panel, BB-matched syntax colors, and TypeScript, JSON, CSS, and HTML language services.",
+    "branding": {
+      "icon": "Code"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "dependencies": {
+    "@shikijs/langs": "4.4.3",
+    "esbuild": "0.28.2",
+    "monaco-editor": "0.56.0",
+    "shiki": "4.4.3",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.47",
+    "@types/node": "22.19.15",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "better-sqlite3": "13.0.3",
+    "clsx": "2.1.1",
+    "cron-parser": "5.5.0",
+    "hono": "4.13.7",
+    "sonner": "1.7.4",
+    "tailwind-merge": "3.4.0",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3"
+  },
+  "private": true,
+  "scripts": {
+    "build": "bb plugin build",
+    "build:monaco": "node scripts/stage-assets.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test lib/*.test.ts server.test.ts"
+  }
+}

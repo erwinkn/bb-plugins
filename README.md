@@ -2,6 +2,11 @@
 
 A private GitHub collection of BB plugins.
 
+| Plugin         | Directory         | What it does                                                                                  |
+| -------------- | ----------------- | --------------------------------------------------------------------------------------------- |
+| `erwin-editor` | `plugins/editor`  | Monaco editor with a Files panel, BB-matched syntax colors, and TS/JSON/CSS/HTML services. See its [README](plugins/editor/README.md). |
+| `erwin-hello`  | `plugins/hello`   | A sidebar page with one button that pings the BB server.                                     |
+
 `erwin-hello` adds **Erwin Hello** to the sidebar. Select **Say hello** to
 send a request to the BB server. The page shows the server message and UTC
 time. The plugin uses no storage, credentials, host entry, or background work.
