@@ -54,6 +54,11 @@ test("fresh cache reader rejects ambiguous, malformed and oversized files", asyn
     await rm(join(dir, "user_status.1234.bin"));
     await writeFile(file, JSON.stringify({ ...envelope, version: 2 }));
     await assert.rejects(() => readFreshUsageCache(cache));
+    // Non-canonical or empty Base64 must not decode to an empty "successful" status.
+    for (const payload of ["A", "", "AAA", "QQ=", "QUJD===", "Q-Jd"]) {
+      await writeFile(file, JSON.stringify({ ...envelope, payload }));
+      await assert.rejects(() => readFreshUsageCache(cache), `payload ${JSON.stringify(payload)}`);
+    }
     await writeFile(file, "x".repeat(2 * 1024 * 1024 + 1));
     await assert.rejects(() => readFreshUsageCache(cache), /too large/);
   } finally { await rm(cache, { recursive: true, force: true }); }

@@ -9,7 +9,9 @@ import { decodeCachedUserStatus } from "./usage-codec";
 
 const TIMEOUT_MS = 15_000;
 const MAX_CACHE_BYTES = 2 * 1024 * 1024;
-const envelopeSchema = z.object({ version: z.literal(1), identity_digest: z.string().min(1), fetched_at_secs: z.number().finite(), payload: z.string().min(1).regex(/^[A-Za-z0-9+/]+={0,2}$/) });
+// Canonical Base64 only: Node decodes non-canonical input such as "A" to empty
+// bytes, which protobuf would accept as an empty, "successful" status.
+const envelopeSchema = z.object({ version: z.literal(1), identity_digest: z.string().min(1), fetched_at_secs: z.number().finite(), payload: z.string().regex(/^(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$|^(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)$/) });
 
 export async function readFreshUsageCache(cache: string): Promise<unknown | undefined> {
   const dir = join(cache, "devin", "cli");
@@ -22,7 +24,9 @@ export async function readFreshUsageCache(cache: string): Promise<unknown | unde
   const path = join(dir, names[0]!);
   if ((await stat(path)).size > MAX_CACHE_BYTES) throw new Error("usage cache too large");
   const envelope = envelopeSchema.parse(JSON.parse(await readFile(path, "utf8")));
-  return decodeCachedUserStatus(Buffer.from(envelope.payload, "base64"));
+  const payload = Buffer.from(envelope.payload, "base64");
+  if (payload.length === 0) throw new Error("empty usage cache payload");
+  return decodeCachedUserStatus(payload);
 }
 
 export async function probeDevinUsage(command: string): Promise<unknown> {
