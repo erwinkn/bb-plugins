@@ -1,5 +1,5 @@
 {
-  "name": "bb-plugin-erwin-hello",
+  "name": "bb-plugin-erwin-devin",
   "version": "0.1.0",
   "type": "module",
   "engines": {
@@ -7,23 +7,22 @@
     "bbPluginSdk": ">=0.4.47"
   },
   "bb": {
-    "name": "Erwin Hello",
-    "description": "A button that checks the connection to the BB server.",
+    "name": "Devin provider",
+    "description": "Run Devin CLI in bb through its Agent Client Protocol connection.",
     "branding": {
-      "icon": "Zap"
+      "icon": "./assets/devin.svg"
     },
     "server": "./server.ts",
-    "app": "./app.tsx",
+    "host": "./host.ts",
     "skills": []
   },
   "dependencies": {
+    "@get-bb/plugin-sdk": "0.4.47",
+    "protobufjs": "8.8.0",
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.47",
     "@types/node": "22.19.15",
-    "@types/react": "19.2.14",
-    "@types/react-dom": "19.2.3",
     "better-sqlite3": "13.0.3",
     "cron-parser": "5.5.0",
     "hono": "4.13.7",
@@ -34,6 +33,6 @@
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test server.test.ts"
+    "test": "node --import ./test-runtime.mjs --import tsx --test provider.test.ts usage.test.ts models.test.ts model-cache.test.ts && node --import ./test-runtime.mjs --import tsx bridge.test.ts"
   }
 }

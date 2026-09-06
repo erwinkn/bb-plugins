@@ -4,8 +4,8 @@
   "name": "erwin-plugins",
   "plugins": [
     {
-      "name": "erwin-hello",
-      "source": "./plugins/hello"
+      "name": "erwin-devin",
+      "source": "./plugins/devin"
     },
     {
       "name": "voice-mode",
