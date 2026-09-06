@@ -2,6 +2,7 @@ import * as Menu from "@radix-ui/react-context-menu";
 import { useRef, useState, type ReactNode } from "react";
 import {
   useRpc,
+  useBbNavigate,
   experimental_useSidebarThreadActions,
   experimental_useSidebarThreadSplit,
   type PluginSidebarThread,
@@ -48,6 +49,7 @@ export function ThreadRow({
   onError: (error: unknown) => void;
 }) {
   const rpc = useRpc<typeof archiveContract>();
+  const navigate = useBbNavigate();
   const nested = depth > 0;
   const actions = experimental_useSidebarThreadActions();
   const scope = usePortalScopeProps();
@@ -63,7 +65,8 @@ export function ThreadRow({
   const branch = thread.environment?.branchName;
   const timestamp = sortBy === "created" ? thread.createdAt : thread.updatedAt;
   const open = (split = false) => {
-    actions.open(thread.id, { split });
+    if (thread.isArchived) navigate.toThread(thread.id);
+    else actions.open(thread.id, { split });
     onNavigate();
   };
   return (
@@ -87,7 +90,7 @@ export function ThreadRow({
           >
             <Menu.Trigger asChild>
               <a
-                {...splitProps}
+                {...(!thread.isArchived ? splitProps : {})}
                 {...longPress}
                 href={`/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(thread.id)}`}
                 data-sidebar-thread-shortcut-target=""
@@ -98,7 +101,11 @@ export function ThreadRow({
                   suppressClick.current = false;
                   longPress.onPointerDown(event);
                   // Touch belongs to scrolling/long press, not drag-to-split.
-                  if (event.pointerType !== "touch" && event.button === 0) {
+                  if (
+                    !thread.isArchived &&
+                    event.pointerType !== "touch" &&
+                    event.button === 0
+                  ) {
                     splitProps.onPointerDown?.(event);
                   }
                 }}
@@ -199,7 +206,7 @@ export function ThreadRow({
               aria-label={`Actions for ${title}`}
               className="z-50 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
             >
-              {isAvailable && (
+              {isAvailable && !thread.isArchived && (
                 <Menu.Item
                   className={menuItemClass}
                   onSelect={() => open(true)}
@@ -207,27 +214,31 @@ export function ThreadRow({
                   Open in split
                 </Menu.Item>
               )}
-              <Menu.Item
-                className={menuItemClass}
-                onSelect={() => {
-                  void actions
-                    .setRead(thread.id, thread.isUnread)
-                    .catch(onError);
-                }}
-              >
-                Mark as {thread.isUnread ? "read" : "unread"}
-              </Menu.Item>
-              <Menu.Item
-                className={menuItemClass}
-                onSelect={() => {
-                  void actions
-                    .setPinned(thread.id, !thread.isPinned)
-                    .catch(onError);
-                }}
-              >
-                {thread.isPinned ? "Unpin" : "Pin"}
-              </Menu.Item>
-              <Menu.Separator className="my-1 h-px bg-border" />
+              {!thread.isArchived && (
+                <>
+                  <Menu.Item
+                    className={menuItemClass}
+                    onSelect={() => {
+                      void actions
+                        .setRead(thread.id, thread.isUnread)
+                        .catch(onError);
+                    }}
+                  >
+                    Mark as {thread.isUnread ? "read" : "unread"}
+                  </Menu.Item>
+                  <Menu.Item
+                    className={menuItemClass}
+                    onSelect={() => {
+                      void actions
+                        .setPinned(thread.id, !thread.isPinned)
+                        .catch(onError);
+                    }}
+                  >
+                    {thread.isPinned ? "Unpin" : "Pin"}
+                  </Menu.Item>
+                  <Menu.Separator className="my-1 h-px bg-border" />
+                </>
+              )}
               <Menu.Item
                 className={menuItemClass}
                 onSelect={() => {

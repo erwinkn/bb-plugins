@@ -90,22 +90,51 @@ describe("activity sidebar", () => {
           projects,
           threads: [
             thread({ id: "parent", indicator: "runtime" }),
-            thread({ id: "pin-child", parentThreadId: "parent", isPinned: true, updatedAt: 300 }),
-            thread({ id: "pin-parent", projectId: "project-2", isPinned: true, updatedAt: 200 }),
-            thread({ id: "child", parentThreadId: "pin-parent", isUnread: true }),
+            thread({
+              id: "pin-child",
+              parentThreadId: "parent",
+              isPinned: true,
+              updatedAt: 300,
+            }),
+            thread({
+              id: "pin-parent",
+              projectId: "project-2",
+              isPinned: true,
+              updatedAt: 200,
+            }),
+            thread({
+              id: "child",
+              parentThreadId: "pin-parent",
+              isUnread: true,
+            }),
             thread({ id: "archived-pin", isPinned: true, isArchived: true }),
           ],
         },
       });
-      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe("Pinned");
+      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe(
+        "Pinned",
+      );
       const pins = slot.getByRole("list", { name: "Pinned threads" });
-      expect(Array.from(pins.querySelectorAll("[data-sidebar-thread-id]"),
-        (row) => row.getAttribute("data-sidebar-thread-id"),
-      )).toEqual(["pin-child", "pin-parent"]);
-      expect(slot.container.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(4);
-      expect(slot.container.querySelector('[data-sidebar-thread-id="child"]')).not.toBeNull();
-      act(() => updateState((state) => ({ ...state, groupBy: groupBy === "status" ? "project" : "status" })));
-      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe("Pinned");
+      expect(
+        Array.from(pins.querySelectorAll("[data-sidebar-thread-id]"), (row) =>
+          row.getAttribute("data-sidebar-thread-id"),
+        ),
+      ).toEqual(["pin-child", "pin-parent"]);
+      expect(
+        slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+      ).toHaveLength(4);
+      expect(
+        slot.container.querySelector('[data-sidebar-thread-id="child"]'),
+      ).not.toBeNull();
+      act(() =>
+        updateState((state) => ({
+          ...state,
+          groupBy: groupBy === "status" ? "project" : "status",
+        })),
+      );
+      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe(
+        "Pinned",
+      );
     },
   );
 
@@ -156,10 +185,9 @@ describe("activity sidebar", () => {
         '[data-sidebar-thread-id="old-0"]',
       )!;
       fireEvent.click(target);
-      expect(slot.inspection.sidebarActionCalls).toContainEqual({
-        method: "open",
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "toThread",
         threadId: "old-0",
-        options: { split: false },
       });
       fireEvent.contextMenu(target);
       fireEvent.click(slot.getByRole("menuitem", { name: "Restore" }));

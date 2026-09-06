@@ -169,7 +169,9 @@ do not hide archived threads. The selected date sort also applies to archives.
 
 Expand a section to browse its threads. Rows use the same paging and child
 groups as active threads. Open a row to read it, or select Restore from its
-context menu. Restoration uses BB's existing operation.
+context menu. Restoration uses BB's existing operation. Archived rows use
+BB's general thread navigation because the sidebar open action only knows
+active threads. Restore a thread before using pin, read, or split actions.
 
 The backend reads visible archives in pages of 200 through BB's public SDK.
 Hidden background threads stay hidden. The list refreshes on archive and delete
