@@ -215,6 +215,14 @@ test("without an identity the catalog is kept in this process only, for a short 
   const c = bridge(dir, other.fetch, { identity: () => undefined, now: () => clock });
   c.select(4, "medium"); await settle(() => c.forwarded.length === 1);
   assert.equal(other.calls.length, 1, "another process does not see the local copy");
+  // Two executables share a family name but map it to different native IDs.
+  const byCommand: Fetch = async (command) => ({ families: [{ family_uid: "gpt", family_label: "GPT", variants: [variant(`${command}-a`, "GPT Low Thinking"), variant(`${command}-b`, "GPT Medium Thinking")] }] });
+  const d = bridge(dir, byCommand, { identity: () => undefined, now: () => clock });
+  const selectWith = (id: number, command: string) => d.entry.handleLine(JSON.stringify({ jsonrpc: "2.0", id, method: "thread/start", params: { threadId: `t${id}`, options: { model: groupId, reasoningLevel: "medium", providerOptions: { acpLaunchSpec: { ...launch, command } } } } }));
+  selectWith(5, "devin-one"); await settle(() => d.forwarded.length === 1);
+  selectWith(6, "devin-two"); await settle(() => d.forwarded.length === 2);
+  selectWith(7, "devin-one"); await settle(() => d.forwarded.length === 3);
+  assert.deepEqual(d.forwarded.map(m => m.params.options.model), ["devin-one-b", "devin-two-b", "devin-one-b"], "local copies never cross executables");
 });
 
 test("a sign-in change during a lookup does not join the older lookup", async (t) => {
@@ -232,7 +240,8 @@ test("a sign-in change during a lookup does not join the older lookup", async (t
   releases[1]!(); await settle(() => b.forwarded.length === 1);
   assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).identity, "id-2");
   releases[0]!(); await settle(() => b.forwarded.length === 2);
-  assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).identity, "id-1", "the older lookup still writes the identity it started with");
+  assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).identity, "id-2", "a lookup that finishes late does not replace the newer entry");
+  assert.equal(b.forwarded[1].params.options.model, "opaque-b", "the late lookup still answers its own request");
   // Same command and identity still share one lookup.
   const d = bridge(dir, slow, { identity: () => "id-9" });
   d.select(3, "medium"); d.select(4, "low");

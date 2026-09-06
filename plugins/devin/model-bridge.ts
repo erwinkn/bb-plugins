@@ -19,8 +19,18 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
   // The persistent store arrives with start(); until then this process only.
   let store: CatalogStore = memoryCatalogStore();
   // Without a local identity nothing is persisted; this process still keeps
-  // the last catalog briefly so one thread does not rerun the CLI per turn.
-  const local = memoryCatalogStore();
+  // each command's last catalog briefly so one thread does not rerun the CLI
+  // per turn.
+  const local = new Map<string, CatalogStore>();
+  function storeFor(command: string, id: string | undefined): CatalogStore {
+    if (id !== undefined) return store;
+    let memory = local.get(command);
+    if (!memory) local.set(command, memory = memoryCatalogStore());
+    return memory;
+  }
+  // Lookups are numbered so a lookup that finishes late cannot replace the
+  // entry written by a lookup that started after it.
+  let started = 0, written = 0;
   const pending = new Set<{ threadId: unknown; cancelled: boolean }>();
   // Reuse a single in-flight lookup per command and identity, but never
   // retain a failed one. A different identity must not join an older lookup.
@@ -29,13 +39,15 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
     const key = `${command}\0${id ?? ""}`;
     const existing = inflight.get(key);
     if (existing) return existing;
+    const sequence = ++started;
     const lookup = (async () => {
       const raw = await fetch(command, abort.signal);
       const catalog = buildDevinModels(raw);
       // The identity was read before the lookup: a sign-in change during the
       // lookup makes the entry unusable rather than trusted.
-      if (!abort.signal.aborted) {
-        await (id === undefined ? local : store).write({ version: 1, identity: id ?? "", fetchedAt: now(), catalog: raw })
+      if (!abort.signal.aborted && sequence > written) {
+        written = sequence;
+        await storeFor(command, id).write({ version: 1, identity: id ?? "", fetchedAt: now(), catalog: raw })
           .catch(error => process.stderr.write(`Devin model catalog cache was not written: ${error instanceof Error ? error.message : String(error)}\n`));
       }
       return catalog;
@@ -43,8 +55,8 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
     inflight.set(key, lookup);
     return lookup;
   }
-  async function cached(id: string | undefined): Promise<{ catalog: Catalog; stale: boolean } | undefined> {
-    const entry = await (id === undefined ? local : store).read();
+  async function cached(command: string, id: string | undefined): Promise<{ catalog: Catalog; stale: boolean } | undefined> {
+    const entry = await storeFor(command, id).read();
     if (!entry || entry.identity !== (id ?? "")) return undefined;
     const age = now() - entry.fetchedAt;
     if (age < 0 || age >= (id === undefined ? UNKNOWN_IDENTITY_TTL_MS : MAX_AGE_MS)) return undefined;
@@ -54,7 +66,7 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
   // lookup, which decides with the current catalog and never substitutes.
   async function resolve(command: string, model: string, reasoningLevel?: ReasoningLevel, serviceTier?: ServiceTier): Promise<string> {
     const id = await identity(command);
-    const hit = await cached(id);
+    const hit = await cached(command, id);
     if (hit) {
       try {
         const resolved = hit.catalog.resolve(model, reasoningLevel, serviceTier);
@@ -64,7 +76,7 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
     }
     return (await live(command, id)).resolve(model, reasoningLevel, serviceTier);
   }
-  function close() { abort.abort(); inflight.clear(); }
+  function close() { abort.abort(); inflight.clear(); local.clear(); }
   return experimental_defineProviderBridge({
     start(context) { store = fileCatalogStore(context.dataDir); return acp.start?.(context); },
     onClose() { close(); return acp.onClose?.(); },
