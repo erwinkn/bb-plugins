@@ -72,6 +72,162 @@ afterEach(async () => {
 });
 
 describe("activity sidebar", () => {
+  it.each(["updated", "created"] as const)(
+    "pages projects independently with %s sorting",
+    (sortBy) => {
+      updateState((state) => ({ ...state, groupBy: "project", sortBy }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: {
+          projects,
+          threads: projects.flatMap((project) =>
+            Array.from({ length: 23 }, (_, i) =>
+              thread({
+                id: `${project.id}-${i}`,
+                projectId: project.id,
+                updatedAt: 1000 - i,
+                createdAt: i,
+              }),
+            ),
+          ),
+        },
+      });
+      const one = slot.getByRole("list", { name: "One threads" });
+      const two = slot.getByRole("list", { name: "Two threads" });
+      const count = (list: HTMLElement) =>
+        list.querySelectorAll("[data-sidebar-thread-id]").length;
+      expect(count(one)).toBe(10);
+      expect(count(two)).toBe(10);
+      expect(
+        one
+          .querySelector("[data-sidebar-thread-id]")
+          ?.getAttribute("data-sidebar-thread-id"),
+      ).toBe(`project-1-${sortBy === "updated" ? 0 : 22}`);
+      fireEvent.click(
+        within(one).getByRole("button", {
+          name: "Show more One threads, 13 hidden",
+        }),
+      );
+      expect(count(one)).toBe(20);
+      expect(count(two)).toBe(10);
+      const less = within(one).getByRole("button", {
+        name: "Show fewer One threads",
+      });
+      less.focus();
+      fireEvent.click(less);
+      expect(count(one)).toBe(10);
+      expect(document.activeElement).toBe(
+        within(one).getByRole("button", {
+          name: "Show more One threads, 13 hidden",
+        }),
+      );
+      fireEvent.click(
+        within(one).getByRole("button", {
+          name: "Show more One threads, 13 hidden",
+        }),
+      );
+      fireEvent.click(
+        within(one).getByRole("button", {
+          name: "Show more One threads, 3 hidden",
+        }),
+      );
+      expect(count(one)).toBe(23);
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
+    },
+  );
+
+  it("keeps a selected family visible beyond a thousand project roots and counts new drafts in the page", () => {
+    updateState((state) => ({
+      ...state,
+      groupBy: "project",
+      drafts: ["new:project-2"],
+    }));
+    const slot = renderSlot(
+      app.threadLists[0],
+      { ...props, activeThreadId: "selected" },
+      {
+        sidebarThreads: {
+          projects,
+          threads: [
+            ...Array.from({ length: 1000 }, (_, i) =>
+              thread({ id: `root-${i}`, updatedAt: 2000 - i }),
+            ),
+            thread({ id: "selected", parentThreadId: "root-999" }),
+            ...Array.from({ length: 10 }, (_, i) =>
+              thread({ id: `other-${i}`, projectId: "project-2" }),
+            ),
+          ],
+        },
+      },
+    );
+    const one = slot.getByRole("list", { name: "One threads" });
+    expect(one.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(12);
+    expect(
+      one.querySelector('[data-sidebar-thread-id="selected"]'),
+    ).not.toBeNull();
+    expect(
+      within(one).getByRole("button", {
+        name: "Show more One threads, 989 hidden",
+      }),
+    ).toBeTruthy();
+    const two = slot.getByRole("list", { name: "Two threads" });
+    expect(
+      within(two).queryByRole("button", { name: /New thread draft/ }),
+    ).toBeNull();
+    fireEvent.click(
+      within(two).getByRole("button", {
+        name: "Show more Two threads, 1 hidden",
+      }),
+    );
+    expect(
+      within(two).getByRole("button", { name: /New thread draft/ }),
+    ).toBeTruthy();
+  });
+
+  it("keeps unmatched projects and their selected children visible in Project view", () => {
+    updateState((state) => ({ ...state, groupBy: "project" }));
+    const slot = renderSlot(
+      app.threadLists[0],
+      { ...props, activeThreadId: "missing-child" },
+      {
+        sidebarThreads: {
+          projects,
+          threads: [
+            thread({ id: "known", projectId: "project-1" }),
+            thread({ id: "missing-parent", projectId: "missing-a" }),
+            thread({
+              id: "missing-child",
+              projectId: "missing-a",
+              parentThreadId: "missing-parent",
+            }),
+            thread({ id: "other-missing", projectId: "missing-b" }),
+          ],
+        },
+      },
+    );
+    const unknown = slot.getAllByRole("region", { name: "No project" });
+    expect(unknown).toHaveLength(2);
+    expect(
+      unknown[0].querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(2);
+    expect(
+      unknown[1].querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(1);
+    const selected = unknown[0].querySelector(
+      '[data-sidebar-thread-id="missing-child"]',
+    )!;
+    expect(selected.getAttribute("aria-current")).toBe("page");
+    expect(selected.closest("[data-thread-children-depth]")).not.toBeNull();
+    fireEvent.click(
+      within(unknown[0]).getByRole("button", { name: "No project" }),
+    );
+    expect(
+      unknown[0].querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(0);
+    expect(
+      unknown[1].querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(1);
+  });
+
   it.each([
     ["Needs Attention", 5, { hasPendingInteraction: true }],
     ["Unread", 5, { isUnread: true }],
@@ -206,16 +362,15 @@ describe("activity sidebar", () => {
       const slot = renderSlot(app.threadLists[0], props, {
         sidebarThreads: {
           projects,
-          threads: Array.from(
-            { length: groupBy === "status" ? 10 : 15 },
-            (_, i) => thread({ id: `root-${i}` }),
+          threads: Array.from({ length: 10 }, (_, i) =>
+            thread({ id: `root-${i}` }),
           ),
         },
       });
       expect(slot.queryByRole("button", { name: /Show more/ })).toBeNull();
       expect(
         slot.container.querySelectorAll("[data-sidebar-thread-id]"),
-      ).toHaveLength(groupBy === "status" ? 10 : 15);
+      ).toHaveLength(10);
     },
   );
 

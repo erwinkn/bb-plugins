@@ -14,8 +14,10 @@ which shows ten. Show more reveals another five or ten; Show less restores
 the initial limit. Children do not count toward this limit. New-thread drafts
 share the Draft limit with existing threads. The selected thread's family stays
 visible even beyond the limit, so a group can show one extra top-level thread.
-Expansion resets when a group closes or the view reloads. Project view has no
-top-level limit.
+Expansion resets when a group closes or the view reloads. Project view initially
+shows ten top-level threads per project, with ten more per Show more action.
+It uses the same selected-family exception and includes new-thread drafts in
+the limit.
 
 | Group           | Rule                                                                        |
 | --------------- | --------------------------------------------------------------------------- |
@@ -49,6 +51,8 @@ children have no status marker. Project view nests children within the same proj
 If a parent is missing, archived, or hidden by a status filter, its visible
 children appear as separate roots. Cross-project children appear under their
 own project in Project view. Parent names appear in the hover info card.
+If project details are missing, its threads remain in a No project group.
+Each missing project keeps its own group until BB supplies its name.
 
 The display menu switches between Status and Project grouping and shows or
 hides each status. Status groups keep the order above. Project groups sort by

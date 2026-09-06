@@ -105,6 +105,22 @@ function ThreadsList(props: PluginThreadListProps) {
       status: statusOf(thread, knownDrafts.has(`thread:${thread.id}`)),
     }))
     .filter((row) => !state.hidden.includes(row.status));
+  // Thread and project snapshots can arrive separately. Keep unmatched
+  // threads navigable until the project metadata becomes available.
+  const displayProjects = new Map(
+    projects.map((project) => [
+      project.id,
+      { id: project.id, name: project.name },
+    ]),
+  );
+  for (const { thread } of visible) {
+    if (!displayProjects.has(thread.projectId)) {
+      displayProjects.set(thread.projectId, {
+        id: thread.projectId,
+        name: "No project",
+      });
+    }
+  }
   const newDrafts = projects.filter(
     (project) =>
       knownDrafts.has(`new:${project.id}`) && !state.hidden.includes("draft"),
@@ -130,7 +146,7 @@ function ThreadsList(props: PluginThreadListProps) {
       status={status}
       nested={depth > 0}
       showStatus={groupStatus ? status !== groupStatus : status === "attention"}
-      project={projectNames.get(thread.projectId) ?? "Unknown project"}
+      project={projectNames.get(thread.projectId) ?? "No project"}
       provider={providerNames.get(thread.providerId) ?? thread.providerId}
       parent={
         thread.parentThreadId
@@ -182,7 +198,9 @@ function ThreadsList(props: PluginThreadListProps) {
       className={`flex flex-col text-foreground ${props.isCompactViewport ? "shrink-0" : "h-full min-h-0"}`}
     >
       {props.isCompactViewport && (
-        <style data-activity-mobile-scroll="">{MOBILE_SIDEBAR_SCROLL_CSS}</style>
+        <style data-activity-mobile-scroll="">
+          {MOBILE_SIDEBAR_SCROLL_CSS}
+        </style>
       )}
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
@@ -241,7 +259,8 @@ function ThreadsList(props: PluginThreadListProps) {
                   return (
                     <Group key={s} id={`status:${s}`} title={STATUS_LABEL[s]}>
                       <ThreadRoots
-                        status={s}
+                        label={STATUS_LABEL[s]}
+                        pageSize={s === "done" ? 10 : 5}
                         nodes={rows.map(({ node }) => node)}
                         drafts={s === "draft" ? newDrafts : []}
                         activeThreadId={props.activeThreadId}
@@ -251,7 +270,7 @@ function ThreadsList(props: PluginThreadListProps) {
                     </Group>
                   );
                 })
-              : [...projects]
+              : [...displayProjects.values()]
                   .sort((a, b) => a.name.localeCompare(b.name))
                   .map((project) => {
                     const rows = buildThreadTree(
@@ -269,10 +288,15 @@ function ThreadsList(props: PluginThreadListProps) {
                         id={`project:${project.id}`}
                         title={project.name}
                       >
-                        <ul className="m-0 list-none p-0">
-                          {rows.map((node) => row(node))}
-                          {drafts.map(draftRow)}
-                        </ul>
+                        <ThreadRoots
+                          label={project.name}
+                          pageSize={10}
+                          nodes={rows}
+                          drafts={drafts}
+                          activeThreadId={props.activeThreadId}
+                          renderRow={(node) => row(node)}
+                          renderDraft={draftRow}
+                        />
                       </Group>
                     ) : null;
                   })}

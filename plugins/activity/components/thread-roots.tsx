@@ -1,18 +1,19 @@
 import { useId, useState, type ReactNode } from "react";
-import { STATUS_LABEL, type Status } from "../lib/status";
 import { containsThread, type ThreadNode } from "../lib/thread-tree";
 
 type DraftProject = { id: string; name: string };
 
 export function ThreadRoots({
-  status,
+  label,
+  pageSize,
   nodes,
   drafts,
   activeThreadId,
   renderRow,
   renderDraft,
 }: {
-  status: Status;
+  label: string;
+  pageSize: number;
   nodes: ThreadNode[];
   drafts: DraftProject[];
   activeThreadId: string | null;
@@ -20,7 +21,6 @@ export function ThreadRoots({
   renderDraft: (project: DraftProject) => ReactNode;
 }) {
   const id = useId();
-  const pageSize = status === "done" ? 10 : 5;
   const [limit, setLimit] = useState(pageSize);
   const activeIndex = nodes.findIndex((node) =>
     containsThread(node, activeThreadId),
@@ -33,7 +33,6 @@ export function ThreadRoots({
   const remaining =
     nodes.length + drafts.length - shown.length - shownDrafts.length;
   const expanded = limit > pageSize;
-  const label = STATUS_LABEL[status];
   const collapse = () => setLimit(pageSize);
   const buttonClass =
     "flex min-h-8 items-center gap-2 rounded px-2 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent hover:text-foreground active:bg-accent focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-11";
