@@ -40,19 +40,23 @@ export function parseState(raw: string | null): ClientState {
     return DEFAULT;
   }
 }
-function readState(): ClientState {
+function readState(fallback = DEFAULT): ClientState {
   try {
     return parseState(window.localStorage.getItem(KEY));
   } catch {
-    return DEFAULT;
+    return fallback;
   }
 }
 let state = readState();
+let pendingWrite = false;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((listener) => listener());
 function onStorage(event: StorageEvent) {
   if (event.key === KEY || event.key === null) {
-    state = readState();
+    // A failed write leaves this tab's snapshot ahead of storage. Do not
+    // discard it in response to another tab; retry on the next local update.
+    if (pendingWrite) return;
+    state = readState(state);
     emit();
   }
 }
@@ -74,21 +78,29 @@ export function useClientState() {
 export function updateState(change: (current: ClientState) => ClientState) {
   // Merge with the last stored state so another window's flags are preserved.
   let current = state;
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    if (raw !== null) current = parseState(raw);
-  } catch {
-    /* Memory-only mode. */
+  if (!pendingWrite) {
+    try {
+      const raw = window.localStorage.getItem(KEY);
+      if (raw !== null) current = parseState(raw);
+    } catch {
+      /* Memory-only mode. */
+    }
   }
   const next = change(current);
-  if (JSON.stringify(next) === JSON.stringify(state)) return;
+  const serialized = JSON.stringify(next);
+  const changed = serialized !== JSON.stringify(state);
+  // Compare with both baselines. A stale in-memory snapshot can match next
+  // even though the persisted value needs to change.
+  if (!changed && serialized === JSON.stringify(current) && !pendingWrite)
+    return;
   state = next;
   try {
-    window.localStorage.setItem(KEY, JSON.stringify(state));
+    window.localStorage.setItem(KEY, serialized);
+    pendingWrite = false;
   } catch {
-    /* Still usable without storage. */
+    pendingWrite = true;
   }
-  emit();
+  if (changed) emit();
 }
 export function recordDraft(key: string, present: boolean) {
   updateState((current) => ({

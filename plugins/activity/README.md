@@ -50,6 +50,11 @@ move its parent. New-thread drafts have no thread timestamp and appear after dat
 threads in their group. Groups can collapse. There is no thread search field or
 project selector. Old saved project filters are ignored.
 Preferences stay on this client. Sorting and grouping do not change thread state.
+If browser storage rejects a write, this tab keeps its unsaved preferences and
+draft flags in memory. It retries on the next local update, even if the value
+does not change. Until that write succeeds, this tab's unsaved snapshot takes
+precedence over storage events from other tabs. Normal cross-tab updates resume
+after storage recovers. Reloading before a successful write loses those unsaved changes.
 
 On mobile, the whole sidebar scrolls together, including navigation, the Threads
 heading, groups, and footer. There is no separate thread-list scroll area.
