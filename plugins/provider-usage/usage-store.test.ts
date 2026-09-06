@@ -84,4 +84,25 @@ describe("usage refresh ownership", () => {
     await createUsageStore().refreshUsage({ ...request, signal: controller.signal });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it.each(["before", "after"])("accepts an older background result when the newer request aborts %s it settles", async (order) => {
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise));
+    const store = createUsageStore();
+    const controller = new AbortController();
+    const background = store.refreshUsage(request);
+    const card = store.refreshUsage({ ...request, signal: controller.signal });
+    if (order === "before") controller.abort();
+    first.resolve(response("background"));
+    await background;
+    expect(store.getStoreSnapshot().data?.machines[0]?.displayName).toBe("background");
+    controller.abort();
+    second.reject(new DOMException("Cancelled", "AbortError"));
+    await card;
+    expect(store.getStoreSnapshot().data?.machines[0]?.displayName).toBe("background");
+    expect(store.getStoreSnapshot().error).toBeNull();
+    expect(store.getStoreSnapshot().isRefreshing).toBe(false);
+  });
+
 });

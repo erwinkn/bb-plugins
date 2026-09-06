@@ -14,7 +14,8 @@ export function createUsageStore() {
     isRefreshing: false,
   };
   let activeRefreshCount = 0;
-  let latestRequestId = 0;
+  let nextRequestId = 0;
+  let latestAppliedRequestId = 0;
 
   function updateStore(next: UsageStoreSnapshot): void {
     storeSnapshot = next;
@@ -51,7 +52,7 @@ export function createUsageStore() {
     signal?: AbortSignal;
   }): Promise<void> {
     if (signal?.aborted) return Promise.resolve();
-    const requestId = ++latestRequestId;
+    const requestId = ++nextRequestId;
     activeRefreshCount += 1;
     updateStore({ ...storeSnapshot, error: null, isRefreshing: true });
     return (async () => {
@@ -66,22 +67,24 @@ export function createUsageStore() {
           },
         );
         const body: unknown = await response.json();
-        if (signal?.aborted || requestId !== latestRequestId) return;
+        if (signal?.aborted || requestId < latestAppliedRequestId) return;
         const parsed = usageRpcSuccessSchema.safeParse(body);
         if (!response.ok || !parsed.success) {
           throw new Error(
             rpcErrorMessage(body) ?? "Provider usage could not be loaded.",
           );
         }
+        latestAppliedRequestId = requestId;
         updateStore({
           data: parsed.data.result,
           error: null,
           isRefreshing: activeRefreshCount > 1,
         });
       } catch (cause) {
-        if (signal?.aborted || requestId !== latestRequestId) {
+        if (signal?.aborted || requestId < latestAppliedRequestId) {
           return;
         }
+        latestAppliedRequestId = requestId;
         updateStore({
           ...storeSnapshot,
           error: cause instanceof Error ? cause.message : String(cause),
