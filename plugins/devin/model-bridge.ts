@@ -1,30 +1,97 @@
 import { z } from "zod";
 import { createBridgeIo, experimental_defineProviderBridge, modelListParamsSchema, reasoningLevelSchema } from "@get-bb/plugin-sdk/provider-bridge";
-import type { ProviderBridgeEntry } from "@get-bb/plugin-sdk/provider-bridge";
+import type { ProviderBridgeEntry, ReasoningLevel, ServiceTier } from "@get-bb/plugin-sdk/provider-bridge";
 import { experimental_acpLaunchSpecSchema } from "@get-bb/plugin-sdk/provider-bridge/acp";
-import { FAMILY_PREFIX } from "./models";
-import { loadDevinModels } from "./model-probe";
+import { buildDevinModels, FAMILY_PREFIX } from "./models";
+import { fetchDevinCatalog } from "./model-probe";
+import { devinIdentity, fileCatalogStore, FRESH_MS, MAX_AGE_MS, memoryCatalogStore, UNKNOWN_IDENTITY_TTL_MS } from "./model-cache";
+import type { CatalogEntry, CatalogStore } from "./model-cache";
 
 const selectionSchema = z.object({ model: z.string(), reasoningLevel: reasoningLevelSchema.optional(), serviceTier: z.enum(["default", "fast"]).optional(), providerOptions: z.object({ acpLaunchSpec: experimental_acpLaunchSpecSchema }) });
 const selectionMethods = new Set(["thread/start", "thread/resume", "thread/fork", "turn/start"]);
-export function withDevinModels(acp: ProviderBridgeEntry, load = loadDevinModels, write?: (line: string) => void): ProviderBridgeEntry {
+type Catalog = ReturnType<typeof buildDevinModels>;
+export interface DevinModelDeps { identity?: (command: string) => Promise<string | undefined>; now?: () => number; store?: CatalogStore }
+
+export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCatalog, write?: (line: string) => void, deps: DevinModelDeps = {}): ProviderBridgeEntry {
   const io = createBridgeIo({ write });
   const abort = new AbortController();
-  // Reuse a single in-flight lookup, but never retain a failed catalog.
-  const pending = new Set<{ threadId: unknown; cancelled: boolean }>();
-  const cache = new Map<string, { until: number; value: ReturnType<typeof load> }>();
-  function catalog(command: string, refresh = false) {
-    const cached = cache.get(command);
-    if (!refresh && cached && cached.until > Date.now()) return cached.value;
-    const value = load(command, abort.signal);
-    const entry = { until: Date.now() + 60_000, value };
-    cache.set(command, entry);
-    void value.catch(() => { if (cache.get(command) === entry) cache.delete(command); });
-    return value;
+  const identity = deps.identity ?? devinIdentity, now = deps.now ?? Date.now;
+  // Each store serializes its writes; the ordering check runs right before a
+  // write, so a lookup that finishes late never replaces a newer entry.
+  interface Slot { store: CatalogStore; written: number; queue: Promise<void> }
+  const slot = (store: CatalogStore): Slot => ({ store, written: 0, queue: Promise.resolve() });
+  // The persistent store arrives with start(); until then this process only.
+  const persistent = slot(deps.store ?? memoryCatalogStore());
+  // Without a local identity nothing is persisted; this process still keeps
+  // each command's last catalog briefly so one thread does not rerun the CLI
+  // per turn.
+  const local = new Map<string, Slot>();
+  function slotFor(command: string, id: string | undefined): Slot {
+    if (id !== undefined) return persistent;
+    let memory = local.get(command);
+    if (!memory) local.set(command, memory = slot(memoryCatalogStore()));
+    return memory;
   }
-  function close() { abort.abort(); cache.clear(); }
+  let started = 0;
+  function commit(target: Slot, sequence: number, entry: CatalogEntry): Promise<void> {
+    return target.queue = target.queue.then(() => {
+      if (abort.signal.aborted || sequence <= target.written) return;
+      target.written = sequence;
+      return target.store.write(entry)
+        .catch(error => { process.stderr.write(`Devin model catalog cache was not written: ${error instanceof Error ? error.message : String(error)}\n`); });
+    });
+  }
+  const pending = new Set<{ threadId: unknown; cancelled: boolean }>();
+  // Reuse a single in-flight lookup per command and identity, but never
+  // retain a failed one. A different identity must not join an older lookup.
+  const inflight = new Map<string, Promise<Catalog>>();
+  function live(command: string, id: string | undefined, attempt = 0): Promise<Catalog> {
+    const key = `${command}\0${id ?? ""}`;
+    const existing = inflight.get(key);
+    if (existing) return existing;
+    const sequence = ++started, startedAt = now();
+    const lookup = (async () => {
+      const raw = await fetch(command, abort.signal);
+      const catalog = buildDevinModels(raw);
+      // A sign-in or executable change during the probe makes its result
+      // untrustworthy for either state: look up once more under the current
+      // identity instead of forwarding or persisting it.
+      const after = abort.signal.aborted ? id : await identity(command);
+      if (after !== id) {
+        if (attempt > 0) throw new Error("Devin sign-in changed during the model lookup. Try again.");
+        return live(command, after, attempt + 1);
+      }
+      // fetchedAt is the probe start, so a later probe always carries a later stamp.
+      await commit(slotFor(command, id), sequence, { version: 1, identity: id ?? "", fetchedAt: startedAt, catalog: raw });
+      return catalog;
+    })().finally(() => inflight.delete(key));
+    inflight.set(key, lookup);
+    return lookup;
+  }
+  async function cached(command: string, id: string | undefined): Promise<{ catalog: Catalog; stale: boolean } | undefined> {
+    const entry = await slotFor(command, id).store.read();
+    if (!entry || entry.identity !== (id ?? "")) return undefined;
+    const age = now() - entry.fetchedAt;
+    if (age < 0 || age >= (id === undefined ? UNKNOWN_IDENTITY_TTL_MS : MAX_AGE_MS)) return undefined;
+    try { return { catalog: buildDevinModels(entry.catalog), stale: id !== undefined && age >= FRESH_MS }; } catch { return undefined; }
+  }
+  // Cached data resolves only an exact match. Anything else blocks for a live
+  // lookup, which decides with the current catalog and never substitutes.
+  async function resolve(command: string, model: string, reasoningLevel?: ReasoningLevel, serviceTier?: ServiceTier): Promise<string> {
+    const id = await identity(command);
+    const hit = await cached(command, id);
+    if (hit) {
+      try {
+        const resolved = hit.catalog.resolve(model, reasoningLevel, serviceTier);
+        if (hit.stale) void live(command, id).catch(() => {});
+        return resolved;
+      } catch { /* fall through to a live lookup */ }
+    }
+    return (await live(command, id)).resolve(model, reasoningLevel, serviceTier);
+  }
+  function close() { abort.abort(); inflight.clear(); local.clear(); }
   return experimental_defineProviderBridge({
-    start: acp.start,
+    start(context) { if (!deps.store) persistent.store = fileCatalogStore(context.dataDir); return acp.start?.(context); },
     onClose() { close(); return acp.onClose?.(); },
     onSigterm() { close(); return acp.onSigterm?.(); },
     onSigint() { close(); return acp.onSigint?.(); },
@@ -44,13 +111,13 @@ export function withDevinModels(acp: ProviderBridgeEntry, load = loadDevinModels
         if (isList) {
           const params = modelListParamsSchema.parse(message.params);
           const launch = experimental_acpLaunchSpecSchema.parse((params.providerOptions as Record<string, unknown> | undefined)?.acpLaunchSpec);
-          const { models, selectedOnlyModels } = await catalog(launch.command, true);
+          // Reloading the list always refreshes the shared catalog.
+          const { models, selectedOnlyModels } = await live(launch.command, await identity(launch.command));
           if (!abort.signal.aborted) io.sendResult(message.id, { models, selectedOnlyModels });
         } else {
           const options = selectionSchema.parse(message.params.options);
-          const models = await catalog(options.providerOptions.acpLaunchSpec.command);
+          const model = await resolve(options.providerOptions.acpLaunchSpec.command, options.model, options.reasoningLevel, options.serviceTier);
           if (request.cancelled) throw new Error("Devin model selection was cancelled.");
-          const model = models.resolve(options.model, options.reasoningLevel, options.serviceTier);
           const next = { ...message.params.options, model };
           delete next.reasoningLevel;
           delete next.serviceTier;
