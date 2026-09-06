@@ -105,6 +105,28 @@ Suggested issue title: `Usage popup: compact machine selector, align controls, a
 File the request in [BB issues](https://github.com/get-bb/bb/issues), with the
 reported screenshot and the evidence above.
 
+### Hide unused providers from selection menus
+
+Add a per-provider visibility setting to BB's provider and model selection menus.
+Users should be able to hide providers such as Pi or Hermes without disabling
+other providers or preventing existing threads from using them.
+
+Verified on 2026-09-06: Pi has its own `provider-pi` plugin and can be disabled
+separately. Hermes is `acp-hermes-agent`, registered by `provider-acp` alongside
+Cursor, Grok Build, and OpenCode. The installed ACP plugin exposes `customAgents`
+but no per-provider disable setting. BB's general settings expose provider order
+and a default provider, but no visibility list.
+
+This belongs in BB's core provider selection settings. Hiding a provider should
+remove it from new selections while preserving existing threads and its stored
+configuration. Keep visibility distinct from provider registration and plugin
+activation.
+
+Status: Pi disabled locally at the user's request; Hermes remains available.
+No upstream issue filed.
+Suggested issue title: `Allow hiding individual providers from selection menus`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Mobile: choose Steer or Queue from the Send button
 
 When Steer is the default send action, desktop users can press Command+Enter
