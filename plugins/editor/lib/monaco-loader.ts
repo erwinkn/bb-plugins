@@ -31,8 +31,11 @@ export interface EditorRuntime {
 export type TypeScriptDiagnostics = "off" | "syntax" | "semantic";
 
 let bootPromise: Promise<EditorRuntime> | null = null;
+/** The base the server last handed out; workers created later use it. */
+let currentBaseUrl = "";
 
 export function loadEditor(baseUrl: string): Promise<EditorRuntime> {
+  currentBaseUrl = baseUrl;
   bootPromise ??= boot(baseUrl).catch((error: unknown) => {
     bootPromise = null;
     throw error;
@@ -44,7 +47,7 @@ async function boot(baseUrl: string): Promise<EditorRuntime> {
   await injectStylesheet(`${baseUrl}/editor.css`);
   (globalThis as { MonacoEnvironment?: unknown }).MonacoEnvironment = {
     getWorker: (_: string, label: string) =>
-      new Worker(new URL(`${baseUrl}/worker.${workerFor(label)}.js`, window.location.origin), {
+      new Worker(new URL(`${currentBaseUrl}/worker.${workerFor(label)}.js`, window.location.origin), {
         type: "module",
         name: label,
       }),

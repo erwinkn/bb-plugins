@@ -39,6 +39,20 @@ test("contract exposes the methods the frontend calls", () => {
   assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
 });
 
+test("read, write, and tree refuse paths that leave the workspace", async (t) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
+  await assert.rejects(() => harness.behavior.callRpc("read", { path: "../secrets", source }), /cannot contain/);
+  await assert.rejects(() => harness.behavior.callRpc("read", { path: "/etc/passwd", source }), /inside the workspace/);
+  await assert.rejects(
+    () => harness.behavior.callRpc("write", { path: "a/../../x", source, content: "", expectedSha256: null }),
+    /cannot contain/,
+  );
+  await assert.rejects(() => harness.behavior.callRpc("tree", { source, subpath: "../.." }), /cannot contain/);
+});
+
 test("create refuses parent traversal and setSetting refuses unknown keys", async (t) => {
   const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
   t.after(() => harness.lifecycle.dispose());

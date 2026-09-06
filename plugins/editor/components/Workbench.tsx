@@ -47,6 +47,13 @@ interface TreeState {
 }
 
 const EMPTY_TREE: TreeState = { entries: [], root: "", truncated: false, isLoading: false, error: null };
+
+/** A file to show, and how it reaches history: recorded as new, or reached by Back/Forward at `historyIndex`. */
+interface PendingNavigation {
+  path: string;
+  record: boolean;
+  historyIndex: number | null;
+}
 const COMPACT_BREAKPOINT_PX = 420;
 const KEYBOARD_RESIZE_STEP_PX = 24;
 const HISTORY_LIMIT = 50;
@@ -64,7 +71,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     paths: firstPath === null ? [] : [firstPath],
     index: firstPath === null ? -1 : 0,
   }));
-  const [pendingOpen, setPendingOpen] = useState<{ path: string } | null>(null);
+  const [pendingOpen, setPendingOpen] = useState<PendingNavigation | null>(null);
   const [treeOpen, setTreeOpen] = useState(() => readTreeOpen(surface));
   const [treeWidth, setTreeWidth] = useState(readTreeWidth);
   const [width, setWidth] = useState(0);
@@ -93,9 +100,17 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     });
   }, []);
 
+  // The first path is already open (initial state); later ones are files BB
+  // opened into this tab, which go through the unsaved-changes guard.
+  const mounted = useRef(false);
   useEffect(() => {
-    if (initialPath !== null) show(initialPath, { record: true });
-    // Only external path changes (a new file opened into this tab) re-run this.
+    if (!mounted.current) {
+      mounted.current = true;
+      if (initialPath !== null) setFocusNonce((nonce) => nonce + 1);
+      return;
+    }
+    if (initialPath !== null) guardedShow(initialPath, { record: true });
+    // Only external path changes re-run this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPath]);
 
@@ -172,20 +187,41 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     [navigate, source],
   );
 
-  const guardedShow = useCallback(
-    (path: string, options: { record: boolean }) => {
-      if (path === activePath) {
+  /** Apply a navigation: move in history when it came from Back/Forward, then show the file. */
+  const navigateTo = useCallback(
+    (pending: PendingNavigation) => {
+      if (pending.historyIndex !== null) setHistory((current) => ({ ...current, index: pending.historyIndex ?? current.index }));
+      show(pending.path, { record: pending.record });
+      if (compact) setTreeOpen(false);
+    },
+    [compact, show],
+  );
+
+  /**
+   * Navigate unless the open file has unsaved edits, in which case the
+   * navigation waits behind the banner (history stays where it is until the
+   * user decides). In the compact layout the tree gives way so the banner is
+   * visible.
+   */
+  const guardedNavigate = useCallback(
+    (pending: PendingNavigation) => {
+      if (pending.path === activePath) {
         paneRef.current?.focus();
         return;
       }
       if (paneRef.current?.isDirty()) {
-        setPendingOpen({ path });
+        setPendingOpen(pending);
+        if (compact) setTreeOpen(false);
         return;
       }
-      show(path, options);
-      if (compact) setTreeOpen(false);
+      navigateTo(pending);
     },
-    [activePath, compact, show],
+    [activePath, compact, navigateTo],
+  );
+
+  const guardedShow = useCallback(
+    (path: string, options: { record: boolean }) => guardedNavigate({ path, record: options.record, historyIndex: null }),
+    [guardedNavigate],
   );
 
   const openFile = useCallback(
@@ -200,15 +236,13 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     if (history.index <= 0) return;
     const path = history.paths[history.index - 1];
     if (path === undefined) return;
-    setHistory({ ...history, index: history.index - 1 });
-    guardedShow(path, { record: false });
+    guardedNavigate({ path, record: false, historyIndex: history.index - 1 });
   };
   const goForward = () => {
     if (history.index >= history.paths.length - 1) return;
     const path = history.paths[history.index + 1];
     if (path === undefined) return;
-    setHistory({ ...history, index: history.index + 1 });
-    guardedShow(path, { record: false });
+    guardedNavigate({ path, record: false, historyIndex: history.index + 1 });
   };
 
   const createEntry = useCallback(
@@ -223,13 +257,19 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   const renameEntry = useCallback(
     async (path: string, newPath: string, kind: CreateKind) => {
+      const prefix = `${path}/`;
+      const movesOpenFile =
+        activePath !== null && (activePath === path || (kind === "directory" && activePath.startsWith(prefix)));
+      // The editor reloads the renamed file from disk, so unsaved edits go to
+      // disk first; a failed save (conflict, error) leaves the name alone.
+      if (movesOpenFile && paneRef.current?.isDirty()) {
+        const saved = await paneRef.current.save();
+        if (!saved) throw new Error("Save the open file before renaming it");
+      }
       await rpc.call("rename", { path, source, newPath });
       await loadTree();
-      const prefix = `${path}/`;
       if (activePath === path) show(newPath, { record: true });
-      else if (kind === "directory" && activePath !== null && activePath.startsWith(prefix)) {
-        show(`${newPath}/${activePath.slice(prefix.length)}`, { record: true });
-      }
+      else if (movesOpenFile && activePath !== null) show(`${newPath}/${activePath.slice(prefix.length)}`, { record: true });
     },
     [activePath, loadTree, rpc, show, source],
   );
@@ -258,14 +298,20 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     });
   }, [surface]);
 
+  // The handle's pointer listeners are bound when the drag starts, so they
+  // read the width through a ref rather than the render they closed over.
+  const treeWidthRef = useRef(treeWidth);
+  treeWidthRef.current = treeWidth;
   const resizeStart = useRef(treeWidth);
   const treeOnRight = prefs.fileTreeSide === "right";
   const resizeBy = (delta: number) => {
-    setTreeWidth(clampTreeWidth(resizeStart.current + (treeOnRight ? -delta : delta), width));
+    const next = clampTreeWidth(resizeStart.current + (treeOnRight ? -delta : delta), width);
+    treeWidthRef.current = next;
+    setTreeWidth(next);
   };
   const resizeEnd = () => {
-    resizeStart.current = treeWidth;
-    storeTreeWidth(treeWidth);
+    resizeStart.current = treeWidthRef.current;
+    storeTreeWidth(treeWidthRef.current);
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
@@ -330,10 +376,10 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
             Open {pendingOpen.path.split("/").at(-1)} and discard your unsaved changes?
             <NoticeAction
               onClick={() => {
-                const next = pendingOpen.path;
+                const next = pendingOpen;
                 setPendingOpen(null);
                 void paneRef.current?.save().then((saved) => {
-                  if (saved) show(next, { record: true });
+                  if (saved) navigateTo(next);
                 });
               }}
             >
@@ -341,9 +387,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
             </NoticeAction>
             <NoticeAction
               onClick={() => {
-                const next = pendingOpen.path;
+                const next = pendingOpen;
                 setPendingOpen(null);
-                show(next, { record: true });
+                navigateTo(next);
               }}
             >
               Discard and open

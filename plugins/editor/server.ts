@@ -1,5 +1,6 @@
 import path from "node:path";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -8,8 +9,15 @@ import { BB_DEFAULT, bbThemeId, pairIdFromBbTheme, THEME_PAIRS } from "./lib/the
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
 const MAX_TREE_ENTRIES = 10_000;
-const ASSET_LEASE_TTL_MS = 60 * 60 * 1000;
-const ASSET_LEASE_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+/** Served bundle files by extension; anything else is refused. */
+const ASSET_CONTENT_TYPES: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+};
 const PACKAGE_NAME = "bb-plugin-erwin-editor";
 
 export const sourceSchema = z
@@ -27,9 +35,10 @@ export type FileSource = z.infer<typeof sourceSchema>;
 const fileSchema = z.object({ path: z.string().min(1), source: sourceSchema }).strict();
 
 export const rpcContract = defineRpcContract({
+  /** Where the editor bundle is served from; the URL stays valid for the plugin's life. */
   assets: {
     input: z.null(),
-    output: z.object({ baseUrl: z.string(), expiresAtMs: z.number() }),
+    output: z.object({ baseUrl: z.string() }),
   },
   /** The workspace a thread (or a project's default checkout) edits. */
   workspace: {
@@ -152,6 +161,17 @@ function isBundleStale(pluginRoot: string, bundleDir: string): boolean {
   return inputs.some((input) => existsSync(input) && statSync(input).mtimeMs > builtAtMs);
 }
 
+/** Files under `dir`, as POSIX paths relative to it. */
+function listFilesRecursively(dir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...listFilesRecursively(path.join(dir, entry.name), relative));
+    else if (entry.isFile()) out.push(relative);
+  }
+  return out;
+}
+
 async function ensureBundleDir(log: (message: string) => void): Promise<string> {
   const pluginRoot = findPluginRoot(path.dirname(fileURLToPath(import.meta.url)));
   const bundleDir = path.join(pluginRoot, "dist", "monaco");
@@ -210,15 +230,45 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  let assetLease: { baseUrl: string; expiresAtMs: number } | null = null;
+  // The bundle is served through the plugin's own HTTP routes, one per file
+  // (routes match exact paths), so its URLs never expire: the page keeps one
+  // Monaco module for its whole life, and its lazy chunks and workers resolve
+  // against the same base at any later time. A preview lease would lapse
+  // after an hour at most.
+  const assetsBaseUrl = `/api/v1/plugins/${bb.pluginId}/http/monaco`;
+  let assetsReady: Promise<void> | null = null;
 
   async function assets() {
-    const now = Date.now();
-    if (assetLease === null || assetLease.expiresAtMs - now < ASSET_LEASE_REFRESH_MARGIN_MS) {
-      const bundleDir = await ensureBundleDir((message) => bb.log.info(message));
-      assetLease = await bb.sdk.files.createPreview({ rootPath: bundleDir, ttlMs: ASSET_LEASE_TTL_MS });
+    assetsReady ??= registerAssetRoutes().catch((error: unknown) => {
+      assetsReady = null;
+      throw error;
+    });
+    await assetsReady;
+    return { baseUrl: assetsBaseUrl };
+  }
+
+  async function registerAssetRoutes() {
+    const bundleDir = await ensureBundleDir((message) => bb.log.info(message));
+    const files = listFilesRecursively(bundleDir);
+    let served = 0;
+    for (const relative of files) {
+      const type = ASSET_CONTENT_TYPES[path.extname(relative)];
+      if (type === undefined) continue;
+      const absolute = path.join(bundleDir, relative);
+      // Chunks carry a content hash in their name; the entry files do not.
+      const immutable = relative.startsWith("chunks/");
+      bb.http.route("GET", `/monaco/${relative}`, async () => {
+        const body = await readFile(absolute);
+        return new Response(body, {
+          headers: {
+            "content-type": type,
+            "cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
+          },
+        });
+      });
+      served += 1;
     }
-    return assetLease;
+    bb.log.info(`editor bundle: serving ${served} files from ${bundleDir}`);
   }
 
   let primaryHostId: string | null | undefined;
@@ -251,6 +301,9 @@ export default async function plugin(bb: BbPluginApi) {
     source: FileSource,
     filePath: string,
   ): Promise<{ path: string; rootPath: string; hostId?: string }> {
+    // Host files are addressed by absolute path; every other kind is relative
+    // to a workspace root and must stay inside it.
+    if (source.kind !== "host") assertInsideWorkspace(filePath);
     if (source.kind === "thread-storage") {
       if (source.threadId === null) throw new Error("This thread-storage file has no thread");
       const rootPath = path.join(await threadStorageRoot(), source.threadId);

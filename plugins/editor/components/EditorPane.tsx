@@ -299,6 +299,16 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
         });
       } catch (error) {
         if (cancelled) return;
+        // The toolbar names the new path, so the previous file must not stay
+        // behind it where typing and ⌘S would still reach it.
+        const previous = fileRef.current;
+        if (previous !== null) {
+          fileRef.current = null;
+          editor.setModel(null);
+          previous.model.dispose();
+          forgetEditor(editor);
+        }
+        setSaveState({ kind: "clean" });
         setStatus({ kind: "error", message: error instanceof Error ? error.message : "Could not open this file" });
       }
     })();
