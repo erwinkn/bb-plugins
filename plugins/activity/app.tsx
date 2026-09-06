@@ -7,7 +7,7 @@ import {
   useRealtimeConnectionState,
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
-import { STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
+import { compareThreads, STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { DisplayMenu } from "./components/menus";
 import { ThreadRow } from "./components/thread-row";
@@ -92,13 +92,20 @@ function ThreadsList(props: PluginThreadListProps) {
     threads.map((thread) => [thread.id, threadTitle(thread)]),
   );
   const knownDrafts = new Set(state.drafts);
-  const visible = threads
+  const available = threads
     .filter((thread) => !thread.isArchived)
     .map((thread) => ({
       thread,
       status: statusOf(thread, knownDrafts.has(`thread:${thread.id}`)),
-    }))
-    .filter((row) => !state.hidden.includes(row.status));
+    }));
+  // Pins are direct entries, including pinned children. Keep them outside
+  // status filters and family trees so each pin is visible exactly once.
+  const pinned = available
+    .filter(({ thread }) => thread.isPinned)
+    .sort((a, b) => compareThreads(a.thread, b.thread, state.sortBy));
+  const visible = available.filter(
+    ({ thread, status }) => !thread.isPinned && !state.hidden.includes(status),
+  );
   // Thread and project snapshots can arrive separately. Keep unmatched
   // threads and new drafts navigable until project metadata is available.
   const displayProjects = new Map(
@@ -243,6 +250,13 @@ function ThreadsList(props: PluginThreadListProps) {
           </div>
         ) : (
           <>
+            {pinned.length > 0 && (
+              <Group id="pinned" title="Pinned">
+                <ul aria-label="Pinned threads" className="m-0 list-none p-0">
+                  {pinned.map((entry) => row({ ...entry, children: [] }))}
+                </ul>
+              </Group>
+            )}
             {state.hidden.length === STATUSES.length && (
               <p className="p-2 text-xs text-muted-foreground">
                 All statuses are hidden. Use Threads display options to show
@@ -301,6 +315,7 @@ function ThreadsList(props: PluginThreadListProps) {
                   })}
             {state.hidden.length < STATUSES.length &&
               !visible.length &&
+              !pinned.length &&
               !newDrafts.length && (
                 <p className="p-2 text-xs text-muted-foreground">
                   No matching threads.
