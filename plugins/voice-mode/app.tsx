@@ -18,7 +18,7 @@ import {
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
-import { useVoiceRealtime } from "./voice-realtime";
+import { VoiceController } from "./voice-realtime";
 import { SessionsPanel } from "./sessions-panel";
 import { viewWorkspace } from "./view-workspace";
 import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
@@ -65,8 +65,6 @@ export function AideVoiceButton() {
   const shortcuts = useShortcuts();
   const toggleHint = shortcutLabel(shortcuts.toggle, MAC);
   const muteHint = shortcutLabel(shortcuts.mute, MAC);
-
-  useVoiceRealtime();
 
   // Keep the singleton pointed at the freshest surface: after navigation the
   // new composer's button mounts and rebinds, so "this thread" and composer
@@ -213,6 +211,7 @@ function SidebarLiveIndicator() {
 }
 
 export default definePluginApp((app) => {
+  app.slots.experimental_appOverlay({ id: "voice-controller", component: VoiceController });
   app.contentScripts.register({
     id: "sidebar-options",
     mount() {

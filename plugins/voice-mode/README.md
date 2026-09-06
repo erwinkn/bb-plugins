@@ -190,6 +190,10 @@ Mobile calls additionally expose `focus_threads`, `manage_views`, and
 
 ## Call controls and saved data
 
+An app-wide controller keeps RPC and realtime controls active while settings
+or another plugin page is open. Composer and Voice page bindings take priority
+for tool context. This requires BB 0.42 and Plugin SDK 0.4.47 or later.
+
 The server assigns a sequence number before microphone acquisition. The newest
 call claim replaces the previous claim across windows. CLI Stop records an end
 marker and stops a frozen owner when it reconnects. A failed or cancelled start

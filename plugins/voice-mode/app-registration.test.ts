@@ -29,9 +29,11 @@ test("the actual app registers drawer surfaces only on mobile clients", async ()
       assert.equal(behavior.title, undefined);
       assert.equal(page.fixedTabs?.length ?? 0, mobile ? 1 : 0);
       assert.equal(app.threadPanelActions.some(action => action.id === "thread-workspace"), mobile);
+      assert.equal(app.appOverlays.length, 1);
       if (mobile) {
         const mod = await import(`${pathToFileURL(file).href}?mobile=${mobile}`);
         let opened = 0;
+        const controller = renderSlot(app.appOverlays[0], {}, { rpc: { requestPresence: () => ({ ok: true }), logEvent: () => ({ ok: true }) } });
         const slot = renderSlot({ component: mod.AideVoiceButton }, {}, {
           context: { threadId: "source", projectId: "project" },
           composer: { scope: { kind: "thread", threadId: "source" } },
@@ -40,14 +42,15 @@ test("the actual app registers drawer surfaces only on mobile clients", async ()
         });
         try {
           for (const phase of ["live", "muted"]) {
-            await slot.behavior.emitRealtime("voice-presence", { nonce: "call", phase, startedAt: Date.now() });
+            await controller.behavior.emitRealtime("voice-presence", { nonce: "call", phase, startedAt: Date.now() });
             mod.viewWorkspace.open([{ kind: "thread", id: "thread:target", threadId: "target", projectId: "project", title: "Target" }], "new", "reuse");
             assert.equal(mod.viewWorkspace.get().activeId, "thread:target");
           }
           assert.equal(opened, 2);
         } finally {
-          await slot.behavior.emitRealtime("voice-presence", { nonce: "call", phase: "idle", startedAt: null });
+          await controller.behavior.emitRealtime("voice-presence", { nonce: "call", phase: "idle", startedAt: null });
           slot.lifecycle.unmount();
+          controller.lifecycle.unmount();
           mod.viewWorkspace.clear();
         }
       }

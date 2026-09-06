@@ -16,7 +16,6 @@ import {
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
-import { useVoiceRealtime } from "./voice-realtime";
 import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
 import { viewWorkspace } from "./view-workspace";
 import { actionStatus, pairToolEvents } from "./session-events";
@@ -564,7 +563,6 @@ export function SessionsPanel() {
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
   const appPanel = experimental_useAppPanel();
-  useVoiceRealtime();
 
   // The Voice page has no composer, so nothing else binds the voice agent
   // here. Install a fallback binding so the FAB can actually start a call from a

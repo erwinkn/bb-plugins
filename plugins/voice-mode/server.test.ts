@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin, { toolSchemas, threadViewInstructions } from "./server.ts";
+import { legacyMigrations } from "./test-fixtures/legacy-migrations";
 
 test("audio diagnostics stay readable but never appear as voice sessions", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
@@ -227,13 +228,7 @@ test("upgrade from the original five migrations preserves saved prompts and adds
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
   try {
     const db = bb.storage.database();
-    bb.storage.migrate(db, [
-      "CREATE TABLE usage_events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, model TEXT NOT NULL, input_text INTEGER NOT NULL DEFAULT 0, input_audio INTEGER NOT NULL DEFAULT 0, cached_text INTEGER NOT NULL DEFAULT 0, cached_audio INTEGER NOT NULL DEFAULT 0, output_text INTEGER NOT NULL DEFAULT 0, output_audio INTEGER NOT NULL DEFAULT 0)",
-      "ALTER TABLE usage_events ADD COLUMN session_id TEXT",
-      "CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}')",
-      "CREATE INDEX idx_session_events_session ON session_events(session_id, ts)",
-      "CREATE TABLE prompt_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, source TEXT NOT NULL, note TEXT, content TEXT NOT NULL)",
-    ]);
+    bb.storage.migrate(db, legacyMigrations);
     db.prepare("INSERT INTO prompt_versions (ts, source, content) VALUES (1, 'user', 'Keep my prompt')").run();
     await plugin(bb);
     assert.equal((await harness.behavior.callRpc("getPrompt", null) as any).content, "Keep my prompt");

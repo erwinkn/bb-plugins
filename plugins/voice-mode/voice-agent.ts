@@ -238,7 +238,7 @@ export class VoiceAgent {
   /** Guards the once-per-realm `client.hello` observability record. */
   private helloed = false;
   private workspace: ViewWorkspace;
-  private bindingSources = new Map<symbol, { bindings: Bindings; fallback: boolean }>();
+  private bindingSources = new Map<symbol, { bindings: Bindings; priority: 0 | 1 | 2 }>();
   private logQueue: Promise<unknown> | null = null;
 
   constructor(workspace: ViewWorkspace = viewWorkspace) { this.workspace = workspace; }
@@ -338,18 +338,20 @@ export class VoiceAgent {
 
   readonly getAudioPreferences = (): AudioDevicePreferences => this.audioPreferences;
 
-  bind(bindings: Bindings) { return this.registerBindings(bindings, false); }
-  bindFallback(bindings: Bindings) { return this.registerBindings(bindings, true); }
+  bind(bindings: Bindings) { return this.registerBindings(bindings, 2); }
+  bindFallback(bindings: Bindings) { return this.registerBindings(bindings, 1); }
 
-  private registerBindings(bindings: Bindings, fallback: boolean) {
+  bindGlobal(bindings: Bindings) { return this.registerBindings(bindings, 0); }
+
+  private registerBindings(bindings: Bindings, priority: 0 | 1 | 2) {
     const key = Symbol();
-    this.bindingSources.set(key, { bindings, fallback });
+    this.bindingSources.set(key, { bindings, priority });
     const refresh = () => {
       const sources = [...this.bindingSources.values()].reverse();
-      this.bindings = (sources.find(source => !source.fallback) ?? sources[0])?.bindings ?? null;
+      this.bindings = sources.sort((a, b) => b.priority - a.priority)[0]?.bindings ?? null;
     };
     refresh();
-    this.helloOnce(fallback ? "page" : "composer");
+    this.helloOnce(priority === 2 ? "composer" : priority === 1 ? "page" : "app");
     this.requestPresence();
     return () => { this.bindingSources.delete(key); refresh(); };
   }
@@ -1133,7 +1135,10 @@ export class VoiceAgent {
     let acquiredStream: MediaStream | null = null;
     try {
       const { sequence } = await bindings.rpc.call("claimCall", { nonce });
-      if (this.nonce !== nonce) return;
+      if (this.nonce !== nonce) {
+        void bindings.rpc.call("forceStop", { nonce }).catch(() => undefined);
+        return;
+      }
       this.callSequence = sequence;
       const newerClaim = this.newerClaim as { nonce: string; sequence: number } | null;
       if (newerClaim) this.onCallStarted(newerClaim.nonce, newerClaim.sequence);

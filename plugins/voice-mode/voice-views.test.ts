@@ -28,7 +28,7 @@ function fixture(mobile = true) {
     return { ok: true };
   } } as Bindings["rpc"];
   const base: Bindings = { rpc, context: { threadId: "original", projectId: "original-project", onNewThreadScreen: false }, openNewThread() {} };
-  agent.bind(base);
+  const unbind = agent.bind(base);
   internal.nonce = "call-session";
   internal.state = "live";
   let count = 0;
@@ -37,7 +37,7 @@ function fixture(mobile = true) {
     while (internal.logQueue) await internal.logQueue;
     return calls.filter(call => call.method === "logEvent" && call.args?.kind === "tool.result").at(-1)?.args.payload;
   };
-  return { workspace, agent, internal, calls, sent, dc, base, execute };
+  return { workspace, agent, internal, calls, sent, dc, base, execute, unbind };
 }
 
 test("mobile openings use local drawers with correlated tool events", async () => {
@@ -148,4 +148,19 @@ test("stopping during metadata resolution prevents a late open and logs to the o
   assert.equal(f.workspace.get().views.length, 0);
   assert.equal(f.sent.length, 0);
   assert.equal(f.calls.filter(call => call.args?.kind === "tool.result").at(-1)?.args.sessionId, "call-session");
+});
+
+
+test("page and composer bindings take priority over app-wide fallback through navigation", async () => {
+  const f = fixture();
+  const page = f.agent.bindFallback({ ...f.base, context: { ...f.base.context, threadId: "page" } });
+  const global = f.agent.bindGlobal({ ...f.base, context: { threadId: null, projectId: null, onNewThreadScreen: false } });
+  try {
+    assert.equal(JSON.parse((await f.execute("get_context", {})).output).threadId, "original");
+    f.unbind();
+    assert.equal(JSON.parse((await f.execute("get_context", {})).output).threadId, "page");
+    page();
+    assert.equal(JSON.parse((await f.execute("get_context", {})).output).threadId, null);
+    assert.equal((await f.execute("read_thread", { thread_id: "target" })).status, "success");
+  } finally { global(); }
 });

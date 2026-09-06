@@ -14,6 +14,7 @@ const { CompanionTab } = await import("./companion.tsx");
 const { voiceAgent } = await import("./voice-agent.ts");
 const { LiveCallControls } = await import("./voice-chrome.tsx");
 const { SessionsPanel } = await import("./sessions-panel.tsx");
+const { VoiceController } = await import("./voice-realtime.ts");
 after(() => dom.window.close());
 const view = (id: string): ThreadView => ({ kind: "thread", id: `thread:${id}`, threadId: id, projectId: "project", title: `Thread ${id}` });
 
@@ -282,11 +283,11 @@ test("session rows announce live and error status even when both apply", async (
 });
 
 
-test("Voice page receives global stop, mute, and thread update events", async (t) => {
+test("app-wide controller receives stop, mute, and thread events without a Voice page", async (t) => {
   const started = t.mock.method(voiceAgent, "onCallStarted", () => {});
   const muted = t.mock.method(voiceAgent, "setMuted", () => {});
   const notice = t.mock.method(voiceAgent, "enqueueThreadEvent", () => {});
-  const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: pageRpc });
+  const slot = renderSlot({ component: VoiceController }, {}, { rpc: pageRpc });
   try {
     await slot.behavior.emitRealtime("voice-call", { nonce: "new-call" });
     await slot.behavior.emitRealtime("voice-mute", { muted: true });

@@ -1,8 +1,10 @@
-import { useRealtime } from "@get-bb/plugin-sdk/app";
+import { useEffect } from "react";
+import { useRealtime, useRpc, experimental_useSidebarThreadActions } from "@get-bb/plugin-sdk/app";
 import { voiceAgent } from "./voice-agent";
+import type { rpcContract } from "./server";
 
-/** Every surface that can own a call subscribes to the same control channels. */
-export function useVoiceRealtime() {
+/** One app-wide owner keeps call controls and RPC alive across route changes. */
+export function VoiceController() {
   useRealtime("voice-call", (payload) => {
     const claim = payload as { nonce?: unknown; sequence?: unknown } | null;
     if (typeof claim?.nonce === "string") voiceAgent.onCallStarted(claim.nonce, typeof claim.sequence === "number" ? claim.sequence : undefined);
@@ -23,4 +25,12 @@ export function useVoiceRealtime() {
       });
     }
   });
+  const rpc = useRpc<typeof rpcContract>();
+  const sidebarActions = experimental_useSidebarThreadActions();
+  useEffect(() => voiceAgent.bindGlobal({
+    rpc,
+    context: { threadId: null, projectId: null, onNewThreadScreen: false },
+    openNewThread: (projectId) => sidebarActions.openNewThread({ ...(projectId ? { projectId } : {}), focusPrompt: true }),
+  }), [rpc, sidebarActions]);
+  return null;
 }
