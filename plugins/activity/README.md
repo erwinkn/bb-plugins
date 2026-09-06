@@ -103,7 +103,7 @@ icon. Child arrows stay separate from status icons. Group headers have plain lab
 centered collapse chevrons, with no status icons, counts, or hover descriptions.
 The status menu retains its colored icons. The layout uses BB's theme tokens.
 
-Rows use BB's native open, split, pin, read, and archive actions. The plugin also keeps
+Active rows use BB's native open, split, pin, read, and archive actions. The plugin also keeps
 the attributes needed for BB's thread navigation shortcuts. Right-click a row
 on desktop or hold it for 450 ms on mobile to open its actions. Scrolling,
 releasing early, or cancelling the touch cancels the hold. With keyboard focus
@@ -159,3 +159,22 @@ and 2.2.27 recurse during `:modal` checks used to position menus. See
 [upstream issue #172](https://github.com/dperini/nwsapi/issues/172).
 All tests use Vitest's default timeout. Remove the override after a fixed
 release passes the menu tests.
+
+## Archived threads
+
+Status view has an Archived section after the active groups. Project view has
+an Archived section inside each project, including projects with only archives.
+The sections start collapsed and remember their state per client. Status filters
+do not hide archived threads. The selected date sort also applies to archives.
+
+Expand a section to browse its threads. Rows use the same paging and child
+groups as active threads. Archived rows offer only two actions: open the row
+to read its history, or select Restore from its context menu. They have no pin,
+read/unread, split, drag-to-split, or archive controls. Restoration uses BB's existing operation. Archived rows use
+BB's general thread navigation because the sidebar open action only knows
+active threads. Restore a thread before using pin, read, or split actions.
+
+The backend reads visible archives in pages of 200 through BB's public SDK.
+Hidden background threads stay hidden. The list refreshes on archive and delete
+events, plugin restores, sidebar membership changes, and reconnection. Failed
+loads show a Retry button; active threads remain available.

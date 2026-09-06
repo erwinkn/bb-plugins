@@ -7,6 +7,7 @@ export interface ClientState {
   hidden: Status[];
   collapsed: string[];
   drafts: string[];
+  expandedArchives: string[];
 }
 const KEY = "bb-plugin-erwin-activity:v1";
 const DEFAULT: ClientState = {
@@ -15,6 +16,7 @@ const DEFAULT: ClientState = {
   hidden: [],
   collapsed: [],
   drafts: [],
+  expandedArchives: [],
 };
 const strings = (value: unknown): string[] =>
   Array.isArray(value)
@@ -32,6 +34,7 @@ export function parseState(raw: string | null): ClientState {
         STATUSES.includes(s as Status),
       ),
       collapsed: strings(value.collapsed),
+      expandedArchives: strings(value.expandedArchives),
       drafts: strings(value.drafts).filter(
         (key) => key.startsWith("thread:") || key.startsWith("new:"),
       ),

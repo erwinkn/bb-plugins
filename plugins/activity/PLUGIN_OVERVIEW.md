@@ -9,7 +9,9 @@
 - `components/thread-row.tsx`: native thread navigation and actions.
 - `components/thread-children.tsx`: child previews, expansion, and two-level nesting.
 - `components/menus.tsx`: grouping, date sorting, and status visibility controls.
-- `server.ts`: empty backend; no database, tools, schedules, or network requests.
+- `server.ts`: archive list and restore RPCs through BB, with change signals.
+- `lib/archive-contract.ts`: validated archive RPC contract.
+- `lib/use-archives.ts`: paged archive loading and refresh handling.
 - `tests/`: policy and public SDK frontend tests.
 
 See `README.md` for status definitions and draft limitations.

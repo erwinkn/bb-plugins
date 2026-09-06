@@ -55,17 +55,29 @@ in Git history.
 Normal installations track Git `main`. A commit SHA, as shown above, can still
 be used when a fixed version is needed.
 
-1. Build the affected plugin and run its relevant checks. Push the working
-   branch and open a PR.
-2. Switch only that plugin's installed Git ref from `main` to the working
-   branch. Keep its plugin ID and collection entry unchanged. Use the Git
-   branch rather than a temporary worktree path.
-3. Verify the changed behavior in BB. Keep the plugin on the branch while
-   fixing problems, and update the installation after each new push.
-4. Squash-merge the PR after the user authorizes the merge.
-5. Switch the plugin's ref back to `main` and update it. Check the resolved
-   commit and confirm that the plugin runs without errors. A squash merge
-   creates a new commit, so do not leave the installation on the branch SHA.
+1. Create or reuse a feature branch. Fetch `origin` and rebase it onto
+   `origin/main`, preserving other work and resolving conflicts.
+2. Build the affected plugin and run its relevant checks. Commit, push the
+   branch to `origin`, and open a **draft PR** against `main`.
+3. Switch only that plugin's installed Git ref from `main` to the branch.
+   Keep its plugin ID and collection entry unchanged. Preserve settings,
+   secrets, schedules, and data. Use Git rather than a temporary worktree path.
+4. Confirm the installed source and resolved commit. Test the changed behavior
+   in BB, including desktop and mobile when the UI changes. Record the tested
+   commit, checks, and live evidence in the PR.
+5. Fix failures, push, and update the branch installation. Verify the new
+   resolved commit and repeat the affected tests before proceeding.
+6. Mark the draft PR ready for review. Monitor checks and review comments,
+   address valid findings, and push fixes. Update the installed plugin and
+   repeat affected checks after each fix. Continue until required checks pass
+   and review findings are resolved on the latest commit. No comments yet is
+   not proof of a completed review; report unavailable or pending reviews.
+7. Give the user the ready PR and leave the tested branch installed. The user
+   decides when to merge. Do not merge or enable auto-merge.
+8. After the user merges, confirm the merge on GitHub, switch the plugin back
+   to `main`, and update it. Confirm the resolved commit includes the merge
+   and verify that the plugin works without errors. A squash merge has a new
+   commit, so the branch SHA is not the final verification target.
 
 If the change is abandoned, restore `main`. Testing in the normal BB instance
 affects the plugin used for daily work until it returns to `main`.
@@ -76,7 +88,46 @@ does not switch the ref back to `main`. Check the current CLI help when changing
 refs. Preserve settings and data; `bb plugin remove` deletes plugin settings,
 secrets, and schedules and is not a general ref-switch command.
 
+BB 0.42.1 has no in-place Git-ref switch in its CLI or plugin API. Installing
+the same plugin ID from a different ref is refused. For a plugin with no
+server-side settings, secrets, schedules, or stored data, a remove/install
+cycle can be used after verifying those stores are empty. Preserve the plugin
+ID and browser storage; never clear client preferences. Check the resulting
+source and enabled state. Record the previous source so installation failure
+can be rolled back. Do not apply this exception to a plugin with data.
+
+For example, after confirming that `erwin-activity` has no server-side data:
+
+```sh
+bb plugin source erwin-activity --json
+bb plugin remove erwin-activity
+bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin erwin-activity --yes
+bb plugin source erwin-activity --json
+```
+
+After a new push, use `bb plugin update erwin-activity --yes`. After the user
+merges, repeat the verified source-switch procedure with `@main`, then check
+the resolved commit and the plugin behavior. Recheck the data stores before
+each remove/install cycle; a later plugin version may start storing data.
+
+
 ## Desired upstream changes
+
+### Change an installed plugin's Git ref without removing its data
+
+Add a source-change operation to BB's CLI and plugin API. It should validate
+and build the target ref before activation, preserve settings, secrets,
+schedules, and stored data, and retain a rollback source. This supports testing
+a PR branch and returning to `main` after merge.
+
+Verified against BB 0.42.1: `plugin source` is read-only, `plugin update` keeps
+the current ref, and install refuses an existing managed plugin ID from a
+different ref. Removal deletes settings, secrets, and schedules.
+
+Status: no upstream issue filed. Suggested issue title:
+`Allow changing a plugin Git ref while preserving plugin data`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 
 ### Usage popup: compact header and visible provider tabs
 
