@@ -7,7 +7,13 @@ import {
   useRealtimeConnectionState,
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
-import { compareThreads, STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
+import {
+  compareThreads,
+  STATUSES,
+  STATUS_LABEL,
+  statusOf,
+  threadTitle,
+} from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
 import { DisplayMenu } from "./components/menus";
@@ -215,6 +221,9 @@ function ThreadsList(props: PluginThreadListProps) {
   const archiveGroup = (id: string, rows: typeof archived) =>
     rows.length > 0 ? (
       <Group id={id} title="Archived" archive>
+        <p className="mb-2 px-2 text-xs text-[var(--subtle-foreground)]">
+          Open to read. Right-click or long-press to restore.
+        </p>
         <ThreadRoots
           label="Archived"
           pageSize={10}

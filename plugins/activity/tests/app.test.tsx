@@ -14,6 +14,23 @@ import {
 import { parseState, updateState, recordDraft } from "../lib/client-state";
 import { thread } from "./fixtures";
 
+const splitOverride = vi.hoisted(() => ({ enabled: false, drag: vi.fn() }));
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@get-bb/plugin-sdk/app")>();
+  return {
+    ...actual,
+    experimental_useSidebarThreadSplit: (id: string) =>
+      splitOverride.enabled
+        ? {
+            isAvailable: true,
+            splitProps: { onPointerDown: splitOverride.drag },
+            layout: null,
+          }
+        : actual.experimental_useSidebarThreadSplit(id),
+  };
+});
+
 const app = await loadPluginApp(() => import("../app"));
 const mountedSlots: ReturnType<typeof renderSdkSlot>[] = [];
 const renderSlot: typeof renderSdkSlot = (registration, props, options) => {
@@ -190,6 +207,9 @@ describe("activity sidebar", () => {
         threadId: "old-0",
       });
       fireEvent.contextMenu(target);
+      expect(
+        slot.getAllByRole("menuitem").map((item) => item.textContent),
+      ).toEqual(["Restore"]);
       fireEvent.click(slot.getByRole("menuitem", { name: "Restore" }));
       await waitFor(() =>
         expect(restore).toHaveBeenCalledWith({ threadId: "old-0" }),
@@ -204,6 +224,34 @@ describe("activity sidebar", () => {
       expect(group.queryByText("Old thread 0")).toBeNull();
     },
   );
+  it("does not expose split gestures or other active actions for archives", async () => {
+    splitOverride.enabled = true;
+    try {
+      const slot = renderSlot(app.threadLists[0], props, {
+        rpc: { listArchived: async () => archiveRows },
+      });
+      fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
+      expect(
+        slot.getByText("Open to read. Right-click or long-press to restore."),
+      ).toBeTruthy();
+      const row = slot.container.querySelector(
+        '[data-sidebar-thread-id="old-0"]',
+      )!;
+      touch(row, "pointerdown", "mouse");
+      expect(splitOverride.drag).not.toHaveBeenCalled();
+      fireEvent.click(row, { ctrlKey: true });
+      expect(slot.inspection.navigateCalls).toEqual([
+        { method: "toThread", threadId: "old-0" },
+      ]);
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
+      fireEvent.contextMenu(row);
+      expect(
+        slot.getAllByRole("menuitem").map((item) => item.textContent),
+      ).toEqual(["Restore"]);
+    } finally {
+      splitOverride.enabled = false;
+    }
+  });
   it("loads every archive page, limits mounted rows, and refreshes on restore signals", async () => {
     const firstPage = Array.from({ length: 200 }, (_, index) => ({
       ...archiveRows[0],
