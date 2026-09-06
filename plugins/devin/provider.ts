@@ -6,7 +6,7 @@ export const PROVIDER_ID = "acp-devin";
 export function devinProvider(command: string): PluginProviderDeclaration {
   return {
     id: PROVIDER_ID,
-    displayName: "Devin CLI",
+    displayName: "Devin",
     family: "acp",
     icon: "./assets/devin.svg",
     strings: {
@@ -16,7 +16,7 @@ export function devinProvider(command: string): PluginProviderDeclaration {
     },
     experimental_bridgeOptions: {
       acpDialect: "generic",
-      acpLaunchSpec: { displayName: "Devin CLI", command, args: ["acp"], env: {} },
+      acpLaunchSpec: { displayName: "Devin", command, args: ["acp"], env: {} },
     },
     models: { scope: "host" },
     maintenance: { health: true, usage: false, installation: false },

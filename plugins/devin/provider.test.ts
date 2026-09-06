@@ -9,11 +9,11 @@ import { devinProvider } from "./provider";
 test("Devin retains its provider ID and uses a native icon and public ACP launch", () => {
   const provider = devinProvider("/custom/devin");
   assert.equal(provider.id, "acp-devin");
-  assert.equal(provider.displayName, "Devin CLI");
+  assert.equal(provider.displayName, "Devin");
   assert.equal(provider.icon, "./assets/devin.svg");
   assert.equal(provider.experimental_bridgeOptions?.acpDialect, "generic");
   assert.deepEqual(experimental_acpLaunchSpecSchema.parse(provider.experimental_bridgeOptions?.acpLaunchSpec), {
-    displayName: "Devin CLI", command: "/custom/devin", args: ["acp"], env: {},
+    displayName: "Devin", command: "/custom/devin", args: ["acp"], env: {},
   });
   assert.equal(provider.capabilities.fork, "none");
 });
@@ -27,7 +27,7 @@ test("executable setting re-registers one provider; invalid settings preserve it
   await harness.behavior.setSettings({ command: "/custom/devin" });
   assert.equal(harness.inspection.registrations.providerRegistrations.length, 1);
   assert.deepEqual(harness.inspection.registrations.providerRegistrations[0]?.experimental_bridgeOptions?.acpLaunchSpec,
-    { displayName: "Devin CLI", command: "/custom/devin", args: ["acp"], env: {} });
+    { displayName: "Devin", command: "/custom/devin", args: ["acp"], env: {} });
   await assert.rejects(() => harness.behavior.setSettings({ command: " " }));
   assert.equal(harness.inspection.registrations.providerRegistrations.length, 1);
   assert.equal(harness.inspection.sdk.calls.length, 0);

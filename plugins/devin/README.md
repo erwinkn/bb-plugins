@@ -1,4 +1,4 @@
-# Devin CLI provider
+# Devin provider
 
 Run Devin CLI as a bb provider through the public ACP bridge. The plugin owns
 the `acp-devin` provider ID, native icon, display name, sign-in help, and executable
@@ -57,7 +57,7 @@ scripted ACP peer; it does not prove a real old Devin session can be resumed.
 The native icon is declared on the provider, so bb can serve it before any
 frontend plugin loads. There is no separate app bundle or DOM modification.
 bb controls compact picker tabs and model/header text. The provider name is
-`Devin CLI`; the icon does not add permanent text beside an icon-only tab.
+`Devin`; the icon does not add permanent text beside an icon-only tab.
 
 The declaration retains the previous generic ACP capabilities, permission modes,
 and model catalog scope. The model response supplies precise reasoning options.

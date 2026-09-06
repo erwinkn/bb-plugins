@@ -7,7 +7,7 @@
     "bbPluginSdk": ">=0.4.47"
   },
   "bb": {
-    "name": "Devin CLI",
+    "name": "Devin provider",
     "description": "Run Devin CLI in bb through its Agent Client Protocol connection.",
     "branding": {
       "icon": "./assets/devin.svg"
