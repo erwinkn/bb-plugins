@@ -87,6 +87,9 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
   const saveStateRef = useRef<SaveState>({ kind: "clean" });
   const [saveState, setSaveStateValue] = useState<SaveState>({ kind: "clean" });
   const [status, setStatus] = useState<Status>({ kind: "loading" });
+  // The editor exists; file opens depend on this, not on `status`, so one
+  // file that fails to open does not stop the next from loading.
+  const [booted, setBooted] = useState(false);
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // The theme to show: the picker's preview, else BB's own code theme.
@@ -221,6 +224,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
           });
         });
         setStatus({ kind: "ready" });
+        setBooted(true);
       } catch (error) {
         if (disposed) return;
         setStatus({ kind: "error", message: error instanceof Error ? error.message : "Could not start the editor" });
@@ -235,13 +239,13 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
       fileRef.current = null;
       editor?.dispose();
       editorRef.current = null;
+      setBooted(false);
     };
   }, [rpc, setSaveState]);
 
   // Open `path` in the editor whenever it, or the editor, changes.
-  const editorReady = status.kind === "ready" || status.kind === "unsupported";
   useEffect(() => {
-    if (!editorReady) return;
+    if (!booted) return;
     const runtime = runtimeRef.current;
     const editor = editorRef.current;
     if (runtime === null || editor === null) return;
@@ -315,9 +319,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     return () => {
       cancelled = true;
     };
-    // `editorReady` flips once the editor exists; `status` itself must not retrigger.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editorReady, paneId, path, rpc, setSaveState, source]);
+  }, [booted, paneId, path, rpc, setSaveState, source]);
 
   // Follow the chosen theme: BB's own (with light/dark switches and palette
   // changes), a bundled one, or the picker's preview.

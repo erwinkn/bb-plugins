@@ -92,7 +92,7 @@ function FilePath({ path }: { path: string }) {
 function SaveDot({ indicator }: { indicator: SaveIndicator }) {
   if (indicator === "clean") return null;
   const label =
-    indicator === "saving" ? "Saving…" : indicator === "error" ? "Could not save — unsaved changes" : "Unsaved changes (⌘S to save)";
+    indicator === "saving" ? "Saving…" : indicator === "error" ? "Could not open or save this file" : "Unsaved changes (⌘S to save)";
   return (
     <span className="flex size-3.5 shrink-0 items-center justify-center" title={label} role="status" aria-label={label}>
       <span
