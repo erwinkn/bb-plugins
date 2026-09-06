@@ -47,11 +47,13 @@ test("join separate Fast family; keep ambiguous duplicate cells and unknown labe
 });
 const launch = { command: "fake-devin", args: ["acp"], env: {}, displayName: "Devin" };
 const tick = () => new Promise(r => setImmediate(r));
+// No local identity: the bridge must behave as before, with live lookups only.
+const noIdentity = { identity: async () => undefined };
 test("bridge lists models and maps start/resume/fork/turn without changing other options", async () => {
   const forwarded: string[] = [], output: any[] = [];
   const acp: ProviderBridgeEntry = { experimental_apiVersion: 1, handleLine: line => { forwarded.push(line); } };
   const c = buildDevinModels(fixture);
-  const bridge = withDevinModels(acp, async () => c, line => output.push(JSON.parse(line)));
+  const bridge = withDevinModels(acp, async () => fixture, line => output.push(JSON.parse(line)), noIdentity);
   bridge.handleLine(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "model/list", params: { providerOptions: { acpLaunchSpec: launch } } }));
   await tick(); assert.equal(output[0].result.models.length, 2);
   for (const method of ["thread/start", "thread/resume", "thread/fork", "turn/start"]) {
@@ -67,14 +69,15 @@ test("bridge lists models and maps start/resume/fork/turn without changing other
   await tick(); assert.equal(output.at(-1).error.code, -32602);
 });
 test("stop during catalog load cannot start a delayed turn; close aborts the probe", async () => {
-  let resolve!: (c: ReturnType<typeof buildDevinModels>) => void;
+  let resolve!: (raw: unknown) => void;
   let signal: AbortSignal | undefined;
   const forwarded: string[] = [], output: any[] = [];
   const c = buildDevinModels(fixture);
-  const bridge = withDevinModels({ experimental_apiVersion: 1, handleLine: line => { forwarded.push(line); } }, (_command, s) => { signal = s; return new Promise(r => { resolve = r; }); }, line => output.push(JSON.parse(line)));
+  const bridge = withDevinModels({ experimental_apiVersion: 1, handleLine: line => { forwarded.push(line); } }, (_command, s) => { signal = s; return new Promise(r => { resolve = r; }); }, line => output.push(JSON.parse(line)), noIdentity);
   bridge.handleLine(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "turn/start", params: { threadId: "t", options: { model: group(c).id, providerOptions: { acpLaunchSpec: launch } } } }));
   bridge.handleLine('{"jsonrpc":"2.0","id":2,"method":"thread/stop","params":{"threadId":"t"}}');
-  resolve(c); await tick();
+  while (!resolve) await tick();
+  resolve(fixture); await tick();
   assert.equal(forwarded.length, 1); assert.match(output[0].error.message, /cancelled/);
   bridge.onClose?.(); assert.equal(signal?.aborted, true);
 });

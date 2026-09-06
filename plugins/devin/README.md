@@ -142,9 +142,55 @@ IDs; the variants remain in the selected-only catalog.
 
 `Devin default` uses the CLI's configured default. The JSON catalog does not
 report that setting, so the plugin does not choose a paid model on your behalf.
-A catalog lookup runs for at most 15 seconds with a 2 MiB output limit. Selection
-lookups can reuse the result for 60 seconds. Reloading the model list refreshes
-it. A failed lookup produces an error and is not cached.
+A catalog lookup runs for at most 15 seconds with a 2 MiB output limit. A failed
+lookup produces an error and is not cached.
+
+### Catalog cache
+
+Each bb thread runs its own bridge process, and the model picker runs in a
+separate maintenance process. Without a shared cache, every thread start paid
+one `devin models list` call (about 0.9 to 1.1 seconds on the verified machine).
+The bridge therefore stores the last catalog JSON it received in the plugin's
+persistent bridge data directory that bb supplies (`plugins/<id>/bridge-data`
+under the bb data directory), in `model-catalog.json`. All bridge processes of
+this plugin on the machine share that file; environments do not get separate
+copies. Writes go to a temporary file first and are then renamed, so a
+concurrent reader never sees a partial file.
+
+Rules for a grouped selection (`devin-family:` model IDs):
+
+- A cached catalog younger than one hour resolves the selection directly.
+- Between one hour and 24 hours, the cached catalog resolves the selection and
+  the bridge refreshes the file in the background. Bridge shutdown aborts that
+  refresh; a failed refresh keeps the old file.
+- Older, missing, corrupt, oversized, or foreign-identity data blocks for a
+  live lookup, which then rewrites the file.
+- A group, effort, or Fast combination that the cached catalog does not contain
+  blocks for a live lookup. The live catalog decides; a still-missing choice
+  fails with the same clear error as before. The cache never selects another
+  model or effort.
+- Reloading the model list always runs a live lookup and rewrites the file.
+- The `Devin default` row and native variant IDs bypass the catalog as before.
+
+The cache entry is bound to an identity fingerprint: a SHA-256 of the resolved
+executable's real path, size, and modification time, of the size and
+modification time of the Devin credentials file that `devin auth status`
+reports (`$XDG_DATA_HOME/devin/credentials.toml`, default `~/.local/share`),
+and of `devin.org_id` from `~/.config/devin/config.json`. No credential
+content is read or stored. A CLI update, a new sign-in, a sign-out, or an
+organization change gives a different fingerprint and the old entry is ignored.
+When the fingerprint cannot be computed (no credentials file, `WINDSURF_API_KEY`
+set in the bridge environment, or an executable that is not found), the bridge
+does not use the persistent cache and runs a live lookup each time, as before.
+Windows credential paths are not verified, so Windows currently gets no
+persistent cache.
+
+Measured on the verified machine with the real CLI, one separate process per
+run: a cold selection took 941 to 953 ms and ran one catalog command; with a
+cache written by another process it took 6.1 to 6.2 ms and ran none, and
+resolved the same native model ID. This removes only the plugin's catalog
+step. Starting the `devin acp` session and the model's first response are
+unchanged.
 
 BB exposes Fast per provider, not per model. The control can therefore appear
 for a model without a Fast variant. A grouped selection with an unavailable
