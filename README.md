@@ -50,6 +50,32 @@ The earlier Hello proof plugin and general branding experiment have been
 removed from the current collection. Their prior commits and release tags stay
 in Git history.
 
+### Test plugin updates on a branch
+
+Normal installations track Git `main`. A commit SHA, as shown above, can still
+be used when a fixed version is needed.
+
+1. Build the affected plugin and run its relevant checks. Push the working
+   branch and open a PR.
+2. Switch only that plugin's installed Git ref from `main` to the working
+   branch. Keep its plugin ID and collection entry unchanged. Use the Git
+   branch rather than a temporary worktree path.
+3. Verify the changed behavior in BB. Keep the plugin on the branch while
+   fixing problems, and update the installation after each new push.
+4. Squash-merge the PR after the user authorizes the merge.
+5. Switch the plugin's ref back to `main` and update it. Check the resolved
+   commit and confirm that the plugin runs without errors. A squash merge
+   creates a new commit, so do not leave the installation on the branch SHA.
+
+If the change is abandoned, restore `main`. Testing in the normal BB instance
+affects the plugin used for daily work until it returns to `main`.
+
+Use `bb plugin source <id> --json` to inspect the installed source and
+`bb plugin update <id>` to fetch updates from its current ref. Updating alone
+does not switch the ref back to `main`. Check the current CLI help when changing
+refs. Preserve settings and data; `bb plugin remove` deletes plugin settings,
+secrets, and schedules and is not a general ref-switch command.
+
 ## Desired upstream changes
 
 ### Usage popup: compact header and visible provider tabs
