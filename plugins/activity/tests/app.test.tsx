@@ -72,6 +72,39 @@ afterEach(async () => {
 });
 
 describe("activity sidebar", () => {
+  it.each(["status", "project"] as const)(
+    "keeps pins above %s groups, including children and filtered statuses",
+    (groupBy) => {
+      updateState((state) => ({ ...state, groupBy, hidden: ["done"] }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: {
+          projects,
+          threads: [
+            thread({ id: "parent", indicator: "runtime" }),
+            thread({ id: "pin-child", parentThreadId: "parent", isPinned: true, updatedAt: 300 }),
+            thread({ id: "pin-parent", projectId: "project-2", isPinned: true, updatedAt: 200 }),
+            thread({ id: "child", parentThreadId: "pin-parent", isUnread: true }),
+            thread({ id: "archived-pin", isPinned: true, isArchived: true }),
+          ],
+        },
+      });
+      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe("Pinned");
+      const pins = slot.getByRole("list", { name: "Pinned threads" });
+      expect(Array.from(pins.querySelectorAll("[data-sidebar-thread-id]"),
+        (row) => row.getAttribute("data-sidebar-thread-id"),
+      )).toEqual(["pin-child", "pin-parent"]);
+      expect(slot.container.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(4);
+      expect(slot.container.querySelector('[data-sidebar-thread-id="child"]')).not.toBeNull();
+      act(() => updateState((state) => ({ ...state, groupBy: groupBy === "status" ? "project" : "status" })));
+      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe("Pinned");
+    },
+  );
+
+  it("hides the pinned section when there are no pins", () => {
+    const slot = mount();
+    expect(slot.queryByRole("region", { name: "Pinned" })).toBeNull();
+  });
+
   it.each([
     ["Needs Attention", { hasPendingInteraction: true }],
     ["Unread", { isUnread: true }],

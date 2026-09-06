@@ -31,7 +31,11 @@ Attention takes precedence over work. Work takes precedence over an old unread
 flag. Unread takes precedence over a draft. Display order does not determine
 this precedence.
 
-Pins appear first within each group. The display menu offers **Date updated**
+Pinned threads appear once in a Pinned section above the Status or Project
+groups. The section is hidden when empty and shows all pins without a row limit.
+Status filters do not hide pins. Pinned children appear directly in this section;
+unpinned children stay in the regular groups, as roots if their parent is pinned.
+Archived threads remain hidden. The display menu offers **Date updated**
 (the default) and **Date created**, both newest first. The choice applies in
 both Status and Project views and stays when you switch views or reload.
 The sort uses BB's `updatedAt` or `createdAt`, not attention events.
@@ -62,8 +66,8 @@ Each missing project keeps its own group until BB supplies its name.
 
 The display menu switches between Status and Project grouping and shows or
 hides each status. Status groups keep the order above. Project groups sort by
-name. Roots and siblings follow the selected date sort, with pins first;
-children always stay below their parent. A child's timestamp or pin does not
+name. Pins, roots, and siblings follow the selected date sort.
+Unpinned children stay below their unpinned parent. A child's timestamp or pin does not
 move its parent. New-thread drafts have no thread timestamp and appear after dated
 threads in their group. Groups can collapse. There is no thread search field or
 project selector. Old saved project filters are ignored.
