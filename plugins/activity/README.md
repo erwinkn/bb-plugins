@@ -159,3 +159,19 @@ and 2.2.27 recurse during `:modal` checks used to position menus. See
 [upstream issue #172](https://github.com/dperini/nwsapi/issues/172).
 All tests use Vitest's default timeout. Remove the override after a fixed
 release passes the menu tests.
+
+## Archived threads
+
+Status view has an Archived section after the active groups. Project view has
+an Archived section inside each project, including projects with only archives.
+The sections start collapsed and remember their state per client. Status filters
+do not hide archived threads. The selected date sort also applies to archives.
+
+Expand a section to browse its threads. Rows use the same paging and child
+groups as active threads. Open a row to read it, or select Restore from its
+context menu. Restoration uses BB's existing operation.
+
+The backend reads visible archives in pages of 200 through BB's public SDK.
+Hidden background threads stay hidden. The list refreshes on archive and delete
+events, plugin restores, sidebar membership changes, and reconnection. Failed
+loads show a Retry button; active threads remain available.

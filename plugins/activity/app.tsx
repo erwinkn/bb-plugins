@@ -9,6 +9,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import { compareThreads, STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
+import { useArchives } from "./lib/use-archives";
 import { DisplayMenu } from "./components/menus";
 import { ThreadRow } from "./components/thread-row";
 import { ThreadChildren } from "./components/thread-children";
@@ -26,13 +27,17 @@ function Group({
   id,
   title,
   children,
+  archive = false,
 }: {
   id: string;
   title: string;
+  archive?: boolean;
   children: ReactNode;
 }) {
-  const { collapsed } = useClientState();
-  const closed = collapsed.includes(id);
+  const { collapsed, expandedArchives } = useClientState();
+  const closed = archive
+    ? !expandedArchives.includes(id)
+    : collapsed.includes(id);
   return (
     <section aria-label={title} className="mt-5 first:mt-3">
       <button
@@ -41,7 +46,9 @@ function Group({
         onClick={() =>
           updateState((current) => ({
             ...current,
-            collapsed: toggleValue(current.collapsed, id),
+            ...(archive
+              ? { expandedArchives: toggleValue(current.expandedArchives, id) }
+              : { collapsed: toggleValue(current.collapsed, id) }),
           }))
         }
         className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
@@ -70,6 +77,11 @@ function Group({
 
 function ThreadsList(props: PluginThreadListProps) {
   const { status, threads, projects } = experimental_useSidebarThreads();
+  const archives = useArchives(threads);
+  const archived = archives.threads.map((thread) => ({
+    thread,
+    status: "done" as const,
+  }));
   const { providers } = experimental_useProviders();
   const actions = experimental_useSidebarThreadActions();
   const connection = useRealtimeConnectionState();
@@ -89,7 +101,10 @@ function ThreadsList(props: PluginThreadListProps) {
     providers.map((provider) => [provider.id, provider.displayName]),
   );
   const titles = new Map(
-    threads.map((thread) => [thread.id, threadTitle(thread)]),
+    [...threads, ...archives.threads].map((thread) => [
+      thread.id,
+      threadTitle(thread),
+    ]),
   );
   const knownDrafts = new Set(state.drafts);
   const available = threads
@@ -114,7 +129,7 @@ function ThreadsList(props: PluginThreadListProps) {
       { id: project.id, name: project.name },
     ]),
   );
-  for (const { thread } of visible) {
+  for (const { thread } of [...visible, ...archived]) {
     if (!displayProjects.has(thread.projectId)) {
       displayProjects.set(thread.projectId, {
         id: thread.projectId,
@@ -197,6 +212,20 @@ function ThreadsList(props: PluginThreadListProps) {
       </button>
     </li>
   );
+  const archiveGroup = (id: string, rows: typeof archived) =>
+    rows.length > 0 ? (
+      <Group id={id} title="Archived" archive>
+        <ThreadRoots
+          label="Archived"
+          pageSize={10}
+          nodes={buildThreadTree(rows, state.sortBy)}
+          drafts={[]}
+          activeThreadId={props.activeThreadId}
+          renderRow={(node) => row(node)}
+          renderDraft={draftRow}
+        />
+      </Group>
+    ) : null;
   return (
     <div
       data-activity-sidebar=""
@@ -225,6 +254,14 @@ function ThreadsList(props: PluginThreadListProps) {
           <p role="status" className="mt-2 px-2 text-xs text-muted-foreground">
             Reconnecting… Statuses can be out of date.
           </p>
+        )}
+        {archives.error && (
+          <div role="alert" className="mt-2 text-xs text-destructive">
+            Cannot load archived threads.
+            <button className="ml-2 underline" onClick={archives.refresh}>
+              Retry
+            </button>
+          </div>
         )}
         {error && (
           <div role="alert" className="mt-2 text-xs text-destructive">
@@ -295,7 +332,12 @@ function ThreadsList(props: PluginThreadListProps) {
                     const drafts = newDrafts.filter(
                       (draft) => draft.id === project.id,
                     );
-                    return rows.length || drafts.length ? (
+                    const projectArchives = archived.filter(
+                      ({ thread }) => thread.projectId === project.id,
+                    );
+                    return rows.length ||
+                      drafts.length ||
+                      projectArchives.length ? (
                       <Group
                         key={project.id}
                         id={`project:${project.id}`}
@@ -310,10 +352,17 @@ function ThreadsList(props: PluginThreadListProps) {
                           renderRow={(node) => row(node)}
                           renderDraft={draftRow}
                         />
+                        {archiveGroup(
+                          `archive:project:${project.id}`,
+                          projectArchives,
+                        )}
                       </Group>
                     ) : null;
                   })}
+            {state.groupBy === "status" &&
+              archiveGroup("archive:status", archived)}
             {state.hidden.length < STATUSES.length &&
+              !archived.length &&
               !visible.length &&
               !pinned.length &&
               !newDrafts.length && (

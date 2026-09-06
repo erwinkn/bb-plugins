@@ -59,7 +59,7 @@ export function ThreadInfo({
   });
   const description = [
     title,
-    STATUS_LABEL[status],
+    thread.isArchived ? "Archived" : STATUS_LABEL[status],
     provider,
     project,
     branch,
@@ -98,7 +98,7 @@ export function ThreadInfo({
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--subtle-foreground)]">
               <span className="flex items-center gap-1.5 text-popover-foreground">
                 <StatusIcon status={status} size="small" />
-                {STATUS_LABEL[status]}
+                {thread.isArchived ? "Archived" : STATUS_LABEL[status]}
               </span>
               <span aria-hidden="true">·</span>
               <span>{provider}</span>

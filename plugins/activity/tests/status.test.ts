@@ -153,6 +153,7 @@ describe("client storage boundary", () => {
       hidden: ["done"],
       drafts: ["thread:1"],
       collapsed: [],
+      expandedArchives: [],
       groupBy: "status",
       sortBy: "updated",
     });

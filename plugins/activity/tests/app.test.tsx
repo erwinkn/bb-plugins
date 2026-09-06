@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import {
   loadPluginApp,
   renderSlot as renderSdkSlot,
@@ -11,7 +17,10 @@ import { thread } from "./fixtures";
 const app = await loadPluginApp(() => import("../app"));
 const mountedSlots: ReturnType<typeof renderSdkSlot>[] = [];
 const renderSlot: typeof renderSdkSlot = (registration, props, options) => {
-  const slot = renderSdkSlot(registration, props, options);
+  const slot = renderSdkSlot(registration, props, {
+    ...options,
+    rpc: { listArchived: async () => [], ...options?.rpc },
+  });
   mountedSlots.push(slot);
   return slot;
 };
@@ -105,6 +114,145 @@ describe("activity sidebar", () => {
     expect(slot.queryByRole("region", { name: "Pinned" })).toBeNull();
   });
 
+  const archiveRows = ["project-1", "project-2"].map((projectId, index) => ({
+    id: `old-${index}`,
+    projectId,
+    title: `Old thread ${index}`,
+    titleFallback: null,
+    parentThreadId: null,
+    providerId: "codex",
+    createdAt: 1,
+    updatedAt: 2,
+    environmentId: null,
+    environmentName: null,
+    environmentBranchName: null,
+    environmentWorkspaceDisplayKind: "other",
+  }));
+  it.each(["status", "project"] as const)(
+    "browses and restores archives in %s view",
+    async (groupBy) => {
+      updateState((state) => ({ ...state, groupBy, hidden: ["done"] }));
+      const restore = vi.fn(async () => ({ ok: true }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: { projects, threads: [] },
+        rpc: { listArchived: async () => archiveRows, restoreThread: restore },
+      });
+      await waitFor(() =>
+        expect(slot.getAllByRole("button", { name: "Archived" })).toHaveLength(
+          groupBy === "status" ? 1 : 2,
+        ),
+      );
+      expect(slot.queryByText("Old thread 0")).toBeNull();
+      expect(slot.queryByText("No matching threads.")).toBeNull();
+      const group =
+        groupBy === "project"
+          ? within(slot.getByRole("region", { name: "One" }))
+          : slot;
+      fireEvent.click(group.getByRole("button", { name: "Archived" }));
+      expect(group.getByText("Old thread 0")).toBeTruthy();
+      if (groupBy === "project")
+        expect(group.queryByText("Old thread 1")).toBeNull();
+      const target = slot.container.querySelector(
+        '[data-sidebar-thread-id="old-0"]',
+      )!;
+      fireEvent.click(target);
+      expect(slot.inspection.sidebarActionCalls).toContainEqual({
+        method: "open",
+        threadId: "old-0",
+        options: { split: false },
+      });
+      fireEvent.contextMenu(target);
+      fireEvent.click(slot.getByRole("menuitem", { name: "Restore" }));
+      await waitFor(() =>
+        expect(restore).toHaveBeenCalledWith({ threadId: "old-0" }),
+      );
+      expect(
+        parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
+          .expandedArchives,
+      ).toEqual([
+        groupBy === "status" ? "archive:status" : "archive:project:project-1",
+      ]);
+      fireEvent.click(group.getByRole("button", { name: "Archived" }));
+      expect(group.queryByText("Old thread 0")).toBeNull();
+    },
+  );
+  it("loads every archive page, limits mounted rows, and refreshes on restore signals", async () => {
+    const firstPage = Array.from({ length: 200 }, (_, index) => ({
+      ...archiveRows[0],
+      id: `page-${index}`,
+      title: `Page ${index}`,
+      updatedAt: 1000 - index,
+    }));
+    let restored = false;
+    const list = vi.fn(async (input: unknown) =>
+      restored
+        ? []
+        : (input as { offset: number }).offset === 0
+          ? firstPage
+          : [archiveRows[1]],
+    );
+    const slot = renderSlot(app.threadLists[0], props, {
+      rpc: { listArchived: list },
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
+    expect(list.mock.calls.map(([input]) => input)).toEqual([
+      { offset: 0 },
+      { offset: 200 },
+    ]);
+    expect(
+      slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(10);
+    expect(
+      slot.getByRole("button", {
+        name: "Show more Archived threads, 191 hidden",
+      }),
+    ).toBeTruthy();
+    restored = true;
+    await slot.behavior.emitRealtime("archives-changed", {});
+    await waitFor(() =>
+      expect(slot.queryByRole("region", { name: "Archived" })).toBeNull(),
+    );
+  });
+  it("retains archive expansion on remount", async () => {
+    const options = { rpc: { listArchived: async () => archiveRows } };
+    let slot = renderSlot(app.threadLists[0], props, options);
+    fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
+    slot.unmount();
+    slot = renderSlot(app.threadLists[0], props, options);
+    expect(await slot.findByText("Old thread 0")).toBeTruthy();
+  });
+  it("retries archive loading without hiding active threads", async () => {
+    const list = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Offline"))
+      .mockResolvedValue(archiveRows);
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { projects, threads },
+      rpc: { listArchived: list },
+    });
+    await slot.findByText("Cannot load archived threads.");
+    expect(slot.getByText("Read reply")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Retry" }));
+    await slot.findByRole("button", { name: "Archived" });
+    expect(slot.queryByText("Cannot load archived threads.")).toBeNull();
+  });
+  it("reports restore errors and keeps the archive available", async () => {
+    const slot = renderSlot(app.threadLists[0], props, {
+      rpc: {
+        listArchived: async () => archiveRows,
+        restoreThread: async () => {
+          throw new Error("Restore failed");
+        },
+      },
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-sidebar-thread-id="old-0"]')!,
+    );
+    fireEvent.click(slot.getByRole("menuitem", { name: "Restore" }));
+    await slot.findByText("Restore failed");
+    expect(slot.getByText("Old thread 0")).toBeTruthy();
+  });
   it.each([
     ["Needs Attention", { hasPendingInteraction: true }],
     ["Unread", { isUnread: true }],

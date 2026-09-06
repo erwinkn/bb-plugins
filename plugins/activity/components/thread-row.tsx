@@ -1,6 +1,7 @@
 import * as Menu from "@radix-ui/react-context-menu";
 import { useRef, useState, type ReactNode } from "react";
 import {
+  useRpc,
   experimental_useSidebarThreadActions,
   experimental_useSidebarThreadSplit,
   type PluginSidebarThread,
@@ -11,6 +12,7 @@ import {
   type Status,
   type SortBy,
 } from "../lib/status";
+import type { archiveContract } from "../lib/archive-contract";
 import { menuItemClass } from "./menus";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { relativeAge } from "../lib/time";
@@ -45,6 +47,7 @@ export function ThreadRow({
   onNavigate: () => void;
   onError: (error: unknown) => void;
 }) {
+  const rpc = useRpc<typeof archiveContract>();
   const nested = depth > 0;
   const actions = experimental_useSidebarThreadActions();
   const scope = usePortalScopeProps();
@@ -227,9 +230,15 @@ export function ThreadRow({
               <Menu.Separator className="my-1 h-px bg-border" />
               <Menu.Item
                 className={menuItemClass}
-                onSelect={() => actions.archive(thread.id)}
+                onSelect={() => {
+                  if (thread.isArchived) {
+                    void rpc
+                      .call("restoreThread", { threadId: thread.id })
+                      .catch(onError);
+                  } else actions.archive(thread.id);
+                }}
               >
-                Archive
+                {thread.isArchived ? "Restore" : "Archive"}
               </Menu.Item>
             </Menu.Content>
           </Menu.Portal>
