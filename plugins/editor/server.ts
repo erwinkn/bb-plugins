@@ -19,11 +19,13 @@ const ASSET_CONTENT_TYPES: Record<string, string> = {
   ".map": "application/json; charset=utf-8",
 };
 const PACKAGE_NAME = "bb-plugin-erwin-editor";
+/** BB ids are `<prefix>_<alphanumerics>`; a thread id becomes a directory name under thread storage, so nothing path-like passes. */
+const BB_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 export const sourceSchema = z
   .object({
     kind: z.enum(["workspace", "host", "thread-storage"]),
-    threadId: z.string().nullable(),
+    threadId: z.string().regex(BB_ID, "Invalid thread id").nullable(),
     environmentId: z.string().nullable(),
     projectId: z.string().nullable(),
     experimental_hostId: z.string().optional(),

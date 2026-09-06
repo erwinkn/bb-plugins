@@ -51,6 +51,10 @@ test("read, write, and tree refuse paths that leave the workspace", async (t) =>
     /cannot contain/,
   );
   await assert.rejects(() => harness.behavior.callRpc("tree", { source, subpath: "../.." }), /cannot contain/);
+  // A thread id names a directory under thread storage; path-like ids are refused at the schema.
+  const storage = { kind: "thread-storage", threadId: "../..", environmentId: null, projectId: null };
+  await assert.rejects(() => harness.behavior.callRpc("read", { path: "bb.db", source: storage }));
+  await assert.rejects(() => harness.behavior.callRpc("tree", { source: { ...storage, threadId: "/" } }));
 });
 
 test("create refuses parent traversal and setSetting refuses unknown keys", async (t) => {
