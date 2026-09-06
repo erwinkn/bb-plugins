@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ProviderBridgeEntry } from "@get-bb/plugin-sdk/provider-bridge";
-import { devinIdentity, fileCatalogStore, FRESH_MS, MAX_AGE_MS, MAX_CATALOG_BYTES } from "./model-cache";
+import { devinIdentity, fileCatalogStore, FRESH_MS, MAX_AGE_MS, MAX_CATALOG_BYTES, UNKNOWN_IDENTITY_TTL_MS } from "./model-cache";
 import { withDevinModels } from "./model-bridge";
 import { buildDevinModels } from "./models";
 
@@ -21,10 +21,11 @@ const T0 = 1_000_000_000_000;
 
 // One bridge per process in production; here separate instances stand in for
 // separate bridge processes that share the plugin data directory.
-function bridge(dir: string, fetch: Fetch, opts: { identity?: string; now?: () => number } = {}) {
+function bridge(dir: string, fetch: Fetch, opts: { identity?: string | (() => string | undefined); now?: () => number } = {}) {
   const forwarded: any[] = [], output: any[] = [];
   const acp: ProviderBridgeEntry = { experimental_apiVersion: 1, handleLine: line => { forwarded.push(JSON.parse(line)); } };
-  const entry = withDevinModels(acp, fetch, line => output.push(JSON.parse(line)), { identity: async () => opts.identity ?? "id-1", now: opts.now ?? (() => T0) });
+  const identity = typeof opts.identity === "function" ? opts.identity : () => (opts.identity as string | undefined) ?? "id-1";
+  const entry = withDevinModels(acp, fetch, line => output.push(JSON.parse(line)), { identity: async () => identity(), now: opts.now ?? (() => T0) });
   entry.start!({ pluginId: "erwin-devin", dataDir: dir, tempDir: dir });
   const select = (id: number, reasoningLevel?: string, serviceTier?: string, model = groupId) => entry.handleLine(JSON.stringify({
     jsonrpc: "2.0", id, method: "thread/start", params: { threadId: `t${id}`, options: { model, reasoningLevel, serviceTier, permissionMode: "full", providerOptions: { acpLaunchSpec: launch } } },
@@ -196,6 +197,48 @@ test("a failed background refresh keeps the old catalog; close aborts it; cancel
   assert.match(d.output[0].error.message, /cancelled/);
   assert.deepEqual(d.forwarded.map(m => m.method), ["thread/stop"], "no delayed thread/start after stop");
   assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).identity, "id-9", "the completed lookup still refreshes the shared cache");
+});
+
+test("without an identity the catalog is kept in this process only, for a short time", async (t) => {
+  const dir = tempDir(t);
+  let clock = T0;
+  const live = counting();
+  const b = bridge(dir, live.fetch, { identity: () => undefined, now: () => clock });
+  b.select(1, "medium"); await settle(() => b.forwarded.length === 1);
+  b.select(2, "low", "fast"); await settle(() => b.forwarded.length === 2);
+  assert.equal(live.calls.length, 1, "a second selection in the same process reuses the catalog");
+  assert.equal(existsSync(cachePath(dir)), false, "nothing is persisted without an identity");
+  clock += UNKNOWN_IDENTITY_TTL_MS;
+  b.select(3, "medium"); await settle(() => b.forwarded.length === 3);
+  assert.equal(live.calls.length, 2, "the process-local copy expires");
+  const other = counting();
+  const c = bridge(dir, other.fetch, { identity: () => undefined, now: () => clock });
+  c.select(4, "medium"); await settle(() => c.forwarded.length === 1);
+  assert.equal(other.calls.length, 1, "another process does not see the local copy");
+});
+
+test("a sign-in change during a lookup does not join the older lookup", async (t) => {
+  const dir = tempDir(t);
+  const releases: Array<() => void> = [];
+  const slow: Fetch = () => new Promise(r => { releases.push(() => r(fixture)); });
+  let current = "id-1";
+  const b = bridge(dir, slow, { identity: () => current });
+  b.select(1, "medium");
+  await settle(() => releases.length === 1);
+  current = "id-2";
+  b.select(2, "medium");
+  await settle(() => releases.length === 2);
+  assert.equal(releases.length, 2, "the new identity starts its own lookup");
+  releases[1]!(); await settle(() => b.forwarded.length === 1);
+  assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).identity, "id-2");
+  releases[0]!(); await settle(() => b.forwarded.length === 2);
+  assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).identity, "id-1", "the older lookup still writes the identity it started with");
+  // Same command and identity still share one lookup.
+  const d = bridge(dir, slow, { identity: () => "id-9" });
+  d.select(3, "medium"); d.select(4, "low");
+  await settle(() => releases.length === 3); await tick(); await tick();
+  assert.equal(releases.length, 3);
+  releases[2]!(); await settle(() => d.forwarded.length === 2);
 });
 
 test("identity follows the executable and the local sign-in state without reading credentials", async (t) => {

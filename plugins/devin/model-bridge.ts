@@ -4,7 +4,7 @@ import type { ProviderBridgeEntry, ReasoningLevel, ServiceTier } from "@get-bb/p
 import { experimental_acpLaunchSpecSchema } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import { buildDevinModels, FAMILY_PREFIX } from "./models";
 import { fetchDevinCatalog } from "./model-probe";
-import { devinIdentity, fileCatalogStore, FRESH_MS, MAX_AGE_MS, memoryCatalogStore } from "./model-cache";
+import { devinIdentity, fileCatalogStore, FRESH_MS, MAX_AGE_MS, memoryCatalogStore, UNKNOWN_IDENTITY_TTL_MS } from "./model-cache";
 import type { CatalogStore } from "./model-cache";
 
 const selectionSchema = z.object({ model: z.string(), reasoningLevel: reasoningLevelSchema.optional(), serviceTier: z.enum(["default", "fast"]).optional(), providerOptions: z.object({ acpLaunchSpec: experimental_acpLaunchSpecSchema }) });
@@ -18,33 +18,37 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
   const identity = deps.identity ?? devinIdentity, now = deps.now ?? Date.now;
   // The persistent store arrives with start(); until then this process only.
   let store: CatalogStore = memoryCatalogStore();
+  // Without a local identity nothing is persisted; this process still keeps
+  // the last catalog briefly so one thread does not rerun the CLI per turn.
+  const local = memoryCatalogStore();
   const pending = new Set<{ threadId: unknown; cancelled: boolean }>();
-  // Reuse a single in-flight lookup per command, but never retain a failed one.
+  // Reuse a single in-flight lookup per command and identity, but never
+  // retain a failed one. A different identity must not join an older lookup.
   const inflight = new Map<string, Promise<Catalog>>();
   function live(command: string, id: string | undefined): Promise<Catalog> {
-    const existing = inflight.get(command);
+    const key = `${command}\0${id ?? ""}`;
+    const existing = inflight.get(key);
     if (existing) return existing;
     const lookup = (async () => {
       const raw = await fetch(command, abort.signal);
       const catalog = buildDevinModels(raw);
       // The identity was read before the lookup: a sign-in change during the
       // lookup makes the entry unusable rather than trusted.
-      if (id !== undefined && !abort.signal.aborted) {
-        await store.write({ version: 1, identity: id, fetchedAt: now(), catalog: raw })
+      if (!abort.signal.aborted) {
+        await (id === undefined ? local : store).write({ version: 1, identity: id ?? "", fetchedAt: now(), catalog: raw })
           .catch(error => process.stderr.write(`Devin model catalog cache was not written: ${error instanceof Error ? error.message : String(error)}\n`));
       }
       return catalog;
-    })().finally(() => inflight.delete(command));
-    inflight.set(command, lookup);
+    })().finally(() => inflight.delete(key));
+    inflight.set(key, lookup);
     return lookup;
   }
   async function cached(id: string | undefined): Promise<{ catalog: Catalog; stale: boolean } | undefined> {
-    if (id === undefined) return undefined;
-    const entry = await store.read();
-    if (!entry || entry.identity !== id) return undefined;
+    const entry = await (id === undefined ? local : store).read();
+    if (!entry || entry.identity !== (id ?? "")) return undefined;
     const age = now() - entry.fetchedAt;
-    if (age < 0 || age >= MAX_AGE_MS) return undefined;
-    try { return { catalog: buildDevinModels(entry.catalog), stale: age >= FRESH_MS }; } catch { return undefined; }
+    if (age < 0 || age >= (id === undefined ? UNKNOWN_IDENTITY_TTL_MS : MAX_AGE_MS)) return undefined;
+    try { return { catalog: buildDevinModels(entry.catalog), stale: id !== undefined && age >= FRESH_MS }; } catch { return undefined; }
   }
   // Cached data resolves only an exact match. Anything else blocks for a live
   // lookup, which decides with the current catalog and never substitutes.

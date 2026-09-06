@@ -183,9 +183,9 @@ organization change gives a different fingerprint and the old entry is ignored,
 even when the rewritten file keeps its size and timestamps.
 When the fingerprint cannot be computed (no credentials file, `WINDSURF_API_KEY`
 set in the bridge environment, or an executable that is not found), the bridge
-does not use the persistent cache and runs a live lookup each time, as before.
-Windows credential paths are not verified, so Windows currently gets no
-persistent cache.
+persists nothing and keeps the last catalog in its own process for 60 seconds,
+as the previous version did. Windows credential paths are not verified, so
+Windows currently gets only that process-local reuse.
 
 Measured on the verified machine with the real CLI, one separate process per
 run: a cold selection took 941 to 953 ms and ran one catalog command; with a

@@ -9,6 +9,8 @@ import { experimental_resolveExecutablePath as resolveExecutablePath } from "@ge
 // used, with a background refresh. Older data blocks for a live lookup.
 export const FRESH_MS = 60 * 60 * 1000;
 export const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// Process-local reuse window when no identity can bind a persistent entry.
+export const UNKNOWN_IDENTITY_TTL_MS = 60 * 1000;
 // The probe accepts up to MAX_CATALOG_BYTES of raw JSON; the persisted envelope
 // adds a fixed header, so the reader allows that overhead on top.
 export const MAX_CATALOG_BYTES = 2 * 1024 * 1024;
