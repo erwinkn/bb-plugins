@@ -8,6 +8,10 @@
       "source": "./plugins/devin"
     },
     {
+      "name": "voice-mode",
+      "source": "./plugins/voice-mode"
+    },
+    {
       "name": "erwin-provider-usage",
       "source": "./plugins/provider-usage"
     }

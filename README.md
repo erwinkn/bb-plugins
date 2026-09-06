@@ -7,6 +7,9 @@ help, executable setting, account usage, and live ACP model catalog. It preserve
 ID `acp-devin`. See [Devin provider](plugins/devin/README.md) for configuration,
 verification, and migration from a custom ACP entry.
 
+`voice-mode` adds real-time voice calls, session history, and spoken thread
+updates. See [Voice Mode](plugins/voice-mode/README.md).
+
 `erwin-provider-usage` supplies the compact usage popup. See [Provider usage
 compact](plugins/provider-usage/README.md) for installation and rollback.
 
