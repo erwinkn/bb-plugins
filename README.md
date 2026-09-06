@@ -2,6 +2,11 @@
 
 A private GitHub collection of BB plugins.
 
+`voice-mode` adds real-time voice control of bb: a waveform button next to the
+composer microphone, a **Voice** sidebar page, and a `bb voice-mode` CLI. It is a
+renamed copy of [bb-handsfree](https://github.com/swairshah/bb-handsfree).
+See `plugins/voice-mode/README.md`.
+
 `erwin-hello` adds **Erwin Hello** to the sidebar. Select **Say hello** to
 send a request to the BB server. The page shows the server message and UTC
 time. The plugin uses no storage, credentials, host entry, or background work.
