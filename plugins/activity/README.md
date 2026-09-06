@@ -44,10 +44,16 @@ Indentation stops at two levels below a root: children and grandchildren.
 Deeper descendants appear at the second level in family order, with their actual
 parent still shown in the info card. Hidden descendants still contribute to the
 family's status. In Status view, a family appears in its highest-priority
-category using the group order above. Each row keeps its own status. Child rows
-use only status markers, with no extra status text. Working and unread children
-have a blue dot; attention and draft children keep their status icons; Done
-children have no status marker. Project view nests children within the same project.
+category using the group order above. Each row keeps its own status.
+All status markers align in one column, including child and grandchild markers.
+Every row has the same full-width hover, selection, and click area. Nesting
+indents only the arrow and thread information, not the row background or status icon.
+Status markers do not change the title indentation. Rows never show a third
+status line below the project and branch. Child rows
+use the same status markers as parent rows, with no extra status text: a green
+spinner for Working, a blue dot for Unread, an amber alert for Needs Attention,
+a violet dashed circle for Draft, and no marker for Done.
+Project view nests children within the same project.
 If a parent is missing, archived, or hidden by a status filter, its visible
 children appear as separate roots. Cross-project children appear under their
 own project in Project view. Parent names appear in the hover info card.

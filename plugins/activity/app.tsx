@@ -7,13 +7,7 @@ import {
   useRealtimeConnectionState,
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
-import {
-  STATUSES,
-  STATUS_LABEL,
-  statusOf,
-  threadTitle,
-  type Status,
-} from "./lib/status";
+import { STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { DisplayMenu } from "./components/menus";
 import { ThreadRow } from "./components/thread-row";
@@ -135,7 +129,6 @@ function ThreadsList(props: PluginThreadListProps) {
   };
   const row = (
     { thread, status, children }: ThreadNode,
-    groupStatus?: Status,
     depth = 0,
   ): ReactNode => (
     <ThreadRow
@@ -144,8 +137,7 @@ function ThreadsList(props: PluginThreadListProps) {
       sortBy={state.sortBy}
       thread={thread}
       status={status}
-      nested={depth > 0}
-      showStatus={groupStatus ? status !== groupStatus : status === "attention"}
+      depth={depth}
       project={projectNames.get(thread.projectId) ?? "No project"}
       provider={providerNames.get(thread.providerId) ?? thread.providerId}
       parent={
@@ -163,7 +155,7 @@ function ThreadsList(props: PluginThreadListProps) {
           parentTitle={threadTitle(thread)}
           depth={depth + 1}
           activeThreadId={props.activeThreadId}
-          renderRow={(child, childDepth) => row(child, groupStatus, childDepth)}
+          renderRow={row}
         />
       )}
     </ThreadRow>
@@ -264,7 +256,7 @@ function ThreadsList(props: PluginThreadListProps) {
                         nodes={rows.map(({ node }) => node)}
                         drafts={s === "draft" ? newDrafts : []}
                         activeThreadId={props.activeThreadId}
-                        renderRow={(node) => row(node, s)}
+                        renderRow={(node) => row(node)}
                         renderDraft={draftRow}
                       />
                     </Group>

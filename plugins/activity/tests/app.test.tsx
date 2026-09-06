@@ -72,6 +72,67 @@ afterEach(async () => {
 });
 
 describe("activity sidebar", () => {
+  it.each([
+    ["Needs Attention", { hasPendingInteraction: true }],
+    ["Unread", { isUnread: true }],
+    ["Working", { indicator: "runtime" as const }],
+    ["Draft", {}],
+    ["Done", {}],
+  ] as const)(
+    "keeps %s child hit areas full width and indents only their contents",
+    (label, overrides) => {
+      const ids = ["root", "child", "grandchild"];
+      if (label === "Draft") {
+        updateState((state) => ({
+          ...state,
+          drafts: ids.map((id) => `thread:${id}`),
+        }));
+      }
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: {
+          projects,
+          threads: ids.map((id, depth) =>
+            thread({
+              id,
+              parentThreadId: depth ? ids[depth - 1] : null,
+              ...overrides,
+            }),
+          ),
+        },
+      });
+      const rows = ids.map(
+        (id) =>
+          slot.container.querySelector(
+            `[data-sidebar-thread-id="${id}"]`,
+          ) as HTMLElement,
+      );
+      rows.forEach((row, depth) => {
+        expect(row.style.paddingLeft).toBe(
+          ["2rem", "3.25rem", "4.75rem"][depth],
+        );
+        expect(row.parentElement?.className).toBe(
+          rows[0].parentElement?.className,
+        );
+        if (label !== "Done") {
+          const marker = within(row).getByRole("img", { name: label });
+          expect(marker.classList.contains("left-2")).toBe(true);
+          expect(marker.style.left).toBe("");
+        }
+      });
+      for (const list of Array.from(
+        slot.container.querySelectorAll("[data-thread-children-depth]"),
+      )) {
+        expect(list.className).toBe("m-0 list-none p-0");
+      }
+      fireEvent.click(
+        label === "Done"
+          ? rows[1]
+          : within(rows[1]).getByRole("img", { name: label }),
+      );
+      expect(props.onNavigate).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(["updated", "created"] as const)(
     "pages projects independently with %s sorting",
     (sortBy) => {
@@ -771,7 +832,7 @@ describe("activity sidebar", () => {
     },
   );
   it.each(["status", "project"] as const)(
-    "uses only each child's own status marker in %s view",
+    "uses the same status markers for children and parents in %s view",
     (groupBy) => {
       updateState((state) => ({ ...state, groupBy }));
       const slot = renderSlot(app.threadLists[0], props, {
@@ -830,11 +891,19 @@ describe("activity sidebar", () => {
           expect(within(row).queryByRole("img")).toBeNull();
         } else {
           const marker = within(row).getByRole("img", { name: label });
-          if (id === "working" || id === "unread") {
+          if (id === "unread") {
             expect(marker.querySelector(".bg-sky-600")).not.toBeNull();
             expect(marker.querySelector("svg")).toBeNull();
           } else {
             expect(marker.querySelector("svg")).not.toBeNull();
+            if (id === "working") {
+              const parent = slot.container.querySelector(
+                '[data-sidebar-thread-id="parent"]',
+              ) as HTMLElement;
+              expect(marker.innerHTML).toBe(
+                within(parent).getByRole("img", { name: "Working" }).innerHTML,
+              );
+            }
           }
         }
       }
@@ -943,15 +1012,27 @@ describe("activity sidebar", () => {
     expect(parent.querySelector("[data-child-arrow]")).toBeNull();
     expect(child.querySelector("[data-child-arrow]")).not.toBeNull();
     expect(within(child as HTMLElement).queryByRole("img")).toBeNull();
-    expect(child.classList.contains("pl-7")).toBe(true);
+    expect((parent as HTMLElement).style.paddingLeft).toBe("2rem");
+    expect((child as HTMLElement).style.paddingLeft).toBe("3.25rem");
+    expect(
+      (child.querySelector("[data-child-arrow]") as SVGElement).style.left,
+    ).toBe("2rem");
     expect(grandchild.querySelector("[data-child-arrow]")).not.toBeNull();
     expect(
       within(grandchild as HTMLElement).getByRole("img", { name: "Draft" }),
     ).toBeTruthy();
-    expect(grandchild.classList.contains("pl-12")).toBe(true);
+    expect((grandchild as HTMLElement).style.paddingLeft).toBe("4.75rem");
+    expect(
+      (grandchild.querySelector("[data-child-arrow]") as SVGElement).style.left,
+    ).toBe("3.5rem");
+    expect(
+      within(grandchild as HTMLElement)
+        .getByRole("img", { name: "Draft" })
+        .classList.contains("left-2"),
+    ).toBe(true);
     for (const list of slot.getAllByRole("list", { name: /Children of/ })) {
       expect(list.classList.contains("border-l")).toBe(false);
-      expect(list.classList.contains("ml-6")).toBe(true);
+      expect(list.className).toBe("m-0 list-none p-0");
     }
   });
   it("nests children in their family's priority group, excludes archives, and preserves shortcuts", () => {

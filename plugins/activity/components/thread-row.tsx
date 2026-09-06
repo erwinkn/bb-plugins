@@ -24,8 +24,7 @@ export function ThreadRow({
   project,
   provider,
   parent,
-  nested = false,
-  showStatus = false,
+  depth = 0,
   children,
   active,
   now,
@@ -38,8 +37,7 @@ export function ThreadRow({
   project: string;
   provider: string;
   parent?: string;
-  nested?: boolean;
-  showStatus?: boolean;
+  depth?: number;
   children?: ReactNode;
   active: boolean;
   now: number;
@@ -47,6 +45,7 @@ export function ThreadRow({
   onNavigate: () => void;
   onError: (error: unknown) => void;
 }) {
+  const nested = depth > 0;
   const actions = experimental_useSidebarThreadActions();
   const scope = usePortalScopeProps();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -123,7 +122,8 @@ export function ThreadRow({
                   if (suppressClick.current && event.detail !== 0) return;
                   open(event.metaKey || event.ctrlKey);
                 }}
-                className={`flex min-w-0 flex-1 select-none items-start rounded-md py-2 pr-10 text-left no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring ${nested ? (status === "done" ? "pl-7" : "pl-12") : "pl-8"}`}
+                className="flex min-w-0 flex-1 select-none items-start rounded-md py-2 pr-10 text-left no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                style={{ paddingLeft: `${nested ? 1.75 + depth * 1.5 : 2}rem` }}
               >
                 {nested && (
                   <svg
@@ -135,7 +135,8 @@ export function ThreadRow({
                     strokeWidth="1.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className="absolute left-2 top-3 size-3 text-[var(--subtle-foreground)]"
+                    className="absolute top-3 size-3 text-[var(--subtle-foreground)]"
+                    style={{ left: `${0.5 + depth * 1.5}rem` }}
                   >
                     <path d="M3 3v5a2 2 0 0 0 2 2h8m-3-3 3 3-3 3" />
                   </svg>
@@ -144,9 +145,9 @@ export function ThreadRow({
                   <span
                     role="img"
                     aria-label={STATUS_LABEL[status]}
-                    className={`absolute top-2.5 flex size-4 items-center justify-center ${nested ? "left-7" : "left-2"}`}
+                    className="absolute left-2 top-2.5 flex size-4 items-center justify-center"
                   >
-                    {status === "unread" || (nested && status === "working") ? (
+                    {status === "unread" ? (
                       <span
                         aria-hidden="true"
                         className="size-1.5 rounded-full bg-sky-600 dark:bg-sky-400"
@@ -178,13 +179,6 @@ export function ThreadRow({
                       </>
                     )}
                   </span>
-                  {showStatus && !nested && (
-                    <span
-                      className={`block text-[10px] leading-4 ${status === "attention" ? "text-[var(--warning-text)]" : "text-muted-foreground"}`}
-                    >
-                      {STATUS_LABEL[status]}
-                    </span>
-                  )}
                 </span>
                 <time
                   dateTime={new Date(timestamp).toISOString()}

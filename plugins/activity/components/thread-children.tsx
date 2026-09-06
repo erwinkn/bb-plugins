@@ -43,11 +43,14 @@ export function ThreadChildren({
       id={id}
       data-thread-children-depth={depth}
       aria-label={`${flat ? "Descendants" : "Children"} of ${parentTitle}`}
-      className="m-0 ml-6 list-none p-0"
+      className="m-0 list-none p-0"
     >
       {shown.map((node) => renderRow(node, depth))}
       {(remaining > 0 || expanded) && (
-        <li className="flex flex-wrap items-center gap-x-1 pl-5">
+        <li
+          className="flex flex-wrap items-center gap-x-1"
+          style={{ paddingLeft: `${1.25 + depth * 1.5}rem` }}
+        >
           <button
             type="button"
             aria-controls={id}
