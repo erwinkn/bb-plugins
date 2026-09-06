@@ -221,9 +221,6 @@ function ThreadsList(props: PluginThreadListProps) {
   const archiveGroup = (id: string, rows: typeof archived) =>
     rows.length > 0 ? (
       <Group id={id} title="Archived" archive>
-        <p className="mb-2 px-2 text-xs text-[var(--subtle-foreground)]">
-          Open to read. Right-click or long-press to restore.
-        </p>
         <ThreadRoots
           label="Archived"
           pageSize={10}

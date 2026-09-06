@@ -231,9 +231,6 @@ describe("activity sidebar", () => {
         rpc: { listArchived: async () => archiveRows },
       });
       fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
-      expect(
-        slot.getByText("Open to read. Right-click or long-press to restore."),
-      ).toBeTruthy();
       const row = slot.container.querySelector(
         '[data-sidebar-thread-id="old-0"]',
       )!;
