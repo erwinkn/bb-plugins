@@ -88,8 +88,9 @@ test("a stale catalog is used at once and refreshed in the background; expired d
   await settle(() => b.forwarded.length === 2);
   assert.equal(calls.length, 1); assert.equal(b.forwarded[1].params.options.model, "opaque-c");
 
-  await fileCatalogStore(dir).write({ version: 1, identity: "id-1", fetchedAt: T0 - MAX_AGE_MS, catalog: fixture });
-  const c = bridge(dir, slow);
+  const expired = tempDir(t);
+  await fileCatalogStore(expired).write({ version: 1, identity: "id-1", fetchedAt: T0 - MAX_AGE_MS, catalog: fixture });
+  const c = bridge(expired, slow);
   c.select(3, "medium");
   await settle(() => calls.length === 2);
   await tick(); await tick();
@@ -226,7 +227,7 @@ test("without an identity the catalog is kept in this process only, for a short 
   assert.deepEqual(d.forwarded.map(m => m.params.options.model), ["devin-one-b", "devin-two-b", "devin-one-b"], "local copies never cross executables");
 });
 
-test("a sign-in change during a lookup does not join the older lookup", async (t) => {
+test("a sign-in change during a lookup starts a new lookup and never forwards the old result", async (t) => {
   const dir = tempDir(t);
   const releases: Array<() => void> = [];
   const slow: Fetch = () => new Promise(r => { releases.push(() => r(fixture)); });
@@ -237,48 +238,64 @@ test("a sign-in change during a lookup does not join the older lookup", async (t
   current = "id-2";
   b.select(2, "medium");
   await settle(() => releases.length === 2);
-  assert.equal(releases.length, 2, "the new identity starts its own lookup");
+  assert.equal(releases.length, 2, "the new identity does not join the older lookup");
   releases[1]!(); await settle(() => b.forwarded.length === 1);
   assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).identity, "id-2");
-  releases[0]!(); await settle(() => b.forwarded.length === 2);
-  assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).identity, "id-2", "a lookup that finishes late does not replace the newer entry");
-  assert.equal(b.forwarded[1].params.options.model, "opaque-b", "the late lookup still answers its own request");
+  // The older probe finishes after the sign-in changed: its result is dropped
+  // and the request retries under the current identity.
+  releases[0]!(); await settle(() => releases.length === 3);
+  assert.equal(b.forwarded.length, 1, "the obsolete catalog is not forwarded");
+  releases[2]!(); await settle(() => b.forwarded.length === 2);
+  assert.equal(b.forwarded[1].params.options.model, "opaque-b");
+  assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).identity, "id-2");
   // Same command and identity still share one lookup.
   const d = bridge(dir, slow, { identity: () => "id-9" });
   d.select(3, "medium"); d.select(4, "low");
-  await settle(() => releases.length === 3); await tick(); await tick();
-  assert.equal(releases.length, 3);
-  releases[2]!(); await settle(() => d.forwarded.length === 2);
+  await settle(() => releases.length === 4); await tick(); await tick();
+  assert.equal(releases.length, 4);
+  releases[3]!(); await settle(() => d.forwarded.length === 2);
+  // An identity that keeps changing fails clearly after one retry.
+  let flips = 0;
+  const e = bridge(dir, slow, { identity: () => `flip-${flips++}` });
+  e.select(5, "medium");
+  await settle(() => releases.length === 5); releases[4]!();
+  await settle(() => releases.length === 6); releases[5]!();
+  await settle(() => e.output.length === 1);
+  assert.match(e.output[0].error.message, /sign-in changed/);
+  assert.deepEqual(e.forwarded, []);
 });
 
 test("a slow older write cannot overtake a newer write; local slots order independently", async (t) => {
-  // A store whose writes complete only when released, in any order.
+  // A store whose writes complete only when released, in any order. Two
+  // commands with one identity share the persistent slot.
   const writes: Array<{ entry: CatalogEntry; release: () => void }> = [];
   let current: CatalogEntry | undefined;
   const store: CatalogStore = { async read() { return current; }, write(entry) { return new Promise<void>(r => writes.push({ entry, release: () => { current = entry; r(); } })); } };
-  const releases: Array<() => void> = [];
-  const slow: Fetch = () => new Promise(r => { releases.push(() => r(fixture)); });
-  let identity = "id-1";
+  const releases = new Map<string, () => void>();
+  const slow: Fetch = (command) => new Promise(r => { releases.set(command, () => r({ families: [{ family_uid: "gpt", family_label: "GPT", variants: [variant(`${command}-b`, "GPT Medium Thinking"), variant(`${command}-a`, "GPT Low Thinking")] }] })); });
   const forwarded: any[] = [];
-  const entry = withDevinModels({ experimental_apiVersion: 1, handleLine: l => forwarded.push(JSON.parse(l)) }, slow, () => {}, { identity: async () => identity, now: () => T0, store });
-  const select = (id: number) => entry.handleLine(JSON.stringify({ jsonrpc: "2.0", id, method: "thread/start", params: { threadId: `t${id}`, options: { model: groupId, reasoningLevel: "medium", providerOptions: { acpLaunchSpec: launch } } } }));
-  select(1); await settle(() => releases.length === 1);
-  identity = "id-2"; select(2); await settle(() => releases.length === 2);
-  releases[0]!(); await settle(() => writes.length === 1);
-  assert.equal(writes[0]!.entry.identity, "id-1");
-  releases[1]!(); await tick(); await tick(); await tick();
+  const entry = withDevinModels({ experimental_apiVersion: 1, handleLine: l => forwarded.push(JSON.parse(l)) }, slow, () => {}, { identity: async () => "id-1", now: () => T0, store });
+  const select = (id: number, command: string) => entry.handleLine(JSON.stringify({ jsonrpc: "2.0", id, method: "thread/start", params: { threadId: `t${id}`, options: { model: groupId, reasoningLevel: "medium", providerOptions: { acpLaunchSpec: { ...launch, command } } } } }));
+  const catalogOf = (e: CatalogEntry) => (e.catalog as any).families[0].variants[0].model_uid;
+  select(1, "one"); select(2, "two");
+  await settle(() => releases.size === 2);
+  releases.get("one")!(); await settle(() => writes.length === 1);
+  assert.equal(catalogOf(writes[0]!.entry), "one-b");
+  releases.get("two")!(); await tick(); await tick(); await tick();
   assert.equal(writes.length, 1, "the newer write waits behind the older one");
   writes[0]!.release(); await settle(() => writes.length === 2);
-  assert.equal(writes[1]!.entry.identity, "id-2");
+  assert.equal(catalogOf(writes[1]!.entry), "two-b");
   writes[1]!.release(); await settle(() => forwarded.length === 2);
-  assert.equal(current?.identity, "id-2", "the newest entry is the final one");
+  assert.equal(current && catalogOf(current), "two-b", "the newest entry is the final one");
+  assert.deepEqual(forwarded.map(m => m.params.options.model), ["one-b", "two-b"], "each request gets its own catalog");
   // Reverse completion order: the older lookup does not write at all.
-  identity = "id-3"; select(3); await settle(() => releases.length === 3);
-  identity = "id-4"; select(4); await settle(() => releases.length === 4);
-  releases[3]!(); await settle(() => writes.length === 3); writes[2]!.release();
-  releases[2]!(); await settle(() => forwarded.length === 4); await tick(); await tick();
+  releases.clear(); current = undefined;
+  select(3, "three"); select(4, "four");
+  await settle(() => releases.size === 2);
+  releases.get("four")!(); await settle(() => writes.length === 3); writes[2]!.release();
+  releases.get("three")!(); await settle(() => forwarded.length === 4); await tick(); await tick();
   assert.equal(writes.length, 3, "the superseded lookup skips its write");
-  assert.equal(current?.identity, "id-4");
+  assert.equal(current && catalogOf(current), "four-b");
 
   // Without an identity, concurrent lookups for two commands each keep their own copy.
   const dir = tempDir(t);
@@ -294,6 +311,31 @@ test("a slow older write cannot overtake a newer write; local slots order indepe
   selectWith(7, "devin-one"); selectWith(8, "devin-two");
   await settle(() => d.forwarded.length === 4);
   assert.deepEqual(calls, ["devin-one", "devin-two"], "both commands keep their local copy");
+});
+
+test("the shared file keeps the later probe when another process publishes an older one", async (t) => {
+  const dir = tempDir(t);
+  const store = fileCatalogStore(dir);
+  await store.write({ version: 1, identity: "id-1", fetchedAt: T0 + 10, catalog: fixture });
+  const older = { ...fixture, families: [{ ...fixture.families[0], variants: fixture.families[0].variants.slice(0, 2) }] };
+  await store.write({ version: 1, identity: "id-1", fetchedAt: T0, catalog: older });
+  assert.equal((await store.read())?.fetchedAt, T0 + 10, "an older probe does not replace a newer one");
+  await store.write({ version: 1, identity: "id-1", fetchedAt: T0 + 20, catalog: older });
+  assert.equal((await store.read())?.fetchedAt, T0 + 20);
+  await store.write({ version: 1, identity: "id-2", fetchedAt: T0, catalog: fixture });
+  assert.equal((await store.read())?.identity, "id-2", "another identity is always published; readers validate identity");
+  // In the bridge, the stamp is the probe start, so the probe that started later wins across processes.
+  let clock = T0;
+  const releases: Array<() => void> = [];
+  const slow: Fetch = () => new Promise(r => { releases.push(() => r(fixture)); });
+  const a = bridge(dir, slow, { identity: "id-3", now: () => clock });
+  a.select(1, "medium"); await settle(() => releases.length === 1);
+  clock = T0 + 1000;
+  const b = bridge(dir, slow, { identity: "id-3", now: () => clock });
+  b.select(2, "medium"); await settle(() => releases.length === 2);
+  releases[1]!(); await settle(() => b.forwarded.length === 1);
+  releases[0]!(); await settle(() => a.forwarded.length === 1);
+  assert.equal(JSON.parse(readFileSync(cachePath(dir), "utf8")).fetchedAt, T0 + 1000, "the earlier-started probe finishing last does not replace the later one");
 });
 
 test("identity follows the executable and the local sign-in state without reading credentials", async (t) => {

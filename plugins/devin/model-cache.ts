@@ -39,6 +39,10 @@ export function fileCatalogStore(dataDir: string): CatalogStore {
       } catch { return undefined; }
     },
     async write(entry) {
+      // Other bridge processes write the same file. Do not publish a probe
+      // that started before the one already published for this identity.
+      const current = await this.read();
+      if (current && current.identity === entry.identity && current.fetchedAt > entry.fetchedAt) return;
       await mkdir(dataDir, { recursive: true });
       const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
       try { await writeFile(temp, JSON.stringify(entry), { mode: 0o600 }); await rename(temp, path); }

@@ -45,17 +45,24 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
   // Reuse a single in-flight lookup per command and identity, but never
   // retain a failed one. A different identity must not join an older lookup.
   const inflight = new Map<string, Promise<Catalog>>();
-  function live(command: string, id: string | undefined): Promise<Catalog> {
+  function live(command: string, id: string | undefined, attempt = 0): Promise<Catalog> {
     const key = `${command}\0${id ?? ""}`;
     const existing = inflight.get(key);
     if (existing) return existing;
-    const sequence = ++started;
+    const sequence = ++started, startedAt = now();
     const lookup = (async () => {
       const raw = await fetch(command, abort.signal);
       const catalog = buildDevinModels(raw);
-      // The identity was read before the lookup: a sign-in change during the
-      // lookup makes the entry unusable rather than trusted.
-      await commit(slotFor(command, id), sequence, { version: 1, identity: id ?? "", fetchedAt: now(), catalog: raw });
+      // A sign-in or executable change during the probe makes its result
+      // untrustworthy for either state: look up once more under the current
+      // identity instead of forwarding or persisting it.
+      const after = abort.signal.aborted ? id : await identity(command);
+      if (after !== id) {
+        if (attempt > 0) throw new Error("Devin sign-in changed during the model lookup. Try again.");
+        return live(command, after, attempt + 1);
+      }
+      // fetchedAt is the probe start, so a later probe always carries a later stamp.
+      await commit(slotFor(command, id), sequence, { version: 1, identity: id ?? "", fetchedAt: startedAt, catalog: raw });
       return catalog;
     })().finally(() => inflight.delete(key));
     inflight.set(key, lookup);

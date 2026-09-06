@@ -155,7 +155,11 @@ persistent bridge data directory that bb supplies (`plugins/<id>/bridge-data`
 under the bb data directory), in `model-catalog.json`. All bridge processes of
 this plugin on the machine share that file; environments do not get separate
 copies. Writes go to a temporary file first and are then renamed, so a
-concurrent reader never sees a partial file.
+concurrent reader never sees a partial file. Each entry carries the start time
+of its probe; a writer does not replace an entry from a later-started probe of
+the same identity, so concurrent bridges converge on the newest catalog. If the
+sign-in or executable changes while a probe runs, that result is discarded and
+the lookup runs once more under the current identity.
 
 Rules for a grouped selection (`devin-family:` model IDs):
 
