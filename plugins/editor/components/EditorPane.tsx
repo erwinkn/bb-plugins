@@ -249,6 +249,8 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     const runtime = runtimeRef.current;
     const editor = editorRef.current;
     if (runtime === null || editor === null) return;
+    // An earlier file's failure must not be read as this file's while it loads.
+    setStatus((current) => (current.kind === "error" ? { kind: "ready" } : current));
     let cancelled = false;
     void (async () => {
       try {
