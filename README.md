@@ -39,3 +39,21 @@ npm run build
 The earlier Hello proof plugin and general branding experiment have been
 removed from the current collection. Their prior commits and release tags stay
 in Git history.
+
+## Desired upstream changes
+
+### Mobile: choose Steer or Queue from the Send button
+
+When Steer is the default send action, desktop users can press Command+Enter
+to queue a message. Mobile users need a touch control for the same choice.
+
+Allow a long press on Send to open a menu with **Steer now** and **Queue next**.
+A normal tap should keep the configured default. Opening or dismissing the
+menu must not send the message. A visible menu arrow could also expose the choice.
+
+This belongs in BB's core composer. Both actions already exist, but the plugin
+API has no dedicated way to change the built-in Send button's behavior.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Mobile: long-press Send to choose Steer or Queue`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
