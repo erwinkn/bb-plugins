@@ -1,0 +1,47 @@
+# Provider usage compact
+
+`erwin-provider-usage` replaces BB's built-in usage popup with a compact header.
+The machine button shows an icon. Its tooltip and accessible label identify the
+selected machine. All header controls are 32 pixels high. Provider tabs wrap when
+space is limited. Click outside the popup or press Escape to close it.
+
+Provider discovery uses `capability: "usage"`. Devin appears when its provider
+reports usage support. The plugin uses BB's existing provider credentials and
+usage APIs. It needs no separate sign-in or API key.
+
+## Install locally
+
+From the repository root:
+
+```sh
+cd plugins/provider-usage
+npm ci --include=dev
+npm run typecheck
+npm test
+npm run build
+bb plugin install path:. --yes
+bb plugin disable provider-usage
+```
+
+Confirm that `erwin-provider-usage` is running before disabling the built-in
+plugin. Both plugins use separate IDs. Installation does not change BB's app
+bundle. Keep this directory available while the local plugin is installed.
+After source changes, build and run `bb plugin reload erwin-provider-usage`.
+
+## Switch back
+
+```sh
+bb plugin disable erwin-provider-usage
+bb plugin enable provider-usage
+```
+
+## Source and checks
+
+Adapted from BB's MIT-licensed `plugins/provider-usage` and shared UI components
+at commit `accd5595926b080a1e17d1ea9b2fa2d7d0505ac6`. The license is included in `LICENSE`.
+The BB CLI scaffold supplied the remaining UI components. The SDK dependency is
+pinned to the installed BB version. Run `bb plugin types` when upgrading it.
+
+Tests cover provider discovery, per-machine caching, offline status, provider and
+machine selection, keyboard tabs, manual refresh, and refresh cleanup. Check
+layout and outside-click dismissal in BB because its footer owns the popup.
