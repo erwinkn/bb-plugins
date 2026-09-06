@@ -19,7 +19,7 @@ export function devinProvider(command: string): PluginProviderDeclaration {
       acpLaunchSpec: { displayName: "Devin", command, args: ["acp"], env: {} },
     },
     models: { scope: "host" },
-    maintenance: { health: true, usage: false, installation: false },
+    maintenance: { health: true, usage: true, installation: false },
     // Preserve the previous generic ACP contract; the live model catalog is precise.
     capabilities: {
       supportsServiceTier: true,

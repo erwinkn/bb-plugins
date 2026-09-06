@@ -34,6 +34,6 @@ test("executable setting re-registers one provider; invalid settings preserve it
 });
 
 test("only public SDK imports are used", () => {
-  const scan = experimental_scanPublicSdkOnly(fileURLToPath(new URL(".", import.meta.url)));
+  const scan = experimental_scanPublicSdkOnly(fileURLToPath(new URL(".", import.meta.url)), { allow: [/^protobufjs$/] });
   assert.deepEqual(scan.violations, []); assert.deepEqual(scan.privateDependencies, []);
 });

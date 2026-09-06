@@ -61,8 +61,51 @@ bb controls compact picker tabs and model/header text. The provider name is
 
 The declaration retains the previous generic ACP capabilities, permission modes,
 and model catalog scope. The model response supplies precise reasoning options.
-Fork, manual compaction, usage reporting, and managed CLI installation are not
+Fork, manual compaction, and managed CLI installation are not
 advertised. This plugin does not implement or claim those capabilities.
+
+## Account usage
+
+The plugin implements BB's `provider/usage` maintenance request on the execution
+machine. The shared BB usage UI can show daily and weekly percentage bars and
+reset times. For accounts with an ACU limit, it can also show billing-cycle ACU
+usage. It respects Devin's flags that hide daily or weekly quotas.
+
+For each refresh, the handler starts the configured `devin acp` executable with
+an empty private `XDG_CACHE_HOME`, sends only ACP `initialize`, and reads the
+fresh `user_status` protobuf cache written by that process. It then stops the
+process and removes the temporary cache. It does not create a session, send a
+prompt, copy credentials, or read an old shared cache. Devin handles its own
+login, account selection, and request authentication.
+
+Devin's direct account-status requests need additional CLI metadata. Keeping the
+request inside Devin avoids copying that private authentication logic. The cache
+format is internal and can change; an unsupported format or ambiguous account
+cache produces an error rather than a guessed value. This was verified with
+Devin CLI 3000.6.14 on macOS. The same XDG layout is used on Linux; Windows has
+not been verified.
+
+The probe has a 15-second deadline and a 2 MiB cache limit. It stops its child
+process and removes its temporary files on success or failure. Missing executable
+and failed probes use BB's standard usage states. Errors contain no native CLI
+output, cache contents, or credentials. A failed login is reported as a usage
+error with a `devin auth status` hint; the plugin does not infer login state from
+terminal text. Absent quotas do not become empty or exhausted bars.
+
+Extra-usage balances are not shown: BB's shared window contract requires a limit
+and percentage, and a remaining balance alone does not supply them. ACUs are
+not converted into an assumed dollar price.
+
+## Session usage
+
+Devin exposes `/session-stats` (alias `/stats`) through ACP. This is separate from
+account quota. The shared SDK bridge handles standard ACP `usage_update` events
+as context-window usage. It does not map Devin's custom token, credit, and ACU
+metadata into BB's conversation totals. The published ACP bridge has no event
+translation hook for a plugin to add that mapping. This plugin keeps the shared
+bridge and does not patch its output or scrape the terminal.
+
+See the [Devin command reference](https://docs.devin.ai/cli/reference/commands#session-statistics).
 
 ## Verify
 
@@ -74,7 +117,8 @@ npm run build
 ```
 
 The tests check provider identity, launch schema, settings validation and
-registration, public imports, and the canonical bridge protocol against a local
+registration, public imports, quota decoding, error states and the sessionless CLI probe, usage
+request routing, and the canonical bridge protocol against a local
 scripted agent. The bridge test runs in its own process because its stdout
 capture must not intercept the Node test runner's binary transport.
 

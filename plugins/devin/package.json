@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@get-bb/plugin-sdk": "0.4.47",
+    "protobufjs": "8.8.0",
     "zod": "4.3.6"
   },
   "devDependencies": {
@@ -32,6 +33,6 @@
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test provider.test.ts && tsx bridge.test.ts"
+    "test": "node --import ./test-runtime.mjs --import tsx --test provider.test.ts usage.test.ts && node --import ./test-runtime.mjs --import tsx bridge.test.ts"
   }
 }
