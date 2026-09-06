@@ -67,6 +67,11 @@ A voice session is shared across all your bb windows and devices: the **Voice**
 sidebar entry shows a live indicator with the call duration, and any window
 can pick it up or stop it.
 
+Background thread announcements wait until the conversation is quiet. Each
+announcement uses a separate response with tools disabled. Thread titles and
+results stay out of the main conversation. If a result is missing, Voice reports
+the status and says that details are unavailable; ask for details to read the thread.
+
 ## Mobile views beside the call
 
 On mobile, “show that thread” opens a drawer without leaving the voice call.
