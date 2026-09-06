@@ -11,9 +11,11 @@ const COLOR: Record<Status, string> = {
 export function StatusIcon({
   status,
   className = "",
+  size = "default",
 }: {
   status: Status;
   className?: string;
+  size?: "small" | "default";
 }) {
   return (
     <svg
@@ -24,7 +26,7 @@ export function StatusIcon({
       strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={`size-4 shrink-0 ${COLOR[status]} ${status === "working" ? "motion-safe:animate-spin" : ""} ${className}`}
+      className={`${size === "small" ? "size-3.5" : "size-4"} shrink-0 ${COLOR[status]} ${status === "working" ? "motion-safe:animate-spin" : ""} ${className}`}
     >
       {status === "attention" && (
         <>

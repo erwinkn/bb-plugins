@@ -6,20 +6,26 @@ import {
   experimental_useProviders,
   useRealtimeConnectionState,
   type PluginThreadListProps,
-  type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
 import {
   STATUSES,
   STATUS_LABEL,
   statusOf,
-  compareThreads,
   threadTitle,
   type Status,
 } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { DisplayMenu } from "./components/menus";
 import { ThreadRow } from "./components/thread-row";
+import { ThreadChildren } from "./components/thread-children";
 import { DraftObserver } from "./components/draft-observer";
+import { StatusIcon } from "./components/status-icon";
+import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
+import {
+  buildThreadTree,
+  familyStatus,
+  type ThreadNode,
+} from "./lib/thread-tree";
 
 function Group({
   id,
@@ -102,23 +108,27 @@ function ThreadsList(props: PluginThreadListProps) {
     (project) =>
       knownDrafts.has(`new:${project.id}`) && !state.hidden.includes("draft"),
   );
+  const families = buildThreadTree(visible, state.sortBy).map((node) => ({
+    node,
+    status: familyStatus(node),
+  }));
   const openNew = (id?: string) => {
     actions.openNewThread({ projectId: id, focusPrompt: true });
     props.onNavigate();
   };
-  const row = ({
-    thread,
-    status,
-  }: {
-    thread: PluginSidebarThread;
-    status: Status;
-  }) => (
+  const row = (
+    { thread, status, children }: ThreadNode,
+    groupStatus?: Status,
+    depth = 0,
+  ): ReactNode => (
     <ThreadRow
       key={thread.id}
       now={now}
       sortBy={state.sortBy}
       thread={thread}
       status={status}
+      nested={depth > 0}
+      showStatus={groupStatus ? status !== groupStatus : status === "attention"}
       project={projectNames.get(thread.projectId) ?? "Unknown project"}
       provider={providerNames.get(thread.providerId) ?? thread.providerId}
       parent={
@@ -129,15 +139,32 @@ function ThreadsList(props: PluginThreadListProps) {
       active={props.activeThreadId === thread.id}
       onNavigate={props.onNavigate}
       onError={report}
-    />
+    >
+      {children.length > 0 && (
+        <ThreadChildren
+          nodes={children}
+          parentTitle={threadTitle(thread)}
+          depth={depth + 1}
+          activeThreadId={props.activeThreadId}
+          renderRow={(child, childDepth) => row(child, groupStatus, childDepth)}
+        />
+      )}
+    </ThreadRow>
   );
   const draftRow = (project: { id: string; name: string }) => (
     <li key={`new:${project.id}`}>
       <button
         type="button"
         onClick={() => openNew(project.id)}
-        className="flex w-full items-center rounded-md py-2 pl-8 pr-2 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        className="relative flex w-full items-center rounded-md py-2 pl-8 pr-2 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
       >
+        <span
+          role="img"
+          aria-label="Draft"
+          className="absolute left-2 top-2.5 flex size-4 items-center justify-center"
+        >
+          <StatusIcon status="draft" />
+        </span>
         <span className="min-w-0">
           <span className="block truncate">New thread draft</span>
           <span className="block truncate text-[11px] text-muted-foreground">
@@ -150,8 +177,12 @@ function ThreadsList(props: PluginThreadListProps) {
   return (
     <div
       data-activity-sidebar=""
-      className="flex h-full min-h-0 flex-col text-foreground"
+      data-mobile-scroll={props.isCompactViewport ? "" : undefined}
+      className={`flex flex-col text-foreground ${props.isCompactViewport ? "shrink-0" : "h-full min-h-0"}`}
     >
+      {props.isCompactViewport && (
+        <style data-activity-mobile-scroll="">{MOBILE_SIDEBAR_SCROLL_CSS}</style>
+      )}
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
           <h2 className="flex-1 px-2 text-sm font-medium">Threads</h2>
@@ -179,7 +210,10 @@ function ThreadsList(props: PluginThreadListProps) {
           </div>
         )}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+      <div
+        data-activity-thread-groups=""
+        className={`px-2 pb-3 ${props.isCompactViewport ? "" : "min-h-0 flex-1 overflow-y-auto"}`}
+      >
         {status === "loading" ? (
           <p role="status" className="p-2 text-sm text-muted-foreground">
             Loading threads…
@@ -199,17 +233,13 @@ function ThreadsList(props: PluginThreadListProps) {
             )}
             {state.groupBy === "status"
               ? STATUSES.filter((s) => !state.hidden.includes(s)).map((s) => {
-                  const rows = visible
-                    .filter((row) => row.status === s)
-                    .sort((a, b) =>
-                      compareThreads(a.thread, b.thread, state.sortBy),
-                    );
+                  const rows = families.filter((family) => family.status === s);
                   const count =
                     rows.length + (s === "draft" ? newDrafts.length : 0);
                   if (!count) return null;
                   return (
                     <Group key={s} id={`status:${s}`} title={STATUS_LABEL[s]}>
-                      {rows.map(row)}
+                      {rows.map(({ node }) => row(node, s))}
                       {s === "draft" && newDrafts.map(draftRow)}
                     </Group>
                   );
@@ -217,11 +247,12 @@ function ThreadsList(props: PluginThreadListProps) {
               : [...projects]
                   .sort((a, b) => a.name.localeCompare(b.name))
                   .map((project) => {
-                    const rows = visible
-                      .filter((row) => row.thread.projectId === project.id)
-                      .sort((a, b) =>
-                        compareThreads(a.thread, b.thread, state.sortBy),
-                      );
+                    const rows = buildThreadTree(
+                      visible.filter(
+                        (row) => row.thread.projectId === project.id,
+                      ),
+                      state.sortBy,
+                    );
                     const drafts = newDrafts.filter(
                       (draft) => draft.id === project.id,
                     );
@@ -231,7 +262,7 @@ function ThreadsList(props: PluginThreadListProps) {
                         id={`project:${project.id}`}
                         title={project.name}
                       >
-                        {rows.map(row)}
+                        {rows.map((node) => row(node))}
                         {drafts.map(draftRow)}
                       </Group>
                     ) : null;

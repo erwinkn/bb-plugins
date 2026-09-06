@@ -46,6 +46,17 @@ const mount = () =>
   renderSlot(app.threadLists[0], props, {
     sidebarThreads: { threads, projects },
   });
+// jsdom has no PointerEvent constructor. Preserve the fields Radix uses.
+function touch(target: Element, type: string, pointerType = "touch") {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: 40,
+    clientY: 60,
+  });
+  Object.defineProperty(event, "pointerType", { value: pointerType });
+  fireEvent(target, event);
+}
 beforeEach(() => {
   localStorage.clear();
   updateState(() => parseState(null));
@@ -61,7 +72,491 @@ afterEach(async () => {
 });
 
 describe("activity sidebar", () => {
-  it("uses plain group labels and only working spinners or unread dots on rows", () => {
+  it.each(["status", "project"] as const)(
+    "reveals three more children at a time and can shorten the list in %s view",
+    (groupBy) => {
+      updateState((state) => ({ ...state, groupBy }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: {
+          projects,
+          threads: [
+            thread({ id: "parent", title: "Parent" }),
+            ...Array.from({ length: 8 }, (_, i) =>
+              thread({
+                id: `child-${i}`,
+                title: `Child ${i}`,
+                parentThreadId: "parent",
+                updatedAt: 1000 - i,
+              }),
+            ),
+          ],
+        },
+      });
+      const list = slot.getByRole("list", { name: "Children of Parent" });
+      const rowCount = () =>
+        list.querySelectorAll("[data-sidebar-thread-id]").length;
+      const more = () =>
+        within(list).getByRole("button", { name: /^Show more children/ });
+      expect(rowCount()).toBe(3);
+      expect(more().textContent).toContain("5");
+      fireEvent.click(more());
+      expect(rowCount()).toBe(6);
+      const less = within(list).getByRole("button", {
+        name: /^Show fewer children/,
+      });
+      less.focus();
+      fireEvent.click(less);
+      expect(rowCount()).toBe(3);
+      expect(document.activeElement).toBe(more());
+      fireEvent.click(more());
+      const finalMore = more();
+      finalMore.focus();
+      fireEvent.click(finalMore);
+      expect(rowCount()).toBe(8);
+      expect(document.activeElement).toBe(
+        within(list).getByRole("button", { name: /^Show fewer children/ }),
+      );
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
+      expect(props.onNavigate).not.toHaveBeenCalled();
+      fireEvent.click(
+        within(list).getByRole("button", { name: /^Show fewer children/ }),
+      );
+      expect(rowCount()).toBe(3);
+    },
+  );
+  it("caps nesting at children and grandchildren without losing deeper threads", () => {
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: Array.from({ length: 7 }, (_, i) =>
+          thread({
+            id: `level-${i}`,
+            title: `Level ${i}`,
+            parentThreadId: i ? `level-${i - 1}` : null,
+          }),
+        ),
+      },
+    });
+    expect(
+      slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(5);
+    expect(
+      slot.container.querySelector('[data-thread-children-depth="3"]'),
+    ).toBeNull();
+    const list = slot.getByRole("list", { name: "Descendants of Level 1" });
+    fireEvent.click(
+      within(list).getByRole("button", { name: /^Show more descendants/ }),
+    );
+    expect(
+      slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(7);
+    expect(
+      Array.from(list.children).filter((el) =>
+        el.hasAttribute("data-thread-node"),
+      ),
+    ).toHaveLength(5);
+    const deepest = list.querySelector('[data-sidebar-thread-id="level-6"]')!;
+    fireEvent.focus(deepest);
+    expect(
+      document.querySelector('[data-thread-info="level-6"]')?.textContent,
+    ).toContain("Level 5");
+    fireEvent.click(deepest);
+    expect(slot.inspection.sidebarActionCalls).toEqual([
+      { method: "open", threadId: "level-6", options: { split: false } },
+    ]);
+  });
+  it("keeps the selected descendant visible without expanding every preceding sibling", () => {
+    const slot = renderSlot(
+      app.threadLists[0],
+      { ...props, activeThreadId: "deep-active" },
+      {
+        sidebarThreads: {
+          projects,
+          threads: [
+            thread({ id: "parent", title: "Parent" }),
+            ...Array.from({ length: 1000 }, (_, i) =>
+              thread({
+                id: `child-${i}`,
+                parentThreadId: "parent",
+                updatedAt: 2000 - i,
+              }),
+            ),
+            thread({
+              id: "deep-active",
+              parentThreadId: "child-999",
+              indicator: "runtime",
+            }),
+          ],
+        },
+      },
+    );
+    expect(
+      slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(6);
+    expect(
+      slot.container
+        .querySelector('[aria-current="page"]')
+        ?.getAttribute("data-sidebar-thread-id"),
+    ).toBe("deep-active");
+    expect(
+      within(slot.getByRole("region", { name: "Working" })).getByRole(
+        "button",
+        { name: /996 hidden/ },
+      ),
+    ).toBeTruthy();
+  });
+  it("still groups by a hidden descendant's status and unmounts rows in a closed group", () => {
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: [
+          thread({ id: "parent", title: "Parent" }),
+          ...Array.from({ length: 4 }, (_, i) =>
+            thread({
+              id: `child-${i}`,
+              parentThreadId: "parent",
+              updatedAt: 1000 - i,
+              hasPendingInteraction: i === 3,
+            }),
+          ),
+        ],
+      },
+    });
+    expect(
+      slot.container.querySelector('[data-sidebar-thread-id="child-3"]'),
+    ).toBeNull();
+    const group = slot.getByRole("region", { name: "Needs Attention" });
+    expect(
+      group.querySelector('[data-sidebar-thread-id="parent"]'),
+    ).not.toBeNull();
+    fireEvent.click(
+      within(group).getByRole("button", { name: "Needs Attention" }),
+    );
+    expect(
+      slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(0);
+  });
+  it.each([false, true])(
+    "uses whole-sidebar scrolling only in compact mode: %s",
+    (isCompactViewport) => {
+      const slot = renderSlot(
+        app.threadLists[0],
+        { ...props, isCompactViewport },
+        { sidebarThreads: { threads, projects } },
+      );
+      const root = slot.container.querySelector("[data-activity-sidebar]")!;
+      const groups = root.querySelector("[data-activity-thread-groups]")!;
+      const styles = root.querySelector("[data-activity-mobile-scroll]");
+      expect(root.hasAttribute("data-mobile-scroll")).toBe(isCompactViewport);
+      expect(groups.classList.contains("overflow-y-auto")).toBe(
+        !isCompactViewport,
+      );
+      expect(root.classList.contains("h-full")).toBe(!isCompactViewport);
+      expect(Boolean(styles)).toBe(isCompactViewport);
+      if (styles) {
+        // Host overrides are gated by this mounted list, not by a global
+        // viewport selector that would also change other sidebar providers.
+        expect(styles.textContent).toContain(
+          ":has([data-activity-sidebar][data-mobile-scroll])",
+        );
+        slot.lifecycle.unmount();
+        expect(
+          document.querySelector("[data-activity-mobile-scroll]"),
+        ).toBeNull();
+      }
+    },
+  );
+  it.each(["working", "child"])(
+    "archives the selected %s thread through BB's native action",
+    async (id) => {
+      const slot = mount();
+      const row = slot.container.querySelector(
+        `[data-sidebar-thread-id="${id}"]`,
+      )!;
+      fireEvent.contextMenu(row);
+      const menu = await slot.findByRole("menu");
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Archive" }));
+      expect(slot.inspection.sidebarActionCalls).toEqual([
+        { method: "archive", threadId: id },
+      ]);
+      expect(props.onNavigate).not.toHaveBeenCalled();
+      expect(slot.queryByRole("menu")).toBeNull();
+    },
+  );
+  it("opens row actions on right-click without an actions button or navigation", async () => {
+    const slot = mount();
+    expect(slot.queryByRole("button", { name: /^Actions for/ })).toBeNull();
+    const row = slot.container.querySelector(
+      '[data-sidebar-thread-id="unread"]',
+    )!;
+    fireEvent.contextMenu(row, { clientX: 40, clientY: 60 });
+    const menu = await slot.findByRole("menu", {
+      name: "Actions for New reply",
+    });
+    expect(menu.hasAttribute("data-bb-portaled-overlay")).toBe(true);
+    expect(
+      document.querySelector("[data-thread-touch-selection-guard]"),
+    ).toBeNull();
+    expect(slot.inspection.sidebarActionCalls).toEqual([]);
+    expect(props.onNavigate).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(menu).getByRole("menuitem", { name: "Mark as read" }),
+    );
+    expect(slot.inspection.sidebarActionCalls).toEqual([
+      { method: "setRead", threadId: "unread", read: true },
+    ]);
+  });
+  it.each([{ key: "ContextMenu" }, { key: "F10", shiftKey: true }])(
+    "opens row actions from the keyboard with $key",
+    async (key) => {
+      const slot = mount();
+      const row = slot.container.querySelector(
+        '[data-sidebar-thread-id="done"]',
+      )!;
+      (row as HTMLElement).focus();
+      fireEvent.keyDown(row, key);
+      const menu = await slot.findByRole("menu", {
+        name: "Actions for Read reply",
+      });
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Pin" }));
+      expect(slot.inspection.sidebarActionCalls).toEqual([
+        { method: "setPinned", threadId: "done", pinned: true },
+      ]);
+    },
+  );
+  it("opens a child's menu after a long press and suppresses the release click", async () => {
+    const slot = mount();
+    const row = slot.container.querySelector(
+      '[data-sidebar-thread-id="child"]',
+    )!;
+    vi.useFakeTimers();
+    try {
+      touch(row, "pointerdown");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(449);
+      });
+      expect(slot.queryByRole("menu")).toBeNull();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(
+        slot.getByRole("menu", { name: "Actions for Blocked child" }),
+      ).toBeTruthy();
+      expect(
+        slot.queryByRole("menu", { name: "Actions for Running parent" }),
+      ).toBeNull();
+      touch(row, "pointerup");
+      fireEvent.click(row, { detail: 1 });
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
+      fireEvent.keyDown(slot.getByRole("menu"), { key: "Escape" });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10);
+      });
+      expect(slot.queryByRole("menu")).toBeNull();
+      touch(row, "pointerdown");
+      touch(row, "pointerup");
+      fireEvent.click(row);
+      expect(slot.inspection.sidebarActionCalls).toEqual([
+        { method: "open", threadId: "child", options: { split: false } },
+      ]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(800);
+      });
+      expect(slot.queryByRole("menu")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each(["dismiss", "unmount"])(
+    "blocks background text selection only while a touch menu is open, then restores it on %s",
+    async (finish) => {
+      const slot = mount();
+      const row = slot.container.querySelector(
+        '[data-sidebar-thread-id="child"]',
+      )!;
+      const panel = document.createElement("div");
+      panel.textContent = "Existing main panel selection";
+      panel.style.userSelect = "text";
+      document.body.append(panel);
+      vi.useFakeTimers();
+      try {
+        touch(row, "pointerdown");
+        expect(
+          document.querySelector("[data-thread-touch-selection-guard]"),
+        ).toBeNull();
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(450);
+        });
+        touch(row, "pointerup");
+        expect(
+          document.querySelectorAll("[data-thread-touch-selection-guard]"),
+        ).toHaveLength(1);
+        for (const type of ["selectstart", "contextmenu"]) {
+          const event = new Event(type, { bubbles: true, cancelable: true });
+          fireEvent(panel, event);
+          expect(event.defaultPrevented).toBe(true);
+        }
+        if (finish === "dismiss") {
+          fireEvent.keyDown(slot.getByRole("menu"), { key: "Escape" });
+        } else {
+          slot.lifecycle.unmount();
+        }
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10);
+        });
+        expect(
+          document.querySelector("[data-thread-touch-selection-guard]"),
+        ).toBeNull();
+        const event = new Event("selectstart", {
+          bubbles: true,
+          cancelable: true,
+        });
+        fireEvent(panel, event);
+        expect(event.defaultPrevented).toBe(false);
+        expect(panel.style.userSelect).toBe("text");
+      } finally {
+        panel.remove();
+        vi.useRealTimers();
+      }
+    },
+  );
+  it("keeps BB's programmatic shortcut clicks working after a menu closes", async () => {
+    const slot = mount();
+    const row = slot.container.querySelector(
+      '[data-sidebar-thread-id="done"]',
+    )!;
+    fireEvent.contextMenu(row);
+    const menu = await slot.findByRole("menu");
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    fireEvent.click(row, { detail: 0 });
+    expect(slot.inspection.sidebarActionCalls).toEqual([
+      { method: "open", threadId: "done", options: { split: false } },
+    ]);
+  });
+  it.each(["pointerup", "pointermove", "pointercancel"])(
+    "cancels a pending long press on %s",
+    async (type) => {
+      const slot = mount();
+      const row = slot.container.querySelector(
+        '[data-sidebar-thread-id="done"]',
+      )!;
+      vi.useFakeTimers();
+      try {
+        touch(row, "pointerdown");
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(100);
+        });
+        touch(row, type);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(750);
+        });
+        expect(slot.queryByRole("menu")).toBeNull();
+        expect(slot.inspection.sidebarActionCalls).toEqual([]);
+        if (type === "pointerup") {
+          fireEvent.click(row);
+          expect(slot.inspection.sidebarActionCalls).toEqual([
+            { method: "open", threadId: "done", options: { split: false } },
+          ]);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+  it.each(["status", "project"] as const)(
+    "uses only each child's own status marker in %s view",
+    (groupBy) => {
+      updateState((state) => ({ ...state, groupBy }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: {
+          projects,
+          threads: [
+            thread({ id: "parent", title: "Parent", indicator: "runtime" }),
+            thread({
+              id: "done",
+              title: "Child done",
+              parentThreadId: "parent",
+            }),
+            thread({
+              id: "working",
+              title: "Child working",
+              parentThreadId: "parent",
+              indicator: "runtime",
+            }),
+            thread({
+              id: "unread",
+              title: "Child unread",
+              parentThreadId: "parent",
+              isUnread: true,
+            }),
+            thread({
+              id: "attention",
+              title: "Child attention",
+              parentThreadId: "parent",
+              hasPendingInteraction: true,
+            }),
+            thread({
+              id: "draft",
+              title: "Child draft",
+              parentThreadId: "parent",
+            }),
+          ],
+        },
+      });
+      act(() => recordDraft("thread:draft", true));
+      const children = slot.getByRole("list", { name: "Children of Parent" });
+      fireEvent.click(
+        within(children).getByRole("button", { name: /^Show more children/ }),
+      );
+      for (const [id, label] of [
+        ["done", "Done"],
+        ["working", "Working"],
+        ["unread", "Unread"],
+        ["attention", "Needs Attention"],
+        ["draft", "Draft"],
+      ]) {
+        const row = children.querySelector(
+          `[data-sidebar-thread-id="${id}"]`,
+        ) as HTMLElement;
+        expect(within(row).queryByText(label)).toBeNull();
+        if (id === "done") {
+          expect(within(row).queryByRole("img")).toBeNull();
+        } else {
+          const marker = within(row).getByRole("img", { name: label });
+          if (id === "working" || id === "unread") {
+            expect(marker.querySelector(".bg-sky-600")).not.toBeNull();
+            expect(marker.querySelector("svg")).toBeNull();
+          } else {
+            expect(marker.querySelector("svg")).not.toBeNull();
+          }
+        }
+      }
+    },
+  );
+  it("cancels the long press when its row unmounts", async () => {
+    const slot = mount();
+    vi.useFakeTimers();
+    try {
+      touch(
+        slot.container.querySelector('[data-sidebar-thread-id="child"]')!,
+        "pointerdown",
+      );
+      slot.lifecycle.unmount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(800);
+      });
+      expect(document.querySelector('[role="menu"]')).toBeNull();
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("uses plain group labels and status icons for attention, draft, and working, plus unread dots", () => {
     const slot = mount();
     act(() => {
       recordDraft("thread:done", true);
@@ -91,18 +586,89 @@ describe("activity sidebar", () => {
         .querySelector("svg"),
     ).toBeNull();
     expect(unread.querySelector(".rounded-full")).not.toBeNull();
+    const draft = slot.container.querySelector(
+      '[data-sidebar-thread-id="done"]',
+    )!;
     expect(
-      slot.container.querySelector('[data-sidebar-thread-id="done"] svg'),
-    ).toBeNull();
+      within(draft as HTMLElement)
+        .getByRole("img", { name: "Draft" })
+        .querySelector("svg"),
+    ).not.toBeNull();
+    const attention = slot.container.querySelector(
+      '[data-sidebar-thread-id="child"]',
+    )!;
+    expect(
+      within(attention as HTMLElement)
+        .getByRole("img", { name: "Needs Attention" })
+        .querySelector("svg"),
+    ).not.toBeNull();
     expect(slot.getByText("New thread draft")).toBeTruthy();
+    expect(
+      within(
+        slot.getByRole("button", { name: "Draft New thread draft One" }),
+      ).getByRole("img", { name: "Draft" }),
+    ).toBeTruthy();
   });
-  it("groups children by their own status, excludes archived threads, and preserves shortcuts", () => {
+  it("uses an inset arrow inside each child row instead of an outside connecting line", () => {
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: [
+          thread({ id: "parent", title: "Done parent" }),
+          thread({
+            id: "child",
+            title: "Done child",
+            parentThreadId: "parent",
+          }),
+          thread({
+            id: "grandchild",
+            title: "Draft child",
+            parentThreadId: "child",
+          }),
+        ],
+      },
+    });
+    act(() => recordDraft("thread:grandchild", true));
+    const parent = slot.container.querySelector(
+      '[data-sidebar-thread-id="parent"]',
+    )!;
+    const child = slot.container.querySelector(
+      '[data-sidebar-thread-id="child"]',
+    )!;
+    const grandchild = slot.container.querySelector(
+      '[data-sidebar-thread-id="grandchild"]',
+    )!;
+    expect(parent.querySelector("[data-child-arrow]")).toBeNull();
+    expect(child.querySelector("[data-child-arrow]")).not.toBeNull();
+    expect(within(child as HTMLElement).queryByRole("img")).toBeNull();
+    expect(child.classList.contains("pl-7")).toBe(true);
+    expect(grandchild.querySelector("[data-child-arrow]")).not.toBeNull();
+    expect(
+      within(grandchild as HTMLElement).getByRole("img", { name: "Draft" }),
+    ).toBeTruthy();
+    expect(grandchild.classList.contains("pl-12")).toBe(true);
+    for (const list of slot.getAllByRole("list", { name: /Children of/ })) {
+      expect(list.classList.contains("border-l")).toBe(false);
+      expect(list.classList.contains("ml-6")).toBe(true);
+    }
+  });
+  it("nests children in their family's priority group, excludes archives, and preserves shortcuts", () => {
     const slot = mount();
     expect(
       slot
         .getAllByRole("region")
         .map((region) => region.getAttribute("aria-label")),
-    ).toEqual(["Needs Attention", "Unread", "Working", "Done"]);
+    ).toEqual(["Needs Attention", "Unread", "Done"]);
+    const children = slot.getByRole("list", {
+      name: "Children of Running parent",
+    });
+    expect(within(children).getByText("Blocked child")).toBeTruthy();
+    expect(children.closest("section")?.getAttribute("aria-label")).toBe(
+      "Needs Attention",
+    );
+    expect(
+      slot.container.querySelectorAll('[data-sidebar-thread-id="child"]'),
+    ).toHaveLength(1);
     expect(
       within(slot.getByRole("region", { name: "Needs Attention" })).getByText(
         "Blocked child",
@@ -121,6 +687,74 @@ describe("activity sidebar", () => {
       options: { split: false },
     });
     expect(props.onNavigate).toHaveBeenCalledOnce();
+  });
+  it("nests mixed-status children in Project view and preserves child actions", async () => {
+    updateState((state) => ({ ...state, groupBy: "project" }));
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: [
+          thread({ id: "parent", title: "Parent" }),
+          thread({
+            id: "child",
+            title: "Question",
+            parentThreadId: "parent",
+            hasPendingInteraction: true,
+          }),
+        ],
+      },
+    });
+    const children = slot.getByRole("list", { name: "Children of Parent" });
+    expect(within(children).queryByText("Needs Attention")).toBeNull();
+    expect(
+      within(children).getByRole("img", { name: "Needs Attention" }),
+    ).toBeTruthy();
+    fireEvent.click(within(children).getByRole("link"), { metaKey: true });
+    expect(slot.inspection.sidebarActionCalls).toContainEqual({
+      method: "open",
+      threadId: "child",
+      options: { split: true },
+    });
+    fireEvent.contextMenu(within(children).getByRole("link"));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    fireEvent.click(
+      slot.getByRole("menuitem", { name: "Mark as unread", hidden: true }),
+    );
+    expect(slot.inspection.sidebarActionCalls).toContainEqual({
+      method: "setRead",
+      threadId: "child",
+      read: false,
+    });
+  });
+  it("shows a child when its parent is hidden or archived", () => {
+    updateState((state) => ({ ...state, hidden: ["done"] }));
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: [
+          thread({ id: "hidden", title: "Hidden parent" }),
+          thread({
+            id: "child",
+            title: "Visible child",
+            parentThreadId: "hidden",
+            isUnread: true,
+          }),
+          thread({ id: "archived", isArchived: true }),
+          thread({
+            id: "orphan",
+            title: "Archived parent child",
+            parentThreadId: "archived",
+            hasPendingInteraction: true,
+          }),
+        ],
+      },
+    });
+    expect(slot.queryByText("Hidden parent")).toBeNull();
+    expect(slot.getByText("Visible child")).toBeTruthy();
+    expect(slot.getByText("Archived parent child")).toBeTruthy();
+    expect(slot.queryByRole("list", { name: /Children of/ })).toBeNull();
   });
   it("shows Threads without filters and ignores the old saved project selector", () => {
     updateState(() => parseState(JSON.stringify({ projectId: "project-1" })));
@@ -142,12 +776,13 @@ describe("activity sidebar", () => {
     expect(empty.queryAllByRole("region")).toHaveLength(0);
     expect(empty.getByText("No matching threads.")).toBeTruthy();
   });
-  it("shows title, project, branch, and age; keeps provider in the tooltip", () => {
+  it("shows an instant, structured info card with no native tooltips", async () => {
     const slot = renderSlot(app.threadLists[0], props, {
       sidebarThreads: {
         projects,
         threads: [
           thread({
+            host: { id: "host", name: "Development Mac" },
             environment: {
               id: "env",
               name: "Local",
@@ -163,46 +798,209 @@ describe("activity sidebar", () => {
     expect(link.textContent).toContain("One");
     expect(link.textContent).toContain("feature/activity");
     expect(link.textContent).not.toContain("codex");
-    expect(link.title).toContain("codex");
+    expect(link.hasAttribute("title")).toBe(false);
+    expect(link.querySelector("[title]")).toBeNull();
     expect(link.querySelector("time")?.getAttribute("datetime")).toBe(
       new Date(100).toISOString(),
     );
+    vi.useFakeTimers();
+    try {
+      touch(link, "pointermove", "mouse");
+      // Radix schedules a zero-delay timer, not a hover dwell delay.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    const tooltip = slot.getByRole("tooltip");
+    expect(link.getAttribute("aria-describedby")).toBe(tooltip.id);
+    const card = document.querySelector('[data-thread-info="thread-1"]')!;
+    expect(card.hasAttribute("data-bb-portaled-overlay")).toBe(true);
+    for (const label of [
+      "Project",
+      "Branch",
+      "Machine",
+      "Workspace",
+      "Created",
+      "Updated",
+    ]) {
+      expect(
+        Array.from(card.querySelectorAll("dt")).some(
+          (e) => e.textContent === label,
+        ),
+      ).toBe(true);
+    }
+    for (const value of [
+      "codex",
+      "Development Mac",
+      "Worktree · Local",
+      "feature/activity",
+    ]) {
+      expect(card.textContent).toContain(value);
+    }
+    expect(card.textContent).not.toContain("Manage Environment");
+    expect(slot.inspection.sidebarActionCalls).toEqual([]);
   });
-  it(
-    "supports keyboard menus, status filters, and project grouping",
-    async () => {
-      const slot = mount();
-      fireEvent.keyDown(
-        slot.getByRole("button", { name: "Threads display options" }),
-        { key: "Enter" },
-      );
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
+  it("shows child details on keyboard focus and closes them with Escape", () => {
+    const slot = mount();
+    const row = slot.container.querySelector(
+      '[data-sidebar-thread-id="child"]',
+    )!;
+    fireEvent.focus(row);
+    expect(slot.getByRole("tooltip").textContent).toContain(
+      "Child of Running parent",
+    );
+    const card = document.querySelector('[data-thread-info="child"]')!;
+    expect(
+      Array.from(card.querySelectorAll("dt")).map((e) => e.textContent),
+    ).not.toContain("Machine");
+    expect(card.textContent).not.toContain("Cloud");
+    fireEvent.keyDown(row, { key: "Escape" });
+    expect(slot.queryByRole("tooltip")).toBeNull();
+  });
+  it("keeps full metadata in aligned labelled rows without decorative body icons", () => {
+    const branch = "bb/" + "long-branch-name-".repeat(12);
+    const parent =
+      "A parent thread with a long title that must remain fully readable";
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: [
+          thread({ id: "parent", title: parent }),
+          thread({
+            id: "child",
+            parentThreadId: "parent",
+            isPinned: true,
+            environment: {
+              id: "env",
+              name: "Review workspace",
+              branchName: branch,
+              workspaceDisplayKind: "managed-worktree",
+            },
+            host: { id: "host", name: "Review machine" },
+          }),
+        ],
+      },
+    });
+    fireEvent.focus(
+      slot.container.querySelector('[data-sidebar-thread-id="child"]')!,
+    );
+    const card = document.querySelector('[data-thread-info="child"]')!;
+    const lists = Array.from(card.querySelectorAll("dl"));
+    expect(lists).toHaveLength(2);
+    for (const list of lists) {
+      expect(list.className).toContain("grid-cols-[64px_minmax(0,1fr)]");
+      expect(list.querySelector("svg")).toBeNull();
       expect(
-        slot
-          .getAllByRole("menuitemcheckbox", { hidden: true })
-          .map((item) => item.textContent?.replace("✓", "")),
-      ).toEqual(["Needs Attention", "Unread", "Working", "Draft", "Done"]);
-      fireEvent.click(
-        slot.getByRole("menuitemcheckbox", { name: "Done", hidden: true }),
-      );
-      expect(
-        slot.container.querySelector('section[aria-label="Done"]'),
-      ).toBeNull();
-      fireEvent.click(
-        slot.getByRole("menuitemradio", { name: "Project", hidden: true }),
-      );
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      });
-      expect(
-        slot
-          .getAllByRole("region")
-          .map((region) => region.getAttribute("aria-label")),
-      ).toEqual(["One", "Two"]);
-    },
-  );
+        Array.from(list.children).every(
+          (e) => e.tagName === "DT" || e.tagName === "DD",
+        ),
+      ).toBe(true);
+    }
+    expect(
+      Array.from(card.querySelectorAll("dt")).map((e) => e.textContent),
+    ).toEqual([
+      "Project",
+      "Branch",
+      "Machine",
+      "Workspace",
+      "Parent",
+      "Created",
+      "Updated",
+    ]);
+    expect(
+      Array.from(card.querySelectorAll("dd")).map((e) => e.textContent),
+    ).toContain(branch);
+    expect(
+      Array.from(card.querySelectorAll("dd")).map((e) => e.textContent),
+    ).toContain(parent);
+    const description = slot.getByRole("tooltip").textContent;
+    for (const fact of [
+      branch,
+      parent,
+      "Review workspace",
+      "Review machine",
+      "Pinned",
+    ]) {
+      expect(description).toContain(fact);
+    }
+  });
+  it("replaces the hover card with the row actions menu", async () => {
+    const slot = mount();
+    const row = slot.container.querySelector(
+      '[data-sidebar-thread-id="child"]',
+    )!;
+    touch(row, "pointermove", "mouse");
+    expect(await slot.findByRole("tooltip")).toBeTruthy();
+    fireEvent.contextMenu(row);
+    expect(
+      await slot.findByRole("menu", { name: "Actions for Blocked child" }),
+    ).toBeTruthy();
+    expect(slot.queryByRole("tooltip")).toBeNull();
+    expect(slot.inspection.sidebarActionCalls).toEqual([]);
+  });
+  it("does not show hover information on touch", () => {
+    const slot = mount();
+    const row = slot.container.querySelector(
+      '[data-sidebar-thread-id="done"]',
+    )!;
+    touch(row, "pointermove");
+    touch(row, "pointerdown");
+    fireEvent.focus(row);
+    touch(row, "pointerup");
+    expect(slot.queryByRole("tooltip")).toBeNull();
+  });
+  it("closes the info card on scrolling or a BB shortcut click", () => {
+    const slot = mount();
+    const row = slot.container.querySelector(
+      '[data-sidebar-thread-id="done"]',
+    )!;
+    fireEvent.focus(row);
+    expect(slot.getByRole("tooltip")).toBeTruthy();
+    fireEvent.scroll(slot.container);
+    expect(slot.queryByRole("tooltip")).toBeNull();
+    fireEvent.blur(row);
+    fireEvent.focus(row);
+    expect(slot.getByRole("tooltip")).toBeTruthy();
+    fireEvent.click(row, { detail: 0 });
+    expect(slot.queryByRole("tooltip")).toBeNull();
+    expect(slot.inspection.sidebarActionCalls).toEqual([
+      { method: "open", threadId: "done", options: { split: false } },
+    ]);
+  });
+  it("supports keyboard menus, status filters, and project grouping", async () => {
+    const slot = mount();
+    fireEvent.keyDown(
+      slot.getByRole("button", { name: "Threads display options" }),
+      { key: "Enter" },
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(
+      slot
+        .getAllByRole("menuitemcheckbox", { hidden: true })
+        .map((item) => item.textContent?.replace("✓", "")),
+    ).toEqual(["Needs Attention", "Unread", "Working", "Draft", "Done"]);
+    fireEvent.click(
+      slot.getByRole("menuitemcheckbox", { name: "Done", hidden: true }),
+    );
+    expect(
+      slot.container.querySelector('section[aria-label="Done"]'),
+    ).toBeNull();
+    fireEvent.click(
+      slot.getByRole("menuitemradio", { name: "Project", hidden: true }),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(
+      slot
+        .getAllByRole("region")
+        .map((region) => region.getAttribute("aria-label")),
+    ).toEqual(["One", "Two"]);
+  });
   it.each(["status", "project"] as const)(
     "sorts by created or updated date in %s view and keeps the choice",
     async (groupBy) => {
@@ -260,7 +1058,7 @@ describe("activity sidebar", () => {
       expect(rowTime.getAttribute("datetime")).toBe(
         new Date(1000).toISOString(),
       );
-      expect(rowTime.getAttribute("title")).toMatch(/^Created /);
+      expect(rowTime.getAttribute("aria-label")).toMatch(/^Created /);
       expect(
         parseState(localStorage.getItem("bb-plugin-erwin-activity:v1")).sortBy,
       ).toBe("created");

@@ -2,7 +2,7 @@
 
 A status-first BB sidebar. It replaces only the thread list, not the rest of
 the sidebar. It uses the public Plugin SDK. It does not use a six-hour activity
-window, archive threads, or run cleanup jobs.
+window, automatically archive threads, or run cleanup jobs.
 
 ## Status rules
 
@@ -25,28 +25,68 @@ Pins appear first within each group. The display menu offers **Date updated**
 (the default) and **Date created**, both newest first. The choice applies in
 both Status and Project views and stays when you switch views or reload.
 The sort uses BB's `updatedAt` or `createdAt`, not attention events.
-Child threads use their own
-status; a blocked child is not hidden below a running parent. A child row has
-an arrow, and its tooltip names its parent.
+Children appear below their parent, with an inset arrow inside each child row
+instead of a connecting line outside the rows. Each parent initially shows three
+children. Show more reveals three more at a time; Show less restores the preview.
+The selected thread and its ancestor path remain visible even outside that preview.
+Expansion stays only while the family is mounted, not across reloads or group collapse.
+Indentation stops at two levels below a root: children and grandchildren.
+Deeper descendants appear at the second level in family order, with their actual
+parent still shown in the info card. Hidden descendants still contribute to the
+family's status. In Status view, a family appears in its highest-priority
+category using the group order above. Each row keeps its own status. Child rows
+use only status markers, with no extra status text. Working and unread children
+have a blue dot; attention and draft children keep their status icons; Done
+children have no status marker. Project view nests children within the same project.
+If a parent is missing, archived, or hidden by a status filter, its visible
+children appear as separate roots. Cross-project children appear under their
+own project in Project view. Parent names appear in the hover info card.
 
 The display menu switches between Status and Project grouping and shows or
 hides each status. Status groups keep the order above. Project groups sort by
-name; threads inside each project follow the selected date sort, regardless of
-status. New-thread drafts have no thread timestamp and appear after dated
+name. Roots and siblings follow the selected date sort, with pins first;
+children always stay below their parent. A child's timestamp or pin does not
+move its parent. New-thread drafts have no thread timestamp and appear after dated
 threads in their group. Groups can collapse. There is no thread search field or
 project selector. Old saved project filters are ignored.
 Preferences stay on this client. Sorting and grouping do not change thread state.
 
+On mobile, the whole sidebar scrolls together, including navigation, the Threads
+heading, groups, and footer. There is no separate thread-list scroll area.
+Desktop keeps its fixed heading and scrolling thread list. The SDK has no
+whole-sidebar scroll option, so compact mode applies a small CSS adapter to
+BB's `data-sidebar` regions. It applies only while this list is mounted and
+does not change host inline styles. Check this host layout after BB upgrades.
+
 Rows show the title first, then muted project and branch text. The age for the
 selected date appears on the right and refreshes each minute. The provider and full branch
-remain in the tooltip. Working rows have a green spinner; unread rows have a
-blue dot. Other rows have no status icon. Group headers have plain labels and
+appear in an instant info card to the right on hover or keyboard focus.
+The card uses a 14 px title and 12 px details, with visible labels and values
+aligned in two columns. The branch and parent stay fully readable. Labels,
+provider, and dates use BB's subtle text color; status and values use the normal
+foreground. Only the status has an icon. Missing fields are omitted.
+It uses BB's reported machine name, not a guessed local/cloud label. There is
+no environment management action. Long text wraps, and the card adjusts at
+viewport edges. Escape, scrolling, or opening thread actions dismisses it.
+Touch keeps tap-to-open and long-press actions, without a hover card.
+Working rows have a green spinner; unread rows have a
+blue dot. Needs Attention rows have an amber alert icon. Draft rows, including
+new-thread drafts, have a violet dashed-circle icon. Done rows have no status
+icon. Child arrows stay separate from status icons. Group headers have plain labels and
 centered collapse chevrons, with no status icons, counts, or hover descriptions.
 The status menu retains its colored icons. The layout uses BB's theme tokens.
 
-Rows use BB's native open, split, pin, and read actions. The plugin also keeps
-the attributes needed for BB's thread navigation shortcuts. No bulk read,
-archive, or delete actions are added.
+Rows use BB's native open, split, pin, read, and archive actions. The plugin also keeps
+the attributes needed for BB's thread navigation shortcuts. Right-click a row
+on desktop or hold it for 450 ms on mobile to open its actions. Scrolling,
+releasing early, or cancelling the touch cancels the hold. With keyboard focus
+on a row, press Shift+F10 or the Menu key. While a touch menu is open, a temporary
+selection guard prevents the native hold from selecting background text. It is
+removed on close or unmount; desktop menus are unchanged.
+There is no actions button. A normal
+click or tap still opens the thread. Archive uses BB's native flow, which also
+archives child threads and closes their open panes. No bulk read or delete
+actions are added.
 
 ## Draft limits
 
