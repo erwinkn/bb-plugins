@@ -116,7 +116,10 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const compact = width > 0 && width < COMPACT_BREAKPOINT_PX;
   const effectiveTreeWidth = compact ? width : clampTreeWidth(treeWidth, width || Number.POSITIVE_INFINITY);
 
+  // Deferred directories load on expand; one request per path until it lands.
+  const deferredRequests = useRef(new Set<string>());
   const loadTree = useCallback(() => {
+    deferredRequests.current.clear();
     setTree((current) => ({ ...current, isLoading: true, error: null }));
     return rpc
       .call("tree", { source })
@@ -128,6 +131,28 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         setTree({ ...EMPTY_TREE, error: error instanceof Error ? error.message : "Could not list files" });
       });
   }, [rpc, source]);
+
+  const loadDirectory = useCallback(
+    (subpath: string) => {
+      if (deferredRequests.current.has(subpath)) return;
+      deferredRequests.current.add(subpath);
+      rpc
+        .call("tree", { source, subpath })
+        .then((result) => {
+          setTree((current) => {
+            const prefix = `${subpath}/`;
+            const kept = current.entries.filter((entry) => entry.path !== subpath && !entry.path.startsWith(prefix));
+            return { ...current, entries: [...kept, { path: subpath, kind: "directory" }, ...result.entries] };
+          });
+          if (result.truncated) toast.message(`Showing the first entries of ${subpath}; it is larger.`);
+        })
+        .catch((error: unknown) => {
+          deferredRequests.current.delete(subpath);
+          toast.error(error instanceof Error ? error.message : `Could not list ${subpath}`);
+        });
+    },
+    [rpc, source],
+  );
 
   const needTree = treeOpen || quickOpen;
   useEffect(() => {
@@ -277,6 +302,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         activePath={activePath}
         onOpenFile={openFile}
         onRefresh={() => void loadTree()}
+        onExpandDeferred={loadDirectory}
         onCreate={createEntry}
         onRename={renameEntry}
         onDelete={deleteEntry}

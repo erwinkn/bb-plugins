@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { listLocalTree } from "./lib/local-tree.js";
 import { BB_DEFAULT, bbThemeId, pairIdFromBbTheme, THEME_PAIRS } from "./lib/themes.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
@@ -55,11 +56,16 @@ export const rpcContract = defineRpcContract({
       z.object({ kind: z.literal("unsupported"), reason: z.string() }),
     ]),
   },
+  /**
+   * The workspace's entries, or with `subpath` those under one directory
+   * (paths stay workspace-relative). Directories marked `deferred` were not
+   * descended into; list them with `subpath` when the user expands them.
+   */
   tree: {
-    input: z.object({ source: sourceSchema }).strict(),
+    input: z.object({ source: sourceSchema, subpath: z.string().optional() }).strict(),
     output: z.object({
       root: z.string(),
-      entries: z.array(z.object({ path: z.string(), kind: z.enum(["file", "directory"]) })),
+      entries: z.array(z.object({ path: z.string(), kind: z.enum(["file", "directory"]), deferred: z.literal(true).optional() })),
       truncated: z.boolean(),
     }),
   },
@@ -215,6 +221,25 @@ export default async function plugin(bb: BbPluginApi) {
     return assetLease;
   }
 
+  let primaryHostId: string | null | undefined;
+
+  /**
+   * Whether `target` is a directory on the machine this plugin runs on: its
+   * host is BB's primary host (or none, for thread storage) and the path
+   * exists here. Anything else is read through BB's daemon.
+   */
+  async function isLocalWorkspace(target: { rootPath: string; hostId?: string }): Promise<boolean> {
+    if (target.hostId !== undefined) {
+      primaryHostId ??= (await bb.sdk.system.config()).primaryHostId;
+      if (target.hostId !== primaryHostId) return false;
+    }
+    try {
+      return statSync(target.rootPath).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
   async function threadStorageRoot(): Promise<string> {
     const override = process.env.BB_THREAD_STORAGE;
     if (override && override.trim().length > 0) return path.resolve(override);
@@ -309,10 +334,17 @@ export default async function plugin(bb: BbPluginApi) {
       };
     },
 
-    async tree({ source }) {
+    async tree({ source, subpath = "" }) {
+      assertInsideWorkspace(subpath);
       const target = await resolveTarget(source, ".");
+      const clean = subpath.replace(/^\/+|\/+$/g, "");
+      if (await isLocalWorkspace(target)) {
+        const listing = await listLocalTree(target.rootPath, clean, MAX_TREE_ENTRIES);
+        return { root: target.rootPath, ...listing };
+      }
+      // Another host: BB's daemon lists it, without hidden entries, node_modules, or symlinks.
       const result = await bb.sdk.files.listPaths({
-        path: target.rootPath,
+        path: clean === "" ? target.rootPath : path.posix.join(target.rootPath, clean),
         includeFiles: true,
         includeDirectories: true,
         limit: MAX_TREE_ENTRIES,
@@ -320,7 +352,7 @@ export default async function plugin(bb: BbPluginApi) {
       });
       return {
         root: target.rootPath,
-        entries: result.paths.map((entry) => ({ path: entry.path, kind: entry.kind })),
+        entries: result.paths.map((entry) => ({ path: clean === "" ? entry.path : `${clean}/${entry.path}`, kind: entry.kind })),
         truncated: result.truncated,
       };
     },

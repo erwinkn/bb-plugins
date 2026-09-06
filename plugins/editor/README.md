@@ -18,7 +18,7 @@ disable that one before you install this one.
   checkout. Hidden files and directories are listed, as in other editors;
   only VS Code's default excludes (`.git`, `.hg`, `.svn`, `.DS_Store`,
   `Thumbs.db`) are hidden. `node_modules` and symlinked directories appear
-  collapsed and list when expanded. Workspaces on another host go through
+  collapsed and list one level at a time as you expand them. Workspaces on another host go through
   BB's own lister, which drops hidden entries.
 - **Toolbar.** Back and forward through the files you opened, the path
   (click to copy), then `⋯` (save, discard, reload, open in new tab, copy

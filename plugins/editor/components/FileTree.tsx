@@ -17,6 +17,8 @@ export interface FileTreeProps {
   activePath: string | null;
   onOpenFile: (path: string, options: { newTab: boolean }) => void;
   onRefresh: () => void;
+  /** Called for an expanded directory whose contents are not listed yet. */
+  onExpandDeferred: (path: string) => void;
   /** Resolves when the entry exists; rejects with a message to show inline. */
   onCreate: (path: string, kind: CreateKind) => Promise<void>;
   onRename: (path: string, newPath: string, kind: CreateKind) => Promise<void>;
@@ -43,6 +45,7 @@ export function FileTree({
   activePath,
   onOpenFile,
   onRefresh,
+  onExpandDeferred,
   onCreate,
   onRename,
   onDelete,
@@ -77,6 +80,23 @@ export function FileTree({
     () => (filtered.expand.size === 0 ? expanded : new Set([...expanded, ...filtered.expand])),
     [expanded, filtered.expand],
   );
+
+  // Directories listed without their contents (node_modules, symlinks) load
+  // once they are open; the owner dedupes requests and merges the result.
+  const deferredPaths = useMemo(() => {
+    const paths = new Set<string>();
+    const visit = (nodes: readonly TreeNode[]) => {
+      for (const node of nodes) {
+        if (node.deferred) paths.add(node.path);
+        visit(node.children);
+      }
+    };
+    visit(tree);
+    return paths;
+  }, [tree]);
+  useEffect(() => {
+    for (const path of effectiveExpanded) if (deferredPaths.has(path)) onExpandDeferred(path);
+  }, [deferredPaths, effectiveExpanded, onExpandDeferred]);
 
   const toggle = (path: string) => {
     setExpanded((current) => {
@@ -388,6 +408,14 @@ function Rows(props: RowsProps) {
               <>
                 {draft !== null && draft.parent === node.path ? (
                   <DraftRow draft={draft} level={level + 1} onCancel={onCancelDraft} onCreate={onCreate} onDone={onCancelDraft} />
+                ) : null}
+                {node.deferred && node.children.length === 0 ? (
+                  <div
+                    className="flex h-6 items-center text-[13px] leading-6 text-muted-foreground"
+                    style={{ paddingLeft: 6 + (level + 1) * INDENT_PER_LEVEL_PX + 22 }}
+                  >
+                    Loading…
+                  </div>
                 ) : null}
                 <Rows {...props} level={level + 1} nodes={node.children} />
               </>

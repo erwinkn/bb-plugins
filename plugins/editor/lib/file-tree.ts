@@ -3,6 +3,8 @@ export type EntryKind = "file" | "directory";
 export interface FlatEntry {
   path: string;
   kind: EntryKind;
+  /** Directory whose contents are not listed yet (see the `tree` RPC). */
+  deferred?: true;
 }
 
 export interface TreeNode {
@@ -10,10 +12,12 @@ export interface TreeNode {
   name: string;
   kind: EntryKind;
   children: TreeNode[];
+  /** Contents not listed yet; expanding the node requests them. */
+  deferred: boolean;
 }
 
 export function buildTree(entries: readonly FlatEntry[]): TreeNode[] {
-  const root: TreeNode = { path: "", name: "", kind: "directory", children: [] };
+  const root: TreeNode = { path: "", name: "", kind: "directory", children: [], deferred: false };
   const byPath = new Map<string, TreeNode>([["", root]]);
 
   const directoryAt = (path: string): TreeNode => {
@@ -21,7 +25,7 @@ export function buildTree(entries: readonly FlatEntry[]): TreeNode[] {
     if (existing !== undefined) return existing;
     const separator = path.lastIndexOf("/");
     const parent = directoryAt(separator === -1 ? "" : path.slice(0, separator));
-    const node: TreeNode = { path, name: path.slice(separator + 1), kind: "directory", children: [] };
+    const node: TreeNode = { path, name: path.slice(separator + 1), kind: "directory", children: [], deferred: false };
     byPath.set(path, node);
     parent.children.push(node);
     return node;
@@ -31,13 +35,13 @@ export function buildTree(entries: readonly FlatEntry[]): TreeNode[] {
     const path = normalize(entry.path);
     if (path === "") continue;
     if (entry.kind === "directory") {
-      directoryAt(path);
+      directoryAt(path).deferred = entry.deferred === true;
       continue;
     }
     if (byPath.has(path)) continue;
     const separator = path.lastIndexOf("/");
     const parent = directoryAt(separator === -1 ? "" : path.slice(0, separator));
-    const node: TreeNode = { path, name: path.slice(separator + 1), kind: "file", children: [] };
+    const node: TreeNode = { path, name: path.slice(separator + 1), kind: "file", children: [], deferred: false };
     byPath.set(path, node);
     parent.children.push(node);
   }
