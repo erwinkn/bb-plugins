@@ -1,5 +1,5 @@
 Run Devin CLI inside bb with a native provider icon and name, sign-in guidance,
-an executable setting, and the models available through your Devin account.
+an executable setting, and grouped models with effort controls from your Devin account.
 
 The plugin uses bb's public ACP bridge. Install Devin CLI and sign in on the
 machine where your threads run. Authentication stays with Devin; the plugin

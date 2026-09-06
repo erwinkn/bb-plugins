@@ -20,7 +20,7 @@ export function devinProvider(command: string): PluginProviderDeclaration {
     },
     models: { scope: "host" },
     maintenance: { health: true, usage: true, installation: false },
-    // Preserve the previous generic ACP contract; the live model catalog is precise.
+    // The live model catalog supplies each model group's exact effort choices.
     capabilities: {
       supportsServiceTier: true,
       supportsNativeUserQuestion: false,
@@ -29,7 +29,7 @@ export function devinProvider(command: string): PluginProviderDeclaration {
       supportsThreadRename: false,
       fork: "none",
       permissionModes: ["accept-edits", "full"],
-      reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
     },
     serviceTiers: [{ id: "default", label: "Default" }, { id: "fast", label: "Fast" }],
     composerActions: [],

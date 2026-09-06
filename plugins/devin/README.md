@@ -129,3 +129,30 @@ that artifact. The plugin starts no agent process while importing its code.
 The native SVG mark is a vector adaptation of the Devin documentation favicon
 used in the earlier local plugin. This is a personal provider integration, not
 an official Cognition plugin.
+
+## Model choices
+
+The plugin reads `devin models list --format json`. It groups variants by the
+CLI's model family and context size. BB shows the supported effort choices next
+to the model. The bridge maps the selection to an exact native variant ID before
+it starts or resumes an ACP session or sends a turn. It does not build a model
+ID from a guessed suffix. Existing threads with native variant IDs keep those
+IDs; the variants remain in the selected-only catalog.
+
+`Devin default` uses the CLI's configured default. The JSON catalog does not
+report that setting, so the plugin does not choose a paid model on your behalf.
+A catalog lookup runs for at most 15 seconds with a 2 MiB output limit. Selection
+lookups can reuse the result for 60 seconds. Reloading the model list refreshes
+it. A failed lookup produces an error and is not cached.
+
+BB exposes Fast per provider, not per model. The control can therefore appear
+for a model without a Fast variant. A grouped selection with an unavailable
+effort or Fast combination fails with a clear message; it does not silently use
+another variant. Model descriptions state whether the group has Fast variants.
+The native Default row and saved native variant IDs retain native behavior.
+
+Context sizes stay separate. Unknown effort values, such as `Minimal`, stay as
+native model rows because BB has no matching effort value. Duplicate or ambiguous
+variants also stay visible as native rows. This keeps each native choice available
+without mapping it to a different effort. The CLI model JSON and variant labels
+are version-dependent; this was verified with CLI 3000.6.14 on macOS.
