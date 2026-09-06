@@ -1,0 +1,43 @@
+@keyframes aide-wave {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.aide-wave-live .aide-bar {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: aide-wave 0.9s ease-in-out infinite;
+}
+
+.aide-wave-live .aide-bar:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.aide-wave-live .aide-bar:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+.aide-wave-live .aide-bar:nth-child(4) {
+  animation-delay: 0.36s;
+}
+
+.voice-call-controls button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aide-wave-live .aide-bar,
+  .voice-sessions .animate-pulse {
+    animation: none;
+  }
+
+  .voice-sessions .transition-transform {
+    transition: none;
+  }
+}

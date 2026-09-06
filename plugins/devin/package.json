@@ -1,0 +1,38 @@
+{
+  "name": "bb-plugin-erwin-devin",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.42.1",
+    "bbPluginSdk": ">=0.4.47"
+  },
+  "bb": {
+    "name": "Devin provider",
+    "description": "Run Devin CLI in bb through its Agent Client Protocol connection.",
+    "branding": {
+      "icon": "./assets/devin.svg"
+    },
+    "server": "./server.ts",
+    "host": "./host.ts",
+    "skills": []
+  },
+  "dependencies": {
+    "@get-bb/plugin-sdk": "0.4.47",
+    "protobufjs": "8.8.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.15",
+    "better-sqlite3": "13.0.3",
+    "cron-parser": "5.5.0",
+    "hono": "4.13.7",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3"
+  },
+  "private": true,
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import ./test-runtime.mjs --import tsx --test provider.test.ts usage.test.ts models.test.ts model-cache.test.ts && node --import ./test-runtime.mjs --import tsx bridge.test.ts"
+  }
+}

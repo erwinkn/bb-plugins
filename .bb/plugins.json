@@ -3,7 +3,25 @@
   "schemaVersion": 1,
   "name": "erwin-plugins",
   "plugins": [
-    { "name": "erwin-hello", "source": "./plugins/hello" },
-    { "name": "erwin-editor", "source": "./plugins/editor" }
+    {
+      "name": "erwin-devin",
+      "source": "./plugins/devin"
+    },
+    {
+      "name": "voice-mode",
+      "source": "./plugins/voice-mode"
+    },
+    {
+      "name": "erwin-provider-usage",
+      "source": "./plugins/provider-usage"
+    },
+    {
+      "name": "erwin-activity",
+      "source": "./plugins/activity"
+    },
+    {
+      "name": "erwin-editor",
+      "source": "./plugins/editor"
+    }
   ]
 }
