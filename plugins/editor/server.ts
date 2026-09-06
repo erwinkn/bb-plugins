@@ -166,12 +166,6 @@ export default async function plugin(bb: BbPluginApi) {
       experimental_schema: z.number().int().min(9).max(24),
       default: 13,
     },
-    colorIntensity: {
-      type: "select",
-      label: "Syntax color intensity (full matches BB's preview; soft and muted desaturate)",
-      options: ["full", "soft", "muted"],
-      default: "full",
-    },
     wordWrap: { type: "boolean", label: "Wrap long lines", default: false },
     lineNumbers: { type: "boolean", label: "Show line numbers", default: true },
     minimap: { type: "boolean", label: "Show minimap", default: false },

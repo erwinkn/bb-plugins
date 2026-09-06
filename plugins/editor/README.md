@@ -34,8 +34,9 @@ disable that one before you install this one.
   are BB's Hugeicons at BB's size, so the editor reads as part of the panel.
   Like BB's preview there are no indentation or bracket guides, no bracket
   colors, and no current-line band (the active line number is the cue).
-  Theme and light/dark switches apply live; a **Syntax color intensity**
-  setting pulls token colors toward the foreground for a calmer editor.
+  Theme and light/dark switches apply live. For a calmer palette, pick one
+  app-wide in BB (a custom theme can name `pierre-dark-soft` in its
+  `theme.json`), and the editor follows.
 - **Language services.** Completions, hover, signature help, go to
   definition, rename, formatting, and outline for TypeScript, JavaScript,
   JSON, CSS/SCSS/Less, and HTML. The TypeScript checker sees only the open
@@ -60,7 +61,6 @@ Extensions → Editor:
 | Setting                | Default  | Notes                                                   |
 | ---------------------- | -------- | ------------------------------------------------------- |
 | Font size              | 13       | 9 to 24                                                 |
-| Syntax color intensity | full     | `full` matches BB's preview; `soft` keeps 85% and `muted` 70% of each color's distance from the foreground |
 | Wrap long lines        | off      | Also in the `⋯` menu                                    |
 | Show line numbers      | on       | Also in the `⋯` menu                                    |
 | Show minimap           | off      | Also in the `⋯` menu                                    |

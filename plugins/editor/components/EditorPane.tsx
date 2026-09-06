@@ -176,7 +176,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
             ? theme.mode === "dark"
               ? "vs-dark"
               : "vs"
-            : await runtime.shiki.applyTheme(theme.theme, resolveBbTokens(container), latest.current.prefs.colorIntensity);
+            : await runtime.shiki.applyTheme(theme.theme, resolveBbTokens(container));
         if (disposed) return;
         setOverflowWidgetsTheme(theme.theme?.type === "light" ? "vs" : theme.mode === "light" ? "vs" : "vs-dark");
         const editor = monaco.editor.create(container, {
@@ -318,7 +318,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
           ? codeTheme.mode === "dark"
             ? "vs-dark"
             : "vs"
-          : await runtime.shiki.applyTheme(codeTheme.theme, host === null ? null : resolveBbTokens(host), prefs.colorIntensity);
+          : await runtime.shiki.applyTheme(codeTheme.theme, host === null ? null : resolveBbTokens(host));
       if (cancelled) return;
       runtime.monaco.editor.setTheme(name);
       setOverflowWidgetsTheme((codeTheme.theme?.type ?? codeTheme.mode) === "light" ? "vs" : "vs-dark");
@@ -328,7 +328,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     };
     // The hook may hand back the previous document while a switch is in
     // flight, so the name and mode are dependencies of their own.
-  }, [codeTheme, codeTheme.name, codeTheme.mode, codeTheme.theme, prefs.colorIntensity, status.kind]);
+  }, [codeTheme, codeTheme.name, codeTheme.mode, codeTheme.theme, status.kind]);
 
   useEffect(() => {
     editorRef.current?.updateOptions(prefEditorOptions(prefs));
