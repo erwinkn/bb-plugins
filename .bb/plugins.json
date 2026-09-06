@@ -6,6 +6,10 @@
     {
       "name": "erwin-devin",
       "source": "./plugins/devin"
+    },
+    {
+      "name": "automations-sidebar",
+      "source": "./plugins/automations-sidebar"
     }
   ]
 }

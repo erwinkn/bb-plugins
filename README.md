@@ -7,6 +7,9 @@ help, executable setting, account usage, and live ACP model catalog. It preserve
 ID `acp-devin`. See [Devin provider](plugins/devin/README.md) for configuration,
 verification, and migration from a custom ACP entry.
 
+`automations-sidebar` hides the Automations sidebar ellipsis button. It adds UI
+styles on top of the built-in plugin. See [Automations sidebar](plugins/automations-sidebar/README.md).
+
 ## Install
 
 Use BB 0.42.1 or later. The bb server needs Git, npm, and GitHub access to this
@@ -109,3 +112,14 @@ later. Remove an entry when the upstream fix ships.
   to the ACP project.
 - **Status:** not filed yet. Direct confirmation against a real Devin turn is
   still open; the reproduction used the SDK bridge with a scripted ACP peer.
+
+### Sidebar: allow plugins to hide the options button
+
+Add a per-panel SDK option to hide the sidebar ellipsis button while retaining
+the context menu. The Automations sidebar add-on currently uses a content
+script scoped to BB 0.42 row markup. A native option would remove this
+markup dependency.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Allow nav panels to hide the sidebar options button`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
