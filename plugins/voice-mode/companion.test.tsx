@@ -280,3 +280,20 @@ test("session rows announce live and error status even when both apply", async (
     assert.doesNotMatch(ui.getByRole("button", { name: /Session ended/ }).textContent ?? "", /Live session|Session has errors/);
   } finally { slot.lifecycle.unmount(); }
 });
+
+
+test("Voice page receives global stop, mute, and thread update events", async (t) => {
+  const started = t.mock.method(voiceAgent, "onCallStarted", () => {});
+  const muted = t.mock.method(voiceAgent, "setMuted", () => {});
+  const notice = t.mock.method(voiceAgent, "enqueueThreadEvent", () => {});
+  const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: pageRpc });
+  try {
+    await slot.behavior.emitRealtime("voice-call", { nonce: "new-call" });
+    await slot.behavior.emitRealtime("voice-mute", { muted: true });
+    await slot.behavior.emitRealtime("voice-mute", { muted: false });
+    await slot.behavior.emitRealtime("aide-thread-event", { kind: "idle", threadId: "worker", title: "Done" });
+    assert.equal(started.mock.calls[0].arguments[0], "new-call");
+    assert.deepEqual(muted.mock.calls.map(call => call.arguments[0]), [true, false]);
+    assert.equal(notice.mock.callCount(), 1);
+  } finally { slot.lifecycle.unmount(); }
+});

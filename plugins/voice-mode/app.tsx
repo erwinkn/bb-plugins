@@ -13,12 +13,12 @@ import {
   useBbNavigate,
   useComposer,
   useComposerView,
-  useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
+import { useVoiceRealtime } from "./voice-realtime";
 import { SessionsPanel } from "./sessions-panel";
 import { viewWorkspace } from "./view-workspace";
 import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
@@ -30,7 +30,7 @@ import { matchShortcut, shortcutLabel } from "./shortcuts";
 import { MAC, SHORTCUT_STORAGE_KEY, shortcutStore, useShortcutSync, useShortcuts } from "./shortcut-store";
 import "./app.css";
 
-function AideVoiceButton() {
+export function AideVoiceButton() {
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
   const { threadId, projectId } = useBbContext();
@@ -66,45 +66,7 @@ function AideVoiceButton() {
   const toggleHint = shortcutLabel(shortcuts.toggle, MAC);
   const muteHint = shortcutLabel(shortcuts.mute, MAC);
 
-  // Global exclusivity: when any window starts a call, all others stop theirs.
-  useRealtime("voice-call", (payload) => {
-    const nonce = (payload as { nonce?: unknown } | null)?.nonce;
-    if (typeof nonce === "string") voiceAgent.onCallStarted(nonce);
-  });
-
-  // CLI mute control: bb voice-mode mute|unmute broadcasts on this channel.
-  useRealtime("voice-mute", (payload) => {
-    const muted = (payload as { muted?: unknown } | null)?.muted;
-    if (typeof muted === "boolean") voiceAgent.setMuted(muted);
-  });
-
-  // Cross-surface presence: mirror a call owned by another realm so this pill
-  // reflects it, and relay stop/mute back to whichever realm owns the call.
-  useRealtime("voice-presence", (payload) => voiceAgent.ingestPresence(payload));
-  useRealtime("voice-command", (payload) => voiceAgent.applyVoiceCommand(payload));
-  useRealtime("voice-presence-query", () => voiceAgent.answerPresenceQuery());
-
-  // Catch up immediately when this surface mounts (e.g. a realm rebuilt after
-  // navigation), rather than waiting up to a heartbeat to learn a call is live.
-  useEffect(() => voiceAgent.requestPresence(), []);
-
-  // Thread-event notifications (digested; disabled via `notifications` setting).
-  useRealtime("aide-thread-event", (payload) => {
-    const event = payload as {
-      kind?: unknown;
-      threadId?: unknown;
-      title?: unknown;
-      detail?: unknown;
-    } | null;
-    if (typeof event?.kind === "string" && typeof event.threadId === "string" && typeof event.title === "string") {
-      voiceAgent.enqueueThreadEvent({
-        kind: event.kind,
-        threadId: event.threadId,
-        title: event.title,
-        detail: typeof event.detail === "string" ? event.detail : null,
-      });
-    }
-  });
+  useVoiceRealtime();
 
   // Keep the singleton pointed at the freshest surface: after navigation the
   // new composer's button mounts and rebinds, so "this thread" and composer
@@ -151,7 +113,7 @@ function AideVoiceButton() {
             ? "Muted"
             : "Connected";
     return (
-      <div className="flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-border bg-accent">
+      <div ref={node => { surface.current = node; }} className="flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-border bg-accent">
         <button
           type="button"
           aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}

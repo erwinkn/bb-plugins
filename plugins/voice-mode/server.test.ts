@@ -119,3 +119,124 @@ test("desktop focus still opens the real bb thread through the original SDK oper
     assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 1);
   } finally { await harness.lifecycle.dispose(); }
 });
+
+
+test("concurrent settings patches preserve both changes", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
+  try {
+    await plugin(bb);
+    await Promise.all([
+      harness.behavior.callRpc("setConfig", { notifications: false }),
+      harness.behavior.callRpc("setConfig", { mobileViewBehavior: "new" }),
+    ]);
+    const config = await harness.behavior.callRpc("getConfig", null) as any;
+    assert.equal(config.notifications, false);
+    assert.equal(config.mobileViewBehavior, "new");
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("agent prompt proposals do not change active instructions until the user saves", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
+  try {
+    await plugin(bb);
+    const before = await harness.behavior.callRpc("getPrompt", null) as any;
+    const suggest = (instructions: string) => harness.behavior.callRpc("runTool", {
+      name: "update_instructions", args: { instructions, reason: "User asked for short replies" }, threadId: null, projectId: null,
+    });
+    await suggest("Keep replies short.");
+    const pending = await harness.behavior.callRpc("getPrompt", null) as any;
+    assert.equal(pending.content, before.content);
+    assert.equal(pending.versions.length, before.versions.length);
+    assert.equal(pending.proposal.content, "Keep replies short.");
+    await suggest("Ask before starting work.");
+    await harness.behavior.callRpc("setPrompt", { content: pending.proposal.content, source: "user", note: "reviewed", proposalId: pending.proposal.id });
+    const after = await harness.behavior.callRpc("getPrompt", null) as any;
+    assert.equal(after.content, "Keep replies short.");
+    assert.equal(after.proposal.content, "Ask before starting work.", "a newer suggestion survives saving an older one");
+    await harness.behavior.callRpc("setPrompt", { content: after.proposal.content, source: "user", note: "reviewed", proposalId: after.proposal.id });
+    assert.equal((await harness.behavior.callRpc("getPrompt", null) as any).proposal, null);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("session cursors retain older history when new sessions arrive, including timestamp ties", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
+  try {
+    await plugin(bb);
+    const db = bb.storage.database();
+    const insert = db.prepare("INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, 'session.started', '{}')");
+    for (let i = 0; i < 65; i++) insert.run(`session-${String(i).padStart(3, "0")}`, 1000);
+    const first = await harness.behavior.callRpc("listSessions", null) as any;
+    insert.run("new-session", 2000);
+    const before = first.sessions.at(-1);
+    const second = await harness.behavior.callRpc("listSessions", { before: { startedAt: before.startedAt, id: before.id } }) as any;
+    const last = second.sessions.at(-1);
+    const third = await harness.behavior.callRpc("listSessions", { before: { startedAt: last.startedAt, id: last.id } }) as any;
+    assert.equal(new Set([...first.sessions, ...second.sessions, ...third.sessions].map((row: any) => row.id)).size, 65);
+    assert.equal(third.hasMore, false);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("event logging rejects oversized payloads", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
+  try {
+    await plugin(bb);
+    await assert.rejects(harness.behavior.callRpc("logEvent", { sessionId: "call", kind: "user", payload: { text: "x".repeat(65536) } }), /input validation/);
+    assert.deepEqual((await harness.behavior.callRpc("listSessions", null) as any).sessions, []);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+
+test("full event storage rejects new logs but still sends stop controls", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
+  try {
+    const db = bb.storage.database();
+    db.exec("CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL)");
+    // Simulate retained history before plugin startup so the quota is rebuilt.
+    db.prepare("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 100000) INSERT INTO session_events(session_id,ts,kind,payload) SELECT 'old', x, 'user', '{}' FROM n").run();
+    await plugin(bb);
+    await assert.rejects(harness.behavior.callRpc("logEvent", { sessionId: "call", kind: "user", payload: {} }), /storage is full/);
+    await harness.behavior.callRpc("forceStop", { nonce: "call" });
+    assert.ok(harness.inspection.realtimeSignals.some(signal => signal.channel === "voice-command"));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("newest call claim wins and CLI stop remains authoritative for a frozen owner", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
+  try {
+    await plugin(bb);
+    const first = await harness.behavior.callRpc("claimCall", { nonce: "a" }) as any;
+    const second = await harness.behavior.callRpc("claimCall", { nonce: "b" }) as any;
+    assert.ok(second.sequence > first.sequence);
+    await assert.rejects(harness.behavior.callRpc("createCall", { nonce: "a", sdp: "offer", threadId: null, projectId: null }), /stopped or replaced/);
+    const stopped = await harness.behavior.runCli(["stop"]);
+    assert.equal(stopped.exitCode, 0);
+    const history = await harness.behavior.callRpc("getSessionEvents", { sessionId: "b" }) as any;
+    assert.ok(history.events.some((event: any) => event.kind === "session.stopped"));
+    await assert.rejects(harness.behavior.callRpc("createCall", { nonce: "b", sdp: "offer", threadId: null, projectId: null }), /stopped or replaced/);
+    const startSignals = harness.inspection.realtimeSignals.length;
+    // A frozen owner's heartbeat cannot resurrect a stopped call when it wakes.
+    await harness.behavior.callRpc("publishPresence", { nonce: "b", phase: "live", startedAt: 1000 });
+    const signals = harness.inspection.realtimeSignals.slice(startSignals);
+    assert.equal(signals.some(signal => signal.channel === "voice-presence"), false);
+    assert.ok(signals.some(signal => signal.channel === "voice-command"));
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+
+test("upgrade from the original five migrations preserves saved prompts and adds call control", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
+  try {
+    const db = bb.storage.database();
+    bb.storage.migrate(db, [
+      "CREATE TABLE usage_events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, model TEXT NOT NULL, input_text INTEGER NOT NULL DEFAULT 0, input_audio INTEGER NOT NULL DEFAULT 0, cached_text INTEGER NOT NULL DEFAULT 0, cached_audio INTEGER NOT NULL DEFAULT 0, output_text INTEGER NOT NULL DEFAULT 0, output_audio INTEGER NOT NULL DEFAULT 0)",
+      "ALTER TABLE usage_events ADD COLUMN session_id TEXT",
+      "CREATE TABLE session_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, ts INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}')",
+      "CREATE INDEX idx_session_events_session ON session_events(session_id, ts)",
+      "CREATE TABLE prompt_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, source TEXT NOT NULL, note TEXT, content TEXT NOT NULL)",
+    ]);
+    db.prepare("INSERT INTO prompt_versions (ts, source, content) VALUES (1, 'user', 'Keep my prompt')").run();
+    await plugin(bb);
+    assert.equal((await harness.behavior.callRpc("getPrompt", null) as any).content, "Keep my prompt");
+    assert.equal((await harness.behavior.callRpc("claimCall", { nonce: "new" }) as any).sequence, 1);
+  } finally { await harness.lifecycle.dispose(); }
+});

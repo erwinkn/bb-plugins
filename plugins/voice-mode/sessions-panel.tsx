@@ -16,6 +16,7 @@ import {
 import type { rpcContract } from "./server";
 import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
+import { useVoiceRealtime } from "./voice-realtime";
 import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
 import { viewWorkspace } from "./view-workspace";
 import { actionStatus, pairToolEvents } from "./session-events";
@@ -563,6 +564,7 @@ export function SessionsPanel() {
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
   const appPanel = experimental_useAppPanel();
+  useVoiceRealtime();
 
   // The Voice page has no composer, so nothing else binds the voice agent
   // here. Install a fallback binding so the FAB can actually start a call from a
@@ -653,9 +655,9 @@ export function SessionsPanel() {
   }, [rpc, mergeNewest]);
 
   const loadMore = useCallback(() => {
-    if (!sessions) return;
+    if (!sessions?.length || loadingMore) return;
     setLoadingMore(true);
-    rpc.call("listSessions", { offset: sessions.length }).then(
+    rpc.call("listSessions", { before: { startedAt: sessions[sessions.length - 1].startedAt, id: sessions[sessions.length - 1].id } }).then(
       (result) => {
         setSessions((prev) => {
           if (!prev) return result.sessions;
@@ -670,7 +672,7 @@ export function SessionsPanel() {
         setLoadingMore(false);
       },
     );
-  }, [rpc, sessions]);
+  }, [rpc, sessions, loadingMore]);
 
   const refetchEvents = useCallback(
     (sessionId: string, showLoading = false) => {
@@ -720,17 +722,6 @@ export function SessionsPanel() {
     const sessionId = (payload as { sessionId?: unknown } | null)?.sessionId;
     if (selected && sessionId === selected) refetchEvents(selected);
   });
-
-  // Cross-surface presence: mirror a call owned by another realm so the console
-  // reflects it, and relay stop/mute from the console back to the owning realm.
-  useRealtime("voice-presence", (payload) => voiceAgent.ingestPresence(payload));
-  useRealtime("voice-command", (payload) => voiceAgent.applyVoiceCommand(payload));
-  useRealtime("voice-presence-query", () => voiceAgent.answerPresenceQuery());
-
-  // Catch up the moment the page mounts (e.g. a realm rebuilt after navigating
-  // back) instead of waiting up to a heartbeat — this is the "shows Talk to Aide
-  // over a live call, then flips to Connected a few seconds later" gap.
-  useEffect(() => voiceAgent.requestPresence(), []);
 
   // Auto-follow the transcript: after opening it, or when new events land while
   // you're already reading the bottom, snap to the latest — but if you've

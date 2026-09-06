@@ -5,7 +5,7 @@
 // which model and voice to use, whether Aide announces thread events, the
 // microphone, and the keyboard shortcuts — lives here as curated sections
 // instead of a flat auto-form.
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
@@ -548,10 +548,12 @@ function PluginPicker({
 // save your own, or reset to the default.
 // ---------------------------------------------------------------------------
 
-function PromptEditor() {
+export function PromptEditor() {
   const rpc = useRpc<typeof rpcContract>();
   const [active, setActive] = useState("");
   const [defaultContent, setDefaultContent] = useState("");
+  const [proposal, setProposal] = useState<{ id: string; content: string; reason: string } | null>(null);
+  const [reviewedProposalId, setReviewedProposalId] = useState<string | undefined>();
   const [mode, setMode] = useState<"view" | "preview" | "edit">("view");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -560,6 +562,7 @@ function PromptEditor() {
     rpc.call("getPrompt", null).then((result) => {
       setActive(result.content);
       setDefaultContent(result.defaultContent);
+      setProposal(result.proposal);
     }, () => undefined);
   }, [rpc]);
   useEffect(refetch, [refetch]);
@@ -571,7 +574,8 @@ function PromptEditor() {
     if (content.trim().length === 0) return;
     setBusy(true);
     try {
-      await rpc.call("setPrompt", { content, source: "user", note });
+      await rpc.call("setPrompt", { content, source: "user", note, proposalId: reviewedProposalId });
+      setReviewedProposalId(undefined);
       setMode("view");
       toast.success("Prompt saved");
     } catch (cause) {
@@ -603,6 +607,7 @@ function PromptEditor() {
               variant="outline"
               size="sm"
               onClick={() => {
+                setReviewedProposalId(undefined);
                 setDraft(active);
                 setMode("edit");
               }}
@@ -613,10 +618,22 @@ function PromptEditor() {
         )}
       </div>
 
+      {proposal && mode !== "edit" ? (
+        <div className="space-y-2 rounded-md border border-border p-3">
+          <p className="text-sm">Aide suggested a prompt change. It is not active.</p>
+          <p className="text-xs text-muted-foreground">{proposal.reason}</p>
+          <Button type="button" variant="outline" size="sm" onClick={() => {
+            setDraft(proposal.content);
+            setReviewedProposalId(proposal.id);
+            setMode("edit");
+          }}>Review suggestion</Button>
+        </div>
+      ) : null}
       {mode === "edit" ? (
         <div className="space-y-2">
           <textarea
             value={draft}
+            aria-label="Voice instructions"
             autoFocus
             spellCheck={false}
             rows={16}
@@ -664,7 +681,7 @@ function PromptEditor() {
 // ---------------------------------------------------------------------------
 
 /** Live RMS of the selected mic, 0..1, while `active`. Cleans up fully on stop. */
-function MicLevelMeter({ deviceId, active }: { deviceId: string; active: boolean }) {
+export function MicLevelMeter({ deviceId, active }: { deviceId: string; active: boolean }) {
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
@@ -673,6 +690,7 @@ function MicLevelMeter({ deviceId, active }: { deviceId: string; active: boolean
       setLevel(0);
       return;
     }
+    setError(null);
     let stream: MediaStream | null = null;
     let context: AudioContext | null = null;
     let raf = 0;
@@ -683,7 +701,10 @@ function MicLevelMeter({ deviceId, active }: { deviceId: string; active: boolean
         stream = await navigator.mediaDevices.getUserMedia({
           audio: deviceId ? { deviceId: { exact: deviceId } } : true,
         });
-        if (cancelled) return;
+        if (cancelled) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
         context = new AudioContext();
         const source = context.createMediaStreamSource(stream);
         const analyser = context.createAnalyser();

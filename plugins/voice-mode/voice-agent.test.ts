@@ -254,7 +254,7 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
   Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
   const agent = new VoiceAgent();
   agent.bind({
-    rpc: { call: (async (method: string) => method === "createCall" ? { sdp: "answer" } : method === "runTool" ? runTool() : { ok: true }) as never },
+    rpc: { call: (async (method: string) => method === "claimCall" ? { sequence: 1 } : method === "createCall" ? { sdp: "answer" } : method === "runTool" ? runTool() : { ok: true }) as never },
     context: { threadId: null, projectId: null, onNewThreadScreen: false },
     openNewThread() {},
   });
@@ -595,6 +595,7 @@ test("stopping during the SDP exchange closes the mic and cancels startup", asyn
     rpc: {
       // Pause startup at the SDP exchange so the test can stop mid-flight.
       call: (async (method: string) => {
+        if (method === "claimCall") return { sequence: 1 };
         if (method === "createCall") {
           announceCallStarted();
           await callPending;
@@ -632,4 +633,52 @@ test("stopping during the SDP exchange closes the mic and cancels startup", asyn
     if (originalAudio) Object.defineProperty(globalThis, "Audio", originalAudio);
     else delete (globalThis as { Audio?: unknown }).Audio;
   }
+});
+
+for (const outcome of ["resolve", "reject"] as const) {
+  test(`stale microphone acquisition ${outcome} cannot replace or stop a new call`, async (t) => {
+    const { agent, start } = await liveVoiceFixture(t);
+    agent.stop();
+    const acquire = navigator.mediaDevices.getUserMedia;
+    let resolve!: (stream: MediaStream) => void;
+    let reject!: (error: Error) => void;
+    const pending = new Promise<MediaStream>((yes, no) => { resolve = yes; reject = no; });
+    navigator.mediaDevices.getUserMedia = () => pending;
+    agent.toggle();
+    await settleVoice();
+    assert.equal(agent.getState(), "connecting");
+    agent.stop();
+    navigator.mediaDevices.getUserMedia = acquire;
+    const fresh = await start();
+    const id = agent.getSessionId();
+    let stopped = false;
+    if (outcome === "resolve") resolve({ getTracks: () => [{ stop() { stopped = true; } }] } as unknown as MediaStream);
+    else reject(new Error("Old acquisition failed"));
+    await settleVoice();
+    assert.equal(agent.getState(), "live");
+    assert.equal(agent.getSessionId(), id);
+    assert.equal(fresh.readyState, "open");
+    assert.equal(stopped, outcome === "resolve");
+  });
+}
+
+test("binding requests presence only after an RPC binding is installed", () => {
+  const agent = new VoiceAgent();
+  let requests = 0;
+  const unbind = agent.bind({
+    rpc: { call: (async (method: string) => { if (method === "requestPresence") requests++; return { ok: true }; }) as never },
+    context: { threadId: null, projectId: null, onNewThreadScreen: false }, openNewThread() {},
+  });
+  assert.equal(requests, 1);
+  unbind();
+});
+
+test("older call announcements do not stop a newer owner", async (t) => {
+  const { agent } = await liveVoiceFixture(t);
+  const nonce = agent.getSessionId();
+  agent.onCallStarted("older-call", 0);
+  assert.equal(agent.getState(), "live");
+  assert.equal(agent.getSessionId(), nonce);
+  agent.onCallStarted("newer-call", 2);
+  assert.equal(agent.getState(), "idle");
 });

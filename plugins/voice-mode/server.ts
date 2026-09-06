@@ -35,6 +35,10 @@ const shortcutsSchema = z
   .strict();
 
 export const rpcContract = defineRpcContract({
+  claimCall: {
+    input: z.object({ nonce: z.string().min(1).max(256) }).strict(),
+    output: z.object({ sequence: z.number() }).strict(),
+  },
   /** Exchange a WebRTC SDP offer with OpenAI Realtime. Returns the answer. */
   createCall: {
     input: z
@@ -90,6 +94,7 @@ export const rpcContract = defineRpcContract({
       .object({
         content: z.string(),
         defaultContent: z.string(),
+        proposal: z.object({ id: z.string(), content: z.string(), reason: z.string() }).nullable(),
         versions: z.array(
           z
             .object({
@@ -109,7 +114,8 @@ export const rpcContract = defineRpcContract({
     input: z
       .object({
         content: z.string().min(1).max(20000),
-        source: z.enum(["user", "agent"]),
+        source: z.literal("user"),
+        proposalId: z.string().optional(),
         note: z.string().nullable(),
       })
       .strict(),
@@ -192,9 +198,9 @@ export const rpcContract = defineRpcContract({
   logEvent: {
     input: z
       .object({
-        sessionId: z.string().min(1),
-        kind: z.string().min(1),
-        payload: z.record(z.string(), z.unknown()),
+        sessionId: z.string().min(1).max(256),
+        kind: z.string().min(1).max(128),
+        payload: z.record(z.string(), z.unknown()).refine(value => Buffer.byteLength(JSON.stringify(value), "utf8") <= 65536, "Event payload exceeds 64 KiB"),
       })
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
@@ -268,7 +274,10 @@ export const rpcContract = defineRpcContract({
   },
   /** List voice sessions, newest first, with counts and estimated cost. */
   listSessions: {
-    input: z.object({ offset: z.number().int().min(0) }).strict().nullable(),
+    input: z.object({
+      offset: z.number().int().min(0).optional(),
+      before: z.object({ startedAt: z.number(), id: z.string().min(1) }).strict().optional(),
+    }).strict().nullable(),
     output: z
       .object({
         sessions: z.array(
@@ -424,7 +433,7 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
     { type: "function", name: "show_diff", description: "Summarize a thread's workspace diff (changed files, additions/deletions) and focus the thread so the user can see it.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
-    { type: "function", name: "update_instructions", description: "Amend your own standing instructions (the system prompt for future voice sessions). Pass the COMPLETE new instructions text, not a diff. Use only when the user asks for a lasting behavior change.", parameters: { type: "object", properties: { instructions: { type: "string", description: "The full replacement instructions." }, reason: { type: "string", description: "One short sentence: why, quoting the user's request." } }, required: ["instructions", "reason"] } },
+    { type: "function", name: "update_instructions", description: "Propose new standing instructions for the user to review and save in Voice Mode settings. This does not change the active prompt. Pass the COMPLETE new instructions text, not a diff. Use only when the user asks for a lasting behavior change.", parameters: { type: "object", properties: { instructions: { type: "string", description: "The full replacement instructions." }, reason: { type: "string", description: "One short sentence: why, quoting the user's request." } }, required: ["instructions", "reason"] } },
     // Handled locally in the bb app frontend, never reaches runTool:
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into).", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
@@ -449,7 +458,7 @@ Rules:
 - Prefer focus_thread so the user sees what you are talking about.
 - While a voice session is active, bb sends you updates when visible threads finish or fail (when Announcements is enabled). You can notify the user: if they ask to be told when a thread finishes, say yes, then announce the update in one short sentence when it arrives. Always name the thread by its title in that sentence; several threads may be running, so a bare "it finished" is ambiguous. Never claim that you cannot notify them, and do not poll the thread.
 - Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting.
-- When the user asks you to permanently behave differently ("always …", "from now on …"), use update_instructions to amend these standing instructions.`;
+- When the user asks you to permanently behave differently ("always …", "from now on …"), use update_instructions to propose new standing instructions, then tell the user to review and save the suggestion in Voice Mode settings.`;
 
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -481,7 +490,48 @@ export default async function plugin(bb: BbPluginApi) {
       note TEXT,
       content TEXT NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS voice_call_control (
+      slot INTEGER PRIMARY KEY CHECK (slot = 1),
+      sequence INTEGER NOT NULL,
+      nonce TEXT
+    )`,
+    `INSERT OR IGNORE INTO voice_call_control (slot, sequence, nonce) VALUES (1, 0, NULL)`,
+    `CREATE TABLE IF NOT EXISTS prompt_proposals (
+      slot INTEGER PRIMARY KEY CHECK (slot = 1),
+      id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      reason TEXT NOT NULL
+    )`,
   ]);
+
+  // Reject new event data at the quota; never silently delete saved transcripts.
+  const EVENT_STORAGE_LIMIT = 128 * 1024 * 1024;
+  const EVENT_COUNT_LIMIT = 100_000;
+  const usage = db.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(length(CAST(payload AS BLOB)) + length(CAST(session_id AS BLOB)) + length(CAST(kind AS BLOB))), 0) AS bytes FROM session_events").get() as { count: number; bytes: number };
+  let eventCount = usage.count;
+  let eventBytes = usage.bytes;
+  function appendEvent(sessionId: string, kind: string, payload: Record<string, unknown>) {
+    const text = JSON.stringify(payload);
+    const bytes = Buffer.byteLength(text + sessionId + kind, "utf8");
+    if (eventCount >= EVENT_COUNT_LIMIT || eventBytes + bytes > EVENT_STORAGE_LIMIT) {
+      throw new Error("Voice event storage is full. Export and clear old session events before logging more.");
+    }
+    const ts = Date.now();
+    const result = db.prepare("INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, ?, ?)").run(sessionId, ts, kind, text);
+    eventCount += 1;
+    eventBytes += bytes;
+    return { ts, id: Number(result.lastInsertRowid) };
+  }
+
+  const currentCall = () => db.prepare("SELECT sequence, nonce FROM voice_call_control WHERE slot = 1").get() as { sequence: number; nonce: string | null };
+  function forceStopCall(nonce: string) {
+    db.prepare("UPDATE voice_call_control SET nonce = NULL WHERE nonce = ?").run(nonce);
+    try { appendEvent(nonce, "session.stopped", { _forced: true }); }
+    catch (error) { bb.log.warn(String(error)); }
+    bb.realtime.publish("voice-presence", { nonce, phase: "idle", startedAt: null });
+    bb.realtime.publish("voice-command", { nonce, action: "stop" });
+    bb.realtime.publish("aide-log", { sessionId: nonce });
+  }
 
   // The API key is the ONE declarative setting: secrets must live here to get
   // 0600-file storage that never touches the db or the frontend. Everything
@@ -540,12 +590,17 @@ export default async function plugin(bb: BbPluginApi) {
       shortcuts: normalizeShortcuts(stored.shortcuts),
     };
   }
-  async function writeConfig(patch: Partial<VoiceConfig>): Promise<VoiceConfig> {
-    // Store the canonical spelling so equality checks downstream are simple.
+  let configWrite: Promise<unknown> = Promise.resolve();
+  function writeConfig(patch: Partial<VoiceConfig>): Promise<VoiceConfig> {
     if (patch.shortcuts) patch = { ...patch, shortcuts: normalizeShortcuts(patch.shortcuts) };
-    const next = { ...(await readConfig()), ...patch };
-    await bb.storage.kv.set(CONFIG_KEY, next);
-    return next;
+    const result = configWrite.then(async () => {
+      const next = { ...(await readConfig()), ...patch };
+      await bb.storage.kv.set(CONFIG_KEY, next);
+      return next;
+    });
+    // A failed write rejects its caller, but must not block future updates.
+    configWrite = result.catch(() => undefined);
+    return result;
   }
 
   // One-time migration: earlier versions stored model/voice/notifications/
@@ -1048,8 +1103,11 @@ export default async function plugin(bb: BbPluginApi) {
       case "update_instructions": {
         const content = str("instructions");
         if (content.length > 20000) throw new Error("Instructions too long (max 20000 characters).");
-        savePromptVersion(content, "agent", str("reason"));
-        return "Instructions updated. They apply from the next voice session.";
+        const reason = str("reason");
+        if (!content.trim() || reason.length > 2000) throw new Error("Provide instructions and a reason of at most 2000 characters.");
+        db.prepare("INSERT OR REPLACE INTO prompt_proposals (slot, id, content, reason) VALUES (1, ?, ?, ?)").run(crypto.randomUUID(), content, reason);
+        bb.realtime.publish("prompt-changed", {});
+        return "Suggestion saved for review. The active prompt is unchanged. Ask the user to open Voice Mode settings, review the suggestion, and press Save.";
       }
       case "show_diff": {
         const threadId = str("thread_id");
@@ -1110,8 +1168,9 @@ export default async function plugin(bb: BbPluginApi) {
           return { exitCode: 0, stdout: `${command === "mute" ? "Mute" : "Unmute"} signal broadcast.` };
         }
         if (command === "stop") {
-          // Every mounted voice button listens on this channel and stops any
-          // session whose nonce differs — an unknown nonce stops them all.
+          const { nonce } = currentCall();
+          if (nonce) forceStopCall(nonce);
+          // Also stop clients still waiting for a claim response.
           bb.realtime.publish("voice-call", { nonce: `cli-stop-${Date.now()}` });
           return { exitCode: 0, stdout: "Stop signal broadcast to all bb windows." };
         }
@@ -1177,7 +1236,16 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
+    async claimCall({ nonce }) {
+      const previous = currentCall();
+      if (previous.nonce) forceStopCall(previous.nonce);
+      db.prepare("UPDATE voice_call_control SET sequence = sequence + 1, nonce = ? WHERE slot = 1").run(nonce);
+      const { sequence } = currentCall();
+      bb.realtime.publish("voice-call", { nonce, sequence });
+      return { sequence };
+    },
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
+      if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       const key = await apiKey();
       const { model, voice } = await readConfig();
       const pluginCommands = await exposedPluginCommands();
@@ -1210,6 +1278,7 @@ export default async function plugin(bb: BbPluginApi) {
       const form = new FormData();
       form.set("sdp", sdp);
       form.set("session", JSON.stringify(session));
+      if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       const response = await fetch(REALTIME_ENDPOINT, {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -1220,9 +1289,7 @@ export default async function plugin(bb: BbPluginApi) {
         bb.log.error(`OpenAI realtime call failed: ${response.status} ${text.slice(0, 500)}`);
         throw new Error(`OpenAI realtime call failed: ${response.status} ${response.statusText}`);
       }
-      // One voice session at a time, everywhere: every connected client hears
-      // this and stops any session whose nonce differs.
-      bb.realtime.publish("voice-call", { nonce });
+      if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       return { sdp: text };
     },
     async getTools() {
@@ -1241,10 +1308,15 @@ export default async function plugin(bb: BbPluginApi) {
       const versions = db
         .prepare("SELECT id, ts, source, note, content FROM prompt_versions ORDER BY id DESC LIMIT 50")
         .all() as { id: number; ts: number; source: string; note: string | null; content: string }[];
-      return { content: activePrompt(), defaultContent: DEFAULT_PROMPT, versions };
+      const proposal = db.prepare("SELECT id, content, reason FROM prompt_proposals WHERE slot = 1").get() as { id: string; content: string; reason: string } | undefined;
+      return { content: activePrompt(), defaultContent: DEFAULT_PROMPT, versions, proposal: proposal ?? null };
     },
-    async setPrompt({ content, source, note }) {
+    async setPrompt({ content, source, note, proposalId }) {
       savePromptVersion(content, source, note);
+      if (proposalId) {
+        db.prepare("DELETE FROM prompt_proposals WHERE id = ?").run(proposalId);
+        bb.realtime.publish("prompt-changed", {});
+      }
       return { ok: true as const };
     },
     async getConfig() {
@@ -1308,18 +1380,20 @@ export default async function plugin(bb: BbPluginApi) {
       return { effective, preference, hasApiKey, envKeyPresent, subscriptionAvailable };
     },
     async logEvent({ sessionId, kind, payload }) {
-      const ts = Date.now();
-      const result = db.prepare(
-        "INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, ?, ?)",
-      ).run(sessionId, ts, kind, JSON.stringify(payload));
+      const { ts, id } = appendEvent(sessionId, kind, payload);
       // Both views describe this exact persisted event, including client/session
       // and tool call identity. Client-handled tools must be visible here too.
-      const entry = sessionEventLog({ id: Number(result.lastInsertRowid), ts, sessionId, kind, payload });
+      const entry = sessionEventLog({ id, ts, sessionId, kind, payload });
       bb.log[entry.level](entry.message);
       bb.realtime.publish("aide-log", { sessionId });
       return { ok: true as const };
     },
     async publishPresence({ nonce, phase, startedAt, client, realm }) {
+      if (phase !== "idle" && currentCall().nonce !== nonce) {
+        bb.realtime.publish("voice-command", { nonce, action: "stop" });
+        return { ok: true as const };
+      }
+      if (phase === "idle") db.prepare("UPDATE voice_call_control SET nonce = NULL WHERE nonce = ?").run(nonce);
       bb.realtime.publish("voice-presence", { nonce, phase, startedAt, client, realm });
       return { ok: true as const };
     },
@@ -1345,29 +1419,25 @@ export default async function plugin(bb: BbPluginApi) {
       return { views, preference: (await readConfig()).mobileViewBehavior };
     },
     async forceStop({ nonce }) {
-      // Durable end-marker so listSessions stops showing it live even if the
-      // owner realm never logs its own session.stopped (count > 0 is enough).
-      db.prepare(
-        "INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, ?, ?)",
-      ).run(nonce, Date.now(), "session.stopped", JSON.stringify({ _forced: true }));
-      bb.realtime.publish("voice-presence", { nonce, phase: "idle", startedAt: null });
-      bb.realtime.publish("voice-command", { nonce, action: "stop" });
-      bb.realtime.publish("aide-log", { sessionId: nonce });
+      forceStopCall(nonce);
       return { ok: true as const };
     },
     async listSessions(input) {
       // Page through grouped sessions newest-first. Fetch one extra row past the
       // page to tell the client whether a "Load more" is worthwhile, then drop it.
       const pageSize = 30;
-      const offset = input?.offset ?? 0;
+      const offset = input?.before ? 0 : input?.offset ?? 0;
+      const before = input?.before;
       const rows = db
         .prepare(
           `SELECT session_id AS id, MIN(ts) AS startedAt, MAX(ts) AS lastEventAt, COUNT(*) AS events,
                   SUM(CASE WHEN kind = 'session.stopped' THEN 1 ELSE 0 END) AS stopped
            FROM session_events WHERE session_id <> 'audio-diagnostics'
-           GROUP BY session_id ORDER BY startedAt DESC LIMIT ? OFFSET ?`,
+           GROUP BY session_id
+           HAVING (? IS NULL OR MIN(ts) < ? OR (MIN(ts) = ? AND session_id < ?))
+           ORDER BY startedAt DESC, session_id DESC LIMIT ? OFFSET ?`,
         )
-        .all(pageSize + 1, offset) as { id: string; startedAt: number; lastEventAt: number; events: number; stopped: number }[];
+        .all(before?.startedAt ?? null, before?.startedAt ?? null, before?.startedAt ?? null, before?.id ?? null, pageSize + 1, offset) as { id: string; startedAt: number; lastEventAt: number; events: number; stopped: number }[];
       const hasMore = rows.length > pageSize;
       const page = hasMore ? rows.slice(0, pageSize) : rows;
       const costStmt = db.prepare("SELECT * FROM usage_events WHERE session_id = ?");

@@ -191,6 +191,8 @@ export class VoiceAgent {
   private responseActive = false;
   /** A response.create is owed once the active response finishes. */
   private responsePending = false;
+  private callSequence: number | null = null;
+  private newerClaim: { nonce: string; sequence: number } | null = null;
   private activeResponseId: string | null = null;
   private responseUserTurn: number | null = null;
   private userTurn = 0;
@@ -348,6 +350,7 @@ export class VoiceAgent {
     };
     refresh();
     this.helloOnce(fallback ? "page" : "composer");
+    this.requestPresence();
     return () => { this.bindingSources.delete(key); refresh(); };
   }
   /**
@@ -372,7 +375,7 @@ export class VoiceAgent {
     // Announce our own transitions so other realms mirror this call. Idle is
     // announced explicitly by stop() (which clears the nonce first), so skip it
     // here — a null nonce has nothing to identify.
-    if (next !== "idle" && this.nonce) this.broadcastPresence(next, this.nonce);
+    if (next !== "idle" && this.nonce && this.callSequence !== null) this.broadcastPresence(next, this.nonce);
   }
 
   private emitChange() {
@@ -907,11 +910,16 @@ export class VoiceAgent {
   }
 
   /** Another window (or this one) started a call: only the newest survives. */
-  onCallStarted(nonce: string) {
-    if (nonce && nonce !== this.nonce && this.state !== "idle") {
-      toast.info("Aide: voice session taken over elsewhere");
-      this.stop();
+  onCallStarted(nonce: string, sequence?: number) {
+    if (nonce === this.nonce || this.state === "idle") return;
+    if (sequence !== undefined) {
+      if (this.callSequence === null) {
+        if (!this.newerClaim || sequence > this.newerClaim.sequence) this.newerClaim = { nonce, sequence };
+        return;
+      }
+      if (sequence <= this.callSequence) return;
     }
+    this.stop();
   }
 
   /**
@@ -936,13 +944,15 @@ export class VoiceAgent {
 
   stop() {
     const endedNonce = this.nonce;
-    if (this.session) this.log("session.stopped");
+    if (endedNonce) this.log("session.stopped");
     this.clearConnectWatchdog();
     this.stopPresenceHeartbeat();
     this.liveStartedAt = null;
     const session = this.session;
     this.session = null;
     this.nonce = null;
+    this.callSequence = null;
+    this.newerClaim = null;
     this.toolChain = Promise.resolve();
     this.setResponseActive(false);
     this.setAssistantSpeaking(false);
@@ -1116,16 +1126,28 @@ export class VoiceAgent {
     // broadcast already carries our identity.
     const nonce = crypto.randomUUID();
     this.nonce = nonce;
+    this.callSequence = null;
+    this.newerClaim = null;
     this.setState("connecting");
     this.log("session.started", { ...bindings.context, device: deviceSummary() });
+    let acquiredStream: MediaStream | null = null;
     try {
+      const { sequence } = await bindings.rpc.call("claimCall", { nonce });
+      if (this.nonce !== nonce) return;
+      this.callSequence = sequence;
+      const newerClaim = this.newerClaim as { nonce: string; sequence: number } | null;
+      if (newerClaim) this.onCallStarted(newerClaim.nonce, newerClaim.sequence);
+      if (this.nonce !== nonce) return;
+      this.broadcastPresence("connecting", nonce);
       // Deterministic acquisition: enumerate what is actually present, resolve
       // the saved ids against it (a saved id whose salt rotated across restarts
       // simply resolves to the system default), then acquire. No "try an exact
       // id, catch, retry" dance — every branch is decided up front and logged.
       const devices = await this.enumerateDevices();
+      if (this.nonce !== nonce) return;
       const support = describeAudioSupport(devices, this.audioPreferences);
       const micPermission = await queryMicPermission(navigator.permissions);
+      if (this.nonce !== nonce) return;
       const saved = this.audioPreferences;
       const inputMatch = resolveDevice(devices, "audioinput", saved.inputDeviceId, saved.inputLabel);
       const inputId = inputMatch.deviceId;
@@ -1152,6 +1174,11 @@ export class VoiceAgent {
       let stream: MediaStream;
       try {
         stream = await this.acquireMic(inputId);
+        acquiredStream = stream;
+        if (this.nonce !== nonce) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
       } catch (error) {
         const name = error instanceof Error ? error.name : "unknown";
         this.logDiag("audio.getUserMedia.failed", { name, deviceId: inputId || "default" });
@@ -1340,8 +1367,11 @@ export class VoiceAgent {
       };
 
       const offer = await pc.createOffer();
+      if (this.nonce !== nonce) return;
       await pc.setLocalDescription(offer);
+      if (this.nonce !== nonce) return;
       await waitForIceGathering(pc);
+      if (this.nonce !== nonce) return;
       const localSdp = pc.localDescription?.sdp;
       if (!localSdp) throw new Error("No local SDP offer");
 
@@ -1354,6 +1384,8 @@ export class VoiceAgent {
       if (this.session?.pc !== pc) return; // stopped while exchanging
       await pc.setRemoteDescription({ type: "answer", sdp });
     } catch (error) {
+      acquiredStream?.getTracks().forEach(track => track.stop());
+      if (this.nonce !== nonce) return;
       this.stop();
       toast.error(`Aide: ${error instanceof Error ? error.message : String(error)}`);
     }

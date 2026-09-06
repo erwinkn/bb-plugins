@@ -35,7 +35,7 @@ function fixture(mobile = true) {
   const execute = async (name: string, args: Record<string, unknown>) => {
     await internal.handleToolCall(dc, { name, call_id: `tool-${++count}`, arguments: JSON.stringify(args) });
     while (internal.logQueue) await internal.logQueue;
-    return calls.filter(call => call.method === "logEvent" && call.args.kind === "tool.result").at(-1)?.args.payload;
+    return calls.filter(call => call.method === "logEvent" && call.args?.kind === "tool.result").at(-1)?.args.payload;
   };
   return { workspace, agent, internal, calls, sent, dc, base, execute };
 }
@@ -147,5 +147,5 @@ test("stopping during metadata resolution prevents a late open and logs to the o
   assert.equal(result.status, "error");
   assert.equal(f.workspace.get().views.length, 0);
   assert.equal(f.sent.length, 0);
-  assert.equal(f.calls.filter(call => call.args.kind === "tool.result").at(-1)?.args.sessionId, "call-session");
+  assert.equal(f.calls.filter(call => call.args?.kind === "tool.result").at(-1)?.args.sessionId, "call-session");
 });

@@ -187,3 +187,31 @@ bb plugin logs voice-mode -f # tool traffic and errors
 
 Mobile calls additionally expose `focus_threads`, `manage_views`, and
 `set_view_behavior` for the drawer. Desktop retains its navigation tool set.
+
+## Call controls and saved data
+
+The server assigns a sequence number before microphone acquisition. The newest
+call claim replaces the previous claim across windows. CLI Stop records an end
+marker and stops a frozen owner when it reconnects. A failed or cancelled start
+also records an end marker.
+
+Agent requests to change standing instructions create a suggestion. Review the
+suggestion in Voice Mode settings and press Save to activate it for later calls.
+The agent cannot activate the suggestion through its tools.
+
+Event payloads are limited to 64 KiB. Event storage stops accepting new entries
+at 100,000 events or 128 MiB of event text. Existing transcripts are retained;
+logging reports a warning when full, and Stop continues to work. These limits
+cover session events, not token-usage accounting or the complete SQLite file.
+There is no automatic deletion or retention policy.
+
+BB controls access to plugin RPCs. Connected clients of the same BB installation
+share session history and the configured plugin-command access. Session IDs and
+call claims are routing data, not per-user access credentials. The host's plugin
+RPC route checks browser origin and JSON content type. Voice Mode does not add
+a separate multi-user permission system.
+
+The sidebar options button is hidden by a content script scoped to BB 0.42 row
+markup. Reloading or disabling the plugin removes that style. Check the selector
+when upgrading BB. Physical mobile and native desktop audio validation remains
+separate from browser and simulated-event tests.
