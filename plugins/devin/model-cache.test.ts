@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ProviderBridgeEntry } from "@get-bb/plugin-sdk/provider-bridge";
 import { devinIdentity, fileCatalogStore, FRESH_MS, MAX_AGE_MS, MAX_CATALOG_BYTES, UNKNOWN_IDENTITY_TTL_MS } from "./model-cache";
+import type { CatalogEntry, CatalogStore } from "./model-cache";
 import { withDevinModels } from "./model-bridge";
 import { buildDevinModels } from "./models";
 
@@ -248,6 +249,51 @@ test("a sign-in change during a lookup does not join the older lookup", async (t
   await settle(() => releases.length === 3); await tick(); await tick();
   assert.equal(releases.length, 3);
   releases[2]!(); await settle(() => d.forwarded.length === 2);
+});
+
+test("a slow older write cannot overtake a newer write; local slots order independently", async (t) => {
+  // A store whose writes complete only when released, in any order.
+  const writes: Array<{ entry: CatalogEntry; release: () => void }> = [];
+  let current: CatalogEntry | undefined;
+  const store: CatalogStore = { async read() { return current; }, write(entry) { return new Promise<void>(r => writes.push({ entry, release: () => { current = entry; r(); } })); } };
+  const releases: Array<() => void> = [];
+  const slow: Fetch = () => new Promise(r => { releases.push(() => r(fixture)); });
+  let identity = "id-1";
+  const forwarded: any[] = [];
+  const entry = withDevinModels({ experimental_apiVersion: 1, handleLine: l => forwarded.push(JSON.parse(l)) }, slow, () => {}, { identity: async () => identity, now: () => T0, store });
+  const select = (id: number) => entry.handleLine(JSON.stringify({ jsonrpc: "2.0", id, method: "thread/start", params: { threadId: `t${id}`, options: { model: groupId, reasoningLevel: "medium", providerOptions: { acpLaunchSpec: launch } } } }));
+  select(1); await settle(() => releases.length === 1);
+  identity = "id-2"; select(2); await settle(() => releases.length === 2);
+  releases[0]!(); await settle(() => writes.length === 1);
+  assert.equal(writes[0]!.entry.identity, "id-1");
+  releases[1]!(); await tick(); await tick(); await tick();
+  assert.equal(writes.length, 1, "the newer write waits behind the older one");
+  writes[0]!.release(); await settle(() => writes.length === 2);
+  assert.equal(writes[1]!.entry.identity, "id-2");
+  writes[1]!.release(); await settle(() => forwarded.length === 2);
+  assert.equal(current?.identity, "id-2", "the newest entry is the final one");
+  // Reverse completion order: the older lookup does not write at all.
+  identity = "id-3"; select(3); await settle(() => releases.length === 3);
+  identity = "id-4"; select(4); await settle(() => releases.length === 4);
+  releases[3]!(); await settle(() => writes.length === 3); writes[2]!.release();
+  releases[2]!(); await settle(() => forwarded.length === 4); await tick(); await tick();
+  assert.equal(writes.length, 3, "the superseded lookup skips its write");
+  assert.equal(current?.identity, "id-4");
+
+  // Without an identity, concurrent lookups for two commands each keep their own copy.
+  const dir = tempDir(t);
+  const releasesByCommand = new Map<string, () => void>();
+  const calls: string[] = [];
+  const perCommand: Fetch = (command) => { calls.push(command); return new Promise(r => releasesByCommand.set(command, () => r(fixture))); };
+  const d = bridge(dir, perCommand, { identity: () => undefined });
+  const selectWith = (id: number, command: string) => d.entry.handleLine(JSON.stringify({ jsonrpc: "2.0", id, method: "thread/start", params: { threadId: `t${id}`, options: { model: groupId, reasoningLevel: "medium", providerOptions: { acpLaunchSpec: { ...launch, command } } } } }));
+  selectWith(5, "devin-one"); selectWith(6, "devin-two");
+  await settle(() => releasesByCommand.size === 2);
+  releasesByCommand.get("devin-two")!(); await settle(() => d.forwarded.length === 1);
+  releasesByCommand.get("devin-one")!(); await settle(() => d.forwarded.length === 2);
+  selectWith(7, "devin-one"); selectWith(8, "devin-two");
+  await settle(() => d.forwarded.length === 4);
+  assert.deepEqual(calls, ["devin-one", "devin-two"], "both commands keep their local copy");
 });
 
 test("identity follows the executable and the local sign-in state without reading credentials", async (t) => {

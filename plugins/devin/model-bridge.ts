@@ -5,32 +5,42 @@ import { experimental_acpLaunchSpecSchema } from "@get-bb/plugin-sdk/provider-br
 import { buildDevinModels, FAMILY_PREFIX } from "./models";
 import { fetchDevinCatalog } from "./model-probe";
 import { devinIdentity, fileCatalogStore, FRESH_MS, MAX_AGE_MS, memoryCatalogStore, UNKNOWN_IDENTITY_TTL_MS } from "./model-cache";
-import type { CatalogStore } from "./model-cache";
+import type { CatalogEntry, CatalogStore } from "./model-cache";
 
 const selectionSchema = z.object({ model: z.string(), reasoningLevel: reasoningLevelSchema.optional(), serviceTier: z.enum(["default", "fast"]).optional(), providerOptions: z.object({ acpLaunchSpec: experimental_acpLaunchSpecSchema }) });
 const selectionMethods = new Set(["thread/start", "thread/resume", "thread/fork", "turn/start"]);
 type Catalog = ReturnType<typeof buildDevinModels>;
-export interface DevinModelDeps { identity?: (command: string) => Promise<string | undefined>; now?: () => number }
+export interface DevinModelDeps { identity?: (command: string) => Promise<string | undefined>; now?: () => number; store?: CatalogStore }
 
 export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCatalog, write?: (line: string) => void, deps: DevinModelDeps = {}): ProviderBridgeEntry {
   const io = createBridgeIo({ write });
   const abort = new AbortController();
   const identity = deps.identity ?? devinIdentity, now = deps.now ?? Date.now;
+  // Each store serializes its writes; the ordering check runs right before a
+  // write, so a lookup that finishes late never replaces a newer entry.
+  interface Slot { store: CatalogStore; written: number; queue: Promise<void> }
+  const slot = (store: CatalogStore): Slot => ({ store, written: 0, queue: Promise.resolve() });
   // The persistent store arrives with start(); until then this process only.
-  let store: CatalogStore = memoryCatalogStore();
+  const persistent = slot(deps.store ?? memoryCatalogStore());
   // Without a local identity nothing is persisted; this process still keeps
   // each command's last catalog briefly so one thread does not rerun the CLI
   // per turn.
-  const local = new Map<string, CatalogStore>();
-  function storeFor(command: string, id: string | undefined): CatalogStore {
-    if (id !== undefined) return store;
+  const local = new Map<string, Slot>();
+  function slotFor(command: string, id: string | undefined): Slot {
+    if (id !== undefined) return persistent;
     let memory = local.get(command);
-    if (!memory) local.set(command, memory = memoryCatalogStore());
+    if (!memory) local.set(command, memory = slot(memoryCatalogStore()));
     return memory;
   }
-  // Lookups are numbered so a lookup that finishes late cannot replace the
-  // entry written by a lookup that started after it.
-  let started = 0, written = 0;
+  let started = 0;
+  function commit(target: Slot, sequence: number, entry: CatalogEntry): Promise<void> {
+    return target.queue = target.queue.then(() => {
+      if (abort.signal.aborted || sequence <= target.written) return;
+      target.written = sequence;
+      return target.store.write(entry)
+        .catch(error => { process.stderr.write(`Devin model catalog cache was not written: ${error instanceof Error ? error.message : String(error)}\n`); });
+    });
+  }
   const pending = new Set<{ threadId: unknown; cancelled: boolean }>();
   // Reuse a single in-flight lookup per command and identity, but never
   // retain a failed one. A different identity must not join an older lookup.
@@ -45,18 +55,14 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
       const catalog = buildDevinModels(raw);
       // The identity was read before the lookup: a sign-in change during the
       // lookup makes the entry unusable rather than trusted.
-      if (!abort.signal.aborted && sequence > written) {
-        written = sequence;
-        await storeFor(command, id).write({ version: 1, identity: id ?? "", fetchedAt: now(), catalog: raw })
-          .catch(error => process.stderr.write(`Devin model catalog cache was not written: ${error instanceof Error ? error.message : String(error)}\n`));
-      }
+      await commit(slotFor(command, id), sequence, { version: 1, identity: id ?? "", fetchedAt: now(), catalog: raw });
       return catalog;
     })().finally(() => inflight.delete(key));
     inflight.set(key, lookup);
     return lookup;
   }
   async function cached(command: string, id: string | undefined): Promise<{ catalog: Catalog; stale: boolean } | undefined> {
-    const entry = await storeFor(command, id).read();
+    const entry = await slotFor(command, id).store.read();
     if (!entry || entry.identity !== (id ?? "")) return undefined;
     const age = now() - entry.fetchedAt;
     if (age < 0 || age >= (id === undefined ? UNKNOWN_IDENTITY_TTL_MS : MAX_AGE_MS)) return undefined;
@@ -78,7 +84,7 @@ export function withDevinModels(acp: ProviderBridgeEntry, fetch = fetchDevinCata
   }
   function close() { abort.abort(); inflight.clear(); local.clear(); }
   return experimental_defineProviderBridge({
-    start(context) { store = fileCatalogStore(context.dataDir); return acp.start?.(context); },
+    start(context) { if (!deps.store) persistent.store = fileCatalogStore(context.dataDir); return acp.start?.(context); },
     onClose() { close(); return acp.onClose?.(); },
     onSigterm() { close(); return acp.onSigterm?.(); },
     onSigint() { close(); return acp.onSigint?.(); },
