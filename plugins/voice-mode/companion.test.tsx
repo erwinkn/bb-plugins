@@ -113,6 +113,12 @@ test("session creation is above history; call controls only show during a call",
   try {
     const row = await ui.findByRole("button", { name: /Session a/ });
     const startButton = ui.getByRole("button", { name: "New session" });
+    const header = ui.getByRole("heading", { name: "Voice sessions" }).parentElement;
+    assert.equal(header?.contains(startButton), true);
+    const settingsButton = ui.getByRole("button", { name: "Open Voice Mode settings" });
+    assert.equal(header?.contains(settingsButton), true);
+    assert.equal(settingsButton.textContent, "");
+    assert.ok(settingsButton.compareDocumentPosition(startButton) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
     assert.ok(startButton.compareDocumentPosition(row) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
     assert.equal(ui.queryByRole("region", { name: "Current voice session" }), null);
     assert.equal(ui.queryByText("Talk to Aide"), null);

@@ -830,32 +830,32 @@ export function SessionsPanel() {
           </>
         ) : (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 ref={historyHeadingRef} tabIndex={-1} className="rounded-sm text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Voice sessions</h2>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={openVoiceModeSettings}
-                aria-label="Open Voice Mode settings"
-                className="min-h-11 text-muted-foreground sm:min-h-8"
-              >
-                <GearIcon />
-                Settings
-              </Button>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Button
-                type="button"
-                disabled={callState !== "idle"}
-                onClick={() => {
-                  if (voiceAgent.getState() === "idle") voiceAgent.toggleFromSurface();
-                }}
-                className="min-h-11 sm:min-h-9"
-              >
-                <WaveformIcon live={false} />
-                {callState === "idle" ? "New session" : callState === "connecting" ? "Connecting…" : "Session in progress"}
-              </Button>
+            <div className="flex items-center justify-between gap-2">
+              <h2 ref={historyHeadingRef} tabIndex={-1} className="min-w-0 rounded-sm text-base font-semibold leading-tight text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Voice sessions</h2>
+              <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={openVoiceModeSettings}
+                  aria-label="Open Voice Mode settings"
+                  className="size-11 p-0 text-muted-foreground sm:size-8"
+                >
+                  <GearIcon />
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={callState !== "idle"}
+                  onClick={() => {
+                    if (voiceAgent.getState() === "idle") voiceAgent.toggleFromSurface();
+                  }}
+                  className="min-h-11 sm:min-h-8"
+                >
+                  <WaveformIcon live={false} />
+                  {callState === "idle" ? "New session" : callState === "connecting" ? "Connecting…" : "Session in progress"}
+                </Button>
+              </div>
             </div>
             {sessions && sessions.length > 0 ? (
               <div className="flex items-center gap-2">

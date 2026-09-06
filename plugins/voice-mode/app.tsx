@@ -251,6 +251,25 @@ function SidebarLiveIndicator() {
 }
 
 export default definePluginApp((app) => {
+  app.contentScripts.register({
+    id: "sidebar-options",
+    mount() {
+      // BB 0.42 owns this menu and has no per-panel visibility option.
+      // Scope the override to its stable row key, not the translated title.
+      const style = document.createElement("style");
+      style.dataset.voiceModeSidebar = "";
+      style.textContent = `
+        [data-sidebar-navigation-item="voice-mode/sessions"] > .bb-sidebar-hover-actions {
+          display: none !important;
+        }
+        [data-sidebar-navigation-item="voice-mode/sessions"] > [data-plugin-nav-sidebar-accessory] {
+          opacity: 1 !important;
+        }
+      `;
+      document.head.append(style);
+      return () => style.remove();
+    },
+  });
   app.slots.settingsSection({
     id: "models",
     title: "Model & voice",
@@ -258,7 +277,6 @@ export default definePluginApp((app) => {
   });
   app.slots.settingsSection({
     id: "behavior",
-    title: "Behavior",
     component: BehaviorSettings,
   });
   app.slots.settingsSection({

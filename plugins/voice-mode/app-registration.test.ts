@@ -24,6 +24,9 @@ test("the actual app registers drawer surfaces only on mobile clients", async ()
       const app = await loadPluginApp(() => import(`${pathToFileURL(file).href}?mobile=${mobile}`));
       const page = app.navPanels.find(panel => panel.id === "sessions");
       assert.ok(page);
+      const behavior = app.settingsSections.find(section => section.id === "behavior");
+      assert.ok(behavior);
+      assert.equal(behavior.title, undefined);
       assert.equal(page.fixedTabs?.length ?? 0, mobile ? 1 : 0);
       assert.equal(app.threadPanelActions.some(action => action.id === "thread-workspace"), mobile);
     }
