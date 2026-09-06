@@ -10,6 +10,10 @@
     {
       "name": "automations-sidebar",
       "source": "./plugins/automations-sidebar"
+    },
+    {
+      "name": "erwin-provider-usage",
+      "source": "./plugins/provider-usage"
     }
   ]
 }

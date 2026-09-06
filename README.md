@@ -10,6 +10,9 @@ verification, and migration from a custom ACP entry.
 `automations-sidebar` hides the Automations sidebar ellipsis button. It adds UI
 styles on top of the built-in plugin. See [Automations sidebar](plugins/automations-sidebar/README.md).
 
+`erwin-provider-usage` supplies the compact usage popup. See [Provider usage
+compact](plugins/provider-usage/README.md) for installation and rollback.
+
 ## Install
 
 Use BB 0.42.1 or later. The bb server needs Git, npm, and GitHub access to this
@@ -44,6 +47,59 @@ removed from the current collection. Their prior commits and release tags stay
 in Git history.
 
 ## Desired upstream changes
+
+### Usage popup: compact header and visible provider tabs
+
+The original popup belongs to BB's built-in `provider-usage` plugin. This
+collection now provides `erwin-provider-usage` as a local replacement through
+BB's footer API. The same layout changes can still go upstream in BB's
+`plugins/provider-usage` source.
+
+The original built-in frontend has an `overflow-x-auto` provider tab list. Each tab is
+`h-10 w-8`, while the machine selector and action buttons are `h-7` or `size-7`.
+The machine selector shows a name up to `max-w-32` wide. This leaves too little
+room for the tabs. The extra bar below the active-tab underline is the horizontal
+scrollbar. Devin is the fourth provider, after Codex, Claude Code, and Cursor,
+and is hidden in that overflow in the reported screenshot.
+
+Requested changes:
+
+- Replace the machine-name trigger with a machine icon. Keep the current machine
+  name in a tooltip and accessible label, and keep full names and connection
+  states in the selection menu.
+- Align provider tabs, machine selection, and refresh on one row with consistent
+  control heights, icon alignment, and spacing. Keep one clear active-tab marker.
+- Fit all four current provider tabs at the reported popup width without a
+  horizontal scrollbar. At narrower widths or with more providers, keep every
+  provider reachable through an explicit overflow control or another accessible
+  layout. Do not just hide the scrollbar and leave tabs clipped.
+- Remove the `Collapse provider usage` button. Verify that clicking outside and
+  pressing Escape dismiss the popup, and that the machine menu remains usable.
+- Keep provider discovery based on `capability: "usage"`; do not hard-code a
+  provider list or add a separate Devin usage request.
+
+Verified on 2026-09-06 against the running app: `bb provider list` reports
+`acp-devin`, owned by `erwin-devin`, with `maintenance.usage: true`. A forced
+`provider-usage` `getUsage` RPC for the connected machine returned all four
+providers and valid Devin usage with `status: "ok"`, a plan label, and a weekly
+window. The backend already loads usage-capable providers through
+`bb.sdk.providers.list` and `bb.sdk.system.usageLimits`. The frontend renders
+that list without a provider allowlist. Devin needs a layout fix, not another
+provider implementation.
+
+Acceptance checks: long machine names, all four current providers, additional
+providers, narrow popup widths, keyboard tab selection, machine switching,
+refresh, outside-click dismissal, Escape, and visible focus indicators. Verify
+that Devin's existing usage window renders when its tab is selected.
+
+Status: implemented in [Provider usage compact](plugins/provider-usage/README.md).
+No upstream issue filed. The built-in plugin can be enabled again to roll back.
+Live checking also found that BB handles Escape but does not handle outside
+clicks for footer disclosures. Our plugin adds a scoped listener for that action;
+the same behavior should be added to the upstream footer.
+Suggested issue title: `Usage popup: compact machine selector, align controls, and expose overflowing provider tabs`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues), with the
+reported screenshot and the evidence above.
 
 ### Mobile: choose Steer or Queue from the Send button
 
