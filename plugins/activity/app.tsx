@@ -100,7 +100,7 @@ function ThreadsList(props: PluginThreadListProps) {
     }))
     .filter((row) => !state.hidden.includes(row.status));
   // Thread and project snapshots can arrive separately. Keep unmatched
-  // threads navigable until the project metadata becomes available.
+  // threads and new drafts navigable until project metadata is available.
   const displayProjects = new Map(
     projects.map((project) => [
       project.id,
@@ -115,7 +115,14 @@ function ThreadsList(props: PluginThreadListProps) {
       });
     }
   }
-  const newDrafts = projects.filter(
+  for (const key of knownDrafts) {
+    if (!key.startsWith("new:")) continue;
+    const projectId = key.slice(4);
+    if (projectId && !displayProjects.has(projectId)) {
+      displayProjects.set(projectId, { id: projectId, name: "No project" });
+    }
+  }
+  const newDrafts = [...displayProjects.values()].filter(
     (project) =>
       knownDrafts.has(`new:${project.id}`) && !state.hidden.includes("draft"),
   );

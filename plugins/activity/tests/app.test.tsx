@@ -244,6 +244,62 @@ describe("activity sidebar", () => {
     ).toBeTruthy();
   });
 
+  it.each(["status", "project"] as const)(
+    "keeps new drafts without project metadata visible in %s view",
+    (groupBy) => {
+      updateState((state) => ({
+        ...state,
+        groupBy,
+        drafts: ["new:missing-project", "new:"],
+      }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: { projects: [], threads: [] },
+      });
+      const draft = slot.getByRole("button", {
+        name: "Draft New thread draft No project",
+      });
+      expect(slot.getAllByText("New thread draft")).toHaveLength(1);
+      expect(slot.queryByText("No matching threads.")).toBeNull();
+      expect(
+        slot.getByRole("region", {
+          name: groupBy === "status" ? "Draft" : "No project",
+        }),
+      ).toBeTruthy();
+      fireEvent.click(draft);
+      expect(slot.inspection.sidebarActionCalls).toEqual([
+        {
+          method: "openNewThread",
+          options: { projectId: "missing-project", focusPrompt: true },
+        },
+      ]);
+      expect(props.onNavigate).toHaveBeenCalledOnce();
+
+      act(() => updateState((state) => ({ ...state, hidden: ["draft"] })));
+      expect(slot.queryByText("New thread draft")).toBeNull();
+      expect(slot.queryByRole("region")).toBeNull();
+      act(() => updateState((state) => ({ ...state, hidden: [] })));
+      expect(slot.getAllByText("New thread draft")).toHaveLength(1);
+
+      // Re-mount with a later SDK snapshot; the stored flag is unchanged.
+      slot.lifecycle.unmount();
+      const loaded = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: {
+          threads: [],
+          projects: [
+            { id: "missing-project", name: "Recovered", isPersonal: false },
+          ],
+        },
+      });
+      expect(loaded.getAllByText("New thread draft")).toHaveLength(1);
+      expect(loaded.queryByText("No project")).toBeNull();
+      expect(
+        loaded.getByRole("button", {
+          name: "Draft New thread draft Recovered",
+        }),
+      ).toBeTruthy();
+    },
+  );
+
   it("keeps unmatched projects and their selected children visible in Project view", () => {
     updateState((state) => ({ ...state, groupBy: "project" }));
     const slot = renderSlot(
