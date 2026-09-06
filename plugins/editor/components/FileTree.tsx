@@ -19,6 +19,8 @@ export interface FileTreeProps {
   onRefresh: () => void;
   /** Resolves when the entry exists; rejects with a message to show inline. */
   onCreate: (path: string, kind: CreateKind) => Promise<void>;
+  onRename: (path: string, newPath: string, kind: CreateKind) => Promise<void>;
+  onDelete: (path: string, kind: CreateKind) => Promise<void>;
 }
 
 interface Draft {
@@ -26,13 +28,30 @@ interface Draft {
   kind: CreateKind;
 }
 
+/** A row in an editing state: renaming, or awaiting delete confirmation. */
+type RowEdit = { kind: "rename"; path: string } | { kind: "delete"; path: string };
+
 const INDENT_PER_LEVEL_PX = 12;
 
-export function FileTree({ entries, root, label, isLoading, error, truncated, activePath, onOpenFile, onRefresh, onCreate }: FileTreeProps) {
+export function FileTree({
+  entries,
+  root,
+  label,
+  isLoading,
+  error,
+  truncated,
+  activePath,
+  onOpenFile,
+  onRefresh,
+  onCreate,
+  onRename,
+  onDelete,
+}: FileTreeProps) {
   const [query, setQuery] = useState("");
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [rowEdit, setRowEdit] = useState<RowEdit | null>(null);
   const activeRowRef = useRef<HTMLButtonElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -87,6 +106,9 @@ export function FileTree({ entries, root, label, isLoading, error, truncated, ac
         ...(node.kind === "file" ? [{ label: "Open in new tab", onSelect: () => onOpenFile(node.path, { newTab: true }) }] : []),
         { label: "New file…", onSelect: () => startDraft(parent, "file") },
         { label: "New folder…", onSelect: () => startDraft(parent, "directory") },
+        { type: "separator" as const },
+        { label: "Rename…", onSelect: () => setRowEdit({ kind: "rename", path: node.path }) },
+        { label: "Delete…", onSelect: () => setRowEdit({ kind: "delete", path: node.path }) },
         { type: "separator" as const },
         { label: "Copy absolute path", onSelect: () => void copyText(absolutePathOf(node.path), "Absolute path copied") },
         { label: "Copy relative path", onSelect: () => void copyText(node.path, "Relative path copied") },
@@ -151,6 +173,7 @@ export function FileTree({ entries, root, label, isLoading, error, truncated, ac
               activePath={activePath}
               activeRowRef={activeRowRef}
               draft={draft}
+              rowEdit={rowEdit}
               expanded={effectiveExpanded}
               level={0}
               nodes={filtered.nodes}
@@ -160,6 +183,9 @@ export function FileTree({ entries, root, label, isLoading, error, truncated, ac
               onToggle={toggle}
               onCancelDraft={() => setDraft(null)}
               onCreate={onCreate}
+              onEndRowEdit={() => setRowEdit(null)}
+              onRename={onRename}
+              onDelete={onDelete}
             />
           </>
         )}
@@ -272,23 +298,11 @@ function DraftRow({
   );
 }
 
-function Rows({
-  activePath,
-  activeRowRef,
-  draft,
-  expanded,
-  level,
-  nodes,
-  onContextMenu,
-  onOpenFile,
-  onStartDraft,
-  onToggle,
-  onCancelDraft,
-  onCreate,
-}: {
+interface RowsProps {
   activePath: string | null;
   activeRowRef: React.RefObject<HTMLButtonElement | null>;
   draft: Draft | null;
+  rowEdit: RowEdit | null;
   expanded: ReadonlySet<string>;
   level: number;
   nodes: readonly TreeNode[];
@@ -298,13 +312,31 @@ function Rows({
   onToggle: (path: string) => void;
   onCancelDraft: () => void;
   onCreate: (path: string, kind: CreateKind) => Promise<void>;
-}) {
+  onEndRowEdit: () => void;
+  onRename: (path: string, newPath: string, kind: CreateKind) => Promise<void>;
+  onDelete: (path: string, kind: CreateKind) => Promise<void>;
+}
+
+function Rows(props: RowsProps) {
+  const { activePath, activeRowRef, draft, rowEdit, expanded, level, nodes, onContextMenu, onOpenFile, onStartDraft, onToggle, onCancelDraft, onCreate, onEndRowEdit, onRename, onDelete } = props;
   return (
     <>
       {nodes.map((node) => {
         const isDirectory = node.kind === "directory";
         const isOpen = isDirectory && expanded.has(node.path);
         const isActive = !isDirectory && node.path === activePath;
+        if (rowEdit?.path === node.path) {
+          return (
+            <div key={node.path} role="treeitem">
+              {rowEdit.kind === "rename" ? (
+                <RenameRow node={node} level={level} onCancel={onEndRowEdit} onRename={onRename} />
+              ) : (
+                <DeleteRow node={node} level={level} onCancel={onEndRowEdit} onDelete={onDelete} />
+              )}
+              {isDirectory && isOpen ? <Rows {...props} level={level + 1} nodes={node.children} /> : null}
+            </div>
+          );
+        }
         return (
           <div key={node.path} role="treeitem" aria-expanded={isDirectory ? isOpen : undefined}>
             <div className="group/row relative">
@@ -357,20 +389,7 @@ function Rows({
                 {draft !== null && draft.parent === node.path ? (
                   <DraftRow draft={draft} level={level + 1} onCancel={onCancelDraft} onCreate={onCreate} onDone={onCancelDraft} />
                 ) : null}
-                <Rows
-                  activePath={activePath}
-                  activeRowRef={activeRowRef}
-                  draft={draft}
-                  expanded={expanded}
-                  level={level + 1}
-                  nodes={node.children}
-                  onContextMenu={onContextMenu}
-                  onOpenFile={onOpenFile}
-                  onStartDraft={onStartDraft}
-                  onToggle={onToggle}
-                  onCancelDraft={onCancelDraft}
-                  onCreate={onCreate}
-                />
+                <Rows {...props} level={level + 1} nodes={node.children} />
               </>
             ) : null}
           </div>
@@ -378,6 +397,164 @@ function Rows({
       })}
     </>
   );
+}
+
+function RenameRow({
+  node,
+  level,
+  onCancel,
+  onRename,
+}: {
+  node: TreeNode;
+  level: number;
+  onCancel: () => void;
+  onRename: (path: string, newPath: string, kind: CreateKind) => Promise<void>;
+}) {
+  const [name, setName] = useState(node.name);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    const input = ref.current;
+    if (input === null) return;
+    input.focus();
+    const dot = node.kind === "file" ? node.name.lastIndexOf(".") : -1;
+    input.setSelectionRange(0, dot > 0 ? dot : node.name.length);
+  }, [node]);
+  const submit = async () => {
+    const trimmed = name.trim();
+    if (busy) return;
+    if (trimmed === "" || trimmed === node.name) {
+      onCancel();
+      return;
+    }
+    if (trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("..")) {
+      setError("Use a plain name; moving between folders is not supported here");
+      return;
+    }
+    setBusy(true);
+    try {
+      const parent = node.path.slice(0, Math.max(node.path.lastIndexOf("/"), 0));
+      await onRename(node.path, parent === "" ? trimmed : `${parent}/${trimmed}`, node.kind);
+      onCancel();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not rename it");
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="px-2" style={{ paddingLeft: 6 + level * INDENT_PER_LEVEL_PX }}>
+      <div className="flex h-6 items-center gap-1">
+        <span className="flex size-3.5 shrink-0" />
+        <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground">
+          {node.kind === "directory" ? <FolderIcon /> : <FileIcon path={name || node.name} />}
+        </span>
+        <input
+          ref={ref}
+          type="text"
+          value={name}
+          disabled={busy}
+          onChange={(event) => {
+            setName(event.target.value);
+            setError(null);
+          }}
+          onBlur={() => {
+            if (!busy && error === null) void submit();
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void submit();
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              onCancel();
+            }
+          }}
+          aria-label={`Rename ${node.name}`}
+          spellCheck={false}
+          className={cn(
+            "h-5 min-w-0 flex-1 rounded-sm bg-surface-recessed px-1.5 text-[13px] text-foreground",
+            "ring-1 ring-ring focus:outline-none",
+            error !== null && "ring-destructive",
+          )}
+        />
+      </div>
+      {error !== null ? <p className="pb-1 pl-9 text-[11px] text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
+function DeleteRow({
+  node,
+  level,
+  onCancel,
+  onDelete,
+}: {
+  node: TreeNode;
+  level: number;
+  onCancel: () => void;
+  onDelete: (path: string, kind: CreateKind) => Promise<void>;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    confirmRef.current?.focus();
+  }, []);
+  const confirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onDelete(node.path, node.kind);
+      onCancel();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not delete it");
+      setBusy(false);
+    }
+  };
+  const count = node.kind === "directory" ? countFiles(node) : 0;
+  return (
+    <div
+      className="bg-destructive/10 px-2 py-1 text-xs text-foreground"
+      style={{ paddingLeft: 6 + level * INDENT_PER_LEVEL_PX }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          onCancel();
+        }
+      }}
+    >
+      <p className="truncate">
+        Delete <span className="font-medium">{node.name}</span>
+        {node.kind === "directory" ? ` and ${count} file${count === 1 ? "" : "s"}` : ""}?
+      </p>
+      <div className="mt-1 flex gap-2">
+        <button
+          ref={confirmRef}
+          type="button"
+          disabled={busy}
+          onClick={() => void confirm()}
+          className="cursor-pointer rounded-sm bg-destructive px-2 py-0.5 text-[11px] font-medium text-white hover:opacity-90 focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none disabled:opacity-50"
+        >
+          Delete
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="cursor-pointer rounded-sm px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          Cancel
+        </button>
+      </div>
+      {error !== null ? <p className="pt-1 text-[11px] text-destructive">{error}</p> : null}
+    </div>
+  );
+}
+
+function countFiles(node: TreeNode): number {
+  return node.children.reduce((total, child) => total + (child.kind === "file" ? 1 : countFiles(child)), 0);
 }
 
 function RowButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {

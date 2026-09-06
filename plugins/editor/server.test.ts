@@ -36,7 +36,7 @@ test("workspace without a thread or project asks for a project", async (t) => {
 });
 
 test("contract exposes the methods the frontend calls", () => {
-  assert.deepEqual(Object.keys(rpcContract).sort(), ["assets", "create", "read", "setSetting", "tree", "workspace", "write"]);
+  assert.deepEqual(Object.keys(rpcContract).sort(), ["assets", "create", "read", "remove", "rename", "setSetting", "tree", "workspace", "write"]);
 });
 
 test("create refuses parent traversal and setSetting refuses unknown keys", async (t) => {
@@ -45,6 +45,8 @@ test("create refuses parent traversal and setSetting refuses unknown keys", asyn
   await plugin(bb);
   const source = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
   await assert.rejects(() => harness.behavior.callRpc("create", { path: "../x", source, kind: "file" }), /cannot contain/);
+  await assert.rejects(() => harness.behavior.callRpc("rename", { path: "a.ts", source, newPath: "/etc/passwd" }), /inside the workspace/);
+  await assert.rejects(() => harness.behavior.callRpc("remove", { path: "..", source, kind: "directory" }), /cannot contain/);
   await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "fontSize", value: 40 }));
   await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "wordWrap", value: "yes" }));
 });

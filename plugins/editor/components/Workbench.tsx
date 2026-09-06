@@ -184,6 +184,36 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     [guardedShow, loadTree, rpc, source],
   );
 
+  const renameEntry = useCallback(
+    async (path: string, newPath: string, kind: CreateKind) => {
+      await rpc.call("rename", { path, source, newPath });
+      await loadTree();
+      const prefix = `${path}/`;
+      if (activePath === path) show(newPath, { record: true });
+      else if (kind === "directory" && activePath !== null && activePath.startsWith(prefix)) {
+        show(`${newPath}/${activePath.slice(prefix.length)}`, { record: true });
+      }
+    },
+    [activePath, loadTree, rpc, show, source],
+  );
+
+  const deleteEntry = useCallback(
+    async (path: string, kind: CreateKind) => {
+      await rpc.call("remove", { path, source, kind });
+      await loadTree();
+      const gone = activePath !== null && (activePath === path || (kind === "directory" && activePath.startsWith(`${path}/`)));
+      if (gone) {
+        setActivePath(null);
+        setHistory((current) => {
+          const paths = current.paths.filter((entry) => entry !== activePath && !(kind === "directory" && entry.startsWith(`${path}/`)));
+          return { paths, index: paths.length - 1 };
+        });
+      }
+      toast.success(`Deleted ${path}`);
+    },
+    [activePath, loadTree, rpc, source],
+  );
+
   const toggleTree = useCallback(() => {
     setTreeOpen((open) => {
       storeTreeOpen(surface, !open);
@@ -236,6 +266,8 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         onOpenFile={openFile}
         onRefresh={() => void loadTree()}
         onCreate={createEntry}
+        onRename={renameEntry}
+        onDelete={deleteEntry}
       />
       {compact ? null : (
         <ResizeHandle

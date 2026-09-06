@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
-import { editorBackground, mixHex, monacoThemeName, normalizeFontStyle, normalizeHex, toMonacoTheme, workbenchColors } from "./monaco-theme";
+import {
+  editorBackground,
+  mixHex,
+  monacoThemeName,
+  normalizeFontStyle,
+  normalizeHex,
+  softenTheme,
+  themeFingerprint,
+  toMonacoTheme,
+  workbenchColors,
+} from "./monaco-theme";
 
 function theme(overrides: Partial<PluginCodeThemeData> = {}): PluginCodeThemeData {
   return {
@@ -69,6 +79,41 @@ test("editorBackground falls back to the theme's own bg and to null", () => {
   assert.equal(editorBackground(theme()), "#eceff4");
   assert.equal(editorBackground(null), null);
   assert.equal(editorBackground(theme({ bg: "not-a-color", fg: "nope" })), null);
+});
+
+test("themeFingerprint separates documents that share a name", () => {
+  const a = theme({ tokenColors: [{ scope: "keyword", settings: { foreground: "#ff0000" } }] });
+  const b = theme({ tokenColors: [{ scope: "keyword", settings: { foreground: "#00ff00" } }] });
+  assert.notEqual(themeFingerprint(a), themeFingerprint(b));
+  assert.equal(themeFingerprint(a), themeFingerprint({ ...a, colors: { "editor.background": "#000000" } }));
+});
+
+test("softenTheme pulls token colors toward the foreground and renames the theme", () => {
+  const source = theme({ fg: "#000000", tokenColors: [{ scope: "keyword", settings: { foreground: "#ff0000aa" } }] });
+  assert.equal(softenTheme(source, 1), source);
+  const soft = softenTheme(source, 0.5);
+  assert.equal(soft.tokenColors[0]!.settings.foreground, "#800000aa");
+  assert.notEqual(soft.name, source.name);
+});
+
+test("workbenchColors with BB tokens paints chrome from the app surfaces", () => {
+  const tokens = {
+    background: "#111111",
+    surfaceRaised: "#161616",
+    surfaceRecessed: "#1c1c1c",
+    popover: "#181818",
+    stateHover: "#262626",
+    border: "#333333",
+    foreground: "#eeeeee",
+    mutedForeground: "#999999",
+    subtleForeground: "#666666",
+    ring: "#8888ff",
+  };
+  const colors = workbenchColors(theme({ colors: { "editor.background": "#1e1e2e", "editorCursor.foreground": "#abcdef" } }), tokens);
+  assert.equal(colors["editor.background"], "#111111");
+  assert.equal(colors["editorWidget.background"], "#181818");
+  assert.equal(colors["editorLineNumber.foreground"], "#666666");
+  assert.equal(colors["editorCursor.foreground"], "#abcdef");
 });
 
 test("mixHex blends channels linearly", () => {

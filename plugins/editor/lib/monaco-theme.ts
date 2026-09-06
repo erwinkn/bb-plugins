@@ -10,6 +10,45 @@ export function monacoThemeName(name: string): string {
 }
 
 /**
+ * A short stable hash of the parts of a theme document that decide colors.
+ * Two documents that share a name but differ in content get different Monaco
+ * and Shiki registrations, so a palette switch can never reuse stale tokens.
+ */
+export function themeFingerprint(theme: PluginCodeThemeData): string {
+  const text = JSON.stringify([theme.type, theme.fg, theme.bg, theme.tokenColors]);
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
+ * The theme with its token colors pulled toward the default foreground.
+ * `intensity` 1 keeps the theme as designed; 0.7 keeps 70% of each color's
+ * distance from the foreground, for a calmer editor.
+ */
+export function softenTheme(theme: PluginCodeThemeData, intensity: number): PluginCodeThemeData {
+  const fg = normalizeHex(theme.fg)?.slice(0, 6);
+  if (intensity >= 1 || fg === undefined) return theme;
+  const soften = (value: string | undefined) => {
+    const hex = normalizeHex(value);
+    if (hex === undefined) return value;
+    const alpha = hex.length === 8 ? hex.slice(6) : "";
+    return `#${mixHex(fg, hex.slice(0, 6), intensity)}${alpha}`;
+  };
+  return {
+    ...theme,
+    name: `${theme.name}:soft${Math.round(intensity * 100)}`,
+    tokenColors: theme.tokenColors.map((rule) => ({
+      ...rule,
+      settings: { ...rule.settings, ...(rule.settings.foreground === undefined ? {} : { foreground: soften(rule.settings.foreground) }) },
+    })),
+  };
+}
+
+/**
  * A color as `RRGGBB` or `RRGGBBAA` without `#`, which is what Monaco's rule
  * parser accepts; 3- and 4-digit forms expand. Anything else is dropped.
  */
@@ -161,9 +200,9 @@ export function workbenchColors(theme: PluginCodeThemeData, tokens: BbTokens | n
   const selection: Record<string, string> = {
     "editor.selectionBackground": withAlpha(fg, dark ? 0.2 : 0.16),
     "editor.inactiveSelectionBackground": withAlpha(fg, 0.1),
-    "editor.selectionHighlightBackground": withAlpha(fg, 0.1),
-    "editor.wordHighlightBackground": withAlpha(fg, 0.1),
-    "editor.wordHighlightStrongBackground": withAlpha(fg, 0.14),
+    "editor.selectionHighlightBackground": withAlpha(fg, 0.07),
+    "editor.wordHighlightBackground": withAlpha(fg, 0.07),
+    "editor.wordHighlightStrongBackground": withAlpha(fg, 0.1),
     "editor.findMatchBackground": withAlpha(fg, 0.3),
     "editor.findMatchHighlightBackground": withAlpha(fg, 0.14),
   };

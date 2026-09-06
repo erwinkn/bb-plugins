@@ -74,6 +74,16 @@ export const rpcContract = defineRpcContract({
     input: fileSchema.extend({ kind: z.enum(["file", "directory"]) }),
     output: z.object({ path: z.string() }),
   },
+  /** Move a file or directory to a new workspace-relative path. */
+  rename: {
+    input: fileSchema.extend({ newPath: z.string().min(1) }),
+    output: z.object({ path: z.string() }),
+  },
+  /** Delete a file, or a directory with its contents. */
+  remove: {
+    input: fileSchema.extend({ kind: z.enum(["file", "directory"]) }),
+    output: z.null(),
+  },
   /** Persist one editor preference from the toolbar menu. */
   setSetting: {
     input: z.discriminatedUnion("key", [
@@ -143,6 +153,11 @@ async function ensureBundleDir(log: (message: string) => void): Promise<string> 
   return bundleDir;
 }
 
+function assertInsideWorkspace(relativePath: string): void {
+  if (/(^|[\\/])\.\.([\\/]|$)/.test(relativePath)) throw new Error("The path cannot contain '..'");
+  if (/^([\\/]|[A-Za-z]:)/.test(relativePath)) throw new Error("The path must be inside the workspace");
+}
+
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
     fontSize: {
@@ -150,6 +165,12 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Font size",
       experimental_schema: z.number().int().min(9).max(24),
       default: 13,
+    },
+    colorIntensity: {
+      type: "select",
+      label: "Syntax color intensity (full matches BB's preview)",
+      options: ["full", "soft", "muted"],
+      default: "full",
     },
     wordWrap: { type: "boolean", label: "Wrap long lines", default: false },
     lineNumbers: { type: "boolean", label: "Show line numbers", default: true },
@@ -305,14 +326,10 @@ export default async function plugin(bb: BbPluginApi) {
     },
 
     async create({ path: filePath, source, kind }) {
-      if (/(^|[\\/])\.\.([\\/]|$)/.test(filePath)) throw new Error("The name cannot contain '..'");
+      assertInsideWorkspace(filePath);
       const target = await resolveTarget(source, filePath);
       const hostId = target.hostId === undefined ? {} : { hostId: target.hostId };
-      const exists = await bb.sdk.files
-        .read({ path: target.path, ...hostId })
-        .then(() => true)
-        .catch(() => false);
-      if (exists) throw new Error(`${filePath} already exists`);
+      if (await exists(target.path, hostId)) throw new Error(`${filePath} already exists`);
       if (kind === "directory") {
         await bb.sdk.files.mkdir({ path: target.path, recursive: true, ...hostId });
       } else {
@@ -328,9 +345,38 @@ export default async function plugin(bb: BbPluginApi) {
       return { path: filePath };
     },
 
+    async rename({ path: filePath, source, newPath }) {
+      assertInsideWorkspace(filePath);
+      assertInsideWorkspace(newPath);
+      const from = await resolveTarget(source, filePath);
+      const to = await resolveTarget(source, newPath);
+      const hostId = from.hostId === undefined ? {} : { hostId: from.hostId };
+      if (from.path === to.path) return { path: newPath };
+      if (await exists(to.path, hostId)) throw new Error(`${newPath} already exists`);
+      await bb.sdk.files.move({ sourcePath: from.path, destinationPath: to.path, ...hostId });
+      return { path: newPath };
+    },
+
+    async remove({ path: filePath, source, kind }) {
+      assertInsideWorkspace(filePath);
+      const target = await resolveTarget(source, filePath);
+      if (target.path === target.rootPath) throw new Error("The workspace root cannot be deleted");
+      const hostId = target.hostId === undefined ? {} : { hostId: target.hostId };
+      await bb.sdk.files.remove({ path: target.path, recursive: kind === "directory", ...hostId });
+      return null;
+    },
+
     async setSetting(input) {
       await settings.experimental_set({ [input.key]: input.value });
       return null;
     },
   });
+
+  /** Whether a file or directory exists; a directory reads with an error too, so mkdir stays idempotent. */
+  async function exists(absolutePath: string, hostId: { hostId?: string }): Promise<boolean> {
+    return bb.sdk.files
+      .read({ path: absolutePath, ...hostId })
+      .then(() => true)
+      .catch((error: unknown) => /EISDIR|is a directory/i.test(error instanceof Error ? error.message : String(error)));
+  }
 }

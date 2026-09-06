@@ -12,8 +12,10 @@ disable that one before you install this one.
   super.engineering; a setting moves it left). The tree collapses (`⌘B`),
   resizes by drag, and remembers its width and the last file per workspace.
   Hover the tree header or a folder for **refresh**, **new file**, and
-  **new folder**; names are typed inline. On the New thread screen, **Files**
-  browses the project's default checkout.
+  **new folder**; names are typed inline. Right-click a row for **Rename…**
+  (inline) and **Delete…** (inline confirmation; folders report their file
+  count). On the New thread screen, **Files** browses the project's default
+  checkout.
 - **Toolbar.** Back and forward through the files you opened, the path
   (click to copy), then `⋯` (save, discard, reload, open in new tab, copy
   paths, and toggles for line numbers, word wrap, minimap, auto save, format
@@ -30,7 +32,10 @@ disable that one before you install this one.
   so token colors match BB's. The editor chrome (background, gutter, line
   highlight, widgets, scrollbars) takes BB's own surface colors, and icons
   are BB's Hugeicons at BB's size, so the editor reads as part of the panel.
-  Theme and light/dark switches apply live.
+  Like BB's preview there are no indentation or bracket guides, no bracket
+  colors, and no current-line band (the active line number is the cue).
+  Theme and light/dark switches apply live; a **Syntax color intensity**
+  setting pulls token colors toward the foreground for a calmer editor.
 - **Language services.** Completions, hover, signature help, go to
   definition, rename, formatting, and outline for TypeScript, JavaScript,
   JSON, CSS/SCSS/Less, and HTML. The TypeScript checker sees only the open
@@ -55,6 +60,7 @@ Extensions → Editor:
 | Setting                | Default  | Notes                                                   |
 | ---------------------- | -------- | ------------------------------------------------------- |
 | Font size              | 13       | 9 to 24                                                 |
+| Syntax color intensity | full     | `full` matches BB's preview; `soft` keeps 85% and `muted` 70% of each color's distance from the foreground |
 | Wrap long lines        | off      | Also in the `⋯` menu                                    |
 | Show line numbers      | on       | Also in the `⋯` menu                                    |
 | Show minimap           | off      | Also in the `⋯` menu                                    |
@@ -130,7 +136,6 @@ grammar, and five workers, all loaded on demand.
 - Live reload when the agent edits an open file (needs a workspace watch).
 - Git gutter and an editable diff view against HEAD or the base branch.
 - Review comments on lines that the agent can read.
-- Renaming and deleting files from the tree (creating works).
 - Hidden files never appear in the tree; BB's path listing excludes them.
 - A file opened from the tree inside an editor tab keeps that tab's original
   title; plugins cannot retitle a host tab yet.

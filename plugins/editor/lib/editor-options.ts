@@ -7,6 +7,8 @@ export type TreeSide = "left" | "right";
 
 export interface EditorPrefs {
   fontSize: number;
+  /** 1 keeps the code theme's colors; lower values pull them toward the foreground. */
+  colorIntensity: number;
   wordWrap: boolean;
   lineNumbers: boolean;
   minimap: boolean;
@@ -18,6 +20,7 @@ export interface EditorPrefs {
 
 export const DEFAULT_PREFS: EditorPrefs = {
   fontSize: 13,
+  colorIntensity: 1,
   wordWrap: false,
   lineNumbers: true,
   minimap: false,
@@ -36,8 +39,10 @@ export function prefsFrom(values: Record<string, unknown> | null | undefined): E
   const diagnostics = values?.typescriptDiagnostics;
   const bool = (key: keyof EditorPrefs & ("wordWrap" | "lineNumbers" | "minimap" | "formatOnSave")) =>
     typeof values?.[key] === "boolean" ? (values[key] as boolean) : DEFAULT_PREFS[key];
+  const intensity = { full: 1, soft: 0.85, muted: 0.7 }[String(values?.colorIntensity)] ?? DEFAULT_PREFS.colorIntensity;
   return {
     fontSize: Number.isFinite(fontSize) && fontSize >= 9 && fontSize <= 24 ? Math.round(fontSize) : DEFAULT_PREFS.fontSize,
+    colorIntensity: intensity,
     wordWrap: bool("wordWrap"),
     lineNumbers: bool("lineNumbers"),
     minimap: bool("minimap"),
@@ -84,12 +89,14 @@ export function baseEditorOptions(
     cursorBlinking: "smooth",
     cursorSmoothCaretAnimation: "on",
     cursorSurroundingLines: 3,
-    renderLineHighlight: "line",
-    renderLineHighlightOnlyWhenFocus: true,
+    // Like BB's own preview: no current-line band, no bracket colors, and no
+    // indentation or bracket-pair guides; the active line number is the cue.
+    renderLineHighlight: "gutter",
     renderWhitespace: "selection",
     stickyScroll: { enabled: true, maxLineCount: 3 },
-    bracketPairColorization: { enabled: true },
-    guides: { bracketPairs: "active", indentation: true, highlightActiveIndentation: true },
+    bracketPairColorization: { enabled: false },
+    guides: { bracketPairs: false, bracketPairsHorizontal: false, indentation: false, highlightActiveIndentation: false },
+    matchBrackets: "near",
     padding: { top: 8, bottom: 8 },
     scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10, useShadows: false },
     overviewRulerBorder: false,

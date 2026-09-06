@@ -15,7 +15,7 @@ import type { PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
 import type { EditorBundle } from "./monaco-loader.js";
 import type { LanguageDef } from "./languages.js";
 import type { BbTokens } from "./bb-tokens.js";
-import { monacoThemeName, normalizeFontStyle, normalizeHex, toMonacoTheme } from "./monaco-theme.js";
+import { monacoThemeName, normalizeFontStyle, normalizeHex, softenTheme, themeFingerprint, toMonacoTheme } from "./monaco-theme.js";
 
 type Highlighter = Awaited<ReturnType<EditorBundle["createHighlighterCore"]>>;
 type StateStack = Parameters<ReturnType<Highlighter["getLanguage"]>["tokenizeLine2"]>[1];
@@ -69,12 +69,13 @@ export class ShikiTokenization {
   }
 
   /**
-   * Registers `theme` with Shiki (once per document) and (re)defines the
-   * Monaco theme with BB's current surface tokens, then makes it current.
+   * Registers `theme` with Shiki (once per document content) and (re)defines
+   * the Monaco theme with BB's current surface tokens, then makes it current.
    * Returns the Monaco theme name to pass to `setTheme`.
    */
-  async applyTheme(theme: PluginCodeThemeData, tokens: BbTokens | null): Promise<string> {
-    const name = monacoThemeName(theme.name);
+  async applyTheme(source: PluginCodeThemeData, tokens: BbTokens | null, intensity = 1): Promise<string> {
+    const theme = softenTheme(source, intensity);
+    const name = monacoThemeName(`${theme.name}-${themeFingerprint(theme)}`);
     const loaded = this.highlighter.getLoadedThemes().includes(name);
     if (!loaded) {
       // Shiki's raw theme shape is VS Code's: `settings` is the pre-1.0 name of
