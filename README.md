@@ -58,6 +58,28 @@ Status: recorded here; no upstream issue filed.
 Suggested issue title: `Mobile: long-press Send to choose Steer or Queue`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Dictation: choose Stop and insert or Stop and send
+
+Currently, stopping dictation inserts the transcript into the message draft.
+Sending requires waiting for transcription to finish, then pressing Send.
+
+Provide two actions while recording:
+
+- Secondary: **Stop and insert** transcribes into the draft for review.
+- Primary: **Stop and send** transcribes, then sends the completed draft with
+  its attachments automatically, without a second click.
+
+Show transcription progress and allow cancellation. Send only after successful
+transcription; a cancelled or failed transcription must not send the message.
+
+This belongs in BB's core composer. The plugin API does not expose recording
+controls or transcription completion, and its composer submission API supports
+scheduled sending only.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Add Stop and send to voice dictation`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this
