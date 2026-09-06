@@ -483,7 +483,7 @@ function rowMatchesFilter(row: Row, filter: TranscriptFilter): boolean {
 
 function FilterBar({ value, onChange }: { value: TranscriptFilter; onChange: (next: TranscriptFilter) => void }) {
   return (
-    <div role="group" aria-label="Transcript filters" className="flex max-w-full flex-wrap items-center gap-1 rounded-md border border-border p-1">
+    <div role="group" aria-label="Transcript filters" className="flex max-w-full flex-wrap items-center gap-1 sm:rounded-md sm:border sm:border-border sm:p-1">
       {FILTERS.map((filter) => (
         <Button
           key={filter.id}
@@ -535,7 +535,7 @@ function TranscriptBody({ events, plugins, filter }: { events: EventRow[]; plugi
  * ones something else already handled (e.g. closing a dialog), so Escape
  * still means "dismiss" inside nested UI.
  */
-function useEscapeToClose() {
+function useEscapeToClose(onBack?: () => void) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
@@ -550,11 +550,12 @@ function useEscapeToClose() {
         return;
       }
       event.preventDefault();
-      window.history.back();
+      if (onBack) onBack();
+      else window.history.back();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [onBack]);
 }
 
 export function SessionsPanel() {
@@ -562,7 +563,6 @@ export function SessionsPanel() {
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
   const appPanel = experimental_useAppPanel();
-  useEscapeToClose();
 
   // The Voice page has no composer, so nothing else binds the voice agent
   // here. Install a fallback binding so the FAB can actually start a call from a
@@ -592,6 +592,21 @@ export function SessionsPanel() {
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  const backButtonRef = useRef<HTMLButtonElement>(null);
+  const historyHeadingRef = useRef<HTMLHeadingElement>(null);
+  const sessionButtons = useRef(new Map<string, HTMLButtonElement>());
+  const previousSelection = useRef<string | null>(null);
+  useEffect(() => {
+    if (selected) {
+      previousSelection.current = selected;
+      backButtonRef.current?.focus({ preventScroll: true });
+    } else if (previousSelection.current) {
+      (sessionButtons.current.get(previousSelection.current) ?? historyHeadingRef.current)?.focus();
+      previousSelection.current = null;
+    }
+  }, [selected]);
+  const backToSessions = useCallback(() => setSelected(null), []);
+  useEscapeToClose(selected ? backToSessions : undefined);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState<string | null>(null);
@@ -742,7 +757,17 @@ export function SessionsPanel() {
 
   return (
     <div className="voice-sessions flex h-full min-h-0 flex-col">
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
+      {selected ? (
+        <nav aria-label="Transcript navigation" className="shrink-0 border-b border-border bg-background px-4 py-2 sm:py-3 md:px-6">
+          <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-1.5 sm:gap-2">
+            <Button ref={backButtonRef} type="button" variant="outline" size="sm" onClick={backToSessions} className="min-h-11 shrink-0 sm:min-h-8">
+              ← All sessions
+            </Button>
+            <FilterBar value={filter} onChange={setFilter} />
+          </div>
+        </nav>
+      ) : null}
+      <div role="region" aria-label="Session content" ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
       <div className="mx-auto w-full min-w-0 max-w-3xl space-y-4">
         {error ? (
           <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 p-3 text-sm">
@@ -752,18 +777,6 @@ export function SessionsPanel() {
         ) : null}
         {selected ? (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setSelected(null)}
-                className="min-h-11 shrink-0 sm:min-h-8"
-              >
-                ← All sessions
-              </Button>
-              <FilterBar value={filter} onChange={setFilter} />
-            </div>
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-border bg-card px-3.5 py-2.5">
               <div className="flex items-center gap-2.5">
                 {current && isLive(current) ? (
@@ -818,7 +831,7 @@ export function SessionsPanel() {
         ) : (
           <>
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-base font-semibold text-foreground">Voice sessions</h2>
+              <h2 ref={historyHeadingRef} tabIndex={-1} className="rounded-sm text-base font-semibold text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Voice sessions</h2>
               <Button
                 type="button"
                 variant="ghost"
@@ -866,9 +879,10 @@ export function SessionsPanel() {
                 </Button>
               </div>
             ) : null}
+            {sessions !== null || !error ? (
             <div aria-label="Session history" className="divide-y divide-border rounded-lg border border-border">
               {sessions === null ? (
-                error ? null : <p role="status" className="p-4 text-sm text-muted-foreground">Loading sessions…</p>
+                <p role="status" className="p-4 text-sm text-muted-foreground">Loading sessions…</p>
               ) : sessions.length === 0 ? (
                 <div className="space-y-2 px-4 py-8 text-center">
                   <h3 className="text-sm font-medium text-foreground">No voice sessions yet</h3>
@@ -883,40 +897,55 @@ export function SessionsPanel() {
                 visibleSessions?.map((session) => (
                   <button
                     key={session.id}
+                    ref={(node) => {
+                      if (node) sessionButtons.current.set(session.id, node);
+                      else sessionButtons.current.delete(session.id);
+                    }}
                     type="button"
                     onClick={() => setSelected(session.id)}
                     className="flex min-h-16 w-full items-center gap-3 px-4 py-3 text-left first:rounded-t-lg last:rounded-b-lg hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                   >
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm text-foreground">
+                      <span className="line-clamp-2 break-words text-sm text-foreground sm:block sm:truncate">
                         {session.preview || <span className="italic text-muted-foreground">No transcript</span>}
                       </span>
-                      <span className="mt-0.5 block text-xs tabular-nums text-muted-foreground">
+                      <span className="mt-1 block text-xs tabular-nums text-muted-foreground">
                         {fmtDate(session.startedAt)} · {duration(session.startedAt, session.lastEventAt)}
+                        {session.costUsd > 0 ? <span className="sm:hidden">{` · ~$${session.costUsd.toFixed(4)}`}</span> : null}
                       </span>
                     </span>
                     {session.costUsd > 0 ? (
                       <span
                         title="Estimated API cost for this session"
-                        className="shrink-0 text-xs tabular-nums text-muted-foreground"
+                        className="hidden shrink-0 text-xs tabular-nums text-muted-foreground sm:inline"
                       >
                         {`~$${session.costUsd.toFixed(4)}`}
                       </span>
                     ) : null}
                     {session.device ? (
-                      <span title={session.device.label} className="flex shrink-0 items-center">
+                      <span title={session.device.label} className="hidden shrink-0 items-center sm:flex">
                         <DeviceIcon mobile={session.device.mobile} className="size-4 text-muted-foreground/50" />
                       </span>
                     ) : null}
                     {isLive(session) ? (
-                      <span className="size-2 shrink-0 animate-pulse rounded-full bg-primary" title="Live" />
-                    ) : session.hasError ? (
-                      <span className="shrink-0 text-xs text-destructive" title="This session had an error">⚠</span>
+                      <span className="flex shrink-0 items-center" title="Live session">
+                        <span aria-hidden="true" className="size-2 animate-pulse rounded-full bg-primary" />
+                        <span className="sr-only">Live session</span>
+                      </span>
+                    ) : null}
+                    {session.hasError ? (
+                      <span className="shrink-0 text-destructive" title="Session has errors">
+                        <svg aria-hidden="true" viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M8 2L1.5 13h13L8 2Z" /><path d="M8 6v3m0 2h.01" />
+                        </svg>
+                        <span className="sr-only">Session has errors</span>
+                      </span>
                     ) : null}
                   </button>
                 ))
               )}
             </div>
+            ) : null}
             {hasMore ? (
               <div className="flex justify-center">
                 <Button
