@@ -40,7 +40,7 @@ export interface EditorPaneHandle {
 
 export type PrefToggle = "wordWrap" | "minimap" | "lineNumbers" | "formatOnSave";
 /** A preference write from the editor chrome: key and the value it takes. */
-export type PrefWrite = [PrefToggle, boolean] | ["autoSave", "off" | "afterDelay"] | ["darkTheme" | "lightTheme", string];
+export type PrefWrite = [PrefToggle, boolean] | ["autoSave", "off" | "afterDelay"];
 export type SetPref = (...write: PrefWrite) => void;
 
 export interface EditorPaneProps {
@@ -55,7 +55,7 @@ export interface EditorPaneProps {
   onOpenInTab: (() => void) | null;
   history: { canBack: boolean; canForward: boolean; back: () => void; forward: () => void };
   onSetPref: SetPref;
-  /** A theme id being previewed by the picker; null shows the saved preference. */
+  /** A theme name being previewed by the picker; null follows BB's code theme. */
   themePreview: string | null;
   onPickTheme: () => void;
   /** BB's preview for this file; rendered when the file is not editable text. */
@@ -89,8 +89,8 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
   const [status, setStatus] = useState<Status>({ kind: "loading" });
   const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // The theme to show: the picker's preview, else the saved choice for BB's mode.
-  const themeChoice = themePreview ?? (codeTheme.mode === "dark" ? prefs.darkTheme : prefs.lightTheme);
+  // The theme to show: the picker's preview, else BB's own code theme.
+  const themeChoice = themePreview ?? FOLLOW_BB;
   const latest = useRef({ prefs, onToggleTree, onQuickOpen, codeTheme, themeChoice, focusNonce });
   latest.current = { prefs, onToggleTree, onQuickOpen, codeTheme, themeChoice, focusNonce };
   const focusedNonce = useRef(focusNonce);

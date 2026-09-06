@@ -36,7 +36,7 @@ test("workspace without a thread or project asks for a project", async (t) => {
 });
 
 test("contract exposes the methods the frontend calls", () => {
-  assert.deepEqual(Object.keys(rpcContract).sort(), ["assets", "create", "read", "remove", "rename", "setSetting", "tree", "workspace", "write"]);
+  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
 });
 
 test("create refuses parent traversal and setSetting refuses unknown keys", async (t) => {

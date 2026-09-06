@@ -19,6 +19,7 @@ import { EditorPane, NoticeAction, NoticeRow, type EditorPaneHandle, type SetPre
 import { FileTree, type CreateKind } from "./FileTree";
 import { QuickOpen } from "./QuickOpen";
 import { ThemePicker } from "./ThemePicker";
+import { themeNameFor } from "@/lib/themes";
 import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
 
 export type Surface = "opener" | "panel";
@@ -69,9 +70,16 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const [width, setWidth] = useState(0);
   const [tree, setTree] = useState<TreeState>(EMPTY_TREE);
   const [quickOpen, setQuickOpen] = useState(false);
-  const [themePicker, setThemePicker] = useState(false);
+  const [themePicker, setThemePicker] = useState<{ current: string | null } | null>(null);
   const [themePreview, setThemePreview] = useState<string | null>(null);
   const bbTheme = experimental_useCodeTheme();
+  const openThemePicker = useCallback(() => {
+    setThemePicker({ current: null });
+    rpc
+      .call("theme", null)
+      .then((theme) => setThemePicker((state) => (state === null ? null : { current: theme.pair })))
+      .catch((error: unknown) => console.warn("[erwin-editor] could not read BB's theme", error));
+  }, [rpc]);
   const [focusNonce, setFocusNonce] = useState(0);
   const treeRequested = useRef(false);
 
@@ -331,7 +339,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           history={{ canBack: history.index > 0, canForward: history.index < history.paths.length - 1, back: goBack, forward: goForward }}
           onSetPref={onSetPref}
           themePreview={themePreview}
-          onPickTheme={() => setThemePicker(true)}
+          onPickTheme={openThemePicker}
           Original={Original}
           focusNonce={focusNonce}
         />
@@ -358,19 +366,23 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         </>
       )}
       {quickOpen ? <QuickOpen entries={tree.entries} onOpen={openFile} onClose={() => setQuickOpen(false)} /> : null}
-      {themePicker ? (
+      {themePicker !== null ? (
         <ThemePicker
           mode={bbTheme.mode}
-          bbThemeName={bbTheme.name}
-          current={bbTheme.mode === "dark" ? prefs.darkTheme : prefs.lightTheme}
-          onPreview={setThemePreview}
-          onChoose={(id) => {
-            setThemePreview(null);
-            onSetPref(bbTheme.mode === "dark" ? "darkTheme" : "lightTheme", id);
+          current={themePicker.current}
+          onPreview={(pair) => setThemePreview(pair === null ? null : themeNameFor(pair, bbTheme.mode))}
+          onChoose={(pair) => {
+            // Keep the preview up until BB's theme arrives, so the switch does not flash.
+            rpc
+              .call("applyTheme", { pair })
+              .then(() => setThemePreview(null))
+              .catch((error: unknown) => {
+                setThemePreview(null);
+                toast.error(`Could not set the theme: ${error instanceof Error ? error.message : String(error)}`);
+              });
           }}
           onClose={() => {
-            setThemePreview(null);
-            setThemePicker(false);
+            setThemePicker(null);
             paneRef.current?.focus();
           }}
         />

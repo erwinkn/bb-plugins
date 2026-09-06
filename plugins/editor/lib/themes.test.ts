@@ -1,29 +1,48 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CODE_THEMES, codeThemesOfType, FOLLOW_BB, normalizeThemeSetting, themeSettingOptions } from "./themes";
+import { readFileSync } from "node:fs";
+import { BB_DEFAULT, bbThemeId, manifestThemes, pairIdFromBbTheme, THEME_PAIRS, themeNameFor, themePair } from "./themes";
 import { toThemeData } from "./monaco-loader";
 
-test("the catalog has unique ids, both modes, and BB's own family first", () => {
-  assert.equal(new Set(CODE_THEMES.map((entry) => entry.id)).size, CODE_THEMES.length);
-  assert.ok(codeThemesOfType("dark").length > 10);
-  assert.ok(codeThemesOfType("light").length > 5);
-  assert.equal(CODE_THEMES[0]?.id, "pierre-dark");
-  assert.ok(CODE_THEMES.some((entry) => entry.id === "pierre-dark-soft" && entry.type === "dark"));
+const bundledThemeNames = (() => {
+  const source = readFileSync(new URL("../monaco-bundle/editor.js", import.meta.url), "utf8");
+  return new Set([...source.matchAll(/"([a-z0-9-]+)":\s*\(\)\s*=>\s*import\(/g)].map((match) => match[1]));
+})();
+
+test("the pairs have unique ids and BB's own family first", () => {
+  assert.equal(new Set(THEME_PAIRS.map((pair) => pair.id)).size, THEME_PAIRS.length);
+  assert.ok(THEME_PAIRS.length > 20);
+  assert.equal(THEME_PAIRS[0]?.id, "pierre-soft");
+  assert.ok(!THEME_PAIRS.some((pair) => pair.id === BB_DEFAULT));
 });
 
-test("theme setting options start with bb and hold only themes of that mode", () => {
-  const dark = themeSettingOptions("dark");
-  assert.equal(dark[0], FOLLOW_BB);
-  assert.ok(dark.includes("pierre-dark-soft"));
-  assert.ok(!dark.includes("pierre-light"));
-  assert.ok(themeSettingOptions("light").includes("pierre-light-soft"));
+test("every theme a pair names ships as a preview chunk of the editor bundle", () => {
+  for (const pair of THEME_PAIRS) {
+    assert.ok(bundledThemeNames.has(pair.dark), `${pair.id}: ${pair.dark}`);
+    assert.ok(bundledThemeNames.has(pair.light), `${pair.id}: ${pair.light}`);
+  }
 });
 
-test("normalizeThemeSetting falls back to bb for unknown ids and the wrong mode", () => {
-  assert.equal(normalizeThemeSetting("pierre-dark-soft", "dark"), "pierre-dark-soft");
-  assert.equal(normalizeThemeSetting("pierre-dark-soft", "light"), FOLLOW_BB);
-  assert.equal(normalizeThemeSetting("nope", "dark"), FOLLOW_BB);
-  assert.equal(normalizeThemeSetting(undefined, "dark"), FOLLOW_BB);
+test("package.json contributes exactly the pairs as BB themes", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { bb: { themes: unknown } };
+  assert.deepEqual(manifest.bb.themes, manifestThemes("./themes/default.css"));
+});
+
+test("BB theme ids round-trip and foreign themes map to null", () => {
+  assert.equal(bbThemeId("erwin-editor", "github"), "plugin:erwin-editor:github");
+  assert.equal(pairIdFromBbTheme("erwin-editor", "plugin:erwin-editor:github"), "github");
+  assert.equal(pairIdFromBbTheme("erwin-editor", BB_DEFAULT), BB_DEFAULT);
+  assert.equal(pairIdFromBbTheme("erwin-editor", "nord"), null);
+  assert.equal(pairIdFromBbTheme("erwin-editor", "plugin:erwin-editor:nope"), null);
+  assert.equal(pairIdFromBbTheme("erwin-editor", "plugin:other:github"), null);
+});
+
+test("themeNameFor picks the mode's theme and BB's default pair", () => {
+  assert.equal(themeNameFor("github", "dark"), "github-dark");
+  assert.equal(themeNameFor("github", "light"), "github-light");
+  assert.equal(themeNameFor(BB_DEFAULT, "dark"), "pierre-dark");
+  assert.equal(themeNameFor("nope", "dark"), null);
+  assert.equal(themePair("github")?.label, "GitHub");
 });
 
 test("toThemeData accepts VS Code's old and new rule keys and derives fg/bg", () => {
@@ -42,7 +61,7 @@ test("toThemeData accepts VS Code's old and new rule keys and derives fg/bg", ()
     { settings: { foreground: "#101010" } },
     { scope: ["keyword", "storage"], settings: { foreground: "#ff0000", fontStyle: "bold" } },
   ]);
-  const bare = toThemeData("y", { name: "Y", tokenColors: [] });
+  const bare = toThemeData("y", { name: "Y", settings: [], tokenColors: [] } as Parameters<typeof toThemeData>[1]);
   assert.equal(bare.type, "dark");
   assert.equal(bare.fg, "#d4d4d4");
 });

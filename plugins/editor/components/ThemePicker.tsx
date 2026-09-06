@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { codeThemesOfType, FOLLOW_BB, type ThemeType } from "@/lib/themes";
+import { BB_DEFAULT, THEME_PAIRS, type ThemeType } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 import { CheckIcon, SearchIcon } from "./icons";
 
@@ -10,26 +10,23 @@ interface Choice {
 }
 
 /**
- * Picks the code theme for BB's current color mode. Moving through the list
- * previews the theme in the editor; Enter or a click keeps it, Esc puts the
- * saved theme back. "Follow BB" is BB's own code theme, so the editor keeps
- * matching BB's previews.
+ * Picks BB's code theme from the pairs this plugin contributes. Moving
+ * through the list previews the pair's theme for BB's current mode in the
+ * editor; Enter or a click sets it on BB, so BB's previews and the diff view
+ * follow; Esc puts BB's theme back.
  */
 export function ThemePicker({
   mode,
-  bbThemeName,
   current,
   onPreview,
   onChoose,
   onClose,
 }: {
   mode: ThemeType;
-  /** BB's current code theme name, shown on the "Follow BB" row. */
-  bbThemeName: string;
-  /** The saved setting for `mode`. */
-  current: string;
-  onPreview: (id: string | null) => void;
-  onChoose: (id: string) => void;
+  /** The pair BB uses now (`default` for its stock theme); null while unknown or not one of ours. */
+  current: string | null;
+  onPreview: (pair: string | null) => void;
+  onChoose: (pair: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -38,10 +35,10 @@ export function ThemePicker({
 
   const choices = useMemo<Choice[]>(
     () => [
-      { id: FOLLOW_BB, label: "Follow BB", detail: bbThemeName },
-      ...codeThemesOfType(mode).map((entry) => ({ id: entry.id, label: entry.label, detail: null })),
+      { id: BB_DEFAULT, label: "BB default", detail: mode === "dark" ? "pierre-dark" : "pierre-light" },
+      ...THEME_PAIRS.map((pair) => ({ id: pair.id, label: pair.label, detail: pair[mode] })),
     ],
-    [bbThemeName, mode],
+    [mode],
   );
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -49,7 +46,7 @@ export function ThemePicker({
     return choices.filter((choice) => `${choice.label} ${choice.id} ${choice.detail ?? ""}`.toLowerCase().includes(needle));
   }, [choices, query]);
 
-  const [index, setIndex] = useState(() => Math.max(0, choices.findIndex((choice) => choice.id === current)));
+  const [index, setIndex] = useState(0);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -58,6 +55,14 @@ export function ThemePicker({
   useEffect(() => {
     setIndex(0);
   }, [query]);
+
+  // The current pair arrives after the picker opens; start on it once, before the user moves.
+  const moved = useRef(false);
+  useEffect(() => {
+    if (current === null || moved.current || query !== "") return;
+    const at = choices.findIndex((choice) => choice.id === current);
+    if (at >= 0) setIndex(at);
+  }, [choices, current, query]);
 
   useEffect(() => {
     listRef.current?.children[index]?.scrollIntoView({ block: "nearest" });
@@ -102,16 +107,18 @@ export function ThemePicker({
                 cancel();
               } else if (event.key === "ArrowDown") {
                 event.preventDefault();
+                moved.current = true;
                 setIndex((value) => Math.min(value + 1, Math.max(matches.length - 1, 0)));
               } else if (event.key === "ArrowUp") {
                 event.preventDefault();
+                moved.current = true;
                 setIndex((value) => Math.max(value - 1, 0));
               } else if (event.key === "Enter") {
                 event.preventDefault();
                 choose(index);
               }
             }}
-            placeholder={`${mode === "dark" ? "Dark" : "Light"} code theme…`}
+            placeholder="Code theme for BB…"
             aria-label="Code theme"
             spellCheck={false}
             autoComplete="off"
@@ -128,7 +135,10 @@ export function ThemePicker({
                 key={choice.id}
                 role="option"
                 aria-selected={i === index}
-                onPointerMove={() => setIndex(i)}
+                onPointerMove={() => {
+                  moved.current = true;
+                  setIndex(i);
+                }}
                 onClick={() => choose(i)}
                 className={cn(
                   "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm",

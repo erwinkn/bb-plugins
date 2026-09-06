@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { FOLLOW_BB, themeSettingOptions } from "./lib/themes.js";
+import { BB_DEFAULT, bbThemeId, pairIdFromBbTheme, THEME_PAIRS } from "./lib/themes.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
 const MAX_TREE_ENTRIES = 10_000;
@@ -94,9 +94,20 @@ export const rpcContract = defineRpcContract({
       z.object({ key: z.literal("formatOnSave"), value: z.boolean() }),
       z.object({ key: z.literal("autoSave"), value: z.enum(["off", "onBlur", "afterDelay"]) }),
       z.object({ key: z.literal("fileTreeSide"), value: z.enum(["left", "right"]) }),
-      z.object({ key: z.literal("darkTheme"), value: z.enum(themeSettingOptions("dark")) }),
-      z.object({ key: z.literal("lightTheme"), value: z.enum(themeSettingOptions("light")) }),
     ]),
+    output: z.null(),
+  },
+  /**
+   * BB's active theme as one of this plugin's pairs: `default` for BB's
+   * stock theme, a pair id for one of ours, null for any other theme.
+   */
+  theme: {
+    input: z.null(),
+    output: z.object({ pair: z.string().nullable(), themeId: z.string() }),
+  },
+  /** Set BB's theme to `default` or one of this plugin's pairs. */
+  applyTheme: {
+    input: z.object({ pair: z.enum([BB_DEFAULT, ...THEME_PAIRS.map((pair) => pair.id)] as [string, ...string[]]) }),
     output: z.null(),
   },
 });
@@ -168,18 +179,6 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Font size",
       experimental_schema: z.number().int().min(9).max(24),
       default: 13,
-    },
-    darkTheme: {
-      type: "select",
-      label: "Code theme in dark mode (bb follows BB's code theme)",
-      options: themeSettingOptions("dark"),
-      default: FOLLOW_BB,
-    },
-    lightTheme: {
-      type: "select",
-      label: "Code theme in light mode (bb follows BB's code theme)",
-      options: themeSettingOptions("light"),
-      default: FOLLOW_BB,
     },
     wordWrap: { type: "boolean", label: "Wrap long lines", default: false },
     lineNumbers: { type: "boolean", label: "Show line numbers", default: true },
@@ -377,6 +376,16 @@ export default async function plugin(bb: BbPluginApi) {
 
     async setSetting(input) {
       await settings.experimental_set({ [input.key]: input.value });
+      return null;
+    },
+
+    async theme() {
+      const { themeId } = await bb.sdk.theme.get();
+      return { pair: pairIdFromBbTheme(bb.pluginId, themeId), themeId };
+    },
+
+    async applyTheme({ pair }) {
+      await bb.sdk.theme.set(pair === BB_DEFAULT ? BB_DEFAULT : bbThemeId(bb.pluginId, pair));
       return null;
     },
   });

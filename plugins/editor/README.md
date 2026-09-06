@@ -15,7 +15,11 @@ disable that one before you install this one.
   **new folder**; names are typed inline. Right-click a row for **Rename…**
   (inline) and **Delete…** (inline confirmation; folders report their file
   count). On the New thread screen, **Files** browses the project's default
-  checkout.
+  checkout. Hidden files and directories are listed, as in other editors;
+  only VS Code's default excludes (`.git`, `.hg`, `.svn`, `.DS_Store`,
+  `Thumbs.db`) are hidden. `node_modules` and symlinked directories appear
+  collapsed and list when expanded. Workspaces on another host go through
+  BB's own lister, which drops hidden entries.
 - **Toolbar.** Back and forward through the files you opened, the path
   (click to copy), then `⋯` (save, discard, reload, open in new tab, copy
   paths, and toggles for line numbers, word wrap, minimap, auto save, format
@@ -35,9 +39,12 @@ disable that one before you install this one.
   Like BB's preview there are no indentation or bracket guides, no bracket
   colors, and no current-line band (the active line number is the cue).
   Theme and light/dark switches apply live. The `⋯` menu's **Theme…**
-  picker swaps in another theme for the editor only, previewing as you move
-  through the list: BB's own Pierre family (dark/light, soft, vibrant) and
-  Shiki's bundled VS Code themes, chosen per BB color mode.
+  picker sets BB's code theme, so BB's previews, the diff view, and the
+  editor all follow it. Its entries are dark/light pairs the plugin
+  contributes to BB as app themes (they also appear in `bb theme list`):
+  BB's own Pierre family (soft, vibrant) and Shiki's bundled VS Code themes,
+  all with BB's default palette. Moving through the list previews the theme
+  in the editor before BB switches.
 - **Language services.** Completions, hover, signature help, go to
   definition, rename, formatting, and outline for TypeScript, JavaScript,
   JSON, CSS/SCSS/Less, and HTML. The TypeScript checker sees only the open
@@ -62,8 +69,6 @@ Extensions → Editor:
 | Setting                | Default  | Notes                                                   |
 | ---------------------- | -------- | ------------------------------------------------------- |
 | Font size              | 13       | 9 to 24                                                 |
-| Code theme in dark mode | bb      | `bb` follows BB's code theme; or a theme id from the `⋯ → Theme…` picker |
-| Code theme in light mode | bb     | Same, for BB's light mode                               |
 | Wrap long lines        | off      | Also in the `⋯` menu                                    |
 | Show line numbers      | on       | Also in the `⋯` menu                                    |
 | Show minimap           | off      | Also in the `⋯` menu                                    |

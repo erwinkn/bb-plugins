@@ -1,113 +1,102 @@
 /**
- * Code themes the editor can use instead of BB's. Pierre's are BB's own
- * family (BB's default code theme is `pierre-dark`); the rest are Shiki's
- * bundled VS Code themes. Both ship as lazy chunks of the editor bundle
- * (`monaco-bundle/editor.js`), so an unused theme costs nothing.
+ * Code themes the Files view can put on BB. Each entry is a dark/light pair
+ * that the plugin contributes to BB as an app theme (see `bb.themes` in
+ * package.json): choosing one sets BB's theme, so BB's previews, the diff
+ * view, and this editor all paint with it. The CSS of every entry is empty,
+ * so BB keeps its default palette and only the code theme changes.
  *
- * This module is plain data shared by the server (settings options) and the
- * app (picker), so it must not import anything.
+ * Every name here is one BB's own code-theme registry resolves (Pierre's
+ * family plus Shiki's bundled VS Code themes). The same themes ship as lazy
+ * chunks of the editor bundle so the picker can preview them before BB
+ * switches.
+ *
+ * This module is plain data shared by the server and the app, so it must
+ * not import anything.
  */
 export type ThemeType = "dark" | "light";
 
-export interface CodeThemeEntry {
+export interface ThemePair {
+  /** Theme id inside the plugin; BB's id is `plugin:<pluginId>:<id>`. */
   id: string;
   label: string;
-  type: ThemeType;
+  dark: string;
+  light: string;
 }
 
-/** Setting value meaning "use whatever BB's code theme is". */
+/** BB's stock theme (Pierre Dark / Pierre Light with BB's default palette). */
+export const BB_DEFAULT = "default";
+
+/** Editor-side marker for "paint with whatever BB's code theme is". */
 export const FOLLOW_BB = "bb";
 
-export const CODE_THEMES: readonly CodeThemeEntry[] = [
-  { id: "pierre-dark", label: "Pierre Dark", type: "dark" },
-  { id: "pierre-dark-soft", label: "Pierre Dark Soft", type: "dark" },
-  { id: "pierre-dark-vibrant", label: "Pierre Dark Vibrant", type: "dark" },
-  { id: "pierre-light", label: "Pierre Light", type: "light" },
-  { id: "pierre-light-soft", label: "Pierre Light Soft", type: "light" },
-  { id: "pierre-light-vibrant", label: "Pierre Light Vibrant", type: "light" },
-  { id: "andromeeda", label: "Andromeeda", type: "dark" },
-  { id: "aurora-x", label: "Aurora X", type: "dark" },
-  { id: "ayu-dark", label: "Ayu Dark", type: "dark" },
-  { id: "ayu-light", label: "Ayu Light", type: "light" },
-  { id: "ayu-mirage", label: "Ayu Mirage", type: "dark" },
-  { id: "catppuccin-frappe", label: "Catppuccin Frappé", type: "dark" },
-  { id: "catppuccin-latte", label: "Catppuccin Latte", type: "light" },
-  { id: "catppuccin-macchiato", label: "Catppuccin Macchiato", type: "dark" },
-  { id: "catppuccin-mocha", label: "Catppuccin Mocha", type: "dark" },
-  { id: "dark-plus", label: "Dark Plus", type: "dark" },
-  { id: "dracula-soft", label: "Dracula Soft", type: "dark" },
-  { id: "dracula", label: "Dracula", type: "dark" },
-  { id: "everforest-dark", label: "Everforest Dark", type: "dark" },
-  { id: "everforest-light", label: "Everforest Light", type: "light" },
-  { id: "github-dark-default", label: "GitHub Dark Default", type: "dark" },
-  { id: "github-dark-dimmed", label: "GitHub Dark Dimmed", type: "dark" },
-  { id: "github-dark-high-contrast", label: "GitHub Dark High Contrast", type: "dark" },
-  { id: "github-dark", label: "GitHub Dark", type: "dark" },
-  { id: "github-light-default", label: "GitHub Light Default", type: "light" },
-  { id: "github-light-high-contrast", label: "GitHub Light High Contrast", type: "light" },
-  { id: "github-light", label: "GitHub Light", type: "light" },
-  { id: "gruvbox-dark-hard", label: "Gruvbox Dark Hard", type: "dark" },
-  { id: "gruvbox-dark-medium", label: "Gruvbox Dark Medium", type: "dark" },
-  { id: "gruvbox-dark-soft", label: "Gruvbox Dark Soft", type: "dark" },
-  { id: "gruvbox-light-hard", label: "Gruvbox Light Hard", type: "light" },
-  { id: "gruvbox-light-medium", label: "Gruvbox Light Medium", type: "light" },
-  { id: "gruvbox-light-soft", label: "Gruvbox Light Soft", type: "light" },
-  { id: "horizon-bright", label: "Horizon Bright", type: "light" },
-  { id: "horizon", label: "Horizon", type: "dark" },
-  { id: "houston", label: "Houston", type: "dark" },
-  { id: "kanagawa-dragon", label: "Kanagawa Dragon", type: "dark" },
-  { id: "kanagawa-lotus", label: "Kanagawa Lotus", type: "light" },
-  { id: "kanagawa-wave", label: "Kanagawa Wave", type: "dark" },
-  { id: "laserwave", label: "LaserWave", type: "dark" },
-  { id: "light-plus", label: "Light Plus", type: "light" },
-  { id: "material-theme-darker", label: "Material Theme Darker", type: "dark" },
-  { id: "material-theme-lighter", label: "Material Theme Lighter", type: "light" },
-  { id: "material-theme-ocean", label: "Material Theme Ocean", type: "dark" },
-  { id: "material-theme-palenight", label: "Material Theme Palenight", type: "dark" },
-  { id: "material-theme", label: "Material Theme", type: "dark" },
-  { id: "min-dark", label: "Min Dark", type: "dark" },
-  { id: "min-light", label: "Min Light", type: "light" },
-  { id: "monokai", label: "Monokai", type: "dark" },
-  { id: "night-owl-light", label: "Night Owl Light", type: "light" },
-  { id: "night-owl", label: "Night Owl", type: "dark" },
-  { id: "nord", label: "Nord", type: "dark" },
-  { id: "one-dark-pro", label: "One Dark Pro", type: "dark" },
-  { id: "one-light", label: "One Light", type: "light" },
-  { id: "plastic", label: "Plastic", type: "dark" },
-  { id: "poimandres", label: "Poimandres", type: "dark" },
-  { id: "red", label: "Red", type: "dark" },
-  { id: "rose-pine-dawn", label: "Rosé Pine Dawn", type: "light" },
-  { id: "rose-pine-moon", label: "Rosé Pine Moon", type: "dark" },
-  { id: "rose-pine", label: "Rosé Pine", type: "dark" },
-  { id: "slack-dark", label: "Slack Dark", type: "dark" },
-  { id: "slack-ochin", label: "Slack Ochin", type: "light" },
-  { id: "snazzy-light", label: "Snazzy Light", type: "light" },
-  { id: "solarized-dark", label: "Solarized Dark", type: "dark" },
-  { id: "solarized-light", label: "Solarized Light", type: "light" },
-  { id: "synthwave-84", label: "Synthwave '84", type: "dark" },
-  { id: "tokyo-night", label: "Tokyo Night", type: "dark" },
-  { id: "vesper", label: "Vesper", type: "dark" },
-  { id: "vitesse-black", label: "Vitesse Black", type: "dark" },
-  { id: "vitesse-dark", label: "Vitesse Dark", type: "dark" },
-  { id: "vitesse-light", label: "Vitesse Light", type: "light" },
+export const THEME_PAIRS: readonly ThemePair[] = [
+  { id: "pierre-soft", label: "Pierre Soft", dark: "pierre-dark-soft", light: "pierre-light-soft" },
+  { id: "pierre-vibrant", label: "Pierre Vibrant", dark: "pierre-dark-vibrant", light: "pierre-light-vibrant" },
+  { id: "github", label: "GitHub", dark: "github-dark", light: "github-light" },
+  { id: "github-default", label: "GitHub Default", dark: "github-dark-default", light: "github-light-default" },
+  { id: "github-dimmed", label: "GitHub Dimmed", dark: "github-dark-dimmed", light: "github-light-default" },
+  { id: "github-high-contrast", label: "GitHub High Contrast", dark: "github-dark-high-contrast", light: "github-light-high-contrast" },
+  { id: "vs-code", label: "VS Code", dark: "dark-plus", light: "light-plus" },
+  { id: "one", label: "One", dark: "one-dark-pro", light: "one-light" },
+  { id: "catppuccin-mocha", label: "Catppuccin Mocha", dark: "catppuccin-mocha", light: "catppuccin-latte" },
+  { id: "catppuccin-macchiato", label: "Catppuccin Macchiato", dark: "catppuccin-macchiato", light: "catppuccin-latte" },
+  { id: "catppuccin-frappe", label: "Catppuccin Frappé", dark: "catppuccin-frappe", light: "catppuccin-latte" },
+  { id: "ayu", label: "Ayu", dark: "ayu-dark", light: "ayu-light" },
+  { id: "ayu-mirage", label: "Ayu Mirage", dark: "ayu-mirage", light: "ayu-light" },
+  { id: "everforest", label: "Everforest", dark: "everforest-dark", light: "everforest-light" },
+  { id: "gruvbox-hard", label: "Gruvbox Hard", dark: "gruvbox-dark-hard", light: "gruvbox-light-hard" },
+  { id: "gruvbox-medium", label: "Gruvbox Medium", dark: "gruvbox-dark-medium", light: "gruvbox-light-medium" },
+  { id: "gruvbox-soft", label: "Gruvbox Soft", dark: "gruvbox-dark-soft", light: "gruvbox-light-soft" },
+  { id: "kanagawa-wave", label: "Kanagawa Wave", dark: "kanagawa-wave", light: "kanagawa-lotus" },
+  { id: "kanagawa-dragon", label: "Kanagawa Dragon", dark: "kanagawa-dragon", light: "kanagawa-lotus" },
+  { id: "material", label: "Material", dark: "material-theme", light: "material-theme-lighter" },
+  { id: "material-ocean", label: "Material Ocean", dark: "material-theme-ocean", light: "material-theme-lighter" },
+  { id: "material-palenight", label: "Material Palenight", dark: "material-theme-palenight", light: "material-theme-lighter" },
+  { id: "material-darker", label: "Material Darker", dark: "material-theme-darker", light: "material-theme-lighter" },
+  { id: "min", label: "Min", dark: "min-dark", light: "min-light" },
+  { id: "night-owl", label: "Night Owl", dark: "night-owl", light: "night-owl-light" },
+  { id: "rose-pine", label: "Rosé Pine", dark: "rose-pine", light: "rose-pine-dawn" },
+  { id: "rose-pine-moon", label: "Rosé Pine Moon", dark: "rose-pine-moon", light: "rose-pine-dawn" },
+  { id: "solarized", label: "Solarized", dark: "solarized-dark", light: "solarized-light" },
+  { id: "vitesse", label: "Vitesse", dark: "vitesse-dark", light: "vitesse-light" },
+  { id: "vitesse-black", label: "Vitesse Black", dark: "vitesse-black", light: "vitesse-light" },
+  { id: "slack", label: "Slack", dark: "slack-dark", light: "slack-ochin" },
+  { id: "tokyo-night", label: "Tokyo Night", dark: "tokyo-night", light: "pierre-light" },
+  { id: "dracula-soft", label: "Dracula Soft", dark: "dracula-soft", light: "pierre-light" },
+  { id: "aurora-x", label: "Aurora X", dark: "aurora-x", light: "pierre-light" },
+  { id: "synthwave-84", label: "Synthwave '84", dark: "synthwave-84", light: "pierre-light" },
+  { id: "horizon", label: "Horizon", dark: "pierre-dark", light: "horizon-bright" },
+  { id: "snazzy", label: "Snazzy", dark: "pierre-dark", light: "snazzy-light" },
 ];
 
-const BY_ID = new Map(CODE_THEMES.map((entry) => [entry.id, entry]));
+const BY_ID = new Map(THEME_PAIRS.map((pair) => [pair.id, pair]));
 
-export function codeTheme(id: string): CodeThemeEntry | undefined {
+export function themePair(id: string): ThemePair | undefined {
   return BY_ID.get(id);
 }
 
-export function codeThemesOfType(type: ThemeType): CodeThemeEntry[] {
-  return CODE_THEMES.filter((entry) => entry.type === type);
+/** BB's app-theme id for a pair contributed by this plugin. */
+export function bbThemeId(pluginId: string, pairId: string): string {
+  return `plugin:${pluginId}:${pairId}`;
 }
 
-/** Valid values of the dark or light theme setting: `bb` plus every theme of that type. */
-export function themeSettingOptions(type: ThemeType): string[] {
-  return [FOLLOW_BB, ...codeThemesOfType(type).map((entry) => entry.id)];
+/** The pair id behind a BB theme id, or `default`; null for a theme that is not ours. */
+export function pairIdFromBbTheme(pluginId: string, themeId: string): string | null {
+  if (themeId === BB_DEFAULT) return BB_DEFAULT;
+  const prefix = `plugin:${pluginId}:`;
+  if (!themeId.startsWith(prefix)) return null;
+  const id = themeId.slice(prefix.length);
+  return BY_ID.has(id) ? id : null;
 }
 
-/** The setting value, or `bb` when it names nothing of that type. */
-export function normalizeThemeSetting(value: unknown, type: ThemeType): string {
-  return typeof value === "string" && BY_ID.get(value)?.type === type ? value : FOLLOW_BB;
+/** The theme name a pair uses in `mode`; BB's default pair for `default`. */
+export function themeNameFor(pairId: string, mode: ThemeType): string | null {
+  if (pairId === BB_DEFAULT) return mode === "dark" ? "pierre-dark" : "pierre-light";
+  const pair = BY_ID.get(pairId);
+  return pair === undefined ? null : pair[mode];
+}
+
+/** The `bb.themes` manifest entries for the pairs, kept in sync by a test. */
+export function manifestThemes(css: string): { id: string; name: string; css: string; codeTheme: { dark: string; light: string } }[] {
+  return THEME_PAIRS.map((pair) => ({ id: pair.id, name: pair.label, css, codeTheme: { dark: pair.dark, light: pair.light } }));
 }
