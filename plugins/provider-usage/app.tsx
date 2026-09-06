@@ -8,7 +8,6 @@ import {
   useSyncExternalStore,
   type CSSProperties,
   type KeyboardEvent,
-  type RefObject,
 } from "react";
 import {
   definePluginApp,
@@ -24,111 +23,23 @@ import {
   DropdownMenuTrigger,
 } from "./components/ui/dropdown-menu";
 import { cn } from "./lib/utils";
+import { createUsageStore } from "./usage-store.js";
 import { LIST_HOVER_TRANSITION } from "./components/ui/motion";
 
 import {
   providerUsageTone,
-  usageRpcSuccessSchema,
   type UsageMachine,
   type UsageProvider,
-  type UsageSnapshot,
   type UsageWindow as UsageWindowValue,
 } from "./usage-schema.js";
-
-interface UsageStoreSnapshot {
-  data: UsageSnapshot | null;
-  error: string | null;
-  isRefreshing: boolean;
-}
 
 const CARD_MAX_AGE_MS = 2 * 60_000;
 const FOCUS_MAX_AGE_MS = 5 * 60_000;
 const SAFETY_REFRESH_INTERVAL_MS = 30 * 60_000;
-const storeListeners = new Set<() => void>();
-let storeSnapshot: UsageStoreSnapshot = {
-  data: null,
-  error: null,
-  isRefreshing: false,
-};
-let activeRefreshCount = 0;
 let lastMachineId: string | null = null;
 let lastProviderIdByMachine = new Map<string, string>();
 
-function updateStore(next: UsageStoreSnapshot): void {
-  storeSnapshot = next;
-  for (const listener of storeListeners) listener();
-}
-
-function subscribeStore(listener: () => void): () => void {
-  storeListeners.add(listener);
-  return () => storeListeners.delete(listener);
-}
-
-function getStoreSnapshot(): UsageStoreSnapshot {
-  return storeSnapshot;
-}
-
-function rpcErrorMessage(body: unknown): string | null {
-  if (typeof body !== "object" || body === null) return null;
-  const error = Reflect.get(body, "error");
-  if (typeof error === "string") return error;
-  if (typeof error !== "object" || error === null) return null;
-  const message = Reflect.get(error, "message");
-  return typeof message === "string" ? message : null;
-}
-
-function refreshUsage({
-  force,
-  machineIds,
-  maxAgeMs,
-  signal,
-}: {
-  force: boolean;
-  machineIds: string[] | null;
-  maxAgeMs: number;
-  signal?: AbortSignal;
-}): Promise<void> {
-  activeRefreshCount += 1;
-  updateStore({ ...storeSnapshot, error: null, isRefreshing: true });
-  return (async () => {
-    try {
-      const response = await fetch(
-        "/api/v1/plugins/erwin-provider-usage/rpc/getUsage",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ force, machineIds, maxAgeMs }),
-          signal,
-        },
-      );
-      const body: unknown = await response.json();
-      const parsed = usageRpcSuccessSchema.safeParse(body);
-      if (!response.ok || !parsed.success) {
-        throw new Error(
-          rpcErrorMessage(body) ?? "Provider usage could not be loaded.",
-        );
-      }
-      updateStore({
-        data: parsed.data.result,
-        error: null,
-        isRefreshing: activeRefreshCount > 1,
-      });
-    } catch (cause) {
-      if (signal?.aborted === true) {
-        return;
-      }
-      updateStore({
-        ...storeSnapshot,
-        error: cause instanceof Error ? cause.message : String(cause),
-      });
-    } finally {
-      activeRefreshCount -= 1;
-      if (activeRefreshCount === 0 && storeSnapshot.isRefreshing) {
-        updateStore({ ...storeSnapshot, isRefreshing: false });
-      }
-    }
-  })();
-}
+const { subscribeStore, getStoreSnapshot, refreshUsage } = createUsageStore();
 
 function providerIconStyle(provider: UsageProvider): CSSProperties | undefined {
   if (provider.iconTint === null) return undefined;
@@ -299,16 +210,16 @@ function ProviderUsageBody({ provider }: { provider: UsageProvider }) {
 function MachineSelector({
   machines,
   activeMachine,
-  menuRef,
+  onOpenChange,
   onSelect,
 }: {
   machines: UsageMachine[];
   activeMachine: UsageMachine | null;
-  menuRef: RefObject<HTMLDivElement | null>;
+  onOpenChange: (open: boolean) => void;
   onSelect: (machineId: string) => void;
 }) {
   return (
-    <DropdownMenu modal={false}>
+    <DropdownMenu modal={false} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild disabled={machines.length === 0}>
         <button
           type="button"
@@ -328,7 +239,6 @@ function MachineSelector({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
-        ref={menuRef}
         align="end"
         mobileTitle="Usage machine"
         className="max-h-72 max-w-72 overflow-y-auto"
@@ -382,12 +292,17 @@ function MachineSelector({
 
 function ProviderUsageStatus({ dismiss }: ExperimentalSidebarFooterDisclosureProps) {
   const cardRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const machineMenuOpen = useRef(false);
+  const onMachineMenuOpenChange = useCallback((open: boolean) => {
+    machineMenuOpen.current = open;
+  }, []);
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
+      // The nested menu owns dismissal until its drawer or popover closes.
+      if (machineMenuOpen.current) return;
       const target = event.target;
       if (!(target instanceof Node)) return;
-      if (cardRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      if (cardRef.current?.contains(target)) return;
       // Let the host footer button toggle its own disclosure on click.
       const control = target instanceof Element ? target.closest("[aria-controls]") : null;
       const controlledId = control?.getAttribute("aria-controls");
@@ -544,7 +459,7 @@ function ProviderUsageStatus({ dismiss }: ExperimentalSidebarFooterDisclosurePro
         )}
         <MachineSelector
           machines={machines}
-          menuRef={menuRef}
+          onOpenChange={onMachineMenuOpenChange}
           activeMachine={activeMachine}
           onSelect={selectMachine}
         />
