@@ -755,3 +755,29 @@ test("a stopped call's disconnect timer cannot stop a replacement call", async (
   tick(11000);
   assert.equal(agent.getState(), "live");
 });
+
+
+for (const closeEventFirst of [true, false]) {
+  test(`a closed event channel ends recovery when close event arrives ${closeEventFirst ? "first" : "last"}`, async (t) => {
+    const { agent, dc, peers, tick, start } = await liveVoiceFixture(t);
+    const peer = peers.at(-1)!;
+    peer.connectionState = "disconnected";
+    peer.onconnectionstatechange?.();
+    dc.readyState = "closed";
+    if (closeEventFirst) dc.onclose?.();
+    peer.connectionState = "connected";
+    peer.onconnectionstatechange?.();
+    assert.equal(agent.getState(), "idle");
+    await start();
+    dc.onclose?.();
+    tick(11000);
+    assert.equal(agent.getState(), "live");
+  });
+}
+
+test("event-channel closure ends an otherwise connected call", async (t) => {
+  const { agent, dc } = await liveVoiceFixture(t);
+  dc.readyState = "closed";
+  dc.onclose?.();
+  assert.equal(agent.getState(), "idle");
+});

@@ -74,7 +74,8 @@ the status and says that details are unavailable; ask for details to read the th
 
 A disconnected network connection gets up to 10 seconds to recover. Voice
 shows a reconnecting notice during this period. A failed connection ends the
-call immediately.
+call immediately. A closed event channel also ends the call because it cannot
+resume speech events or tool responses.
 
 ## Mobile views beside the call
 

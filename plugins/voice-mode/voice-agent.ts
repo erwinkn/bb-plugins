@@ -1264,6 +1264,11 @@ export class VoiceAgent {
         if (this.session?.pc !== pc) return;
         this.logDiag("conn.state", { state: pc.connectionState });
         if (pc.connectionState === "connected") {
+          if (session.dc?.readyState === "closed" || session.dc?.readyState === "closing") {
+            toast.error("Aide: voice event connection closed");
+            this.stop();
+            return;
+          }
           if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
           this.disconnectTimer = null;
         } else if (pc.connectionState === "failed") {
@@ -1298,7 +1303,12 @@ export class VoiceAgent {
           this.scheduleNoticeDrain();
         }
       };
-      dc.onclose = () => this.logDiag("conn.dc.close");
+      dc.onclose = () => {
+        if (this.session !== session) return;
+        this.logDiag("conn.dc.close");
+        toast.error("Aide: voice event connection closed");
+        this.stop();
+      };
       dc.onmessage = (message) => {
         if (this.session !== session || this.nonce !== nonce) return;
         let event: Record<string, unknown>;
