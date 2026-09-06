@@ -9,6 +9,14 @@ window, automatically archive threads, or run cleanup jobs.
 Groups appear in this order. Each thread appears in exactly one group.
 Empty groups are hidden.
 
+Status view initially shows five top-level threads per group, except Done,
+which shows ten. Show more reveals another five or ten; Show less restores
+the initial limit. Children do not count toward this limit. New-thread drafts
+share the Draft limit with existing threads. The selected thread's family stays
+visible even beyond the limit, so a group can show one extra top-level thread.
+Expansion resets when a group closes or the view reloads. Project view has no
+top-level limit.
+
 | Group           | Rule                                                                        |
 | --------------- | --------------------------------------------------------------------------- |
 | Needs Attention | Pending question or approval, or an unread run error.                       |

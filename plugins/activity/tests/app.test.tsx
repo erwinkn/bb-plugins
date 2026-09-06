@@ -72,6 +72,153 @@ afterEach(async () => {
 });
 
 describe("activity sidebar", () => {
+  it.each([
+    ["Needs Attention", 5, { hasPendingInteraction: true }],
+    ["Unread", 5, { isUnread: true }],
+    ["Working", 5, { indicator: "runtime" as const }],
+    ["Draft", 5, {}],
+    ["Done", 10, {}],
+  ] as const)("pages %s roots in batches of %i", (label, size, overrides) => {
+    const roots = Array.from({ length: size * 2 + 2 }, (_, i) =>
+      thread({
+        id: `root-${i}`,
+        title: `Root ${i}`,
+        updatedAt: 1000 - i,
+        ...overrides,
+      }),
+    );
+    if (label === "Draft") {
+      updateState((state) => ({
+        ...state,
+        drafts: roots.map((t) => `thread:${t.id}`),
+      }));
+    }
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads: roots, projects },
+    });
+    const list = slot.getByRole("list", { name: `${label} threads` });
+    const count = () =>
+      list.querySelectorAll("[data-sidebar-thread-id]").length;
+    const more = () =>
+      within(list).getByRole("button", {
+        name: new RegExp(`^Show more ${label}`),
+      });
+    const less = () =>
+      within(list).getByRole("button", { name: `Show fewer ${label} threads` });
+    expect(count()).toBe(size);
+    expect(more().textContent).toContain(String(size + 2));
+    expect(
+      list
+        .querySelector("[data-sidebar-thread-id]")
+        ?.getAttribute("data-sidebar-thread-id"),
+    ).toBe("root-0");
+    fireEvent.click(more());
+    expect(count()).toBe(size * 2);
+    less().focus();
+    fireEvent.click(less());
+    expect(count()).toBe(size);
+    expect(document.activeElement).toBe(more());
+    fireEvent.click(more());
+    more().focus();
+    fireEvent.click(more());
+    expect(count()).toBe(size * 2 + 2);
+    expect(document.activeElement).toBe(less());
+    fireEvent.click(less());
+    expect(count()).toBe(size);
+    fireEvent.click(more());
+    const group = slot.getByRole("button", { name: label });
+    fireEvent.click(group);
+    expect(slot.queryByRole("list", { name: `${label} threads` })).toBeNull();
+    fireEvent.click(group);
+    expect(
+      slot
+        .getByRole("list", { name: `${label} threads` })
+        .querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(size);
+    expect(slot.inspection.sidebarActionCalls).toEqual([]);
+    expect(props.onNavigate).not.toHaveBeenCalled();
+  });
+
+  it("shares the Draft limit between existing threads and new-thread drafts", () => {
+    const roots = Array.from({ length: 4 }, (_, i) =>
+      thread({ id: `draft-${i}` }),
+    );
+    updateState((state) => ({
+      ...state,
+      drafts: [
+        ...roots.map((t) => `thread:${t.id}`),
+        ...projects.map((p) => `new:${p.id}`),
+      ],
+    }));
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads: roots, projects },
+    });
+    const list = slot.getByRole("list", { name: "Draft threads" });
+    expect(
+      within(list).getAllByRole("button", { name: /New thread draft/ }),
+    ).toHaveLength(1);
+    expect(list.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(4);
+    fireEvent.click(
+      within(list).getByRole("button", {
+        name: /Show more Draft threads, 1 hidden/,
+      }),
+    );
+    expect(
+      within(list).getAllByRole("button", { name: /New thread draft/ }),
+    ).toHaveLength(2);
+  });
+
+  it("keeps a selected descendant's family visible beyond a thousand roots", () => {
+    const slot = renderSlot(
+      app.threadLists[0],
+      { ...props, activeThreadId: "selected" },
+      {
+        sidebarThreads: {
+          projects,
+          threads: [
+            ...Array.from({ length: 1000 }, (_, i) =>
+              thread({ id: `root-${i}`, updatedAt: 2000 - i }),
+            ),
+            thread({ id: "selected", parentThreadId: "root-999" }),
+          ],
+        },
+      },
+    );
+    const list = slot.getByRole("list", { name: "Done threads" });
+    expect(list.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(12);
+    expect(
+      list.querySelector('[data-sidebar-thread-id="selected"]'),
+    ).not.toBeNull();
+    expect(
+      list.querySelector('[data-sidebar-thread-id="root-998"]'),
+    ).toBeNull();
+    expect(
+      within(list).getByRole("button", {
+        name: /Show more Done threads, 989 hidden/,
+      }),
+    ).toBeTruthy();
+  });
+
+  it.each(["status", "project"] as const)(
+    "does not add a root control at the exact limit in %s view",
+    (groupBy) => {
+      updateState((state) => ({ ...state, groupBy }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: {
+          projects,
+          threads: Array.from(
+            { length: groupBy === "status" ? 10 : 15 },
+            (_, i) => thread({ id: `root-${i}` }),
+          ),
+        },
+      });
+      expect(slot.queryByRole("button", { name: /Show more/ })).toBeNull();
+      expect(
+        slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+      ).toHaveLength(groupBy === "status" ? 10 : 15);
+    },
+  );
+
   it.each(["status", "project"] as const)(
     "reveals three more children at a time and can shorten the list in %s view",
     (groupBy) => {

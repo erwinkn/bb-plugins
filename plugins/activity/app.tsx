@@ -18,6 +18,7 @@ import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { DisplayMenu } from "./components/menus";
 import { ThreadRow } from "./components/thread-row";
 import { ThreadChildren } from "./components/thread-children";
+import { ThreadRoots } from "./components/thread-roots";
 import { DraftObserver } from "./components/draft-observer";
 import { StatusIcon } from "./components/status-icon";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
@@ -68,7 +69,7 @@ function Group({
           <path d="m4.5 6.25 3.5 3.5 3.5-3.5" />
         </svg>
       </button>
-      {!closed && <ul className="m-0 list-none p-0">{children}</ul>}
+      {!closed && children}
     </section>
   );
 }
@@ -239,8 +240,14 @@ function ThreadsList(props: PluginThreadListProps) {
                   if (!count) return null;
                   return (
                     <Group key={s} id={`status:${s}`} title={STATUS_LABEL[s]}>
-                      {rows.map(({ node }) => row(node, s))}
-                      {s === "draft" && newDrafts.map(draftRow)}
+                      <ThreadRoots
+                        status={s}
+                        nodes={rows.map(({ node }) => node)}
+                        drafts={s === "draft" ? newDrafts : []}
+                        activeThreadId={props.activeThreadId}
+                        renderRow={(node) => row(node, s)}
+                        renderDraft={draftRow}
+                      />
                     </Group>
                   );
                 })
@@ -262,8 +269,10 @@ function ThreadsList(props: PluginThreadListProps) {
                         id={`project:${project.id}`}
                         title={project.name}
                       >
-                        {rows.map((node) => row(node))}
-                        {drafts.map(draftRow)}
+                        <ul className="m-0 list-none p-0">
+                          {rows.map((node) => row(node))}
+                          {drafts.map(draftRow)}
+                        </ul>
                       </Group>
                     ) : null;
                   })}
