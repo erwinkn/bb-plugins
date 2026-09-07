@@ -128,7 +128,7 @@ export function ReviewFooter({
           </Button>
         </div>
       ) : null}
-      <div className="space-y-2 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+      <div className="grid grid-cols-1 items-start gap-2 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 @3xl:grid-cols-[minmax(0,1fr)_auto]">
         <Textarea
           ref={textareaRef}
           value={note}
@@ -138,10 +138,10 @@ export function ReviewFooter({
           aria-label="Note for the agent"
           rows={1}
           disabled={busy}
-          className="min-h-9 resize-none leading-6 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="order-1 min-w-0 min-h-9 resize-none leading-6 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         />
         {failure ? (
-          <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">
+          <div role="alert" className="order-first col-span-full flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">
             <Icon name="AlertCircle" className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
             <div className="min-w-0 flex-1">
               <p className="text-foreground">{failure.message}</p>
@@ -154,12 +154,12 @@ export function ReviewFooter({
             </Button>
           </div>
         ) : null}
-        <div className="flex flex-wrap items-center gap-2">
-          <p className="min-w-0 flex-1 basis-40 text-xs text-muted-foreground" aria-live="polite">
+        <div className="contents">
+          <p className="order-2 col-span-full min-w-0 text-xs text-muted-foreground @3xl:order-3" aria-live="polite">
             {persistFailed ? "Draft not saved in this browser. " : null}
             {hint}
           </p>
-          <div className="flex items-center gap-2">
+          <div className="order-3 flex items-center justify-end gap-2 @3xl:order-2">
             <Button
               type="button"
               variant="outline"

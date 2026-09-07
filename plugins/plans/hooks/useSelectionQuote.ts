@@ -42,9 +42,11 @@ export function useSelectionQuote(
     if (scroller === null || content === null) return;
     const doc = content.ownerDocument;
     let frame: number | null = null;
+    let selecting = false;
 
     const read = () => {
       frame = null;
+      if (selecting) return;
       const selection = doc.getSelection();
       if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
         setCurrent(null);
@@ -79,8 +81,27 @@ export function useSelectionQuote(
       if (frame !== null) return;
       frame = requestAnimationFrame(read);
     };
+    const startSelection = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || !content.contains(event.target)) return;
+      selecting = true;
+      recentRef.current = null;
+      setCurrent(null);
+    };
+    const finishSelection = () => {
+      if (!selecting) return;
+      selecting = false;
+      schedule();
+    };
+    doc.addEventListener("pointerdown", startSelection);
+    doc.addEventListener("pointerup", finishSelection);
+    doc.addEventListener("pointercancel", finishSelection);
+    doc.defaultView?.addEventListener("blur", finishSelection);
     doc.addEventListener("selectionchange", schedule);
     return () => {
+      doc.removeEventListener("pointerdown", startSelection);
+      doc.removeEventListener("pointerup", finishSelection);
+      doc.removeEventListener("pointercancel", finishSelection);
+      doc.defaultView?.removeEventListener("blur", finishSelection);
       doc.removeEventListener("selectionchange", schedule);
       if (frame !== null) cancelAnimationFrame(frame);
     };

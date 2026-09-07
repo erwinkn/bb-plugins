@@ -74,7 +74,7 @@ export function PlanHeader({
     <header className="shrink-0 border-b border-border bg-background">
       {/* Title, view and version pickers, and the actions menu. Status,
           project, and thread identity are already known inside the thread. */}
-      <div className="flex items-center gap-2 px-3 py-3 md:px-4">
+      <div className="flex items-center gap-2 px-4 py-3">
         {onBack ? (
           <Button
             type="button"

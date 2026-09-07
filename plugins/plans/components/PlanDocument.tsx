@@ -273,7 +273,7 @@ export function PlanDocument({
           ref={contentRef}
           onClick={handleClick}
           className={cn(
-            "mx-auto w-full max-w-3xl px-4 pb-24 pt-5 md:px-8 md:pt-6",
+            "w-full px-4 pb-24 pt-5 md:pt-6",
             canComment && "cursor-text",
           )}
         >

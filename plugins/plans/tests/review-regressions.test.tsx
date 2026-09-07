@@ -341,6 +341,21 @@ describe("render stability", () => {
 /* ---------- 4. clicking a highlight vs. dragging a new selection ---------- */
 
 describe("activating a comment from the document", () => {
+  it("shows actions only after the selection drag ends, including release outside the document", async () => {
+    const { content } = renderDocument({ markdown: "Keep the existing data." });
+    fireEvent.pointerDown(screen.getByText("Keep the existing data."));
+    await selectText(content(), "existing");
+    expect(screen.queryByRole("toolbar", { name: "Annotate selection" })).toBeNull();
+    await selectText(content(), "existing data");
+    expect(screen.queryByRole("toolbar", { name: "Annotate selection" })).toBeNull();
+    await act(async () => { fireEvent.pointerUp(document.body); await nextFrame(); });
+    expect(commentButton()).toBeTruthy();
+    fireEvent.pointerDown(screen.getByText("Keep the existing data."));
+    expect(screen.queryByRole("toolbar", { name: "Annotate selection" })).toBeNull();
+    await act(async () => { fireEvent.pointerCancel(document.body); await nextFrame(); });
+    expect(commentButton()).toBeTruthy();
+  });
+
   const saved = comment({ id: "keep", quote: "existing data" });
   const markdown = "Keep the existing data.\n\nDrop the cache.";
 
