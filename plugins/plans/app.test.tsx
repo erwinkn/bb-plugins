@@ -6,7 +6,7 @@
  */
 import { fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ComponentType } from "react";
+import { createElement, type ComponentType } from "react";
 import {
   loadPluginApp,
   renderSlot,
@@ -255,6 +255,18 @@ describe("comments", () => {
 });
 
 describe("thread panel", () => {
+  it("resets the chosen plan when a mounted panel switches threads", async () => {
+    const backend = fakeBackend([makePlan()]);
+    slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
+    await slot.findByRole("button", { name: "Approve and start" });
+    slot.lifecycle.rerender(createElement(threadAction.component, { threadId: "thr_empty", params: null }));
+    await slot.findByLabelText("Plan Markdown");
+    expect(slot.queryByText("This plan belongs to another thread")).toBeNull();
+    expect(slot.queryByRole("button", { name: "Approve and start" })).toBeNull();
+    slot.lifecycle.rerender(createElement(threadAction.component, { threadId: "thr_1", params: null }));
+    await slot.findByRole("button", { name: "Approve and start" });
+  });
+
   it("rejects a requested plan from another thread", async () => {
     const backend = fakeBackend([makePlan({ threadId: "thr_other" })]);
     slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });

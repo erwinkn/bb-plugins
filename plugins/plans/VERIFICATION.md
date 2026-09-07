@@ -179,3 +179,11 @@ release outside the document). A regression test checks expanding a selection
 and starting a second drag. Document, header, and footer use the same left
 padding. The note shares a row with actions above the wide-container breakpoint
 and stacks on narrow panels.
+
+## Bugbot state and diff regressions
+
+ThreadPlanPanel remounts its stateful content per thread ID. A slot test switches
+a mounted panel from a chosen plan to an empty thread and back. Diff comparison
+now normalizes trailing newlines before its equality check; tests cover both
+newline directions and a real line change. Full suite: 56 tests. These fixes
+close the two Bugbot findings from 67592f8; its security review had no findings.

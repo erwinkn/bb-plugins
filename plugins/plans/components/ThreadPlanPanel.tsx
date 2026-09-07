@@ -19,7 +19,11 @@ function paramPlanId(params: PluginThreadPanelProps["params"]): string | null {
  * The thread side-panel tab. One plan opens straight into review; several
  * show a picker; none shows the create form bound to this thread.
  */
-export function ThreadPlanPanel({ threadId, params }: PluginThreadPanelProps) {
+export function ThreadPlanPanel(props: PluginThreadPanelProps) {
+  return <ThreadPlanPanelContent key={props.threadId} {...props} />;
+}
+
+function ThreadPlanPanelContent({ threadId, params }: PluginThreadPanelProps) {
   const list = usePlanList(threadId);
   const requested = paramPlanId(params);
   const [chosenId, setChosenId] = useState<string | null>(requested);

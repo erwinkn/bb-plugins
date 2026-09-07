@@ -13,12 +13,14 @@ export function createVersionPatch(
   oldLabel: string,
   newLabel: string,
 ): string | null {
-  if (oldMarkdown === newMarkdown) return null;
+  const before = ensureTrailingNewline(oldMarkdown);
+  const after = ensureTrailingNewline(newMarkdown);
+  if (before === after) return null;
   return createTwoFilesPatch(
     `a/${PLAN_DIFF_PATH}`,
     `b/${PLAN_DIFF_PATH}`,
-    ensureTrailingNewline(oldMarkdown),
-    ensureTrailingNewline(newMarkdown),
+    before,
+    after,
     oldLabel,
     newLabel,
     { context: 3 },
