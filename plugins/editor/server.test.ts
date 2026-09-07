@@ -116,6 +116,7 @@ test("plugin uses only public SDK imports and declared packages", () => {
       /^@shikijs\/(langs|themes)\//,
       /^@pierre\/theme\//,
       /^@pierre\/diffs(\/|$)/,
+      /^@pierre\/trees$/,
       /^esbuild$/,
       /^@\//,
     ],
