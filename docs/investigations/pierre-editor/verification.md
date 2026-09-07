@@ -269,3 +269,13 @@ Installed checks in the same fixture thread, tab visible:
 Typecheck, both builds and all 131 tests pass. Touch devices still have no
 long-press path on iOS Safari for the row menu; the keyboard menu key and
 Shift+F10 remain.
+
+## Markdown preview (2026-09-07)
+
+Markdown files open as a rendered preview through the SDK's host-owned
+`Markdown` component; a toolbar pencil switches to the editor. Installed check
+on `complex-diffs/docs/release-notes.md`: the preview showed headings, a table,
+a code block and a task list. The switch mounted the editor and moved focus
+into it. Text typed at the top reached disk through auto save and appeared in
+the preview on switching back; deleting it restored the fixture. Typecheck and
+builds pass.

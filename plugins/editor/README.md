@@ -72,6 +72,15 @@ Panel links accept `{ target, path }`, where `target` has type `uncommitted`,
 `mergeBaseBranch`; commit targets require `sha`. The tab validates these values.
 BB's built-in diff tab remains available.
 
+### Markdown preview
+
+A `.md` or `.markdown` file opens in the Files tab as a rendered preview, in
+BB's chat typography. The pencil button in the toolbar (also **Edit the
+source** in the menu) switches to the editor and back; the choice is kept per
+file while the page is open. The preview follows the shared buffer, so unsaved
+edits from the Changes tab show there too. Find and Go to line switch to the
+editor first.
+
 ### Revert actions
 
 Hover changed lines and select the **Revert** control at the right edge of the
