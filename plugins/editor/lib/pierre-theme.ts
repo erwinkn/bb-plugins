@@ -1,6 +1,8 @@
-import { experimental_useCodeTheme, type PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
+import { experimental_useCodeTheme, useSettings, type PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
 import type { ThemeRegistration } from "@pierre/diffs";
 import type { PierreRuntime } from "./pierre-loader.js";
+import { conductorCodeTheme } from "./conductor-palette.js";
+import { FOLLOW_BB } from "./themes.js";
 
 /**
  * A theme ready for a Pierre surface: the name Pierre resolves it under, and
@@ -24,16 +26,37 @@ export interface PierreThemeInput {
 }
 
 /**
- * BB's current code theme, in the form a Pierre surface takes.
+ * The plugin's selected code palette, in the form a Pierre surface takes.
  *
  * `experimental_useCodeTheme` keeps the previous document while a new one
  * resolves, so this never returns an unthemed frame.
  */
-export function usePierreTheme(): PierreThemeInput {
+export function usePierreTheme(preview: string | null = null): PierreThemeInput {
   const state = experimental_useCodeTheme();
-  const fallback = state.mode === "dark" ? "pierre-dark" : "pierre-light";
-  if (state.theme === null) return { id: fallback, type: state.mode, data: null, fallback };
-  return { id: pierreThemeName(state.theme), type: state.theme.type, data: state.theme, fallback };
+  const { values } = useSettings();
+  return resolvePierreTheme({
+    mode: state.mode,
+    theme: state.theme,
+    palette: values?.codePalette === "bb" ? "bb" : "conductor",
+    preview,
+  });
+}
+
+/** Resolve local preview and persisted palette without changing BB's theme. */
+export function resolvePierreTheme({ mode, theme, palette, preview = null }: {
+  mode: "dark" | "light";
+  theme: PluginCodeThemeData | null;
+  palette: "conductor" | "bb";
+  preview?: string | null;
+}): PierreThemeInput {
+  const fallback = mode === "dark" ? "pierre-dark" : "pierre-light";
+  if (preview === "conductor-dark" || preview === "conductor-light" || (preview === null && palette === "conductor")) {
+    const data = conductorCodeTheme(mode);
+    return { id: pierreThemeName(data), type: mode, data, fallback };
+  }
+  if (preview !== null && preview !== FOLLOW_BB) return { id: preview, type: mode, data: null, fallback: preview };
+  if (theme === null) return { id: fallback, type: mode, data: null, fallback };
+  return { id: pierreThemeName(theme), type: theme.type, data: theme, fallback };
 }
 
 /**

@@ -47,3 +47,17 @@ export const ownsContainerElement = !containerExisted;
 
 /** The exact version this bundle was built against. */
 export const version = "1.4.1";
+
+let fontPromise;
+export const loadFont = () => {
+  fontPromise ??= (async () => {
+    const font = new FontFace("BB Editor Geist Mono", `url(${new URL("./geist-mono-5.3.0-latin.woff2", import.meta.url)})`, {
+      weight: "100 900",
+      style: "normal",
+      display: "swap",
+    });
+    await font.load();
+    document.fonts.add(font);
+  })();
+  return fontPromise;
+};

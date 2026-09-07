@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { BB_DEFAULT, bbThemeId, manifestThemes, pairIdFromBbTheme, THEME_PAIRS, themeNameFor, themePair } from "./themes";
+import { BB_DEFAULT, CONDUCTOR, FOLLOW_BB, bbThemeId, manifestThemes, pairIdFromBbTheme, THEME_PAIRS, themeNameFor, themePair } from "./themes";
 
 const modules = path.join(import.meta.dirname, "..", "node_modules");
 
@@ -48,4 +48,8 @@ test("themeNameFor picks the mode's theme and BB's default pair", () => {
   assert.equal(themeNameFor(BB_DEFAULT, "dark"), "pierre-dark");
   assert.equal(themeNameFor("nope", "dark"), null);
   assert.equal(themePair("github")?.label, "GitHub");
+  assert.equal(themeNameFor(CONDUCTOR, "dark"), "conductor-dark");
+  assert.equal(themeNameFor(CONDUCTOR, "light"), "conductor-light");
+  assert.equal(themeNameFor(FOLLOW_BB, "dark"), "bb");
+  assert.ok(!manifestThemes("").some((entry) => entry.id === CONDUCTOR || entry.id === FOLLOW_BB));
 });

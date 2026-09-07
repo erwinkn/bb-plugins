@@ -6,6 +6,7 @@ import {
   pierreThemeName,
   resetPierreThemesForTests,
   synchronizePierreTheme,
+  resolvePierreTheme,
   toPierreTheme,
   type PierreThemeInput,
 } from "./pierre-theme.js";
@@ -145,4 +146,21 @@ test("theme synchronization also supports main-thread rendering and exposes load
   assert.equal(await synchronizePierreTheme(runtime, input(null)), "pierre-dark");
   runtime.workerPool = { setRenderOptions: async () => { throw new Error("theme failed to load"); } } as unknown as PierreRuntime["workerPool"];
   await assert.rejects(() => synchronizePierreTheme(runtime, input(null)), /theme failed to load/);
+});
+
+test("local palette and preview choices preserve BB's theme document", () => {
+  const bb = theme();
+  const original = JSON.stringify(bb);
+  const local = resolvePierreTheme({ mode: "dark", theme: bb, palette: "conductor" });
+  assert.equal(local.data?.name, "Conductor-inspired dark");
+  const follow = resolvePierreTheme({ mode: "dark", theme: bb, palette: "conductor", preview: "bb" });
+  assert.equal(follow.data, bb);
+  const preview = resolvePierreTheme({ mode: "dark", theme: bb, palette: "conductor", preview: "tokyo-night" });
+  assert.equal(preview.id, "tokyo-night");
+  assert.equal(preview.data, null);
+  const restored = resolvePierreTheme({ mode: "dark", theme: bb, palette: "conductor", preview: null });
+  assert.equal(restored.id, local.id);
+  assert.equal(resolvePierreTheme({ mode: "light", theme: null, palette: "conductor", preview: "conductor-light" }).data?.type, "light");
+  assert.equal(resolvePierreTheme({ mode: "dark", theme: bb, palette: "bb" }).data, bb);
+  assert.equal(JSON.stringify(bb), original);
 });

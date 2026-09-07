@@ -1,7 +1,8 @@
 # bb-plugin-erwin-editor
 
 A Pierre file editor for BB with **Files** and **Changes** tabs. Both tabs use
-BB's code theme and share the same file buffer and save queue.
+a Conductor-inspired code palette and share the same file buffer and save queue.
+The canvas, controls, and menus use BB's current interface theme.
 Plugin id: `erwin-editor`. Disable the bundled `monaco-editor` plugin before
 installing this one.
 
@@ -14,8 +15,10 @@ thread screen also has a Files tab for the project's default checkout.
 
 File links claimed by this plugin open in the same editor. Use `⌘S` to save,
 `⌘F` to find text, and `⌘P` for quick open. The toolbar has file history,
-path actions, find, and display settings. The theme picker changes
-BB's code theme for the editor and BB's own previews.
+path actions, find, and display settings. The editor uses Geist Mono, quiet line
+numbers, and compact diff separators. The Theme picker offers Conductor for
+this plugin only, Follow BB for BB's current code colors, and the existing
+shared BB theme pairs. Choosing Conductor does not change BB's global theme.
 
 The editor uses Pierre's text editing and Shiki syntax highlighting. It does
 not provide Monaco's completions, diagnostics, hover information, symbol
@@ -76,7 +79,8 @@ Extensions → Editor:
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| Font size | 13 | 9 to 24 |
+| Font size | 13 | 9 to 24; Geist Mono with BB monospace fallback |
+| Code palette | conductor | Local Conductor-inspired colors, or `bb` to follow BB |
 | Wrap long lines | off | Shared by Files and Changes |
 | Show line numbers | on | Shared by Files and Changes |
 | Auto save | off | `onBlur` or `afterDelay`; the delay is one second |

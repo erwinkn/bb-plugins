@@ -41,6 +41,28 @@ test("contract exposes the methods the frontend calls", () => {
   assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffList", "diffRead", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
 });
 
+test("local code palettes leave the global BB theme unchanged and existing pairs keep their behavior", async (t) => {
+  let themeId = "default";
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "erwin-editor",
+    sdk: { theme: { get: async () => ({ themeId }), set: async (id) => { themeId = id; return { themeId }; } } },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const readTheme = async () => rpcContract.theme.output.parse(await harness.behavior.callRpc("theme", null));
+  assert.deepEqual(await readTheme(), { pair: "conductor", themeId: "default" });
+  await harness.behavior.callRpc("applyTheme", { pair: "bb" });
+  assert.deepEqual(await readTheme(), { pair: "default", themeId: "default" });
+  await harness.behavior.callRpc("applyTheme", { pair: "conductor" });
+  assert.deepEqual(await readTheme(), { pair: "conductor", themeId: "default" });
+  assert.equal(harness.inspection.sdk.callsTo("theme.set").length, 0);
+  await harness.behavior.callRpc("applyTheme", { pair: "tokyo-night" });
+  assert.deepEqual(await readTheme(), { pair: "tokyo-night", themeId: "plugin:erwin-editor:tokyo-night" });
+  await harness.behavior.callRpc("applyTheme", { pair: "conductor" });
+  assert.deepEqual(await readTheme(), { pair: "conductor", themeId: "plugin:erwin-editor:tokyo-night" });
+  assert.equal(harness.inspection.sdk.callsTo("theme.set").length, 1);
+});
+
 test("read, write, and tree refuse paths that leave the workspace", async (t) => {
   const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
   t.after(() => harness.lifecycle.dispose());

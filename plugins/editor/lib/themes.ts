@@ -28,6 +28,8 @@ export const BB_DEFAULT = "default";
 
 /** Editor-side marker for "paint with whatever BB's code theme is". */
 export const FOLLOW_BB = "bb";
+/** Local syntax palette; it is deliberately not a BB app-theme contribution. */
+export const CONDUCTOR = "conductor";
 
 export const THEME_PAIRS: readonly ThemePair[] = [
   { id: "pierre-soft", label: "Pierre Soft", dark: "pierre-dark-soft", light: "pierre-light-soft" },
@@ -91,6 +93,8 @@ export function pairIdFromBbTheme(pluginId: string, themeId: string): string | n
 
 /** The theme name a pair uses in `mode`; BB's default pair for `default`. */
 export function themeNameFor(pairId: string, mode: ThemeType): string | null {
+  if (pairId === CONDUCTOR) return `conductor-${mode}`;
+  if (pairId === FOLLOW_BB) return FOLLOW_BB;
   if (pairId === BB_DEFAULT) return mode === "dark" ? "pierre-dark" : "pierre-light";
   const pair = BY_ID.get(pairId);
   return pair === undefined ? null : pair[mode];

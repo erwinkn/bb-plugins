@@ -17,7 +17,7 @@
  * `server.ts` runs this script when `dist/pierre` is missing or older than its
  * inputs, so a fresh install builds on first use.
  */
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -29,6 +29,8 @@ const esbuild = require("esbuild");
 const outDir = path.join(pluginRoot, "dist", "pierre");
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
+const fontInput = "node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2";
+await copyFile(path.join(pluginRoot, fontInput), path.join(outDir, "geist-mono-5.3.0-latin.woff2"));
 
 const shared = {
   bundle: true,
@@ -160,7 +162,7 @@ async function collectLicenses(inputs) {
   return sections;
 }
 
-const sections = await collectLicenses([...editorInputs, ...workerInputs]);
+const sections = await collectLicenses([...editorInputs, ...workerInputs, fontInput]);
 await writeFile(
   path.join(outDir, "LICENSES.txt"),
   [

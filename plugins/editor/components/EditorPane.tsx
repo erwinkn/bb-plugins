@@ -7,7 +7,7 @@ import { AUTO_SAVE_DELAY_MS, lineHeightFor, monoFontFamily, type EditorPrefs, ty
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
 import { useFileSession } from "@/lib/use-file-session";
 import type { FileSessionSnapshot } from "@/lib/file-session";
-import { usePierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
+import { usePierreTheme } from "@/lib/pierre-theme";
 import { cn } from "@/lib/utils";
 import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } from "./PierreSurface";
 import type { MenuItem } from "./ContextMenu";
@@ -84,16 +84,7 @@ export function EditorPane({
   const state = file.state;
   const { save, overwrite, reload, discard, setContent, claimEditor, isEditor } = file;
 
-  const bbTheme = usePierreTheme();
-  const theme = useMemo<PierreThemeInput>(
-    () =>
-      themePreview === null
-        ? bbTheme
-        : // A previewed theme is one Pierre bundles under its own name; there
-          // is no document to register for it.
-          { id: themePreview, type: bbTheme.type, data: null, fallback: themePreview },
-    [bbTheme, themePreview],
-  );
+  const theme = usePierreTheme(themePreview);
 
   useEffect(() => {
     let cancelled = false;

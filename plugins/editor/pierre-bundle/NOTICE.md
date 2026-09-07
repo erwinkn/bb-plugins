@@ -14,10 +14,11 @@ distribute a built copy of this plugin.
 | `diff` | 9.0.0 | BSD-3-Clause |
 | `hast-util-to-html` and its `hast`/`unist` dependencies | — | MIT |
 | `lru_map` | 0.4.1 | MIT |
+| `@fontsource-variable/geist-mono` | 5.3.0 | OFL-1.1 |
 
 The Apache-2.0 license of `@pierre/diffs` requires that a distribution keeps the
 license and the attribution notices. `dist/pierre/LICENSES.txt` satisfies that,
 and the table above names the source for a reader who has only this repository.
 
 No code from other Pierre integrations is copied into this plugin. The bundle
-entries in this directory only re-export the published `@pierre/diffs` API.
+entries adapt the published `@pierre/diffs` API and load the licensed Geist Mono font.

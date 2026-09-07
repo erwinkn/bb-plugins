@@ -1,16 +1,16 @@
 # Pierre editor verification
 
 Tested on 7 September 2026 with BB 0.42.1, SDK 0.4.47, and Pierre 1.4.1.
-The final code revision tested is `b86f63d`. Later report-only commits do not
-change the runtime. The installed preview uses branch `feat/pierre-editor-diffs` in the stable clone
+The initial implementation was tested at `b86f63d`. The styling follow-up is
+recorded below and in the draft PR. The installed preview uses branch `feat/pierre-editor-diffs` in the stable clone
 `/Users/erwin/Code/bb-plugins-editor-preview`. It retains plugin id `erwin-editor`.
 PR #16 stays in draft until the user permits review readiness.
 
 ## Automated checks
 
 `npm run typecheck`, `npm test`, `npm run build:pierre`, `bb plugin build`,
-and `git diff --check` pass. The current suite has 104 passing tests.
-The asset build produces 11.4 MB and 398 lazy chunks. Its dependency check
+and `git diff --check` pass. The current suite has 108 passing tests.
+The asset build produces 11.5 MB and 398 lazy chunks. Its dependency check
 rejects React, React DOM, and Scheduler in the lazy runtime.
 
 The tests cover hash-checked saves, save serialization, typing during a save
@@ -80,3 +80,20 @@ worked with that registration present.
 
 This is an installed preview for user testing. No merge or review-readiness
 change is authorized.
+
+## Styling follow-up
+
+Conductor 0.84.2 registers custom `conductor-dark` and `conductor-light` themes.
+Its default dark colors are warm white `#eae8e6`, comment gray `#8e8885`,
+keyword red `#f87272`, string tan `#ddc1b1`, constant blue `#61a6fa`, and
+entity magenta `#e852ff`. These values come from the installed app's palette
+and theme registration, not a guess from the screenshot. Its default code
+font is Geist Mono at 13 px with 20 px rows. No local code-theme override was
+found; a running Conductor editor's selected theme was not inspected.
+
+The plugin applies those colors with its own compact scope rules. It bundles
+the OFL-licensed Geist Mono font, keeps BB's canvas background in the shadow
+root, uses subdued line numbers and a stable gutter width, and uses compact
+hunk separators with 20-line expansion. Conductor and Follow BB are local
+palette choices in the existing picker. Other theme pairs retain their
+existing shared BB theme behavior.

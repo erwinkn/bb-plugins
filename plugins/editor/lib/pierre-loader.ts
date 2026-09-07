@@ -30,6 +30,7 @@ export interface PierreBundle {
   /** False when another copy of Pierre defined `<diffs-container>` first. */
   ownsContainerElement: boolean;
   version: string;
+  loadFont: () => Promise<void>;
 }
 
 export interface PierreRuntime extends PierreBundle {
@@ -88,6 +89,11 @@ async function boot(baseUrl: string, highlighter: PierreHighlighter): Promise<Pi
     throw new Error(`the Pierre bundle did not export ${missing.join(", ")}`);
   }
   const runtime = bundle as PierreBundle;
+  // Resolve metrics before creating a virtualized editor. If the optional font
+  // cannot load, BB's monospace stack remains a usable fallback.
+  await runtime.loadFont().catch((error: unknown) => {
+    console.warn("[erwin-editor] Geist Mono could not load; using BB's monospace font", error);
+  });
   if (!runtime.ownsContainerElement) {
     // BB's app registers `<diffs-container>` from its own Pierre copy. The tag
     // can only be defined once, so our elements then carry that copy's

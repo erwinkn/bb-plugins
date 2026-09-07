@@ -37,7 +37,7 @@ export function prefsFrom(values: Record<string, unknown> | null | undefined): E
 
 export function monoFontFamily(): string | undefined {
   const value = getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim();
-  return value === "" ? undefined : value;
+  return `"BB Editor Geist Mono", ${value || "monospace"}`;
 }
 
 /** The row height that keeps code readable at `fontSize`. */

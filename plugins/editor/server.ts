@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { listLocalTree } from "./lib/local-tree.js";
-import { BB_DEFAULT, bbThemeId, pairIdFromBbTheme, THEME_PAIRS } from "./lib/themes.js";
+import { BB_DEFAULT, CONDUCTOR, FOLLOW_BB, bbThemeId, pairIdFromBbTheme, THEME_PAIRS } from "./lib/themes.js";
 import { diffEntrySchema, diffTargetSchema, hasConflictMarkers, isWorkingTreeTarget, type DiffTarget } from "./lib/diff-contract.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
@@ -17,6 +17,7 @@ const ASSET_CONTENT_TYPES: Record<string, string> = {
   ".mjs": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".wasm": "application/wasm",
+  ".woff2": "font/woff2",
   ".json": "application/json; charset=utf-8",
   ".map": "application/json; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
@@ -131,20 +132,21 @@ export const rpcContract = defineRpcContract({
       z.object({ key: z.literal("lineNumbers"), value: z.boolean() }),
       z.object({ key: z.literal("autoSave"), value: z.enum(["off", "onBlur", "afterDelay"]) }),
       z.object({ key: z.literal("fileTreeSide"), value: z.enum(["left", "right"]) }),
+      z.object({ key: z.literal("codePalette"), value: z.enum(["conductor", "bb"]) }),
     ]),
     output: z.null(),
   },
   /**
-   * BB's active theme as one of this plugin's pairs: `default` for BB's
-   * stock theme, a pair id for one of ours, null for any other theme.
+   * The selected local palette or active BB pair, with BB's own theme id
+   * retained so choosing local colors never changes the global theme.
    */
   theme: {
     input: z.null(),
     output: z.object({ pair: z.string().nullable(), themeId: z.string() }),
   },
-  /** Set BB's theme to `default` or one of this plugin's pairs. */
+  /** Choose a local palette, or apply an existing BB code-theme pair. */
   applyTheme: {
-    input: z.object({ pair: z.enum([BB_DEFAULT, ...THEME_PAIRS.map((pair) => pair.id)] as [string, ...string[]]) }),
+    input: z.object({ pair: z.enum([CONDUCTOR, FOLLOW_BB, BB_DEFAULT, ...THEME_PAIRS.map((pair) => pair.id)] as [string, ...string[]]) }),
     output: z.null(),
   },
 });
@@ -231,6 +233,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     wordWrap: { type: "boolean", label: "Wrap long lines", default: false },
     lineNumbers: { type: "boolean", label: "Show line numbers", default: true },
+    codePalette: { type: "select", label: "Code palette", options: [CONDUCTOR, FOLLOW_BB], default: CONDUCTOR },
     autoSave: {
       type: "select",
       label: "Auto save",
@@ -617,11 +620,17 @@ export default async function plugin(bb: BbPluginApi) {
 
     async theme() {
       const { themeId } = await bb.sdk.theme.get();
-      return { pair: pairIdFromBbTheme(bb.pluginId, themeId), themeId };
+      const { codePalette } = await settings.get();
+      return { pair: codePalette === CONDUCTOR ? CONDUCTOR : (pairIdFromBbTheme(bb.pluginId, themeId) ?? FOLLOW_BB), themeId };
     },
 
     async applyTheme({ pair }) {
+      if (pair === CONDUCTOR || pair === FOLLOW_BB) {
+        await settings.experimental_set({ codePalette: pair });
+        return null;
+      }
       await bb.sdk.theme.set(pair === BB_DEFAULT ? BB_DEFAULT : bbThemeId(bb.pluginId, pair));
+      await settings.experimental_set({ codePalette: FOLLOW_BB });
       return null;
     },
   });

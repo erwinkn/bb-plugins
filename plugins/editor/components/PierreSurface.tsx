@@ -7,6 +7,26 @@ import { applyPierreTheme, synchronizePierreTheme, type PierreThemeInput } from 
 import { cn } from "@/lib/utils";
 import { createPierreItem } from "@/lib/pierre-item";
 
+// Pierre's single-theme renderer writes its own host background. Override it
+// inside the shadow root so both BB color modes and user palettes stay intact.
+// Token colors still come from the selected syntax theme.
+const SURFACE_CSS = `
+  :host {
+    background-color: var(--background);
+    --diffs-bg: var(--background);
+    --diffs-bg-buffer-override: var(--background);
+    --diffs-fg-number-override: color-mix(in srgb, var(--foreground) 55%, var(--background));
+    --diffs-min-number-column-width: 2ch;
+    --diffs-bg-selection-override: color-mix(in srgb, var(--foreground) 20%, var(--background));
+    --diffs-bg-selection-number-override: var(--background);
+    --diffs-selection-number-fg: var(--foreground);
+  }
+  [data-utility-button]:focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+`;
+
 /** Where the caret goes when the surface takes focus. */
 export interface PierreFocusTarget {
   /** One-based document line, or the first editable line that is on screen. */
@@ -410,6 +430,10 @@ function buildOptions(
     overflow: props.wrap === true ? "wrap" : "scroll",
     disableLineNumbers: props.lineNumbers === false,
     disableFileHeader: props.fileHeader !== true,
+    unsafeCSS: SURFACE_CSS,
+    hunkSeparators: "line-info-basic",
+    expansionLineCount: 20,
+    lineHoverHighlight: "number",
     expandUnchanged: props.expandUnchanged ?? false,
     stickyHeaders: props.stickyHeader ?? false,
     // One item fills the pane, so none of Pierre's list spacing applies.
