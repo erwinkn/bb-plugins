@@ -264,11 +264,7 @@ export function ThreadRow({
                   className={`mt-0.5 flex min-w-0 items-center gap-1 text-xs leading-4 text-[var(--subtle-foreground)] ${fadeClass}`}
                 >
                   {parent && !nested ? "↳ " : ""}
-                  <span
-                    className={`shrink-0 ${branch ? `max-w-[55%] ${fadeClass}` : ""}`}
-                  >
-                    {project}
-                  </span>
+                  <span className="shrink-0">{project}</span>
                   {branch && (
                     <>
                       <span aria-hidden="true">·</span>
