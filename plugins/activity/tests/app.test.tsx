@@ -116,12 +116,17 @@ describe("activity sidebar", () => {
     fireEvent.submit(form);
     fireEvent.submit(form);
     expect(rename).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(slot.getByRole("textbox"));
+    expect((slot.getByRole("textbox") as HTMLInputElement).readOnly).toBe(true);
     await act(async () => rejectSave(new Error("offline")));
     expect(slot.getByRole("alert").textContent).toContain("Try again");
     expect((slot.getByRole("textbox") as HTMLInputElement).value).toBe("Retry name");
+    expect(document.activeElement).toBe(slot.getByRole("textbox"));
+    expect((slot.getByRole("textbox") as HTMLInputElement).readOnly).toBe(false);
     fireEvent.submit(form);
     await waitFor(() => expect(slot.queryByRole("textbox")).toBeNull());
     expect(rename).toHaveBeenLastCalledWith("working", "Retry name");
+    expect(document.activeElement).toBe(slot.container.querySelector('[data-sidebar-thread-id="working"]'));
   });
   it.each([false, true])("renames a thread in compact mode %s without navigation", async (isCompactViewport) => {
     const slot = renderSlot(app.threadLists[0], { ...props, isCompactViewport }, {
@@ -140,6 +145,7 @@ describe("activity sidebar", () => {
       { method: "rename", threadId: "child", title: "New child name" },
     ]);
     expect(props.onNavigate).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(slot.container.querySelector('[data-sidebar-thread-id="child"]'));
   });
   it.each(["Cancel", "Escape", "unchanged"])("closes rename with %s without saving", async (method) => {
     const slot = mount();
@@ -150,6 +156,7 @@ describe("activity sidebar", () => {
     else fireEvent.submit(slot.getByRole("form", { name: "Rename thread" }));
     expect(slot.queryByRole("textbox")).toBeNull();
     expect(slot.inspection.sidebarActionCalls).toEqual([]);
+    expect(document.activeElement).toBe(slot.container.querySelector('[data-sidebar-thread-id="working"]'));
   });
   it.each(["status", "project"] as const)(
     "keeps pins above %s groups, including children and filtered statuses",

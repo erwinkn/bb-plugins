@@ -1,5 +1,5 @@
 import * as Menu from "@radix-ui/react-context-menu";
-import { useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   useRpc,
   useBbNavigate,
@@ -60,6 +60,18 @@ export function ThreadRow({
   const [renameError, setRenameError] = useState<string | null>(null);
   const savingRef = useRef(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const rowRef = useRef<HTMLAnchorElement>(null);
+  const restoreRowFocus = useRef(false);
+  const closeEditor = () => {
+    restoreRowFocus.current = true;
+    setEditing(false);
+  };
+  useLayoutEffect(() => {
+    if (!editing && restoreRowFocus.current) {
+      restoreRowFocus.current = false;
+      rowRef.current?.focus();
+    }
+  }, [editing]);
   const longPress = useLongPressMenu(menuOpen);
   // A long press can produce a click on release. Keep keyboard and BB shortcut
   // clicks (detail === 0) available, but require a fresh pointer press otherwise.
@@ -88,7 +100,7 @@ export function ThreadRow({
               if (event.key === "Escape") {
                 event.preventDefault();
                 event.stopPropagation();
-                if (!savingRef.current) setEditing(false);
+                if (!savingRef.current) closeEditor();
               }
             }}
             onSubmit={async (event) => {
@@ -96,15 +108,16 @@ export function ThreadRow({
               const nextTitle = draftTitle.trim();
               if (!nextTitle || savingRef.current) return;
               if (nextTitle === title) {
-                setEditing(false);
+                closeEditor();
                 return;
               }
               savingRef.current = true;
               setSaving(true);
               setRenameError(null);
+              renameInputRef.current?.focus();
               try {
                 await actions.rename(thread.id, nextTitle);
-                setEditing(false);
+                closeEditor();
               } catch {
                 setRenameError("Could not rename the thread. Try again.");
               } finally {
@@ -119,14 +132,14 @@ export function ThreadRow({
               autoFocus
               onFocus={(event) => event.currentTarget.select()}
               value={draftTitle}
-              disabled={saving}
+              readOnly={saving}
               onChange={(event) => setDraftTitle(event.target.value)}
               className="w-full min-w-0 rounded-md border border-border bg-background px-2 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />
             <button type="submit" disabled={saving || !draftTitle.trim()} className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
               {saving ? "Saving…" : "Save"}
             </button>
-            <button type="button" disabled={saving} onClick={() => setEditing(false)} className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+            <button type="button" disabled={saving} onClick={closeEditor} className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
               Cancel
             </button>
             {renameError && <p role="alert" className="w-full text-sm text-destructive">{renameError}</p>}
@@ -147,6 +160,7 @@ export function ThreadRow({
           >
             <Menu.Trigger asChild>
               <a
+                ref={rowRef}
                 {...(!thread.isArchived ? splitProps : {})}
                 {...longPress}
                 href={`/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(thread.id)}`}
