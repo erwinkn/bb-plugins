@@ -182,6 +182,31 @@ describe("Plans review workflow", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("on non-blocking providers, returns at once, holds the prompt, and delivers the decision as a message", async () => {
+    const { harness, rpc, send } = await setup();
+    await harness.behavior.setSettings({ nonBlockingProviders: "acp-cursor, test-provider" });
+    const result = JSON.parse(String(await harness.behavior.callAgentTool("plans_submit", { title: "Held", markdown: "# Held\n\nKeep the existing data." }, { threadId: "thread-1" }))) as { status: string; planId: string; versionId: string; instruction: string };
+    expect(result.status).toBe("submitted");
+    expect(result.instruction).toMatch(/End your turn/);
+    expect(result.instruction).toMatch(/do not poll or run `bb plans wait`/);
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    expect(harness.inspection.pendingInteractions[0]).toMatchObject({ threadId: "thread-1", title: "Review plan: Held" });
+    // A revision replaces the held prompt with one for the new version.
+    const revised = JSON.parse(String(await harness.behavior.callAgentTool("plans_submit", { title: "Held", markdown: "# Held\n\nKeep the data.", planId: result.planId, expectedVersionId: result.versionId }, { threadId: "thread-1" }))) as { versionId: string };
+    await vi.waitFor(() => {
+      expect(harness.inspection.pendingInteractions).toHaveLength(1);
+      expect((harness.inspection.pendingInteractions[0]!.payload as { versionId: string }).versionId).toBe(revised.versionId);
+    });
+    await rpc("addComment", { id: result.planId, versionId: revised.versionId, quote: "the data", body: "Which data?" });
+    await rpc("submitReview", { id: result.planId, versionId: revised.versionId, action: "feedback", note: "", requestId: "held-message" });
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    const text = (send.mock.calls[0]![0] as { input: Array<{ text: string }> }).input[0]!.text;
+    expect(text).toContain("Which data?");
+    expect(text).not.toContain("bb plans wait");
+    expect(text).not.toContain("Keep the data");
+  });
+
   it("returns dismissed when the user skips the review prompt", async () => {
     const { harness } = await setup();
     const submitting = harness.behavior.callAgentTool("plans_submit", { title: "Skipped", markdown: "Skip me" }, { threadId: "thread-1" });

@@ -145,7 +145,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     receipt: input.requestId,
     instruction: input.action === "approve"
       ? `Implement plan ${plan.id} version ${version.number} exactly. Run \`bb plans get ${plan.id} --version-id ${version.id}\` if it is no longer in context. This does not authorize a merge or deployment.`
-      : `Revise plan ${plan.id} with plans_submit (planId, expectedVersionId ${version.id}) or \`bb plans submit\`, then wait for review again. Do not implement yet.`,
+      : `Revise plan ${plan.id} with plans_submit (planId, expectedVersionId ${version.id}) or \`bb plans submit\` and follow its result. Do not implement yet.`,
   });
   const storedDecision = (planId: string, versionId: string): ReviewDecision | null => {
     const rows = db.prepare("SELECT decision FROM deliveries WHERE plan_id = ? AND state = 'sent' AND decision IS NOT NULL").all(planId) as { decision: string }[];
@@ -169,8 +169,12 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     notifyWaiters(plan.id, { kind: "decision", decision });
     return result;
   };
-  /** Waits on stored state and in-process events only; no BB interaction. */
-  const waitLocal = ({ id, versionId, timeoutMs, signal }: WaitInput): Promise<WaitResult> => {
+  /**
+   * Waits on stored state and in-process events only; no BB interaction.
+   * `attend` records the wait so a decision skips the thread message; a
+   * detached hold passes false because the message is how its agent hears.
+   */
+  const waitLocal = ({ id, versionId, timeoutMs, signal }: WaitInput, attend = true): Promise<WaitResult> => {
     const plan = get({ id });
     const latest = plan.versions.at(-1)!;
     const version = versionId ? plan.versions.find((item) => item.id === versionId) : latest;
@@ -192,14 +196,14 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       waiters.set(plan.id, set);
       // Attendance lives in SQLite so a review that lands after a plugin reload
       // still knows an agent is waiting and skips the thread message.
-      db.prepare("INSERT INTO waits (id, plan_id, expires_at) VALUES (?, ?, ?)").run(waitId, plan.id, Date.now() + timeoutMs + WAIT_GRACE_MS);
+      if (attend) db.prepare("INSERT INTO waits (id, plan_id, expires_at) VALUES (?, ?, ?)").run(waitId, plan.id, Date.now() + timeoutMs + WAIT_GRACE_MS);
       const cleanup = () => {
         set.delete(onEvent);
         if (set.size === 0) waiters.delete(plan.id);
         clearTimeout(timer);
         clearInterval(poller);
         signal?.removeEventListener("abort", onAbort);
-        try { db.prepare("DELETE FROM waits WHERE id = ?").run(waitId); } catch { /* database closed on dispose */ }
+        if (attend) try { db.prepare("DELETE FROM waits WHERE id = ?").run(waitId); } catch { /* database closed on dispose */ }
       };
       const onEvent = (event: WaiterEvent) => {
         cleanup();
@@ -293,6 +297,80 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       }
     }
   };
+  const holds = new Map<string, () => Promise<void>>();
+  const release = async (planId: string) => {
+    await holds.get(planId)?.();
+  };
+  /**
+   * For providers whose tool calls cannot stay open (Cursor): keep the review
+   * prompt pending on the thread without any agent attached, so BB still marks
+   * the thread as waiting for the user. The decision reaches the agent as the
+   * unattended thread message, which is what starts its next turn. Released
+   * by the decision, a newer version, the user skipping the prompt, or a
+   * plugin reload (the prompt is not re-established afterwards).
+   */
+  const hold = ({ id, versionId }: { id: string; versionId?: string }): void => {
+    const plan = get({ id });
+    const version = versionId ? plan.versions.find((item) => item.id === versionId) : plan.versions.at(-1);
+    if (!version) throw new Error("Version not found.");
+    if (plan.threadId === null) throw new Error("Only plans linked to a thread can hold a review prompt.");
+    if (storedDecision(plan.id, version.id) !== null || plan.versions.at(-1)!.id !== version.id) return;
+    const threadId = plan.threadId;
+    const chunk = Math.min(options.interactionChunkMs ?? INTERACTION_MAX_MS, INTERACTION_MAX_MS);
+    const stop = new AbortController();
+    const previous = holds.get(plan.id);
+    const run = (async () => {
+      await previous?.();
+      while (!stop.signal.aborted) {
+        const local = new AbortController();
+        const prompt = new AbortController();
+        const onStop = () => prompt.abort();
+        stop.signal.addEventListener("abort", onStop, { once: true });
+        try {
+          const watch = waitLocal({ id: plan.id, versionId: version.id, timeoutMs: chunk, signal: local.signal }, false)
+            .then((result) => ({ kind: "watch" as const, result }), () => ({ kind: "watch" as const, result: null }));
+          const interaction = bb.ui.requestInput({
+            threadId,
+            rendererId: REVIEW_INTERACTION_RENDERER,
+            title: `Review plan: ${plan.title}`,
+            payload: { planId: plan.id, versionId: version.id, title: plan.title, versionNumber: version.number },
+            timeoutMs: chunk,
+          }, { signal: prompt.signal }).then(
+            (result) => ({ kind: "interaction" as const, result }),
+            (error: unknown) => ({ kind: "interaction-failed" as const, error }),
+          );
+          const first = await Promise.race([watch, interaction]);
+          if (first.kind === "watch") {
+            if (first.result === null || first.result.status !== "pending") {
+              prompt.abort();
+              await interaction;
+              return;
+            }
+            // Both time out together; the next chunk re-requests the prompt.
+            await interaction;
+            continue;
+          }
+          local.abort();
+          await watch;
+          if (first.kind === "interaction-failed") {
+            bb.log.warn(`Review prompt unavailable for plan ${plan.id}: ${first.error instanceof Error ? first.error.message : String(first.error)}`);
+            return;
+          }
+          if (first.result.outcome === "cancelled" && first.result.reason === "timeout") continue;
+          return;
+        } finally {
+          stop.signal.removeEventListener("abort", onStop);
+        }
+      }
+    })().finally(() => {
+      if (holds.get(plan.id) === releaseThis) holds.delete(plan.id);
+    });
+    const releaseThis = async () => {
+      stop.abort();
+      await run.catch(() => undefined);
+    };
+    holds.set(plan.id, releaseThis);
+  };
   const submitReview = async (input: z.infer<typeof reviewSchema>) => {
     input = reviewSchema.parse(input);
     const previous = db.prepare("SELECT payload, state FROM deliveries WHERE id = ?").get(input.requestId) as { payload: string; state: string } | undefined;
@@ -326,7 +404,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     const fetchHint = `Run \`bb plans get ${plan.id} --version-id ${version.id}\` if the plan text is no longer in context.`;
     const text = input.action === "approve"
       ? `The user approved plan ${plan.id}, version ${version.number} (${version.id}), and asked you to start implementation. Implement that exact version. ${fetchHint} This does not authorize a merge or deployment.\n\nPositive annotations:\n${annotations}\n${ANNOTATION_GUIDE}\n\nUser note: ${input.note}`
-      : `The user requests changes to plan ${plan.id}, version ${version.number} (${version.id}). Revise the plan using plans_submit with planId and expectedVersionId ${version.id}, then wait for review with \`bb plans wait\`. Do not start implementation. ${fetchHint}\n\nReview comments (each versionId identifies the reviewed snapshot):\n${annotations}\n${ANNOTATION_GUIDE}\n\nUser note: ${input.note}`;
+      : `The user requests changes to plan ${plan.id}, version ${version.number} (${version.id}). Revise the plan using plans_submit with planId and expectedVersionId ${version.id} and follow its result. Do not start implementation. ${fetchHint}\n\nReview comments (each versionId identifies the reviewed snapshot):\n${annotations}\n${ANNOTATION_GUIDE}\n\nUser note: ${input.note}`;
     // The SDK preflight above yields. Recheck inside the synchronous transaction
     // so two browser windows cannot deliver the same plan at the same time.
     db.transaction(() => {
@@ -336,6 +414,8 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       db.prepare("INSERT INTO deliveries (id, plan_id, payload, state) VALUES (?, ?, ?, 'pending')").run(input.requestId, plan.id, JSON.stringify(input));
     })();
     if (notify !== null) {
+      // Clear the held prompt first so the message reaches a free thread.
+      await release(plan.id);
       try {
         await bb.sdk.threads.send({ threadId: notify, mode: "queue-if-active", input: [{ type: "text", text: `${text}\n\nReview receipt: ${input.requestId}`, mentions: [] }] });
       } catch (error) {
@@ -358,7 +438,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     };
   };
   return {
-    get, create, revise, submitReview, wait, version,
+    get, create, revise, submitReview, wait, hold, version,
     list: ({ threadId, offset = 0 }: { threadId?: string; offset?: number }) => {
       const rows = db.prepare("SELECT body FROM plans WHERE (? IS NULL OR json_extract(body, '$.threadId') = ?) ORDER BY json_extract(body, '$.updatedAt') DESC, id LIMIT 10 OFFSET ?").all(threadId ?? null, threadId ?? null, offset) as { body: string }[];
       return rows.map(({ body }) => planSchema.parse(JSON.parse(body)))

@@ -54,6 +54,11 @@ export function waitInstruction(planId: string, versionId: string): string {
   return `Plan saved for review. Run \`bb plans wait ${planId} --version-id ${versionId}\` and act on its JSON result; run it in the background and await it if your shell tool has a time limit. Do not implement yet.`;
 }
 
+/** For providers whose tool calls cannot block: the prompt is held server-side. */
+export function heldInstruction(planId: string, versionId: string): string {
+  return `Plan ${planId} version ${versionId} is open for review and the thread is marked as waiting for the user. End your turn now without implementing. The decision arrives as a new message with the comments and note (never the plan text); do not poll or run \`bb plans wait\`.`;
+}
+
 /** The tool holds the thread for at most this long before returning `pending`. */
 const TOOL_WAIT_MS = 24 * 60 * 60 * 1000;
 
@@ -73,7 +78,7 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
     nonBlockingProviders: {
       type: "string",
       label: "Providers whose tool calls cannot block",
-      description: "Comma-separated provider IDs whose tool calls time out quickly (Cursor's MCP client stops after 60 seconds). For these, plans_submit returns at once with the `bb plans wait` command to run instead of blocking on the review.",
+      description: "Comma-separated provider IDs whose tool calls time out quickly (Cursor's MCP client stops after 60 seconds). For these, plans_submit keeps the review prompt pending on the thread without blocking, and the decision arrives as a thread message.",
       default: "acp-cursor",
     },
   });
@@ -87,11 +92,11 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
     notifyUnattended: async () => (await settings.get()).notifyThreadWhenUnattended,
     interactionChunkMs: options.interactionChunkMs,
   });
-  const { delivery, wait, version, ...rpcHandlers } = service;
+  const { delivery, wait, hold: _hold, version, ...rpcHandlers } = service;
   bb.rpc.register(plansContract, rpcHandlers);
   bb.agents.registerTool({
     name: "plans_submit",
-    description: "Submit a Markdown plan to the Plans review panel, or submit a revised version, then block until the user sends feedback or approves. The result is the decision as JSON (status feedback|approved with comments and note). On providers whose tool calls cannot block, it returns status submitted with the `bb plans wait` command to run instead. This tool does not itself enforce provider plan mode.",
+    description: "Submit a Markdown plan to the Plans review panel, or submit a revised version, then block until the user sends feedback or approves. The result is the decision as JSON (status feedback|approved with comments and note). On providers whose tool calls cannot block, it returns status submitted while the review prompt stays pending on the thread; end the turn and the decision arrives as a message. This tool does not itself enforce provider plan mode.",
     presentation: { label: { pending: "Awaiting plan review", completed: "Plan reviewed" } },
     parameters: z.object({ title: z.string().min(1).max(200), markdown: z.string().min(1).max(100_000), planId: z.string().optional(), expectedVersionId: z.string().optional() }),
     async execute({ title, markdown, planId, expectedVersionId }, { threadId, signal }) {
@@ -106,7 +111,8 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
       }
       const versionId = plan.versions.at(-1)!.id;
       if (await isNonBlocking(threadId)) {
-        return JSON.stringify({ status: "submitted", planId: plan.id, versionId, instruction: waitInstruction(plan.id, versionId) });
+        service.hold({ id: plan.id, versionId });
+        return JSON.stringify({ status: "submitted", planId: plan.id, versionId, instruction: heldInstruction(plan.id, versionId) });
       }
       const result = await wait({ id: plan.id, versionId, timeoutMs: TOOL_WAIT_MS, signal, hold: true });
       return JSON.stringify(result);

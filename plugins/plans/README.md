@@ -58,8 +58,12 @@ without its own prompt.
 
 Cursor's MCP client times out tool calls after 60 seconds, so on providers
 listed in the **Providers whose tool calls cannot block** setting (default
-`acp-cursor`) `plans_submit` returns `status: "submitted"` at once and the
-agent runs `bb plans wait` instead, which holds the same prompt.
+`acp-cursor`) `plans_submit` returns `status: "submitted"` at once while the
+plugin keeps the same **Review plan** prompt pending on the thread. The agent
+ends its turn; your decision arrives as the compact thread message and starts
+its next turn. A plugin reload drops the held prompt (the plan stays open and
+the message still arrives). `bb plans wait` remains available for agents that
+prefer to block on a shell command.
 
 The panel lists only plans from its thread. If none exists, paste Markdown
 to create one. New plans are linked to that thread automatically.
