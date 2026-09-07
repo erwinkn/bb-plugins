@@ -178,16 +178,44 @@ export function CommentComposer({
   );
 }
 
-function Quote({ text, muted }: { text: string; muted?: boolean }) {
+type CommentKind = NonNullable<PlanComment["kind"]>;
+
+/** Colors and labels follow the document highlights for the same kind. */
+const KIND_STYLE: Record<
+  CommentKind,
+  { border: string; text: string; icon: "X" | "Check" | null; label: string | null }
+> = {
+  comment: { border: "border-warning", text: "", icon: null, label: null },
+  redline: { border: "border-destructive", text: "text-destructive", icon: "X", label: "Redline" },
+  looksGood: { border: "border-success", text: "text-success", icon: "Check", label: "Looks good" },
+};
+
+function kindOf(comment: PlanComment): CommentKind {
+  return comment.kind ?? "comment";
+}
+
+function Quote({ text, kind, muted }: { text: string; kind: CommentKind; muted?: boolean }) {
   return (
     <blockquote
       className={cn(
-        "border-l-2 border-warning pl-2.5 text-xs leading-5 text-muted-foreground",
-        muted && "border-border",
+        "border-l-2 pl-2.5 text-xs leading-5 text-muted-foreground",
+        muted ? "border-border" : KIND_STYLE[kind].border,
+        kind === "redline" && !muted && "line-through decoration-destructive/50",
       )}
     >
       <span className="line-clamp-2 break-words">{text}</span>
     </blockquote>
+  );
+}
+
+function KindBadge({ kind }: { kind: CommentKind }) {
+  const style = KIND_STYLE[kind];
+  if (style.label === null || style.icon === null) return null;
+  return (
+    <span className={cn("inline-flex items-center gap-1 font-medium", style.text)}>
+      <Icon name={style.icon} className="size-3" aria-hidden />
+      {style.label}
+    </span>
   );
 }
 
@@ -214,6 +242,7 @@ function CommentCard({ comment, anchor, isActive, onActivate, actions, canEdit }
   const [error, setError] = useState<string | null>(null);
   const isDraft = comment.sentAt === null;
   const editable = isDraft && canEdit;
+  const kind = kindOf(comment);
   const note = anchorNote(anchor);
 
   const run = async (work: () => Promise<void>) => {
@@ -232,7 +261,7 @@ function CommentCard({ comment, anchor, isActive, onActivate, actions, canEdit }
     <article
       aria-current={isActive ? "true" : undefined}
       className={cn(
-        "group relative space-y-1 px-3 py-2 transition-colors duration-150",
+        "group relative space-y-1.5 px-3 py-2.5 transition-colors duration-150",
         isActive && "bg-state-active",
         comment.resolved && !isActive && "opacity-70",
       )}
@@ -243,7 +272,7 @@ function CommentCard({ comment, anchor, isActive, onActivate, actions, canEdit }
         className="block w-full rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         aria-label={anchor === undefined || anchor.kind === "unique" ? "Show this passage in the plan" : "Select comment"}
       >
-        <Quote text={comment.quote} muted={comment.resolved} />
+        <Quote text={comment.quote} kind={kind} muted={comment.resolved} />
       </button>
       {note ? <p className="text-[11px] leading-4 text-muted-foreground">{note}</p> : null}
       {isEditing ? (
@@ -291,47 +320,47 @@ function CommentCard({ comment, anchor, isActive, onActivate, actions, canEdit }
             </Button>
           </div>
         </form>
-      ) : (
-        <p className={cn("whitespace-pre-wrap break-words text-sm leading-5", comment.resolved && "text-muted-foreground", comment.kind === "redline" && "text-destructive", comment.kind === "looksGood" && "text-success")}>
-          {comment.kind === "redline" ? "Redline" : comment.kind === "looksGood" ? "👍 Looks good" : comment.body}
+      ) : kind === "comment" ? (
+        <p className={cn("whitespace-pre-wrap break-words text-sm leading-5", comment.resolved && "text-muted-foreground")}>
+          {comment.body}
         </p>
-      )}
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span className={cn("inline-flex items-center gap-1", isDraft && "text-foreground")}>
-          {isDraft ? (
-            <>
-              <Icon name="Edit" className="size-3" aria-hidden />
-              Draft
-            </>
-          ) : (
-            <>
-              <Icon name="Sent" className="size-3" aria-hidden />
-              Sent
-            </>
-          )}
-        </span>
+      ) : null}
+      <div className="flex h-7 items-center gap-1.5 text-xs text-muted-foreground">
+        {kind !== "comment" ? (
+          <>
+            <KindBadge kind={kind} />
+            <span aria-hidden>·</span>
+          </>
+        ) : null}
+        <span className={cn(isDraft && "text-foreground")}>{isDraft ? "Draft" : "Sent"}</span>
         <span aria-hidden>·</span>
         <time dateTime={new Date(comment.createdAt).toISOString()}>
           {formatRelativeTime(comment.createdAt)}
         </time>
-        <span className="ml-auto flex items-center gap-0.5">
-          {editable && !isEditing ? (
-            <>
-              {(!comment.kind || comment.kind === "comment") ? <IconAction
+        {editable && !isEditing ? (
+          <span
+            className={cn(
+              "ml-auto flex items-center gap-0.5 transition-opacity duration-150",
+              "pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100 pointer-fine:group-focus-within:opacity-100",
+              isActive && "pointer-fine:opacity-100",
+            )}
+          >
+            {kind === "comment" ? (
+              <IconAction
                 label="Edit comment"
                 icon="Edit"
                 disabled={isBusy}
                 onClick={() => setEditing(true)}
-              /> : null}
-              <IconAction
-                label="Delete comment"
-                icon="Trash2"
-                disabled={isBusy}
-                onClick={() => void run(() => actions.remove(comment.id))}
               />
-            </>
-          ) : null}
-        </span>
+            ) : null}
+            <IconAction
+              label="Delete comment"
+              icon="Trash2"
+              disabled={isBusy}
+              onClick={() => void run(() => actions.remove(comment.id))}
+            />
+          </span>
+        ) : null}
       </div>
       {error ? (
         <p role="alert" className="text-xs text-destructive">

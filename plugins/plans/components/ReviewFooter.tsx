@@ -14,7 +14,7 @@ import { Icon } from "@/components/ui/icon";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { Plan } from "../contract";
-import { pendingFeedbackComments, reviewGate } from "../lib/plan-model";
+import { reviewGate } from "../lib/plan-model";
 import { formatRelativeTime } from "../lib/time";
 
 export type ReviewAction = "feedback" | "approve";
@@ -48,7 +48,7 @@ const NOTE_LINE_HEIGHT = 20;
 /**
  * The decision bar: a note for the agent plus the two explicit outcomes.
  * "Send feedback" keeps the plan in review; "Approve" hands it to
- * the agent. Both explain why they are unavailable instead of failing later.
+ * the agent. Both disable, without commentary, when the gate says no.
  */
 export function ReviewFooter({
   plan,
@@ -66,7 +66,6 @@ export function ReviewFooter({
   className,
 }: ReviewFooterProps) {
   const gate = reviewGate(plan, versionId, note);
-  const pending = pendingFeedbackComments(plan).length;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const busy = submitting !== null;
 
@@ -103,16 +102,6 @@ export function ReviewFooter({
       onSubmit("feedback");
     }
   };
-
-  const hint = failure
-    ? null
-    : gate.canApprove
-      ? pending > 0
-        ? plan.sample
-          ? `${pending} draft ${pending === 1 ? "comment" : "comments"} will be marked as sent.`
-          : `${pending} draft ${pending === 1 ? "comment" : "comments"} will be sent with feedback.`
-        : null
-      : gate.approveReason;
 
   return (
     <div className={cn("border-t border-border bg-background", className)}>
@@ -155,10 +144,9 @@ export function ReviewFooter({
           </div>
         ) : null}
         <div className="contents">
-          {persistFailed || hint ? (
+          {persistFailed ? (
             <p className="order-2 col-span-full min-w-0 text-xs text-muted-foreground @3xl:order-3" aria-live="polite">
-              {persistFailed ? "Draft not saved in this browser. " : null}
-              {hint}
+              Draft not saved in this browser.
             </p>
           ) : null}
           <div className="order-3 flex items-center justify-end gap-2 @3xl:order-2">
