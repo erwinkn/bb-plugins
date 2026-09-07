@@ -302,14 +302,12 @@ export function ModelsSettings() {
 }
 
 // ---------------------------------------------------------------------------
-// Behavior: the prompt (how Aide acts), thread announcements, and which
-// plugins it may use.
+// Behavior: the prompt (how Aide acts) and which plugins it may use.
 // ---------------------------------------------------------------------------
 
 export function BehaviorSettings() {
   const { config, update } = useVoiceConfig();
   const loading = config === null;
-  const notifications = config?.notifications ?? true;
   const pluginCommands = (config?.pluginCommands ?? "all").trim();
 
   const exposure: "all" | "none" | "custom" =
@@ -326,19 +324,6 @@ export function BehaviorSettings() {
   return (
     <div className="space-y-5">
       <PromptEditor />
-
-      <Group label="Announcements">
-        <label className="flex items-center justify-between gap-3">
-          <span className="text-sm text-foreground">When a thread finishes or fails</span>
-          <input
-            type="checkbox"
-            checked={notifications}
-            disabled={loading}
-            onChange={(event) => void update({ notifications: event.target.checked })}
-            className="size-4 shrink-0 accent-primary"
-          />
-        </label>
-      </Group>
 
       <Group label="Plugins" hint="Aide always has its built-in tools for driving bb by voice; plugins let it also run your other installed plugins.">
         <select

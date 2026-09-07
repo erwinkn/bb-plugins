@@ -132,3 +132,14 @@ configuration fields, and the tool for changing that preference.
 
 I stand behind this change. Existing device-test limits for the broader branch
 still apply. The user's standing PR and reload authorization covers publication.
+
+
+## Remove the legacy Announcements control
+
+Removed the Announcements section from Behavior settings as requested.
+The legacy server field remains for compatibility with stored configuration;
+it does not control the mandatory coordinator's watched-thread updates.
+Alternative: remove the legacy notification transport and migrate its stored
+field too. Confidence: high. This UI cleanup does not change update scheduling
+or session data. Existing settings tests, typecheck, and build cover the change.
+I stand behind this change under the user's standing PR and reload authorization.
