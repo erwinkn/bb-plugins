@@ -1,4 +1,4 @@
-// Round selection for the Notebook panel, kept apart from the host tab
+// Round selection for the Questions panel, kept apart from the host tab
 // identity. The host keys a panel tab by action id plus `params`, so opening
 // with `{ roundId }` once and without params later creates two tabs. Every
 // caller therefore opens the panel without params and, when it wants one

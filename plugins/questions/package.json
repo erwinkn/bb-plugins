@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Questions",
-    "description": "Ask the user structured question rounds in a thread-bound Notebook side panel or inline, with durable drafts and submitted answers.",
+    "description": "Ask the user structured question rounds in a thread-bound Questions side panel or inline, with durable drafts and submitted answers.",
     "branding": {
       "icon": "MessageQuestion"
     },

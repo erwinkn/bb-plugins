@@ -16,13 +16,13 @@ export interface ChangeSignal {
   submissionId?: string;
 }
 
-export const QUESTION_MODES = ["notebook", "inline"] as const;
+export const QUESTION_MODES = ["panel", "inline"] as const;
 export type QuestionMode = (typeof QUESTION_MODES)[number];
 
 export const CONFIDENCE_LEVELS = ["low", "medium", "high"] as const;
 export type Confidence = (typeof CONFIDENCE_LEVELS)[number];
 
-/** Byte and count bounds. Question count in the Notebook is not capped. */
+/** Byte and count bounds. Question count in the side panel is not capped. */
 export const LIMITS = {
   inlineMaxQuestions: 5,
   roundQuestionsBytes: 256 * 1024,

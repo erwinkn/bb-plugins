@@ -1,4 +1,4 @@
-// Questions plugin backend: a durable, thread-bound notebook of agent
+// Questions plugin backend: a durable, thread-bound collection of agent
 // questions and user answers. Rounds are created by the agent tool or the
 // CLI, drafts and submissions live in the plugin's SQLite database, and
 // answers travel back to the owning thread as ordinary user messages.
@@ -100,10 +100,10 @@ function errorMessage(error: unknown): string {
 
 const askToolSchema = z.object({
   mode: z
-    .enum(["notebook", "inline"])
-    .default("notebook")
+    .enum(["panel", "inline"])
+    .default("panel")
     .describe(
-      'Where the user answers. "notebook": the persistent Questions side panel, any number of questions, grouped, with optional attachments, references, confidence, and citations of earlier answers. "inline": a short card inside the thread, at most 5 questions, choices and free text only.',
+      'Where the user answers. "panel": the persistent Questions side panel, any number of questions, grouped, with optional attachments, references, confidence, and citations of earlier answers. "inline": a short card inside the thread, at most 5 questions, choices and free text only.',
     ),
   intro: z
     .string()
@@ -115,7 +115,7 @@ const askToolSchema = z.object({
       z.object({
         title: z.string().min(1).max(LIMITS.titleChars).describe("The question, as a full sentence."),
         help: z.string().max(LIMITS.helpChars).optional().describe("Optional context under the title."),
-        group: z.string().max(120).optional().describe("Notebook only: heading to group questions under."),
+        group: z.string().max(120).optional().describe("Side panel only: heading to group questions under."),
         options: z
           .array(z.string().min(1).max(LIMITS.optionChars))
           .max(LIMITS.optionsPerQuestion)
@@ -129,10 +129,10 @@ const askToolSchema = z.object({
           .array(z.string())
           .max(10)
           .optional()
-          .describe('Notebook only: labels of earlier questions ("Q3") whose submitted answers this question builds on.'),
-        attachments: z.boolean().optional().describe("Notebook only: let the user attach files or images."),
-        references: z.boolean().optional().describe("Notebook only: let the user pick workspace files or links."),
-        confidence: z.boolean().optional().describe("Notebook only: ask for a low, medium, or high confidence."),
+          .describe('Side panel only: labels of earlier questions ("Q3") whose submitted answers this question builds on.'),
+        attachments: z.boolean().optional().describe("Side panel only: let the user attach files or images."),
+        references: z.boolean().optional().describe("Side panel only: let the user pick workspace files or links."),
+        confidence: z.boolean().optional().describe("Side panel only: ask for a low, medium, or high confidence."),
       }),
     )
     .min(1),
@@ -184,14 +184,14 @@ export default async function plugin(bb: BbPluginApi) {
     "Use questions_ask when you need several answers from the user before you continue.",
     "The call returns at once. The user answers in their own time, so after the call: put the returned directive line alone on its own line in your reply, say nothing else about how to answer, and end your turn.",
     "Do not poll or wait in a loop. Answers arrive later as user messages that begin with 'Answers to'. Call questions_read to see every submitted answer, then ask a follow-up round if needed.",
-    'Prefer mode "notebook". Use mode "inline" only for up to 5 quick questions that need no attachments, references, or citations.',
+    'Prefer mode "panel". Use mode "inline" only for up to 5 quick questions that need no attachments, references, or citations.',
     "For the quick single question that BB already offers, keep using the built-in question tool if it is available.",
   ].join(" ");
 
   bb.agents.registerTool({
     name: "questions_ask",
     description:
-      "Ask the user a round of structured questions in the BB Questions notebook (side panel) or inline in the thread. Returns immediately; the user submits answers later as messages.",
+      "Ask the user a round of structured questions in the BB Questions (side panel) or inline in the thread. Returns immediately; the user submits answers later as messages.",
     instructions: askInstructions,
     parameters: askToolSchema,
     presentation: {
@@ -204,7 +204,7 @@ export default async function plugin(bb: BbPluginApi) {
         const where =
           result.round.mode === "inline"
             ? "The questions render inside your message where the directive appears."
-            : "The questions open in the Questions notebook side panel.";
+            : "The questions open in the Questions side panel.";
         return [
           `Created round ${result.round.number} (id ${result.round.id}) with ${result.labels.join(", ")}.`,
           where,
@@ -221,7 +221,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "questions_read",
     description:
-      "Read every answer the user submitted in this thread's Questions notebook, with thread-wide labels (Q1, Q2, …). Drafts the user has not submitted are reported only as pending.",
+      "Read every answer the user submitted in this thread's Questions, with thread-wide labels (Q1, Q2, …). Drafts the user has not submitted are reported only as pending.",
     parameters: z.object({
       round: z.string().optional().describe("Limit to one round id. Omit for every round."),
       after: z.string().optional().describe("Continue after the question ID from the previous page. Complete submitted records are returned; drafts are not."),
@@ -239,7 +239,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "questions_summary",
     description:
-      "Set or clear the short markdown summary shown on the Summary tab of this thread's Questions notebook: the goal, the current direction, and what is still open.",
+      "Set or clear the short markdown summary shown on the Summary tab of this thread's Questions: the goal, the current direction, and what is still open.",
     parameters: z.object({
       summary: z
         .string()
@@ -273,7 +273,7 @@ export default async function plugin(bb: BbPluginApi) {
     "The thread defaults to the thread the command runs in (BB_THREAD_ID).",
     "--file reads on the invoking thread's machine. Outside a thread, pass --host and an absolute file path.",
     "questions.json holds the same object questions_ask accepts:",
-    '  {"mode":"notebook","intro":"…","questions":[{"title":"…","options":["A","B"],"select":"single"}]}',
+    '  {"mode":"panel","intro":"…","questions":[{"title":"…","options":["A","B"],"select":"single"}]}',
   ].join("\n");
 
   interface ParsedArgs {
@@ -318,7 +318,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register({
     name: "questions",
-    summary: "Ask and read structured questions in a thread's Questions notebook",
+    summary: "Ask and read structured questions in a thread's Questions",
     commands: [
       {
         name: "ask",
@@ -376,7 +376,7 @@ export default async function plugin(bb: BbPluginApi) {
               if (title === "") return { exitCode: 1, stderr: usage };
               const options = parsed.flags.get("option") ?? [];
               input = {
-                mode: parsed.booleans.has("inline") ? "inline" : "notebook",
+                mode: parsed.booleans.has("inline") ? "inline" : "panel",
                 intro: parsed.flags.get("intro")?.[0],
                 questions: [
                   {

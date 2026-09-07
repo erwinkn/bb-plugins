@@ -6,7 +6,7 @@ import { useBbNavigate } from "@get-bb/plugin-sdk/app";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { type Reference, referenceLabel, referenceName } from "@/lib/model";
-import type { PathHit } from "@/hooks/useNotebook";
+import type { PathHit } from "@/hooks/useQuestions";
 import { IconButton } from "./primitives";
 
 interface Candidate {

@@ -1,4 +1,4 @@
-// The Notebook side panel: one tab per round plus a global Summary, and one
+// The Questions side panel: one tab per round plus a global Summary, and one
 // Submit answered (N) button that sends every changed answer across rounds.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@get-bb/plugin-sdk/app";
@@ -13,7 +13,7 @@ import {
   answerText,
   hasContent,
 } from "@/lib/model";
-import { type Notebook, type SubmitOutcome, useNotebook } from "@/hooks/useNotebook";
+import { type QuestionsController, type SubmitOutcome, useQuestions } from "@/hooks/useQuestions";
 import { subscribeRequestedRound, takeRequestedRound } from "@/lib/panel-navigation";
 import { Hint, IconButton, PanelButton } from "./primitives";
 import { QuestionEditor } from "./QuestionEditor";
@@ -25,30 +25,30 @@ function timeOf(timestamp: number | null): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function statusText(notebook: Notebook, questionId: string): string {
-  const status = notebook.statusOf(questionId);
-  const state = notebook.answers.get(questionId);
+function statusText(controller: QuestionsController, questionId: string): string {
+  const status = controller.statusOf(questionId);
+  const state = controller.answers.get(questionId);
   if (status === "done") return `Submitted at ${timeOf(state?.submittedAt ?? null)}`;
   if (status === "draft") return state?.submitted ? "changed since submit" : "draft";
   return "";
 }
 
 /** Status glyph and clear button; width is reserved so answering never shifts the row. */
-function TitleControls({ notebook, questionId, label }: { notebook: Notebook; questionId: string; label: string }) {
-  const has = hasContent(notebook.draftOf(questionId));
-  const status = notebook.statusOf(questionId);
-  const text = statusText(notebook, questionId);
+function TitleControls({ controller, questionId, label }: { controller: QuestionsController; questionId: string; label: string }) {
+  const has = hasContent(controller.draftOf(questionId));
+  const status = controller.statusOf(questionId);
+  const text = statusText(controller, questionId);
   return (
     <span className={cn("inline-flex h-5 w-[42px] shrink-0 items-center gap-1 self-start", !has && "invisible")} data-controls={questionId}>
       <span role="img" aria-label={text || "Unanswered"} className="w-[18px] text-center text-[12px] text-[var(--subtle-foreground)]">
         {status === "done" ? "✓" : "•"}
       </span>
-      <IconButton icon="X" label={`Clear answer to ${label}`} size={20} disabled={!has} tabIndex={has ? 0 : -1} onClick={() => notebook.clear(questionId)} />
+      <IconButton icon="X" label={`Clear answer to ${label}`} size={20} disabled={!has} tabIndex={has ? 0 : -1} onClick={() => controller.clear(questionId)} />
     </span>
   );
 }
 
-function RoundView({ notebook, round, onJump, onError }: { notebook: Notebook; round: Round; onJump: (id: string) => void; onError: (message: string) => void }) {
+function RoundView({ controller, round, onJump, onError }: { controller: QuestionsController; round: Round; onJump: (id: string) => void; onError: (message: string) => void }) {
   const groups = useMemo(() => {
     const ordered: { title: string | null; questions: Question[] }[] = [];
     for (const question of round.questions) {
@@ -70,7 +70,7 @@ function RoundView({ notebook, round, onJump, onError }: { notebook: Notebook; r
             <h3 className="mx-3 mt-3 flex h-6 items-center text-[12px] font-medium text-[var(--subtle-foreground)]">{group.title}</h3>
           ) : null}
           {group.questions.map((question) => {
-            const label = notebook.labels.get(question.id) ?? question.id;
+            const label = controller.labels.get(question.id) ?? question.id;
             const border = !first && !group.title;
             first = false;
             return (
@@ -78,9 +78,9 @@ function RoundView({ notebook, round, onJump, onError }: { notebook: Notebook; r
                 <div className="flex items-baseline gap-2 px-3 pt-1.5">
                   <span className="min-w-[26px] text-[12px] tabular-nums text-[var(--subtle-foreground)]">{label}</span>
                   <span className="min-w-0 flex-1 text-[13px] font-medium [overflow-wrap:anywhere]">{question.title}</span>
-                  <TitleControls notebook={notebook} questionId={question.id} label={label} />
+                  <TitleControls controller={controller} questionId={question.id} label={label} />
                 </div>
-                <QuestionEditor notebook={notebook} question={question} full onJump={onJump} onError={onError} />
+                <QuestionEditor controller={controller} question={question} full onJump={onJump} onError={onError} />
               </div>
             );
           })}
@@ -90,14 +90,14 @@ function RoundView({ notebook, round, onJump, onError }: { notebook: Notebook; r
   );
 }
 
-function SummaryView({ notebook, onJump }: { notebook: Notebook; onJump: (id: string) => void }) {
+function SummaryView({ controller, onJump }: { controller: QuestionsController; onJump: (id: string) => void }) {
   const items: { round: Round; question: Question }[] = [];
-  for (const round of notebook.rounds) for (const question of round.questions) items.push({ round, question });
-  const decided = items.filter((item) => notebook.statusOf(item.question.id) === "done");
-  const open = items.filter((item) => notebook.statusOf(item.question.id) !== "done");
+  for (const round of controller.rounds) for (const question of round.questions) items.push({ round, question });
+  const decided = items.filter((item) => controller.statusOf(item.question.id) === "done");
+  const open = items.filter((item) => controller.statusOf(item.question.id) !== "done");
   const render = (item: { round: Round; question: Question }, draftLabel: boolean) => {
-    const label = notebook.labels.get(item.question.id) ?? item.question.id;
-    const draft = notebook.draftOf(item.question.id);
+    const label = controller.labels.get(item.question.id) ?? item.question.id;
+    const draft = controller.draftOf(item.question.id);
     const text = hasContent(draft) ? answerText(item.question, draft) : "";
     return (
       <div key={item.question.id} className="flex items-start gap-2 rounded-md border-t border-[var(--border-seam)] px-2 py-1.5 hover:bg-[var(--state-hover)]">
@@ -117,10 +117,10 @@ function SummaryView({ notebook, onJump }: { notebook: Notebook; onJump: (id: st
   };
   return (
     <div className="flex flex-col gap-3.5 p-3">
-      {notebook.summary ? (
+      {controller.summary ? (
         <div className="border-l-2 border-[var(--input)] px-2.5 py-0.5 text-[13px] text-muted-foreground">
-          <div className="mb-0.5 text-[12px] text-[var(--subtle-foreground)]">Agent summary · {timeOf(notebook.summary.updatedAt)}</div>
-          <Markdown content={notebook.summary.markdown} />
+          <div className="mb-0.5 text-[12px] text-[var(--subtle-foreground)]">Agent summary · {timeOf(controller.summary.updatedAt)}</div>
+          <Markdown content={controller.summary.markdown} />
         </div>
       ) : (
         <Hint>The agent has not written a summary yet.</Hint>
@@ -137,12 +137,12 @@ function SummaryView({ notebook, onJump }: { notebook: Notebook; onJump: (id: st
   );
 }
 
-function SubmissionNotice({ notebook, submission }: { notebook: Notebook; submission: Submission }) {
+function SubmissionNotice({ controller, submission }: { controller: QuestionsController; submission: Submission }) {
   const [busy, setBusy] = useState(false);
-  const labels = submission.questionIds.map((id) => notebook.labels.get(id) ?? id).join(", ");
+  const labels = submission.questionIds.map((id) => controller.labels.get(id) ?? id).join(", ");
   const retry = async () => {
     setBusy(true);
-    const outcome = await notebook.retry(submission.id);
+    const outcome = await controller.retry(submission.id);
     setBusy(false);
     reportOutcome(outcome);
   };
@@ -157,7 +157,7 @@ function SubmissionNotice({ notebook, submission }: { notebook: Notebook; submis
           : `The server did not confirm delivery${submission.error ? ` (${submission.error})` : ""}. Your answers are kept as drafts. Look in the thread for a user message mentioning submission ${submission.id.slice(0, 8)} before you retry; a retry sends the same frozen answers again and can duplicate them.`}
       </div>
       <div className="mt-1.5 flex gap-1.5">
-        <PanelButton small disabled={busy || notebook.submitting} onClick={() => void retry()}>
+        <PanelButton small disabled={busy || controller.submitting} onClick={() => void retry()}>
           Retry this submission
         </PanelButton>
       </div>
@@ -189,8 +189,8 @@ export function reportOutcome(outcome: SubmitOutcome) {
   }
 }
 
-export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
-  const notebook = useNotebook(threadId);
+export function QuestionsPanel({ threadId, params }: PluginThreadPanelProps) {
+  const controller = useQuestions(threadId);
   // `params.roundId` only comes from tabs persisted by an earlier version;
   // new opens carry the round through panel-navigation instead.
   const requested = params && typeof params === "object" && !Array.isArray(params) && typeof params.roundId === "string" ? params.roundId : null;
@@ -201,19 +201,19 @@ export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
 
   // Default to the newest round; switch to a round that arrives while open.
   useEffect(() => {
-    if (notebook.status !== "ready") return;
-    const ids = new Set(notebook.rounds.map((round) => round.id));
-    const latest = notebook.rounds[notebook.rounds.length - 1];
+    if (controller.status !== "ready") return;
+    const ids = new Set(controller.rounds.map((round) => round.id));
+    const latest = controller.rounds[controller.rounds.length - 1];
     if (knownRounds.current === null) {
       knownRounds.current = ids;
       if (tab === null && latest) setTab({ kind: "round", roundId: latest.id });
       return;
     }
-    const fresh = notebook.rounds.filter((round) => !knownRounds.current?.has(round.id));
+    const fresh = controller.rounds.filter((round) => !knownRounds.current?.has(round.id));
     knownRounds.current = ids;
     const newest = fresh[fresh.length - 1];
     if (newest) setTab({ kind: "round", roundId: newest.id });
-  }, [notebook.rounds, notebook.status, tab]);
+  }, [controller.rounds, controller.status, tab]);
 
   // A round requested by the header or a message card, whether the request
   // arrived before this tab mounted or while it was already open. Declared
@@ -228,19 +228,19 @@ export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
     return unsubscribe;
   }, [threadId]);
   useEffect(() => {
-    if (wanted === null || notebook.status !== "ready") return;
+    if (wanted === null || controller.status !== "ready") return;
     // A round the panel does not know yet may arrive with the next refresh
     // (the card can render before this panel's state loads); keep waiting.
-    if (!notebook.rounds.some((round) => round.id === wanted)) return;
+    if (!controller.rounds.some((round) => round.id === wanted)) return;
     setTab({ kind: "round", roundId: wanted });
     setWanted(null);
-  }, [notebook.rounds, notebook.status, wanted]);
+  }, [controller.rounds, controller.status, wanted]);
 
-  const notices = notebook.notices;
+  const notices = controller.notices;
   useEffect(() => {
     for (const notice of notices) {
       toast.warning(notice.text);
-      notebook.dismissNotice(notice.id);
+      controller.dismissNotice(notice.id);
     }
     // Each notice is shown once; dismissing mutates the store, not React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -248,7 +248,7 @@ export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
 
   const jump = useCallback(
     (questionId: string) => {
-      const round = notebook.rounds.find((item) => item.questions.some((question) => question.id === questionId));
+      const round = controller.rounds.find((item) => item.questions.some((question) => question.id === questionId));
       if (!round) return;
       setTab({ kind: "round", roundId: round.id });
       requestAnimationFrame(() => {
@@ -257,15 +257,15 @@ export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
         element?.querySelector<HTMLElement>("input, textarea, button")?.focus({ preventScroll: true });
       });
     },
-    [notebook.rounds],
+    [controller.rounds],
   );
 
-  const activeRound = tab?.kind === "round" ? notebook.rounds.find((round) => round.id === tab.roundId) ?? null : null;
-  const openCount = notebook.rounds.reduce((count, round) => count + round.questions.filter((question) => notebook.statusOf(question.id) !== "done").length, 0);
-  const pending = notebook.pendingIds.length;
+  const activeRound = tab?.kind === "round" ? controller.rounds.find((round) => round.id === tab.roundId) ?? null : null;
+  const openCount = controller.rounds.reduce((count, round) => count + round.questions.filter((question) => controller.statusOf(question.id) !== "done").length, 0);
+  const pending = controller.pendingIds.length;
 
   const onSubmit = async () => {
-    const outcome = await notebook.submit();
+    const outcome = await controller.submit();
     reportOutcome(outcome);
   };
 
@@ -273,8 +273,8 @@ export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
     <div className="@container flex h-full min-h-0 flex-col bg-background text-[13px] leading-[1.45] text-foreground">
       <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pl-2 pr-1.5">
         <div role="tablist" aria-label="Rounds" className="flex h-full min-w-0 items-center gap-0.5 overflow-x-auto">
-          {notebook.rounds.map((round) => {
-            const done = round.questions.filter((question) => notebook.statusOf(question.id) === "done").length;
+          {controller.rounds.map((round) => {
+            const done = round.questions.filter((question) => controller.statusOf(question.id) === "done").length;
             const selected = tab?.kind === "round" && tab.roundId === round.id;
             return (
               <button
@@ -311,21 +311,21 @@ export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
         </div>
       </div>
       <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col overflow-auto">
-        {actionableFailures(notebook.submissions).map((submission) => (
-          <SubmissionNotice key={submission.id} notebook={notebook} submission={submission} />
+        {actionableFailures(controller.submissions).map((submission) => (
+          <SubmissionNotice key={submission.id} controller={controller} submission={submission} />
         ))}
-        {notebook.status === "loading" ? (
+        {controller.status === "loading" ? (
           <div role="status" className="p-3 text-[12px] text-[var(--subtle-foreground)]">Loading questions…</div>
-        ) : notebook.status === "error" ? (
-          <div role="alert" className="p-3 text-[12px] text-[var(--destructive-text)]">{notebook.error}</div>
-        ) : notebook.rounds.length === 0 ? (
+        ) : controller.status === "error" ? (
+          <div role="alert" className="p-3 text-[12px] text-[var(--destructive-text)]">{controller.error}</div>
+        ) : controller.rounds.length === 0 ? (
           <div role="status" className="p-3 text-[12px] text-[var(--subtle-foreground)]">
             No questions yet. When the agent calls <code>questions_ask</code>, the round appears here.
           </div>
         ) : tab?.kind === "summary" ? (
-          <SummaryView notebook={notebook} onJump={jump} />
+          <SummaryView controller={controller} onJump={jump} />
         ) : activeRound ? (
-          <RoundView notebook={notebook} round={activeRound} onJump={jump} onError={(message) => toast.error(message)} />
+          <RoundView controller={controller} round={activeRound} onJump={jump} onError={(message) => toast.error(message)} />
         ) : null}
       </div>
       <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-t border-border py-1.5 pl-3 pr-2">
@@ -333,14 +333,14 @@ export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
           {pending > 0 ? `Sends ${pending} draft answer${pending > 1 ? "s" : ""} across all rounds.` : "No draft answers to send."}
         </Hint>
         <Hint>
-          {notebook.saving
+          {controller.saving
             ? "Saving draft…"
-            : notebook.backupMode === "browser"
+            : controller.backupMode === "browser"
               ? "Drafts are saved on the server."
               : "Drafts are saved on the server. This browser cannot keep an offline copy."}
         </Hint>
         <span className="flex-1" />
-        <PanelButton small primary disabled={pending === 0 || notebook.submitting} aria-label="Submit every draft or changed answer in every round" onClick={() => void onSubmit()}>
+        <PanelButton small primary disabled={pending === 0 || controller.submitting} aria-label="Submit every draft or changed answer in every round" onClick={() => void onSubmit()}>
           Submit answered ({pending})
         </PanelButton>
       </div>

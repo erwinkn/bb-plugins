@@ -47,7 +47,7 @@ function question(id: string, overrides: Partial<Question> = {}): Question {
   };
 }
 
-function round(id: string, number: number, questions: Question[], mode: Round["mode"] = "notebook", intro: string | null = null): Round {
+function round(id: string, number: number, questions: Question[], mode: Round["mode"] = "panel", intro: string | null = null): Round {
   return { id, threadId: THREAD, number, mode, intro, questions, createdAt: number };
 }
 
@@ -128,7 +128,7 @@ function backend(initial: Partial<ThreadState> = {}) {
 
 const slots: ReturnType<typeof renderSlot>[] = [];
 function mountPanel(server: ReturnType<typeof backend>, params: Record<string, string> | null = null) {
-  const registration = app.threadPanelActions.find((item) => item.id === "notebook")!;
+  const registration = app.threadPanelActions.find((item) => item.id === "questions")!;
   const slot = renderSlot<PluginThreadPanelProps, typeof rpcContract>(
     registration,
     { threadId: THREAD, params },
@@ -150,19 +150,19 @@ afterEach(() => {
 
 describe("registrations", () => {
   it("registers the panel action, header control, and directive", () => {
-    expect(app.threadPanelActions.map((item) => item.id)).toEqual(["notebook"]);
+    expect(app.threadPanelActions.map((item) => item.id)).toEqual(["questions"]);
     expect(app.threadPanelActions[0]?.layout).toBe("flush");
     expect(app.threadHeaderActions.map((item) => item.id)).toEqual(["questions"]);
     expect(app.messageDirectives.map((item) => item.id)).toEqual(["questions"]);
   });
 });
 
-describe("Notebook panel", () => {
+describe("Questions panel", () => {
   it("shows round tabs, thread-wide question numbers, groups, and the Summary tab", async () => {
     const server = backend({
       rounds: [
         round("r1", 1, [question("q1", { group: "Display", select: "single", options: [{ id: "o1", label: "Panel" }, { id: "o2", label: "Thread" }] }), question("q2", { group: "Display" })]),
-        round("r2", 2, [question("q3", { cites: ["q1"] })], "notebook", "Follow-ups."),
+        round("r2", 2, [question("q3", { cites: ["q1"] })], "panel", "Follow-ups."),
       ],
       answers: [answer("q1", "r1", { ...emptyAnswer(), selected: ["o1"] }, 2, { ...emptyAnswer(), selected: ["o1"] })],
     });
@@ -342,20 +342,32 @@ describe("Message directive", () => {
     expect(sent.items.map((item) => item.questionId)).toEqual(["q2"]);
   });
 
-  it("renders a compact card for a notebook round that opens the panel", async () => {
-    const server = backend({ rounds: [round("r1", 1, [question("q1"), question("q2")])] });
+  it("renders a compact card for a panel round that opens the panel", async () => {
+    const server = backend({ rounds: [round("r1", 1, Array.from({ length: 6 }, (_, i) => question(`q${i + 1}`)))] });
     const slot = mountDirective(server, "r1");
-    const button = await slot.findByRole("button", { name: "Open notebook" });
-    expect(slot.getByText(/2 questions \(Q1–Q2\) · 0 of 2 submitted/)).toBeTruthy();
+    const button = await slot.findByRole("button", { name: "Open" });
+    expect(slot.getByText("Round 1: 6 questions (0/6)")).toBeTruthy();
     fireEvent.click(button);
     expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ method: "openThreadPanel" });
+  });
+
+  it("uses singular wording and counts submitted answers rather than drafts", async () => {
+    const server = backend({
+      rounds: [round("r1", 1, [question("q1")])],
+      answers: [answer("q1", "r1", { ...emptyAnswer(), text: "Draft" }, 1)],
+    });
+    const slot = mountDirective(server, "r1");
+    await slot.findByText("Round 1: 1 question (0/1)");
+    server.state.answers[0]!.submitted = { ...emptyAnswer(), text: "Sent" };
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
+    await slot.findByText("Round 1: 1 question (1/1)");
   });
 
   it("opens the panel without params and selects the older round it was asked for", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1")]), round("r2", 2, [question("q2")])] });
     const card = mountDirective(server, "r1");
-    fireEvent.click(await card.findByRole("button", { name: "Open notebook" }));
-    expect(card.inspection.navigateCalls.at(-1)).toEqual({ method: "openThreadPanel", options: { actionId: "notebook", title: "Questions" } });
+    fireEvent.click(await card.findByRole("button", { name: "Open" }));
+    expect(card.inspection.navigateCalls.at(-1)).toEqual({ method: "openThreadPanel", options: { actionId: "questions", title: "Questions" } });
     // The tab mounts after the click, as it does for a first open.
     const panel = mountPanel(server);
     await panel.findByText("q1 title?");
@@ -371,7 +383,7 @@ describe("Message directive", () => {
     // Already-open panel: the card for round 1 switches the tab in place.
     // Slot queries span the document, so scope each card to its own container.
     const older = mountDirective(server, "r1");
-    fireEvent.click(await within(older.container).findByRole("button", { name: "Open notebook" }));
+    fireEvent.click(await within(older.container).findByRole("button", { name: "Open" }));
     await waitFor(() => expect(panel.getByRole("tab", { name: /Round 1/ }).getAttribute("aria-selected")).toBe("true"));
 
     // The panel's state lags: rounds 3 and 4 exist for the directive but not
@@ -384,7 +396,7 @@ describe("Message directive", () => {
     server.handlers.questions_state = async () => ({ ...(await listState()), rounds: released ? full : lagging });
     server.state.rounds = full;
     const newer = mountDirective(server, "r3");
-    fireEvent.click(await within(newer.container).findByRole("button", { name: "Open notebook" }));
+    fireEvent.click(await within(newer.container).findByRole("button", { name: "Open" }));
     await panel.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
     await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_state").length).toBeGreaterThanOrEqual(2));
     const tabs = within(panel.container);
@@ -406,7 +418,7 @@ describe("Message directive", () => {
       { rpc: server.handlers, context: { projectId: "proj", threadId: THREAD }, openThreadPanel: () => false },
     );
     slots.push(card);
-    fireEvent.click(await card.findByRole("button", { name: "Open notebook" }));
+    fireEvent.click(await card.findByRole("button", { name: "Open" }));
     expect(toasts.calls.at(-1)).toMatch(/no side panel/);
     const panel = mountPanel(server);
     await panel.findByText("q2 title?");
@@ -479,7 +491,7 @@ describe("Header control", () => {
     await waitFor(() => expect(openThreadPanel).toHaveBeenCalledTimes(2));
     // No params: the host keys tabs by action + params, and a second params
     // value would open a second Questions tab.
-    expect(openThreadPanel).toHaveBeenLastCalledWith({ actionId: "notebook", title: "Questions" });
+    expect(openThreadPanel).toHaveBeenLastCalledWith({ actionId: "questions", title: "Questions" });
     await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r2" });
     await slot.behavior.emitRealtime("questions-changed", { threadId: "other", kind: "round-created", roundId: "r3" });
     await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_state").length).toBeGreaterThanOrEqual(3));

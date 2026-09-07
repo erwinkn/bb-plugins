@@ -1,4 +1,4 @@
-// Synchronous client store for one thread's notebook. React reads it through
+// Synchronous client store for one thread's controller. React reads it through
 // a subscription; every mutation happens here so flush, submit, and upload
 // see one consistent view instead of a React render in flight.
 //

@@ -1,7 +1,7 @@
 # Questions
 
 A BB plugin that lets an agent ask the user a round of structured questions
-and collect the answers later. Questions live in a thread-bound **Notebook**
+and collect the answers later. Questions live in a thread-bound
 side panel (any number of questions, grouped, with optional attachments,
 workspace references, confidence, and citations of earlier answers) or, for up
 to five quick questions, inline in the thread. Drafts and submitted answers are
@@ -18,10 +18,10 @@ durable path for rounds that need more than one quick answer.
    at once with the round id, the labels of the new questions (`Q1`, `Q2`, …
    numbered across the whole thread), and a directive line.
 2. The agent puts the directive alone on its own line in its reply and ends
-   its turn: `::questions{round="rnd_…"}`. A notebook round renders as a
-   compact card with an **Open notebook** button; an inline round renders its
+   its turn: `::questions{round="rnd_…"}`. A panel round renders as a
+   compact card with an **Open** button; an inline round renders its
    questions right in the message. While the thread is open in BB, a new
-   notebook round also opens the panel once through the thread header control.
+   panel round also opens the panel once through the thread header control.
 3. The user answers in any order. Every edit is saved to the server after a
    short pause. The title row of each question keeps a fixed-width slot for a
    status glyph (`•` draft, `✓` submitted) and a clear button, so answering
@@ -34,9 +34,9 @@ durable path for rounds that need more than one quick answer.
    ask a follow-up round that cites earlier answers (`cites: ["Q3"]`). The
    citation quotes the submitted answer only; unsent edits never change it.
 
-## Notebook and inline mode
+## Panel and inline mode
 
-| | Notebook (side panel) | Inline (in the message) |
+| | Panel | Inline (in the message) |
 | --- | --- | --- |
 | Questions per round | no count cap (256 KiB of question JSON per round) | 5 |
 | Answer forms | single or multiple choice with optional detail per option, free text, attachments, workspace references, confidence | single or multiple choice, free text |
@@ -50,7 +50,7 @@ submitted and open questions of every round.
 ## Agent tools
 
 - `questions_ask` `{ mode?, intro?, questions: [{ title, help?, group?, options?, select?, cites?, attachments?, references?, confidence? }] }`.
-  `mode` defaults to `"notebook"`. `options` is a list of labels; `select` is
+  `mode` defaults to `"panel"`. `options` is a list of labels; `select` is
   `"single"` (default) or `"multiple"`. The thread is always the calling thread.
 - `questions_read` `{ round?, after? }` returns every submitted answer as
   complete records (choices with details, text, references with paths or links,
@@ -145,6 +145,20 @@ absolute path. The CLI never prints draft content.
 
 ## Develop
 
+### Naming update
+
+The display modes are `panel` and `inline`. The panel action ID is `questions`.
+Existing saved rounds migrate to `panel` on startup. Round IDs, answers, drafts,
+submission snapshots, and browser draft backup keys stay unchanged.
+The old display mode is no longer accepted by tools or the CLI. Agents with
+cached tool definitions need a new session to receive the new schema.
+Close and reopen an old Questions tab after updating. BB does not expose a
+public API to rename a saved panel action ID; no legacy action is registered.
+Do not roll back to the old build after this migration without restoring a
+pre-update database backup, since the old build cannot read `panel` rounds.
+
+### Local checks
+
 ```sh
 npm install
 npm run typecheck
@@ -156,4 +170,4 @@ Source layout: `server.ts` wires RPC, tools, and CLI; `server/store.ts` is the
 SQLite layer; `server/service.ts` holds validation and the outbox;
 `lib/model.ts` is the shared schema; `lib/message.ts` renders the submission
 message; `lib/draft-store.ts` is the client-side draft store; `hooks/` and
-`components/notebook/` are the React panel, directive, and header control.
+`components/questions/` are the React panel, directive, and header control.

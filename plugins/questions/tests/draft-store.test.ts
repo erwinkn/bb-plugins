@@ -20,7 +20,7 @@ function state(answers: AnswerState[] = []): ThreadState {
         id: "rnd_1",
         threadId: THREAD,
         number: 1,
-        mode: "notebook",
+        mode: "panel",
         intro: null,
         createdAt: 1,
         questions: [

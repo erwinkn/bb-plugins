@@ -54,6 +54,7 @@ export const MIGRATIONS = [
     markdown TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
+  `UPDATE rounds SET mode = 'panel' WHERE mode = 'notebook'`,
 ];
 
 interface RoundRow {
@@ -105,7 +106,7 @@ function parseAnswer(json: string | null, where: string): Answer | null {
 }
 
 function rowToRound(row: RoundRow): Round {
-  if (row.mode !== "inline" && row.mode !== "notebook") throw new StoredDataError(`Stored round ${row.id} has an invalid display mode.`);
+  if (row.mode !== "inline" && row.mode !== "panel") throw new StoredDataError(`Stored round ${row.id} has an invalid display mode.`);
   const parsedQuestions = questionSchema.array().safeParse(JSON.parse(row.questions_json));
   if (!parsedQuestions.success) {
     throw new StoredDataError(`Stored questions for round ${row.id} are not readable.`);

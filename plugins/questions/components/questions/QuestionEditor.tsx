@@ -19,7 +19,7 @@ import {
   formatBytes,
   hasContent,
 } from "@/lib/model";
-import type { Notebook } from "@/hooks/useNotebook";
+import type { QuestionsController } from "@/hooks/useQuestions";
 import { Hint, IconButton, PanelButton, Radio, TextArea } from "./primitives";
 import { ReferencePicker } from "./ReferencePicker";
 
@@ -30,20 +30,20 @@ function timeOf(timestamp: number | null): string {
 
 /** Compact citation of an earlier answer; expanding replaces it in place. */
 function Citation({
-  notebook,
+  controller,
   citedId,
   onJump,
 }: {
-  notebook: Notebook;
+  controller: QuestionsController;
   citedId: string;
   onJump: (questionId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const found = findQuestion(notebook.rounds, citedId);
+  const found = findQuestion(controller.rounds, citedId);
   if (!found) return null;
   const { round, question } = found;
-  const label = notebook.labels.get(citedId) ?? citedId;
-  const state: AnswerState | undefined = notebook.answers.get(citedId);
+  const label = controller.labels.get(citedId) ?? citedId;
+  const state: AnswerState | undefined = controller.answers.get(citedId);
   const submitted = state?.submitted ?? null;
   const sentText = submitted && hasContent(submitted) ? answerText(question, submitted) : null;
   const source = `Round ${round.number} · ${label}`;
@@ -127,7 +127,7 @@ function AttachmentList({
 }: {
   questionId: string;
   attachments: Attachment[];
-  preview: Notebook["attachmentPreview"];
+  preview: QuestionsController["attachmentPreview"];
   onRemove: (attachment: Attachment) => void;
 }) {
   const [previews, setPreviews] = useState<Map<string, string>>(() => new Map());
@@ -170,9 +170,9 @@ function AttachmentList({
 }
 
 export interface QuestionEditorProps {
-  notebook: Notebook;
+  controller: QuestionsController;
   question: Question;
-  /** Notebook mode shows citations, attachments, references, confidence. */
+  /** Panel mode shows citations, attachments, references, confidence. */
   full: boolean;
   onJump?: (questionId: string) => void;
   onError?: (message: string) => void;
@@ -180,9 +180,9 @@ export interface QuestionEditorProps {
   header?: ReactNode;
 }
 
-export function QuestionEditor({ notebook, question, full, onJump, onError, header }: QuestionEditorProps) {
+export function QuestionEditor({ controller, question, full, onJump, onError, header }: QuestionEditorProps) {
   const groupName = useId();
-  const draft = notebook.draftOf(question.id);
+  const draft = controller.draftOf(question.id);
   const [textOpen, setTextOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -204,7 +204,7 @@ export function QuestionEditor({ notebook, question, full, onJump, onError, head
     }
   }, [focusText]);
 
-  const update = (updater: (current: Answer) => Answer) => notebook.update(question.id, updater);
+  const update = (updater: (current: Answer) => Answer) => controller.update(question.id, updater);
   const hasOptions = question.options.length > 0;
   const showAttachments = full && question.attachments;
   const showText = !hasOptions || draft.text.trim() !== "" || textOpen || showAttachments;
@@ -238,7 +238,7 @@ export function QuestionEditor({ notebook, question, full, onJump, onError, head
     setUploading(true);
     try {
       for (const file of Array.from(files)) {
-        await notebook.uploadAttachment(question.id, file);
+        await controller.uploadAttachment(question.id, file);
       }
     } catch (cause) {
       onError?.(cause instanceof Error ? cause.message : String(cause));
@@ -248,7 +248,7 @@ export function QuestionEditor({ notebook, question, full, onJump, onError, head
     }
   };
 
-  const conflict = notebook.conflictOf(question.id);
+  const conflict = controller.conflictOf(question.id);
 
   return (
     <div className="px-3 pb-3 pt-1" data-question={question.id}>
@@ -261,15 +261,15 @@ export function QuestionEditor({ notebook, question, full, onJump, onError, head
             Saved version: {conflict.draft && hasContent(conflict.draft) ? answerText(question, conflict.draft) : "empty"}. Your edit here is kept until you choose.
           </div>
           <div className="mt-1.5 flex gap-1.5">
-            <PanelButton small onClick={() => notebook.resolveConflict(question.id, "mine")}>Keep mine</PanelButton>
-            <PanelButton small onClick={() => notebook.resolveConflict(question.id, "saved")}>Use saved</PanelButton>
+            <PanelButton small onClick={() => controller.resolveConflict(question.id, "mine")}>Keep mine</PanelButton>
+            <PanelButton small onClick={() => controller.resolveConflict(question.id, "saved")}>Use saved</PanelButton>
           </div>
         </div>
       ) : null}
       {full && question.cites.length > 0 ? (
         <div className="mt-1.5 flex flex-col items-start gap-1">
           {question.cites.map((citedId) => (
-            <Citation key={citedId} notebook={notebook} citedId={citedId} onJump={(id) => onJump?.(id)} />
+            <Citation key={citedId} controller={controller} citedId={citedId} onJump={(id) => onJump?.(id)} />
           ))}
         </div>
       ) : null}
@@ -412,7 +412,7 @@ export function QuestionEditor({ notebook, question, full, onJump, onError, head
       {showAttachments ? (
         <AttachmentList
           questionId={question.id}
-          preview={notebook.attachmentPreview}
+          preview={controller.attachmentPreview}
           attachments={draft.attachments}
           onRemove={(attachment) =>
             update((current) => ({ ...current, attachments: current.attachments.filter((item) => item.path !== attachment.path) }))
@@ -425,7 +425,7 @@ export function QuestionEditor({ notebook, question, full, onJump, onError, head
           questionId={question.id}
           references={draft.references}
           onChange={(references) => update((current) => ({ ...current, references }))}
-          search={notebook.searchPaths}
+          search={controller.searchPaths}
         />
       ) : null}
       {uploading ? <Hint className="mt-1 block">Uploading…</Hint> : null}

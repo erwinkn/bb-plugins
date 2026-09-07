@@ -32,7 +32,7 @@ import { QuestionsStore, type SaveDraftResult } from "./store";
 
 /** What an agent or the CLI may pass to create a round. */
 export const askInputSchema = z.object({
-  mode: z.enum(["notebook", "inline"]).default("notebook"),
+  mode: z.enum(["panel", "inline"]).default("panel"),
   intro: z.string().trim().max(LIMITS.introChars).optional(),
   questions: z
     .array(
@@ -164,7 +164,7 @@ export class QuestionsService {
     const mode: QuestionMode = input.mode;
     if (mode === "inline" && input.questions.length > LIMITS.inlineMaxQuestions) {
       throw new QuestionsError(
-        `Inline rounds hold at most ${LIMITS.inlineMaxQuestions} questions. Use mode "notebook" for more, or ask another round later.`,
+        `Inline rounds hold at most ${LIMITS.inlineMaxQuestions} questions. Use mode "panel" for more, or ask another round later.`,
       );
     }
     const existing = this.store.listRounds(threadId);
@@ -186,7 +186,7 @@ export class QuestionsService {
         );
         if (advanced.length > 0) {
           throw new QuestionsError(
-            `Question ${index + 1}: inline mode does not support ${advanced.join(", ")}. Use mode "notebook".`,
+            `Question ${index + 1}: inline mode does not support ${advanced.join(", ")}. Use mode "panel".`,
           );
         }
       }

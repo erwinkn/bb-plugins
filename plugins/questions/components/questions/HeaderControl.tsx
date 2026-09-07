@@ -1,5 +1,5 @@
 // Thread header control: shows how many questions are open and opens the
-// Notebook panel. A new round opens the panel once; a reload never does.
+// Questions panel. A new round opens the panel once; a reload never does.
 import { useEffect, useRef, useState } from "react";
 import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
@@ -8,7 +8,7 @@ import { Icon } from "@/components/ui/icon";
 import { type ChangeSignal, REALTIME_CHANNEL, answerStatus } from "@/lib/model";
 import { cn } from "@/lib/utils";
 import { requestRound, takeRequestedRound } from "@/lib/panel-navigation";
-import { NOTEBOOK_ACTION_ID } from "./InlineRound";
+import { QUESTIONS_ACTION_ID } from "./InlineRound";
 
 const OPENED_KEY = "bb-questions-opened";
 
@@ -42,7 +42,7 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
   // through panel-navigation instead.
   const open = (roundId?: string) => {
     if (roundId) requestRound(threadId, roundId);
-    const opened = navigate.openThreadPanel({ actionId: NOTEBOOK_ACTION_ID, title: "Questions" });
+    const opened = navigate.openThreadPanel({ actionId: QUESTIONS_ACTION_ID, title: "Questions" });
     if (!opened && roundId) takeRequestedRound(threadId);
     return opened;
   };
@@ -63,9 +63,9 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
           }
         }
         setCounts({ open: openCount, total });
-        // Only a notebook round opens the panel; inline rounds stay in the thread.
+        // Only a panel round opens the panel; inline rounds stay in the thread.
         const created = openRoundId ? state.rounds.find((round) => round.id === openRoundId) : undefined;
-        if (created && created.mode === "notebook" && rememberOpened(forThread, created.id)) open(created.id);
+        if (created && created.mode === "panel" && rememberOpened(forThread, created.id)) open(created.id);
       },
       () => {
         if (mounted.current && seq === requestSeq.current) setCounts(null);

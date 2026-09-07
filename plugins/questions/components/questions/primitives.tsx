@@ -1,5 +1,5 @@
 // Small shared controls that follow the approved prototype's spacing and use
-// only host theme tokens. Everything else in the notebook composes these.
+// only host theme tokens. The question controls compose these.
 import type React from "react";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
 import { Icon, type IconName } from "@/components/ui/icon";

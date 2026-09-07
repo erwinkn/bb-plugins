@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createFakePluginHost, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
+import { MIGRATIONS } from "../server/store";
 import { emptyAnswer, threadStateSchema, type Answer, type Question, type Submission } from "../lib/model";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
@@ -12,7 +13,7 @@ function uuid(label: string): string {
 }
 afterEach(async () => { for (const host of hosts.splice(0)) await host.harness.lifecycle.dispose(); });
 
-async function setup() {
+async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHost>) => void) {
   const send = vi.fn(async () => ({ ok: true, delivery: "sent" }));
   const host = createFakePluginHost({
     pluginId: "questions",
@@ -33,10 +34,11 @@ async function setup() {
     },
   });
   hosts.push(host);
+  beforePlugin?.(host);
   await plugin(host.bb);
   const rpc = host.harness.behavior.callRpc;
   const state = async (threadId = "t") => threadStateSchema.parse(await rpc("questions_state", { threadId }));
-  const ask = async (questions: unknown[], threadId = "t", mode = "notebook") => {
+  const ask = async (questions: unknown[], threadId = "t", mode = "panel") => {
     const result = await host.harness.behavior.callAgentTool("questions_ask", { mode, questions }, { threadId, projectId: `proj_${threadId}` });
     expect(typeof result).toBe("string");
     return (await state(threadId)).rounds.at(-1)!;
@@ -49,7 +51,29 @@ async function setup() {
 }
 
 describe("Questions backend", () => {
-  it("accepts more than 200 notebook questions but refuses six inline questions", async () => {
+  it("migrates the old display mode without changing rounds or answers", async () => {
+    const draft = { ...emptyAnswer(), text: "Unsent edit " };
+    const submitted = { ...emptyAnswer(), text: "Original answer" };
+    const h = await setup(({ bb }) => {
+      const db = bb.storage.database();
+      bb.storage.migrate(db, MIGRATIONS.slice(0, -1));
+      db.prepare("INSERT INTO rounds VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run("legacy", "t", "proj_t", 1, "notebook", "Keep this", "[]", 123);
+      db.prepare("INSERT INTO answers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run("legacy-q", "t", "legacy", JSON.stringify(draft), 7, JSON.stringify(submitted), 456, "legacy-s", 789);
+    });
+    const migrated = await h.state();
+    expect(migrated.rounds[0]).toMatchObject({ id: "legacy", mode: "panel", number: 1, intro: "Keep this", createdAt: 123 });
+    expect(migrated.answers[0]).toMatchObject({ questionId: "legacy-q", draft, submitted, version: 7, submittedAt: 456, submissionId: "legacy-s" });
+    expect((await h.ask([{ title: "New panel round?" }])).mode).toBe("panel");
+    await expect(h.harness.behavior.callAgentTool("questions_ask", { mode: "notebook", questions: [{ title: "Old mode?" }] }, { threadId: "t" })).rejects.toThrow("Invalid option");
+    const beforeReload = await h.state();
+    const replacement = await h.harness.lifecycle.reload(plugin);
+    hosts.push(replacement);
+    expect(threadStateSchema.parse(await replacement.harness.behavior.callRpc("questions_state", { threadId: "t" }))).toEqual(beforeReload);
+  });
+
+  it("accepts more than 200 panel questions but refuses six inline questions", async () => {
     const h = await setup();
     expect((await h.ask(Array.from({ length: 201 }, (_, i) => ({ title: `Question ${i}?` })))).questions).toHaveLength(201);
     const result = await h.harness.behavior.callAgentTool("questions_ask", { mode: "inline", questions: Array.from({ length: 6 }, () => ({ title: "Quick?" })) }, { threadId: "t", projectId: "proj_t" });

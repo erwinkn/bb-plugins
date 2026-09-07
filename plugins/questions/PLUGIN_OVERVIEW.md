@@ -4,7 +4,7 @@ place to ask and gives you a place to answer at your own pace.
 
 ## What you get
 
-- A **Notebook** side panel bound to the thread, with one tab per round and a
+- A **Questions** side panel bound to the thread, with one tab per round and a
   global Summary tab. Any number of questions per round, grouped under quiet
   headings, numbered across the thread, with a 256 KiB size limit per round.
 - Single or multiple choice with optional detail per option, a quiet **Type an

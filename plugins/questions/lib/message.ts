@@ -70,9 +70,9 @@ export function buildSubmissionMessage(
     );
     attachments.push(...answer.attachments);
   }
-  const header = `Answers to ${answered.join(", ")} from the Questions notebook (submission ${submissionId}).`;
+  const header = `Answers to ${answered.join(", ")} from Questions (submission ${submissionId}).`;
   const footer =
-    "Unanswered questions stay open in the notebook. Call questions_read for every submitted answer.";
+    "Unanswered questions stay open in Questions. Call questions_read for every submitted answer.";
   return {
     text: [header, "", sections.join("\n\n"), "", footer].join("\n"),
     attachments,

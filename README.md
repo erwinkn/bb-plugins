@@ -152,6 +152,14 @@ each remove/install cycle; a later plugin version may start storing data.
 
 ## Desired upstream changes
 
+### Rename saved plugin panel actions
+
+The public SDK has no API to migrate a saved thread panel tab to a new action
+ID. Plugin authors must keep a legacy registration or ask users to close and
+reopen the tab. Add a plugin-scoped action-ID migration that preserves saved
+tab parameters and avoids duplicate tabs. This belongs in BB core and its
+public SDK. No upstream issue filed.
+
 ### Idempotent message delivery for plugins
 
 The Questions plugin saves answers before sending them to their thread.

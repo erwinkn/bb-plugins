@@ -34,7 +34,7 @@ export interface PathSearch {
   unavailable: string | null;
 }
 
-export interface Notebook {
+export interface QuestionsController {
   threadId: string;
   status: "loading" | "ready" | "error";
   error: string | null;
@@ -92,7 +92,7 @@ function readFileBase64(file: File): Promise<string> {
   });
 }
 
-export function useNotebook(threadId: string): Notebook {
+export function useQuestions(threadId: string): QuestionsController {
   const rpc = useRpc<typeof rpcContract>();
   const store = useMemo(
     () =>
