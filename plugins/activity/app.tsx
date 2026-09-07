@@ -15,7 +15,12 @@ import {
 } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
+import { useSpaces } from "./lib/use-spaces";
+import { inScope, newSpaceId, resolveScope } from "./lib/spaces";
 import { DisplayMenu } from "./components/menus";
+import { ScopeMenu, type SpaceEdit } from "./components/scope-menu";
+import { SpaceForm } from "./components/space-form";
+import { NewThreadButton } from "./components/new-thread-button";
 import { ThreadRow, fadeClass } from "./components/thread-row";
 import { ThreadChildren } from "./components/thread-children";
 import { ThreadRoots } from "./components/thread-roots";
@@ -84,12 +89,23 @@ function Group({
 function ThreadsList(props: PluginThreadListProps) {
   const { status, threads, projects } = experimental_useSidebarThreads();
   const state = useClientState();
+  const spaces = useSpaces();
+  const scope = resolveScope(spaces.catalog, state);
+  const scopeKey =
+    scope.kind === "all"
+      ? "all"
+      : scope.kind === "space"
+        ? `space:${scope.space.id}`
+        : `projects:${[...scope.projectIds].sort().join(",")}`;
+  const [edit, setEdit] = useState<SpaceEdit | null>(null);
   const archives = useArchives(threads, state.showArchives);
   const archived = state.showArchives
-    ? archives.threads.map((thread) => ({
-        thread,
-        status: "done" as const,
-      }))
+    ? archives.threads
+        .filter((thread) => inScope(scope, thread.projectId))
+        .map((thread) => ({
+          thread,
+          status: "done" as const,
+        }))
     : [];
   const { providers } = experimental_useProviders();
   const actions = experimental_useSidebarThreadActions();
@@ -115,8 +131,11 @@ function ThreadsList(props: PluginThreadListProps) {
     ]),
   );
   const knownDrafts = new Set(state.drafts);
+  // Scope membership applies before pins and families: a pinned thread or a
+  // descendant outside the scope stays hidden, and an inside child whose
+  // parent is outside becomes a root. Titles stay unfiltered for parent labels.
   const available = threads
-    .filter((thread) => !thread.isArchived)
+    .filter((thread) => !thread.isArchived && inScope(scope, thread.projectId))
     .map((thread) => ({
       thread,
       status: statusOf(thread, knownDrafts.has(`thread:${thread.id}`)),
@@ -133,10 +152,9 @@ function ThreadsList(props: PluginThreadListProps) {
   // Thread and project snapshots can arrive separately. Keep unmatched
   // threads and new drafts navigable until project metadata is available.
   const displayProjects = new Map(
-    projects.map((project) => [
-      project.id,
-      { id: project.id, name: project.name },
-    ]),
+    projects
+      .filter((project) => inScope(scope, project.id))
+      .map((project) => [project.id, { id: project.id, name: project.name }]),
   );
   for (const { thread } of [...visible, ...archived]) {
     if (!displayProjects.has(thread.projectId)) {
@@ -149,7 +167,11 @@ function ThreadsList(props: PluginThreadListProps) {
   for (const key of knownDrafts) {
     if (!key.startsWith("new:")) continue;
     const projectId = key.slice(4);
-    if (projectId && !displayProjects.has(projectId)) {
+    if (
+      projectId &&
+      inScope(scope, projectId) &&
+      !displayProjects.has(projectId)
+    ) {
       displayProjects.set(projectId, { id: projectId, name: "No project" });
     }
   }
@@ -165,6 +187,72 @@ function ThreadsList(props: PluginThreadListProps) {
     actions.openNewThread({ projectId: id, focusPrompt: true });
     props.onNavigate();
   };
+  const scopeProjects = projects
+    .map((project) => ({ id: project.id, name: project.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const selectAll = () =>
+    updateState((current) => ({ ...current, spaceId: null, projectIds: [] }));
+  const selectSpace = (spaceId: string) =>
+    updateState((current) => ({ ...current, spaceId, projectIds: [] }));
+  const toggleProject = (projectId: string) => {
+    if (scope.kind === "space") {
+      const { space } = scope;
+      const projectIds = toggleValue(space.projectIds, projectId);
+      void spaces
+        .save(
+          spaces.catalog.spaces.map((entry) =>
+            entry.id === space.id ? { ...entry, projectIds } : entry,
+          ),
+        )
+        .catch(report);
+      return;
+    }
+    const allIds = projects.map((project) => project.id);
+    const next = toggleValue(
+      scope.kind === "all" ? allIds : [...scope.projectIds],
+      projectId,
+    );
+    // Selecting nothing or everything both mean All projects.
+    const everything = allIds.every((id) => next.includes(id));
+    updateState((current) => ({
+      ...current,
+      spaceId: null,
+      projectIds: next.length === 0 || everything ? [] : next,
+    }));
+  };
+  const submitEdit = async (name: string) => {
+    const list = spaces.catalog.spaces;
+    if (edit === "create") {
+      const id = newSpaceId();
+      await spaces.save([
+        ...list,
+        { id, name, projectIds: [...(scope.projectIds ?? [])] },
+      ]);
+      selectSpace(id);
+    } else if (scope.kind === "space") {
+      const { space } = scope;
+      if (edit === "rename") {
+        await spaces.save(
+          list.map((entry) =>
+            entry.id === space.id ? { ...entry, name } : entry,
+          ),
+        );
+      } else {
+        await spaces.save(list.filter((entry) => entry.id !== space.id));
+        selectAll();
+      }
+    }
+  };
+  const activeThread = threads.find(
+    (thread) => thread.id === props.activeThreadId,
+  );
+  const activeOutside =
+    scope.kind !== "all" &&
+    activeThread !== undefined &&
+    !inScope(scope, activeThread.projectId);
+  const spaceMissing =
+    state.spaceId !== null && scope.kind !== "space" && spaces.status === "ready";
+  const scopePending = state.spaceId !== null && spaces.status === "loading";
   // Rows under a project header omit the project name, which would repeat it.
   const makeRow = (showProject: boolean) => {
     const row = (
@@ -263,17 +351,56 @@ function ThreadsList(props: PluginThreadListProps) {
       )}
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
-          <h2 className="flex-1 px-2 text-sm font-medium">Threads</h2>
+          <ScopeMenu
+            scope={scope}
+            catalog={spaces.catalog}
+            projects={scopeProjects}
+            onSelectAll={selectAll}
+            onSelectSpace={selectSpace}
+            onToggleProject={toggleProject}
+            onEdit={setEdit}
+          />
           <DisplayMenu />
-          <button
-            type="button"
-            aria-label="New thread"
-            onClick={() => openNew(props.activeProjectId || undefined)}
-            className="rounded px-2 py-1 text-lg leading-none text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            +
-          </button>
+          <NewThreadButton
+            scope={scope}
+            activeProjectId={props.activeProjectId || null}
+            projects={scopeProjects}
+            onOpen={openNew}
+          />
         </div>
+        {edit && (
+          <SpaceForm
+            key={edit}
+            edit={edit}
+            spaceName={scope.kind === "space" ? scope.space.name : undefined}
+            onSubmit={submitEdit}
+            onClose={() => setEdit(null)}
+          />
+        )}
+        {spaceMissing && (
+          <p role="status" className="mt-2 px-2 text-xs text-muted-foreground">
+            This space no longer exists. Showing all projects.
+            <button className="ml-2 underline" onClick={selectAll}>
+              Dismiss
+            </button>
+          </p>
+        )}
+        {spaces.status === "error" && state.spaceId !== null && (
+          <div role="alert" className="mt-2 text-xs text-destructive">
+            Cannot load spaces. Showing all projects.
+            <button className="ml-2 underline" onClick={spaces.refresh}>
+              Retry
+            </button>
+          </div>
+        )}
+        {activeOutside && (
+          <p role="status" className="mt-2 px-2 text-xs text-muted-foreground">
+            The current thread is outside this scope.
+            <button className="ml-2 underline" onClick={selectAll}>
+              Show all projects
+            </button>
+          </p>
+        )}
         {connection !== "connected" && (
           <p role="status" className="mt-2 px-2 text-xs text-muted-foreground">
             Reconnecting… Statuses can be out of date.
@@ -297,12 +424,14 @@ function ThreadsList(props: PluginThreadListProps) {
         )}
       </div>
       <div
+        // Remounting on a scope change resets every Show more limit.
+        key={scopeKey}
         data-activity-thread-groups=""
         className={`px-2 pb-3 ${props.isCompactViewport ? "" : "min-h-0 flex-1 overflow-y-auto"}`}
       >
-        {status === "loading" ? (
+        {status === "loading" || scopePending ? (
           <p role="status" className="p-2 text-sm text-muted-foreground">
-            Loading threads…
+            {scopePending ? "Loading spaces…" : "Loading threads…"}
           </p>
         ) : status === "error" ? (
           <div role="alert" className="p-2 text-sm">
@@ -392,7 +521,11 @@ function ThreadsList(props: PluginThreadListProps) {
               !pinned.length &&
               !newDrafts.length && (
                 <p className="p-2 text-xs text-muted-foreground">
-                  No matching threads.
+                  {scope.kind === "space" && scope.projectIds.size === 0
+                    ? "No projects in this space. Choose projects from the heading menu."
+                    : scope.kind !== "all"
+                      ? "No matching threads in this scope."
+                      : "No matching threads."}
                 </p>
               )}
           </>

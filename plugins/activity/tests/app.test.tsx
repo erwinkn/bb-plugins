@@ -1637,7 +1637,7 @@ describe("activity sidebar", () => {
   it("shows Threads without filters and ignores the old saved project selector", () => {
     updateState(() => parseState(JSON.stringify({ projectId: "project-1" })));
     const slot = mount();
-    expect(slot.getByRole("heading", { name: "Threads" })).toBeTruthy();
+    expect(slot.getByRole("button", { name: "Threads: All projects" })).toBeTruthy();
     expect(slot.queryByRole("textbox")).toBeNull();
     expect(slot.queryByRole("combobox")).toBeNull();
     expect(slot.getByText("New reply")).toBeTruthy();

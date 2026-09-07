@@ -157,6 +157,8 @@ describe("client storage boundary", () => {
       expandedArchives: [],
       groupBy: "status",
       sortBy: "updated",
+      spaceId: null,
+      projectIds: [],
     });
   });
 });

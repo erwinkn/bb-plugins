@@ -76,8 +76,8 @@ Status groups keep the order above. Project groups sort by
 name. Pins, roots, and siblings follow the selected date sort.
 Children in each family stay below their parent. A child's timestamp or pin does not
 move its parent. New-thread drafts have no thread timestamp and appear after dated
-threads in their group. Groups can collapse. There is no thread search field or
-project selector. Old saved project filters are ignored.
+threads in their group. Groups can collapse. There is no thread search field.
+Old saved project filters from before spaces are ignored.
 Preferences stay on this client. Sorting and grouping do not change thread state.
 If browser storage rejects a write, this tab keeps its unsaved preferences and
 draft flags in memory. It retries on the next local update, even if the value
@@ -143,6 +143,49 @@ This is not atomic: children created or moved during the operation can escape
 the collected tree. BB's other archive buttons and keyboard shortcut keep their
 native behavior. No bulk read or delete actions are added.
 
+## Spaces
+
+A space is a named selection of projects. The Threads heading is the scope
+selector: it reads **All projects**, a space name, or **N projects** for an
+unsaved selection. Its menu lists All projects, each saved space, and a
+checklist of every BB project.
+
+- In All projects every project is checked. Unchecking projects starts an
+  unsaved selection on this client. Unchecking the last project, or checking
+  every project again, returns to All projects. **Save as space…** names the
+  selection and selects the new space.
+- With a space selected, toggling a project edits that space for every client.
+  **Rename space…** and **Delete space…** use the same inline form under the
+  heading. Enter saves; Escape cancels. Deleting a space never touches
+  projects or threads. Names are trimmed, limited to 60 characters, and unique
+  ignoring case. A member project BB no longer lists appears as *Unavailable
+  project* so it can be removed.
+- Space definitions are shared by every client of one BB server and stored in
+  the plugin's key-value store as one document with a revision. A save that
+  races another client's save fails with an error, and the form keeps your
+  input; the catalog reloads so you can retry. Each client keeps its own
+  selection in local storage, together with a cached copy of the catalog for
+  the next load. Grouping, sorting, and status filters are shared across spaces.
+- Scope applies before pins, families, archives, and drafts. A pinned thread
+  outside the scope is hidden. A child outside the scope is hidden and does not
+  affect its family's status. An in-scope child of an out-of-scope parent is a
+  root, with its parent still named in the info card. Archiving a family still
+  archives every active descendant, including those outside the scope.
+- If the open thread is outside the scope, a notice offers **Show all
+  projects**; the thread stays open and the scope does not change. If the
+  selected space was deleted elsewhere, the list shows All projects with a
+  notice. A brand-new client with a selected space shows *Loading spaces…*
+  until the catalog arrives; if it cannot load, the list shows All projects
+  with a Retry action.
+- **New thread** uses the active project when it is in scope, otherwise the
+  space's only project, otherwise a menu of member projects. In All projects
+  it keeps BB's behavior.
+- New BB projects are not added to any space automatically. SDK 0.4.47 has no
+  project-creation event that identifies the originating client.
+- `bb activity spaces-export` prints the catalog. `bb activity spaces-import
+'<json>'` replaces it and bumps the revision. Use them for backups and for
+  moving definitions between BB servers.
+
 ## Draft limits
 
 SDK 0.4.47 does not expose saved composer drafts in its thread list. An invisible
@@ -178,7 +221,8 @@ it automatically. The selection is per client. Use `bb plugin dev` for live
 development. To remove it, run `bb plugin remove erwin-activity`.
 
 Tests cover status precedence, date sorting in both views, navigation, storage validation,
-draft text and attachments, fallback UI, and a disconnected realtime connection.
+draft text and attachments, fallback UI, a disconnected realtime connection, space
+filtering and editing, the space catalog RPC, and the spaces CLI.
 They use the SDK's frontend harness. The live BB view still needs visual checks
 after SDK upgrades because the sidebar API is experimental.
 
