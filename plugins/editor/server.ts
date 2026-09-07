@@ -246,6 +246,15 @@ async function ensureBundleDir(log: (message: string) => void): Promise<string> 
   return bundleDir;
 }
 
+/**
+ * The path API for an absolute path from a host: Windows for a drive or UNC
+ * path, POSIX otherwise. (`path.win32.isAbsolute` accepts `/tmp` too, and
+ * would then produce backslashes in relative paths.)
+ */
+export function pathApiFor(absolutePath: string): path.PlatformPath {
+  return /^([A-Za-z]:[\\/]|\\\\)/.test(absolutePath) ? path.win32 : path.posix;
+}
+
 function assertInsideWorkspace(relativePath: string): void {
   if (/(^|[\\/])\.\.([\\/]|$)/.test(relativePath)) throw new Error("The path cannot contain '..'");
   if (/^([\\/]|[A-Za-z]:)/.test(relativePath)) throw new Error("The path must be inside the workspace");
@@ -380,7 +389,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (source.environmentId === null) throw new Error("This file has no environment to resolve it against");
     const environment = await bb.sdk.environments.get({ environmentId: source.environmentId });
     if (source.kind === "host") {
-      const api = path.win32.isAbsolute(filePath) ? path.win32 : path.posix;
+      const api = pathApiFor(filePath);
       return {
         path: filePath,
         rootPath: api.dirname(filePath),
@@ -396,7 +405,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   function relativeTo(root: string, target: string): string {
-    const api = path.win32.isAbsolute(root) ? path.win32 : path.posix;
+    const api = pathApiFor(root);
     return api.relative(root, target) || api.basename(target);
   }
 

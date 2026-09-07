@@ -5,9 +5,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakePluginHost, experimental_scanPublicSdkOnly, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import plugin, { findPluginRoot, rpcContract } from "./server";
+import plugin, { findPluginRoot, pathApiFor, rpcContract } from "./server";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
+
+test("relative paths use POSIX separators for POSIX roots and Windows ones only for drive or UNC roots", () => {
+  assert.equal(pathApiFor("/tmp/workspace").relative("/tmp/workspace", "/tmp/workspace/docs/a.md"), "docs/a.md");
+  assert.equal(pathApiFor("C:\\work").relative("C:\\work", "C:\\work\\docs\\a.md"), "docs\\a.md");
+  assert.equal(pathApiFor("\\\\server\\share").sep, "\\");
+});
 
 test("findPluginRoot locates the package from the source directory and from dist", () => {
   assert.equal(findPluginRoot(here), path.resolve(here));
