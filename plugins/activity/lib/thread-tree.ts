@@ -10,6 +10,30 @@ export interface ThreadNode {
 export const CHILD_PAGE_SIZE = 3;
 export const MAX_NESTING_DEPTH = 2;
 
+// Pin ownership extends through every available descendant, before filters.
+export function pinnedThreadIds(
+  rows: { thread: PluginSidebarThread }[],
+): Set<string> {
+  const children = new Map<string, string[]>();
+  const pending: string[] = [];
+  for (const { thread } of rows) {
+    if (thread.isPinned) pending.push(thread.id);
+    if (thread.parentThreadId) {
+      const siblings = children.get(thread.parentThreadId) ?? [];
+      siblings.push(thread.id);
+      children.set(thread.parentThreadId, siblings);
+    }
+  }
+  const ids = new Set<string>();
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (ids.has(id)) continue;
+    ids.add(id);
+    for (const child of children.get(id) ?? []) pending.push(child);
+  }
+  return ids;
+}
+
 // Preserve family order and true parentThreadId, but stop adding visual levels.
 export function flattenDescendants(nodes: ThreadNode[]): ThreadNode[] {
   const result: ThreadNode[] = [];

@@ -8,7 +8,6 @@ import {
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import {
-  compareThreads,
   STATUSES,
   STATUS_LABEL,
   statusOf,
@@ -26,6 +25,7 @@ import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
 import {
   buildThreadTree,
   familyStatus,
+  pinnedThreadIds,
   type ThreadNode,
 } from "./lib/thread-tree";
 
@@ -119,13 +119,14 @@ function ThreadsList(props: PluginThreadListProps) {
       thread,
       status: statusOf(thread, knownDrafts.has(`thread:${thread.id}`)),
     }));
-  // Pins are direct entries, including pinned children. Keep them outside
-  // status filters and family trees so each pin is visible exactly once.
-  const pinned = available
-    .filter(({ thread }) => thread.isPinned)
-    .sort((a, b) => compareThreads(a.thread, b.thread, state.sortBy));
+  const pinnedIds = pinnedThreadIds(available);
+  const pinned = buildThreadTree(
+    available.filter(({ thread }) => pinnedIds.has(thread.id)),
+    state.sortBy,
+  );
   const visible = available.filter(
-    ({ thread, status }) => !thread.isPinned && !state.hidden.includes(status),
+    ({ thread, status }) =>
+      !pinnedIds.has(thread.id) && !state.hidden.includes(status),
   );
   // Thread and project snapshots can arrive separately. Keep unmatched
   // threads and new drafts navigable until project metadata is available.
@@ -311,7 +312,7 @@ function ThreadsList(props: PluginThreadListProps) {
             {pinned.length > 0 && (
               <Group id="pinned" title="Pinned">
                 <ul aria-label="Pinned threads" className="m-0 list-none p-0">
-                  {pinned.map((entry) => row({ ...entry, children: [] }))}
+                  {pinned.map((entry) => row(entry))}
                 </ul>
               </Group>
             )}
