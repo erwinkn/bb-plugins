@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import test from "node:test";
 
@@ -49,6 +50,35 @@ test("the bundle entry exports everything PierreBundle declares", () => {
   assert.ok(declared.length > 5, "the interface should not have been parsed as empty");
   const missing = declared.filter((name) => !exported.has(name));
   assert.deepEqual(missing, [], "pierre-bundle/editor.js must re-export these");
+});
+
+test("a retained lazy runtime accepts theme registration again after the app reloads", () => {
+  // Use the real plain-JavaScript entry and Pierre registry in an isolated
+  // process. The two callers represent successive app-module instances.
+  const result = spawnSync(process.execPath, ["--input-type=module", "--eval", `
+    import assert from "node:assert/strict";
+    import { registerCustomTheme } from "./pierre-bundle/editor.js";
+    import { getResolvedOrResolveTheme } from "@pierre/diffs";
+    const errors = [];
+    console.error = (...args) => errors.push(args);
+    let firstLoads = 0;
+    let secondLoads = 0;
+    const name = "bb-reload-regression-theme";
+    registerCustomTheme(name, async () => {
+      firstLoads++;
+      return { name, type: "dark", fg: "#abcdef", bg: "#101010", settings: [] };
+    });
+    registerCustomTheme(name, async () => {
+      secondLoads++;
+      return { name, type: "dark", fg: "#ffffff", bg: "#202020", settings: [] };
+    });
+    const theme = await getResolvedOrResolveTheme(name);
+    assert.equal(theme.fg, "#abcdef");
+    assert.equal(firstLoads, 1);
+    assert.equal(secondLoads, 0);
+    assert.deepEqual(errors, []);
+  `], { cwd: pluginRoot, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test("the bundle entry checks the custom element before it imports Pierre", () => {
