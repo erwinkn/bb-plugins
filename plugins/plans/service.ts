@@ -124,7 +124,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     comments: delivered(plan, input.action).map(({ quote, body, kind, versionId }) => ({ quote, body, kind: kind ?? "comment", versionId })),
     receipt: input.requestId,
     instruction: input.action === "approve"
-      ? `Implement plan ${plan.id} version ${version.number} exactly. Run \`bb plans get ${plan.id} --version ${version.id}\` if it is no longer in context. This does not authorize a merge or deployment.`
+      ? `Implement plan ${plan.id} version ${version.number} exactly. Run \`bb plans get ${plan.id} --version-id ${version.id}\` if it is no longer in context. This does not authorize a merge or deployment.`
       : `Revise plan ${plan.id} with plans_submit (planId, expectedVersionId ${version.id}) or \`bb plans submit\`, then wait for review again. Do not implement yet.`,
   });
   const storedDecision = (planId: string, versionId: string): ReviewDecision | null => {
@@ -182,7 +182,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       const timer = setTimeout(() => {
         cleanup();
         resolve({ status: "pending", planId: plan.id, versionId: version.id,
-          instruction: `No review yet. Run \`bb plans wait ${plan.id} --version ${version.id}\` again to keep waiting.` });
+          instruction: `No review yet. Run \`bb plans wait ${plan.id} --version-id ${version.id}\` again to keep waiting.` });
       }, timeoutMs);
       set.add(onEvent);
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -219,7 +219,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     const attended = (waiters.get(plan.id)?.size ?? 0) > 0;
     const notify = plan.threadId !== null && !attended && (await notifyUnattended()) ? plan.threadId : null;
     const annotations = JSON.stringify(delivered(plan, input.action).map(({ versionId, quote, body, kind }) => ({ versionId, quote, body, kind: kind ?? "comment" })), null, 2);
-    const fetchHint = `Run \`bb plans get ${plan.id} --version ${version.id}\` if the plan text is no longer in context.`;
+    const fetchHint = `Run \`bb plans get ${plan.id} --version-id ${version.id}\` if the plan text is no longer in context.`;
     const text = input.action === "approve"
       ? `The user approved plan ${plan.id}, version ${version.number} (${version.id}), and asked you to start implementation. Implement that exact version. ${fetchHint} This does not authorize a merge or deployment.\n\nPositive annotations:\n${annotations}\n${ANNOTATION_GUIDE}\n\nUser note: ${input.note}`
       : `The user requests changes to plan ${plan.id}, version ${version.number} (${version.id}). Revise the plan using plans_submit with planId and expectedVersionId ${version.id}, then wait for review with \`bb plans wait\`. Do not start implementation. ${fetchHint}\n\nReview comments (each versionId identifies the reviewed snapshot):\n${annotations}\n${ANNOTATION_GUIDE}\n\nUser note: ${input.note}`;

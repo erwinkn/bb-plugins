@@ -13,6 +13,7 @@ interface Flags {
   wait: boolean;
   timeoutMs: number;
   version?: string;
+  thread?: string;
   note: string;
   comments: Array<{ quote: string; body: string; kind: "comment" | "redline" | "looksGood" }>;
 }
@@ -32,7 +33,8 @@ function parseFlags(argv: string[]): Flags {
       const seconds = z.coerce.number().int().min(1).max(MAX_WAIT_SECONDS).parse(take(i, arg));
       flags.timeoutMs = seconds * 1000;
       i += 1;
-    } else if (arg === "--version") { flags.version = take(i, arg); i += 1; }
+    } else if (arg === "--version-id") { flags.version = take(i, arg); i += 1; }
+    else if (arg === "--thread") { flags.thread = take(i, arg); i += 1; }
     else if (arg === "--note") { flags.note = take(i, arg); i += 1; }
     else if (arg === "--comment") {
       const raw = take(i, arg);
@@ -49,7 +51,7 @@ function parseFlags(argv: string[]): Flags {
 }
 
 export function waitInstruction(planId: string, versionId: string): string {
-  return `Plan saved for review. Run \`bb plans wait ${planId} --version ${versionId}\` and act on its JSON result; run it in the background and await it if your shell tool has a time limit. Do not implement yet.`;
+  return `Plan saved for review. Run \`bb plans wait ${planId} --version-id ${versionId}\` and act on its JSON result; run it in the background and await it if your shell tool has a time limit. Do not implement yet.`;
 }
 
 export default function plugin(bb: BbPluginApi) {
@@ -68,7 +70,7 @@ export default function plugin(bb: BbPluginApi) {
   bb.rpc.register(plansContract, rpcHandlers);
   bb.agents.registerTool({
     name: "plans_submit",
-    description: "Submit a Markdown plan to the Plans review panel, or submit a revised version. Afterwards run `bb plans wait <planId> --version <versionId>` to receive the review as JSON. This tool does not itself enforce provider plan mode.",
+    description: "Submit a Markdown plan to the Plans review panel, or submit a revised version. Afterwards run `bb plans wait <planId> --version-id <versionId>` to receive the review as JSON. This tool does not itself enforce provider plan mode.",
     parameters: z.object({ title: z.string().min(1).max(200), markdown: z.string().min(1).max(100_000), planId: z.string().optional(), expectedVersionId: z.string().optional() }),
     async execute({ title, markdown, planId, expectedVersionId }, { threadId }) {
       if (!threadId) throw new Error("Submit a plan from a BB thread.");
@@ -89,9 +91,9 @@ export default function plugin(bb: BbPluginApi) {
     summary: "Submit plans for human review in the thread panel and wait for the decision.",
     commands: [
       { name: "submit", summary: "Submit a plan from a Markdown file in this thread; --wait blocks until it is reviewed", usage: "bb plans submit <file> [title] [plan-id expected-version-id] [--wait] [--timeout <seconds>]" },
-      { name: "wait", summary: "Block until the reviewer sends feedback or approves; prints the decision as JSON, or status pending on timeout", usage: "bb plans wait <plan-id> [--version <id>] [--timeout <seconds>]" },
-      { name: "get", summary: "Read a plan; --version returns one version's text and comments", usage: "bb plans get <plan-id> [--version <id>]" },
-      { name: "list", summary: "List plans for this thread, ten per page", usage: "bb plans list [offset]" },
+      { name: "wait", summary: "Block until the reviewer sends feedback or approves; prints the decision as JSON, or status pending on timeout", usage: "bb plans wait <plan-id> [--version-id <id>] [--timeout <seconds>]" },
+      { name: "get", summary: "Read a plan; --version-id returns one version's text and comments", usage: "bb plans get <plan-id> [--version-id <id>]" },
+      { name: "list", summary: "List plans for this thread (or another with --thread), ten per page", usage: "bb plans list [offset] [--thread <thread-id>]" },
       { name: "review", summary: "Review another thread's plan (for example a child's) as its reviewer; a thread cannot review its own plan", usage: "bb plans review <plan-id> <version-id> approve|feedback [--note <text>] [--comment <quote>::<body>] [--redline <quote>] [--looks-good <quote>]" },
       { name: "delivery", summary: "Inspect a review receipt; resolve only after checking the linked thread", usage: "bb plans delivery <request-id> [sent|not-sent]" },
     ],
@@ -102,7 +104,7 @@ export default function plugin(bb: BbPluginApi) {
         let result: unknown;
         const awaitDecision = (planId: string, versionId: string): Promise<WaitResult> =>
           wait({ id: planId, versionId, timeoutMs: flags.timeoutMs, signal: ctx.signal });
-        if (command === "list") result = service.list({ threadId: ctx.threadId, offset: z.coerce.number().int().nonnegative().parse(args[0] ?? 0) });
+        if (command === "list") result = service.list({ threadId: flags.thread ?? ctx.threadId, offset: z.coerce.number().int().nonnegative().parse(args[0] ?? 0) });
         else if (command === "get" && args[0]) result = flags.version ? version({ id: args[0], versionId: flags.version }) : service.get({ id: args[0] });
         else if (command === "wait" && args[0]) result = await awaitDecision(args[0], flags.version ?? service.get({ id: args[0] }).versions.at(-1)!.id);
         else if (command === "delivery" && args[0]) {
@@ -133,7 +135,7 @@ export default function plugin(bb: BbPluginApi) {
           result = flags.wait
             ? await awaitDecision(plan.id, versionId)
             : { planId: plan.id, versionId, instruction: waitInstruction(plan.id, versionId) };
-        } else throw new Error("Usage: bb plans submit <file> [title] [plan-id expected-version-id] [--wait] [--timeout <s>], wait <plan-id> [--version <id>] [--timeout <s>], get <id> [--version <id>], list, review <plan-id> <version-id> approve|feedback [...], or delivery <receipt> [sent|not-sent].");
+        } else throw new Error("Usage: bb plans submit <file> [title] [plan-id expected-version-id] [--wait] [--timeout <s>], wait <plan-id> [--version-id <id>] [--timeout <s>], get <id> [--version-id <id>], list, review <plan-id> <version-id> approve|feedback [...], or delivery <receipt> [sent|not-sent].");
         const stdout = JSON.stringify(result, null, 2);
         if (Buffer.byteLength(stdout) > 900_000) throw new Error("This result is too large for the CLI. Open the plan in the Plans panel.");
         return { exitCode: 0, stdout };

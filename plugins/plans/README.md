@@ -38,7 +38,7 @@ or resume before new agent tools become available.
    `status: "approved"` and the agent implements that exact version.
 
 The decision never repeats the plan text: the agent already has it, and
-`bb plans get PLAN_ID --version VERSION_ID` fetches it after context loss.
+`bb plans get PLAN_ID --version-id VERSION_ID` fetches it after context loss.
 If no `wait` is attached when you decide (the agent's turn ended, or it never
 waited), the plugin falls back to a compact thread message with the same
 content, queued if the thread is busy. The **Message the thread when no agent
@@ -56,10 +56,10 @@ and `expectedVersionId`. A revision must belong to the calling thread. It
 returns the plan and version IDs plus the `bb plans wait` command to run next.
 
 ```sh
-bb plans wait PLAN_ID --version VERSION_ID [--timeout 1200]
+bb plans wait PLAN_ID --version-id VERSION_ID [--timeout 1200]
 bb plans submit ./plan.md 'Storage migration' --wait
 bb plans submit ./plan.md 'Storage migration' PLAN_ID EXPECTED_VERSION_ID --wait
-bb plans get PLAN_ID --version VERSION_ID
+bb plans get PLAN_ID --version-id VERSION_ID
 bb plans list [10]
 bb plans review PLAN_ID VERSION_ID feedback --comment 'quoted text::what to change' --redline 'drop this' --note 'General note'
 bb plans review PLAN_ID VERSION_ID approve --looks-good 'keep this'

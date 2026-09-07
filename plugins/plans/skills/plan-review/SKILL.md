@@ -33,7 +33,7 @@ active, its native approval step remains separate.
 ## Wait
 
 ```sh
-bb plans wait PLAN_ID --version VERSION_ID
+bb plans wait PLAN_ID --version-id VERSION_ID
 ```
 
 The command blocks until the reviewer sends feedback or approves, then prints
@@ -54,7 +54,7 @@ removal of the quoted text; a `looksGood` annotation marks text to keep; a
 The plan text is not repeated in the result. If it is no longer in context:
 
 ```sh
-bb plans get PLAN_ID --version VERSION_ID
+bb plans get PLAN_ID --version-id VERSION_ID
 ```
 
 If a review arrives as a thread message instead, the same rules apply; that
