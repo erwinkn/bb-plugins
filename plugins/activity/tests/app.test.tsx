@@ -290,6 +290,7 @@ describe("activity sidebar", () => {
       hidden: true,
     });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     fireEvent.click(toggle);
 
     await waitFor(() =>
@@ -300,6 +301,9 @@ describe("activity sidebar", () => {
       hidden: true,
     });
     expect(archive.getAttribute("aria-expanded")).toBe("false");
+    expect(archive.querySelector("svg")?.outerHTML).toBe(
+      toggle.querySelector("svg")?.outerHTML,
+    );
     expect(
       parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
         .showArchives,

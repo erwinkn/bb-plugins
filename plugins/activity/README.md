@@ -116,7 +116,8 @@ blue dot. Needs Attention rows have an amber alert icon. Draft rows, including
 new-thread drafts, have a violet dashed-circle icon. Done rows have no status
 icon. Child arrows stay separate from status icons. Group headers have plain labels and
 centered collapse chevrons, with no status icons, counts, or hover descriptions.
-The status menu retains its colored icons. The layout uses BB's theme tokens.
+The status menu retains its colored icons. Archived has a neutral archive-box
+icon in the menu and section headers. The layout uses BB's theme tokens.
 
 Active rows use BB's native open, split, rename, pin, read, and archive actions. The plugin also keeps
 the attributes needed for BB's thread navigation shortcuts. Right-click a row
