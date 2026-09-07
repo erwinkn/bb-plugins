@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hasMarkdownImage, rewriteMarkdownPaths, workspacePathFromHref, workspaceRoot } from "./markdown-preview.js";
+import { anchorSlug, hasMarkdownImage, headingSlug, rewriteMarkdownPaths, workspacePathFromHref, workspaceRoot } from "./markdown-preview.js";
 
 const at = { filePath: "docs/guide/intro.md", baseUrl: "/preview/abc" };
 
@@ -70,4 +70,14 @@ test("the workspace root is the absolute path without its root-relative tail", (
   assert.equal(workspaceRoot("C:\\repo\\docs\\guide.md", "docs\\guide.md"), "C:\\repo");
   assert.equal(workspaceRoot("/repo/docs/guide.md", ""), "");
   assert.equal(workspaceRoot("/elsewhere/guide.md", "docs/guide.md"), "");
+});
+
+test("anchors match headings by GitHub-style slug", () => {
+  assert.equal(headingSlug("Preview links"), "preview-links");
+  assert.equal(headingSlug("  Release 2.0 — Café / 東京 "), "release-20--café--東京");
+  assert.equal(headingSlug("What's new?"), "whats-new");
+  assert.equal(anchorSlug("#Preview-Links"), "preview-links");
+  assert.equal(anchorSlug("#caf%C3%A9"), "café");
+  assert.equal(anchorSlug("#"), null);
+  assert.equal(anchorSlug("./a.md#x"), null);
 });

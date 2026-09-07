@@ -94,3 +94,26 @@ export function workspaceRoot(absolutePath: string, relativePath: string): strin
   if (relativePath === "" || !absolutePath.endsWith(relativePath)) return "";
   return absolutePath.slice(0, absolutePath.length - relativePath.length).replace(/[\\/]+$/, "");
 }
+
+/**
+ * The heading slug an anchor refers to, GitHub style: the heading text in
+ * lower case, punctuation dropped, spaces as hyphens. BB's renderer gives
+ * headings no ids, so the preview matches anchors by text.
+ */
+export function headingSlug(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .replace(/\s/g, "-");
+}
+
+/** The slug an anchor href names, or null when the href is not a same-document anchor. */
+export function anchorSlug(href: string): string | null {
+  if (!href.startsWith("#") || href.length < 2) return null;
+  try {
+    return decodeURIComponent(href.slice(1)).toLowerCase();
+  } catch {
+    return href.slice(1).toLowerCase();
+  }
+}

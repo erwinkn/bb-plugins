@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Markdown, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { FileSessionSource } from "@/lib/file-session";
-import { hasMarkdownImage, rewriteMarkdownPaths, workspacePathFromHref } from "@/lib/markdown-preview";
+import { anchorSlug, hasMarkdownImage, headingSlug, rewriteMarkdownPaths, workspacePathFromHref } from "@/lib/markdown-preview";
 
 /** Renew a lease this long before it expires, so an image never loads from a dead one. */
 const LEASE_RENEWAL_MARGIN_MS = 60_000;
@@ -64,9 +64,11 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
     [content, lease, relativePath],
   );
 
-  // BB renders the links itself and opens a file link in a new tab. A plain
-  // click on a file under the root opens it here instead. The listener is
-  // native and in the capture phase, so it runs before the host's handler.
+  // BB renders the links itself: a file link opens in a new tab, and an
+  // anchor would open the app root. A plain click on a file under the root
+  // opens it here instead, and an anchor scrolls to its heading. The
+  // listener is native and in the capture phase, so it runs before the
+  // host's handler.
   const container = useRef<HTMLDivElement | null>(null);
   const openPath = useRef(onOpenPath);
   openPath.current = onOpenPath;
@@ -74,11 +76,23 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
     const element = container.current;
     if (element === null) return;
     const intercept = (event: MouseEvent) => {
-      const open = openPath.current;
-      if (open === null || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const anchor = event.target instanceof Element ? event.target.closest("a") : null;
       if (anchor === null) return;
-      const target = workspacePathFromHref(anchor.getAttribute("href") ?? "", rootPath);
+      const href = anchor.getAttribute("href") ?? "";
+      const slug = anchorSlug(href);
+      if (slug !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        const heading = Array.from(element.querySelectorAll("h1, h2, h3, h4, h5, h6")).find(
+          (candidate) => headingSlug(candidate.textContent ?? "") === slug,
+        );
+        heading?.scrollIntoView({ block: "start", behavior: "smooth" });
+        return;
+      }
+      const open = openPath.current;
+      if (open === null) return;
+      const target = workspacePathFromHref(href, rootPath);
       if (target === null) return;
       event.preventDefault();
       event.stopPropagation();
