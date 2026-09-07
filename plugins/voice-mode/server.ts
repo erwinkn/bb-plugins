@@ -117,6 +117,7 @@ export const rpcContract = defineRpcContract({
         nonce: z.string().min(1).max(256),
         /** Start a separate logical conversation instead of resuming the last one. */
         newConversation: z.boolean().optional(),
+        transferFromNonce: z.string().min(1).max(256).optional(),
         conversationId: z.string().min(1).optional(),
         threadId: z.string().nullable().optional(),
         projectId: z.string().nullable().optional(),
@@ -521,10 +522,10 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   const currentCall = () => db.prepare("SELECT sequence, nonce FROM voice_call_control WHERE slot = 1").get() as { sequence: number; nonce: string | null };
-  function forceStopCall(nonce: string) {
+  function forceStopCall(nonce: string, transferring = false) {
     uiCommands.cancelCall(nonce);
     db.prepare("UPDATE voice_call_control SET nonce = NULL WHERE nonce = ?").run(nonce);
-    void coordinator.endCall(nonce).catch((error) => bb.log.warn(`coordinator hangup drain failed: ${error instanceof Error ? error.message : String(error)}`));
+    void coordinator.endCall(nonce, {releaseRuntime:!transferring}).catch((error) => bb.log.warn(`coordinator hangup drain failed: ${error instanceof Error ? error.message : String(error)}`));
     try { appendEvent(nonce, "session.stopped", { _forced: true }); }
     catch (error) { bb.log.warn(String(error)); }
     bb.realtime.publish("voice-presence", { nonce, phase: "idle", startedAt: null });
@@ -1088,13 +1089,19 @@ export default async function plugin(bb: BbPluginApi) {
     async pendingUiCommands(input) { return { commands: uiCommands.pending(input), revokedCommandIds: uiCommands.revoked(input) }; },
     async claimUiCommand(input) { return uiCommands.claim(input); },
     async reportUiCommandResult(input) { return uiCommands.report(input); },
-    async claimCall({ nonce, newConversation = false, conversationId, threadId = null, projectId = null }) {
+    async claimCall({ nonce, newConversation = false, conversationId, transferFromNonce, threadId = null, projectId = null }) {
+      if (transferFromNonce) {
+        if (currentCall().nonce !== transferFromNonce) throw new Error("The call changed before you could switch. Check its current device and try again.");
+        if (newConversation || conversationId) throw new Error("A device switch must keep the active conversation.");
+        conversationId = coordinatorStore.listConversations(100).find(conversation => conversation.currentCallNonce === transferFromNonce)?.id;
+        if (!conversationId) throw new Error("The active voice conversation could not be found.");
+      }
       const selected = conversationId ? voiceSessions.get(conversationId).session : null;
-      if (selected && currentCall().nonce) throw new Error("End the current call before continuing another session.");
+      if (selected && currentCall().nonce && !transferFromNonce) throw new Error("End the current call before continuing another session.");
       let selectedId = selected?.legacy ? coordinatorStore.createConversation().id : selected?.id;
       if (selected?.legacy && selectedId) for (const callId of selected.callIds) voiceSessions.link(callId, selectedId);
       const previous = currentCall();
-      if (previous.nonce) forceStopCall(previous.nonce);
+      if (previous.nonce) forceStopCall(previous.nonce, !!transferFromNonce);
       db.prepare("UPDATE voice_call_control SET sequence = sequence + 1, nonce = ? WHERE slot = 1").run(nonce);
       const { sequence } = currentCall();
       bb.realtime.publish("voice-call", { nonce, sequence });

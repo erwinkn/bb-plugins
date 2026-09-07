@@ -474,3 +474,36 @@ test("event-channel closure ends an otherwise connected call", async (t) => {
   dc.onclose?.();
   assert.equal(agent.getState(), "idle");
 });
+
+
+test("device switch acquires the microphone before claiming the existing call", async t => {
+  const {agent}=await liveVoiceFixture(t); agent.stop();
+  const calls:{method:string;args:any}[]=[];
+  agent.bind({rpc:{call:(async(method:string,args:any)=>{calls.push({method,args});return method==="claimCall" ? {sequence:2,conversationId:"same_conversation"} : method==="createCall" ? {sdp:"answer"} : {ok:true};}) as never},context:{threadId:null,projectId:null,onNewThreadScreen:false}});
+  agent.ingestPresence({nonce:"desktop",phase:"live",startedAt:1000,client:"desktop-client"});
+  const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+  let grant!:(stream:MediaStream)=>void;
+  navigator.mediaDevices.getUserMedia=()=>new Promise(resolve=>{grant=resolve;});
+  agent.switchToThisDevice(); agent.switchToThisDevice();
+  await settleVoice();
+  assert.equal(calls.filter(call=>call.method==="claimCall").length,0);
+  grant(stream); await settleVoice();
+  assert.equal(calls.filter(call=>call.method==="claimCall").length,1);
+  assert.equal(calls.find(call=>call.method==="claimCall")?.args.transferFromNonce,"desktop");
+  assert.equal(agent.getState(),"live");
+  assert.equal(agent.getRemoteCallLabel(),null);
+  agent.stop(); assert.equal(agent.getState(),"idle","the old desktop mirror must not reappear");
+});
+
+test("denied microphone access leaves the other device's call running", async t => {
+  const {agent}=await liveVoiceFixture(t);agent.stop();
+  const calls:{method:string;args:any}[]=[];
+  agent.bind({rpc:{call:(async(method:string,args:any)=>{calls.push({method,args});return {ok:true};}) as never},context:{threadId:null,projectId:null,onNewThreadScreen:false}});
+  agent.ingestPresence({nonce:"desktop",phase:"live",startedAt:1000,client:"desktop-client"});
+  navigator.mediaDevices.getUserMedia=async()=>{throw new DOMException("Denied","NotAllowedError");};
+  agent.switchToThisDevice();await settleVoice();
+  assert.equal(calls.some(call=>call.method==="claimCall" || call.method==="forceStop"),false);
+  assert.equal(agent.getSessionId(),"desktop");
+  assert.equal(agent.getRemoteCallLabel(),"Call on another device");
+  agent.ingestPresence({nonce:"desktop",phase:"idle"});
+});

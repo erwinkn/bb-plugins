@@ -218,7 +218,7 @@ export class CoordinatorManager {
    * questions are cancelled and preserved as unresolved; the runtime is
    * released once the coordinator settles.
    */
-  async endCall(nonce: string): Promise<void> {
+  async endCall(nonce: string, options: { releaseRuntime?: boolean } = {}): Promise<void> {
     const conversation = this.store.listConversations(20).find((row) => row.currentCallNonce === nonce);
     if (!conversation) return;
     this.store.updateConversation(conversation.id, { currentCallNonce: null, currentCallSequence: null });
@@ -236,7 +236,7 @@ export class CoordinatorManager {
       if (waiter) waiter.resolve({ kind: "cancelled", reason: "hangup" });
       else this.store.updateQuestion(question.id, { status: "unresolved", cancelReason: "hangup" });
     }
-    await this.releaseIfSettled(conversation.id);
+    if (options.releaseRuntime !== false) await this.releaseIfSettled(conversation.id);
     this.publishStatus(conversation.id);
   }
 

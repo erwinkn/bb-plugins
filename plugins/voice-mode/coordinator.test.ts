@@ -890,3 +890,20 @@ test("hangup during a direct send preserves uncertainty and never replays delive
   const result=await h.rpc("retryRequest",{requestId:"pending-send"});
   assert.equal(result.status,"quick_unknown");
 });
+
+
+test("device transfer keeps the active conversation and rejects an outdated takeover", async t => {
+  const h=await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
+  const desktop=await h.claim("desktop");
+  await h.rpc("submitRequest",{envelope:h.envelope(desktop.conversationId,"desktop","warmup","Check status")});
+  await h.idle(h.coordinatorId());
+  const mobile=await h.rpc("claimCall",{nonce:"mobile",transferFromNonce:"desktop"});
+  assert.equal(mobile.conversationId,desktop.conversationId);
+  assert.equal(mobile.sequence,desktop.sequence+1);
+  await settle();
+  assert.equal(h.world.stops.length,0,"transferring must not release the coordinator runtime");
+  const status=await h.rpc("getCoordinatorStatus",null);
+  assert.equal(status.conversation.currentCallNonce,"mobile");
+  await assert.rejects(h.rpc("claimCall",{nonce:"stale-mobile",transferFromNonce:"desktop"}),/call changed/);
+  assert.equal((await h.rpc("getCoordinatorStatus",null)).conversation.currentCallNonce,"mobile");
+});

@@ -101,3 +101,17 @@ status requests; small implementation requests still use the coordinator.
 I support this bounded fast path for the draft and local test. I do not claim
 that a word filter proves arbitrary natural-language messages harmless. Direct
 implementation requests remain outside this revision pending the user's answer.
+
+
+## Device switch — 7 September 2026
+
+| Decision | Alternative | Confidence and possible failure |
+| --- | --- | --- |
+| Show a remote-call label and Switch here; hide local mic and stop controls on that indicator. | Hide the remote call entirely or show it as Connected. | High. Shared presence already identifies remote ownership. Same-browser windows use a separate label. |
+| Transfer one active audio connection while retaining its logical conversation and coordinator. | Add simultaneous call participants. | High. The current WebRTC transport and request ownership assume one active device. A switch starts a new physical call, with a short audio gap. |
+| Acquire the new device's microphone before claiming ownership. | Disconnect the old device before requesting permission. | High. Permission denial leaves the original call running. SDP or network failure after the claim can still end the transfer; automatic rollback is not implemented. |
+| Compare the expected old call nonce before transfer and keep the coordinator runtime during the change. | Replace whichever call is active when permission resolves. | High. A stale button cannot take over a different call, and the old hangup does not release the resumed coordinator. |
+| Verify ownership, permission failure, stale transfer, and UI controls with deterministic tests. | Treat these tests as proof of desktop/mobile audio continuity. | High for the tested behavior. Physical device switching remains a user test. |
+
+I support this device-switch implementation for the existing draft and local
+reload. Joining as a second simultaneous participant is not part of this change.

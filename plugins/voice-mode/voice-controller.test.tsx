@@ -133,3 +133,21 @@ test("a draft lands in the exact composer scope, follows a scope change, and is 
     assert.equal(controller.inspection.sidebarActionCalls.length, 0, "no navigation while a protected editor is open");
   } finally { slot.lifecycle.unmount(); controller.lifecycle.unmount(); }
 });
+
+
+test("a mirrored call offers transfer instead of local microphone controls", async t => {
+  const transfer=t.mock.method(voiceAgent,"switchToThisDevice",()=>{});
+  const slot=renderSlot({component:VoiceController},{},{rpc});
+  try {
+    await slot.behavior.emitRealtime("voice-presence",{nonce:"desktop-call",phase:"live",startedAt:Date.now(),client:"other-device"});
+    const ui=within(slot.container);
+    assert.ok(ui.getByText("Call on another device"));
+    assert.equal(ui.queryByLabelText("Mute Aide microphone"),null);
+    assert.equal(ui.queryByText("Connected"),null);
+    await act(async()=>ui.getByRole("button",{name:"Switch voice call to this device"}).click());
+    assert.equal(transfer.mock.callCount(),1);
+  } finally {
+    await act(async()=>voiceAgent.ingestPresence({nonce:"desktop-call",phase:"idle"}));
+    slot.lifecycle.unmount();
+  }
+});

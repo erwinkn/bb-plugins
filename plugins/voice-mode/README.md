@@ -19,6 +19,13 @@ commands. The default keyboard shortcuts are Cmd+Shift+H for start/stop and
 Cmd+Shift+U for mute; Windows/Linux use Ctrl instead of Cmd. Change these under
 Settings → Plugins → Voice Mode → Keyboard shortcuts.
 
+When the call is active elsewhere, other devices show **Call on another device**
+with **Switch here**. The switch checks local microphone access, disconnects the
+previous device, and continues the same conversation. Only one device sends or
+plays call audio at a time. Another window in the same browser is labelled
+**Call in another window**. A failed microphone check leaves the original call
+running; a connection failure after transfer requires reconnecting.
+
 A voice session is one logical conversation with its own hidden coordinator.
 Continue reuses that conversation across calls. New session starts another.
 The Voice page opens the conversation by default. Its view picker also offers

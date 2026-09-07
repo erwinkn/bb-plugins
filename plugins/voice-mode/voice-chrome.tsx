@@ -65,12 +65,24 @@ export function useCallElapsed(): string | null {
 /** Controls for an existing call. Mounting/unmounting never starts or stops it. */
 export function LiveCallControls() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+  const remoteLabel = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getRemoteCallLabel);
   const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
   const micSuspended = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getMicSuspended);
   const elapsed = useCallElapsed();
   const muted = state === "muted";
   const connecting = state === "connecting";
   if (state === "idle") return null;
+  if (remoteLabel) return (
+    <div className="voice-call-controls flex min-h-11 max-w-full items-center gap-2 rounded-md border border-border bg-background px-3">
+      <span className="min-w-0 text-xs text-muted-foreground">{remoteLabel}</span>
+      <button type="button" onClick={() => voiceAgent.switchToThisDevice()}
+        aria-label="Switch voice call to this device"
+        title="Move this conversation here. The other device will disconnect."
+        className="min-h-11 shrink-0 px-2 text-sm font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+        Switch here
+      </button>
+    </div>
+  );
 
   const speaking = activity === "aide";
   const listening = activity === "you";

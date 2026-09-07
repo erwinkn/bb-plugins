@@ -361,6 +361,22 @@ export class VoiceAgent {
   readonly getState = (): VoiceState =>
     this.state !== "idle" ? this.state : this.remotePresenceLive()?.phase ?? "idle";
 
+  readonly getRemoteCallLabel = (): string | null => {
+    if (this.hasLocalCall()) return null;
+    const remote = this.remotePresenceLive();
+    return !remote ? null : remote.ownerClient === clientId ? "Call in another window" : "Call on another device";
+  };
+
+  /** A click explicitly transfers the mirrored call after local microphone access succeeds. */
+  switchToThisDevice() {
+    if (this.hasLocalCall()) return;
+    const remote = this.remotePresenceLive();
+    if (!remote) return;
+    this.nextConversationId = undefined;
+    this.startNewConversation = false;
+    void this.start(remote.nonce);
+  }
+
   /** Epoch ms when the call went live, or null when not in a live/muted call. */
   readonly getLiveStartedAt = (): number | null =>
     this.state !== "idle" ? this.liveStartedAt : this.remotePresenceLive()?.startedAt ?? null;
@@ -1253,7 +1269,7 @@ export class VoiceAgent {
     return new CoordinatorBridge(host, conversationId, () => this.userTurn);
   }
 
-  private async start() {
+  private async start(transferFromNonce?: string) {
     const bindings = this.bindings;
     if (!bindings) return;
     // Assign the nonce before entering "connecting" so that state's presence
@@ -1275,28 +1291,37 @@ export class VoiceAgent {
       this.nextConversationId = undefined;
       const newConversation = this.startNewConversation;
       this.startNewConversation = false;
-      const claim = await bindings.rpc.call("claimCall", {
-        nonce,
-        newConversation,
-        ...(selectedConversationId ? {conversationId: selectedConversationId} : {}),
-        threadId: bindings.context.threadId,
-        projectId: bindings.context.projectId,
-      });
-      const { sequence } = claim;
-      if (this.nonce !== nonce) {
-        void bindings.rpc.call("forceStop", { nonce }).catch(() => undefined);
-        return;
-      }
-      this.callSequence = sequence;
-      const conversationId = claim.conversationId;
-      if (!conversationId) throw new Error("The server did not provide a coordinator conversation.");
-      this.logicalConversationId = conversationId;
-      this.emitChange();
-      if (conversationId) this.log("coordinator.conversation", { conversationId, resumed: claim.resumed, queuedUpdates: claim.queuedUpdates, newConversation });
-      const newerClaim = this.newerClaim as { nonce: string; sequence: number } | null;
-      if (newerClaim) this.onCallStarted(newerClaim.nonce, newerClaim.sequence);
-      if (this.nonce !== nonce) return;
-      this.broadcastPresence("connecting", nonce);
+      let conversationId: string | null = null;
+      const claimOwnership = async (): Promise<boolean> => {
+        const claim = await bindings.rpc.call("claimCall", {
+          nonce,
+          newConversation,
+          ...(transferFromNonce ? {transferFromNonce} : {}),
+          ...(selectedConversationId ? {conversationId: selectedConversationId} : {}),
+          threadId: bindings.context.threadId,
+          projectId: bindings.context.projectId,
+        });
+        const { sequence } = claim;
+        if (this.nonce !== nonce) {
+          void bindings.rpc.call("forceStop", { nonce }).catch(() => undefined);
+          return false;
+        }
+        this.callSequence = sequence;
+        this.remotePresence = null;
+        this.disarmRemoteExpiry();
+        conversationId = claim.conversationId;
+        if (!conversationId) throw new Error("The server did not provide a coordinator conversation.");
+        this.logicalConversationId = conversationId;
+        this.emitChange();
+        if (conversationId) this.log("coordinator.conversation", { conversationId, resumed: claim.resumed, queuedUpdates: claim.queuedUpdates, newConversation });
+        const newerClaim = this.newerClaim as { nonce: string; sequence: number } | null;
+        if (newerClaim) this.onCallStarted(newerClaim.nonce, newerClaim.sequence);
+        if (this.nonce !== nonce) return false;
+        this.broadcastPresence("connecting", nonce);
+        return true;
+      };
+      // Keep the other device's call alive while this device asks for microphone access.
+      if (!transferFromNonce && !await claimOwnership()) return;
       // Deterministic acquisition: enumerate what is actually present, resolve
       // the saved ids against it (a saved id whose salt rotated across restarts
       // simply resolves to the system default), then acquire. No "try an exact
@@ -1349,6 +1374,13 @@ export class VoiceAgent {
         );
       }
       this.logDiag("audio.getUserMedia.ok", { deviceId: inputId || "default" });
+      if (transferFromNonce && !await claimOwnership()) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
+      if (!conversationId) throw new Error("The voice conversation is unavailable.");
+      const callConversationId = conversationId;
+
 
       const pc = new RTCPeerConnection();
       const audio = new Audio();
@@ -1435,7 +1467,7 @@ export class VoiceAgent {
           this.clearConnectWatchdog();
           this.liveStartedAt = Date.now();
           this.markConversationChange();
-          this.bridge = this.createBridge(dc, conversationId);
+          this.bridge = this.createBridge(dc, callConversationId);
           this.refreshBridgeSnapshot();
           void this.bridge.reconcile();
           this.setState("live");
@@ -1647,6 +1679,7 @@ export class VoiceAgent {
       if (this.nonce !== nonce) return;
       this.stop();
       toast.error(`Aide: ${error instanceof Error ? error.message : String(error)}`);
+      this.requestPresence();
     }
   }
 }
