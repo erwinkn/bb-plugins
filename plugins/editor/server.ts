@@ -40,6 +40,9 @@ export type FileSource = z.infer<typeof sourceSchema>;
 
 const fileSchema = z.object({ path: z.string().min(1), source: sourceSchema }).strict();
 
+/** How long a Markdown preview's image lease lasts before the client renews it. */
+const PREVIEW_LEASE_MS = 30 * 60 * 1000;
+
 export const rpcContract = defineRpcContract({
   diffRevert: {
     input: z.object({ threadId: z.string().regex(BB_ID), target: diffTargetSchema,
@@ -77,6 +80,14 @@ export const rpcContract = defineRpcContract({
       }),
       z.object({ kind: z.literal("unsupported"), reason: z.string() }),
     ]),
+  },
+  /**
+   * A temporary URL base that serves the files under the root of `path`, for
+   * the images a Markdown preview refers to. It expires; ask again after that.
+   */
+  previewBase: {
+    input: fileSchema,
+    output: z.object({ baseUrl: z.string(), expiresAtMs: z.number() }),
   },
   /** Where the editor bundle is served from; the URL stays valid for the plugin's life. */
   assets: {
@@ -564,6 +575,16 @@ export default async function plugin(bb: BbPluginApi) {
 
     diffRead: readDiff,
     assets: () => assets(),
+
+    async previewBase({ path: filePath, source }) {
+      const target = await resolveTarget(source, filePath);
+      const lease = await bb.sdk.files.createPreview({
+        rootPath: target.rootPath,
+        ...(target.hostId === undefined ? {} : { hostId: target.hostId }),
+        ttlMs: PREVIEW_LEASE_MS,
+      });
+      return { baseUrl: lease.baseUrl, expiresAtMs: lease.expiresAtMs };
+    },
 
     async workspace({ threadId, projectId }) {
       if (threadId !== null) {

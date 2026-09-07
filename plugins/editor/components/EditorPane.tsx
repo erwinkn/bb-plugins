@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ComponentType, Ref } from "react";
-import { Markdown, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
+import { useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import { AUTO_SAVE_DELAY_MS, lineHeightFor, monoFontFamily, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } from "./PierreSurface";
 import type { MenuItem } from "./ContextMenu";
 import { GoToLine } from "./GoToLine";
+import { MarkdownPreview } from "./MarkdownPreview";
 import { Toolbar, type SaveIndicator } from "./Toolbar";
 
 /** Files that open as a rendered preview, with the editor one switch away. */
@@ -47,6 +48,8 @@ export interface EditorPaneProps {
   onToggleTree: () => void;
   onQuickOpen: (() => void) | null;
   onOpenInTab: (() => void) | null;
+  /** Opens another workspace file in this pane, for links in a Markdown preview. */
+  onOpenPath: ((path: string) => void) | null;
   history: { canBack: boolean; canForward: boolean; back: () => void; forward: () => void };
   onSetPref: SetPref;
   /** A Pierre theme name being previewed by the picker; null follows BB. */
@@ -77,6 +80,7 @@ export function EditorPane({
   onToggleTree,
   onQuickOpen,
   onOpenInTab,
+  onOpenPath,
   history,
   onSetPref,
   themePreview,
@@ -283,9 +287,14 @@ export function EditorPane({
         ) : !editing && state !== null && state.load.kind === "ready" ? (
           // The preview follows the shared buffer, so unsaved edits from the
           // Changes tab or an earlier draft show here too.
-          <div className="absolute inset-0 overflow-auto bg-background" data-testid="markdown-preview">
-            <Markdown content={state.content} className="mx-auto max-w-3xl px-6 py-5" />
-          </div>
+          <MarkdownPreview
+            source={source}
+            path={path}
+            relativePath={state.relativePath || path}
+            rootPath={workspaceRoot(state)}
+            content={state.content}
+            onOpenPath={onOpenPath}
+          />
         ) : assets !== null && "baseUrl" in assets && state !== null && state.load.kind === "ready" ? (
           <PierreSurface
             ref={surfaceRef}
@@ -338,6 +347,13 @@ function runOnSurface(ref: { current: PierreSurfaceHandle | null }, run: (handle
   if (handle === null || handle.status().kind !== "ready") return;
   handle.focus();
   run(handle);
+}
+
+/** The workspace root the file was read from: its absolute path minus its root-relative one. */
+function workspaceRoot(state: FileSessionSnapshot): string {
+  const { absolutePath, relativePath } = state;
+  if (relativePath === "" || !absolutePath.endsWith(relativePath)) return "";
+  return absolutePath.slice(0, absolutePath.length - relativePath.length).replace(/[\\/]+$/, "");
 }
 
 function indicatorFor(state: FileSessionSnapshot | null, surface: PierreSurfaceStatus): SaveIndicator {

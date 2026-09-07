@@ -440,6 +440,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           onToggleTree={toggleTree}
           onQuickOpen={() => setQuickOpen(true)}
           onOpenInTab={canOpenInTab ? () => void openInTab(activePath) : null}
+          onOpenPath={source.kind === "host" ? null : (path) => openFile(path, { newTab: false })}
           history={{ canBack: history.index > 0, canForward: history.index < history.paths.length - 1, back: goBack, forward: goForward }}
           onSetPref={onSetPref}
           themePreview={themePreview}

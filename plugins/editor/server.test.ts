@@ -38,7 +38,7 @@ test("workspace without a thread or project asks for a project", async (t) => {
 });
 
 test("contract exposes the methods the frontend calls", () => {
-  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffCommits", "diffList", "diffRead", "diffRevert", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
+  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffCommits", "diffList", "diffRead", "diffRevert", "previewBase", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
 });
 
 test("settings and the picker share predefined themes without changing BB's global theme", async (t) => {
@@ -202,6 +202,26 @@ test("create writes only an absent file and preserves a file created after its c
   assert.equal((absent.harness.inspection.sdk.callsTo("files.write")[0]?.[0] as { expectedSha256: null }).expectedSha256, null);
   await assert.rejects(() => raced.harness.behavior.callRpc("create", { source: raced.source, path: "new.txt", kind: "file" }), /already exists/);
   assert.equal(raced.content(), "another process created this");
+});
+
+test("previewBase leases the workspace root on the file's host and refuses paths outside it", async (t) => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "erwin-editor",
+    sdk: {
+      environments: { get: async () => environment },
+      files: { createPreview: async () => ({ baseUrl: "/api/v1/files/preview/lease1", expiresAtMs: 1_000 }) },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace", threadId: null, environmentId: environment.id, projectId: environment.projectId };
+  const lease = rpcContract.previewBase.output.parse(await harness.behavior.callRpc("previewBase", { path: "docs/guide.md", source }));
+  assert.deepEqual(lease, { baseUrl: "/api/v1/files/preview/lease1", expiresAtMs: 1_000 });
+  const args = harness.inspection.sdk.callsTo("files.createPreview")[0]?.[0] as { rootPath: string; hostId?: string; ttlMs?: number };
+  assert.equal(args.rootPath, "/workspace");
+  assert.equal(args.hostId, "host_remote");
+  assert.ok((args.ttlMs ?? 0) > 0);
+  await assert.rejects(() => harness.behavior.callRpc("previewBase", { path: "../guide.md", source }), /cannot contain/);
 });
 
 type Status = Awaited<ReturnType<BbPluginApi["sdk"]["environments"]["status"]>>;
