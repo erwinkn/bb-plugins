@@ -7,6 +7,7 @@
  * Skipped entirely: VS Code's default `files.exclude` (`.git`, `.hg`, `.svn`,
  * `.DS_Store`, `Thumbs.db`). Listed but not descended into: `node_modules`
  * and directory symlinks; those come back `deferred` and load when expanded.
+ * Symlinks whose target lies outside the workspace are omitted.
  */
 import { lstat, opendir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
@@ -43,21 +44,40 @@ export async function listLocalTree(rootPath: string, subpath: string, limit: nu
   // a symlink swapped after the check cannot lead it elsewhere. A symlinked
   // directory lists only when it stays inside the workspace; one that points
   // elsewhere shows as an empty folder.
-  const real = await resolveInside(rootPath, start);
+  let root: string;
+  try {
+    root = await realpath(rootPath);
+  } catch {
+    return { entries, truncated: false };
+  }
+  const real = await resolveInside(root, start);
   if (real === null) return { entries, truncated: false };
-  const truncated = await walk(real, subpath, entries, limit, subpath === "");
+  const truncated = await walk(real, subpath, { root, out: entries, limit, recurse: subpath === "" });
   return { entries, truncated };
 }
 
-/** The real path of `target` when it is the workspace root or under it; null otherwise. */
-async function resolveInside(rootPath: string, target: string): Promise<string | null> {
+/** The real path of `target` when it is the (real) workspace root or under it; null otherwise. */
+async function resolveInside(root: string, target: string): Promise<string | null> {
   try {
-    const root = await realpath(rootPath);
     const real = await realpath(target);
-    return real === root || real.startsWith(root + path.sep) ? real : null;
+    return isInside(root, real) ? real : null;
   } catch {
     return null;
   }
+}
+
+function isInside(root: string, real: string): boolean {
+  if (real === root) return true;
+  // A root that is itself the filesystem root already ends with the separator.
+  return real.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+}
+
+interface Walk {
+  /** Real path of the workspace root; symlinks may only point inside it. */
+  root: string;
+  out: TreeEntry[];
+  limit: number;
+  recurse: boolean;
 }
 
 /**
@@ -72,7 +92,8 @@ async function resolveInside(rootPath: string, target: string): Promise<string |
  * times, or its entries are dropped. What remains is a swap and swap-back
  * inside one read.
  */
-async function walk(dir: string, relativeDir: string, out: TreeEntry[], limit: number, recurse: boolean): Promise<boolean> {
+async function walk(dir: string, relativeDir: string, walkState: Walk): Promise<boolean> {
+  const { root, out, limit, recurse } = walkState;
   let handle;
   try {
     handle = await opendir(dir);
@@ -90,20 +111,32 @@ async function walk(dir: string, relativeDir: string, out: TreeEntry[], limit: n
           out.push({ path: relative, kind: "directory", deferred: true });
           continue;
         }
-        out.push({ path: relative, kind: "directory" });
+        // A directory that fails its identity check (replaced meanwhile, or a
+        // junction that lstat does not report as a directory) is listed as
+        // deferred, so expanding it goes through the resolved-path check.
         const before = await directoryIdentity(absolute);
-        if (before === null) continue;
+        if (before === null) {
+          out.push({ path: relative, kind: "directory", deferred: true });
+          continue;
+        }
+        out.push({ path: relative, kind: "directory" });
         const mark = out.length;
-        const truncated = await walk(absolute, relative, out, limit, recurse);
+        const truncated = await walk(absolute, relative, walkState);
         const after = await directoryIdentity(absolute);
-        if (after === null || after.ino !== before.ino || after.dev !== before.dev) out.length = mark;
+        if (after === null || after.ino !== before.ino || after.dev !== before.dev) {
+          out.length = mark;
+          out[mark - 1] = { path: relative, kind: "directory", deferred: true };
+        }
         if (truncated) return true;
         continue;
       }
       if (dirent.isSymbolicLink()) {
+        // Only links that stay inside the workspace are listed; one that points
+        // elsewhere would let file operations reach its target.
         let target;
         try {
           target = await stat(absolute);
+          if (!isInside(root, await realpath(absolute))) continue;
         } catch {
           continue; // dangling
         }
