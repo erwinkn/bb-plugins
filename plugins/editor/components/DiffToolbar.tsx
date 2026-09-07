@@ -4,7 +4,7 @@
  * done with it. Both use BB's chrome sizes, so the tab sits beside the Files
  * tab without looking different.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import { cn } from "@/lib/utils";
@@ -103,14 +103,14 @@ export function ScopeBar({
     request.current += 1;
     setCommits([]);
     setExpanded(false);
-    setScopeOpen(false);
+    setCommitStatus("loading");
     return () => { request.current += 1; };
   }, [threadId, commitBase]);
-  const loadCommits = () => {
+  const loadCommits = useCallback(() => {
     const generation = ++request.current;
     setCommitStatus("loading");
     setCommitMessage(null);
-    void rpc.call("diffCommits", { threadId, target }).then((result) => {
+    void rpc.call("diffCommits", { threadId, target: commitBase ? { type: "branch_committed", mergeBaseBranch: commitBase } : { type: "uncommitted" } }).then((result) => {
       if (generation !== request.current) return;
       setCommits(result.commits);
       setCommitMessage(result.message);
@@ -120,7 +120,12 @@ export function ScopeBar({
       setCommitStatus("error");
       setCommitMessage(error instanceof Error ? error.message : "Could not load commits");
     });
-  };
+  }, [rpc, threadId, commitBase]);
+  useEffect(() => {
+    if (!scopeOpen) return;
+    loadCommits();
+    return () => { request.current += 1; };
+  }, [scopeOpen, loadCommits]);
   const wording = describeTarget(target, baseBranch);
   const activeCommit = target.type === "commit" ? commits.find((commit) => commit.sha.startsWith(target.sha)) : null;
   const scopeIcon = (scope: DiffScope) => scope === "uncommitted" ? <FileAddGlyph /> : scope === "all" ? <CompareGlyph /> : <CommitGlyph />;
@@ -189,7 +194,7 @@ export function ScopeBar({
       <div className={ROW_CLASS}>
         <DiffScopeMenu items={scopeItems} open={scopeOpen} onOpenChange={(open) => {
           setScopeOpen(open);
-          if (open) { setExpanded(false); loadCommits(); }
+          if (open) setExpanded(false);
         }}>
         <button
           type="button"

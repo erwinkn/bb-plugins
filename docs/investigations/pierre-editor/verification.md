@@ -196,6 +196,8 @@ Installed desktop checks passed for the collapsed and expanded lists,
 Home/End/Escape, the selected commit mark, rendering an actual read-only commit
 comparison, and returning to Uncommitted. At 390 × 844, the BB drawer remained
 open during expansion and collapse; changing scope kept the Changes panel open.
+A delayed-response test also opens the selector before the workspace base arrives;
+the menu stays open and refreshes its commits when that response completes.
 No browser errors were reported. The browser tab must be active for Pierre's
 animation-frame rendering; a hidden test tab initially caused false failures.
 
