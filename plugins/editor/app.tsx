@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   definePluginApp,
   useRpc,
@@ -35,15 +35,23 @@ function usePrefs(): { prefs: EditorPrefs; setPref: SetPref } {
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
   }, [values]);
+  // Writes go out one after another, so two quick toggles cannot land in
+  // the wrong order and persist the older value.
+  const writeQueue = useRef<Promise<void>>(Promise.resolve());
   const setPref = useCallback<SetPref>(
     (...[key, value]) => {
       setOverrides((current) => ({ ...current, [key]: value }));
-      void rpc.call("setSetting", { key, value } as Parameters<typeof rpc.call<"setSetting">>[1]).catch(() => {
-        setOverrides((current) => {
-          const { [key]: _dropped, ...rest } = current;
-          return rest;
-        });
-      });
+      writeQueue.current = writeQueue.current.then(() =>
+        rpc
+          .call("setSetting", { key, value } as Parameters<typeof rpc.call<"setSetting">>[1])
+          .then(() => undefined)
+          .catch(() => {
+            setOverrides((current) => {
+              const { [key]: _dropped, ...rest } = current;
+              return rest;
+            });
+          }),
+      );
     },
     [rpc],
   );

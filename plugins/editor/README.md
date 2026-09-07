@@ -55,8 +55,8 @@ disable that one before you install this one.
   file changed on disk since you opened it, the save stops and offers
   **Reload** or **Overwrite**. Switching files with unsaved changes offers
   **Save and open**, **Discard and open**, or **Cancel**.
-- **Editor polish.** Sticky scroll, bracket pair colors, indent guides,
-  smooth caret, BB's mono font, and 70 grammars (Astro, Svelte, Vue, TOML,
+- **Editor polish.** Sticky scroll, smooth caret, BB's mono font, and 70
+  grammars (Astro, Svelte, Vue, TOML,
   Zig, Nix, Prisma, Haskell, OCaml, Gleam, Elixir, Makefile, Dockerfile, …).
 - **Quick palette commands** (`⌘⇧P`, type "Editor:"): save, quick open,
   toggle tree, format, go to symbol, go to line, fold and unfold, sort lines,
@@ -144,6 +144,5 @@ grammar, and five workers, all loaded on demand.
 - Live reload when the agent edits an open file (needs a workspace watch).
 - Git gutter and an editable diff view against HEAD or the base branch.
 - Review comments on lines that the agent can read.
-- Hidden files never appear in the tree; BB's path listing excludes them.
 - A file opened from the tree inside an editor tab keeps that tab's original
   title; plugins cannot retitle a host tab yet.

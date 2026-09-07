@@ -50,7 +50,7 @@ export function ContextMenu({ state, onClose }: { state: MenuState | null; onClo
 
   useEffect(() => {
     if (state === null) return;
-    menuRef.current?.querySelector("button")?.focus();
+    menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
     const onPointerDown = (event: PointerEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) onClose();
     };

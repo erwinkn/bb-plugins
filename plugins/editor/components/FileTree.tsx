@@ -72,9 +72,10 @@ export function FileTree({
     });
   }, [activePath]);
 
+  // Runs again once the ancestors above expand, when the row first exists.
   useEffect(() => {
     activeRowRef.current?.scrollIntoView({ block: "nearest" });
-  }, [activePath, entries.length]);
+  }, [activePath, entries.length, expanded]);
 
   const effectiveExpanded = useMemo(
     () => (filtered.expand.size === 0 ? expanded : new Set([...expanded, ...filtered.expand])),
@@ -106,6 +107,11 @@ export function FileTree({
       return next;
     });
   };
+
+  // A row's request can finish after another draft or edit replaced it; only
+  // the originating one clears the state.
+  const endDraft = (which: Draft) => setDraft((current) => (current === which ? null : current));
+  const endRowEdit = (which: RowEdit) => setRowEdit((current) => (current === which ? null : current));
 
   const startDraft = (parent: string, kind: CreateKind) => {
     if (parent !== "") setExpanded((current) => (current.has(parent) ? current : new Set([...current, parent])));
@@ -187,7 +193,7 @@ export function FileTree({
         ) : (
           <>
             {draft !== null && draft.parent === "" ? (
-              <DraftRow draft={draft} level={0} onCancel={() => setDraft(null)} onCreate={onCreate} onDone={() => setDraft(null)} />
+              <DraftRow draft={draft} level={0} onCancel={() => endDraft(draft)} onCreate={onCreate} onDone={() => endDraft(draft)} />
             ) : null}
             <Rows
               activePath={activePath}
@@ -201,9 +207,9 @@ export function FileTree({
               onOpenFile={onOpenFile}
               onStartDraft={startDraft}
               onToggle={toggle}
-              onCancelDraft={() => setDraft(null)}
+              onCancelDraft={() => (draft === null ? undefined : endDraft(draft))}
               onCreate={onCreate}
-              onEndRowEdit={() => setRowEdit(null)}
+              onEndRowEdit={() => (rowEdit === null ? undefined : endRowEdit(rowEdit))}
               onRename={onRename}
               onDelete={onDelete}
             />
@@ -541,7 +547,7 @@ function DeleteRow({
       setBusy(false);
     }
   };
-  const count = node.kind === "directory" ? countFiles(node) : 0;
+  const contents = node.kind === "directory" ? describeContents(node) : "";
   return (
     <div
       className="bg-destructive/10 px-2 py-1 text-xs text-foreground"
@@ -556,7 +562,7 @@ function DeleteRow({
     >
       <p className="truncate">
         Delete <span className="font-medium">{node.name}</span>
-        {node.kind === "directory" ? ` and ${count} file${count === 1 ? "" : "s"}` : ""}?
+        {contents}?
       </p>
       <div className="mt-1 flex gap-2">
         <button
@@ -579,6 +585,22 @@ function DeleteRow({
       {error !== null ? <p className="pt-1 text-[11px] text-destructive">{error}</p> : null}
     </div>
   );
+}
+
+/**
+ * What deleting a directory takes with it. A count is only honest when every
+ * descendant is listed; a deferred directory (node_modules, a symlink, or a
+ * level not expanded yet) holds an unknown number of files.
+ */
+function describeContents(node: TreeNode): string {
+  if (hasUnlistedContents(node)) return " and everything in it";
+  const count = countFiles(node);
+  return ` and ${count} file${count === 1 ? "" : "s"}`;
+}
+
+function hasUnlistedContents(node: TreeNode): boolean {
+  if (node.deferred && node.children.length === 0) return true;
+  return node.children.some((child) => child.kind === "directory" && hasUnlistedContents(child));
 }
 
 function countFiles(node: TreeNode): number {

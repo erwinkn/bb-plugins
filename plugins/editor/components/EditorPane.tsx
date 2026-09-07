@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { toast } from "sonner";
 import type { ComponentType } from "react";
 import { experimental_useCodeTheme, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type * as MonacoNs from "monaco-editor";
@@ -103,10 +104,13 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     setSaveStateValue(next);
   }, []);
 
-  const write = useCallback(
-    async (expectedSha256: string | null): Promise<boolean> => {
-      const file = fileRef.current;
-      if (file === null || saveStateRef.current.kind === "saving") return false;
+  const scheduleAutosave = useCallback(() => {
+    if (autosaveTimer.current !== null) clearTimeout(autosaveTimer.current);
+    autosaveTimer.current = setTimeout(() => void saveRef.current(), AUTO_SAVE_DELAY_MS);
+  }, []);
+
+  const writeNow = useCallback(
+    async (file: OpenFile, expectedSha256: string | null): Promise<boolean> => {
       if (latest.current.prefs.formatOnSave) {
         // No-op for languages without a formatter; the TS/JSON/CSS/HTML workers provide one.
         await editorRef.current?.getAction("editor.action.formatDocument")?.run();
@@ -128,7 +132,10 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
         }
         file.sha256 = result.sha256;
         file.savedVersionId = versionId;
-        setSaveState(file.model.getAlternativeVersionId() === versionId ? { kind: "clean" } : { kind: "dirty" });
+        // Edits typed during the save are still unsaved; auto save must pick them up.
+        const stillDirty = file.model.getAlternativeVersionId() !== versionId;
+        setSaveState(stillDirty ? { kind: "dirty" } : { kind: "clean" });
+        if (stillDirty && latest.current.prefs.autoSave === "afterDelay") scheduleAutosave();
         return true;
       } catch (error) {
         if (fileRef.current === file) {
@@ -137,7 +144,27 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
         return false;
       }
     },
-    [rpc, setSaveState, source],
+    [rpc, scheduleAutosave, setSaveState, source],
+  );
+
+  // One save at a time: a save requested during another waits for it, then
+  // runs against the model as it is by then (or reports clean and stops).
+  const inFlightSave = useRef<Promise<boolean> | null>(null);
+  const write = useCallback(
+    async (expectedSha256: string | null): Promise<boolean> => {
+      while (inFlightSave.current !== null) await inFlightSave.current;
+      const file = fileRef.current;
+      if (file === null) return false;
+      if (saveStateRef.current.kind === "clean" && file.model.getAlternativeVersionId() === file.savedVersionId) return true;
+      const run = writeNow(file, expectedSha256 === null ? null : file.sha256);
+      inFlightSave.current = run;
+      try {
+        return await run;
+      } finally {
+        if (inFlightSave.current === run) inFlightSave.current = null;
+      }
+    },
+    [writeNow],
   );
 
   const save = useCallback(() => write(fileRef.current?.sha256 ?? null), [write]);
@@ -148,14 +175,21 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
   const reloadFromDisk = useCallback(async () => {
     const file = fileRef.current;
     if (file === null) return;
+    // Edits typed while the read is in flight are newer than what it returns.
+    const versionId = file.model.getAlternativeVersionId();
     try {
       const result = await rpc.call("read", { path: file.path, source });
       if (fileRef.current !== file || result.kind !== "text") return;
+      if (file.model.getAlternativeVersionId() !== versionId) {
+        toast.message("The file changed while reloading; reload again to replace it");
+        return;
+      }
       file.model.setValue(result.content);
       file.sha256 = result.sha256;
       file.savedVersionId = file.model.getAlternativeVersionId();
       setSaveState({ kind: "clean" });
     } catch (error) {
+      if (fileRef.current !== file) return;
       setSaveState({ kind: "error", message: error instanceof Error ? error.message : "Reload failed" });
     }
   }, [rpc, setSaveState, source]);
@@ -163,7 +197,8 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
   useImperativeHandle(
     ref,
     () => ({
-      isDirty: () => saveStateRef.current.kind !== "clean" && saveStateRef.current.kind !== "saving",
+      // A save in flight still counts: its outcome (conflict, error) is unknown.
+      isDirty: () => saveStateRef.current.kind !== "clean",
       save,
       focus: () => editorRef.current?.focus(),
     }),
@@ -203,10 +238,7 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
           if (current === "saving" || current === "conflict") return;
           if (dirty && current !== "dirty" && current !== "error") setSaveState({ kind: "dirty" });
           if (!dirty && current === "dirty") setSaveState({ kind: "clean" });
-          if (latest.current.prefs.autoSave === "afterDelay" && dirty) {
-            if (autosaveTimer.current !== null) clearTimeout(autosaveTimer.current);
-            autosaveTimer.current = setTimeout(() => void saveRef.current(), AUTO_SAVE_DELAY_MS);
-          }
+          if (latest.current.prefs.autoSave === "afterDelay" && dirty) scheduleAutosave();
         });
         editor.onDidBlurEditorWidget(() => {
           if (latest.current.prefs.autoSave === "onBlur" && saveStateRef.current.kind === "dirty") void saveRef.current();
@@ -251,19 +283,23 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
     if (runtime === null || editor === null) return;
     // An earlier file's failure must not be read as this file's while it loads.
     setStatus((current) => (current.kind === "error" ? { kind: "ready" } : current));
+    // The previous file leaves before the read starts, so nothing typed or
+    // saved while the new one loads can reach it.
+    const previous = fileRef.current;
+    if (previous !== null) {
+      const viewState = editor.saveViewState();
+      if (viewState !== null) viewStates.current.set(previous.path, viewState);
+      fileRef.current = null;
+      editor.setModel(null);
+      previous.model.dispose();
+      forgetEditor(editor);
+      setSaveState({ kind: "clean" });
+    }
     let cancelled = false;
     void (async () => {
       try {
         const result = await rpc.call("read", { path, source });
         if (cancelled) return;
-        const previous = fileRef.current;
-        if (previous !== null) {
-          const viewState = editor.saveViewState();
-          if (viewState !== null) viewStates.current.set(previous.path, viewState);
-          fileRef.current = null;
-          editor.setModel(null);
-          previous.model.dispose();
-        }
         if (result.kind === "unsupported") {
           setSaveState({ kind: "clean" });
           setStatus({ kind: "unsupported", reason: result.reason });
@@ -305,16 +341,6 @@ export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function
         });
       } catch (error) {
         if (cancelled) return;
-        // The toolbar names the new path, so the previous file must not stay
-        // behind it where typing and ⌘S would still reach it.
-        const previous = fileRef.current;
-        if (previous !== null) {
-          fileRef.current = null;
-          editor.setModel(null);
-          previous.model.dispose();
-          forgetEditor(editor);
-        }
-        setSaveState({ kind: "clean" });
         setStatus({ kind: "error", message: error instanceof Error ? error.message : "Could not open this file" });
       }
     })();

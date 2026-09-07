@@ -268,8 +268,12 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       }
       await rpc.call("rename", { path, source, newPath });
       await loadTree();
-      if (activePath === path) show(newPath, { record: true });
-      else if (movesOpenFile && activePath !== null) show(`${newPath}/${activePath.slice(prefix.length)}`, { record: true });
+      // History follows the rename (the old paths no longer exist), and the
+      // open file's new name replaces its entry rather than adding one.
+      const renamed = (entry: string) =>
+        entry === path ? newPath : kind === "directory" && entry.startsWith(prefix) ? `${newPath}/${entry.slice(prefix.length)}` : entry;
+      setHistory((current) => ({ ...current, paths: current.paths.map(renamed) }));
+      if (movesOpenFile && activePath !== null) show(renamed(activePath), { record: false });
     },
     [activePath, loadTree, rpc, show, source],
   );

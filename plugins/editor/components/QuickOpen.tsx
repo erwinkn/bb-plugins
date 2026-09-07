@@ -25,7 +25,8 @@ export function QuickOpen({
     inputRef.current?.focus();
   }, []);
 
-  useEffect(() => setIndex(0), [query]);
+  // The list re-sorts when entries arrive, so a kept index would name another file.
+  useEffect(() => setIndex(0), [query, entries]);
 
   useEffect(() => {
     listRef.current?.children[index]?.scrollIntoView({ block: "nearest" });
