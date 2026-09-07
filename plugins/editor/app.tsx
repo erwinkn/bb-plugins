@@ -13,6 +13,7 @@ import { CLAIMED_EXTENSIONS } from "@/lib/languages";
 import { prefsFrom, type EditorPrefs } from "@/lib/editor-options";
 import { EDITOR_COMMANDS, isCommandAvailable, runEditorCommand } from "@/lib/editor-commands";
 import { Workbench, type WorkbenchProps } from "@/components/Workbench";
+import { DiffWorkbench } from "@/components/DiffWorkbench";
 
 type SetPref = WorkbenchProps["onSetPref"];
 
@@ -142,6 +143,11 @@ function ThreadFilesPanel({ threadId, params }: PluginThreadPanelProps) {
   return <FilesPanelBody workspace={workspace} initialPath={pathParam(params)} />;
 }
 
+function ThreadChangesPanel({ threadId, params }: PluginThreadPanelProps) {
+  const { prefs, setPref } = usePrefs();
+  return <DiffWorkbench threadId={threadId} params={params} prefs={prefs} onSetPref={setPref} />;
+}
+
 /** The "Files" tab on the New thread screen: the project's default checkout. */
 function NewThreadFilesPanel({ projectId, params }: PluginNewThreadPanelProps) {
   const workspace = useWorkspace(null, projectId);
@@ -165,6 +171,21 @@ export default definePluginApp((app) => {
     icon: "Folder",
     layout: "flush",
     component: ThreadFilesPanel,
+  });
+
+  app.slots.threadPanelAction({
+    id: "changes",
+    title: "Changes",
+    icon: "GitDiff",
+    layout: "flush",
+    component: ThreadChangesPanel,
+  });
+
+  app.slots.commandPaletteAction({
+    id: "open-changes",
+    title: "Editor: open changes",
+    isAvailable: ({ threadId }) => threadId !== null,
+    run: ({ openPanel }) => { openPanel({ actionId: "changes" }); },
   });
 
   app.slots.experimental_newThreadPanelAction({

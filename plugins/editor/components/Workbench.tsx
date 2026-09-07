@@ -346,8 +346,6 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-    const inMonaco = (event.target as HTMLElement | null)?.closest(".monaco-editor") !== null;
-    if (inMonaco) return;
     const key = event.key.toLowerCase();
     if (key === "p" && !event.shiftKey) {
       event.preventDefault();

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { listLocalTree } from "./lib/local-tree.js";
 import { BB_DEFAULT, bbThemeId, pairIdFromBbTheme, THEME_PAIRS } from "./lib/themes.js";
+import { diffEntrySchema, diffTargetSchema, hasConflictMarkers, isWorkingTreeTarget, type DiffTarget } from "./lib/diff-contract.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
 const MAX_TREE_ENTRIES = 10_000;
@@ -17,6 +19,7 @@ const ASSET_CONTENT_TYPES: Record<string, string> = {
   ".wasm": "application/wasm",
   ".json": "application/json; charset=utf-8",
   ".map": "application/json; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
 };
 const PACKAGE_NAME = "bb-plugin-erwin-editor";
 /** BB ids are `<prefix>_<alphanumerics>`; a thread id becomes a directory name under thread storage, so nothing path-like passes. */
@@ -37,6 +40,25 @@ export type FileSource = z.infer<typeof sourceSchema>;
 const fileSchema = z.object({ path: z.string().min(1), source: sourceSchema }).strict();
 
 export const rpcContract = defineRpcContract({
+  diffList: {
+    input: z.object({ threadId: z.string().regex(BB_ID), target: diffTargetSchema }).strict(),
+    output: z.object({
+      source: sourceSchema, root: z.string(), label: z.string(), baseBranch: z.string().nullable(),
+      target: diffTargetSchema, files: z.array(diffEntrySchema), truncated: z.boolean(), message: z.string().nullable(),
+    }),
+  },
+  diffRead: {
+    input: z.object({ threadId: z.string().regex(BB_ID), target: diffTargetSchema, path: z.string().min(1).max(4096) }).strict(),
+    output: z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("text"), source: sourceSchema, path: z.string(), previousPath: z.string().nullable(),
+        oldContent: z.string().nullable(), newContent: z.string().nullable(), editable: z.boolean(), reason: z.string().nullable(),
+        changeKind: diffEntrySchema.shape.changeKind, origin: diffEntrySchema.shape.origin,
+        sha256: z.string().nullable(), absolutePath: z.string(), relativePath: z.string(),
+      }),
+      z.object({ kind: z.literal("unsupported"), reason: z.string() }),
+    ]),
+  },
   /** Where the editor bundle is served from; the URL stays valid for the plugin's life. */
   assets: {
     input: z.null(),
@@ -106,9 +128,7 @@ export const rpcContract = defineRpcContract({
   setSetting: {
     input: z.discriminatedUnion("key", [
       z.object({ key: z.literal("wordWrap"), value: z.boolean() }),
-      z.object({ key: z.literal("minimap"), value: z.boolean() }),
       z.object({ key: z.literal("lineNumbers"), value: z.boolean() }),
-      z.object({ key: z.literal("formatOnSave"), value: z.boolean() }),
       z.object({ key: z.literal("autoSave"), value: z.enum(["off", "onBlur", "afterDelay"]) }),
       z.object({ key: z.literal("fileTreeSide"), value: z.enum(["left", "right"]) }),
     ]),
@@ -153,11 +173,12 @@ export function findPluginRoot(start: string): string {
 
 function isBundleStale(pluginRoot: string, bundleDir: string): boolean {
   const builtAtMs = statSync(path.join(bundleDir, "editor.js")).mtimeMs;
-  const entryDir = path.join(pluginRoot, "monaco-bundle");
+  const entryDir = path.join(pluginRoot, "pierre-bundle");
   if (!existsSync(entryDir)) return false;
   const inputs = [
     path.join(pluginRoot, "scripts", "stage-assets.mjs"),
     path.join(pluginRoot, "package.json"),
+    path.join(pluginRoot, "package-lock.json"),
     ...readdirSync(entryDir).map((name) => path.join(entryDir, name)),
   ];
   return inputs.some((input) => existsSync(input) && statSync(input).mtimeMs > builtAtMs);
@@ -176,7 +197,7 @@ function listFilesRecursively(dir: string, prefix = ""): string[] {
 
 async function ensureBundleDir(log: (message: string) => void): Promise<string> {
   const pluginRoot = findPluginRoot(path.dirname(fileURLToPath(import.meta.url)));
-  const bundleDir = path.join(pluginRoot, "dist", "monaco");
+  const bundleDir = path.join(pluginRoot, "dist", "pierre");
   const built = existsSync(path.join(bundleDir, "editor.js"));
   if (built && !isBundleStale(pluginRoot, bundleDir)) return bundleDir;
   log(built ? "editor bundle is older than its sources; rebuilding it" : "editor bundle missing; building it");
@@ -186,7 +207,7 @@ async function ensureBundleDir(log: (message: string) => void): Promise<string> 
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `could not build the editor bundle (${reason}); run \`npm run build:monaco\` in ${pluginRoot}`,
+      `could not build the editor bundle (${reason}); run \`npm run build:pierre\` in ${pluginRoot}`,
     );
   }
   if (!existsSync(path.join(bundleDir, "editor.js"))) {
@@ -210,34 +231,26 @@ export default async function plugin(bb: BbPluginApi) {
     },
     wordWrap: { type: "boolean", label: "Wrap long lines", default: false },
     lineNumbers: { type: "boolean", label: "Show line numbers", default: true },
-    minimap: { type: "boolean", label: "Show minimap", default: false },
     autoSave: {
       type: "select",
       label: "Auto save",
       options: ["off", "onBlur", "afterDelay"],
       default: "off",
     },
-    formatOnSave: { type: "boolean", label: "Format on save (languages with a formatter)", default: false },
     fileTreeSide: {
       type: "select",
       label: "File tree side",
       options: ["left", "right"],
       default: "right",
     },
-    typescriptDiagnostics: {
-      type: "select",
-      label: "TypeScript diagnostics (the checker sees only the open file)",
-      options: ["off", "syntax", "semantic"],
-      default: "syntax",
-    },
   });
 
   // The bundle is served through the plugin's own HTTP routes, one per file
   // (routes match exact paths), so its URLs never expire: the page keeps one
-  // Monaco module for its whole life, and its lazy chunks and workers resolve
+  // Pierre module for its whole life, and its lazy chunks and workers resolve
   // against the same base at any later time. A preview lease would lapse
   // after an hour at most.
-  const assetsBaseUrl = `/api/v1/plugins/${bb.pluginId}/http/monaco`;
+  let assetsBaseUrl = "";
   let assetsReady: Promise<void> | null = null;
 
   async function assets() {
@@ -251,6 +264,12 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function registerAssetRoutes() {
     const bundleDir = await ensureBundleDir((message) => bb.log.info(message));
+    // Version the base path as well as chunks: browsers cache imported ESM
+    // modules even when HTTP says no-cache. A plugin reload must load new code.
+    const entries = await Promise.all(["editor.js", "worker.js"].map((name) => readFile(path.join(bundleDir, name))));
+    const revision = createHash("sha256").update(entries[0]!).update(entries[1]!).digest("hex").slice(0, 16);
+    const routeBase = `/pierre/${revision}`;
+    assetsBaseUrl = `/api/v1/plugins/${bb.pluginId}/http${routeBase}`;
     const files = listFilesRecursively(bundleDir);
     let served = 0;
     for (const relative of files) {
@@ -258,8 +277,8 @@ export default async function plugin(bb: BbPluginApi) {
       if (type === undefined) continue;
       const absolute = path.join(bundleDir, relative);
       // Chunks carry a content hash in their name; the entry files do not.
-      const immutable = relative.startsWith("chunks/");
-      bb.http.route("GET", `/monaco/${relative}`, async () => {
+      const immutable = relative.startsWith("chunks/") || relative.startsWith("worker-chunks/");
+      bb.http.route("GET", `${routeBase}/${relative}`, async () => {
         const body = await readFile(absolute);
         return new Response(body, {
           headers: {
@@ -344,7 +363,128 @@ export default async function plugin(bb: BbPluginApi) {
     return api.relative(root, target) || api.basename(target);
   }
 
+  /**
+   * The comparison's file list, fresh from the daemon. `diffRead` calls this
+   * too, so a file's membership and metadata are never older than the read:
+   * on a slow host that is one extra name-status and numstat run per open.
+   */
+  async function listDiff(threadId: string, requested: DiffTarget) {
+    const thread = await bb.sdk.threads.get({ threadId });
+    if (thread.environmentId === null) throw new Error("This thread has no workspace");
+    const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
+    if (!environment.path) throw new Error("This workspace has no filesystem path");
+    const baseBranch = environment.mergeBaseBranch ?? environment.baseBranch ?? environment.defaultBranch ?? null;
+    const source: FileSource = {
+      kind: "workspace", threadId, environmentId: thread.environmentId, projectId: thread.projectId,
+      ...(environment.hostId ? { experimental_hostId: environment.hostId } : {}),
+    };
+    let target = requested;
+    if (requested.type === "all" || requested.type === "branch_committed") {
+      const branch = requested.mergeBaseBranch ?? baseBranch;
+      if (!branch) throw new Error("Enter a base branch for this comparison");
+      target = { ...requested, mergeBaseBranch: branch };
+    }
+    const query = target.type === "commit"
+      ? { target: target.type, sha: target.sha }
+      : target.type === "uncommitted"
+        ? { target: target.type }
+        : { target: target.type, mergeBaseBranch: target.mergeBaseBranch! };
+    const result = await bb.sdk.environments.diffFiles({ environmentId: environment.id, ...query });
+    // Without a merge base the daemon reports an empty, "available" comparison.
+    const message = result.outcome === "available"
+      ? (target.type === "all" || target.type === "branch_committed") && result.mergeBaseRef === null
+        ? `HEAD has no merge base with ${target.mergeBaseBranch}. Check that the branch exists and shares history.`
+        : null
+      : result.outcome === "not_applicable" ? result.message : result.failure.message;
+    return { source, environment, baseBranch, target, result, message };
+  }
+
+  /**
+   * Why working-tree edits to `filePath` must wait, or null. Comparisons
+   * fold git's `U` status into "modified", so an unmerged index shows only
+   * in the workspace status, per file, and only for porcelain codes that
+   * contain `U`. Known gap: a both-added (`AA`) entry reports as `A`; it is
+   * caught by `hasConflictMarkers` unless its markers were stripped by hand.
+   * Both-deleted (`DD`) entries are absent from disk and stay read-only.
+   */
+  async function conflictBlock(environmentId: string, filePath: string): Promise<string | null> {
+    let status: Awaited<ReturnType<typeof bb.sdk.environments.status>>;
+    try {
+      status = await bb.sdk.environments.status({ environmentId });
+    } catch (error) {
+      return `Cannot confirm the workspace has no merge conflict: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (status.outcome !== "available") {
+      const detail = status.outcome === "not_applicable" ? status.message : status.failure.message;
+      return `Cannot confirm the workspace has no merge conflict: ${detail}`;
+    }
+    if (status.workspace.workingTree.files.some((file) => file.path === filePath && file.status === "U")) {
+      return "Resolve this file's merge conflict in the file editor before editing this diff.";
+    }
+    return null;
+  }
+
   bb.rpc.register(rpcContract, {
+    async diffList({ threadId, target }) {
+      const data = await listDiff(threadId, target);
+      const { result, environment } = data;
+      return {
+        source: data.source, root: environment.path!,
+        label: environment.branchName ?? environment.name ?? path.basename(environment.path!),
+        baseBranch: data.baseBranch, target: data.target,
+        files: result.outcome === "available" ? result.files.slice(0, MAX_TREE_ENTRIES) : [],
+        truncated: result.outcome === "available" && (result.truncated || result.files.length > MAX_TREE_ENTRIES),
+        message: data.message,
+      };
+    },
+
+    async diffRead({ threadId, target: requested, path: filePath }) {
+      assertInsideWorkspace(filePath);
+      const { result, environment, source, target, message } = await listDiff(threadId, requested);
+      if (result.outcome !== "available" || message !== null) return { kind: "unsupported" as const, reason: message ?? "This comparison is unavailable" };
+      const entry = result.files.find((file) => file.path === filePath);
+      if (!entry) return { kind: "unsupported" as const, reason: "This file is no longer in the comparison. Refresh the file list." };
+      if (entry.binary) return { kind: "unsupported" as const, reason: "Binary file changed" };
+      if (entry.loadMode === "too_large") return { kind: "unsupported" as const, reason: "This file is too large to compare" };
+      if (entry.changeKind === "type_changed") return { kind: "unsupported" as const, reason: "The file type changed. Open the working file to inspect it." };
+      // `initialPatches` is only a bounded preview; both sides load whole below.
+      const query = target.type === "commit" ? { target: target.type, sha: target.sha }
+        : target.type === "uncommitted" ? { target: target.type }
+        : { target: target.type, mergeBaseRef: result.mergeBaseRef ?? "" };
+      const empty = { content: "", contentEncoding: "utf8" as const, sizeBytes: 0 };
+      const [oldFile, newFile] = await Promise.all([
+        entry.changeKind === "added" || entry.origin === "untracked" ? empty : bb.sdk.environments.diffFile({ environmentId: environment.id, ...query, side: "old", path: entry.previousPath ?? filePath }),
+        entry.changeKind === "deleted" ? empty : bb.sdk.environments.diffFile({ environmentId: environment.id, ...query, side: "new", path: filePath }),
+      ]);
+      if (oldFile.contentEncoding !== "utf8" || newFile.contentEncoding !== "utf8") return { kind: "unsupported" as const, reason: "This file is not text" };
+      if (Math.max(oldFile.sizeBytes, newFile.sizeBytes) > MAX_EDITABLE_BYTES) return { kind: "unsupported" as const, reason: "This file is too large to compare" };
+      const resolved = await resolveTarget(source, filePath);
+      let editable = isWorkingTreeTarget(target) && entry.changeKind !== "deleted";
+      let reason: string | null = editable ? null : entry.changeKind === "deleted" ? "Deleted files are read-only" : "This is a saved revision. Open the working file to edit it.";
+      let sha256: string | null = null;
+      if (editable) {
+        const [live, blocked] = await Promise.all([bb.sdk.files.read(resolved), conflictBlock(environment.id, filePath)]);
+        if (live.contentEncoding !== "utf8" || live.sizeBytes > MAX_EDITABLE_BYTES) return { kind: "unsupported" as const, reason: "The working file can no longer be edited as text" };
+        sha256 = live.sha256;
+        if (live.content !== newFile.content) {
+          editable = false;
+          reason = "The working file changed while loading. Refresh before editing.";
+        } else if (blocked !== null) {
+          editable = false;
+          reason = blocked;
+        } else if (hasConflictMarkers(live.content)) {
+          editable = false;
+          reason = "Resolve the merge conflict in the file editor before editing this diff.";
+        }
+      }
+      return {
+        kind: "text" as const, source, path: filePath, previousPath: entry.previousPath,
+        oldContent: entry.changeKind === "added" || entry.origin === "untracked" ? null : oldFile.content,
+        newContent: entry.changeKind === "deleted" ? null : newFile.content,
+        changeKind: entry.changeKind, origin: entry.origin, editable, reason, sha256,
+        absolutePath: resolved.path, relativePath: relativeTo(resolved.rootPath, resolved.path),
+      };
+    },
     assets: () => assets(),
 
     async workspace({ threadId, projectId }) {

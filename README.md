@@ -6,9 +6,9 @@ A private GitHub collection of BB plugins.
 Working, Draft, and Done. It also supports project grouping. See
 [Threads](plugins/activity/README.md) for local installation and draft limits.
 
-`erwin-editor` adds a Monaco file editor: a Files panel with a file tree,
-BB-matched syntax colors, a code theme picker, and TypeScript, JSON, CSS,
-and HTML language services. See [Editor](plugins/editor/README.md).
+`erwin-editor` adds a Pierre file editor: a Files panel with a file tree,
+BB-matched syntax colors, a code theme picker, and an editable Changes tab.
+Both tabs share file buffers and safe saves. See [Editor](plugins/editor/README.md).
 
 `erwin-devin` adds **Devin** as a provider, with a native icon, sign-in
 help, executable setting, account usage, and live ACP model catalog. It preserves the provider
@@ -132,6 +132,17 @@ ID and browser storage; never clear client preferences. Check the resulting
 source and enabled state. Record the previous source so installation failure
 can be rolled back. Do not apply this exception to a plugin with data.
 
+An existing `path:` installation can move to another path with
+`bb plugin install path:<directory> --yes` while retaining its plugin ID and
+server-side state. For a branch preview of a plugin with settings, use a stable
+Git clone checked out at the pushed feature branch, build there, and move only
+that plugin to the clone. Do not use a temporary worktree. Record the clone's
+branch and full commit hash beside `bb plugin source`, since BB reports a path
+source without a resolved Git commit. Update that clone explicitly for each
+preview; `bb plugin update` does not fetch path installations. After merge,
+return it to `main` and rebuild, or move it back to its recorded normal path.
+A managed Git source switch still needs the upstream API described below.
+
 For example, after confirming that `erwin-activity` has no server-side data:
 
 ```sh
@@ -157,6 +168,55 @@ keyboard shortcuts. The Threads plugin currently collects the descendant tree
 and archives deepest first through public SDK calls. A server-owned operation
 should handle concurrent child creation and reparenting consistently, preserve
 BB's lifecycle cleanup, and report partial failures.
+
+### Editable plugin diff renderers and Git targets
+
+Allow a plugin to edit a live working file inside BB's native diff viewer.
+BB 0.42.1 already has `experimental_diffRenderer`, but the installed host passes
+only patch text, path, display options, optional complete sides and `Original`.
+It does not pass environment/host identity, revision target, a file hash, save
+or refresh actions. Complete diff text alone does not identify a writable file.
+
+Extend the contract with semantic source and revision identity and optional
+live-file read/save/refresh capabilities. Keep historical and patch-only callers
+read-only. Pass the existing selection-to-chat action to replacements too.
+Keep `Original` as the fallback and test environment and timeline callers.
+
+Also add explicit staged and unstaged environment diff targets and index-content
+reads. The current SDK targets are `uncommitted`, `branch_committed`, `all` and
+`commit`; `uncommitted` compares HEAD with the working tree and combines index
+and unstaged changes. `diffPatch` reads patches; it does not apply them. Any new
+stage, unstage or revert API should check disk/index generations and report a
+conflict when the patch is stale.
+
+Expose raw porcelain status or an `unmerged` flag on
+`environments.status().workspace.workingTree.files`. SDK 0.4.47 reports `U`
+conflicts per file, but folds `AA` (both added) into `A`. A markerless both-added
+conflict cannot be distinguished from a normal addition. The editor blocks
+reported `U` conflicts and conflict markers; it cannot detect this remaining
+case through the public worktree API. Status can also be cached for three
+seconds by BB. The file save still checks its content hash.
+
+Pierre should expose public methods for search, replace, and find-again.
+Version 1.4.1 only exposes those actions through editor key commands; the plugin
+uses a reserved custom key binding for toolbar search. A public command method
+would remove that DOM dependency.
+
+For editor lifecycle support, add plugin tab dirty state, close negotiation,
+retitle and line-location delivery to file openers. Plugins must still preserve
+drafts across unmounts and disconnects.
+
+The [feasibility report](docs/investigations/pierre-editor/README.md) records
+installed SDK and runtime evidence, an isolated Pierre 1.4.1 compile probe,
+and a phased plugin proposal. A dedicated editable diff action tab is feasible
+with existing APIs; native diff editing needs the contract extension above.
+
+Status: recorded locally on 2026-09-07; no upstream issue filed.
+Suggested issue titles: `Pass semantic edit context to plugin diff renderers`,
+`Expose staged and unstaged Git targets with guarded patch actions`, and
+`Add dirty state and lifecycle controls for plugin editor tabs`.
+File separate requests in [BB issues](https://github.com/get-bb/bb/issues), with
+the relevant evidence and acceptance checks from the report.
 
 ### Share individual threads with guests
 

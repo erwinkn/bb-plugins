@@ -1,0 +1,28 @@
+{
+  "bb": "0.42.1",
+  "worktreeHead": "36125a7",
+  "sdk": "0.4.47",
+  "pierre": "1.4.1",
+  "files": [
+    {
+      "path": "/Applications/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app/app/dist/assets/DiffHost-BdhrSvIl.js",
+      "sha256": "46b184de78c6db31d2a1ddb9afc6df71c9d79cc112cc6155020265493ae97785"
+    },
+    {
+      "path": "/Applications/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app/app/dist/assets/BbDiff-DQbinN6o.js",
+      "sha256": "8f83d920b89de86b18a2f87164313576ce019518bba0a62cc9a24ab8d1f23555"
+    },
+    {
+      "path": "/Applications/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app/host-daemon/dist/daemon-bundle.mjs",
+      "sha256": "8ec95fb5e83661bd95af5048e136f990baebe297c14c9cbe084f053c2a007cc4"
+    },
+    {
+      "path": "/Applications/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app/host-daemon/dist/bb-plugin-host-worker.mjs",
+      "sha256": "0d3df99cdf644b2c79e248305149515b78aaf36865de29e747c35e6314624be7"
+    },
+    {
+      "path": "/Applications/bb.app/Contents/Resources/app.asar.unpacked/node_modules/bb-app/server/dist/start-server.js",
+      "sha256": "888e38d46dd98754f027e09b55112cfacf784d9a6c31344795837e6bef9129a5"
+    }
+  ]
+}
