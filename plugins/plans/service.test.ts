@@ -167,6 +167,30 @@ describe("Plans review workflow", () => {
     }, { threadId: "other-thread" })).rejects.toThrow(/another thread/);
   });
 
+  it("blocks plans_submit on a pending interaction until the panel decides, then clears it", async () => {
+    const { harness, rpc, send } = await setup();
+    const submitting = harness.behavior.callAgentTool("plans_submit", { title: "Held", markdown: "# Held\n\nKeep the existing data." }, { threadId: "thread-1" });
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    const interaction = harness.inspection.pendingInteractions[0]!;
+    expect(interaction).toMatchObject({ threadId: "thread-1", rendererId: "plan-review", title: "Review plan: Held" });
+    const { planId, versionId } = interaction.payload as { planId: string; versionId: string };
+    await rpc("addComment", { id: planId, versionId, quote: "existing data", kind: "redline" });
+    await rpc("submitReview", { id: planId, versionId, action: "feedback", note: "Drop it.", requestId: "held-feedback" });
+    const result = JSON.parse(String(await submitting)) as { status: string; comments: unknown[]; note: string };
+    expect(result).toMatchObject({ status: "feedback", note: "Drop it.", comments: [{ quote: "existing data", kind: "redline" }] });
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(0));
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("returns dismissed when the user skips the review prompt", async () => {
+    const { harness } = await setup();
+    const submitting = harness.behavior.callAgentTool("plans_submit", { title: "Skipped", markdown: "Skip me" }, { threadId: "thread-1" });
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    harness.behavior.cancelInteraction(harness.inspection.pendingInteractions[0]!.id);
+    const result = JSON.parse(String(await submitting)) as { status: string };
+    expect(result.status).toBe("dismissed");
+  });
+
   it("hands the decision to a waiting agent and skips the thread message", async () => {
     const { harness, rpc, plan, send } = await setup();
     const versionId = plan.versions[0]!.id;

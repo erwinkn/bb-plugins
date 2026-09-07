@@ -26,24 +26,33 @@ or resume before new agent tools become available.
 ## Review flow
 
 1. Ask the agent to submit a plan for review in BB. The included `plan-review`
-   skill uses `plans_submit`, then blocks on `bb plans wait` until you decide.
-   New tools become available when BB starts or resumes the provider session.
-2. Open **Review plan** in the thread, or use its **Plan** header button. Select text to add a comment, or add a general
-   review note. Draft text stays in this browser; saved comments stay in BB.
-3. Select **Send feedback**. The waiting `bb plans wait` command returns your
-   comments and note as JSON inside the agent's current turn.
+   skill calls `plans_submit`, which blocks the agent the way a question to the
+   user does: BB marks the thread as waiting for you, and the composer shows a
+   **Review plan** prompt with **Open review** and **Skip review**. New tools
+   become available when BB starts or resumes the provider session.
+2. Open **Review plan** from the prompt or the **Plan** header button. Select
+   text to add a comment, or add a general review note. Draft text stays in this
+   browser; saved comments stay in BB.
+3. Select **Send feedback**. The prompt clears and the blocked tool call returns
+   your comments and note as JSON inside the agent's current turn.
 4. The agent submits the revision with the same plan ID and the expected version
-   ID and waits again. Compare the versions. Earlier comments retain their original version.
-5. After reviewing the revision, select **Approve**. The wait returns
+   ID and blocks again. Compare the versions. Earlier comments retain their
+   original version.
+5. After reviewing the revision, select **Approve**. The call returns
    `status: "approved"` and the agent implements that exact version.
 
+**Skip review** releases the agent without a decision (`status: "dismissed"`);
+the plan stays open and a later decision reaches the agent as a thread message.
 The decision never repeats the plan text: the agent already has it, and
 `bb plans get PLAN_ID --version-id VERSION_ID` fetches it after context loss.
-If no `wait` is attached when you decide (the agent's turn ended, or it never
-waited), the plugin falls back to a compact thread message with the same
-content, queued if the thread is busy. The **Message the thread when no agent
-is waiting** setting turns that fallback off. Approval does not authorize a
-merge or deployment.
+If no agent is waiting when you decide (its turn ended, or it never waited),
+the plugin falls back to a compact thread message with the same content, queued
+if the thread is busy. The **Message the thread when no agent is waiting**
+setting turns that fallback off. Approval does not authorize a merge or
+deployment.
+
+BB caps one interaction at an hour; the plugin re-requests it while the agent
+keeps waiting, so a review can take longer than that.
 
 The panel lists only plans from its thread. If none exists, paste Markdown
 to create one. New plans are linked to that thread automatically.
@@ -53,7 +62,7 @@ Legacy sample records remain in storage and never send agent messages.
 
 The native `plans_submit` tool accepts `title`, `markdown`, and optional `planId`
 and `expectedVersionId`. A revision must belong to the calling thread. It
-returns the plan and version IDs plus the `bb plans wait` command to run next.
+blocks until the user decides (up to 24 hours) and returns the decision.
 
 ```sh
 bb plans wait PLAN_ID --version-id VERSION_ID [--timeout 1200]
@@ -65,15 +74,17 @@ bb plans review PLAN_ID VERSION_ID feedback --comment 'quoted text::what to chan
 bb plans review PLAN_ID VERSION_ID approve --looks-good 'keep this'
 ```
 
-`wait` blocks until the reviewer decides on that version, then prints the
-decision as JSON: `status` (`feedback` or `approved`), `note`, `comments` with
-their `quote`, `body`, and `kind`, and an `instruction`. It exits 0 with
-`status: "pending"` when the timeout (default 20 minutes, max 24 hours) passes;
-run it again to keep waiting. A wait on a version that was replaced returns
-`status: "superseded"` with the latest version ID. Decisions are stored, so a
-wait that starts after the decision returns immediately, and a wait that is
-interrupted (plugin reload, shell time limit) loses nothing. Providers whose
-shell tool has a time limit should run `wait` in the background and await it.
+`wait` holds the same BB interaction as the tool and blocks until the reviewer
+decides on that version, then prints the decision as JSON: `status`
+(`feedback` or `approved`), `note`, `comments` with their `quote`, `body`, and
+`kind`, and an `instruction`. It exits 0 with `status: "pending"` when the
+timeout (default 20 minutes, max 24 hours) passes; run it again to keep
+waiting. `dismissed` means the user chose **Skip review**. A wait on a version
+that was replaced returns `status: "superseded"` with the latest version ID.
+Decisions are stored, so a wait that starts after the decision returns
+immediately, and a wait that is interrupted (plugin reload, shell time limit)
+loses nothing. Providers whose shell tool has a time limit should run `wait` in
+the background and await it.
 
 `review` lets another thread act as the reviewer, for example a parent thread
 reviewing a child's plan. A thread cannot review its own plan.

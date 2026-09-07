@@ -18,19 +18,36 @@ export interface ReviewDecision {
 export type WaitResult =
   | ReviewDecision
   | { status: "pending"; planId: string; versionId: string; instruction: string }
-  | { status: "superseded"; planId: string; versionId: string; latestVersionId: string; instruction: string };
+  | { status: "superseded"; planId: string; versionId: string; latestVersionId: string; instruction: string }
+  | { status: "dismissed"; planId: string; versionId: string; instruction: string }
+  | { status: "cancelled"; planId: string; versionId: string; reason: string; instruction: string };
 
 export interface WaitInput {
   id: string;
   versionId?: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  /**
+   * Hold a BB interaction on the plan's thread while waiting, so the thread
+   * shows as awaiting the user and the composer becomes the review prompt.
+   */
+  hold?: boolean;
 }
 
 export interface PlanServiceOptions {
   /** Whether to message the thread when no `wait` call is attached. Read per review. */
   notifyUnattended?: () => Promise<boolean>;
+  /** Interaction lifetime per request; BB caps it at one hour. Tests shorten it. */
+  interactionChunkMs?: number;
 }
+
+/** The frontend `pendingInteraction` slot that renders the review prompt. */
+export const REVIEW_INTERACTION_RENDERER = "plan-review";
+
+const WAIT_POLL_MS = 5_000;
+/** How long past its timeout a wait row still counts as attended. */
+const WAIT_GRACE_MS = 15_000;
+const INTERACTION_MAX_MS = 60 * 60 * 1000;
 
 const ANNOTATION_GUIDE = "Annotation kinds: redline requests removal of the quoted text; looksGood records that the passage needs no change; comment contains the user's requested change or question.";
 
@@ -40,7 +57,10 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     "CREATE TABLE plans (id TEXT PRIMARY KEY, body TEXT NOT NULL)",
     "CREATE TABLE deliveries (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL)",
     "ALTER TABLE deliveries ADD COLUMN decision TEXT",
+    "CREATE TABLE waits (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, expires_at INTEGER NOT NULL)",
   ]);
+  // Rows left by a previous generation that was disposed mid-wait.
+  db.prepare("DELETE FROM waits WHERE expires_at <= ?").run(Date.now());
   type WaiterEvent = { kind: "decision"; decision: ReviewDecision } | { kind: "revised"; latestVersionId: string };
   const waiters = new Map<string, Set<(event: WaiterEvent) => void>>();
   const notifyWaiters = (planId: string, event: WaiterEvent) => {
@@ -149,7 +169,8 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     notifyWaiters(plan.id, { kind: "decision", decision });
     return result;
   };
-  const wait = ({ id, versionId, timeoutMs, signal }: WaitInput): Promise<WaitResult> => {
+  /** Waits on stored state and in-process events only; no BB interaction. */
+  const waitLocal = ({ id, versionId, timeoutMs, signal }: WaitInput): Promise<WaitResult> => {
     const plan = get({ id });
     const latest = plan.versions.at(-1)!;
     const version = versionId ? plan.versions.find((item) => item.id === versionId) : latest;
@@ -161,22 +182,29 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
         instruction: `Version ${version.number} was replaced without a review. Wait on the latest version ${latest.id} instead.` });
     }
     if (signal?.aborted) throw new Error("Wait cancelled.");
+    const waitId = randomUUID();
+    const superseded = (latestVersionId: string): WaitResult => ({
+      status: "superseded", planId: plan.id, versionId: version.id, latestVersionId,
+      instruction: `Version ${version.number} was replaced. Wait on version ${latestVersionId} instead.`,
+    });
     return new Promise<WaitResult>((resolve, reject) => {
       const set = waiters.get(plan.id) ?? new Set();
       waiters.set(plan.id, set);
+      // Attendance lives in SQLite so a review that lands after a plugin reload
+      // still knows an agent is waiting and skips the thread message.
+      db.prepare("INSERT INTO waits (id, plan_id, expires_at) VALUES (?, ?, ?)").run(waitId, plan.id, Date.now() + timeoutMs + WAIT_GRACE_MS);
       const cleanup = () => {
         set.delete(onEvent);
         if (set.size === 0) waiters.delete(plan.id);
         clearTimeout(timer);
+        clearInterval(poller);
         signal?.removeEventListener("abort", onAbort);
+        try { db.prepare("DELETE FROM waits WHERE id = ?").run(waitId); } catch { /* database closed on dispose */ }
       };
       const onEvent = (event: WaiterEvent) => {
         cleanup();
         const latestVersionId = event.kind === "decision" ? event.decision.versionId : event.latestVersionId;
-        resolve(event.kind === "decision" && latestVersionId === version.id
-          ? event.decision
-          : { status: "superseded", planId: plan.id, versionId: version.id, latestVersionId,
-              instruction: `Version ${version.number} was replaced. Wait on version ${latestVersionId} instead.` });
+        resolve(event.kind === "decision" && latestVersionId === version.id ? event.decision : superseded(latestVersionId));
       };
       const onAbort = () => { cleanup(); reject(new Error("Wait cancelled.")); };
       const timer = setTimeout(() => {
@@ -184,9 +212,86 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
         resolve({ status: "pending", planId: plan.id, versionId: version.id,
           instruction: `No review yet. Run \`bb plans wait ${plan.id} --version-id ${version.id}\` again to keep waiting.` });
       }, timeoutMs);
+      // A decision written by another plugin generation (after a reload) never
+      // reaches this process's waiters; the poll catches it.
+      const poller = setInterval(() => {
+        try {
+          const decision = storedDecision(plan.id, version.id);
+          if (decision) return onEvent({ kind: "decision", decision });
+          const latestVersionId = get({ id: plan.id }).versions.at(-1)!.id;
+          if (latestVersionId !== version.id) onEvent({ kind: "revised", latestVersionId });
+        } catch (error) {
+          cleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      }, WAIT_POLL_MS);
       set.add(onEvent);
       signal?.addEventListener("abort", onAbort, { once: true });
     });
+  };
+  const attended = (planId: string) =>
+    (db.prepare("SELECT COUNT(*) AS n FROM waits WHERE plan_id = ? AND expires_at > ?").get(planId, Date.now()) as { n: number }).n > 0;
+  /**
+   * The agent-facing wait. With `hold`, a BB interaction stays pending on the
+   * thread for the whole wait: BB marks the thread as needing the user, and the
+   * composer shows the plugin's review prompt. The decision made in the panel
+   * aborts the interaction; the prompt's own buttons dismiss the wait instead.
+   */
+  const wait = async (input: WaitInput): Promise<WaitResult> => {
+    const plan = get({ id: input.id });
+    const version = input.versionId ? plan.versions.find((item) => item.id === input.versionId) : plan.versions.at(-1);
+    if (!version) throw new Error("Version not found.");
+    const settledAlready = storedDecision(plan.id, version.id) !== null || plan.versions.at(-1)!.id !== version.id;
+    if (!input.hold || plan.threadId === null || settledAlready) return waitLocal(input);
+    const threadId = plan.threadId;
+    const deadline = Date.now() + input.timeoutMs;
+    const chunk = Math.min(options.interactionChunkMs ?? INTERACTION_MAX_MS, INTERACTION_MAX_MS);
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return waitLocal({ ...input, timeoutMs: 1 });
+      const local = new AbortController();
+      const prompt = new AbortController();
+      const onOuterAbort = () => { local.abort(); prompt.abort(); };
+      input.signal?.addEventListener("abort", onOuterAbort, { once: true });
+      try {
+        const decision = waitLocal({ ...input, timeoutMs: remaining, signal: local.signal })
+          .then((result) => ({ kind: "decision" as const, result }));
+        const interaction = bb.ui.requestInput({
+          threadId,
+          rendererId: REVIEW_INTERACTION_RENDERER,
+          title: `Review plan: ${plan.title}`,
+          payload: { planId: plan.id, versionId: version.id, title: plan.title, versionNumber: version.number },
+          timeoutMs: Math.max(1, Math.min(chunk, remaining)),
+        }, { signal: prompt.signal }).then(
+          (result) => ({ kind: "interaction" as const, result }),
+          (error: unknown) => ({ kind: "interaction-failed" as const, error }),
+        );
+        const first = await Promise.race([decision, interaction]);
+        if (first.kind === "decision") {
+          prompt.abort();
+          await interaction;
+          return first.result;
+        }
+        local.abort();
+        await decision.catch(() => undefined);
+        if (first.kind === "interaction-failed") {
+          // The prompt could not be shown (thread archived, host limit). Keep
+          // waiting without it rather than failing the agent's call.
+          bb.log.warn(`Review prompt unavailable for plan ${plan.id}: ${first.error instanceof Error ? first.error.message : String(first.error)}`);
+          return waitLocal({ ...input, timeoutMs: Math.max(1, deadline - Date.now()) });
+        }
+        const settled = first.result;
+        if (settled.outcome === "submitted" || settled.reason === "user") {
+          return { status: "dismissed", planId: plan.id, versionId: version.id,
+            instruction: "The user dismissed the review prompt without deciding. Ask how to proceed; the plan stays open in Review plan and a later decision arrives as a message." };
+        }
+        if (settled.reason === "timeout") continue;
+        return { status: "cancelled", planId: plan.id, versionId: version.id, reason: settled.reason,
+          instruction: `Waiting stopped (${settled.reason}). Run \`bb plans wait ${plan.id} --version-id ${version.id}\` to resume; a decision made meanwhile is returned immediately.` };
+      } finally {
+        input.signal?.removeEventListener("abort", onOuterAbort);
+      }
+    }
   };
   const submitReview = async (input: z.infer<typeof reviewSchema>) => {
     input = reviewSchema.parse(input);
@@ -216,8 +321,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     // An agent blocked in `bb plans wait` gets the decision as its command
     // result. The thread message is only for agents that are not waiting; it
     // never repeats the plan text, which the agent already has or can fetch.
-    const attended = (waiters.get(plan.id)?.size ?? 0) > 0;
-    const notify = plan.threadId !== null && !attended && (await notifyUnattended()) ? plan.threadId : null;
+    const notify = plan.threadId !== null && !attended(plan.id) && (await notifyUnattended()) ? plan.threadId : null;
     const annotations = JSON.stringify(delivered(plan, input.action).map(({ versionId, quote, body, kind }) => ({ versionId, quote, body, kind: kind ?? "comment" })), null, 2);
     const fetchHint = `Run \`bb plans get ${plan.id} --version-id ${version.id}\` if the plan text is no longer in context.`;
     const text = input.action === "approve"

@@ -6,7 +6,8 @@ description: Use when the user asks to submit or review a plan in the BB Plans p
 # Plan review
 
 Use the thread's Plans panel for a review cycle before implementation. The
-cycle stays inside your current turn: submit, wait for the decision, act on it.
+cycle runs inside one tool call: `plans_submit` saves the plan, marks the
+thread as waiting for the user, and returns when the user decides.
 
 ## Submit
 
@@ -15,57 +16,51 @@ the intended result, scope, implementation steps, and verification that fits the
 task. State material open questions; do not make the plan look approved.
 
 Call `plans_submit` with `title` and the full `markdown`. BB supplies the current
-thread. The result contains `planId`, `versionId`, and the wait command. Tell
-the user the plan is ready in **Review plan**, then wait (below). Do not start
-implementation while waiting.
+thread. The call blocks while the user reviews, like a question to the user, and
+returns one JSON object. Do not implement while it is pending.
 
 If the native tool is unavailable, write the Markdown to a UTF-8 file in this
-thread's workspace and submit with the CLI. `--wait` submits and waits in one
-command:
+thread's workspace and use the CLI, which blocks the same way:
 
 ```sh
 bb plans submit ./plan.md 'Plan title' --wait
 ```
 
-The plugin does not control the provider's native plan mode. If that mode is
-active, its native approval step remains separate.
+If your shell tool has a time limit, run the CLI in the background and await
+its output. The plugin does not control the provider's native plan mode. If
+that mode is active, its native approval step remains separate.
 
-## Wait
+## Read the result
 
-```sh
-bb plans wait PLAN_ID --version-id VERSION_ID
-```
-
-The command blocks until the reviewer sends feedback or approves, then prints
-one JSON object. If your shell tool has a time limit, run it in the background
-and await its output rather than polling. Read `status`:
+`status` tells you what happened:
 
 - `feedback`: `comments` (each with `quote`, `body`, `kind`) and `note` are the
   requested changes. Revise (below).
 - `approved`: implement this version. `comments` holds Looks good annotations.
-- `pending`: the timeout passed (default 20 minutes). Run the same command
-  again; nothing was lost.
+- `dismissed`: the user closed the prompt without deciding. Ask how to proceed.
+  The plan stays open in Review plan; a later decision arrives as a message.
+- `pending`: the wait timed out. Resume with
+  `bb plans wait PLAN_ID --version-id VERSION_ID`; nothing was lost.
 - `superseded`: a newer version exists. Wait on `latestVersionId` instead.
+- `cancelled`: BB stopped the wait (`reason` says why). Resume with `bb plans
+  wait` when appropriate.
 
-Comments retain the version and exact text they refer to. A `redline` requests
-removal of the quoted text; a `looksGood` annotation marks text to keep; a
-`comment` carries the user's requested change or question.
+A `redline` requests removal of the quoted text; a `looksGood` annotation marks
+text to keep; a `comment` carries the user's requested change or question.
+Comments keep the version and exact text they refer to.
 
-The plan text is not repeated in the result. If it is no longer in context:
+The result never repeats the plan text. If it is no longer in context:
 
 ```sh
 bb plans get PLAN_ID --version-id VERSION_ID
 ```
 
-If a review arrives as a thread message instead, the same rules apply; that
-happens only when no wait was attached when the user decided.
-
 ## Revise
 
 Apply the feedback to the full plan, including any general note. Submit the
 complete revised Markdown through `plans_submit` with the same `planId` and the
-current `expectedVersionId`. Do not create a new plan for a revision. Then wait
-on the new `versionId`. CLI fallback:
+current `expectedVersionId`. Do not create a new plan for a revision. The call
+blocks again until the user reviews the new version. CLI fallback:
 
 ```sh
 bb plans submit ./plan.md 'Plan title' PLAN_ID EXPECTED_VERSION_ID --wait

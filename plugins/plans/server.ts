@@ -54,7 +54,15 @@ export function waitInstruction(planId: string, versionId: string): string {
   return `Plan saved for review. Run \`bb plans wait ${planId} --version-id ${versionId}\` and act on its JSON result; run it in the background and await it if your shell tool has a time limit. Do not implement yet.`;
 }
 
-export default function plugin(bb: BbPluginApi) {
+/** The tool holds the thread for at most this long before returning `pending`. */
+const TOOL_WAIT_MS = 24 * 60 * 60 * 1000;
+
+export interface PluginOptions {
+  /** Test hook: shorten the BB interaction lifetime per request. */
+  interactionChunkMs?: number;
+}
+
+export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
   const settings = bb.settings.define({
     notifyThreadWhenUnattended: {
       type: "boolean",
@@ -65,14 +73,16 @@ export default function plugin(bb: BbPluginApi) {
   });
   const service = createPlanService(bb, {
     notifyUnattended: async () => (await settings.get()).notifyThreadWhenUnattended,
+    interactionChunkMs: options.interactionChunkMs,
   });
   const { delivery, wait, version, ...rpcHandlers } = service;
   bb.rpc.register(plansContract, rpcHandlers);
   bb.agents.registerTool({
     name: "plans_submit",
-    description: "Submit a Markdown plan to the Plans review panel, or submit a revised version. Afterwards run `bb plans wait <planId> --version-id <versionId>` to receive the review as JSON. This tool does not itself enforce provider plan mode.",
+    description: "Submit a Markdown plan to the Plans review panel, or submit a revised version, then block until the user sends feedback or approves. The result is the decision as JSON (status feedback|approved with comments and note). This tool does not itself enforce provider plan mode.",
+    presentation: { label: { pending: "Awaiting plan review", completed: "Plan reviewed" } },
     parameters: z.object({ title: z.string().min(1).max(200), markdown: z.string().min(1).max(100_000), planId: z.string().optional(), expectedVersionId: z.string().optional() }),
-    async execute({ title, markdown, planId, expectedVersionId }, { threadId }) {
+    async execute({ title, markdown, planId, expectedVersionId }, { threadId, signal }) {
       if (!threadId) throw new Error("Submit a plan from a BB thread.");
       let plan;
       if (planId) {
@@ -83,7 +93,8 @@ export default function plugin(bb: BbPluginApi) {
         plan = await service.create({ title, markdown, threadId });
       }
       const versionId = plan.versions.at(-1)!.id;
-      return JSON.stringify({ planId: plan.id, versionId, panel: { actionId: "review-plan", params: { threadId, planId: plan.id } }, instruction: waitInstruction(plan.id, versionId) });
+      const result = await wait({ id: plan.id, versionId, timeoutMs: TOOL_WAIT_MS, signal, hold: true });
+      return JSON.stringify(result);
     },
   });
   bb.cli.register({
@@ -103,7 +114,7 @@ export default function plugin(bb: BbPluginApi) {
         const [command, ...args] = flags.positional;
         let result: unknown;
         const awaitDecision = (planId: string, versionId: string): Promise<WaitResult> =>
-          wait({ id: planId, versionId, timeoutMs: flags.timeoutMs, signal: ctx.signal });
+          wait({ id: planId, versionId, timeoutMs: flags.timeoutMs, signal: ctx.signal, hold: true });
         if (command === "list") result = service.list({ threadId: flags.thread ?? ctx.threadId, offset: z.coerce.number().int().nonnegative().parse(args[0] ?? 0) });
         else if (command === "get" && args[0]) result = flags.version ? version({ id: args[0], versionId: flags.version }) : service.get({ id: args[0] });
         else if (command === "wait" && args[0]) result = await awaitDecision(args[0], flags.version ?? service.get({ id: args[0] }).versions.at(-1)!.id);
