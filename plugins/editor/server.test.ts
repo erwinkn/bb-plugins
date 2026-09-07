@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,6 +111,71 @@ const modifiedEntry: DiffFiles["files"][number] = {
   path: "a.ts", previousPath: null, changeKind: "modified", origin: "tracked",
   binary: false, loadMode: "auto", additions: 1, deletions: 1,
 };
+
+/** BB's actual write preconditions: omitted = force, null = absent, string = CAS. */
+async function fileWriteHost(initialContent: string | null, createDuringRead = false) {
+  let disk = initialContent;
+  const digest = () => disk === null ? null : createHash("sha256").update(disk).digest("hex");
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "erwin-editor",
+    sdk: {
+      environments: { get: async () => environment },
+      files: {
+        read: async ({ path: filePath }) => {
+          if (disk === null) {
+            if (createDuringRead) disk = "another process created this";
+            throw new Error("ENOENT: file does not exist");
+          }
+          return { path: filePath, content: disk, contentEncoding: "utf8", sha256: digest()!, sizeBytes: Buffer.byteLength(disk), mimeType: "text/plain" };
+        },
+        write: async ({ expectedSha256, content }) => {
+          const currentSha256 = digest();
+          if (expectedSha256 !== undefined && expectedSha256 !== currentSha256) {
+            return { outcome: "conflict", currentSha256 };
+          }
+          disk = content;
+          return { outcome: "written", sha256: digest()! };
+        },
+      },
+    },
+  });
+  await plugin(bb);
+  const source = { kind: "workspace" as const, threadId: null, environmentId: environment.id, projectId: environment.projectId };
+  return { harness, source, content: () => disk, digest };
+}
+
+test("explicit overwrite omits the SDK hash while normal saves retain CAS", async (t) => {
+  const host = await fileWriteHost("disk version");
+  t.after(() => host.harness.lifecycle.dispose());
+  const write = (content: string, expectedSha256: string | null) => host.harness.behavior.callRpc("write", {
+    source: host.source, path: "a.ts", content, expectedSha256,
+  });
+  const originalHash = host.digest()!;
+  const normal = rpcContract.write.output.parse(await write("normal save", originalHash));
+  assert.equal(normal.outcome, "written");
+  assert.equal(host.content(), "normal save");
+  const stale = rpcContract.write.output.parse(await write("must not replace", originalHash));
+  assert.equal(stale.outcome, "conflict");
+  assert.equal(host.content(), "normal save");
+  const forced = rpcContract.write.output.parse(await write("explicit overwrite", null));
+  assert.equal(forced.outcome, "written");
+  assert.equal(host.content(), "explicit overwrite");
+  const calls = host.harness.inspection.sdk.callsTo("files.write");
+  assert.equal((calls[0]?.[0] as { expectedSha256: string }).expectedSha256, originalHash);
+  assert.equal(Object.hasOwn(calls[2]?.[0] as object, "expectedSha256"), false);
+});
+
+test("create writes only an absent file and preserves a file created after its check", async (t) => {
+  const absent = await fileWriteHost(null);
+  const raced = await fileWriteHost(null, true);
+  t.after(() => absent.harness.lifecycle.dispose());
+  t.after(() => raced.harness.lifecycle.dispose());
+  assert.deepEqual(await absent.harness.behavior.callRpc("create", { source: absent.source, path: "new.txt", kind: "file" }), { path: "new.txt" });
+  assert.equal(absent.content(), "");
+  assert.equal((absent.harness.inspection.sdk.callsTo("files.write")[0]?.[0] as { expectedSha256: null }).expectedSha256, null);
+  await assert.rejects(() => raced.harness.behavior.callRpc("create", { source: raced.source, path: "new.txt", kind: "file" }), /already exists/);
+  assert.equal(raced.content(), "another process created this");
+});
 
 type Status = Awaited<ReturnType<BbPluginApi["sdk"]["environments"]["status"]>>;
 
