@@ -44,6 +44,24 @@ test("toPierreTheme normalizes token scopes to arrays and copies the colors", ()
   assert.equal(converted.colors["editor.background"], "#1e1e1e");
 });
 
+/**
+ * BB's Material and similar themes write `"storage.type, storage.modifier"`
+ * as one string. Wrapped whole in an array, the TextMate parser reads it as a
+ * single parent-child selector, so `const` and every other keyword in such a
+ * rule painted with the default color.
+ */
+test("toPierreTheme splits comma-separated scope selectors", () => {
+  const source = theme({
+    tokenColors: [
+      { scope: "storage.type, storage.modifier,storage.control ", settings: { foreground: "#c792ea" } },
+      { scope: ["keyword.control", "meta.a, meta.b"], settings: { fontStyle: "italic" } },
+    ],
+  });
+  const converted = toPierreTheme("bb-dark-x", source) as unknown as { settings: { scope?: string[] }[] };
+  assert.deepEqual(converted.settings[0].scope, ["storage.type", "storage.modifier", "storage.control"]);
+  assert.deepEqual(converted.settings[1].scope, ["keyword.control", "meta.a", "meta.b"]);
+});
+
 test("toPierreTheme keeps a rule that applies to every scope", () => {
   const source = theme({ tokenColors: [{ settings: { foreground: "#ffffff" } }] });
   const converted = toPierreTheme("bb-dark-x", source) as unknown as {

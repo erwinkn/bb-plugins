@@ -74,7 +74,7 @@ export function pierreThemeName(theme: PluginCodeThemeData): string {
  */
 export function toPierreTheme(name: string, theme: PluginCodeThemeData): ThemeRegistration {
   const settings = theme.tokenColors.map((rule) => {
-    const scope = rule.scope === undefined ? undefined : Array.isArray(rule.scope) ? [...rule.scope] : [rule.scope];
+    const scope = rule.scope === undefined ? undefined : splitScopes(rule.scope);
     return scope === undefined ? { settings: { ...rule.settings } } : { scope, settings: { ...rule.settings } };
   });
   return {
@@ -85,6 +85,18 @@ export function toPierreTheme(name: string, theme: PluginCodeThemeData): ThemeRe
     colors: { ...theme.colors },
     settings,
   } as ThemeRegistration;
+}
+
+/**
+ * VS Code themes may list several selectors in one string, separated by
+ * commas. The TextMate parser splits such a string, but only when it arrives
+ * as a string: an array element is taken whole, so `"storage.type, keyword"`
+ * inside an array becomes a parent-child chain that never matches, and every
+ * rule written that way silently loses its color.
+ */
+function splitScopes(scope: string | readonly string[]): string[] {
+  const list = typeof scope === "string" ? [scope] : scope;
+  return list.flatMap((entry) => entry.split(",").map((part) => part.trim()).filter((part) => part !== ""));
 }
 
 const registered = new Set<string>();
