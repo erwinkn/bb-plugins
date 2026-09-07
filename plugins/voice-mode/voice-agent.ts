@@ -16,6 +16,7 @@ import {
 import { actionStatus } from "./session-events.ts";
 import { ViewWorkspace, viewWorkspace, type OpenDisposition } from "./view-workspace.ts";
 import { clientId, realmId, identityTag, clientDescriptor, deviceSummary } from "./client-identity.ts";
+import { CoordinatorBridge, type BridgeSnapshot } from "./coordinator-bridge.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
 /** Who currently has the floor during a live call, for the "listening" UI. */
@@ -248,6 +249,14 @@ export class VoiceAgent {
   private workspace: ViewWorkspace;
   private bindingSources = new Map<symbol, { bindings: Bindings; priority: 0 | 1 | 2 }>();
   private logQueue: Promise<unknown> | null = null;
+  /** Coordinator-path state for the current call; null on the direct path. */
+  private bridge: CoordinatorBridge | null = null;
+  /** When speaking/generation/tool state last changed, for the quiet gate. */
+  private conversationChangedAt = 0;
+  /** The next start() opens a separate logical conversation. */
+  private startNewConversation = false;
+  /** end_call was requested; the call ends once the goodbye has played. */
+  private endCallAfterResponse = false;
 
   constructor(workspace: ViewWorkspace = viewWorkspace) { this.workspace = workspace; }
   /** The most recent tool call, so a suspend/teardown can name its likely cause. */
@@ -329,22 +338,54 @@ export class VoiceAgent {
   private setUserSpeaking(value: boolean) {
     if (this.userSpeaking === value) return;
     this.userSpeaking = value;
+    this.markConversationChange();
     this.emitChange();
   }
 
   private setAssistantSpeaking(value: boolean) {
     if (this.assistantSpeaking === value) return;
     this.assistantSpeaking = value;
+    this.markConversationChange();
     this.emitChange();
   }
 
   private setResponseActive(value: boolean) {
     if (this.responseActive === value) return;
     this.responseActive = value;
+    this.markConversationChange();
     this.emitChange();
   }
 
   readonly getAudioPreferences = (): AudioDevicePreferences => this.audioPreferences;
+
+  /** Coordinator-path status for the UI (working, queued replies, open question). */
+  readonly getBridgeSnapshot = (): BridgeSnapshot | null => this.bridgeSnapshot;
+  private bridgeSnapshot: BridgeSnapshot | null = null;
+  private refreshBridgeSnapshot() {
+    this.bridgeSnapshot = this.bridge ? this.bridge.snapshot() : null;
+    this.emitChange();
+  }
+
+  /** Start the next call in a fresh logical conversation instead of resuming. */
+  startConversationFresh() {
+    this.startNewConversation = true;
+    if (!this.hasLocalCall() && !this.remotePresenceLive()) void this.start();
+  }
+
+  /** Coordinator replies, inbox notices, and questions published by the server. */
+  ingestCoordinatorSignal(channel: "voice-reply" | "voice-inbox" | "voice-question", payload: unknown) {
+    const bridge = this.bridge;
+    if (!bridge || !this.session) return;
+    if (channel === "voice-reply") bridge.ingestReply(payload);
+    else if (channel === "voice-inbox") bridge.ingestInbox(payload);
+    this.refreshBridgeSnapshot();
+    // Anything the gate refuses now is retried at the quiet boundary.
+    this.scheduleNoticeDrain();
+  }
+
+  private markConversationChange() {
+    this.conversationChangedAt = Date.now();
+  }
 
   bind(bindings: Bindings) { return this.registerBindings(bindings, 2); }
   bindFallback(bindings: Bindings) { return this.registerBindings(bindings, 1); }
@@ -684,6 +725,7 @@ export class VoiceAgent {
     let next: { kind: string; name: string; text: string } | null;
     if (kind === "session.started") next = null;
     else if (kind === "user" || kind === "assistant" || kind === "notice") next = { kind, name: "", text: String(payload.text ?? "") };
+    else if (kind === "reply.speaking") next = { kind: "notice", name: "", text: String(payload.text ?? "") };
     else if (kind === "tool.call") next = { kind, name: String(payload.name ?? ""), text: "" };
     else return; // diagnostics / tool.result don't move the ticker
     this.lastActivity = next;
@@ -858,6 +900,7 @@ export class VoiceAgent {
   /** Queue a thread event; announced as one grounded digest when the session is quiet. */
   enqueueThreadEvent(event: ThreadEventNotice) {
     if (!this.session) return; // only the window that owns the call announces
+    if (this.bridge) return; // coordinator path: updates flow through the durable inbox
     const normalized = { ...event, detail: event.detail?.trim() || null };
     const fingerprint = JSON.stringify([
       normalized.threadId,
@@ -876,7 +919,12 @@ export class VoiceAgent {
 
   /** Debounce so simultaneous finishers coalesce into one announcement. */
   private scheduleNoticeDrain(delayMs = NOTICE_QUIET_MS) {
-    if (this.pendingNotices.size === 0) return;
+    if (this.bridge) {
+      // Direct replies pass their gate at the boundary itself; background
+      // speech still needs the quiet window, which the timer below rechecks.
+      this.bridge.drain();
+      this.refreshBridgeSnapshot();
+    } else if (this.pendingNotices.size === 0) return;
     if (this.noticeTimer) clearTimeout(this.noticeTimer);
     const session = this.session;
     this.noticeTimer = setTimeout(() => {
@@ -889,7 +937,15 @@ export class VoiceAgent {
 
   private drainNotices() {
     const dc = this.session?.dc;
-    if (!dc || dc.readyState !== "open" || this.pendingNotices.size === 0) return;
+    if (!dc || dc.readyState !== "open") return;
+    if (this.bridge) {
+      // Coordinator path: replies and digests go through the bridge's gates;
+      // direct thread announcements are not used.
+      this.bridge.drain();
+      this.refreshBridgeSnapshot();
+      return;
+    }
+    if (this.pendingNotices.size === 0) return;
     // Never interrupt: wait for the user and the model to both go quiet.
     if (this.userSpeaking || this.userTurnPending || this.responseActive || this.assistantSpeaking || this.responsePending || this.pendingToolCalls > 0) {
       this.log("notice.deferred", {
@@ -956,6 +1012,12 @@ export class VoiceAgent {
   stop() {
     const endedNonce = this.nonce;
     if (endedNonce) this.log("session.stopped");
+    this.endCallAfterResponse = false;
+    if (this.bridge) {
+      this.bridge.dispose("hangup");
+      this.bridge = null;
+      this.bridgeSnapshot = null;
+    }
     this.clearConnectWatchdog();
     if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
     this.disconnectTimer = null;
@@ -1020,9 +1082,23 @@ export class VoiceAgent {
     const context = shown
       ? { threadId: shown.threadId, projectId: shown.projectId, onNewThreadScreen: false }
       : bindings?.context;
+    let requestResponseAfter = true;
     try {
       if (!bindings) {
         throw new Error("No bb surface is bound right now.");
+      } else if (this.bridge && name === "delegate_to_coordinator") {
+        output = this.bridge.delegate(callId, args);
+        status = "success";
+        label = "Delegated to the coordinator";
+        this.refreshBridgeSnapshot();
+      } else if (this.bridge && name === "remain_silent") {
+        output = this.bridge.remainSilent();
+        status = "success";
+        requestResponseAfter = false;
+      } else if (this.bridge && name === "end_call") {
+        this.endCallAfterResponse = true;
+        output = "Ending the call after this reply.";
+        status = "success";
       } else if (name === "set_composer_text") {
         if (!bindings.composer || (shown && bindings.context.threadId !== shown.threadId)) {
           throw new Error("No matching composer is available. Tap the shown thread’s composer to draft a message.");
@@ -1133,7 +1209,60 @@ export class VoiceAgent {
         item: { type: "function_call_output", call_id: callId, output },
       }),
     );
-    this.requestResponse(dc);
+    if (requestResponseAfter) this.requestResponse(dc);
+    else this.scheduleNoticeDrain();
+  }
+
+  /** Bridge callbacks: how the coordinator bridge reaches the live session. */
+  private createBridge(dc: RTCDataChannel, conversationId: string): CoordinatorBridge {
+    const host = {
+      nonce: () => this.nonce,
+      callSequence: () => this.callSequence,
+      send: (event: Record<string, unknown>) => {
+        if (dc.readyState !== "open" || this.session?.dc !== dc) return false;
+        dc.send(JSON.stringify(event));
+        return true;
+      },
+      rpc: async <T,>(method: string, args: unknown): Promise<T> => {
+        const rpc = this.bindings?.rpc;
+        if (!rpc) throw new Error("No bb surface is bound right now.");
+        return (await rpc.call(method as never, args as never)) as T;
+      },
+      log: (kind: string, payload: Record<string, unknown> = {}) => this.log(kind, payload),
+      facts: () => ({
+        userSpeaking: this.userSpeaking,
+        inputUnresolved: this.userTurnPending && this.responseUserTurn !== this.userTurn,
+        responseActive: this.responseActive,
+        assistantSpeaking: this.assistantSpeaking,
+        responsePending: this.responsePending,
+        pendingToolCalls: this.pendingToolCalls,
+        handoffPending: this.bridge?.snapshot().pendingHandoff !== null && this.bridge !== null,
+        questionOpen: this.bridge?.snapshot().openQuestion !== null && this.bridge !== null,
+        quietForMs: Date.now() - this.conversationChangedAt,
+      }),
+      view: () => {
+        const shown = clientDescriptor.mobile ? this.workspace.current() : null;
+        if (shown) return { threadId: shown.threadId, projectId: shown.projectId, onNewThreadScreen: false };
+        return this.bindings?.context ?? { threadId: null, projectId: null, onNewThreadScreen: false };
+      },
+      now: () => Date.now(),
+      speaking: () => {
+        this.activeResponseId = null;
+        this.setResponseActive(true);
+      },
+      applyFocus: async (threadId: string) => {
+        const rpc = this.bindings?.rpc;
+        if (!rpc || !this.nonce) return;
+        if (clientDescriptor.mobile && (this.state === "live" || this.state === "muted")) {
+          const { views, preference } = await rpc.call("resolveThreadViews", { threadIds: [threadId] });
+          this.workspace.open(views, "auto", preference);
+          return;
+        }
+        await rpc.call("applyPresentation", { nonce: this.nonce, threadId });
+      },
+      changed: () => this.refreshBridgeSnapshot(),
+    };
+    return new CoordinatorBridge(host, conversationId, () => this.userTurn);
   }
 
   private async start() {
@@ -1149,12 +1278,22 @@ export class VoiceAgent {
     this.log("session.started", { ...bindings.context, device: deviceSummary() });
     let acquiredStream: MediaStream | null = null;
     try {
-      const { sequence } = await bindings.rpc.call("claimCall", { nonce });
+      const newConversation = this.startNewConversation;
+      this.startNewConversation = false;
+      const claim = await bindings.rpc.call("claimCall", {
+        nonce,
+        newConversation,
+        threadId: bindings.context.threadId,
+        projectId: bindings.context.projectId,
+      });
+      const { sequence } = claim;
       if (this.nonce !== nonce) {
         void bindings.rpc.call("forceStop", { nonce }).catch(() => undefined);
         return;
       }
       this.callSequence = sequence;
+      const conversationId = claim.conversationId;
+      if (conversationId) this.log("coordinator.conversation", { conversationId, resumed: claim.resumed, queuedUpdates: claim.queuedUpdates, newConversation });
       const newerClaim = this.newerClaim as { nonce: string; sequence: number } | null;
       if (newerClaim) this.onCallStarted(newerClaim.nonce, newerClaim.sequence);
       if (this.nonce !== nonce) return;
@@ -1296,6 +1435,12 @@ export class VoiceAgent {
         if (this.session?.pc === pc) {
           this.clearConnectWatchdog();
           this.liveStartedAt = Date.now();
+          this.markConversationChange();
+          if (conversationId) {
+            this.bridge = this.createBridge(dc, conversationId);
+            this.refreshBridgeSnapshot();
+            void this.bridge.reconcile();
+          }
           this.setState("live");
           this.startPresenceHeartbeat();
           this.log("session.live");
@@ -1318,28 +1463,36 @@ export class VoiceAgent {
           return;
         }
         const type = String(event.type ?? "");
+        const bridge = this.bridge;
         if (type === "response.created") {
           const response = event.response as Record<string, unknown> | undefined;
           const metadata = response?.metadata as Record<string, unknown> | undefined;
           this.activeResponseId = typeof response?.id === "string" ? response.id : null;
-          if (this.activeResponseId && metadata?.bb_voice_source !== "thread_update") this.toolResponseIds.add(this.activeResponseId);
-          this.responseUserTurn = this.userTurnPending && this.userTurnCommitted && !this.userSpeaking && metadata?.bb_voice_source !== "thread_update" ? this.userTurn : null;
+          const bridgeOwned = !!bridge && bridge.ownsResponse(this.activeResponseId, metadata);
+          const background = !!metadata?.bb_voice_source || bridgeOwned;
+          if (this.activeResponseId && !background) this.toolResponseIds.add(this.activeResponseId);
+          this.responseUserTurn = this.userTurnPending && this.userTurnCommitted && !this.userSpeaking && !background ? this.userTurn : null;
           this.setResponseActive(true);
           this.scheduleNoticeDrain();
         } else if (type === "output_audio_buffer.started") {
           this.setAssistantSpeaking(true); // audio is now actually playing
+          bridge?.onAudioStarted();
           this.scheduleNoticeDrain();
-        } else if (
-          type === "output_audio_buffer.stopped" ||
-          type === "output_audio_buffer.cleared"
-        ) {
-          this.setAssistantSpeaking(false); // playback finished or interrupted
+        } else if (type === "output_audio_buffer.stopped") {
+          this.setAssistantSpeaking(false); // playback finished
+          bridge?.onAudioStopped();
+          if (this.endCallAfterResponse && !this.responseActive) { this.stop(); return; }
+          this.scheduleNoticeDrain();
+        } else if (type === "output_audio_buffer.cleared") {
+          this.setAssistantSpeaking(false); // playback interrupted
+          bridge?.onAudioCleared();
           this.scheduleNoticeDrain();
         } else if (type === "input_audio_buffer.speech_started") {
           this.userTurn += 1;
           this.userTurnPending = true;
           this.userTurnCommitted = false;
           this.setUserSpeaking(true);
+          bridge?.onSpeechStarted();
           this.scheduleNoticeDrain();
           // Belt-and-suspenders: a new user turn always clears "Aide speaking",
           // so a missed stopped/cleared event can never leave it stuck on.
@@ -1353,23 +1506,30 @@ export class VoiceAgent {
             this.userTurnPending = true;
           }
           this.userTurnCommitted = true;
+          bridge?.onUserItemCommitted(String(event.item_id ?? ""));
+        } else if (type === "conversation.item.input_audio_transcription.failed") {
+          bridge?.onTranscriptFailed(String(event.item_id ?? ""));
         } else if (type === "response.function_call_arguments.done") {
           if (typeof event.response_id !== "string" || !this.toolResponseIds.has(event.response_id)) {
             this.log("tool.blocked", { reason: "Response is not authorized to call tools", name: event.name });
             return;
           }
           this.pendingToolCalls += 1;
+          this.markConversationChange();
           this.toolChain = this.toolChain
             .then(() => this.session === session ? this.handleToolCall(dc, event) : undefined)
             .catch(() => undefined)
             .finally(() => {
               if (this.session !== session) return;
               this.pendingToolCalls -= 1;
+              this.markConversationChange();
               this.scheduleNoticeDrain();
             });
         } else if (type === "conversation.item.input_audio_transcription.completed") {
           const text = String(event.transcript ?? "").trim();
-          if (text) this.log("user", { text });
+          if (text) this.log("user", { text, itemId: event.item_id ?? null });
+          bridge?.onTranscript(String(event.item_id ?? ""), text);
+          this.refreshBridgeSnapshot();
         } else if (
           type === "response.output_audio_transcript.done" ||
           type === "response.audio_transcript.done"
@@ -1379,6 +1539,7 @@ export class VoiceAgent {
         } else if (type === "response.done") {
           const response = event.response as Record<string, unknown> | undefined;
           if (typeof response?.id === "string") this.toolResponseIds.delete(response.id);
+          bridge?.onResponseDone(typeof response?.id === "string" ? response.id : null, String(response?.status ?? ""));
           if (response?.id === this.activeResponseId) {
             const turnFinished = response?.status === "completed" || response?.status === "failed" || response?.status === "incomplete";
             const hasToolCalls = response?.status === "completed" && Array.isArray(response.output) && response.output.some(item => item?.type === "function_call");
@@ -1388,6 +1549,7 @@ export class VoiceAgent {
             }
             this.activeResponseId = null;
             this.setResponseActive(false);
+            if (this.endCallAfterResponse && !hasToolCalls && !this.assistantSpeaking) { this.stop(); return; }
             if (this.responsePending) {
               this.responsePending = false;
               this.requestResponse(dc);

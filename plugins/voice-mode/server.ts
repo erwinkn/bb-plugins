@@ -21,6 +21,10 @@ import {
 } from "./models";
 import { sessionEventLog } from "./session-events.ts";
 import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
+import { userRequestEnvelopeSchema, voiceAskParamsSchema, voiceReplyParamsSchema, publishedReplySchema } from "./coordinator/envelopes.ts";
+import { COORDINATOR_MIGRATIONS, CoordinatorStore } from "./coordinator/store.ts";
+import { CoordinatorManager, DEFAULT_COORDINATOR_CONFIG, type CoordinatorConfig } from "./coordinator/manager.ts";
+import { COORDINATOR_INSTRUCTIONS, COORDINATOR_VOICE_PROMPT, VOICE_ASK_TOOL_INSTRUCTIONS, VOICE_REPLY_TOOL_INSTRUCTIONS } from "./coordinator/prompts.ts";
 
 /**
  * Rebindable keyboard shortcuts (see shortcuts.ts): each value is a
@@ -34,10 +38,129 @@ const shortcutsSchema = z
   })
   .strict();
 
+const coordinatorConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    providerId: z.string().min(1).max(64),
+    model: z.string().max(128).nullable(),
+    reasoningLevel: z.string().max(32).nullable(),
+    hostId: z.string().max(128).nullable(),
+  })
+  .strict();
+
+const coordinatorStatusSchema = z
+  .object({
+    enabled: z.boolean(),
+    conversation: z
+      .object({
+        id: z.string(),
+        status: z.string(),
+        coordinatorThreadId: z.string().nullable(),
+        providerId: z.string().nullable(),
+        model: z.string().nullable(),
+        hostId: z.string().nullable(),
+        currentCallNonce: z.string().nullable(),
+        revision: z.number(),
+        topic: z.string().nullable(),
+        discussedThreadId: z.string().nullable(),
+      })
+      .strict()
+      .nullable(),
+    requests: z.array(z.object({ id: z.string(), seq: z.number(), status: z.string(), text: z.string(), delivery: z.string().nullable(), error: z.string().nullable(), createdAt: z.number() }).strict()),
+    questions: z.array(z.object({ id: z.string(), question: z.string(), options: z.array(z.string()), allowFreeText: z.boolean(), status: z.string(), createdAt: z.number() }).strict()),
+    pendingInteractions: z.array(z.object({ id: z.string(), threadId: z.string(), title: z.string(), kind: z.string() }).strict()),
+    watch: z.array(z.object({ threadId: z.string(), reason: z.string(), addedAt: z.number() }).strict()),
+    queuedUpdates: z.number(),
+    recentReplies: z.array(z.object({ id: z.string(), kind: z.string(), speech: z.string(), delivery: z.string(), createdAt: z.number(), threadIds: z.array(z.string()) }).strict()),
+    conversations: z.array(z.object({ id: z.string(), createdAt: z.number(), updatedAt: z.number(), status: z.string(), coordinatorThreadId: z.string().nullable(), current: z.boolean() }).strict()),
+  })
+  .strict();
+
+const requestReceiptSchema = z
+  .object({
+    requestId: z.string(),
+    status: z.string(),
+    receipt: z.object({ delivery: z.enum(["sent", "queued"]), coordinatorThreadId: z.string(), mode: z.string(), queuedMessageId: z.string().optional() }).strict().nullable(),
+    error: z.string().nullable(),
+    coordinatorThreadId: z.string().nullable(),
+  })
+  .strict();
+
 export const rpcContract = defineRpcContract({
   claimCall: {
-    input: z.object({ nonce: z.string().min(1).max(256) }).strict(),
-    output: z.object({ sequence: z.number() }).strict(),
+    input: z
+      .object({
+        nonce: z.string().min(1).max(256),
+        /** Start a separate logical conversation instead of resuming the last one. */
+        newConversation: z.boolean().optional(),
+        threadId: z.string().nullable().optional(),
+        projectId: z.string().nullable().optional(),
+      })
+      .strict(),
+    output: z
+      .object({
+        sequence: z.number(),
+        /** Null when the coordinator path is disabled. */
+        conversationId: z.string().nullable(),
+        resumed: z.boolean(),
+        queuedUpdates: z.number(),
+      })
+      .strict(),
+  },
+  /** Hand a completed user request to the hidden coordinator. Idempotent per requestId. */
+  submitRequest: {
+    input: z.object({ envelope: userRequestEnvelopeSchema }).strict(),
+    output: requestReceiptSchema,
+  },
+  retryRequest: {
+    input: z.object({ requestId: z.string().min(1).max(64) }).strict(),
+    output: requestReceiptSchema.omit({ coordinatorThreadId: true }),
+  },
+  /** The bridge found a quiet boundary; the server may reserve one digest batch. */
+  reserveUpdateBatch: {
+    input: z.object({ conversationId: z.string().min(1), nonce: z.string().min(1), msSinceCallLive: z.number().nonnegative() }).strict(),
+    output: z.object({ batch: z.object({ id: z.string(), count: z.number(), remaining: z.number() }).strict().nullable(), reason: z.string().nullable() }).strict(),
+  },
+  reportReplyDelivery: {
+    input: z.object({ replyId: z.string().min(1), nonce: z.string().min(1), state: z.enum(["generated", "playing", "delivered", "interrupted", "partial", "held", "superseded"]) }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /** Replies addressed to this call that were never reported delivered (reconnect). */
+  pendingReplies: {
+    input: z.object({ conversationId: z.string().min(1), nonce: z.string().min(1) }).strict(),
+    output: z.object({ replies: z.array(publishedReplySchema) }).strict(),
+  },
+  getCoordinatorStatus: {
+    input: z.object({ conversationId: z.string().nullable().optional() }).strict().nullable(),
+    output: coordinatorStatusSchema,
+  },
+  answerQuestion: {
+    input: z.object({ questionId: z.string().min(1), value: z.union([z.string().max(4000), z.array(z.string().max(400)).max(10)]) }).strict(),
+    output: z.object({ status: z.string() }).strict(),
+  },
+  newConversation: {
+    input: z.null(),
+    output: z.object({ conversationId: z.string() }).strict(),
+  },
+  setWatch: {
+    input: z.object({ conversationId: z.string().min(1), threadId: z.string().min(1), watched: z.boolean() }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /** Apply a coordinator presentation request (desktop navigation) from the owning call. */
+  applyPresentation: {
+    input: z.object({ nonce: z.string().min(1), threadId: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.literal(true) }).strict(),
+  },
+  /** Providers and models the coordinator setting may use, from the provider catalog. */
+  listCoordinatorProviders: {
+    input: z.object({ hostId: z.string().nullable().optional() }).strict().nullable(),
+    output: z
+      .object({
+        hosts: z.array(z.object({ id: z.string(), name: z.string(), connected: z.boolean() }).strict()),
+        providers: z.array(z.object({ id: z.string(), displayName: z.string(), available: z.boolean() }).strict()),
+        models: z.array(z.object({ providerId: z.string(), id: z.string(), model: z.string(), displayName: z.string(), isDefault: z.boolean() }).strict()),
+      })
+      .strict(),
   },
   /** Exchange a WebRTC SDP offer with OpenAI Realtime. Returns the answer. */
   createCall: {
@@ -133,6 +256,7 @@ export const rpcContract = defineRpcContract({
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
+        coordinator: coordinatorConfigSchema,
       })
       .strict(),
   },
@@ -147,6 +271,7 @@ export const rpcContract = defineRpcContract({
         pluginCommands: z.string().max(2000).optional(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
         shortcuts: shortcutsSchema.optional(),
+        coordinator: coordinatorConfigSchema.partial().optional(),
       })
       .strict(),
     output: z
@@ -158,6 +283,7 @@ export const rpcContract = defineRpcContract({
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
+        coordinator: coordinatorConfigSchema,
       })
       .strict(),
   },
@@ -440,6 +566,39 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
   ].filter(tool => mobile || !["focus_threads", "manage_views", "set_view_behavior"].includes(tool.name));
 }
 
+/**
+ * Realtime tools in coordinator mode. The voice model can hand work to the
+ * coordinator, stay silent, end the call, read the current view, and edit the
+ * local composer or mobile drawer. It has no tool that changes bb state.
+ */
+export function coordinatorToolSchemas(mobile = false) {
+  return [
+    {
+      type: "function",
+      name: "delegate_to_coordinator",
+      description: "Hand the user's request to the bb coordinator, which does the actual work and replies later. Pass the user's own words verbatim in request. Use for anything about threads, projects, agents, work, results, diffs, archiving, stopping, starting, or plugin commands.",
+      parameters: {
+        type: "object",
+        properties: {
+          request: { type: "string", description: "The user's own words, verbatim." },
+          interpretation: { type: "string", description: "Your short reading of what they want (optional)." },
+          urgency: { type: "string", enum: ["new", "steer", "after_current"], description: "new: a fresh request; steer: changes or corrects work already delegated; after_current: explicitly after the current work." },
+          answers_question_id: { type: "string", description: "Set when these words answer the coordinator's open question (its id from the [bb coordinator question …] entry)." },
+        },
+        required: ["request"],
+      },
+    },
+    { type: "function", name: "remain_silent", description: "Say nothing. Use for a bare 'stop' or 'wait', or when no reply is needed." },
+    { type: "function", name: "end_call", description: "End the voice call. Only when the user explicitly asks to hang up, end the call, or says goodbye." },
+    { type: "function", name: "get_context", description: "Get the user's current bb context: the thread and project currently in view, including the thread's status and latest assistant output. Read-only." },
+    { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into). The user reviews and sends it themselves.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+    { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+    ...(mobile
+      ? [{ type: "function", name: "manage_views", description: "List, select, or close the views in the mobile drawer. Closing a view does not stop its thread or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } }]
+      : []),
+  ];
+}
+
 export function threadViewInstructions(mobile: boolean) {
   return mobile
     ? "Mobile thread views: focus_thread shows a thread in the drawer without navigating away from the call. disposition new preserves other views and reuse replaces the selected view. focus_threads opens a batch into the drawer switcher, not separate native bb tabs. For all running threads, use list_live_threads and exclude recently-finished entries. Use manage_views to list, select, or close mobile views. Use set_view_behavior only for an explicitly requested lasting mobile preference. Call get_context for the thread currently shown. If the drawer is unavailable, report the limitation; do not navigate away from the mobile call."
@@ -459,6 +618,23 @@ Rules:
 - While a voice session is active, bb sends you updates when visible threads finish or fail (when Announcements is enabled). You can notify the user: if they ask to be told when a thread finishes, say yes, then announce the update in one short sentence when it arrives. Always name the thread by its title in that sentence; several threads may be running, so a bare "it finished" is ambiguous. Never claim that you cannot notify them, and do not poll the thread.
 - Threads run on a machine. start_thread uses the project's default machine unless you pass machine_id — when the project is on several connected machines and the user didn't name one, use list_machines and ask one short question (e.g. "On your MacBook or the studio?") before starting.
 - When the user asks you to permanently behave differently ("always …", "from now on …"), use update_instructions to propose new standing instructions, then tell the user to review and save the suggestion in Voice Mode settings.`;
+
+/** A one-line, human-readable title for any pending interaction payload. */
+export function describeInteraction(payload: { kind: string } & Record<string, unknown>): string {
+  if (payload.kind === "approval") {
+    const subject = payload.subject as { kind?: string } | undefined;
+    return `Approval requested${typeof payload.reason === "string" && payload.reason ? `: ${payload.reason}` : subject?.kind ? ` (${subject.kind})` : ""}`;
+  }
+  if (payload.kind === "user_question") {
+    const questions = payload.questions as { prompt?: string }[] | undefined;
+    return questions?.[0]?.prompt ?? "Question";
+  }
+  if (typeof payload.title === "string" && payload.title) return payload.title;
+  return payload.kind;
+}
+
+/** Server tools the realtime session may still run while the coordinator owns every mutation. */
+export const COORDINATOR_MODE_SERVER_TOOLS = new Set(["get_context"]);
 
 export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -502,6 +678,7 @@ export default async function plugin(bb: BbPluginApi) {
       content TEXT NOT NULL,
       reason TEXT NOT NULL
     )`,
+    ...COORDINATOR_MIGRATIONS,
   ]);
 
   // Reject new event data at the quota; never silently delete saved transcripts.
@@ -526,6 +703,7 @@ export default async function plugin(bb: BbPluginApi) {
   const currentCall = () => db.prepare("SELECT sequence, nonce FROM voice_call_control WHERE slot = 1").get() as { sequence: number; nonce: string | null };
   function forceStopCall(nonce: string) {
     db.prepare("UPDATE voice_call_control SET nonce = NULL WHERE nonce = ?").run(nonce);
+    void coordinator.endCall(nonce).catch((error) => bb.log.warn(`coordinator hangup drain failed: ${error instanceof Error ? error.message : String(error)}`));
     try { appendEvent(nonce, "session.stopped", { _forced: true }); }
     catch (error) { bb.log.warn(String(error)); }
     bb.realtime.publish("voice-presence", { nonce, phase: "idle", startedAt: null });
@@ -563,6 +741,7 @@ export default async function plugin(bb: BbPluginApi) {
     pluginCommands: string;
     credentialPreference: CredentialPreference;
     shortcuts: Shortcuts;
+    coordinator: CoordinatorConfig;
   }
   const CONFIG_KEY = "config";
   const CONFIG_DEFAULTS: VoiceConfig = {
@@ -573,7 +752,18 @@ export default async function plugin(bb: BbPluginApi) {
     pluginCommands: "all",
     credentialPreference: "auto",
     shortcuts: { ...DEFAULT_SHORTCUTS },
+    coordinator: { ...DEFAULT_COORDINATOR_CONFIG },
   };
+  function normalizeCoordinator(value: unknown): CoordinatorConfig {
+    const v = (value && typeof value === "object" ? value : {}) as Partial<Record<keyof CoordinatorConfig, unknown>>;
+    return {
+      enabled: typeof v.enabled === "boolean" ? v.enabled : DEFAULT_COORDINATOR_CONFIG.enabled,
+      providerId: typeof v.providerId === "string" && v.providerId.trim() ? v.providerId.trim() : DEFAULT_COORDINATOR_CONFIG.providerId,
+      model: typeof v.model === "string" && v.model.trim() ? v.model.trim() : null,
+      reasoningLevel: typeof v.reasoningLevel === "string" && v.reasoningLevel.trim() ? v.reasoningLevel.trim() : null,
+      hostId: typeof v.hostId === "string" && v.hostId.trim() ? v.hostId.trim() : null,
+    };
+  }
   async function readConfig(): Promise<VoiceConfig> {
     const stored = (await bb.storage.kv.get<Partial<VoiceConfig> & { viewBehavior?: string }>(CONFIG_KEY)) ?? {};
     return {
@@ -588,13 +778,19 @@ export default async function plugin(bb: BbPluginApi) {
         ? stored.credentialPreference
         : CONFIG_DEFAULTS.credentialPreference,
       shortcuts: normalizeShortcuts(stored.shortcuts),
+      coordinator: normalizeCoordinator(stored.coordinator),
     };
   }
   let configWrite: Promise<unknown> = Promise.resolve();
-  function writeConfig(patch: Partial<VoiceConfig>): Promise<VoiceConfig> {
+  function writeConfig(patch: Partial<Omit<VoiceConfig, "coordinator">> & { coordinator?: Partial<CoordinatorConfig> }): Promise<VoiceConfig> {
     if (patch.shortcuts) patch = { ...patch, shortcuts: normalizeShortcuts(patch.shortcuts) };
     const result = configWrite.then(async () => {
-      const next = { ...(await readConfig()), ...patch };
+      const current = await readConfig();
+      const next: VoiceConfig = {
+        ...current,
+        ...patch,
+        coordinator: patch.coordinator ? normalizeCoordinator({ ...current.coordinator, ...patch.coordinator }) : current.coordinator,
+      };
       await bb.storage.kv.set(CONFIG_KEY, next);
       return next;
     });
@@ -672,11 +868,78 @@ export default async function plugin(bb: BbPluginApi) {
       detail: notificationDetail(detail),
     });
   }
+  // ---- hidden coordinator (feature-flagged by `coordinator.enabled`) ----
+  // The bridge's server half: durable conversation state, request dispatch
+  // with receipts, the coordinator-only reply/question tools, the background
+  // update inbox, and hangup drain. See docs/coordinator-plan.md.
+  const coordinatorStore = new CoordinatorStore(db);
+  const coordinator = new CoordinatorManager({
+    bb,
+    store: coordinatorStore,
+    config: async () => (await readConfig()).coordinator,
+  });
+  bb.onDispose(() => coordinator.dispose());
+  const coordinatorEnabled = async () => (await readConfig()).coordinator.enabled;
+
+  bb.agents.registerTool({
+    name: "voice_reply",
+    description: "Speak to the Voice Mode user. The only way a coordinator reply reaches the voice call.",
+    instructions: VOICE_REPLY_TOOL_INSTRUCTIONS,
+    parameters: voiceReplyParamsSchema,
+    presentation: { label: { pending: "Replying to voice", completed: "Replied to voice" }, suppress: true },
+    async execute(params, ctx) {
+      return coordinator.recordReply(ctx.threadId, params);
+    },
+  });
+  bb.agents.registerTool({
+    name: "voice_ask",
+    description: "Ask the Voice Mode user one question and wait for the answer.",
+    instructions: VOICE_ASK_TOOL_INSTRUCTIONS,
+    parameters: voiceAskParamsSchema,
+    presentation: { label: { pending: "Asking the user by voice", completed: "Asked the user by voice" } },
+    async execute(params, ctx) {
+      return coordinator.ask(ctx.threadId, params, ctx.signal);
+    },
+  });
+  // Initial configuration runs at thread.start, before the spawned id is
+  // stored, so plugin origin attribution plus the title prefix identify the
+  // coordinator; the stored mapping takes over afterwards. Every other thread
+  // gets none of the voice tools.
+  bb.agents.configure((context) => {
+    if (context.origin.pluginId === bb.pluginId && coordinator.isCoordinatorThread(context.thread)) {
+      return { tools: ["voice_reply", "voice_ask"], skills: [], instructions: COORDINATOR_INSTRUCTIONS };
+    }
+    return { tools: [], skills: [] };
+  });
+
   bb.events.on("thread.idle", ({ thread, lastAssistantText }) => {
+    if (coordinator.conversationFor(thread.id)) {
+      void coordinator.onCoordinatorIdle(thread.id, thread, lastAssistantText).catch((error) => bb.log.warn(`coordinator idle handling failed: ${error instanceof Error ? error.message : String(error)}`));
+      return;
+    }
+    coordinator.enqueueThreadUpdate({ threadId: thread.id, title: thread.title ?? thread.titleFallback, kind: "idle", detail: lastAssistantText, eventKey: String(thread.updatedAt) });
     void publishThreadEvent("idle", thread, lastAssistantText);
   });
   bb.events.on("thread.failed", ({ thread, error }) => {
+    if (coordinator.conversationFor(thread.id)) {
+      void coordinator.onCoordinatorFailed(thread.id, error, null).catch((cause) => bb.log.warn(`coordinator failure handling failed: ${cause instanceof Error ? cause.message : String(cause)}`));
+      return;
+    }
+    coordinator.enqueueThreadUpdate({ threadId: thread.id, title: thread.title ?? thread.titleFallback, kind: "failed", detail: error, eventKey: String(thread.updatedAt) });
     void publishThreadEvent("failed", thread, error);
+  });
+  bb.events.on("interaction.pending", ({ thread, interaction }) => {
+    const title = describeInteraction(interaction.payload);
+    if (coordinator.conversationFor(thread.id)) {
+      coordinator.onCoordinatorInteraction(thread.id, { id: interaction.id, status: interaction.status, payload: { title, kind: interaction.payload.kind }, origin: interaction.origin });
+      return;
+    }
+    coordinator.enqueueThreadUpdate({ threadId: thread.id, title: thread.title ?? thread.titleFallback, kind: "interaction", detail: `Needs your input: ${title}`, eventKey: interaction.id });
+  });
+  bb.events.on("turn.failed", (event) => {
+    if (!coordinator.conversationFor(event.threadId)) return;
+    const reset = event.errorInfo?.category === "rate-limit" || event.errorInfo?.category === "overloaded" ? "The provider reported a rate limit; retry after it resets." : null;
+    void coordinator.onCoordinatorFailed(event.threadId, event.errorInfo ? `${event.errorInfo.category}${event.errorInfo.providerCode ? ` (${event.errorInfo.providerCode})` : ""}` : null, reset).catch((cause) => bb.log.warn(`coordinator turn failure handling failed: ${cause instanceof Error ? cause.message : String(cause)}`));
   });
 
   // ---- Codex subscription auth ----
@@ -1236,27 +1499,37 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
-    async claimCall({ nonce }) {
+    async claimCall({ nonce, newConversation = false, threadId = null, projectId = null }) {
       const previous = currentCall();
       if (previous.nonce) forceStopCall(previous.nonce);
       db.prepare("UPDATE voice_call_control SET sequence = sequence + 1, nonce = ? WHERE slot = 1").run(nonce);
       const { sequence } = currentCall();
       bb.realtime.publish("voice-call", { nonce, sequence });
-      return { sequence };
+      if (!(await coordinatorEnabled())) return { sequence, conversationId: null, resumed: false, queuedUpdates: 0 };
+      const started = await coordinator.startCall({ nonce, sequence, view: { threadId, projectId }, newConversation });
+      return { sequence, conversationId: started.conversationId, resumed: started.resumed, queuedUpdates: started.queuedUpdates };
     },
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       const key = await apiKey();
-      const { model, voice } = await readConfig();
-      const pluginCommands = await exposedPluginCommands();
+      const { model, voice, coordinator: coordinatorConfig } = await readConfig();
+      const pluginCommands = coordinatorConfig.enabled ? [] : await exposedPluginCommands();
       const pluginSection =
         pluginCommands.length === 0
           ? ""
           : `\n\nInstalled bb plugins contribute extra commands you can run with run_plugin_command:\n${pluginCommands.map((c) => `- ${c.id}: bb ${c.name} — ${c.summary}`).join("\n")}\nWhen unsure of a plugin's subcommands, run it with argv ["--help"] first. Summarize command output aloud in a sentence or two; never read raw JSON or long output verbatim.`;
+      const contextLine = `Current context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`;
+      if (coordinatorConfig.enabled) {
+        // Warm the coordinator while audio connects; never block the SDP exchange on it.
+        const conversationId = coordinatorStore.currentConversationId();
+        if (conversationId) void coordinator.ensureCoordinator(conversationId).catch((error) => bb.log.warn(`coordinator warmup failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
       const session = {
         type: "realtime",
         model,
-        instructions: `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\nCurrent context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`,
+        instructions: coordinatorConfig.enabled
+          ? `${COORDINATOR_VOICE_PROMPT}\n\n${mobile ? "Mobile: the app shows threads in a drawer beside the call; manage_views lists or closes them. Do not navigate away from the call." : "Desktop: the coordinator can ask the app to show a thread."}\n\n${contextLine}`
+          : `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\n${contextLine}`,
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -1273,7 +1546,7 @@ export default async function plugin(bb: BbPluginApi) {
           },
           output: { voice },
         },
-        tools: toolSchemas(pluginCommands, mobile),
+        tools: coordinatorConfig.enabled ? coordinatorToolSchemas(mobile) : toolSchemas(pluginCommands, mobile),
       };
       const form = new FormData();
       form.set("sdp", sdp);
@@ -1393,7 +1666,10 @@ export default async function plugin(bb: BbPluginApi) {
         bb.realtime.publish("voice-command", { nonce, action: "stop" });
         return { ok: true as const };
       }
-      if (phase === "idle") db.prepare("UPDATE voice_call_control SET nonce = NULL WHERE nonce = ?").run(nonce);
+      if (phase === "idle") {
+        db.prepare("UPDATE voice_call_control SET nonce = NULL WHERE nonce = ?").run(nonce);
+        void coordinator.endCall(nonce).catch((error) => bb.log.warn(`coordinator hangup drain failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
       bb.realtime.publish("voice-presence", { nonce, phase, startedAt, client, realm });
       return { ok: true as const };
     },
@@ -1538,8 +1814,68 @@ export default async function plugin(bb: BbPluginApi) {
       );
       return { ok: true as const };
     },
+    async submitRequest({ envelope }) {
+      if (!(await coordinatorEnabled())) throw new Error("The voice coordinator is disabled in Voice Mode settings.");
+      return coordinator.submitRequest(envelope);
+    },
+    async retryRequest({ requestId }) {
+      const result = await coordinator.retryRequest(requestId);
+      return { requestId: result.requestId, status: result.status, receipt: result.receipt, error: result.error };
+    },
+    async reserveUpdateBatch({ conversationId, nonce, msSinceCallLive }) {
+      if (currentCall().nonce !== nonce) return { batch: null, reason: "call-mismatch" };
+      return coordinator.reserveBatch({ conversationId, callNonce: nonce, msSinceCallLive });
+    },
+    async reportReplyDelivery({ replyId, nonce, state }) {
+      coordinator.reportDelivery(replyId, state, nonce);
+      return { ok: true as const };
+    },
+    async pendingReplies({ conversationId, nonce }) {
+      return { replies: coordinator.pendingReplies(conversationId, nonce) };
+    },
+    async getCoordinatorStatus(input) {
+      const status = coordinator.status(input?.conversationId ?? null);
+      return { ...status, enabled: await coordinatorEnabled() };
+    },
+    async answerQuestion({ questionId, value }) {
+      return coordinator.answerQuestion(questionId, value, "ui");
+    },
+    async newConversation() {
+      return coordinator.newConversation();
+    },
+    async setWatch({ conversationId, threadId, watched }) {
+      coordinator.setWatch(conversationId, threadId, watched);
+      return { ok: true as const };
+    },
+    async applyPresentation({ nonce, threadId }) {
+      if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
+      const { delivered } = await bb.sdk.threads.open({ threadId, file: null });
+      if (delivered <= 0) throw new Error("No connected bb window received the action.");
+      return { ok: true as const };
+    },
+    async listCoordinatorProviders(input) {
+      const hosts = await bb.sdk.hosts.list();
+      const hostId = input?.hostId ?? hosts.find((host) => host.status === "connected")?.id ?? null;
+      const routing = hostId ? { hostId } : {};
+      const providers = await bb.sdk.providers.list(routing).catch(() => []);
+      const models: { providerId: string; id: string; model: string; displayName: string; isDefault: boolean }[] = [];
+      for (const provider of providers.filter((candidate) => candidate.available)) {
+        try {
+          const catalog = await bb.sdk.providers.models({ providerId: provider.id, ...routing });
+          for (const model of catalog.models) models.push({ providerId: provider.id, id: model.id, model: model.model, displayName: model.displayName, isDefault: model.isDefault });
+        } catch { /* provider without a catalog stays selectable by default model */ }
+      }
+      return {
+        hosts: hosts.map((host) => ({ id: host.id, name: host.name, connected: host.status === "connected" })),
+        providers: providers.map((provider) => ({ id: provider.id, displayName: provider.displayName ?? provider.id, available: provider.available })),
+        models,
+      };
+    },
     async runTool({ name, args, threadId, projectId, onNewThreadScreen }) {
       try {
+        if ((await coordinatorEnabled()) && !COORDINATOR_MODE_SERVER_TOOLS.has(name)) {
+          throw new Error(`Tool ${name} is not available while the voice coordinator is enabled. Delegate to the coordinator instead.`);
+        }
         const output = await runTool(name, args, { threadId, projectId, onNewThreadScreen });
         return { output, status: "success" as const };
       } catch (error) {

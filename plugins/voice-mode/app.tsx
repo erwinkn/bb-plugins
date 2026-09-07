@@ -23,6 +23,7 @@ import { SessionsPanel } from "./sessions-panel";
 import { viewWorkspace } from "./view-workspace";
 import { COMPANION_TAB, CompanionTab, THREAD_WORKSPACE_ACTION } from "./companion";
 import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
+import { CoordinatorSettings, VoiceQuestionInteraction } from "./coordinator-panel";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import { MicIcon, StopIcon, WaveformIcon, useCallElapsed } from "./voice-chrome";
@@ -59,6 +60,7 @@ export function AideVoiceButton() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const activity = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getActivity);
   const micSuspended = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getMicSuspended);
+  const bridge = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getBridgeSnapshot);
   // Shortcut hints for the tooltips. This button is mounted on nearly every
   // page, so it also keeps the content-script mirror in step with the config.
   useShortcutSync();
@@ -101,15 +103,18 @@ export function AideVoiceButton() {
     const listening = activity === "you"; // never true while muted (mic is off)
     // A suspended mic (iOS backgrounding) means Aide can't hear you — say so
     // rather than showing a reassuring "Connected".
+    const working = !!bridge?.working && !speaking && !listening;
     const middleLabel = micSuspended
       ? "Mic paused"
       : speaking
         ? "Aide speaking…"
         : listening
           ? "Listening…"
-          : muted
-            ? "Muted"
-            : "Connected";
+          : working
+            ? "Working…"
+            : muted
+              ? "Muted"
+              : "Connected";
     return (
       <div ref={node => { surface.current = node; }} className="flex h-7 shrink-0 items-center overflow-hidden rounded-full border border-border bg-accent">
         <button
@@ -241,10 +246,18 @@ export default definePluginApp((app) => {
     component: BehaviorSettings,
   });
   app.slots.settingsSection({
+    id: "coordinator",
+    title: "Coordinator",
+    component: CoordinatorSettings,
+  });
+  app.slots.settingsSection({
     id: "audio",
     title: "Audio",
     component: AudioSettings,
   });
+  // Coordinator questions are real pending interactions on the hidden thread;
+  // this renders their form wherever BB shows pending interactions.
+  app.slots.pendingInteraction({ id: "voice-question", component: VoiceQuestionInteraction });
   app.slots.settingsSection({
     id: "shortcuts",
     title: "Keyboard shortcuts",

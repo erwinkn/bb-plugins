@@ -100,6 +100,83 @@ behavior are a [separate design](docs/desktop-navigation-plan.md).
 See [the mobile design and device checklist](docs/thread-views.md) for SDK limits
 and the shared session/plugin logging behavior.
 
+## Coordinator mode
+
+Coordinator mode is off by default. Turn it on under Settings → Plugins →
+Voice Mode → **Coordinator**. It applies to the next call.
+
+With it on, the realtime voice model no longer changes BB itself. It listens,
+hands each request to a hidden BB thread (the coordinator) with the user's
+original words, and speaks the coordinator's replies. The coordinator acts
+through BB's own tools (the `bb` CLI) and reports back through a
+coordinator-only `voice_reply` tool. It asks a question through `voice_ask`
+only when the target or intent is materially ambiguous, or when BB requires an
+approval. Clear requests run without a second confirmation; a conditional
+request such as "we can archive it, nothing remains, right?" runs once the
+coordinator has verified the condition.
+
+What the plugin guarantees in this mode:
+
+- The voice session has no tool that sends, starts, stops, archives, or renames
+  threads, and the server refuses those tools while the mode is on. There is
+  no fallback to the direct path on errors.
+- A request is accepted only when a completed input transcript has been bound
+  to it and recorded durably. Speech that starts before a handoff was sent
+  holds that handoff; the model is told and may delegate again with the
+  complete request. Partial speech at hangup creates no request. If transcription
+  fails or times out, the server asks the user to repeat it and sends no work.
+- Every dispatch is recorded before it is sent and its BB receipt (sent or
+  queued) afterwards. An ambiguous network failure is reconciled against the
+  coordinator's queue and timeline before any retry. An unknown result stays
+  unknown when those checks fail or contain no receipt; Retry checks again
+  without resending. An unknown create also blocks another coordinator spawn.
+  These checks do not guarantee exactly-once execution of native agent commands.
+- Final replies are spoken after the coordinator's turn settles and the user
+  is quiet. Clarifications and approvals can reach the user while the
+  coordinator waits. Background updates use the full idle gate: the user is
+  not speaking, the current request is answered, the coordinator is idle, no
+  question is blocking, playback is finished, and two seconds have passed.
+- Only watched threads produce updates: threads the conversation discussed,
+  delegated to, or that you watch explicitly. Each spoken batch carries at
+  most two updates; failures are never hidden by later status changes.
+- What the user actually heard is tracked separately from what was generated
+  (generated, playing, delivered, interrupted). A bounded, labelled copy of
+  each spoken reply is added to the voice context, so "which thread?" after an
+  announcement resolves to that announcement.
+- A question stays alive as a real pending interaction on the coordinator
+  thread until an answer or an explicit cancellation. UI submission and
+  delivery to the coordinator are tracked separately; a form submitted after
+  the tool invocation was torn down is stored and redelivered. Hangup cancels
+  the native row, keeps the question unresolved, and asks it again on resume.
+- Hangup lets accepted work finish. Late results become queued updates and
+  are read out as a brief digest after the opening request of the next call
+  is answered. The coordinator runtime is released once its work settles.
+- One coordinator per logical conversation. Calls resume the last
+  conversation by default; **New conversation** on the Voice page starts a
+  separate coordinator, and the old one finishes its work without speaking
+  into the new call.
+
+The coordinator runs in a personal-project environment on the selected
+machine with its own provider and model, independent of every project's
+defaults. The initial supported choice is Codex with its default model. An
+unavailable provider or model is reported as a recoverable failure. Normal
+permissions apply; the plugin never forces full permissions.
+
+The Voice page shows a coordinator card with **Open coordinator**, pending
+work with retry, the current question with an answer form, pending approvals,
+watched threads, queued updates, and **New conversation**. The composer pill
+shows "Working…" while a request is with the coordinator.
+
+Verified so far: deterministic fake-host and fake-realtime tests for bridge
+ordering and recovery, and a disposable hidden thread spawned into a
+personal environment on this machine through the same BB contracts. Not yet
+verified: physical desktop and mobile calls (audio interruption, playback
+tracking, the mobile drawer), live model behavior for conditional requests,
+and the 3–5 second first-useful-answer target.
+The bridge logs `handoff.dispatched` (transcript wait) and `reply.playing`
+(milliseconds since the end of speech and since the handoff) in each session
+transcript for that measurement.
+
 ## Inspecting live threads from the terminal
 
 The same "Live threads" view from the sidebar is available as a CLI, for you
@@ -178,6 +255,10 @@ server.ts          API key + SDP exchange, bb tools via bb.sdk, `bb voice-mode` 
 
 More detail: [architecture](docs/handsfree-voice-architecture.md)
 and [docs/voice-scenarios.md](docs/voice-scenarios.md).
+
+The [Voice conversation coordinator](docs/coordinator-plan.md) is implemented
+as an opt-in path (Settings → Plugins → Voice Mode → **Coordinator**). See
+[Coordinator mode](#coordinator-mode) above.
 
 Tool-call flow: model → data channel → `app.tsx` → plugin RPC `runTool` →
 `bb.sdk` → output back over the data channel (function_call_output +

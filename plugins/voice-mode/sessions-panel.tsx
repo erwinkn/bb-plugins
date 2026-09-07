@@ -20,6 +20,7 @@ import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
 import { viewWorkspace } from "./view-workspace";
 import { actionStatus, pairToolEvents } from "./session-events";
 import { COMPANION_TAB } from "./companion";
+import { CoordinatorCard } from "./coordinator-panel";
 import { cn } from "@/lib/utils";
 
 interface DeviceInfo {
@@ -212,6 +213,9 @@ const ACTIONS: Record<string, { family: ActionFamily; verb: string }> = {
   set_composer_text: { family: "compose", verb: "Drafted a message" },
   append_composer_text: { family: "compose", verb: "Appended to the draft" },
   run_plugin_command: { family: "plugin", verb: "Ran a plugin command" },
+  delegate_to_coordinator: { family: "mutate", verb: "Handed off to the coordinator" },
+  remain_silent: { family: "self", verb: "Stayed silent" },
+  end_call: { family: "self", verb: "Ended the call" },
 };
 
 function actionMeta(name: string): { family: ActionFamily; verb: string } {
@@ -281,7 +285,7 @@ type Row =
   | { kind: "error"; id: number; ts: number; message: string }
   | { kind: "sysgroup"; id: number; ts: number; events: EventRow[] };
 
-const CONVERSATION_KINDS = new Set(["user", "assistant", "tool.call", "tool.result", "notice", "error"]);
+const CONVERSATION_KINDS = new Set(["user", "assistant", "tool.call", "tool.result", "notice", "error", "reply.speaking"]);
 
 /**
  * Fold the raw event log into display rows: pair each tool.call with its result,
@@ -326,6 +330,10 @@ function buildRows(events: EventRow[]): Row[] {
         break;
       case "notice":
         rows.push({ kind: "notice", id: event.id, ts: event.ts, text: String(payload.text ?? "") });
+        break;
+      case "reply.speaking":
+        // A coordinator reply the bridge started speaking (delivery is logged separately).
+        rows.push({ kind: "notice", id: event.id, ts: event.ts, text: `Coordinator (${String(payload.kind ?? "reply")}): ${String(payload.text ?? "")}` });
         break;
       case "error":
         rows.push({ kind: "error", id: event.id, ts: event.ts, message: String(payload.message ?? "error") });
@@ -846,6 +854,7 @@ export function SessionsPanel() {
                 </Button>
               </div>
             </div>
+            <CoordinatorCard />
             {sessions && sessions.length > 0 ? (
               <div className="flex items-center gap-2">
                 <input
