@@ -196,7 +196,7 @@ describe("activity sidebar", () => {
         Array.from(pins.querySelectorAll("[data-sidebar-thread-id]"), (row) =>
           row.getAttribute("data-sidebar-thread-id"),
         ),
-      ).toEqual(["pin-child", "pin-parent"]);
+      ).toEqual(["pin-child", "pin-parent", "child"]);
       expect(
         slot.container.querySelectorAll("[data-sidebar-thread-id]"),
       ).toHaveLength(4);
@@ -212,6 +212,40 @@ describe("activity sidebar", () => {
       expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe(
         "Pinned",
       );
+    },
+  );
+
+  it.each(["status", "project"] as const)(
+    "keeps a pinned family together across filters and pin changes in %s view",
+    (groupBy) => {
+      updateState((state) => ({ ...state, groupBy, hidden: ["done", "working"] }));
+      const threads = [
+        thread({ id: "grandchild", parentThreadId: "child", isPinned: true }),
+        thread({ id: "child", title: "child", parentThreadId: "pin", projectId: "project-2", indicator: "runtime" }),
+        thread({ id: "pin", title: "pin", isPinned: true }),
+        thread({ id: "archived-child", parentThreadId: "pin", isArchived: true }),
+        thread({ id: "other", isUnread: true }),
+      ];
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: { projects, threads },
+      });
+      const pins = slot.getByRole("list", { name: "Pinned threads" });
+      const rowIds = (element: Element) => Array.from(
+        element.querySelectorAll("[data-sidebar-thread-id]"),
+        (row) => row.getAttribute("data-sidebar-thread-id"),
+      );
+      expect(rowIds(pins)).toEqual(["pin", "child", "grandchild"]);
+      expect(within(pins).getByRole("img", { name: "Working" })).toBeTruthy();
+      expect(rowIds(slot.container).sort()).toEqual(["child", "grandchild", "other", "pin"]);
+      expect(within(pins).getByRole("list", { name: "Children of pin" })).toBeTruthy();
+      expect(within(pins).getByRole("list", { name: "Descendants of child" })).toBeTruthy();
+
+      // Unpin the ancestor: the independently pinned grandchild stays visible.
+      threads[2] = { ...threads[2], isPinned: false };
+      const Component = app.threadLists[0].component;
+      slot.rerender(<Component {...props} />);
+      expect(rowIds(slot.getByRole("list", { name: "Pinned threads" }))).toEqual(["grandchild"]);
+      expect(rowIds(slot.container).sort()).toEqual(["grandchild", "other"]);
     },
   );
 
