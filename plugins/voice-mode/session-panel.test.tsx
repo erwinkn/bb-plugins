@@ -108,7 +108,7 @@ test("older physical call ids still open their session, and a legacy call has no
     fireEvent.click(await ui.findByRole("button", { name: /Session old/ }));
     await ui.findByText("Words in old");
     assert.ok(ui.getByText("single call", { exact: false }));
-    fireEvent.click(ui.getByRole("tab", { name: "Coordinator" }));
+    fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "coordinator" } });
     assert.match(within(ui.getByRole("region", { name: "Voice coordinator" })).getByText(/no coordinator thread/i).textContent ?? "", /before coordinator mode/);
     assert.equal(ui.queryByTestId("bb-thread-chat"), null);
   } finally { slot.lifecycle.unmount(); }
@@ -130,7 +130,11 @@ test("Diagnostics shows raw events with call boundaries; live log signals refres
     fireEvent.click(await ui.findByRole("button", { name: /Session a/ }));
     await ui.findByText("Words in call_a_1");
     assert.equal(ui.queryByText(/internal words/), null, "the conversation hides handoffs");
-    fireEvent.click(ui.getByRole("tab", { name: "Diagnostics" }));
+    const nav = within(ui.getByRole("navigation", { name: "Session navigation" }));
+    assert.ok(nav.getByRole("button", { name: "All sessions" }).querySelector("svg"));
+    assert.deepEqual(nav.getAllByRole("option").map(option => option.textContent), ["Conversation", "Coordinator", "Diagnostics"]);
+    assert.equal(nav.queryByRole("tablist"), null);
+    fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "diagnostics" } });
     assert.ok(ui.getByRole("separator", { name: "Call 1" }));
     assert.ok(ui.getByRole("separator", { name: "Call 2" }));
     assert.ok(ui.getByText("Handed off to the coordinator"));
@@ -141,6 +145,8 @@ test("Diagnostics shows raw events with call boundaries; live log signals refres
     assert.equal(detailCalls.length, before, "another session's call does not refetch this one");
     await slot.behavior.emitRealtime("aide-log", { sessionId: "call_a_2" });
     assert.equal(detailCalls.length, before + 1);
-    assert.equal(ui.getByRole("tab", { name: "Diagnostics" }).getAttribute("aria-selected"), "true", "a refresh keeps the current tab");
+    assert.equal((ui.getByRole("combobox", { name: "Session view" }) as HTMLSelectElement).value, "diagnostics", "a refresh keeps the current view");
+    fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "conversation" } });
+    assert.equal(ui.queryByText(/internal words/), null, "the picker returns to the conversation");
   } finally { slot.lifecycle.unmount(); }
 });

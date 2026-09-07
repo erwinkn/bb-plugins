@@ -165,3 +165,27 @@ overview tool instructions. Added parentThreadId to the live-thread snapshot.
   Spoken compliance still requires a live call.
 
 I stand behind this change under the user's standing PR and reload authorization.
+
+
+## Compact session header
+
+The user requested a left arrow and a current-view picker in one header row.
+Replaced the three view tabs with a native select showing the current view.
+Conversation remains the default; Coordinator and Diagnostics remain available.
+
+- Use a native select with a caret. Alternative: add a custom popover menu.
+  Confidence: high. Native controls support phone and keyboard interaction;
+  the open picker appearance depends on the browser and operating system.
+- Apply the compact header at all widths. Alternative: keep desktop tabs.
+  Confidence: high. The same three views stay available, with 44-pixel phone
+  touch targets and smaller desktop controls.
+- Keep the back button's existing focus and navigation behavior with an
+  accessible All sessions label. Alternative: replace it with a route link.
+  Confidence: high. Neither view changes nor back navigation end the call.
+- Use existing session tests for selection, live refresh, legacy coordinator
+  access, and returning to Conversation. Browser validation uses a separate
+  session with local build asset overrides, leaving the active call untouched.
+  All three views and back navigation passed at 320, 390, and 1024 pixels,
+  with the header on one row and no header overflow.
+
+I stand behind this change under the user's standing PR authorization.

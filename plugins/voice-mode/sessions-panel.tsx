@@ -826,25 +826,25 @@ function SessionHistoryPanel({ active }: { active: boolean }) {
     <div className="voice-sessions flex h-full min-h-0 flex-col">
       {selected ? (
         <nav aria-label="Session navigation" className="shrink-0 border-b border-border bg-background px-4 py-2 sm:py-3 md:px-6">
-          <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-1.5 sm:gap-2">
-            <Button ref={backButtonRef} type="button" variant="outline" size="sm" onClick={backToSessions} className="min-h-11 shrink-0 sm:min-h-8">
-              ← All sessions
+          <div className="mx-auto flex w-full min-w-0 max-w-3xl items-center gap-2">
+            <Button ref={backButtonRef} type="button" variant="ghost" size="icon" onClick={backToSessions}
+              aria-label="All sessions" className="size-11 shrink-0 sm:size-8">
+              <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m12 5-7 7 7 7M5 12h14" />
+              </svg>
             </Button>
-            <div role="tablist" aria-label="Session views" className="flex max-w-full flex-wrap items-center gap-1 sm:rounded-md sm:border sm:border-border sm:p-1">
-              {SESSION_TABS.map((entry) => (
-                <Button
-                  key={entry.id}
-                  type="button"
-                  role="tab"
-                  size="sm"
-                  variant="ghost"
-                  aria-selected={tab === entry.id}
-                  onClick={() => setTab(entry.id)}
-                  className={cn("min-h-11 px-2 sm:min-h-8", tab === entry.id ? "bg-accent text-foreground" : "text-muted-foreground")}
-                >
-                  {entry.label}
-                </Button>
-              ))}
+            <div className="relative min-w-0">
+              <select aria-label="Session view" value={tab}
+                onChange={event => {
+                  const next = SESSION_TABS.find(entry => entry.id === event.target.value);
+                  if (next) setTab(next.id);
+                }}
+                className="min-h-11 max-w-full appearance-none rounded-md border border-border bg-background py-2 pl-3 pr-9 text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8 sm:py-1">
+                {SESSION_TABS.map(entry => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+              </select>
+              <svg viewBox="0 0 24 24" className="pointer-events-none absolute right-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
             </div>
           </div>
         </nav>
