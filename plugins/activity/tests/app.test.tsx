@@ -1709,6 +1709,7 @@ describe("activity sidebar", () => {
             },
           }),
           thread({ id: "plain" }),
+          thread({ id: "pinned", isPinned: true }),
         ],
       },
       sidebarPullRequests: {
@@ -1727,6 +1728,8 @@ describe("activity sidebar", () => {
       )!;
     expect(meta("branch").textContent).toBe("#7·feature/activity");
     expect(meta("plain").textContent).toBe("");
+    // The Pinned section has no project header, so its rows keep the name.
+    expect(meta("pinned").textContent).toBe("One");
     expect(slot.getByRole("region", { name: "One" })).toBeTruthy();
   });
   it("shows child details on keyboard focus and closes them with Escape", () => {

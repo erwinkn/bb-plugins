@@ -89,7 +89,7 @@ Rows have two lines. The first line shows the title with the status marker
 at its right end. The second line shows muted metadata: the pull request for
 the thread's branch when BB reports one, then the project name, then the
 branch. Under a project header the project name is omitted, because it would
-repeat the header. The age for the selected date sits at the right end of
+repeat the header; pinned rows keep it. The age for the selected date sits at the right end of
 that line and refreshes each minute. The pull request shows a state-colored
 icon and its number: green for open, amber for an open pull request that
 needs you, violet for merged, red for closed, and muted for a draft. Metadata

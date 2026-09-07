@@ -162,40 +162,46 @@ function ThreadsList(props: PluginThreadListProps) {
     actions.openNewThread({ projectId: id, focusPrompt: true });
     props.onNavigate();
   };
-  const row = (
-    { thread, status, children }: ThreadNode,
-    depth = 0,
-  ): ReactNode => (
-    <ThreadRow
-      key={thread.id}
-      now={now}
-      sortBy={state.sortBy}
-      thread={thread}
-      status={status}
-      depth={depth}
-      project={projectNames.get(thread.projectId) ?? "No project"}
-      showProject={state.groupBy !== "project"}
-      provider={providerNames.get(thread.providerId) ?? thread.providerId}
-      parent={
-        thread.parentThreadId
-          ? (titles.get(thread.parentThreadId) ?? thread.parentThreadId)
-          : undefined
-      }
-      active={props.activeThreadId === thread.id}
-      onNavigate={props.onNavigate}
-      onError={report}
-    >
-      {children.length > 0 && (
-        <ThreadChildren
-          nodes={children}
-          parentTitle={threadTitle(thread)}
-          depth={depth + 1}
-          activeThreadId={props.activeThreadId}
-          renderRow={row}
-        />
-      )}
-    </ThreadRow>
-  );
+  // Rows under a project header omit the project name, which would repeat it.
+  const makeRow = (showProject: boolean) => {
+    const row = (
+      { thread, status, children }: ThreadNode,
+      depth = 0,
+    ): ReactNode => (
+      <ThreadRow
+        key={thread.id}
+        now={now}
+        sortBy={state.sortBy}
+        thread={thread}
+        status={status}
+        depth={depth}
+        project={projectNames.get(thread.projectId) ?? "No project"}
+        showProject={showProject}
+        provider={providerNames.get(thread.providerId) ?? thread.providerId}
+        parent={
+          thread.parentThreadId
+            ? (titles.get(thread.parentThreadId) ?? thread.parentThreadId)
+            : undefined
+        }
+        active={props.activeThreadId === thread.id}
+        onNavigate={props.onNavigate}
+        onError={report}
+      >
+        {children.length > 0 && (
+          <ThreadChildren
+            nodes={children}
+            parentTitle={threadTitle(thread)}
+            depth={depth + 1}
+            activeThreadId={props.activeThreadId}
+            renderRow={row}
+          />
+        )}
+      </ThreadRow>
+    );
+    return row;
+  };
+  const row = makeRow(true);
+  const projectRow = makeRow(false);
   const draftRow = (project: { id: string; name: string }) => (
     <li key={`new:${project.id}`}>
       <button
@@ -223,7 +229,11 @@ function ThreadsList(props: PluginThreadListProps) {
       </button>
     </li>
   );
-  const archiveGroup = (id: string, rows: typeof archived) =>
+  const archiveGroup = (
+    id: string,
+    rows: typeof archived,
+    renderRow: typeof row = row,
+  ) =>
     rows.length > 0 ? (
       <Group id={id} title="Archived" archive>
         <ThreadRoots
@@ -232,7 +242,7 @@ function ThreadsList(props: PluginThreadListProps) {
           nodes={buildThreadTree(rows, state.sortBy)}
           drafts={[]}
           activeThreadId={props.activeThreadId}
-          renderRow={(node) => row(node)}
+          renderRow={(node) => renderRow(node)}
           renderDraft={draftRow}
         />
       </Group>
@@ -360,12 +370,13 @@ function ThreadsList(props: PluginThreadListProps) {
                           nodes={rows}
                           drafts={drafts}
                           activeThreadId={props.activeThreadId}
-                          renderRow={(node) => row(node)}
+                          renderRow={(node) => projectRow(node)}
                           renderDraft={draftRow}
                         />
                         {archiveGroup(
                           `archive:project:${project.id}`,
                           projectArchives,
+                          projectRow,
                         )}
                       </Group>
                     ) : null;
