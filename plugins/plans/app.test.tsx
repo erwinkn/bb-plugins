@@ -251,6 +251,19 @@ describe("comments", () => {
     expect(Object.values(input)).not.toContain(undefined);
   });
 
+  it("keeps the selection context when the composer saves a pending comment", async () => {
+    const backend = fakeBackend([makePlan()]);
+    window.localStorage.setItem(
+      "bb-plugin-erwin-plans:draft:plan-1:v1",
+      JSON.stringify({ note: "", pendingComment: { quote: "Step 1.", body: "Pinned", prefix: "Plan ", suffix: "", position: 5 } }),
+    );
+    slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
+    fireEvent.click(await slot.findByRole("button", { name: "Add comment" }));
+    await waitFor(() => expect(backend.plans.get("plan-1")?.comments).toHaveLength(1));
+    const input = slot.inspection.rpcCalls.find((call) => call.method === "addComment")?.input;
+    expect(input).toMatchObject({ quote: "Step 1.", body: "Pinned", prefix: "Plan ", suffix: "", position: 5 });
+  });
+
   it("lets a draft comment be edited and deleted, but not a sent one", async () => {
     const backend = fakeBackend([
       makePlan({ comments: [comment({ id: "draft" }), comment({ id: "sent", body: "Already sent.", sentAt: now })] }),

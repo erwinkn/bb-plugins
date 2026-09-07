@@ -123,7 +123,7 @@ export function CommentComposer({
     setSubmitting(true);
     setError(null);
     try {
-      await onSubmit({ quote: pending.quote, body: pending.body.trim() });
+      await onSubmit({ ...pending, body: pending.body.trim() });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
