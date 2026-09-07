@@ -1,9 +1,11 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useEffect, useState, type ReactNode } from "react";
-import type {
-  PluginSidebarPullRequest,
-  PluginSidebarThread,
+import {
+  useRpc,
+  type PluginSidebarPullRequest,
+  type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
+import type { archiveContract } from "../lib/archive-contract";
 import { STATUS_LABEL, threadTitle, type Status } from "../lib/status";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { PullRequestIcon, pullRequestSummary } from "./pull-request";
@@ -38,6 +40,22 @@ export function ThreadInfo({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const rpc = useRpc<typeof archiveContract>();
+  const [fetchedParent, setFetchedParent] = useState<{ id: string; title: string } | null>(null);
+  const parentId = thread.parentThreadId;
+  useEffect(() => {
+    if (!open || disabled || parent || !parentId) return;
+    let cancelled = false;
+    setFetchedParent(null);
+    void rpc.call("parentTitle", { threadId: parentId }).then(
+      (title) => { if (!cancelled) setFetchedParent({ id: parentId, title }); },
+      () => { if (!cancelled) setFetchedParent({ id: parentId, title: "Unavailable" }); },
+    );
+    return () => { cancelled = true; };
+  }, [rpc, open, disabled, parent, parentId]);
+  const parentLabel = parent ?? (parentId
+    ? fetchedParent?.id === parentId ? fetchedParent.title : "Loading…"
+    : undefined);
   const scope = usePortalScopeProps();
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -73,7 +91,7 @@ export function ThreadInfo({
     workspace,
     environment,
     thread.isPinned ? "Pinned" : null,
-    parent ? `Child of ${parent}` : null,
+    parentLabel ? `Child of ${parentLabel}` : null,
     pullRequest
       ? `${pullRequestSummary(pullRequest)}: ${pullRequest.title}`
       : null,
@@ -131,7 +149,7 @@ export function ThreadInfo({
                     : ""}
                 </Detail>
               )}
-              {parent && <Detail label="Parent">{parent}</Detail>}
+              {parentLabel && <Detail label="Parent">{parentLabel}</Detail>}
               {pullRequest && (
                 <Detail label="PR">
                   <span className="flex items-start gap-1.5">

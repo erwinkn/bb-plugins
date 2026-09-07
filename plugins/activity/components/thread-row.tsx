@@ -20,6 +20,7 @@ import { usePortalScopeProps } from "../lib/portal-scope";
 import { relativeAge } from "../lib/time";
 import { PullRequestIcon } from "./pull-request";
 import { StatusIcon } from "./status-icon";
+import { ArchiveIcon } from "./archive-icon";
 import { ThreadInfo } from "./thread-info";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
 
@@ -246,13 +247,13 @@ export function ThreadRow({
                   >
                     {title}
                   </span>
-                  {status !== "done" && (
+                  {(thread.isArchived || status !== "done") && (
                     <span
                       role="img"
-                      aria-label={STATUS_LABEL[status]}
+                      aria-label={thread.isArchived ? "Archived" : STATUS_LABEL[status]}
                       className="flex size-4 shrink-0 items-center justify-center"
                     >
-                      {status === "unread" ? (
+                      {thread.isArchived ? <ArchiveIcon /> : status === "unread" ? (
                         <span
                           aria-hidden="true"
                           className="size-1.5 rounded-full bg-sky-600 dark:bg-sky-400"
@@ -267,7 +268,7 @@ export function ThreadRow({
                   <span
                     className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
                   >
-                    {parent && !nested ? "↳ " : ""}
+                    {thread.parentThreadId && !nested ? "↳ " : ""}
                     {pullRequest && (
                       <span
                         data-thread-pull-request=""
@@ -366,11 +367,9 @@ export function ThreadRow({
               <Menu.Item
                 className={menuItemClass}
                 onSelect={() => {
-                  if (thread.isArchived) {
-                    void rpc
-                      .call("restoreThread", { threadId: thread.id })
-                      .catch(onError);
-                  } else actions.archive(thread.id);
+                  void rpc
+                    .call(thread.isArchived ? "restoreThread" : "archiveTree", { threadId: thread.id })
+                    .catch(onError);
                 }}
               >
                 {thread.isArchived ? "Restore" : "Archive"}

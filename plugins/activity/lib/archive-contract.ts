@@ -20,6 +20,14 @@ const archivedThread = z.object({
   ]),
 });
 export const archiveContract = defineRpcContract({
+  parentTitle: {
+    input: z.object({ threadId: z.string().check(z.minLength(1)) }),
+    output: z.string(),
+  },
+  archiveTree: {
+    input: z.object({ threadId: z.string().check(z.minLength(1)) }),
+    output: z.object({ ok: z.literal(true) }),
+  },
   listArchived: {
     input: z.object({ offset: z.number().check(z.int(), z.nonnegative()) }),
     output: z.array(archivedThread),

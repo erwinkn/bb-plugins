@@ -5,6 +5,7 @@ export interface ClientState {
   groupBy: "status" | "project";
   sortBy: SortBy;
   hidden: Status[];
+  showArchives: boolean;
   collapsed: string[];
   drafts: string[];
   expandedArchives: string[];
@@ -14,6 +15,7 @@ const DEFAULT: ClientState = {
   groupBy: "status",
   sortBy: "updated",
   hidden: [],
+  showArchives: false,
   collapsed: [],
   drafts: [],
   expandedArchives: [],
@@ -33,6 +35,7 @@ export function parseState(raw: string | null): ClientState {
       hidden: strings(value.hidden).filter((s): s is Status =>
         STATUSES.includes(s as Status),
       ),
+      showArchives: value.showArchives === true,
       collapsed: strings(value.collapsed),
       expandedArchives: strings(value.expandedArchives),
       drafts: strings(value.drafts).filter(

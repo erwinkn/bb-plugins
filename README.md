@@ -117,6 +117,15 @@ each remove/install cycle; a later plugin version may start storing data.
 
 ## Desired upstream changes
 
+### Recursive thread archiving
+
+BB's native archive action archives a thread and its direct children, but not
+all descendants. Make this recursive across sidebar actions, other menus, and
+keyboard shortcuts. The Threads plugin currently collects the descendant tree
+and archives deepest first through public SDK calls. A server-owned operation
+should handle concurrent child creation and reparenting consistently, preserve
+BB's lifecycle cleanup, and report partial failures.
+
 ### Share individual threads with guests
 
 Add sharing for individual BB threads, with read-only access as the first

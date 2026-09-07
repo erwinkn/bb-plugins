@@ -4,6 +4,7 @@ import { usePortalScopeProps } from "../lib/portal-scope";
 import { STATUS_HELP, STATUS_LABEL, STATUSES } from "../lib/status";
 import { toggleValue, updateState, useClientState } from "../lib/client-state";
 import { StatusIcon } from "./status-icon";
+import { ArchiveIcon } from "./archive-icon";
 
 export const menuItemClass =
   "flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
@@ -110,6 +111,21 @@ export function DisplayMenu() {
             <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
           </Menu.CheckboxItem>
         ))}
+        <Menu.CheckboxItem
+          checked={state.showArchives}
+          onSelect={(event) => event.preventDefault()}
+          onCheckedChange={(showArchives) =>
+            updateState((current) => ({
+              ...current,
+              showArchives: showArchives === true,
+            }))
+          }
+          className={menuItemClass}
+        >
+          <ArchiveIcon />
+          <span className="flex-1">Archived</span>
+          <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
+        </Menu.CheckboxItem>
       </MenuContent>
     </Menu.Root>
   );
