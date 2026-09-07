@@ -8,9 +8,9 @@
  * `.DS_Store`, `Thumbs.db`). Listed but not descended into: `node_modules`
  * and directory symlinks; those come back `deferred` and load when expanded.
  */
-import { readdir, realpath, stat } from "node:fs/promises";
+import { lstat, opendir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import type { Dirent } from "node:fs";
+import type { Stats } from "node:fs";
 
 export interface TreeEntry {
   /** Workspace-relative POSIX path. */
@@ -60,41 +60,70 @@ async function resolveInside(rootPath: string, target: string): Promise<string |
   }
 }
 
-/** Returns true when `limit` stopped the walk. `relativeDir` is the workspace-relative name of `dir`. */
+/**
+ * Returns true when `limit` stopped the walk. `relativeDir` is the
+ * workspace-relative name of `dir`. Entries stream from the directory and
+ * stop at the limit, so a directory with millions of entries costs no more
+ * than the limit.
+ *
+ * Node has no fd-relative directory reads, so a walk cannot be made fully
+ * race-free. A child directory is checked before and after it is read: it
+ * must be a real directory (not a symlink) with the same identity both
+ * times, or its entries are dropped. What remains is a swap and swap-back
+ * inside one read.
+ */
 async function walk(dir: string, relativeDir: string, out: TreeEntry[], limit: number, recurse: boolean): Promise<boolean> {
-  let dirents: Dirent[];
+  let handle;
   try {
-    dirents = await readdir(dir, { withFileTypes: true });
+    handle = await opendir(dir);
   } catch {
     return false;
   }
-  dirents.sort((a, b) => a.name.localeCompare(b.name));
-  for (const dirent of dirents) {
-    if (EXCLUDED_NAMES.has(dirent.name)) continue;
-    if (out.length >= limit) return true;
-    const absolute = path.join(dir, dirent.name);
-    const relative = relativeDir === "" ? dirent.name : `${relativeDir}/${dirent.name}`;
-    if (dirent.isDirectory()) {
-      if (!recurse || DEFERRED_DIRECTORY_NAMES.has(dirent.name)) {
-        out.push({ path: relative, kind: "directory", deferred: true });
+  try {
+    for await (const dirent of handle) {
+      if (EXCLUDED_NAMES.has(dirent.name)) continue;
+      if (out.length >= limit) return true;
+      const absolute = path.join(dir, dirent.name);
+      const relative = relativeDir === "" ? dirent.name : `${relativeDir}/${dirent.name}`;
+      if (dirent.isDirectory()) {
+        if (!recurse || DEFERRED_DIRECTORY_NAMES.has(dirent.name)) {
+          out.push({ path: relative, kind: "directory", deferred: true });
+          continue;
+        }
+        out.push({ path: relative, kind: "directory" });
+        const before = await directoryIdentity(absolute);
+        if (before === null) continue;
+        const mark = out.length;
+        const truncated = await walk(absolute, relative, out, limit, recurse);
+        const after = await directoryIdentity(absolute);
+        if (after === null || after.ino !== before.ino || after.dev !== before.dev) out.length = mark;
+        if (truncated) return true;
         continue;
       }
-      out.push({ path: relative, kind: "directory" });
-      if (await walk(absolute, relative, out, limit, recurse)) return true;
-      continue;
-    }
-    if (dirent.isSymbolicLink()) {
-      let target;
-      try {
-        target = await stat(absolute);
-      } catch {
-        continue; // dangling
+      if (dirent.isSymbolicLink()) {
+        let target;
+        try {
+          target = await stat(absolute);
+        } catch {
+          continue; // dangling
+        }
+        out.push(target.isDirectory() ? { path: relative, kind: "directory", deferred: true } : { path: relative, kind: "file" });
+        continue;
       }
-      out.push(target.isDirectory() ? { path: relative, kind: "directory", deferred: true } : { path: relative, kind: "file" });
-      continue;
+      if (dirent.isFile()) out.push({ path: relative, kind: "file" });
     }
-    if (dirent.isFile()) out.push({ path: relative, kind: "file" });
+  } catch {
+    return false;
   }
   return false;
 }
 
+/** dev/ino of the real directory at `absolute`, or null when it is not one (or is a symlink). */
+async function directoryIdentity(absolute: string): Promise<Pick<Stats, "dev" | "ino"> | null> {
+  try {
+    const info = await lstat(absolute);
+    return info.isDirectory() ? { dev: info.dev, ino: info.ino } : null;
+  } catch {
+    return null;
+  }
+}
