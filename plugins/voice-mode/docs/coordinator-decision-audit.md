@@ -189,3 +189,25 @@ Conversation remains the default; Coordinator and Diagnostics remain available.
   with the header on one row and no header overflow.
 
 I stand behind this change under the user's standing PR authorization.
+
+
+## Open other threads by voice
+
+The user reported an incorrect claim that Voice could only open the launch
+thread. Inspection found no such restriction in the opening code; the exact
+reported speech was not found in the stored transcript. Its cause is unconfirmed.
+
+- Clarified both model instructions: resolve spoken names and context with BB
+  tools, across projects, and open with voice_reply.present.focus_thread_id.
+  Alternative: add manual search or paste controls. Confidence: high. The user
+  explicitly wants voice control. Ambiguous targets get a spoken question.
+- Route BB capability questions through the coordinator instead of allowing the
+  realtime model to guess. Alternative: keep direct capability explanations.
+  Confidence: high. This may take longer but gives the model access to BB tools.
+- Kept the existing composer shortcut and access behavior. This request changes
+  voice control, not thread permissions or the available call entry points.
+- Added a coordinator-path test for opening a thread in another project while
+  keeping the call live and avoiding native navigation. All 43 focused tests,
+  typecheck, and build pass. Live spoken compliance still needs user testing.
+
+I stand behind this change under the user's standing PR and reload authorization.

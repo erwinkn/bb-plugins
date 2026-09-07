@@ -1,6 +1,7 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { VoiceAgent } from "./voice-agent.ts";
+import { ViewWorkspace } from "./view-workspace.ts";
 import { TRANSCRIPT_WAIT_MS } from "./coordinator-bridge.ts";
 import type { PublishedReply } from "./coordinator/envelopes.ts";
 
@@ -55,7 +56,8 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
   Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
   const calls: { method: string; args: Any }[] = [];
   const logs: { kind: string; payload: Any }[] = [];
-  const agent = new VoiceAgent();
+  const workspace = new ViewWorkspace();
+  const agent = new VoiceAgent(workspace);
   let voiceOpens = 0;
   agent.bind({
     openVoice: () => { voiceOpens += 1; },
@@ -66,6 +68,7 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
       if (method === "createCall") return { sdp: "answer" };
       if (method === "submitRequest") return options.submit ? options.submit(args.envelope) : { requestId: args.envelope.requestId, status: "accepted", receipt: { delivery: "sent", coordinatorThreadId: "thr_c", mode: "queue-if-active" }, error: null, coordinatorThreadId: "thr_c" };
       if (method === "reserveUpdateBatch") return options.reserve ? options.reserve() : { batch: null, reason: "empty" };
+      if (method === "resolveThreadViews") return { views: args.threadIds.map((threadId:string)=>({kind:"thread",id:`thread:${threadId}`,threadId,projectId:"proj_other",title:"Build thread"})) };
       if (method === "pendingReplies") return { replies: [] };
       if (method === "runTool") return { output: "{}", status: "success" };
       return { ok: true };
@@ -90,7 +93,7 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
     v: 1, replyId: "reply_1", conversationId: "conv_1", seq: 1, requestId: null, batchId: null, questionId: null, kind: "final", source: "tool",
     speech: "Done.", detail: null, threadIds: [], receipts: [], targetCallNonce: agent.getSessionId(), focusThreadId: null, createdAt: 0, ...overrides,
   });
-  return { agent, dc, calls, logs, submits, deliveries, reply, voiceOpens, tick: (ms: number) => t.mock.timers.tick(ms) };
+  return { agent, workspace, dc, calls, logs, submits, deliveries, reply, voiceOpens, tick: (ms: number) => t.mock.timers.tick(ms) };
 }
 
 function speak(dc: { emit(type: string, extra?: Record<string, Any>): void }, itemId: string) {
@@ -416,4 +419,19 @@ test("a late tool from an interrupted response cannot dispatch while the user co
   await settle();
   assert.equal(submits().length,0);
   assert.match(dc.toolOutputs().at(-1)?.item.output,/Held/);
+});
+
+
+test("a coordinator reply opens a thread outside the call's starting project inside Voice", async (t) => {
+  const { agent, workspace, calls, reply, tick } = await coordinatorFixture(t);
+  workspace.registerPresenter({ available: () => true, reveal: () => true });
+  agent.ingestCoordinatorSignal("voice-reply", reply({ requestId: "show_other", speech: "Here is the build thread.", focusThreadId: "thr_other", threadIds: ["thr_other"] }));
+  tick(1);
+  await settle();
+  assert.deepEqual(calls.find(call=>call.method === "resolveThreadViews")?.args, {threadIds:["thr_other"]});
+  assert.equal(workspace.get().views[0]?.threadId,"thr_other");
+  assert.equal(workspace.get().views[0]?.projectId,"proj_other");
+  assert.equal(workspace.get().activeId,"thread:thr_other");
+  assert.equal(agent.getState(),"live");
+  assert.equal(calls.some(call=>call.method === "applyPresentation" || call.method === "runTool"),false);
 });

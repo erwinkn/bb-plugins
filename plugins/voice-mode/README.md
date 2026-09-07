@@ -83,7 +83,10 @@ Start a call from Voice, the composer button, or the shortcut. A new call opens
 Voice. Give instructions and hear progress and results in that conversation;
 opening a work thread is not required.
 
-Visual inspection is optional. Ask "show that thread" to see it inside Voice,
+Visual inspection is controlled by voice. Ask for a thread by name or context;
+Voice resolves it with BB tools, across projects and regardless of where the
+call started. No pasted ID, link, or manual search is required. If the target
+is ambiguous, Voice asks a short question. Ask "show that thread" to see it inside Voice,
 or "show my running threads" to add them to its thread switcher. Select
 Conversation to return without ending the call. Closing a view does not stop
 its thread. No extra Voice Mode entry appears in a work thread's side panel.
