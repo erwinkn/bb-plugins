@@ -482,11 +482,15 @@ describe("activity sidebar", () => {
           .querySelector("[data-sidebar-thread-id]")
           ?.getAttribute("data-sidebar-thread-id"),
       ).toBe(`project-1-${sortBy === "updated" ? 0 : 22}`);
-      fireEvent.click(
-        within(one).getByRole("button", {
-          name: "Show more One threads, 13 hidden",
-        }),
+      const moreOne = within(one).getByRole("button", {
+        name: "Show more One threads, 13 hidden",
+      });
+      // Root rows start at 0.5rem, so the control keeps only its own padding.
+      expect((moreOne.parentElement as HTMLElement).className).not.toMatch(
+        /\bpl-/,
       );
+      expect(moreOne.classList.contains("px-2")).toBe(true);
+      fireEvent.click(moreOne);
       expect(count(one)).toBe(20);
       expect(count(two)).toBe(10);
       const less = within(one).getByRole("button", {
@@ -837,6 +841,12 @@ describe("activity sidebar", () => {
         within(list).getByRole("button", { name: /^Show more children/ });
       expect(rowCount()).toBe(3);
       expect(more().textContent).toContain("5");
+      // The control's text starts where the child rows' text starts:
+      // the list item inset plus the button's own 0.5rem padding.
+      expect(
+        (more().parentElement as HTMLElement).style.paddingLeft,
+      ).toBe("1.25rem");
+      expect(more().classList.contains("px-2")).toBe(true);
       fireEvent.click(more());
       expect(rowCount()).toBe(6);
       const less = within(list).getByRole("button", {
