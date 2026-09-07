@@ -380,7 +380,10 @@ Requested behavior:
 - Expose a provider capability such as `supportsLongRunningToolCalls` in
   `PluginAgentConfigurationContext`, so plugins can withhold blocking tools
   without a provider id list. The plugin currently keeps a
-  `nonBlockingProviders` setting defaulting to `acp-cursor`.
+  `nonBlockingProviders` setting defaulting to `acp-cursor`. On those
+  providers it holds the review prompt server-side without blocking and
+  delivers the decision as a thread message, because a finished background
+  shell command does not wake an idle Cursor agent; only a message does.
 
 Also observed: a thread spawned right after `bb plugin update` still resolved
 the previous global-skills snapshot (`/Users/erwin/.bb/runtime/global-skills/
@@ -459,3 +462,30 @@ later. Remove an entry when the upstream fix ships.
   (symlink or FSEvents scope), whether it only reacts to files listed in the
   manifest, and whether it needs the plugin's `package.json` scripts. Suggested
   issue title: `bb plugin dev: watcher starts but never rebuilds or reloads`.
+
+### Plugin interactions never emit `interaction.pending`
+
+- **Where:** bb 0.42.1, `server/dist/start-server.js`. `registerProviderInteraction`
+  (provider-origin approvals and questions) calls
+  `emitPluginInteractionPending` after creating the row. `requestPluginInteraction`,
+  the path behind `bb.ui.requestInput`, appends the timeline event and notifies
+  `interactions-changed` but never emits the event.
+- **Symptom:** the built-in `push-notifications` plugin subscribes to
+  `bb.events.on("interaction.pending")`, so no desktop, web, or mobile
+  "Waiting for your input" notification is sent for plugin-origin interactions.
+  Verified with the Plans plugin's review prompt (`pint_qb9gre97qw`, pending for
+  two minutes, no notification), and by reading the built-in `ask-user-question`
+  plugin, which uses the same `bb.ui.requestInput` call
+  (`ask-user-question/dist/server.js:14098`) and is therefore affected too.
+  The sidebar indicator is unaffected: `hasPendingInteraction` is computed from
+  the table, and `/api/v1/sidebar-bootstrap` returned `true` with the
+  "Needs Attention" icon shown while the prompt was pending.
+- **Related:** `latestAttentionAt` only advances on active→idle and →error
+  transitions (`statusTransitionNeedsAttention`), so a pending plugin
+  interaction does not mark the thread unread either.
+- **Fix:** call `emitPluginInteractionPending(thread, interaction)` in
+  `requestPluginInteraction` after the row is created, and consider bumping
+  `latestAttentionAt` when a pending interaction is created on an idle thread.
+- **Status:** not filed yet. Suggested issue title: `Plugin interactions
+  (bb.ui.requestInput) do not trigger push notifications`. File in
+  [BB issues](https://github.com/get-bb/bb/issues).
