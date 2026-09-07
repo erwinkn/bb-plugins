@@ -329,11 +329,11 @@ export function BehaviorSettings() {
       <PromptEditor />
 
       <Group label="Thread views in Voice" hint="Optional thread inspection stays inside Voice on desktop and mobile. The call continues.">
-        <label htmlFor="voice-mode-view-behavior" className="mb-2 block text-sm">When showing a thread on mobile</label>
+        <label htmlFor="voice-mode-view-behavior" className="mb-2 block text-sm">When opening another thread</label>
         <select id="voice-mode-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
           onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
           <option value="reuse">Replace the shown thread</option>
-          <option value="new">Keep threads in the drawer switcher</option>
+          <option value="new">Keep inspected threads available</option>
         </select>
       </Group>
 

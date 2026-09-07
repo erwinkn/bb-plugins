@@ -103,3 +103,9 @@ I do not claim that acoustic interruption or native-message context growth is
 fully solved. Those limits require a real call or the documented BB capability,
 not another passing unit test. Commit, PR update, and reload are explicitly
 authorized by the user's latest request; no merge is authorized.
+
+Settings wording follow-up: renamed Fast and corrected the thread-inspection
+copy for both clients. No behavior changed. Announcements was traced to the
+legacy notification path and left unchanged while answering the user's question;
+it does not control coordinator watched updates. Confidence is high from the
+current callers. Twenty affected UI tests, typecheck, and build passed.

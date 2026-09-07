@@ -43,8 +43,8 @@ test("mandatory coordinator settings save only supported execution options and k
     assert.equal(ui.queryByRole("combobox", { name: /machine/i }), null);
     fireEvent.change(ui.getByRole("combobox", { name: "Coordinator reasoning effort" }), { target: { value: "xhigh" } });
     await waitFor(() => assert.equal(coordinator.reasoningLevel, "xhigh"));
-    await waitFor(() => assert.equal(ui.getByRole("checkbox", { name: "Coordinator fast service" }).hasAttribute("disabled"), false));
-    fireEvent.click(ui.getByRole("checkbox", { name: "Coordinator fast service" }));
+    await waitFor(() => assert.equal(ui.getByRole("checkbox", { name: "Fast" }).hasAttribute("disabled"), false));
+    fireEvent.click(ui.getByRole("checkbox", { name: "Fast" }));
     await waitFor(() => assert.equal(coordinator.serviceTier, "fast"));
     await waitFor(() => assert.equal(ui.getByRole("combobox", { name: "Coordinator provider" }).hasAttribute("disabled"), false));
     failSave = true;
@@ -54,7 +54,7 @@ test("mandatory coordinator settings save only supported execution options and k
     assert.equal(coordinator.serviceTier, "fast");
     failSave = false;
     fireEvent.change(ui.getByRole("combobox", { name: "Coordinator provider" }), { target: { value: "other" } });
-    await waitFor(() => assert.equal(ui.queryByRole("checkbox", { name: "Coordinator fast service" }) === null, true));
+    await waitFor(() => assert.equal(ui.queryByRole("checkbox", { name: "Fast" }) === null, true));
     assert.equal(ui.queryByRole("combobox", { name: "Coordinator reasoning effort" }), null);
     assert.deepEqual(coordinator, { providerId: "other", model: null, reasoningLevel: null, serviceTier: "default" });
     assert.deepEqual(patches.at(-1), { coordinator: { providerId: "other", model: null, reasoningLevel: null, serviceTier: "default" } });

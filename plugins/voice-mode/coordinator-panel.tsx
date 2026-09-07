@@ -325,7 +325,7 @@ export function CoordinatorSettings() {
       </select>
     </label> : null}
     {provider?.serviceTiers.some(tier=>tier.id === "fast") ? <label className="flex items-center gap-2 text-sm">
-      <input type="checkbox" aria-label="Coordinator fast service" disabled={disabled} checked={config?.serviceTier === "fast"} onChange={event=>void update({serviceTier:event.target.checked ? "fast" : "default"})}/>Fast service
+      <input type="checkbox" aria-label="Fast" disabled={disabled} checked={config?.serviceTier === "fast"} onChange={event=>void update({serviceTier:event.target.checked ? "fast" : "default"})}/>Fast
     </label> : null}
   </div>;
 }
