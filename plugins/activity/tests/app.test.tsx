@@ -301,9 +301,6 @@ describe("activity sidebar", () => {
       hidden: true,
     });
     expect(archive.getAttribute("aria-expanded")).toBe("false");
-    expect(archive.querySelector("svg")?.outerHTML).toBe(
-      toggle.querySelector("svg")?.outerHTML,
-    );
     expect(
       parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
         .showArchives,
@@ -355,6 +352,9 @@ describe("activity sidebar", () => {
       const target = slot.container.querySelector(
         '[data-sidebar-thread-id="old-0"]',
       )!;
+      const marker = within(target as HTMLElement).getByRole("img", { name: "Archived" });
+      expect(marker.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+      expect(marker.parentElement?.firstElementChild?.textContent).toBe("Old thread 0");
       fireEvent.click(target);
       expect(slot.inspection.navigateCalls).toContainEqual({
         method: "toThread",

@@ -20,6 +20,7 @@ import { usePortalScopeProps } from "../lib/portal-scope";
 import { relativeAge } from "../lib/time";
 import { PullRequestIcon } from "./pull-request";
 import { StatusIcon } from "./status-icon";
+import { ArchiveIcon } from "./archive-icon";
 import { ThreadInfo } from "./thread-info";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
 
@@ -246,13 +247,13 @@ export function ThreadRow({
                   >
                     {title}
                   </span>
-                  {status !== "done" && (
+                  {(thread.isArchived || status !== "done") && (
                     <span
                       role="img"
-                      aria-label={STATUS_LABEL[status]}
+                      aria-label={thread.isArchived ? "Archived" : STATUS_LABEL[status]}
                       className="flex size-4 shrink-0 items-center justify-center"
                     >
-                      {status === "unread" ? (
+                      {thread.isArchived ? <ArchiveIcon /> : status === "unread" ? (
                         <span
                           aria-hidden="true"
                           className="size-1.5 rounded-full bg-sky-600 dark:bg-sky-400"

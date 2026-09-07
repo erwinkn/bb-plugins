@@ -21,7 +21,6 @@ import { ThreadChildren } from "./components/thread-children";
 import { ThreadRoots } from "./components/thread-roots";
 import { DraftObserver } from "./components/draft-observer";
 import { StatusIcon } from "./components/status-icon";
-import { ArchiveIcon } from "./components/archive-icon";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
 import {
   buildThreadTree,
@@ -60,7 +59,6 @@ function Group({
         }
         className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
       >
-        {archive && <ArchiveIcon />}
         <span className="min-w-0 flex-1 truncate text-left font-medium">
           {title}
         </span>
