@@ -206,6 +206,13 @@ For editor lifecycle support, add plugin tab dirty state, close negotiation,
 retitle and line-location delivery to file openers. Plugins must still preserve
 drafts across unmounts and disconnects.
 
+The editor plugin now renders BB's diffs read-only through
+`experimental_diffRenderer` (timeline rows, diff panel bodies). Two gaps remain
+around it: `commandPaletteAction` has no shortcut field, so ⌘D cannot be
+pointed at a plugin's Changes tab, and the diff panel's frame (scope picker,
+file list, expand-all) has no replacement slot. Let a plugin bind a shortcut to
+a palette action, or add a slot for the diff panel as a whole.
+
 The [feasibility report](docs/investigations/pierre-editor/README.md) records
 installed SDK and runtime evidence, an isolated Pierre 1.4.1 compile probe,
 and a phased plugin proposal. A dedicated editable diff action tab is feasible

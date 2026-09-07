@@ -117,6 +117,24 @@ from recreating the file. BB's remove API has no hash precondition: deletion
 checks the hash immediately before a non-recursive, root-confined remove, but
 cannot make that check and removal atomic against an external process.
 
+## BB's own diffs
+
+The plugin registers BB's `experimental_diffRenderer` slot, so every diff BB
+draws from a patch renders with this viewer: the file diffs inside timeline
+tool rows, the file bodies of the environment diff panel (⌘D), and any other
+plugin's `experimental_Diff`. They use the same code theme, font size, and
+Geist Mono as the Changes tab. BB keeps its own frame around them: the tool
+row header, the panel's scope picker and file list, and the split/unified,
+wrap, and line-number choices, which the renderer follows.
+
+These diffs are read-only. BB hands the renderer a patch and, in the diff
+panel, both complete sides; it does not say which environment the file lives
+in, so nothing here writes. When the sides agree with every hunk of the patch,
+the hunk separators expand unchanged lines from them; timeline diffs come
+without sides and show the patch alone. Text that is not a single-file patch,
+or any render failure, goes back to BB's renderer, and the **Draw BB's diffs**
+setting turns the replacement off without disabling the plugin.
+
 ## Saves and drafts
 
 Saves compare the file's content hash with the last read hash. If another
@@ -153,6 +171,7 @@ Extensions → Editor:
 | Show line numbers | on | Shared by Files and Changes |
 | Auto save | off | `onBlur` or `afterDelay`; the delay is one second |
 | File tree side | right | Also controls the Changes list position |
+| Draw BB's diffs | on | Timeline diffs and diff panel bodies use this viewer; off hands them back to BB |
 
 Existing editor preferences are retained. The former `codePalette` preview
 setting is replaced by `Code theme`, which starts at Follow BB.
@@ -188,10 +207,15 @@ plugin directory and resolve the reported installation error.
 
 ## Layout
 
-- `app.tsx` registers file openers, Files, Changes, and palette actions.
+- `app.tsx` registers file openers, Files, Changes, palette actions, and the
+  diff renderer replacement.
 - `components/PierreSurface.tsx` adapts the lazy vanilla Pierre runtime to BB's
   React UI. `pierre-bundle/` and `scripts/stage-assets.mjs` build its ESM assets
   and syntax worker. The lazy bundle does not include a second React runtime.
+- `components/BbDiffRenderer.tsx` is the `experimental_diffRenderer` component.
+  `PierreDiffBlock.tsx` renders one content-height diff with Pierre's plain
+  `FileDiff`; `lib/bb-diff.ts` parses BB's patch and checks the supplied sides
+  against it before they enable context expansion.
 - `components/ui/` and `lib/portal-scope.ts` contain the BB 0.42.1 dropdown
   and responsive overlay source, shared with this repository's provider-usage plugin.
 - `components/Workbench.tsx` and `EditorPane.tsx` provide the Files UI.
@@ -212,8 +236,11 @@ BB needs tab dirty indicators, close negotiation, and file-tab retitling.
 File removal needs an expected-hash precondition. Git discard needs a public
 host-routed operation with explicit worktree/index scope, and revision reads
 need file mode metadata to restore executable files.
-Replacing BB's native diff renderer with safe editing also needs environment
-and save context in that slot. Pierre needs public programmatic search commands;
+The `experimental_diffRenderer` slot receives a patch without environment or
+save context, so the replaced diffs stay read-only; editing them needs that
+context in the slot. The ⌘D shortcut cannot be pointed at the Changes tab,
+because `commandPaletteAction` has no shortcut field, and the diff panel's
+frame (scope picker, file list) has no replacement slot. Pierre needs public programmatic search commands;
 the current adapter uses its keyboard command path.
 
 See the [investigation](../../docs/investigations/pierre-editor/README.md) for

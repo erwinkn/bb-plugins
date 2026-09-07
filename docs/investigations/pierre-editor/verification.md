@@ -350,3 +350,37 @@ child thread, the relative image loaded, the sibling link opened its file in
 the same pane, and the fenced sample stayed raw. The anchor link opened a new
 tab at the app root, because BB's renderer treats it as a link; the preview
 now scrolls to the heading itself, and the user confirmed the fix.
+
+## BB's diffs through the plugin (2026-09-07, evening)
+
+`app.tsx` registers `experimental_diffRenderer`. `BbDiffRenderer` reads the
+"Draw BB's diffs" setting, asks the server for the asset base once per page,
+and renders `PierreDiffBlock`, a wrapper around Pierre's non-virtualized
+`FileDiff`; `PierreSurface` keeps its `CodeView`, which needs its own scroll
+container and would render whole in a page that scrolls itself. The block
+parses BB's patch with `parsePatchFiles` and checks any complete sides against
+every hunk before passing them to Pierre's `loadDiffFiles`, so a side that does
+not belong to the patch cannot become expanded context. Text that is not a
+single-file patch, a render error, or the setting off render `Original`.
+Six tests cover the parse, the side check with CRLF and missing final
+newline, the added-file case and the row estimate. Typecheck, 164 tests and
+the build pass.
+
+Installed checks at `a9c3ad1`, desktop browser:
+
+- Environment diff panel (⌘D), All changes, `README.md` expanded: the body
+  rendered through the plugin (`[data-pierre-status="ready"]`, 1818 px). The
+  "5 unmodified lines" separator expanded to 98 rows from 93, so the panel's
+  complete sides passed the hunk check. The panel's split toggle re-rendered
+  the same block side by side and kept the expanded rows.
+- Timeline, `Edited README.md +21` in an idle thread: the inline diff rendered
+  wrapped, with line numbers, and a "243 unmodified lines" separator without
+  an expand control, since timeline rows carry no sides.
+- `bb plugin config erwin-editor set bbDiffs false` swapped the same row back
+  to BB's renderer without a reload; `true` brought the plugin's back.
+- The console showed only the known notice that BB's Pierre copy owns
+  `<diffs-container>`.
+
+Against BB's renderer, the block draws at the plugin's font size (12 px) and
+line height rather than BB's, and its hunk separator is a full-width row, not
+BB's inset pill. Phones were not tested from this session.
