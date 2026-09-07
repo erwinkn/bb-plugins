@@ -6,10 +6,12 @@ import { isWorkingTreeTarget, type DiffEntry, type DiffTarget } from "@/lib/diff
 import { acquireFileSession, peekFileSession } from "@/lib/file-session";
 import { useFileSessionIo } from "@/lib/use-file-session";
 import { ContextMenu, menuAt, type MenuState } from "./ContextMenu";
+import { useLongPress } from "./ui/hooks/use-long-press";
 
 /**
  * The row's context menu: one action, named for what happens to the file.
- * It opens from a right click, and from the keyboard's menu key or Shift+F10.
+ * It opens from a right click, a long press on a touch screen, and from the
+ * keyboard's menu key or Shift+F10.
  */
 export function DiffFileActions({ children, entry, target, threadId, onChanged }: {
   children: ReactNode; entry: DiffEntry; target: DiffTarget; threadId: string; onChanged: () => void;
@@ -71,13 +73,10 @@ export function DiffFileActions({ children, entry, target, threadId, onChanged }
     }
   };
   const items = [{ label, disabled: !enabled || busy || confirmation !== null, onSelect: () => void prepare() }];
+  const press = useLongPress<HTMLDivElement>((point, anchor) => setMenu({ ...point, anchor, items }));
   return (
     <div
-      onContextMenu={(event) => {
-        event.preventDefault();
-        const anchor = event.currentTarget;
-        setMenu({ x: event.clientX, y: event.clientY, anchor, items });
-      }}
+      {...press}
       onKeyDown={(event) => {
         if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
         event.preventDefault();

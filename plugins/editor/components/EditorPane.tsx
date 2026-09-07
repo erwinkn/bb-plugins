@@ -98,11 +98,19 @@ export function EditorPane({
   const editing = !previewable || (editingByPath.get(path) ?? false);
   /** Set by a switch to the editor: the caret goes there once it exists. */
   const focusEditor = useRef(false);
+  /** A command such as Find that asked for the editor while the preview was up. */
+  const afterEditorReady = useRef<((handle: PierreSurfaceHandle) => void) | null>(null);
   const setEditing = (next: boolean) => {
     editingByPath.set(path, next);
     focusEditor.current = next;
+    if (!next) afterEditorReady.current = null;
     rerender((n) => n + 1);
   };
+  // The surface unmounts with the preview, so its last status must not
+  // outlive it: a stale error would otherwise sit in the notice row.
+  useEffect(() => {
+    if (!editing) setSurfaceStatus({ kind: "loading" });
+  }, [editing]);
 
   const file = useFileSession({ source, path });
   const state = file.state;
@@ -188,23 +196,31 @@ export function EditorPane({
   const focused = useRef(0);
   useEffect(() => {
     if (surfaceStatus.kind !== "ready" || !editing) return;
+    const handle = surfaceRef.current;
     if (focusEditor.current) {
       focusEditor.current = false;
-      if (surfaceRef.current?.focus()) focused.current = focusNonce;
-      return;
+      if (handle?.focus()) focused.current = focusNonce;
+    } else if (focusNonce !== focused.current && handle?.focus()) {
+      focused.current = focusNonce;
     }
-    if (focusNonce === focused.current) return;
-    if (surfaceRef.current?.focus()) focused.current = focusNonce;
+    const pending = afterEditorReady.current;
+    afterEditorReady.current = null;
+    if (pending !== null && handle !== null) pending(handle);
   }, [focusNonce, surfaceStatus.kind, path, editing]);
 
   const lineCount = useMemo(() => (state?.content ?? "").split("\n").length, [state?.content]);
   const unsupported = state?.load.kind === "unsupported";
   const readOnly = !isEditor || unsupported;
 
-  // Find, replace and go-to-line need the editor, so they leave the preview.
-  const withEditor = (run: () => void) => {
-    if (editing) run();
-    else setEditing(true);
+  // Find, replace and go-to-line need the editor, so they leave the preview
+  // and run once it is ready.
+  const withEditor = (run: (handle: PierreSurfaceHandle) => void) => {
+    if (editing) {
+      runOnSurface(surfaceRef, run);
+      return;
+    }
+    afterEditorReady.current = run;
+    setEditing(true);
   };
 
   const menuItems: MenuItem[] = [
@@ -215,8 +231,8 @@ export function EditorPane({
     ...(previewable
       ? [{ type: "toggle", label: "Edit the source", checked: editing, onToggle: setEditing } satisfies MenuItem, { type: "separator" } satisfies MenuItem]
       : []),
-    { label: "Find…", shortcut: "⌘F", onSelect: () => withEditor(() => runOnSurface(surfaceRef, (handle) => handle.openSearch())) },
-    { label: "Find and replace…", onSelect: () => withEditor(() => runOnSurface(surfaceRef, (handle) => handle.openSearchReplace())) },
+    { label: "Find…", shortcut: "⌘F", onSelect: () => withEditor((handle) => handle.openSearch()) },
+    { label: "Find and replace…", onSelect: () => withEditor((handle) => handle.openSearchReplace()) },
     { label: "Go to line…", onSelect: () => withEditor(() => setGoToLineOpen(true)) },
     { type: "separator" },
     ...(onOpenInTab === null ? [] : [{ label: "Open in new tab", onSelect: onOpenInTab } as MenuItem]),
@@ -240,7 +256,7 @@ export function EditorPane({
         canGoForward={history.canForward}
         onBack={history.back}
         onForward={history.forward}
-        onFind={() => withEditor(() => runOnSurface(surfaceRef, (handle) => handle.openSearch()))}
+        onFind={() => withEditor((handle) => handle.openSearch())}
         menuItems={menuItems}
         treeOpen={treeOpen}
         treeSide={treeSide}
