@@ -52,3 +52,20 @@ so the copied palette was removed.
 
 I stand behind these theme changes. Installed tests cover both selection
 controls, both viewers, light/dark modes, and preservation of edits and undo.
+
+
+## Auto-save without editor replacement
+
+Successful writes update the comparison's known hash while keeping its editor
+mounted. This preserves selections, scroll, and undo history directly. Restoring
+a cursor after remounting would still discard the undo stack. Confidence: high.
+
+A file saved back to the baseline stays open until navigation or explicit
+refresh, even though Git removes it from the change list. Automatically moving
+to another file would interrupt the next edit. Confidence: high.
+
+External reads still revalidate the comparison. Pierre completion callbacks
+only acknowledge the highlight cache; actual changes reach the shared session
+through its edit-change callback. Repeating the old completion text can replace
+a newer external read. The installed external-write test now passes.
+I stand behind these changes; the remaining device-test limits are unchanged.

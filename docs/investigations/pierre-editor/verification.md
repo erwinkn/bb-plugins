@@ -9,7 +9,7 @@ PR #16 stays in draft until the user permits review readiness.
 ## Automated checks
 
 `npm run typecheck`, `npm test`, `npm run build:pierre`, `bb plugin build`,
-and `git diff --check` pass. The current suite has 107 passing tests.
+and `git diff --check` pass. The current suite has 110 passing tests.
 The asset build produces 11.5 MB and 398 lazy chunks. Its dependency check
 rejects React, React DOM, and Scheduler in the lazy runtime.
 
@@ -149,3 +149,31 @@ text. The fix exposes the existing disposed flag through the session interface
 and checks it before reusing the hook's retained session.
 
 All 107 tests, typecheck, the BB build, and whitespace checks passed.
+
+
+## Auto-save cursor preservation
+
+Installed revisions `a3d6184` and `81d33cf` fix diff refresh after saves and
+stale text reported when an editor completes during external refresh.
+
+A save now acknowledges its new hash without reloading the comparison. The
+file stays open if saving back to the baseline removes it from the change
+list. Explicit refresh still reconciles the list. Session snapshots distinguish
+saved text obtained from a write from text obtained through an external read.
+Pierre completion updates its cache only; each actual edit already reaches
+the session through `onItemEditChange`.
+
+The original installed version replaced the editor and lost focus after auto
+save. With the fix, the same editor retained cursor offset, a nonempty selected
+range, and scroll position at 2736 px. Repeated saves retained undo/redo.
+Saving a 180-line file back to its baseline kept the editor open; another edit
+saved successfully and put the file back in the change list.
+
+Final revision `81d33cf` passed an actual edit/save test at 390 px with a
+nonempty selection retained. External edits reached the open comparison and
+remained on disk after auto save had time to run. This check found and fixed
+a stale completion callback that could write the old text back over an
+external update. No unhandled browser errors were reported.
+
+All 110 tests, typecheck, the BB build, and whitespace checks pass. Physical
+mobile keyboards and IME remain outside these browser checks.
