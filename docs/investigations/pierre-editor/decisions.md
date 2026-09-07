@@ -7,7 +7,7 @@ record for that review, not a request to merge.
 | Confidence | Decision | Alternative | Where the choice can fail |
 | --- | --- | --- | --- |
 | Medium | Use Pierre 1.4.1's keyboard command path for toolbar search. | Add a public command method upstream, then use it. | A Pierre DOM or keymap change can break toolbar search. The version is pinned. |
-| Medium | Keep the native `diffs-container` registration when BB has already registered it. | Isolate the editor DOM and runtime from BB. | A later BB stylesheet or custom-element change can affect rendering. Coexistence needs live verification. |
+| Medium | Keep the native `diffs-container` registration when BB has already registered it. | Isolate the editor DOM and runtime from BB. | A later BB stylesheet or custom-element change can affect rendering. Installed browser checks passed; later BB updates still require a check. |
 | Medium | Detect conflicts with environment status `U` and text markers. | Add a per-file raw porcelain status or unmerged flag upstream. | Markerless `AA` conflicts look like ordinary additions. BB also caches status for three seconds. CAS still protects against changed file content. |
 | Medium | Read the current diff list again for each file open. | Cache a list or add an SDK call that reads all required data together. | File switching can be slow on a remote host with expensive Git commands. A fresh list avoids relying on client metadata. |
 | Medium | Poll mounted files for external changes while the page is visible. | Add host watch support to the plugin. | Changes appear after a delay and large remote reads cost bandwidth. The intervals are 5 seconds, or 30 seconds above 512 KiB; focus triggers a check. |
@@ -30,7 +30,8 @@ browser checks are required before returning the change for user testing.
 Physical mobile keyboards and IME behavior need device testing; a narrow
 browser viewport or synthetic composition event cannot prove those behaviors.
 
-The implementation is still under validation. No final quality verdict is
-claimed here until the recorded tests and reviews are complete. The user will
-review these choices with the working plugin. No PR is marked ready and no
-merge is authorized.
+The installed preview passed the automated and browser checks in the
+[verification report](verification.md). Live checks led to fixes for overwrite
+semantics, empty comparisons, editor readiness, and syntax-worker theme changes.
+The implementation is ready for the user's testing, with the device and SDK
+limits recorded in that report. The PR remains a draft. No merge is authorized.

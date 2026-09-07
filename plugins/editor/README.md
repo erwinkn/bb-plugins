@@ -14,7 +14,7 @@ thread screen also has a Files tab for the project's default checkout.
 
 File links claimed by this plugin open in the same editor. Use `⌘S` to save,
 `⌘F` to find text, and `⌘P` for quick open. The toolbar has file history,
-path actions, undo, redo, find, and display settings. The theme picker changes
+path actions, find, and display settings. The theme picker changes
 BB's code theme for the editor and BB's own previews.
 
 The editor uses Pierre's text editing and Shiki syntax highlighting. It does
@@ -35,7 +35,9 @@ Choose a file in the change list and select a comparison:
 - **A commit:** that commit against its parent; read-only.
 
 The tab offers side-by-side and unified layouts, word wrap, unchanged lines,
-file navigation, refresh, and opening the working file in Files. Narrow panels
+file navigation, refresh, and opening the working file in Files. A comparison
+with no changed lines shows file contents, so pure renames and empty added
+files can still be edited. Narrow panels
 use the unified layout and switch between the list and comparison.
 
 For a working-tree comparison, edit the new side and save with `⌘S` or the
@@ -134,5 +136,5 @@ and save context in that slot. Pierre needs public programmatic search commands;
 the current adapter uses its keyboard command path.
 
 See the [investigation](../../docs/investigations/pierre-editor/README.md) for
-API evidence and the migration rationale. Live test results and remaining
-limits are recorded with the draft PR.
+API evidence and the migration rationale. The [verification report](../../docs/investigations/pierre-editor/verification.md)
+records installed checks and remaining device-test limits.
