@@ -25,10 +25,14 @@ Keep normal plugin installations on Git `main`. Use this sequence for updates:
    behavior in BB. Include desktop and mobile checks when the UI changes.
 5. Fix failures, push, update the branch installation, and repeat the affected
    checks. Record the tested commit and evidence in the PR.
-6. Mark the PR ready for review only after live verification passes. Monitor
-   checks and review comments, address valid findings, and repeat verification
-   after fixes. Continue until checks pass and review findings are resolved on
-   the latest commit. Report pending or unavailable reviews honestly.
+6. Keep the PR in draft until the human explicitly requests that it be marked
+   ready for review. Passing checks, completed live verification, or a general
+   request to finish the work does not authorize this transition. Mark it ready
+   only after that explicit request and successful live verification. Monitor
+   checks and review comments while it is in draft and after it is marked ready.
+   Address valid findings and repeat verification after fixes. Continue until
+   checks pass and review findings are resolved on the latest commit. Report
+   pending or unavailable reviews honestly.
 7. Return the PR to the user for the merge decision. Do not merge or enable
    auto-merge. Leave the tested branch installed while the PR is open.
 8. After the user merges, confirm the merge on GitHub, switch the plugin back

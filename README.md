@@ -74,12 +74,17 @@ be used when a fixed version is needed.
    commit, checks, and live evidence in the PR.
 5. Fix failures, push, and update the branch installation. Verify the new
    resolved commit and repeat the affected tests before proceeding.
-6. Mark the draft PR ready for review. Monitor checks and review comments,
-   address valid findings, and push fixes. Update the installed plugin and
-   repeat affected checks after each fix. Continue until required checks pass
-   and review findings are resolved on the latest commit. No comments yet is
-   not proof of a completed review; report unavailable or pending reviews.
-7. Give the user the ready PR and leave the tested branch installed. The user
+6. Keep the PR in draft until the human explicitly requests that it be marked
+   ready for review. Passing checks, completed live verification, or a general
+   request to finish the work does not authorize this transition. Mark it ready
+   only after that explicit request and successful live verification. Monitor
+   checks and review comments while it is in draft and after it is marked ready.
+   Address valid findings and push fixes. Update the installed plugin and repeat
+   affected checks after each fix. Continue until required checks pass and review
+   findings are resolved on the latest commit. No comments yet is not proof of
+   a completed review; report unavailable or pending reviews.
+7. Give the user the PR and report whether it is draft or ready for review.
+   Leave the tested branch installed. The user
    decides when to merge. Do not merge or enable auto-merge.
 8. After the user merges, confirm the merge on GitHub, switch the plugin back
    to `main`, and update it. Confirm the resolved commit includes the merge
