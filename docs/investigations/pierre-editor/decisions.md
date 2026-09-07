@@ -35,3 +35,20 @@ The installed preview passed the automated and browser checks in the
 semantics, empty comparisons, editor readiness, and syntax-worker theme changes.
 The implementation is ready for the user's testing, with the device and SDK
 limits recorded in that report. The PR remains a draft. No merge is authorized.
+
+
+## Predefined theme selection, 7 September 2026
+
+The user requested predefined themes, one selection for Files and Changes,
+and selection from plugin settings. Conductor's defaults are custom themes,
+so the copied palette was removed.
+
+| Decision | Alternative | Confidence | Limit |
+| --- | --- | --- | --- |
+| Save one local Code theme setting and default to Follow BB. | Continue changing BB's global theme from the Files menu. | High | Native BB code previews only share the selection when Follow BB is used. |
+| Reuse the existing predefined dark/light pairs. | Add independent dark and light selectors. | High | Themes without a matching variant use Pierre in that mode. |
+| Use readable labels in the native settings select and stable ids in the picker. | Add a custom settings component. | High | Labels are persisted because the SDK select has no separate value/label fields. |
+| Keep existing BB app-theme contributions. | Remove them with the custom palette. | High | Themes can still be chosen separately in BB's Appearance settings. |
+
+I stand behind these theme changes. Installed tests cover both selection
+controls, both viewers, light/dark modes, and preservation of edits and undo.

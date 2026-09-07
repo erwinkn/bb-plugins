@@ -9,7 +9,7 @@ PR #16 stays in draft until the user permits review readiness.
 ## Automated checks
 
 `npm run typecheck`, `npm test`, `npm run build:pierre`, `bb plugin build`,
-and `git diff --check` pass. The current suite has 108 passing tests.
+and `git diff --check` pass. The current suite has 107 passing tests.
 The asset build produces 11.5 MB and 398 lazy chunks. Its dependency check
 rejects React, React DOM, and Scheduler in the lazy runtime.
 
@@ -91,7 +91,7 @@ and theme registration, not a guess from the screenshot. Its default code
 font is Geist Mono at 13 px with 20 px rows. No local code-theme override was
 found; a running Conductor editor's selected theme was not inspected.
 
-The plugin applies those colors with its own compact scope rules. It bundles
+The initial styling revision applied those colors with its own compact scope rules. It bundles
 the OFL-licensed Geist Mono font, keeps BB's canvas background in the shadow
 root, uses subdued line numbers and a stable gutter width, and uses compact
 hunk separators with 20-line expansion. Conductor and Follow BB are local
@@ -105,4 +105,30 @@ keyword/string/entity colors reached the rendered tokens. Theme preview and
 Escape preserved unsaved text and undo history. Follow BB changed the code
 colors while retaining BB's canvas background. The 390 px comparison retained
 its layout without horizontal page overflow. No unhandled browser errors were
-reported. The installed palette is Conductor, and auto save is afterDelay.
+reported. That revision used the Conductor palette. The predefined-theme follow-up below replaces it.
+
+
+## Predefined themes follow-up
+
+Installed code revision `6c9c6d3` removes the copied Conductor palette. The
+Files picker and **Settings → Editor → Code theme** save one plugin setting.
+Files and Changes use the same predefined theme pair. Follow BB is the
+default; plugin selection leaves BB's global theme unchanged. The existing
+BB app-theme contributions remain available for users who select them there.
+
+The clean installed clone passed all 107 tests and typecheck. The Pierre
+asset build, BB build, and whitespace checks passed. Installed browser checks:
+
+- Choosing GitHub in Files saved the setting and gave Files and Changes the
+  same keyword color, `rgb(249, 117, 131)`, with BB's canvas background.
+- Choosing Catppuccin Mocha in the plugin settings UI gave both tabs
+  `rgb(203, 166, 247)` keywords. System light mode used Catppuccin Latte,
+  `rgb(136, 57, 239)`, on BB's light background.
+- Theme preview and Escape kept unsaved text and undo history.
+- At 390 px, the host settings control opened its mobile theme menu. The
+  page had no horizontal overflow and selecting Follow BB saved correctly.
+- No unhandled browser errors were reported. Follow BB and the existing
+  afterDelay auto-save setting were restored after testing.
+
+This replaces the custom palette but retains Geist Mono, subdued line numbers,
+compact separators, and BB's background. Physical-device testing remains open.
