@@ -76,3 +76,11 @@ Accepted for branch installation. Use our own BB implementation; do not reuse
 Plannotator code. The standalone preview is only for UI iteration. Verify the
 actual installed plugin in BB with a plan. Commit the BB-specific skill in this
 repository and distribute it with the plugin; no AI config sync is required now.
+
+## Live verification verdict
+
+The installed Git branch passed the actual BB review cycle, including idle-agent
+activation, native tool submission, Markdown annotations, native diff, approval,
+and reload persistence. I stand behind the branch for review and continued use.
+The user retains the merge decision. Native iOS selection and correctness
+services that skipped this PR are not claimed as verified.

@@ -33,7 +33,7 @@ bugs are restored in a temporary copy.
 The CSS optimizer reports four warnings about `::highlight`. It retains the
 rules, and highlights rendered in the checked browser.
 
-## Still required for the Git branch installation
+## Original pre-install checklist (completed below)
 
 - User triage of `DECISIONS.md`, then commit, push, and a draft PR.
 - Install that Git branch in the normal BB instance and verify its resolved
@@ -127,3 +127,41 @@ thread-panel action IDs, thread ownership checks, and delivery locking. The
 sample test and identical-text revision findings were fixed during review; the
 subsequent full run passed 50 tests. The first live check must confirm that
 queue-if-active wakes an idle thread as well as queues for an active thread.
+
+## Live BB installation — 2026-09-07
+
+Installed the Git feature branch, not a worktree path, at runtime commit
+`dd2d8bb5488846e746e41864c43c54ef552699a7`. `bb plugin source erwin-plans`
+confirmed the branch, commit, and plugins/plans subdirectory. BB reported the
+server running, the frontend compatible, and plans_submit plus plan-review
+registered. The following checks used BB at port 38886, not the Vite preview.
+
+- Fresh Fable 5.1 High thread `thr_58yed643zz` submitted through the native tool.
+  The tool was deferred and found with ToolSearch. The Plan panel auto-opened.
+- Selected a passage rendered by BB Markdown, saved a comment, and confirmed its
+  quote and unsent state through the installed CLI. No false anchor warning.
+- Send feedback woke the idle thread with queue-if-active. The agent submitted
+  v2 of the same plan with the requested line-count verification and stopped.
+- BB's native diff rendered additions, deletions, and word changes at 390x844;
+  the view menu and version control fit, with no horizontal overflow.
+- Approval through the phone-width confirmation woke the idle thread and sent
+  the exact v2. The agent created only /tmp/plans-live-proof.md. The parent
+  independently read the file and confirmed exactly two lines.
+- Reloaded erwin-plans. Its approved status, two versions, and sent comment all
+  survived. No source files were changed by the acceptance thread.
+- The skill was registered by BB but absent from Claude's first Skill menu.
+  The agent read its installed file directly. Local copies were added under
+  ~/.claude/skills/plan-review and ~/.agents/skills/plan-review; the agent then
+  confirmed Skill-menu discovery on its approval turn. No AI config sync.
+- Left another open plan, `ca31fa9d-191c-48ed-8052-74a5e223f545`, in the parent
+  thread for manual annotation. It was submitted with the installed CLI.
+
+Evidence screenshots: /tmp/plans-bb-comment-desktop.png and
+/tmp/plans-bb-mobile-diff.png. Browser console check reported no runtime errors.
+These are real-host browser checks at desktop and phone viewport widths;
+native iOS selection was not separately tested in this run.
+
+GitHub checks: Socket passed. Devin reported a pass but skipped its review
+because its trial expired; Macroscope skipped the draft PR. These are not
+independent correctness approvals. The earlier independent Fable review and
+its addressed findings are recorded above.
