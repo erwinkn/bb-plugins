@@ -87,6 +87,18 @@ export function applyPierreTheme(runtime: PierreRuntime, theme: PierreThemeInput
   return theme.id;
 }
 
+/**
+ * A worker-backed File resolves its theme from the pool before its own options.
+ * Updating CodeView options alone therefore leaves both tokens and active
+ * editor colors unchanged. This public API refreshes the shared highlighter
+ * and worker caches without replacing any document or editor instance.
+ */
+export async function synchronizePierreTheme(runtime: PierreRuntime, theme: PierreThemeInput): Promise<string> {
+  const name = applyPierreTheme(runtime, theme);
+  if (runtime.workerPool !== null) await runtime.workerPool.setRenderOptions({ theme: name });
+  return name;
+}
+
 /** Drops the registration record. For tests only. */
 export function resetPierreThemesForTests(): void {
   registered.clear();

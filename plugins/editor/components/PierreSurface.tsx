@@ -3,7 +3,7 @@ import type { CSSProperties, Ref } from "react";
 import type { CodeView, CodeViewItem, CodeViewOptions } from "@pierre/diffs";
 import type { Editor, EditorFocusOptions, EditorKeymap, EditorViewState } from "@pierre/diffs/edit";
 import { loadPierre, type PierreRuntime } from "@/lib/pierre-loader";
-import { applyPierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
+import { applyPierreTheme, synchronizePierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
 import { cn } from "@/lib/utils";
 import { createPierreItem } from "@/lib/pierre-item";
 
@@ -171,7 +171,8 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     };
     publish({ kind: "loading" });
     loadPierre(baseUrl)
-      .then((runtime) => {
+      .then(async (runtime) => {
+        await synchronizePierreTheme(runtime, latest.current.theme);
         const host = hostRef.current;
         if (disposed || host === null) return;
         const props = latest.current;
@@ -229,9 +230,18 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   useEffect(() => {
     const state = stateRef.current;
     if (state === null) return;
+    let cancelled = false;
     state.view.setOptions(buildOptions(state.runtime, latest, stateRef));
-    state.view.onThemeChange();
-    state.view.render();
+    void synchronizePierreTheme(state.runtime, props.theme).then(() => {
+      if (cancelled || stateRef.current !== state) return;
+      state.view.onThemeChange();
+      state.view.render();
+      if (state.readyEditor !== null && statusRef.current.kind === "error") state.publish({ kind: "ready" });
+    }).catch((error: unknown) => {
+      if (cancelled || stateRef.current !== state) return;
+      state.publish({ kind: "error", message: describe(error), error });
+    });
+    return () => { cancelled = true; };
   }, [optionsKey, status.kind]);
 
   // The document itself: a different file replaces the item, and everything

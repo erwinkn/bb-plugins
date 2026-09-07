@@ -5,6 +5,7 @@ import {
   applyPierreTheme,
   pierreThemeName,
   resetPierreThemesForTests,
+  synchronizePierreTheme,
   toPierreTheme,
   type PierreThemeInput,
 } from "./pierre-theme.js";
@@ -120,4 +121,28 @@ test("applyPierreTheme falls back to a bundled theme while BB is still resolving
   const { runtime, registered } = fakeRuntime();
   assert.equal(applyPierreTheme(runtime, input(null)), "pierre-dark");
   assert.deepEqual(registered, []);
+});
+
+test("theme preview updates the worker pool and restores the BB theme without document operations", async () => {
+  resetPierreThemesForTests();
+  const { runtime, registered } = fakeRuntime();
+  const changes: string[] = [];
+  runtime.workerPool = {
+    setRenderOptions: async ({ theme }: { theme: string }) => { changes.push(theme); },
+  } as unknown as PierreRuntime["workerPool"];
+  const bbTheme = input(theme());
+  const preview: PierreThemeInput = { id: "tokyo-night", type: "dark", fallback: "tokyo-night", data: null };
+  await synchronizePierreTheme(runtime, bbTheme);
+  await synchronizePierreTheme(runtime, preview);
+  await synchronizePierreTheme(runtime, bbTheme);
+  assert.deepEqual(changes, [bbTheme.id, "tokyo-night", bbTheme.id]);
+  assert.deepEqual(registered, [bbTheme.id]);
+});
+
+test("theme synchronization also supports main-thread rendering and exposes load errors", async () => {
+  const { runtime } = fakeRuntime();
+  runtime.workerPool = null;
+  assert.equal(await synchronizePierreTheme(runtime, input(null)), "pierre-dark");
+  runtime.workerPool = { setRenderOptions: async () => { throw new Error("theme failed to load"); } } as unknown as PierreRuntime["workerPool"];
+  await assert.rejects(() => synchronizePierreTheme(runtime, input(null)), /theme failed to load/);
 });
