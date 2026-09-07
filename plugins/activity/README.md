@@ -130,9 +130,14 @@ Select Rename to edit the thread name in the row. Save or Enter applies the
 name. Cancel or Escape discards the edit. Empty names cannot be saved. A failed
 save keeps the entered name and shows an error so you can try again.
 There is no actions button. A normal
-click or tap still opens the thread. Archive uses BB's native flow, which also
-archives child threads and closes their open panes. No bulk read or delete
-actions are added.
+click or tap still opens the thread. Archive collects all active descendants,
+including hidden children, then archives them deepest first and the selected
+thread last through BB's public API. BB handles runtime and terminal cleanup.
+The operation stops on failure and reports partial progress; completed archives
+are not rolled back. Discovery finishes before any archive requests are sent.
+This is not atomic: children created or moved during the operation can escape
+the collected tree. BB's other archive buttons and keyboard shortcut keep their
+native behavior. No bulk read or delete actions are added.
 
 ## Draft limits
 

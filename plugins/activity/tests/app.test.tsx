@@ -41,7 +41,7 @@ const mountedSlots: ReturnType<typeof renderSdkSlot>[] = [];
 const renderSlot: typeof renderSdkSlot = (registration, props, options) => {
   const slot = renderSdkSlot(registration, props, {
     ...options,
-    rpc: { listArchived: async () => [], ...options?.rpc },
+    rpc: { listArchived: async () => [], archiveTree: async () => ({ ok: true }), ...options?.rpc },
   });
   mountedSlots.push(slot);
   return slot;
@@ -1114,7 +1114,7 @@ describe("activity sidebar", () => {
     },
   );
   it.each(["working", "child"])(
-    "archives the selected %s thread through BB's native action",
+    "archives the selected %s thread through the recursive RPC",
     async (id) => {
       const slot = mount();
       const row = slot.container.querySelector(
@@ -1124,13 +1124,24 @@ describe("activity sidebar", () => {
       const menu = await slot.findByRole("menu");
       expect(slot.inspection.sidebarActionCalls).toEqual([]);
       fireEvent.click(within(menu).getByRole("menuitem", { name: "Archive" }));
-      expect(slot.inspection.sidebarActionCalls).toEqual([
-        { method: "archive", threadId: id },
-      ]);
+      await waitFor(() => expect(slot.inspection.rpcCalls).toContainEqual({
+        method: "archiveTree", input: { threadId: id },
+      }));
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
       expect(props.onNavigate).not.toHaveBeenCalled();
       expect(slot.queryByRole("menu")).toBeNull();
     },
   );
+  it("shows recursive archive failures without hiding the active row", async () => {
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads, projects },
+      rpc: { archiveTree: async () => { throw new Error("Archive stopped after 1 of 3 threads."); } },
+    });
+    fireEvent.contextMenu(slot.container.querySelector('[data-sidebar-thread-id="working"]')!);
+    fireEvent.click(await slot.findByRole("menuitem", { name: "Archive" }));
+    await slot.findByText("Archive stopped after 1 of 3 threads.");
+    expect(slot.getByText("Running parent")).toBeTruthy();
+  });
   it("opens row actions on right-click without an actions button or navigation", async () => {
     const slot = mount();
     expect(slot.queryByRole("button", { name: /^Actions for/ })).toBeNull();

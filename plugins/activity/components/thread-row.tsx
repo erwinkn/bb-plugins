@@ -367,11 +367,9 @@ export function ThreadRow({
               <Menu.Item
                 className={menuItemClass}
                 onSelect={() => {
-                  if (thread.isArchived) {
-                    void rpc
-                      .call("restoreThread", { threadId: thread.id })
-                      .catch(onError);
-                  } else actions.archive(thread.id);
+                  void rpc
+                    .call(thread.isArchived ? "restoreThread" : "archiveTree", { threadId: thread.id })
+                    .catch(onError);
                 }}
               >
                 {thread.isArchived ? "Restore" : "Archive"}

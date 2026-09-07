@@ -1,8 +1,10 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { archiveContract } from "./lib/archive-contract";
+import { archiveTree } from "./lib/archive-tree";
 
 export default function plugin(bb: BbPluginApi) {
   bb.rpc.register(archiveContract, {
+    archiveTree: ({ threadId }) => archiveTree(bb, threadId),
     listArchived: ({ offset }) =>
       bb.sdk.threads.list({
         archived: true,
