@@ -255,6 +255,25 @@ describe("comments", () => {
 });
 
 describe("thread panel", () => {
+  it("rejects a requested plan from another thread", async () => {
+    const backend = fakeBackend([makePlan({ threadId: "thr_other" })]);
+    slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
+    await slot.findByText("This plan belongs to another thread");
+    expect(slot.queryByRole("button", { name: "Approve and start" })).toBeNull();
+    expect(slot.queryByLabelText("Note for the agent")).toBeNull();
+    expect(slot.queryByText("Add rate limiting")).toBeNull();
+  });
+
+  it("opens a requested plan beyond the first thread list page", async () => {
+    const plan = makePlan();
+    const backend = fakeBackend([plan]);
+    slot = render(threadAction, { threadId: "thr_1", params: { planId: plan.id } }, {
+      rpc: { ...backend.rpc, list: () => [] },
+    });
+    expect(await slot.findByRole("button", { name: "Approve and start" })).toBeTruthy();
+    expect(slot.getByRole("heading", { name: plan.title })).toBeTruthy();
+  });
+
   it("lists only this thread's plans and offers older pages", async () => {
     const many = Array.from({ length: 10 }, (_, index) => makePlan({ id: `plan-${index}`, title: `Plan ${index}` }));
     const backend = fakeBackend([...many, makePlan({ id: "other", threadId: "thr_other", title: "Other thread plan" })]);

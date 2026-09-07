@@ -56,8 +56,9 @@ export function ThreadPlanPanel({ threadId, params }: PluginThreadPanelProps) {
   if (activeId !== null && !creating) {
     return (
       <PlanReviewLoader
-        key={activeId}
+        key={`${threadId}:${activeId}`}
         planId={activeId}
+        threadId={threadId}
         onDeleted={() => {
           setChosenId(null);
           list.refetch();

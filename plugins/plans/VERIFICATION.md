@@ -165,3 +165,9 @@ GitHub checks: Socket passed. Devin reported a pass but skipped its review
 because its trial expired; Macroscope skipped the draft PR. These are not
 independent correctness approvals. The earlier independent Fable review and
 its addressed findings are recorded above.
+
+## Greptile thread-scope regression
+
+PlanReviewLoader now rejects a loaded plan whose thread ID differs from the
+panel thread. Added slot tests for foreign-plan rejection and a valid requested
+plan absent from the list page. Full suite: 52 tests.

@@ -84,3 +84,10 @@ activation, native tool submission, Markdown annotations, native diff, approval,
 and reload persistence. I stand behind the branch for review and continued use.
 The user retains the merge decision. Native iOS selection and correctness
 services that skipped this PR are not claimed as verified.
+
+## Review fix: thread scope
+
+A plan opened through panel parameters is checked against the panel thread ID
+after loading and before rendering review controls. This enforces the accepted
+per-thread scope without rejecting older plans absent from a paginated list.
+No new user-facing workflow or permission boundary is introduced.

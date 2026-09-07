@@ -6,12 +6,13 @@ import { PlanReview } from "./PlanReview";
 
 interface PlanReviewLoaderProps {
   planId: string;
+  threadId: string;
   onDeleted: () => void;
   onBack?: () => void;
 }
 
 /** Fetches the full plan (versions and comments) and hands it to the review. */
-export function PlanReviewLoader({ planId, onDeleted, onBack }: PlanReviewLoaderProps) {
+export function PlanReviewLoader({ planId, threadId, onDeleted, onBack }: PlanReviewLoaderProps) {
   const { plan, error, isMissing, refetch, apply } = usePlan(planId);
   if (plan === null) {
     if (error !== null) {
@@ -40,6 +41,18 @@ export function PlanReviewLoader({ planId, onDeleted, onBack }: PlanReviewLoader
       );
     }
     return <LoadingState label="Loading plan…" />;
+  }
+  if (plan.threadId !== threadId) {
+    return (
+      <div className="p-4">
+        <EmptyState
+          icon="AlertCircle"
+          title="This plan belongs to another thread"
+          description="Open the plan from its original thread."
+          actions={onBack ? <Button type="button" variant="outline" onClick={onBack}>Back to plans</Button> : undefined}
+        />
+      </div>
+    );
   }
   return (
     <div className="flex h-full min-h-0 flex-col">
