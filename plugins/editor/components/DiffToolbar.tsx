@@ -170,13 +170,13 @@ export function ScopeBar({
         ...(commits.length === 0 ? [{ type: "label", label: commitMessage ?? "No commits on this branch" } satisfies ScopeMenuItem] : []),
         ...(commits.length > 0 && commitMessage ? [{ type: "label", label: commitMessage } satisfies ScopeMenuItem] : []),
       ]),
-    { type: "separator" },
-    { label: "Find commit…", icon: <BranchGlyph />, onSelect: () => chooseScope("commit") },
     ...(commitStatus === "ready" && commits.length > 10 ? [{
       id: "expand-commits", label: expanded ? "Show less" : `Show more (${commits.length - 10})`,
       icon: <ChevronIcon open={!expanded} />, keepOpen: true,
       onSelect: () => setExpanded((value) => !value),
     } satisfies ScopeMenuItem] : []),
+    { type: "separator" },
+    { label: "Find commit…", icon: <BranchGlyph />, onSelect: () => chooseScope("commit") },
   ];
 
   const viewItems: MenuItem[] = [
