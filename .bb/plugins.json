@@ -18,6 +18,10 @@
     {
       "name": "erwin-activity",
       "source": "./plugins/activity"
+    },
+    {
+      "name": "erwin-editor",
+      "source": "./plugins/editor"
     }
   ]
 }
