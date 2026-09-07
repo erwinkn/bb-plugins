@@ -27,8 +27,17 @@ Keep normal plugin installations on Git `main`. Use this sequence for updates:
    checks. Record the tested commit and evidence in the PR.
 6. Keep the PR in draft until the human explicitly requests that it be marked
    ready for review. Passing checks, completed live verification, or a general
-   request to finish the work does not authorize this transition. Mark it ready
-   only after that explicit request and successful live verification. Monitor
+   request to finish the work does not authorize this transition. Before marking
+   it ready, remove temporary work files from the PR diff and from any content
+   sent to review agents. This includes plans, review notes, Markdown documents,
+   HTML previews, prototype scripts, and other files created for development
+   that the plugin does not need. Keep tests and files required to build, run,
+   or use the plugin. Keep repository instructions and documentation changes
+   that the user explicitly requested. Check the final PR diff for these files
+   before requesting agent reviews, including reviews while the PR is in draft.
+   Extra review content consumes credits and costs money. Mark the PR ready only
+   after the user's explicit request, this cleanup, and successful live
+   verification. Monitor
    checks and review comments while it is in draft and after it is marked ready.
    Address valid findings and repeat verification after fixes. Continue until
    checks pass and review findings are resolved on the latest commit. Report
