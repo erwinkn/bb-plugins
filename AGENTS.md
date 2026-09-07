@@ -14,10 +14,13 @@ Keep normal plugin installations on Git `main`. Use this sequence for updates:
 
 1. Create or reuse a feature branch, fetch `origin`, and rebase onto
    `origin/main`. Preserve other work and resolve conflicts before testing.
-2. Build the affected plugin and run its relevant checks. Commit the change,
-   push the branch to `origin`, and open a **draft** PR against `main`.
-3. Switch only the affected plugin to that Git branch, preserving its ID,
-   settings, secrets, schedules, and data. Do not use a temporary worktree path.
+2. Install the affected plugin from the local worktree for development, subject
+   to the data-preservation rules below. Use `bb plugin dev <plugin-path>` to
+   rebuild and reload as files change. Run relevant checks and test in BB.
+   Keep the worktree available until the installation uses another source.
+3. Build the affected plugin, commit the change, push the branch to `origin`,
+   and open a **draft** PR against `main`. Switch only the affected plugin to
+   that Git branch, preserving its ID, settings, secrets, schedules, and data.
 4. Verify the installed source and resolved commit, then test the changed
    behavior in BB. Include desktop and mobile checks when the UI changes.
 5. Fix failures, push, update the branch installation, and repeat the affected
@@ -35,7 +38,9 @@ Keep normal plugin installations on Git `main`. Use this sequence for updates:
 If the change is abandoned, restore `main`. Coordinate before replacing an
 installation another thread is testing. Check BB's current source-change
 commands before use; do not remove an installation with data just to change
-its ref. A remove/install fallback is allowed only after verifying that the
+its source or ref. Local development does not bypass this rule. If a safe
+source switch is unavailable, use the Git-branch workflow for that installation.
+A remove/install fallback is allowed only after verifying that the
 plugin has no server-side settings, secrets, schedules, or stored data. Keep
 client preferences and the plugin ID unchanged. If BB cannot preserve existing
 data, report the exact limitation and record the required upstream change.

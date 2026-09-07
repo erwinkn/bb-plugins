@@ -54,18 +54,21 @@ The earlier Hello proof plugin and general branding experiment have been
 removed from the current collection. Their prior commits and release tags stay
 in Git history.
 
-### Test plugin updates on a branch
+### Develop locally, then verify the Git branch
 
 Normal installations track Git `main`. A commit SHA, as shown above, can still
 be used when a fixed version is needed.
 
 1. Create or reuse a feature branch. Fetch `origin` and rebase it onto
    `origin/main`, preserving other work and resolving conflicts.
-2. Build the affected plugin and run its relevant checks. Commit, push the
-   branch to `origin`, and open a **draft PR** against `main`.
-3. Switch only that plugin's installed Git ref from `main` to the branch.
+2. Install the affected plugin from the local worktree for development, subject
+   to the data-preservation rules below. Use `bb plugin dev <plugin-path>` to
+   watch files, rebuild, and reload. Run relevant checks and test in BB while
+   editing. Keep the worktree available until the plugin uses another source.
+3. Build the affected plugin, commit, push the branch to `origin`, and open a
+   **draft PR** against `main`. Switch only that plugin to the Git branch.
    Keep its plugin ID and collection entry unchanged. Preserve settings,
-   secrets, schedules, and data. Use Git rather than a temporary worktree path.
+   secrets, schedules, and data.
 4. Confirm the installed source and resolved commit. Test the changed behavior
    in BB, including desktop and mobile when the UI changes. Record the tested
    commit, checks, and live evidence in the PR.
@@ -83,8 +86,23 @@ be used when a fixed version is needed.
    and verify that the plugin works without errors. A squash merge has a new
    commit, so the branch SHA is not the final verification target.
 
-If the change is abandoned, restore `main`. Testing in the normal BB instance
-affects the plugin used for daily work until it returns to `main`.
+Local development avoids a commit and push for each test. The Git installation
+check then verifies the version that reviewers and users can install. For a
+plugin that is not installed yet, the local commands are:
+
+```sh
+bb plugin install path:/absolute/worktree/plugins/PLUGIN --yes
+bb plugin dev /absolute/worktree/plugins/PLUGIN
+```
+
+Check the installed source before using these commands for an existing plugin.
+Local development does not bypass data-preservation rules. If a safe source
+switch is unavailable, use the Git-branch workflow for that installation.
+Coordinate before replacing an installation another thread is testing.
+
+If the change is abandoned, restore `main`. Switch away from the local source
+before deleting its worktree. Testing in the normal BB instance affects the
+plugin used for daily work until it returns to `main`.
 
 Use `bb plugin source <id> --json` to inspect the installed source and
 `bb plugin update <id>` to fetch updates from its current ref. Updating alone
@@ -229,10 +247,11 @@ File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 ### Change an installed plugin's Git ref without removing its data
 
-Add a source-change operation to BB's CLI and plugin API. It should validate
-and build the target ref before activation, preserve settings, secrets,
-schedules, and stored data, and retain a rollback source. This supports testing
-a PR branch and returning to `main` after merge.
+Add a source-change operation to BB's CLI and plugin API. It should support
+switching between Git and local paths, as well as changing a Git ref. Validate
+and build the target before activation, preserve settings, secrets, schedules,
+and stored data, and retain a rollback source. This supports local development,
+PR-branch verification, and returning to `main` after merge.
 
 Verified against BB 0.42.1: `plugin source` is read-only, `plugin update` keeps
 the current ref, and install refuses an existing managed plugin ID from a
