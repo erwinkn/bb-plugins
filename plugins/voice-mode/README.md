@@ -89,10 +89,11 @@ Conversation to return without ending the call. Closing a view does not stop
 its thread. No extra Voice Mode entry appears in a work thread's side panel.
 There is no fixed Views side-panel tab that opens automatically on desktop.
 
-Settings → Behavior → Thread views in Voice controls whether a requested view
-replaces the selected view or joins the switcher. The existing saved preference
-is preserved and now applies on both devices. Creating work and reading diffs
-never navigate to work threads. A missing work prompt is requested by voice.
+Opened threads stay in the switcher until you close them on desktop and mobile.
+Opening a thread again selects its existing view. There is no setting for this.
+The switcher lasts for the loaded app session; refreshing or reloading the plugin
+clears it. Creating work and reading diffs never navigate to work threads.
+A missing work prompt is requested by voice.
 
 The embedded view uses BB's supported ThreadChat component. If it cannot open,
 Voice reports that and keeps the call running. The current plugin routes native permission decisions to BB's approval UI,
@@ -345,7 +346,7 @@ bb plugin dev          # rebuild + reload on save
 bb plugin logs voice-mode -f # tool traffic and errors
 ```
 
-Both clients expose `focus_threads`, `manage_views`, and `set_view_behavior`
+Both clients support `focus_thread`, `focus_threads`, and `manage_views`
 for optional inspection inside Voice. Native pane navigation is not exposed.
 
 ## Call controls and saved data

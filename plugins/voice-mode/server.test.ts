@@ -40,21 +40,16 @@ test("session history and plugin logs describe the same stored action, and faile
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("thread metadata is resolved once per ID and the saved preference applies immediately", async () => {
+test("thread metadata is resolved once per ID without an opening preference", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode", sdk: {
     threads: { get: async ({ threadId }) => makeThreadResponse({ id: threadId, title: `Title ${threadId}`, projectId: "project" }) },
   } });
   try {
     await plugin(bb);
-    let result = await harness.behavior.callRpc("resolveThreadViews", { threadIds: ["a", "b", "a"] }) as any;
-    assert.equal(result.preference, "reuse");
+    const result = await harness.behavior.callRpc("resolveThreadViews", { threadIds: ["a", "b", "a"] }) as any;
+    assert.equal("preference" in result, false);
     assert.deepEqual(result.views.map((view: any) => view.id), ["thread:a", "thread:b"]);
     assert.equal(harness.inspection.sdk.callsTo("threads.get").length, 2);
-    const saved = await harness.behavior.callRpc("setConfig", {mobileViewBehavior:"new"}) as any;
-    assert.equal(saved.mobileViewBehavior, "new");
-    result = await harness.behavior.callRpc("resolveThreadViews", { threadIds: ["a"] }) as any;
-    assert.equal(result.preference, "new");
-    assert.ok(harness.inspection.realtimeSignals.some(signal => signal.channel === "config-changed"));
     await assert.rejects(harness.behavior.callRpc("resolveThreadViews", { threadIds: [] }));
   } finally { await harness.lifecycle.dispose(); }
 });
@@ -78,25 +73,23 @@ test("server tool failures carry explicit status and do not create a separate se
 test("both clients offer optional inspection inside Voice without native pane tools", () => {
   for (const mobile of [false, true]) {
     const tools = toolSchemas([], mobile);
-    for (const name of ["focus_thread", "focus_threads", "manage_views", "set_view_behavior"]) assert.ok(tools.some(tool => tool.name === name));
-    assert.equal(tools.some(tool => tool.name === "set_pane"), false);
+    for (const name of ["focus_thread", "focus_threads", "manage_views"]) assert.ok(tools.some(tool => tool.name === name));
+    assert.equal(tools.some(tool => tool.name === "set_pane" || tool.name === "set_view_behavior"), false);
     assert.match(threadViewInstructions(mobile), /listening without looking/);
     assert.match(threadViewInstructions(mobile), /do not navigate away/);
   }
   assert.deepEqual(toolSchemas([], false), toolSchemas([], true));
 });
 
-test("shared Voice inspection preserves and migrates the existing view preference", async () => {
+test("obsolete view preferences are ignored without changing other saved settings", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
   try {
-    await bb.storage.kv.set("config", { viewBehavior: "new" });
+    await bb.storage.kv.set("config", { viewBehavior: "reuse", mobileViewBehavior: "reuse", notifications: false });
     await plugin(bb);
     const current = await harness.behavior.callRpc("getConfig", null) as any;
-    assert.equal(current.mobileViewBehavior, "new");
+    assert.equal("mobileViewBehavior" in current, false);
     assert.equal("viewBehavior" in current, false);
-    const saved = await harness.behavior.callRpc("setConfig", { mobileViewBehavior: "reuse" }) as any;
-    assert.equal(saved.mobileViewBehavior, "reuse");
-    await assert.rejects(harness.behavior.callRpc("setConfig", { mobileViewBehavior: "auto" }));
+    assert.equal(current.notifications, false);
   } finally { await harness.lifecycle.dispose(); }
 });
 
@@ -122,11 +115,11 @@ test("concurrent settings patches preserve both changes", async () => {
     await plugin(bb);
     await Promise.all([
       harness.behavior.callRpc("setConfig", { notifications: false }),
-      harness.behavior.callRpc("setConfig", { mobileViewBehavior: "new" }),
+      harness.behavior.callRpc("setConfig", { pluginCommands: "none" }),
     ]);
     const config = await harness.behavior.callRpc("getConfig", null) as any;
     assert.equal(config.notifications, false);
-    assert.equal(config.mobileViewBehavior, "new");
+    assert.equal(config.pluginCommands, "none");
   } finally { await harness.lifecycle.dispose(); }
 });
 

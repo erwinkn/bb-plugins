@@ -109,3 +109,26 @@ copy for both clients. No behavior changed. Announcements was traced to the
 legacy notification path and left unchanged while answering the user's question;
 it does not control coordinator watched updates. Confidence is high from the
 current callers. Twenty affected UI tests, typecheck, and build passed.
+
+
+## Always retain opened threads
+
+The user requested one behavior with no setting. Opening a thread now adds it
+to the Voice switcher or selects its existing view. Removed replacement code,
+configuration fields, and the tool for changing that preference.
+
+- Kept explicit close and clear controls. Alternative: remove those controls.
+  Confidence: high. The request concerns opening threads; closing a view must
+  remain possible and does not stop its work.
+- Ignore obsolete saved view preferences without a data migration. Alternative:
+  rewrite stored configuration on reload. Confidence: high. Old values cannot
+  affect opening; unrelated settings and session history remain intact.
+- Keep the existing window-local lifetime. Alternative: persist views across
+  refreshes and plugin reloads. Confidence: high for this scope. Reload still
+  clears open views, as documented in the README.
+- Updated existing workspace, server, and UI callers and tests. The checks cover
+  retaining views, reopening without duplicates, batches, explicit closing, and
+  failed opens. Physical audio behavior is outside this change.
+
+I stand behind this change. Existing device-test limits for the broader branch
+still apply. The user's standing PR and reload authorization covers publication.

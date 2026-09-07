@@ -22,7 +22,6 @@ function fixture(mobile = true) {
     calls.push({ method, args });
     if (method === "resolveThreadViews") return {
       views: [...new Set(args.threadIds as string[])].map(threadId => ({ kind: "thread", id: `thread:${threadId}`, threadId, projectId: `project-${threadId}`, title: `Title ${threadId}` })),
-      preference: "reuse",
     };
     if (method === "runTool") return { output: JSON.stringify(args), status: "success" };
     return { ok: true };
@@ -133,7 +132,7 @@ test("stopping during metadata resolution prevents a late open and logs to the o
   f.workspace.registerPresenter({ available: () => true, reveal: () => true });
   const pending = f.execute("focus_thread", { thread_id: "a" });
   f.internal.nonce = "new-session";
-  resolve({ views: [{ kind: "thread", id: "thread:a", threadId: "a", projectId: null, title: "A" }], preference: "auto" });
+  resolve({ views: [{ kind: "thread", id: "thread:a", threadId: "a", projectId: null, title: "A" }] });
   const result = await pending;
   assert.equal(result.status, "error");
   assert.equal(f.workspace.get().views.length, 0);

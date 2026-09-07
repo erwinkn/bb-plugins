@@ -167,8 +167,8 @@ export function CoordinatorCard({ conversationId, legacy = false }: { conversati
     }
   };
   const inspect = (threadId: string) => void run(async () => {
-    const { views, preference } = await rpc.call("resolveThreadViews", { threadIds: [threadId] });
-    viewWorkspace.open(views, "auto", preference);
+    const { views } = await rpc.call("resolveThreadViews", { threadIds: [threadId] });
+    viewWorkspace.open(views);
   });
   const openQuestion = status.questions.find((question) => question.status === "pending" || question.status === "unresolved");
   const activeRequests = status.requests.filter((request) => request.status !== "settled").slice(0, 6);

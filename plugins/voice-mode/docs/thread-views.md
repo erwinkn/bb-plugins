@@ -1,5 +1,11 @@
 # Mobile thread views beside a call
 
+Historical implementation notes. The current flow is documented in the
+[plugin README](../README.md). On both clients, all opened threads now stay
+available inside Voice until closed. The replacement setting and
+`set_view_behavior` tool have been removed. Desktop navigation and separate
+mobile panel registration described below were superseded by PR #15.
+
 This PR changes mobile thread presentation. Desktop `focus_thread` retains the
 existing `bb.sdk.threads.open` navigation, whether the call starts from the
 composer or Voice page. Desktop destination preferences are a separate

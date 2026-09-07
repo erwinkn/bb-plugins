@@ -14,7 +14,7 @@ import {
   type AudioDevicePreferences,
 } from "./audio-devices.ts";
 import { actionStatus } from "./session-events.ts";
-import { ViewWorkspace, viewWorkspace, type OpenDisposition } from "./view-workspace.ts";
+import { ViewWorkspace, viewWorkspace } from "./view-workspace.ts";
 import { clientId, realmId, identityTag, clientDescriptor, deviceSummary } from "./client-identity.ts";
 import { CoordinatorBridge, type BridgeSnapshot } from "./coordinator-bridge.ts";
 
@@ -1173,11 +1173,9 @@ export class VoiceAgent {
         if (!Array.isArray(ids) || !ids.length || ids.length > 100 || ids.some(id => typeof id !== "string" || !id.trim())) {
           throw new Error("Provide between 1 and 100 valid thread IDs.");
         }
-        const disposition = name === "focus_threads" ? "new" : args.disposition ?? "auto";
-        if (disposition !== "auto" && disposition !== "reuse" && disposition !== "new") throw new Error("Invalid tab disposition.");
-        const { views, preference } = await bindings.rpc.call("resolveThreadViews", { threadIds: ids as string[] });
+        const { views } = await bindings.rpc.call("resolveThreadViews", { threadIds: ids as string[] });
         if (dc.readyState !== "open" || this.nonce !== toolSessionId) throw new Error("The call ended before the threads could be shown.");
-        this.workspace.open(views, disposition as OpenDisposition, preference);
+        this.workspace.open(views);
         output = views.length === 1 ? `Showing ${views[0].title}.` : `Showing ${views.length} threads. ${views[0].title} is selected.`;
         label = views.length === 1 ? `Showed ${views[0].title}` : `Showed ${views.length} threads`;
         status = "success";
@@ -1194,7 +1192,7 @@ export class VoiceAgent {
         } else if (!view) {
           throw new Error("That view is not open. List the open views first.");
         } else if (args.action === "select") {
-          this.workspace.open([view], "new", "new");
+          this.workspace.open([view]);
           output = `Showing ${view.title}.`;
         } else if (args.action === "close") {
           this.workspace.close(id);
@@ -1284,9 +1282,9 @@ export class VoiceAgent {
         const rpc = this.bindings?.rpc;
         if (!rpc || !this.nonce) return;
         const nonce = this.nonce;
-        const { views, preference } = await rpc.call("resolveThreadViews", { threadIds: [threadId] });
+        const { views } = await rpc.call("resolveThreadViews", { threadIds: [threadId] });
         if (this.nonce !== nonce || !(this.state === "live" || this.state === "muted")) return;
-        this.workspace.open(views, "auto", preference);
+        this.workspace.open(views);
       },
       changed: () => this.refreshBridgeSnapshot(),
     };

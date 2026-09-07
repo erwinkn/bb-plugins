@@ -254,7 +254,6 @@ export const rpcContract = defineRpcContract({
         model: z.enum(MODEL_OPTIONS),
         voice: z.enum(VOICE_OPTIONS),
         notifications: z.boolean(),
-        mobileViewBehavior: z.enum(["reuse", "new"]),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
@@ -269,7 +268,6 @@ export const rpcContract = defineRpcContract({
         model: z.enum(MODEL_OPTIONS).optional(),
         voice: z.enum(VOICE_OPTIONS).optional(),
         notifications: z.boolean().optional(),
-        mobileViewBehavior: z.enum(["reuse", "new"]).optional(),
         pluginCommands: z.string().max(2000).optional(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
         shortcuts: shortcutsSchema.optional(),
@@ -281,7 +279,6 @@ export const rpcContract = defineRpcContract({
         model: z.enum(MODEL_OPTIONS),
         voice: z.enum(VOICE_OPTIONS),
         notifications: z.boolean(),
-        mobileViewBehavior: z.enum(["reuse", "new"]),
         pluginCommands: z.string(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
@@ -378,7 +375,7 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
-  /** Resolve real thread metadata and the current opening preference. */
+  /** Resolve real thread metadata. */
   resolveThreadViews: {
     input: z.object({ threadIds: z.array(z.string().min(1)).min(1).max(100) }).strict(),
     output: z.object({
@@ -386,7 +383,6 @@ export const rpcContract = defineRpcContract({
         kind: z.literal("thread"), id: z.string(), threadId: z.string(),
         projectId: z.string().nullable(), title: z.string(),
       }).strict()),
-      preference: z.enum(["reuse", "new"]),
     }).strict(),
   },
   /**
@@ -552,10 +548,9 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
     { type: "function", name: "read_thread", description: "Read a thread's details and its latest assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
-    { type: "function", name: "focus_thread", description: "Show a thread inside Voice only when the user asks for visual inspection. The call continues.", parameters: { type: "object", properties: { thread_id: { type: "string" }, disposition: { type: "string", enum: ["auto", "reuse", "new"] } }, required: ["thread_id"] } },
+    { type: "function", name: "focus_thread", description: "Show a thread inside Voice only when the user asks for visual inspection. The call continues.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "focus_threads", description: "Show several threads inside Voice only when requested. Preserves existing views. First resolve the requested threads; do not open views for ordinary progress reports.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
     { type: "function", name: "manage_views", description: "List, select, or close optional thread views inside Voice. Closing a view does not stop work or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
-    { type: "function", name: "set_view_behavior", description: "Save a requested lasting preference for thread views in Voice on desktop and mobile: reuse replaces the active view; new keeps views. Explicit requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
     { type: "function", name: "send_to_thread", description: "Send a message to a thread's agent. Starts a turn if idle, queues/steers if running.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
     { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; With no prompt, ask the user to dictate the work; stay in Voice. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
     { type: "function", name: "stop_thread", description: "Stop a running thread.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
@@ -602,7 +597,7 @@ export function coordinatorToolSchemas(mobile = false) {
 }
 
 export function threadViewInstructions(_mobile: boolean) {
-  return "Voice is the dedicated conversation on desktop and mobile. Assume the user is listening without looking. Read progress and results aloud; do not require opening work threads. Only focus_thread/focus_threads when the user asks for visual inspection, inside Voice. Use manage_views for those optional views. If inspection is unavailable, explain by voice and continue the call; do not navigate away. New work runs without opening its thread. Ask for a missing prompt by voice. Use set_view_behavior only for a requested lasting preference. Call get_context for the optional thread currently shown.";
+  return "Voice is the dedicated conversation on desktop and mobile. Assume the user is listening without looking. Read progress and results aloud; do not require opening work threads. Only focus_thread/focus_threads when the user asks for visual inspection, inside Voice. Use manage_views for those optional views. If inspection is unavailable, explain by voice and continue the call; do not navigate away. New work runs without opening its thread. Ask for a missing prompt by voice. Opened threads stay available until the user closes them. Call get_context for the optional thread currently shown.";
 }
 
 const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
@@ -737,7 +732,6 @@ export default async function plugin(bb: BbPluginApi) {
     model: RealtimeModel;
     voice: Voice;
     notifications: boolean;
-    mobileViewBehavior: "reuse" | "new";
     pluginCommands: string;
     credentialPreference: CredentialPreference;
     shortcuts: Shortcuts;
@@ -748,7 +742,6 @@ export default async function plugin(bb: BbPluginApi) {
     model: DEFAULT_MODEL,
     voice: DEFAULT_VOICE,
     notifications: true,
-    mobileViewBehavior: "reuse",
     pluginCommands: "all",
     credentialPreference: "auto",
     shortcuts: { ...DEFAULT_SHORTCUTS },
@@ -764,13 +757,12 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
   async function readConfig(): Promise<VoiceConfig> {
-    const stored = (await bb.storage.kv.get<Partial<VoiceConfig> & { viewBehavior?: string }>(CONFIG_KEY)) ?? {};
+    const stored = (await bb.storage.kv.get<Partial<VoiceConfig>>(CONFIG_KEY)) ?? {};
     return {
       model: isModel(stored.model) ? stored.model : CONFIG_DEFAULTS.model,
       voice: isVoice(stored.voice) ? stored.voice : CONFIG_DEFAULTS.voice,
       notifications:
         typeof stored.notifications === "boolean" ? stored.notifications : CONFIG_DEFAULTS.notifications,
-      mobileViewBehavior: (stored.mobileViewBehavior ?? stored.viewBehavior) === "new" ? "new" : "reuse",
       pluginCommands:
         typeof stored.pluginCommands === "string" ? stored.pluginCommands : CONFIG_DEFAULTS.pluginCommands,
       credentialPreference: isCredentialPreference(stored.credentialPreference)
@@ -1262,13 +1254,6 @@ export default async function plugin(bb: BbPluginApi) {
         const [described] = await withMachines([describeThread(thread)]);
         return JSON.stringify({ ...described, lastAssistantOutput: output ? truncate(output) : null });
       }
-      case "set_view_behavior": {
-        const behavior = str("behavior");
-        if (behavior !== "reuse" && behavior !== "new") throw new Error("Invalid view behavior.");
-        await writeConfig({ mobileViewBehavior: behavior });
-        bb.realtime.publish("config-changed", {});
-        return "Saved the thread view preference for Voice on desktop and mobile.";
-      }
       case "focus_threads":
       case "manage_views":
       case "focus_thread":
@@ -1686,7 +1671,7 @@ export default async function plugin(bb: BbPluginApi) {
             projectId: thread.projectId, title: thread.title || thread.titleFallback || threadId };
         })));
       }
-      return { views, preference: (await readConfig()).mobileViewBehavior };
+      return { views };
     },
     async forceStop({ nonce }) {
       forceStopCall(nonce);

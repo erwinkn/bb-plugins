@@ -24,7 +24,7 @@ test("the mobile switcher changes the shown thread; closing only removes the req
   const slot = renderSlot({ component: CompanionTab }, {});
   try {
     assert.match(slot.container.textContent ?? "", /all your running threads/);
-    act(() => viewWorkspace.open([view("a"), view("b")], "new", "reuse"));
+    act(() => viewWorkspace.open([view("a"), view("b")]));
     assert.equal(slot.getAllByTestId("bb-thread-chat").length, 1);
     assert.equal(slot.getByRole("combobox", { name: "Shown thread" }).getAttribute("aria-label"), "Shown thread");
     fireEvent.change(slot.getByRole("combobox"), { target: { value: "thread:b" } });
@@ -45,7 +45,7 @@ test("the mobile switcher changes the shown thread; closing only removes the req
 test("closing and remounting a host panel preserves the collection for the app session", () => {
   viewWorkspace.clear();
   const unregister = viewWorkspace.registerPresenter({ available: () => true, reveal: () => true });
-  viewWorkspace.open([view("a"), view("b")], "new", "reuse");
+  viewWorkspace.open([view("a"), view("b")]);
   const first = renderSlot({ component: CompanionTab }, {});
   first.lifecycle.unmount();
   assert.equal(viewWorkspace.current(), null);
@@ -74,7 +74,7 @@ test("drawer controls share call state, survive view changes, and only stop on e
     assert.equal(drawerUi.getByRole("button", { name: "Mute Aide microphone" }).hasAttribute("disabled"), true);
     assert.ok(drawerUi.getByText("Connecting…"));
     act(() => setState("live"));
-    act(() => viewWorkspace.open([view("a"), view("b")], "new", "reuse"));
+    act(() => viewWorkspace.open([view("a"), view("b")]));
     fireEvent.click(drawerUi.getByRole("button", { name: "Mute Aide microphone" }));
     assert.equal(mute.mock.callCount(), 1);
     assert.ok(pageUi.getByRole("button", { name: "Unmute Aide microphone" }));
@@ -307,7 +307,7 @@ test("Voice inspection is optional, stays in the area, and preserves the convers
     assert.equal(ui.queryByRole("group", { name: "Voice area" }), null);
     fireEvent.click(await ui.findByRole("button", { name: /Session a/ }));
     await ui.findByText("Transcript a");
-    act(() => viewWorkspace.open([view("a")], "new", "reuse"));
+    act(() => viewWorkspace.open([view("a")]));
     assert.equal(ui.getByTestId("bb-thread-chat").getAttribute("data-thread-id"), "a");
     fireEvent.click(ui.getByRole("button", { name: "Session" }));
     assert.equal(ui.queryByTestId("bb-thread-chat"), null);

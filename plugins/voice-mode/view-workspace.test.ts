@@ -9,56 +9,51 @@ function workspace() {
   return store;
 }
 
-test("mobile default reuses the shown thread; keeping views deduplicates by thread", () => {
-  const replace = workspace();
-  replace.open([view("a")], "auto", "reuse");
-  replace.open([view("b")], "auto", "reuse");
-  assert.deepEqual(replace.get().views, [view("b")]);
-  const keep = workspace();
-  keep.open([view("a")], "auto", "new");
-  keep.open([view("b")], "auto", "new");
-  keep.open([view("a")], "new", "new");
-  assert.deepEqual(keep.get(), { views: [view("a"), view("b")], activeId: "thread:a" });
+test("opening threads retains previous views and deduplicates reopened threads", () => {
+  const store = workspace();
+  store.open([view("a")]);
+  store.open([view("b")]);
+  store.open([{ ...view("a"), title: "Updated title" }]);
+  assert.deepEqual(store.get(), {
+    views: [{ ...view("a"), title: "Updated title" }, view("b")], activeId: "thread:a",
+  });
 });
 
-test("explicit disposition overrides preference; batches preserve all threads despite reuse", () => {
+test("batches preserve existing threads and deduplicate requested threads", () => {
   const store = workspace();
-  store.open([view("a")], "auto", "new");
-  store.open([view("b")], "auto", "new");
-  store.open([view("c")], "reuse", "new");
-  assert.deepEqual(store.get().views, [view("a"), view("c")]);
-  store.open([view("d"), view("e"), view("d")], "auto", "reuse");
-  assert.deepEqual(store.get().views, [view("a"), view("c"), view("d"), view("e")]);
-  assert.equal(store.get().activeId, "thread:d");
+  store.open([view("a")]);
+  store.open([view("b"), view("c"), view("b")]);
+  assert.deepEqual(store.get().views, [view("a"), view("b"), view("c")]);
+  assert.equal(store.get().activeId, "thread:b");
 });
 
 test("declined or throwing opens leave tabs and selection unchanged", () => {
   const store = workspace();
-  store.open([view("a")], "auto", "reuse");
+  store.open([view("a")]);
   const before = store.get();
   const unregister = store.registerPresenter({ available: () => true, reveal: () => false });
-  assert.throws(() => store.open([view("b")], "reuse", "reuse"), /could not show/);
+  assert.throws(() => store.open([view("b")]), /could not show/);
   assert.equal(store.get(), before);
   unregister();
   store.registerPresenter({ available: () => true, reveal: () => { throw new Error("Host unavailable"); } });
-  assert.throws(() => store.open([view("b")], "reuse", "reuse"), /Host unavailable/);
+  assert.throws(() => store.open([view("b")]), /Host unavailable/);
   assert.equal(store.get(), before);
 });
 
 test("windows are isolated and unmounted or unavailable presenters cannot receive opens", () => {
   const otherWindow = workspace();
   const ownWindow = new ViewWorkspace();
-  assert.throws(() => ownWindow.open([view("a")], "auto", "reuse"), /Open the Voice area/);
+  assert.throws(() => ownWindow.open([view("a")]), /Open the Voice area/);
   assert.equal(otherWindow.get().views.length, 0);
   const unregister = ownWindow.registerPresenter({ available: () => true, reveal: () => true });
   unregister();
   ownWindow.registerPresenter({ available: () => false, reveal: () => { throw new Error("Must not run"); } });
-  assert.throws(() => ownWindow.open([view("a")], "auto", "reuse"), /Open the Voice area/);
+  assert.throws(() => ownWindow.open([view("a")]), /Open the Voice area/);
 });
 
 test("context follows selected views only while a panel is visible; closing restores another tab", () => {
   const store = workspace();
-  store.open([view("a"), view("b"), view("c")], "new", "reuse");
+  store.open([view("a"), view("b"), view("c")]);
   assert.equal(store.current(), null);
   let visible = true;
   const unmount = store.registerVisiblePanel(() => visible);

@@ -1,6 +1,5 @@
 // A window-local collection of views. Host panels present this collection;
 // voice and UI controls use the same operations. Never broadcast navigation.
-export type OpenDisposition = "auto" | "reuse" | "new";
 export type ThreadView = {
   kind: "thread";
   id: string;
@@ -45,22 +44,15 @@ export class ViewWorkspace {
     if (![...this.visiblePanels.values()].some(visible => visible())) return null;
     return this.value.views.find(view => view.id === this.value.activeId) ?? null;
   }
-  open(views: readonly WorkspaceView[], disposition: OpenDisposition, preference: "reuse" | "new") {
+  open(views: readonly WorkspaceView[]) {
     if (!views.length) throw new Error("No threads were selected.");
     const presenter = [...this.presenters.values()].reverse().find(p => p.available());
     if (!presenter) throw new Error("Open the Voice area to inspect threads. The call is still running.");
-    // A batch always preserves every requested item, regardless of the default.
-    const mode = disposition === "auto" ? preference : disposition;
-    const reuse = views.length === 1 && mode === "reuse";
     const next = [...this.value.views];
     for (const view of views) {
       const existing = next.findIndex(item => item.id === view.id);
       if (existing >= 0) next[existing] = view;
-      else {
-        const replace = reuse ? next.findIndex(item => item.id === this.value.activeId) : -1;
-        if (replace >= 0) next[replace] = view;
-        else next.push(view);
-      }
+      else next.push(view);
     }
     // Reveal first; a rejected/throwing host must leave the collection intact.
     if (!presenter.reveal()) throw new Error("The Voice area could not show the thread. The call is still running.");
