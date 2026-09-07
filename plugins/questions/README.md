@@ -2,7 +2,7 @@
 
 A BB plugin that lets an agent ask the user a round of structured questions
 and collect the answers later. Questions live in a thread-bound
-side panel (any number of questions, grouped, with optional attachments,
+side panel (any number of questions, with optional attachments,
 workspace references, confidence, and citations of earlier answers) or, for up
 to five quick questions, inline in the thread. Drafts and submitted answers are
 stored on the BB server. Saved data survives closing the panel, reloading the
@@ -36,11 +36,23 @@ durable path for rounds that need more than one quick answer.
 
 ## Panel and inline mode
 
+Choice questions include **Other**, which opens a text area. Deselecting it
+clears that text. It replaces a single choice and can accompany multiple
+choices. An empty Other selection is saved as a draft but is not a submitted
+answer. Existing typed answers remain visible. Sections are no longer offered;
+old saved section labels are ignored.
+
+For attachment-enabled panel questions, paste images into answer or option
+detail text areas, or use the top-right paperclip. The background fade under
+the paperclip covers text without adding a separate control row. File search
+waits for a query, and selected badges stay inside the control above results.
+The footer shows save status, including a failure or conflict when needed.
+
 | | Panel | Inline (in the message) |
 | --- | --- | --- |
 | Questions per round | no count cap (256 KiB of question JSON per round) | 5 |
 | Answer forms | single or multiple choice with optional detail per option, free text, attachments, workspace references, confidence | single or multiple choice, free text |
-| Extras | `help`, `group`, `cites` | none (rejected) |
+| Extras | `help`, `cites` | none (rejected) |
 | Tabs | one per round plus a global Summary | none |
 
 The Summary tab shows the agent-authored summary (set with
@@ -49,7 +61,7 @@ submitted and open questions of every round.
 
 ## Agent tools
 
-- `questions_ask` `{ mode?, intro?, questions: [{ title, help?, group?, options?, select?, cites?, attachments?, references?, confidence? }] }`.
+- `questions_ask` `{ mode?, intro?, questions: [{ title, help?, options?, select?, cites?, attachments?, references?, confidence? }] }`.
   `mode` defaults to `"panel"`. `options` is a list of labels; `select` is
   `"single"` (default) or `"multiple"`. The thread is always the calling thread.
 - `questions_read` `{ round?, after? }` returns every submitted answer as

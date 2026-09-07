@@ -49,6 +49,7 @@ export interface QuestionsController {
   resolveConflict(questionId: string, choice: "mine" | "saved"): void;
   pendingIds: string[];
   saving: boolean;
+  draftStatus: "saving" | "saved" | "unsaved" | "conflict";
   submitting: boolean;
   backupMode: "browser" | "none";
   notices: Notice[];
@@ -294,6 +295,7 @@ export function useQuestions(threadId: string): QuestionsController {
     resolveConflict: (questionId, choice) => store.resolveConflict(questionId, choice),
     pendingIds: store.pendingIds(),
     saving: store.saving,
+    draftStatus: store.draftStatus,
     submitting,
     backupMode: store.backupMode,
     notices: store.currentNotices,

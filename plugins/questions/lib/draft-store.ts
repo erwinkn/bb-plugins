@@ -45,7 +45,7 @@ function mergeAnswerStates(known: AnswerState | undefined, incoming: AnswerState
 
 /** Byte-exact comparison: drafts keep whitespace, so no normalization here. */
 function sameDraft(a: Answer | null | undefined, b: Answer | null | undefined): boolean {
-  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  return JSON.stringify(a ? answerSchema.parse(a) : null) === JSON.stringify(b ? answerSchema.parse(b) : null);
 }
 
 export type SaveResponse =
@@ -188,6 +188,13 @@ export class DraftStore {
 
   get saving(): boolean {
     return this.inFlight.size > 0;
+  }
+
+  get draftStatus(): "saving" | "saved" | "unsaved" | "conflict" {
+    if ([...this.local.values()].some((edit) => edit.conflict !== null)) return "conflict";
+    if (this.loadError || (this.failures > 0 && this.local.size > 0)) return "unsaved";
+    if (!this.server || this.local.size > 0 || this.inFlight.size > 0) return "saving";
+    return "saved";
   }
 
   get backupMode(): "browser" | "none" {

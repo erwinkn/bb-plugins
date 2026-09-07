@@ -5,11 +5,13 @@ place to ask and gives you a place to answer at your own pace.
 ## What you get
 
 - A **Questions** side panel bound to the thread, with one tab per round and a
-  global Summary tab. Any number of questions per round, grouped under quiet
-  headings, numbered across the thread, with a 256 KiB size limit per round.
-- Single or multiple choice with optional detail per option, a quiet **Type an
-  answer** control, and, only where the agent asks for them, file or image
+  global Summary tab. Questions are numbered across the thread, with no count
+  cap and a 256 KiB size limit per round.
+- Single or multiple choice with optional detail per option, an **Other**
+  option for a typed answer, and, only where the agent asks for them, file or image
   attachments, workspace file references, and a confidence row.
+- Paste images into answer text areas when attachments are enabled. Selected
+  workspace files stay visible inside the search control.
 - Follow-up rounds can quote your earlier submitted answers in place.
 - One **Submit answered (N)** button sends every new or changed answer across
   all rounds as a normal message to the agent. Unanswered questions stay open.

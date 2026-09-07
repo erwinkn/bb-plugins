@@ -24,8 +24,8 @@ function state(answers: AnswerState[] = []): ThreadState {
         intro: null,
         createdAt: 1,
         questions: [
-          { id: Q1, title: "One?", help: null, group: null, select: "single", options: [{ id: "o1", label: "A" }], cites: [], attachments: false, references: false, confidence: false },
-          { id: Q2, title: "Two?", help: null, group: null, select: null, options: [], cites: [], attachments: false, references: false, confidence: false },
+          { id: Q1, title: "One?", help: null, select: "single", options: [{ id: "o1", label: "A" }], cites: [], attachments: false, references: false, confidence: false },
+          { id: Q2, title: "Two?", help: null, select: null, options: [], cites: [], attachments: false, references: false, confidence: false },
         ],
       },
     ],
@@ -95,6 +95,38 @@ async function settle() {
 describe("DraftStore", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+  });
+
+  it("reports pending, saved, failed, and conflicting draft states accurately", async () => {
+    const server = fakeServer();
+    const store = new DraftStore({ threadId: THREAD, transport: server.transport, backups: null });
+    await store.load();
+    expect(store.draftStatus).toBe("saved");
+    store.edit(Q2, () => typed("first"));
+    expect(store.draftStatus).toBe("saving");
+    await store.flush();
+    expect(store.draftStatus).toBe("saved");
+    server.setFailing(true);
+    store.edit(Q2, () => typed("offline"));
+    await store.save(Q2);
+    expect(store.draftStatus).toBe("unsaved");
+    server.setFailing(false);
+    server.externalWrite(Q2, typed("other device"));
+    await store.save(Q2);
+    expect(store.draftStatus).toBe("conflict");
+    store.dispose();
+  });
+
+  it("compares Other drafts without depending on property insertion order", async () => {
+    const server = fakeServer();
+    const store = new DraftStore({ threadId: THREAD, transport: server.transport, backups: null });
+    await store.load();
+    store.edit(Q1, () => ({ ...typed("custom"), other: true }));
+    server.externalWrite(Q1, { other: true, ...typed("custom") });
+    await store.flush();
+    expect(store.conflicts()).toEqual([]);
+    expect(store.draftStatus).toBe("saved");
+    store.dispose();
   });
 
   it("holds saves during upload while preserving typing and attachment removals", async () => {

@@ -1,6 +1,6 @@
 // The Questions side panel: one tab per round plus a global Summary, and one
 // Submit answered (N) button that sends every changed answer across rounds.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Markdown } from "@get-bb/plugin-sdk/app";
 import type { PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
@@ -49,30 +49,14 @@ function TitleControls({ controller, questionId, label }: { controller: Question
 }
 
 function RoundView({ controller, round, onJump, onError }: { controller: QuestionsController; round: Round; onJump: (id: string) => void; onError: (message: string) => void }) {
-  const groups = useMemo(() => {
-    const ordered: { title: string | null; questions: Question[] }[] = [];
-    for (const question of round.questions) {
-      const last = ordered[ordered.length - 1];
-      if (last && last.title === question.group) last.questions.push(question);
-      else ordered.push({ title: question.group, questions: [question] });
-    }
-    return ordered;
-  }, [round]);
-  let first = true;
   return (
     <div>
       {round.intro ? (
-        <div className="mx-3 mb-1.5 mt-2.5 border-l-2 border-[var(--input)] pl-2.5 text-[12px] text-muted-foreground">{round.intro}</div>
+        <div className="mx-3 mb-4 mt-3 text-[16px] font-medium leading-relaxed text-foreground">{round.intro}</div>
       ) : null}
-      {groups.map((group, groupIndex) => (
-        <div key={`${group.title ?? ""}-${groupIndex}`}>
-          {group.title ? (
-            <h3 className="mx-3 mt-3 flex h-6 items-center text-[12px] font-medium text-[var(--subtle-foreground)]">{group.title}</h3>
-          ) : null}
-          {group.questions.map((question) => {
+          {round.questions.map((question, index) => {
             const label = controller.labels.get(question.id) ?? question.id;
-            const border = !first && !group.title;
-            first = false;
+            const border = index > 0;
             return (
               <div key={question.id} className={cn("pb-0.5 pt-1", border ? "border-t border-[var(--border-seam)]" : "")} data-q={question.id}>
                 <div className="flex items-baseline gap-2 px-3 pt-1.5">
@@ -84,8 +68,6 @@ function RoundView({ controller, round, onJump, onError }: { controller: Questio
               </div>
             );
           })}
-        </div>
-      ))}
     </div>
   );
 }
@@ -329,15 +311,11 @@ export function QuestionsPanel({ threadId, params }: PluginThreadPanelProps) {
         ) : null}
       </div>
       <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-t border-border py-1.5 pl-3 pr-2">
-        <Hint>
-          {pending > 0 ? `Sends ${pending} draft answer${pending > 1 ? "s" : ""} across all rounds.` : "No draft answers to send."}
-        </Hint>
-        <Hint>
-          {controller.saving
-            ? "Saving draft…"
-            : controller.backupMode === "browser"
-              ? "Drafts are saved on the server."
-              : "Drafts are saved on the server. This browser cannot keep an offline copy."}
+        <Hint role="status">
+          {controller.draftStatus === "saving" ? "Saving draft…"
+            : controller.draftStatus === "conflict" ? "Draft conflict"
+            : controller.draftStatus === "unsaved" ? "Draft not saved"
+            : "Draft saved"}
         </Hint>
         <span className="flex-1" />
         <PanelButton small primary disabled={pending === 0 || controller.submitting} aria-label="Submit every draft or changed answer in every round" onClick={() => void onSubmit()}>

@@ -183,8 +183,8 @@ export interface QuestionEditorProps {
 export function QuestionEditor({ controller, question, full, onJump, onError, header }: QuestionEditorProps) {
   const groupName = useId();
   const draft = controller.draftOf(question.id);
-  const [textOpen, setTextOpen] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [uploadCount, setUploadCount] = useState(0);
+  const uploading = uploadCount > 0;
   const fileInput = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const detailRefs = useRef(new Map<string, HTMLTextAreaElement>());
@@ -207,12 +207,13 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
   const update = (updater: (current: Answer) => Answer) => controller.update(question.id, updater);
   const hasOptions = question.options.length > 0;
   const showAttachments = full && question.attachments;
-  const showText = !hasOptions || draft.text.trim() !== "" || textOpen || showAttachments;
+  const otherSelected = draft.other ?? (draft.text !== "");
+  const showText = !hasOptions || otherSelected;
   const help = question.help;
 
   const selectOption = (optionId: string, checked: boolean) => {
     update((current) => {
-      if (question.select === "single") return { ...current, selected: [optionId] };
+      if (question.select === "single") return { ...current, selected: [optionId], other: false, text: "", details: Object.fromEntries(Object.entries(current.details).filter(([id]) => id === optionId)) };
       if (checked) {
         return current.selected.includes(optionId) ? current : { ...current, selected: [...current.selected, optionId] };
       }
@@ -220,6 +221,16 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
       delete details[optionId];
       return { ...current, selected: current.selected.filter((id) => id !== optionId), details };
     });
+  };
+
+  const selectOther = (checked: boolean) => {
+    update((current) => ({
+      ...current,
+      other: checked,
+      text: checked ? current.text : "",
+      ...(checked && question.select === "single" ? { selected: [], details: {} } : {}),
+    }));
+    if (checked) setFocusText(true);
   };
 
   const toggleDetail = (optionId: string) => {
@@ -233,9 +244,9 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
     if (!has) setFocusDetail(optionId);
   };
 
-  const attach = async (files: FileList | null) => {
+  const attach = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
-    setUploading(true);
+    setUploadCount((count) => count + 1);
     try {
       for (const file of Array.from(files)) {
         await controller.uploadAttachment(question.id, file);
@@ -243,7 +254,7 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
     } catch (cause) {
       onError?.(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setUploading(false);
+      setUploadCount((count) => count - 1);
       if (fileInput.current) fileInput.current.value = "";
     }
   };
@@ -251,7 +262,16 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
   const conflict = controller.conflictOf(question.id);
 
   return (
-    <div className="px-3 pb-3 pt-1" data-question={question.id}>
+    <div className="px-3 pb-3 pt-1" data-question={question.id}
+      onPaste={(event) => {
+        if (!showAttachments || !(event.target instanceof HTMLTextAreaElement)) return;
+        const files = Array.from(event.clipboardData.items)
+          .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+          .map((item) => item.getAsFile()).filter((file): file is File => file !== null);
+        if (files.length === 0) return;
+        if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+        void attach(files);
+      }}>
       {header}
       {help ? <div className="mt-1 text-[12px] text-muted-foreground">{help}</div> : null}
       {conflict ? (
@@ -329,17 +349,25 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
               </div>
             );
           })}
+          <label className="flex min-h-7 cursor-pointer items-center gap-2.5 rounded-md px-2 py-[3px] text-[13px]">
+            {question.select === "single" ? (
+              <Radio name={groupName} checked={otherSelected} onChange={() => selectOther(true)} onClick={(event) => { if (otherSelected) { event.preventDefault(); selectOther(false); } }} />
+            ) : (
+              <Checkbox checked={otherSelected} onCheckedChange={(checked) => selectOther(checked === true)} />
+            )}
+            <span>Other</span>
+          </label>
         </div>
       ) : null}
 
       {showText ? (
-        <div className={cn("mt-2", showAttachments && "relative")}>
+        <div className={cn(hasOptions ? "mt-0.5 ml-6" : "mt-2", showAttachments && "relative")}>
           <TextArea
             ref={textRef}
             rows={2}
             aria-label={hasOptions ? "Answer in your own words" : "Your answer"}
             placeholder={hasOptions ? "Something else, or a mix of options" : "Type here"}
-            className={cn(showAttachments && "min-h-[86px] pb-[34px]")}
+            className={cn(showAttachments && "min-h-[70px]")}
             value={draft.text}
             onChange={(event) => {
               const value = event.target.value;
@@ -352,7 +380,7 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
                 icon="Paperclip"
                 label="Attach file or image"
                 size={26}
-                className="absolute bottom-[5px] left-[5px]"
+                className="absolute right-[5px] top-[5px] bg-background shadow-[-5px_3px_7px_3px_var(--background)]"
                 disabled={uploading}
                 onClick={() => fileInput.current?.click()}
               />
@@ -366,21 +394,6 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
               />
             </>
           ) : null}
-        </div>
-      ) : null}
-
-      {hasOptions && !showText ? (
-        <div className="-ml-2 mt-px flex flex-wrap items-center gap-0.5">
-          <button
-            type="button"
-            className="min-h-7 cursor-pointer border-0 bg-transparent px-2 py-[3px] text-[12px] font-normal text-muted-foreground hover:text-foreground"
-            onClick={() => {
-              setTextOpen(true);
-              setFocusText(true);
-            }}
-          >
-            Type an answer
-          </button>
         </div>
       ) : null}
 

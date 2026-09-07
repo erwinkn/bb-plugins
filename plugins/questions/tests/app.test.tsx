@@ -36,7 +36,6 @@ function question(id: string, overrides: Partial<Question> = {}): Question {
     id,
     title: `${id} title?`,
     help: null,
-    group: null,
     select: null,
     options: [],
     cites: [],
@@ -93,8 +92,17 @@ function backend(initial: Partial<ThreadState> = {}) {
       state.answers = [...state.answers.filter((item) => item.questionId !== input.questionId), next];
       return { outcome: "saved" as const, state: next };
     },
-    questions_upload_attachment: async () => {
-      throw new Error("not used");
+    questions_upload_attachment: async (input: { threadId: string; questionId: string; name: string; mimeType: string | null; dataBase64: string; expectedVersion: number }) => {
+      calls.push({ method: "questions_upload_attachment", input });
+      const current = state.answers.find((item) => item.questionId === input.questionId)!;
+      const draft = current?.draft ?? emptyAnswer();
+      const next = {
+        ...(current ?? answer(input.questionId, "r1", null, 0)),
+        version: input.expectedVersion + 1,
+        draft: { ...draft, attachments: [...draft.attachments, { type: "localImage" as const, path: "paste.png", name: input.name, mimeType: input.mimeType, sizeBytes: 3 }] },
+      };
+      state.answers = [...state.answers.filter((item) => item.questionId !== input.questionId), next];
+      return { outcome: "saved" as const, state: next };
     },
     questions_attachment_preview: async () => ({ dataUrl: null }),
     questions_search_paths: async ({ query }: { threadId: string; query: string }) => {
@@ -158,10 +166,59 @@ describe("registrations", () => {
 });
 
 describe("Questions panel", () => {
-  it("shows round tabs, thread-wide question numbers, groups, and the Summary tab", async () => {
+  it("pastes images only into attachment-enabled answers", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1", { attachments: true }), question("q2")])] });
+    const slot = mountPanel(server);
+    await slot.findByText("q1 title?");
+    const file = new File(["abc"], "paste.png", { type: "image/png" });
+    const clipboardData = { items: [{ kind: "file", type: "image/png", getAsFile: () => file }], getData: () => "" };
+    const fields = slot.getAllByLabelText("Your answer");
+    expect(fireEvent.paste(fields[1]!, { clipboardData })).toBe(true);
+    expect(server.calls.filter((call) => call.method === "questions_upload_attachment")).toHaveLength(0);
+    expect(fireEvent.paste(fields[0]!, { clipboardData })).toBe(false);
+    await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_upload_attachment")).toHaveLength(1));
+    expect(server.calls.find((call) => call.method === "questions_upload_attachment")?.input).toMatchObject({ questionId: "q1", name: "paste.png", dataBase64: "YWJj" });
+    await slot.findByRole("button", { name: "Remove paste.png" });
+    const clip = slot.getByRole("button", { name: "Attach file or image" });
+    expect(clip.className).toContain("top-[5px]");
+    expect(clip.className).toContain("right-[5px]");
+  });
+
+  it.each(["single", "multiple"] as const)("selects and clears Other for %s choices", async (select) => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1", { select, options: [{ id: "o1", label: "A" }] })])] });
+    const slot = mountPanel(server);
+    await slot.findByText("q1 title?");
+    const role = select === "single" ? "radio" : "checkbox";
+    fireEvent.click(slot.getByRole(role, { name: "A" }));
+    fireEvent.click(slot.getByRole(role, { name: "Other" }));
+    fireEvent.change(slot.getByLabelText("Answer in your own words"), { target: { value: "Custom answer" } });
+    expect(slot.queryByRole("button", { name: "Remove detail" })).toBeNull();
+    if (select === "single") expect((slot.getByRole(role, { name: "A" }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(slot.getByRole(role, { name: "Other" }));
+    expect(slot.queryByLabelText("Answer in your own words")).toBeNull();
+    fireEvent.click(slot.getByRole(role, { name: "Other" }));
+    expect((slot.getByLabelText("Answer in your own words") as HTMLTextAreaElement).value).toBe("");
+    if (select === "single") {
+      fireEvent.change(slot.getByLabelText("Answer in your own words"), { target: { value: "Discard me" } });
+      fireEvent.click(slot.getByRole(role, { name: "A" }));
+      expect(slot.queryByLabelText("Answer in your own words")).toBeNull();
+    }
+  });
+
+  it("does not search an empty query when opening the file picker", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1", { references: true })])] });
+    const slot = mountPanel(server);
+    await slot.findByText("q1 title?");
+    fireEvent.focus(slot.getByRole("combobox", { name: "Search files" }));
+    await slot.findByText("Type to search files");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+    expect(server.calls.filter((call) => call.method === "questions_search_paths")).toHaveLength(0);
+  });
+
+  it("shows round tabs, thread-wide question numbers, and the Summary tab", async () => {
     const server = backend({
       rounds: [
-        round("r1", 1, [question("q1", { group: "Display", select: "single", options: [{ id: "o1", label: "Panel" }, { id: "o2", label: "Thread" }] }), question("q2", { group: "Display" })]),
+        round("r1", 1, [question("q1", { select: "single", options: [{ id: "o1", label: "Panel" }, { id: "o2", label: "Thread" }] }), question("q2")]),
         round("r2", 2, [question("q3", { cites: ["q1"] })], "panel", "Follow-ups."),
       ],
       answers: [answer("q1", "r1", { ...emptyAnswer(), selected: ["o1"] }, 2, { ...emptyAnswer(), selected: ["o1"] })],
@@ -182,7 +239,7 @@ describe("Questions panel", () => {
     expect(slot.queryByText("Your answer")).toBeNull();
 
     fireEvent.click(slot.getByRole("tab", { name: /Round 1/ }));
-    expect(slot.getByText("Display")).toBeTruthy();
+    expect(slot.queryByText("Display")).toBeNull();
     expect(slot.getByText("Q1")).toBeTruthy();
     fireEvent.click(slot.getByRole("tab", { name: /Summary/ }));
     expect(slot.getByText(/Submitted · 1/)).toBeTruthy();
@@ -218,7 +275,7 @@ describe("Questions panel", () => {
     vi.useRealTimers();
   });
 
-  it("reveals the text field from Type an answer and keeps a paperclip only where asked", async () => {
+  it("reveals the text field from Other and keeps a paperclip only where asked", async () => {
     const server = backend({
       rounds: [
         round("r1", 1, [
@@ -231,7 +288,7 @@ describe("Questions panel", () => {
     const slot = mountPanel(server);
     await slot.findByText("q1 title?");
     expect(slot.queryByLabelText("Answer in your own words")).toBeNull();
-    fireEvent.click(slot.getAllByRole("button", { name: "Type an answer" })[0]!);
+    fireEvent.click(slot.getByRole("checkbox", { name: "Other" }));
     expect(slot.getByLabelText("Answer in your own words")).toBeTruthy();
     expect(slot.getAllByRole("button", { name: "Attach file or image" })).toHaveLength(1);
     expect(slot.getByRole("group", { name: "Confidence" })).toBeTruthy();
@@ -255,11 +312,11 @@ describe("Questions panel", () => {
     expect(slot.getByText("Unsent edits are not shown here.")).toBeTruthy();
   });
 
-  it("searches workspace files, toggles selection with keyboard and mouse, and keeps a pasted link", async () => {
+  it("searches workspace files, toggles selection with keyboard and mouse, and keeps selected badges above results", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1", { references: true })])] });
     const slot = mountPanel(server);
     await slot.findByText("q1 title?");
-    const input = slot.getByRole("combobox", { name: "Search files or paste a link" });
+    const input = slot.getByRole("combobox", { name: "Search files" });
     fireEvent.change(input, { target: { value: "app" } });
     const option = await slot.findByRole("option", { name: /app\.tsx/ });
     expect((option).textContent).toMatch("plugins/activity/app.tsx");
@@ -268,10 +325,8 @@ describe("Questions panel", () => {
     expect(within(slot.container).getAllByRole("button", { name: "app.tsx" })).toHaveLength(1);
     expect(slot.queryByRole("button", { name: /^Add$/ })).toBeNull();
 
-    fireEvent.change(input, { target: { value: "https://github.com/get-bb/bb/pull/1" } });
-    const link = await slot.findByRole("option", { name: /github\.com/ });
-    fireEvent.click(link);
-    expect(slot.getByRole("button", { name: "Remove https://github.com/get-bb/bb/pull/1" })).toBeTruthy();
+    const badges = slot.getByLabelText("Selected files");
+    expect(badges.compareDocumentPosition(slot.getByRole("listbox")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(slot.getByRole("button", { name: "Remove plugins/activity/app.tsx" }));
     expect(slot.queryByRole("button", { name: "Remove plugins/activity/app.tsx" })).toBeNull();
   });
@@ -330,7 +385,7 @@ describe("Message directive", () => {
     const slot = mountDirective(server, "r2");
     await slot.findByText("Two quick ones.");
     expect(slot.getByText("Q2")).toBeTruthy();
-    expect(slot.getByRole("button", { name: "Type an answer" })).toBeTruthy();
+    expect(slot.getByRole("radio", { name: "Other" })).toBeTruthy();
     expect(slot.queryByRole("button", { name: "Attach file or image" })).toBeNull();
     fireEvent.click(slot.getByLabelText("Yes"));
     expect(slot.queryByRole("button", { name: "+ detail" })).toBeNull();

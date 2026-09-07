@@ -51,7 +51,6 @@ export const questionSchema = z.object({
   id: z.string().min(1).max(64),
   title: z.string().trim().min(1).max(LIMITS.titleChars),
   help: z.string().max(LIMITS.helpChars).nullable(),
-  group: z.string().trim().max(120).nullable(),
   /** null means a text-only question. */
   select: z.enum(["single", "multiple"]).nullable(),
   options: z.array(questionOptionSchema).max(LIMITS.optionsPerQuestion),
@@ -104,6 +103,7 @@ export const referenceSchema = z.discriminatedUnion("kind", [
 export type Reference = z.infer<typeof referenceSchema>;
 
 export const answerSchema = z.object({
+  other: z.boolean().optional(),
   selected: z.array(z.string().max(64)).max(LIMITS.optionsPerQuestion),
   details: z.record(z.string().max(64), z.string().max(LIMITS.detailChars)),
   text: z.string().max(LIMITS.answerTextChars),

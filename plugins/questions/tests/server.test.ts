@@ -51,6 +51,21 @@ async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHos
 }
 
 describe("Questions backend", () => {
+  it("keeps an empty Other selection as a draft without submitting an empty answer", async () => {
+    const h = await setup();
+    const q = (await h.ask([{ title: "Choose?", options: ["A"] }])).questions[0]!;
+    await h.save(q, { ...emptyAnswer(), other: true });
+    expect((await h.state()).answers[0]!.draft?.other).toBe(true);
+    expect(await h.submit([q.id])).toMatchObject({ outcome: "nothing" });
+    await expect(h.save(q, { ...emptyAnswer(), other: true, selected: ["o1"] }, 1)).rejects.toThrow("Other cannot be combined");
+  });
+
+  it("does not send blank file searches to the host", async () => {
+    const h = await setup();
+    expect(await h.rpc("questions_search_paths", { threadId: "t", query: "  " })).toMatchObject({ hits: [], unavailable: null });
+    expect(h.harness.inspection.sdk.callsTo("environments.paths")).toHaveLength(0);
+  });
+
   it("migrates the old display mode without changing rounds or answers", async () => {
     const draft = { ...emptyAnswer(), text: "Unsent edit " };
     const submitted = { ...emptyAnswer(), text: "Original answer" };

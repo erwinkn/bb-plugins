@@ -39,7 +39,6 @@ export const askInputSchema = z.object({
       z.object({
         title: z.string().trim().min(1).max(LIMITS.titleChars),
         help: z.string().trim().max(LIMITS.helpChars).optional(),
-        group: z.string().trim().max(120).optional(),
         options: z
           .array(
             z.union([
@@ -178,7 +177,7 @@ export class QuestionsService {
       }));
       const select = options.length > 0 ? (item.select ?? "single") : null;
       if (mode === "inline") {
-        const advanced = ["help", "cites", "attachments", "references", "confidence", "group"].filter(
+        const advanced = ["help", "cites", "attachments", "references", "confidence"].filter(
           (key) => {
             const value = item[key as keyof typeof item];
             return Array.isArray(value) ? value.length > 0 : Boolean(value);
@@ -204,7 +203,6 @@ export class QuestionsService {
         id: this.newId("q"),
         title: item.title,
         help: item.help && item.help !== "" ? item.help : null,
-        group: item.group && item.group !== "" ? item.group : null,
         select,
         options,
         cites: [...new Set(cites)],
@@ -321,6 +319,7 @@ export class QuestionsService {
     }
     const selected = question.options.filter((option) => draft.selected.includes(option.id)).map((option) => option.id);
     if (question.select === "single" && selected.length > 1) throw new QuestionsError("Choose one option for this question.");
+    if (question.select === "single" && draft.other && selected.length > 0) throw new QuestionsError("Other cannot be combined with another single-choice option.");
     if (!question.attachments && draft.attachments.length || !question.references && draft.references.length || !question.confidence && draft.confidence !== null) {
       throw new QuestionsError("Draft uses controls this question does not offer.");
     }
@@ -349,6 +348,7 @@ export class QuestionsService {
       : [];
     return {
       selected,
+      ...(draft.other !== undefined ? { other: draft.other } : {}),
       details: draft.details,
       text: draft.text,
       attachments,
@@ -464,6 +464,7 @@ export class QuestionsService {
 
   async searchPaths(threadId: string, query: string): Promise<PathSearchResult> {
     const { environmentId, hostId } = await this.threadEnvironment(threadId);
+    if (query.trim() === "") return { environmentId, hostId, hits: [], truncated: false, unavailable: null };
     if (environmentId === null) {
       return { environmentId: null, hostId: null, hits: [], truncated: false, unavailable: "This thread has no workspace." };
     }

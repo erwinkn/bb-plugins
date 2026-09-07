@@ -103,7 +103,7 @@ const askToolSchema = z.object({
     .enum(["panel", "inline"])
     .default("panel")
     .describe(
-      'Where the user answers. "panel": the persistent Questions side panel, any number of questions, grouped, with optional attachments, references, confidence, and citations of earlier answers. "inline": a short card inside the thread, at most 5 questions, choices and free text only.',
+      'Where the user answers. "panel": the persistent Questions side panel, any number of questions, with optional attachments, references, confidence, and citations of earlier answers. "inline": a short card inside the thread, at most 5 questions, choices and free text only.',
     ),
   intro: z
     .string()
@@ -115,7 +115,6 @@ const askToolSchema = z.object({
       z.object({
         title: z.string().min(1).max(LIMITS.titleChars).describe("The question, as a full sentence."),
         help: z.string().max(LIMITS.helpChars).optional().describe("Optional context under the title."),
-        group: z.string().max(120).optional().describe("Side panel only: heading to group questions under."),
         options: z
           .array(z.string().min(1).max(LIMITS.optionChars))
           .max(LIMITS.optionsPerQuestion)

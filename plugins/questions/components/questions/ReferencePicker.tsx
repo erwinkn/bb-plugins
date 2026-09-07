@@ -23,17 +23,6 @@ function referenceIcon(reference: Reference): IconName {
   return "File";
 }
 
-/** A pasted link or path is selectable at once, even when search is offline. */
-function localCandidate(query: string): Candidate | null {
-  const trimmed = query.trim();
-  if (trimmed === "") return null;
-  if (/^https?:\/\/\S+$/i.test(trimmed)) return { reference: { kind: "url", url: trimmed }, name: trimmed, path: trimmed };
-  if (trimmed.includes("/")) {
-    return { reference: { kind: "custom", path: trimmed }, name: trimmed.split("/").pop() || trimmed, path: trimmed };
-  }
-  return null;
-}
-
 function sameReference(a: Reference, b: Reference): boolean {
   return referenceLabel(a) === referenceLabel(b) && a.kind === b.kind;
 }
@@ -107,12 +96,10 @@ export function ReferencePicker({
   const [serverHits, setServerHits] = useState<{ query: string; hits: Candidate[] }>({ query: "", hits: [] });
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
-  const extra = localCandidate(query);
   // Server hits count only when they answer the current query; a pasted
   // link or path is always selectable.
   const hits: Candidate[] = [
     ...(serverHits.query === query ? serverHits.hits : []),
-    ...(extra && !(serverHits.query === query && serverHits.hits.some((item) => item.path === extra.path)) ? [extra] : []),
   ];
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -122,6 +109,13 @@ export function ReferencePicker({
   const runSearch = useCallback(
     (value: string) => {
       const seq = (requestSeq.current += 1);
+      if (value.trim() === "") {
+        setSearching(false);
+        setUnavailable(null);
+        setServerHits({ query: value, hits: [] });
+        return;
+      }
+      setUnavailable(null);
       setSearching(true);
       search(value).then(
         (result) => {
@@ -193,7 +187,20 @@ export function ReferencePicker({
   const activeId = open && hits.length > 0 ? `${listId}-${active}` : undefined;
 
   return (
-    <div ref={rootRef} className="mt-2" data-picker={questionId}>
+    <div ref={rootRef} className="mt-2 w-full max-w-[28rem]" data-picker={questionId}>
+      <div className="rounded-md border border-border bg-background focus-within:ring-1 focus-within:ring-ring">
+      {references.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5 px-2 pt-2" aria-label="Selected files">
+          {references.map((reference) => (
+            <ReferenceBadge
+              key={`${reference.kind}:${referenceLabel(reference)}`}
+              reference={reference}
+              onOpen={() => openReference(reference)}
+              onRemove={() => onChange(references.filter((item) => item !== reference))}
+            />
+          ))}
+        </div>
+      ) : null}
       <div className="relative flex items-center">
         <Icon name="Search" className="pointer-events-none absolute left-2.5 size-4 text-[var(--subtle-foreground)]" />
         <input
@@ -203,10 +210,10 @@ export function ReferencePicker({
           aria-expanded={open}
           aria-controls={listId}
           aria-activedescendant={activeId}
-          aria-label="Search files or paste a link"
-          placeholder="Search files or paste a link"
+          aria-label="Search files"
+          placeholder="Search files"
           autoComplete="off"
-          className="w-full rounded-md border border-border bg-background py-2 pl-[34px] pr-[34px] text-[13px] text-foreground placeholder:text-[var(--subtle-foreground)] focus:border-[var(--input)] focus:outline-none focus:ring-1 focus:ring-ring"
+          className="w-full min-w-0 rounded-md border-0 bg-transparent py-2 pl-[34px] pr-[34px] text-[13px] text-foreground placeholder:text-[var(--subtle-foreground)] focus:outline-none"
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
@@ -252,6 +259,7 @@ export function ReferencePicker({
           <Icon name="ChevronDown" className="size-4" />
         </button>
       </div>
+      </div>
       {open ? (
         <div
           id={listId}
@@ -262,7 +270,7 @@ export function ReferencePicker({
         >
           {hits.length === 0 ? (
             <div className="p-2.5 text-[12px] text-[var(--subtle-foreground)]">
-              {searching || serverHits.query !== query ? "Searching…" : (unavailable ?? "No matching files")}
+              {query.trim() === "" ? "Type to search files" : searching || serverHits.query !== query ? "Searching…" : (unavailable ?? "No matching files")}
             </div>
           ) : (
             hits.map((candidate, index) => {
@@ -294,18 +302,6 @@ export function ReferencePicker({
               );
             })
           )}
-        </div>
-      ) : null}
-      {references.length > 0 ? (
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {references.map((reference) => (
-            <ReferenceBadge
-              key={`${reference.kind}:${referenceLabel(reference)}`}
-              reference={reference}
-              onOpen={() => openReference(reference)}
-              onRemove={() => onChange(references.filter((item) => item !== reference))}
-            />
-          ))}
         </div>
       ) : null}
     </div>
