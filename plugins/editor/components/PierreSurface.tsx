@@ -1,10 +1,11 @@
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { CSSProperties, Ref } from "react";
-import type { CodeView, CodeViewItem, CodeViewOptions, FileContents } from "@pierre/diffs";
+import type { CodeView, CodeViewItem, CodeViewOptions } from "@pierre/diffs";
 import type { Editor, EditorFocusOptions, EditorKeymap, EditorViewState } from "@pierre/diffs/edit";
 import { loadPierre, type PierreRuntime } from "@/lib/pierre-loader";
 import { applyPierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
 import { cn } from "@/lib/utils";
+import { createPierreItem } from "@/lib/pierre-item";
 
 /** Where the caret goes when the surface takes focus. */
 export interface PierreFocusTarget {
@@ -116,6 +117,7 @@ interface SurfaceState {
   view: CodeView;
   /** Identity of the document on screen. A change means a different file. */
   docKey: string;
+  itemType: "file" | "diff";
   /** Bumped for every item replacement, so Pierre reconciles and re-caches. */
   version: number;
   epoch: number;
@@ -147,6 +149,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   const { baseUrl, className, style, fontSize, lineHeight, fontFamily, tabSize, ref } = props;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<PierreSurfaceStatus>({ kind: "loading" });
+  const [fileComparison, setFileComparison] = useState(false);
   const stateRef = useRef<SurfaceState | null>(null);
   // Pierre's callbacks outlive the render that created them, so they read the
   // current props from here instead of closing over that render's values.
@@ -178,10 +181,13 @@ export default function PierreSurface(props: PierreSurfaceProps) {
         );
         created = view;
         const version = ++cacheRevision;
+        const item = buildItem(runtime, props, version, null);
+        setFileComparison(props.oldContent !== undefined && item.type === "file");
         stateRef.current = {
           runtime,
           view,
           docKey: documentKey(props),
+          itemType: item.type,
           version,
           epoch: props.epoch,
           readyEditor: null,
@@ -190,7 +196,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           editableOverride: null,
         };
         view.setup(host);
-        view.setItems([buildItem(runtime, props, version, null)]);
+        view.setItems([item]);
         // setItems schedules rendering. It does not mean that the file, its
         // highlighter, or the editable DOM exists yet. The callbacks below
         // report readiness after Pierre actually renders or attaches.
@@ -244,7 +250,10 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       state.publish({ kind: "loading" });
       // setItems removes the old record, which ends its edit session and
       // releases its editor and undo history.
-      state.view.setItems([buildItem(state.runtime, latest.current, state.version, null)]);
+      const item = buildItem(state.runtime, latest.current, state.version, null);
+      state.itemType = item.type;
+      setFileComparison(props.oldContent !== undefined && item.type === "file");
+      state.view.setItems([item]);
       return;
     }
     const sameEpoch = props.epoch === state.epoch;
@@ -256,7 +265,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       if (props.epochAuthor === props.viewId) return;
     }
     state.version = ++cacheRevision;
-    state.view.updateItem(buildItem(state.runtime, latest.current, state.version, state.editableOverride));
+    state.view.updateItem(buildItem(state.runtime, latest.current, state.version, state.editableOverride, state.itemType));
   }, [docKey, props.epoch, props.epochAuthor, props.readOnly, props.viewId, status.kind]);
 
   // A changed readOnly prop takes back any imperative override.
@@ -283,7 +292,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
         if (state === null) return;
         state.editableOverride = editable;
         state.version = ++cacheRevision;
-        state.view.updateItem(buildItem(state.runtime, latest.current, state.version, editable));
+        state.view.updateItem(buildItem(state.runtime, latest.current, state.version, editable, state.itemType));
       },
       focus: (target) => {
         const state = stateRef.current;
@@ -317,8 +326,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
 
   return (
     <div
-      ref={hostRef}
-      className={cn("relative h-full w-full min-h-0", className)}
+      className={cn("relative flex h-full w-full min-h-0 flex-col", className)}
       style={cssVariables(style, { fontSize, lineHeight, fontFamily, tabSize })}
       data-pierre-status={status.kind}
       onKeyDown={(event) => {
@@ -329,7 +337,16 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           latest.current.onSave?.();
         }
       }}
-    />
+    >
+      {fileComparison ? (
+        <div className="shrink-0 border-b border-border/50 px-3 py-1.5 text-xs text-muted-foreground">
+          {props.content === "" && props.oldContent === null ? "Empty added file" :
+            props.content === null && props.oldContent === "" ? "Empty deleted file" :
+              props.content === props.oldContent ? "No text changes · File contents" : "File contents"}
+        </div>
+      ) : null}
+      <div ref={hostRef} className="relative min-h-0 w-full flex-1 overflow-auto" />
+    </div>
   );
 }
 
@@ -454,32 +471,20 @@ function buildItem(
   props: PierreSurfaceProps,
   version: number,
   editableOverride: boolean | null,
+  renderType?: "file" | "diff",
 ): CodeViewItem<undefined> {
   const id = itemIdOf(props);
-  const deleted = props.content === null;
-  // A deleted file has no writable side at all, so no override can edit it.
-  const edit = !deleted && (editableOverride ?? props.readOnly !== true);
-  const newFile: FileContents | null = deleted
-    ? null
-    : { name: props.name, contents: props.content ?? "", cacheKey: `${CACHE_NAMESPACE}\0${id}\0new\0${version}` };
-  if (props.oldContent === undefined) {
-    return {
-      id,
-      type: "file",
-      file: newFile ?? { name: props.name, contents: "", cacheKey: `${CACHE_NAMESPACE}\0${id}\0new\0${version}` },
-      version,
-      edit,
-    };
-  }
-  const oldFile: FileContents | null =
-    props.oldContent === null
-      ? null
-      : {
-          name: props.oldName ?? props.name,
-          contents: props.oldContent,
-          cacheKey: `${CACHE_NAMESPACE}\0${id}\0old\0${version}`,
-        };
-  return { id, type: "diff", fileDiff: runtime.parseDiffFromFile(oldFile, newFile), version, edit };
+  return createPierreItem({
+    id,
+    name: props.name,
+    oldName: props.oldName,
+    content: props.content,
+    oldContent: props.oldContent,
+    cachePrefix: `${CACHE_NAMESPACE}\0${id}`,
+    version,
+    editable: editableOverride ?? props.readOnly !== true,
+    renderType,
+  }, runtime.parseDiffFromFile);
 }
 
 function editorOf(state: SurfaceState | null): Editor | null {
