@@ -48,3 +48,24 @@ The user requested this revision in the same branch and PR on 7 September.
 Verdict: suitable for the existing draft and local user test. Physical desktop
 and mobile microphone continuity remains unverified. No new branch, PR, merge,
 or session-data reset is part of this revision.
+
+## Unified sessions and speech follow-up
+
+The user approved implementation and reload of the session and speech proposals.
+These are the remaining implementation choices for that iteration.
+
+| Decision | Alternative | Confidence | Failure case |
+| --- | --- | --- | --- |
+| Keep native VAD settings; add response IDs, monotonic timing, and matching playback handling. | Tune silence thresholds without a new trace. | Medium | A false VAD turn may still interrupt speech. The next physical test must establish its cause. |
+| Give the bridge the acknowledgment after the original tool response settles, unless that response already spoke. | Let both models decide when to acknowledge. | High for bridge behavior; medium for live model compliance | A realtime model may ignore the silent-delegation instruction and speak more than requested in its initial response. The bridge does not add another acknowledgment. |
+| Keep request progress in diagnostics and accept one final reply per request. Preserve clarification and digest delivery. | Speak useful interim progress on a timer. | Medium | Long tasks are quiet until a question or final answer arrives. A changed answer needs a new request rather than a second final for the old request. |
+| Use titles and runtime status in a 30-item overview from the 200 most recent threads and the existing 30-minute window. | Read many thread transcripts for every overview. | Medium | Old blocked work outside the window may be absent; titles can be stale. The tool states its scope and does not certify completion. |
+| Group calls using recorded conversation IDs, request receipts, and a new call relation. Adopt standalone legacy calls only when Continue is selected. | Rewrite old event records or assign a coordinator while browsing. | High | An old call with no recorded association remains separate until explicitly continued. |
+| Retain unknown playback for old assistant transcript rows. Do not merge by matching words. | Infer delivery from adjacent reply text. | High | An older transcript cannot prove which audio reached the speaker. Diagnostics retain the requested reply text. |
+| Use 40-session pages and read-only aggregation over retained history. | Add a separate materialized session index immediately. | Medium | Large histories cost more to list; no records are dropped. |
+| Embed the coordinator thread in its secondary session tab; work-thread inspection remains within Voice. | Navigate to the hidden thread's main page. | High | Native embedded interaction rendering still needs a physical device test. |
+
+Validation covers deterministic backend, realtime-event, transcript projection,
+and rendered React flows. It does not measure the next physical call's latency
+or prove that acoustic interruptions are resolved. I stand behind this as a
+draft for the requested testing, with those limits stated.

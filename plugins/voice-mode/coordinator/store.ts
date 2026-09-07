@@ -122,6 +122,8 @@ export const COORDINATOR_MIGRATIONS: string[] = [
     updated_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_voice_questions_conversation ON voice_questions (conversation_id, status)`,
+  `CREATE TABLE IF NOT EXISTS voice_conversation_calls (call_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL)`,
+
 ];
 
 export const conversationStateSchema = z

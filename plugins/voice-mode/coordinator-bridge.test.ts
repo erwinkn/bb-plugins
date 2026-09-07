@@ -223,6 +223,7 @@ test("background digests need the full idle gate, and interrupting one preserves
   // A pending handoff blocks unrelated background speech.
   speak(dc, "item_9");
   delegate(dc, "resp_9", "call_9", { request: "what's running" });
+  dc.emit("response.output_audio_transcript.done", {response_id:"resp_9",transcript:"On it."});
   await settle();
   agent.ingestCoordinatorSignal("voice-reply", reply({ replyId: "reply_u", kind: "update", batchId: "batch_1", speech: "Docs failed on the build script." }));
   tick(2500);
@@ -314,4 +315,75 @@ test("a background digest cannot open a work-thread view even with a presentatio
   assert.equal(dc.bridgeResponses().length, 1);
   assert.equal(calls.some(call => call.method === "resolveThreadViews" || call.method === "applyPresentation"), false);
   assert.equal(agent.getState(), "live");
+});
+
+test("delegation emits one bridge acknowledgment with no model tool follow-up, then one final answer", async (t) => {
+  const {agent,dc,submits,reply,deliveries,logs,tick} = await coordinatorFixture(t);
+  speak(dc,"ack_input");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"ack_input",transcript:"Check the current threads."});
+  const before = dc.responses().length;
+  delegate(dc,"ack_tool","ack_call",{request:"Check the current threads."});
+  await settle();
+  assert.equal(dc.responses().length,before,"tool output cannot ask the model for another acknowledgment");
+  dc.emit("response.done",{response:{id:"ack_tool",status:"completed",output:[{type:"function_call"}]}});
+  await settle(); tick(1);
+  const ack = dc.bridgeResponses().at(-1)!;
+  assert.match(ack.response.metadata.bb_reply_id,/^local_ack_/);
+  assert.equal(ack.response.input[0].content[0].text,"On it.");
+  dc.emit("response.created",{response:{id:"ack_audio",metadata:ack.response.metadata}});
+  dc.emit("output_audio_buffer.started",{response_id:"ack_audio"});
+  dc.emit("response.output_audio_transcript.done",{response_id:"ack_audio",item_id:"ack_output",transcript:"On it."});
+  dc.emit("response.done",{response:{id:"ack_audio",status:"completed",output:[{type:"message"}]}});
+  const requestId = submits()[0].requestId;
+  agent.ingestCoordinatorSignal("voice-reply",reply({requestId,replyId:"answer"}));
+  assert.equal(dc.bridgeResponses().length,1,"the answer waits for acknowledgment playback");
+  dc.emit("output_audio_buffer.stopped",{response_id:"ack_audio"}); tick(1);
+  assert.equal(dc.bridgeResponses().length,2);
+  assert.equal(dc.bridgeResponses()[1].response.metadata.bb_reply_id,"answer");
+  assert.equal(deliveries().length,0,"a local acknowledgment is not a stored coordinator reply");
+  await settle();
+  assert.ok(logs.some(row => row.kind === "assistant" && row.payload.source === "acknowledgment" && row.payload.requestId === requestId));
+});
+
+test("a spoken preamble consumes the single acknowledgment and stale audio cannot finish a later reply", async (t) => {
+  const {agent,dc,reply,deliveries,tick} = await coordinatorFixture(t);
+  speak(dc,"u_ack");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"u_ack",transcript:"Check."});
+  delegate(dc,"preamble","preamble_call",{request:"Check."});
+  dc.emit("response.output_audio_transcript.done",{response_id:"preamble",transcript:"Checking."});
+  await settle();
+  dc.emit("response.done",{response:{id:"preamble",status:"completed",output:[{type:"function_call"},{type:"message"}]}});
+  await settle(); tick(1);
+  assert.equal(dc.bridgeResponses().length,0);
+  agent.ingestCoordinatorSignal("voice-reply",reply({replyId:"first"})); tick(1);
+  dc.emit("response.created",{response:{id:"first_audio",metadata:dc.bridgeResponses()[0].response.metadata}});
+  dc.emit("output_audio_buffer.started",{response_id:"first_audio"});
+  dc.emit("response.done",{response:{id:"first_audio",status:"completed"}});
+  dc.emit("output_audio_buffer.stopped",{response_id:"first_audio"});
+  agent.ingestCoordinatorSignal("voice-reply",reply({replyId:"second"})); tick(1);
+  dc.emit("response.created",{response:{id:"second_audio",metadata:dc.bridgeResponses()[1].response.metadata}});
+  dc.emit("output_audio_buffer.started",{response_id:"second_audio"});
+  dc.emit("output_audio_buffer.cleared",{response_id:"first_audio"});
+  dc.emit("response.done",{response:{id:"first_audio",status:"cancelled"}});
+  await settle();
+  assert.equal(deliveries().filter(row => row.replyId === "second" && row.state !== "playing").length,0);
+  dc.emit("response.done",{response:{id:"second_audio",status:"completed"}});
+  dc.emit("output_audio_buffer.stopped",{response_id:"second_audio"});
+  await settle();
+  assert.equal(deliveries().at(-1)?.state,"delivered");
+  assert.equal(deliveries().at(-1)?.replyId,"second");
+});
+
+test("interruption before response.created cancels the late bridge response instead of adopting it", async (t) => {
+  const {agent,dc,reply,deliveries,tick} = await coordinatorFixture(t);
+  agent.ingestCoordinatorSignal("voice-reply",reply({replyId:"before_audio"})); tick(1);
+  const metadata = dc.bridgeResponses()[0].response.metadata;
+  dc.emit("input_audio_buffer.speech_started",{item_id:"correction"});
+  dc.emit("response.created",{response:{id:"late_audio",metadata}});
+  dc.emit("output_audio_buffer.started",{response_id:"late_audio"});
+  dc.emit("response.done",{response:{id:"late_audio",status:"cancelled"}});
+  await settle();
+  assert.ok(dc.sent.some(event=>event.type === "response.cancel" && event.response_id === "late_audio"));
+  assert.equal(deliveries().filter(row=>row.replyId === "before_audio" && row.state === "playing").length,0);
+  assert.equal(deliveries().at(-1)?.state,"interrupted");
 });

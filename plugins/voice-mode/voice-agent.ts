@@ -254,6 +254,13 @@ export class VoiceAgent {
   private conversationChangedAt = 0;
   /** The next start() opens a separate logical conversation. */
   private startNewConversation = false;
+  private nextConversationId: string | undefined;
+  private logicalConversationId: string | null = null;
+  private delegatedTurn: number | null = null;
+  private spokenTurns = new Set<number>();
+  private playbackResponseId: string | null = null;
+  private interruptedResponses = new Set<string>();
+  private responseIdentity = new Map<string, { userTurn: number; requestId: string | null; replyId: string | null; source: string }>();
   /** end_call was requested; the call ends once the goodbye has played. */
   private endCallAfterResponse = false;
 
@@ -366,9 +373,28 @@ export class VoiceAgent {
   }
 
   /** Start the next call in a fresh logical conversation instead of resuming. */
-  startConversationFresh() {
-    this.startNewConversation = true;
-    if (!this.hasLocalCall() && !this.remotePresenceLive()) void this.start();
+  startConversationFresh() { this.startConversation(); }
+
+  getConversationId = (): string | null => this.logicalConversationId;
+
+  startConversation(conversationId?: string): void {
+    if (this.hasLocalCall() || this.remotePresenceLive()) {
+      toast.error("End the current call before starting or continuing a session.");
+      return;
+    }
+    this.nextConversationId = conversationId;
+    this.startNewConversation = !conversationId;
+    void this.start();
+  }
+
+  private settleDelegatedTurn() {
+    const turn = this.delegatedTurn;
+    if (turn === null || this.responseActive || this.pendingToolCalls > 0) return;
+    this.delegatedTurn = null;
+    if (turn !== this.userTurn || this.userSpeaking) return;
+    this.userTurnPending = false;
+    this.userTurnCommitted = false;
+    this.bridge?.acknowledge(turn, this.spokenTurns.has(turn));
   }
 
   /** Coordinator replies, inbox notices, and questions published by the server. */
@@ -1087,11 +1113,14 @@ export class VoiceAgent {
         throw new Error("No bb surface is bound right now.");
       } else if (this.bridge && name === "delegate_to_coordinator") {
         output = this.bridge.delegate(callId, args);
+        requestResponseAfter = false;
+        this.delegatedTurn = this.userTurn;
         status = "success";
         label = "Delegated to the coordinator";
         this.refreshBridgeSnapshot();
       } else if (this.bridge && name === "remain_silent") {
         output = this.bridge.remainSilent();
+        this.delegatedTurn = this.userTurn;
         status = "success";
         requestResponseAfter = false;
       } else if (this.bridge && name === "end_call") {
@@ -1273,11 +1302,19 @@ export class VoiceAgent {
     this.log("session.started", { ...bindings.context, device: deviceSummary() });
     let acquiredStream: MediaStream | null = null;
     try {
+      this.delegatedTurn = null;
+      this.spokenTurns.clear();
+      this.interruptedResponses.clear();
+      this.responseIdentity.clear();
+      this.playbackResponseId = null;
+      const selectedConversationId = this.nextConversationId;
+      this.nextConversationId = undefined;
       const newConversation = this.startNewConversation;
       this.startNewConversation = false;
       const claim = await bindings.rpc.call("claimCall", {
         nonce,
         newConversation,
+        ...(selectedConversationId ? {conversationId: selectedConversationId} : {}),
         threadId: bindings.context.threadId,
         projectId: bindings.context.projectId,
       });
@@ -1288,6 +1325,8 @@ export class VoiceAgent {
       }
       this.callSequence = sequence;
       const conversationId = claim.conversationId;
+      this.logicalConversationId = claim.voiceSessionId ?? conversationId ?? nonce;
+      this.emitChange();
       if (conversationId) this.log("coordinator.conversation", { conversationId, resumed: claim.resumed, queuedUpdates: claim.queuedUpdates, newConversation });
       const newerClaim = this.newerClaim as { nonce: string; sequence: number } | null;
       if (newerClaim) this.onCallStarted(newerClaim.nonce, newerClaim.sequence);
@@ -1459,34 +1498,70 @@ export class VoiceAgent {
         }
         const type = String(event.type ?? "");
         const bridge = this.bridge;
+        const responseData = event.response as Record<string, unknown> | undefined;
+        const eventResponseId = typeof event.response_id === "string" ? event.response_id : typeof responseData?.id === "string" ? responseData.id : null;
+        if (/^(input_audio_buffer\.|output_audio_buffer\.|response\.(created|done))/.test(type) || type === "conversation.item.input_audio_transcription.failed") {
+          this.log("realtime.event", { eventType: type, responseId: eventResponseId, itemId: event.item_id ?? null,
+            userTurn: this.userTurn, monotonicMs: performance.now(), status: responseData?.status ?? null,
+            statusDetails: responseData?.status_details ?? null, activeResponseId: this.activeResponseId, playbackResponseId: this.playbackResponseId });
+        }
         if (type === "response.created") {
           const response = event.response as Record<string, unknown> | undefined;
           const metadata = response?.metadata as Record<string, unknown> | undefined;
           this.activeResponseId = typeof response?.id === "string" ? response.id : null;
           const bridgeOwned = !!bridge && bridge.ownsResponse(this.activeResponseId, metadata);
+          if (bridge && metadata?.bb_voice_source === "coordinator_reply" && !bridge.speechIdentity(this.activeResponseId)) {
+            const staleId = this.activeResponseId;
+            if (staleId) this.interruptedResponses.add(staleId);
+            dc.send(JSON.stringify({type:"response.cancel",response_id:staleId}));
+            this.log("response.ignored", {responseId:staleId,replyId:metadata.bb_reply_id,reason:"reply was interrupted or replaced before generation started"});
+            this.activeResponseId = null;
+            this.setResponseActive(false);
+            this.scheduleNoticeDrain();
+            return;
+          }
           const background = !!metadata?.bb_voice_source || bridgeOwned;
+          if (this.activeResponseId) {
+            const identity = bridge?.speechIdentity(this.activeResponseId);
+            this.responseIdentity.set(this.activeResponseId, {userTurn:this.userTurn, requestId:identity?.requestId ?? null, replyId:identity?.replyId ?? null, source:identity?.source ?? (background ? "background" : "realtime")});
+            if (this.responseIdentity.size > 300) {
+              const oldest = this.responseIdentity.keys().next().value!;
+              this.responseIdentity.delete(oldest); this.interruptedResponses.delete(oldest);
+            }
+          }
           if (this.activeResponseId && !background) this.toolResponseIds.add(this.activeResponseId);
           this.responseUserTurn = this.userTurnPending && this.userTurnCommitted && !this.userSpeaking && !background ? this.userTurn : null;
           this.setResponseActive(true);
           this.scheduleNoticeDrain();
         } else if (type === "output_audio_buffer.started") {
-          this.setAssistantSpeaking(true); // audio is now actually playing
-          bridge?.onAudioStarted();
+          const id = eventResponseId ?? this.activeResponseId;
+          if (!id || !this.responseIdentity.has(id) || this.interruptedResponses.has(id)) return;
+          this.playbackResponseId = id;
+          this.setAssistantSpeaking(true);
+          const identity = this.responseIdentity.get(id)!;
+          if (identity.source === "realtime") this.spokenTurns.add(identity.userTurn);
+          this.log("speech.lifecycle", {responseId:id,state:"started",...identity,monotonicMs:performance.now()});
+          bridge?.onAudioStarted(id);
           this.scheduleNoticeDrain();
-        } else if (type === "output_audio_buffer.stopped") {
-          this.setAssistantSpeaking(false); // playback finished
-          bridge?.onAudioStopped();
+        } else if (type === "output_audio_buffer.stopped" || type === "output_audio_buffer.cleared") {
+          const id = eventResponseId ?? this.playbackResponseId;
+          if (!id || id !== this.playbackResponseId) return;
+          this.log("speech.lifecycle", {responseId:id,state:type.endsWith("stopped") ? "delivered" : "interrupted",...this.responseIdentity.get(id),monotonicMs:performance.now()});
+          this.interruptedResponses.add(id);
+          this.playbackResponseId = null;
+          this.setAssistantSpeaking(false);
+          if (type.endsWith("stopped")) bridge?.onAudioStopped(id); else bridge?.onAudioCleared(id);
           if (this.endCallAfterResponse && !this.responseActive) { this.stop(); return; }
-          this.scheduleNoticeDrain();
-        } else if (type === "output_audio_buffer.cleared") {
-          this.setAssistantSpeaking(false); // playback interrupted
-          bridge?.onAudioCleared();
           this.scheduleNoticeDrain();
         } else if (type === "input_audio_buffer.speech_started") {
           this.userTurn += 1;
           this.userTurnPending = true;
           this.userTurnCommitted = false;
           this.setUserSpeaking(true);
+          if (this.activeResponseId) this.interruptedResponses.add(this.activeResponseId);
+          if (this.playbackResponseId) this.interruptedResponses.add(this.playbackResponseId);
+          if (this.playbackResponseId) this.log("speech.lifecycle", {responseId:this.playbackResponseId,state:"interrupted",...this.responseIdentity.get(this.playbackResponseId),monotonicMs:performance.now(),reason:"user-speech"});
+          this.playbackResponseId = null;
           bridge?.onSpeechStarted();
           this.scheduleNoticeDrain();
           // Belt-and-suspenders: a new user turn always clears "Aide speaking",
@@ -1517,12 +1592,13 @@ export class VoiceAgent {
             .finally(() => {
               if (this.session !== session) return;
               this.pendingToolCalls -= 1;
+              this.settleDelegatedTurn();
               this.markConversationChange();
               this.scheduleNoticeDrain();
             });
         } else if (type === "conversation.item.input_audio_transcription.completed") {
           const text = String(event.transcript ?? "").trim();
-          if (text) this.log("user", { text, itemId: event.item_id ?? null });
+          if (text) this.log("user", { text, itemId: event.item_id ?? null, userTurn: this.userTurn });
           bridge?.onTranscript(String(event.item_id ?? ""), text);
           this.refreshBridgeSnapshot();
         } else if (
@@ -1530,7 +1606,11 @@ export class VoiceAgent {
           type === "response.audio_transcript.done"
         ) {
           const text = String(event.transcript ?? "").trim();
-          if (text) this.log("assistant", { text });
+          if (text) {
+            const identity = eventResponseId ? this.responseIdentity.get(eventResponseId) : undefined;
+            if (identity?.source === "realtime") this.spokenTurns.add(identity.userTurn);
+            this.log("assistant", {text,responseId:eventResponseId,itemId:event.item_id ?? null,userTurn:this.userTurn,...identity});
+          }
         } else if (type === "response.done") {
           const response = event.response as Record<string, unknown> | undefined;
           if (typeof response?.id === "string") this.toolResponseIds.delete(response.id);
@@ -1544,6 +1624,7 @@ export class VoiceAgent {
             }
             this.activeResponseId = null;
             this.setResponseActive(false);
+            this.settleDelegatedTurn();
             if (this.endCallAfterResponse && !hasToolCalls && !this.assistantSpeaking) { this.stop(); return; }
             if (this.responsePending) {
               this.responsePending = false;

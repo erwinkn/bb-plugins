@@ -150,7 +150,7 @@ test("a hidden coordinator starts once in the personal environment with plugin a
   assert.equal(world.sends[1].mode, "queue-if-active");
   // Initial tool selection works before the mapping exists, through origin + title.
   const fresh = await harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "thr_unknown", title: `${COORDINATOR_TITLE_PREFIX}conv_x` }, origin: { kind: null, pluginId: "voice-mode" } }));
-  assert.deepEqual(fresh.tools.map((tool) => tool.name).sort(), ["voice_ask", "voice_reply"]);
+  assert.deepEqual(fresh.tools.map((tool) => tool.name).sort(), ["voice_ask", "voice_overview", "voice_reply"]);
   assert.match(fresh.instructions ?? "", /Never turn a question/);
   const worker = await harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "thr_worker", title: "Fix CI" }, origin: { kind: null, pluginId: null } }));
   assert.deepEqual(worker.tools, []);
@@ -200,7 +200,7 @@ test("voice_reply is validated against the stored coordinator mapping and final 
   await idle(coordinatorId(), null); // bootstrap settles; r_1 was queued behind it
   const progress = await harness.behavior.callAgentTool("voice_reply", { request_id: "r_1", kind: "progress", speech: "Checking the speech thread." }, { threadId: coordinatorId() });
   assert.match(String(progress), /Recorded progress/);
-  assert.equal(replies().filter((reply) => reply.requestId === "r_1").length, 1, "progress is published at once");
+  assert.equal(replies().filter((reply) => reply.requestId === "r_1").length, 0, "progress is diagnostic-only; the bridge owns acknowledgment");
   await harness.behavior.callAgentTool("voice_reply", {
     request_id: "r_1", kind: "final", speech: "Archived the old speech thread.", thread_ids: ["thr_speech"],
     receipts: [{ action: "archive", thread_id: "thr_speech", outcome: "done" }], state: { discussed_thread_id: "thr_speech", topic: "speech thread cleanup" },
@@ -211,6 +211,7 @@ test("voice_reply is validated against the stored coordinator mapping and final 
   assert.equal(finals.length, 1);
   assert.equal(finals[0].source, "tool");
   assert.deepEqual(finals[0].receipts, [{ action: "archive", thread_id: "thr_speech", outcome: "done" }]);
+  await harness.behavior.callAgentTool("voice_reply", {request_id:"r_1",kind:"final",speech:"Duplicate."}, {threadId:coordinatorId()});
   // No fallback is spoken beside the structured reply, and a second idle does not repeat it.
   await idle(coordinatorId(), "Archived thr_speech.");
   assert.equal(replies().filter((reply) => reply.requestId === "r_1" && reply.kind === "final").length, 1);
@@ -521,4 +522,52 @@ test("missing transcription cannot execute the voice model's interpretation, eve
   assert.equal((await rpc("retryRequest", { requestId: "r_partial" })).status, "failed");
   assert.equal(world.sends.length, 0);
   assert.equal(world.spawns, 0);
+});
+
+test("logical sessions retain all calls, selection is read-only, and explicit continuation reuses its coordinator", async (t) => {
+  const {harness,rpc,claim,envelope,coordinatorId,world} = await enabledHost();
+  t.after(()=>harness.lifecycle.dispose());
+  const first = await claim("history-call-1",{newConversation:true});
+  await rpc("logEvent",{sessionId:"history-call-1",kind:"user",payload:{text:"First conversation"}});
+  await rpc("submitRequest",{envelope:envelope(first.conversationId,"history-call-1","history_request","Check threads.")});
+  const firstCoordinator = coordinatorId();
+  await rpc("forceStop",{nonce:"history-call-1"});
+  const second = await claim("history-call-2",{newConversation:true});
+  await rpc("logEvent",{sessionId:"history-call-2",kind:"user",payload:{text:"Second conversation"}});
+  const spawnsBefore = world.spawns;
+  const selected = await rpc("getVoiceSession",{sessionId:first.conversationId});
+  assert.deepEqual(selected.session.callIds,["history-call-1"]);
+  assert.equal(world.spawns,spawnsBefore,"viewing a session starts no work");
+  await assert.rejects(claim("blocked-call",{conversationId:first.conversationId}),/End the current call/);
+  await rpc("forceStop",{nonce:"history-call-2"});
+  const resumed = await claim("history-call-3",{conversationId:first.conversationId});
+  assert.equal(resumed.conversationId,first.conversationId);
+  await rpc("logEvent",{sessionId:"history-call-3",kind:"user",payload:{text:"Continue first"}});
+  const history = await rpc("getVoiceSession",{sessionId:first.conversationId});
+  assert.equal(history.session.coordinatorThreadId,firstCoordinator);
+  assert.deepEqual(history.session.callIds,["history-call-1","history-call-3"]);
+  assert.equal(history.events.filter((event:Any)=>event.kind === "user").length,2);
+  assert.ok((await rpc("listVoiceSessions",null)).sessions.some((row:Any)=>row.id===second.conversationId));
+  await rpc("forceStop",{nonce:"history-call-3"});
+  await rpc("logEvent",{sessionId:"legacy-call",kind:"user",payload:{text:"Old call"}});
+  const old = await rpc("getVoiceSession",{sessionId:"legacy-call"});
+  assert.equal(old.session.legacy,true);
+  const adopted = await claim("adopted-call",{conversationId:"legacy-call"});
+  assert.notEqual(adopted.conversationId,"legacy-call");
+  assert.equal((await rpc("getVoiceSession",{sessionId:adopted.conversationId})).events[0].callId,"legacy-call");
+});
+
+test("the overview tool is coordinator-only and returns a bounded fresh snapshot without reading timelines", async (t) => {
+  const {harness,rpc,claim,envelope,coordinatorId,world} = await enabledHost();
+  t.after(()=>harness.lifecycle.dispose());
+  const {conversationId} = await claim("overview-call");
+  await rpc("submitRequest",{envelope:envelope(conversationId,"overview-call","overview_request","What is active?")});
+  for (let n=0;n<40;n++) world.threads.set(`work_${n}`,makeThreadResponse({id:`work_${n}`,title:`Work ${n}`,projectId:"proj_app",status:"active",updatedAt:Date.now(),runtime:{displayStatus:"active",hostReconnectGraceExpiresAt:null}}));
+  const rejected = await harness.behavior.callAgentTool("voice_overview",{}, {threadId:"work_0"}) as Any;
+  assert.equal(rejected.isError,true);
+  const before = harness.inspection.sdk.callsTo("threads.timeline").length;
+  const result = JSON.parse(String(await harness.behavior.callAgentTool("voice_overview",{}, {threadId:coordinatorId()})));
+  assert.equal(result.threads.length,30); assert.equal(result.truncated,true);
+  assert.ok(Math.abs(Date.now()-result.asOf)<1000);
+  assert.equal(harness.inspection.sdk.callsTo("threads.timeline").length,before);
 });

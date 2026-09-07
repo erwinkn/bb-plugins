@@ -1,9 +1,9 @@
-// Coordinator controls: the Voice page card (open the hidden coordinator,
-// pending work, the current question, watched threads, New conversation), the
-// native pending-question form, and the settings section for the dedicated
-// coordinator provider/model.
-import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { useRealtime, useRpc, type PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
+// Coordinator controls: the session-scoped Coordinator debug view (open the
+// hidden coordinator, pending work, the current question, watched threads),
+// the native pending-question form, and the settings section for the
+// dedicated coordinator provider/model.
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { ThreadChat, useRealtime, useRpc, type PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { Button } from "./components/ui/button";
@@ -23,18 +23,29 @@ type Status = Awaited<ReturnType<ReturnType<typeof useRpc<typeof rpcContract>>["
   conversations: { id: string; createdAt: number; updatedAt: number; status: string; coordinatorThreadId: string | null; current: boolean }[];
 };
 
-function useCoordinatorStatus() {
+/**
+ * Coordinator status for ONE logical session. Scoped by conversation id so the
+ * debug view always describes the session being inspected, never the global
+ * current conversation. A late result for a previous id is dropped.
+ */
+function useCoordinatorStatus(conversationId: string | null) {
   const rpc = useRpc<typeof rpcContract>();
   const [status, setStatus] = useState<Status | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const request = useRef(0);
   const refetch = useCallback(() => {
-    rpc.call("getCoordinatorStatus", null).then(
-      (next) => { setStatus(next as Status); setError(null); },
-      (cause) => setError(cause instanceof Error ? cause.message : String(cause)),
+    const id = ++request.current;
+    if (!conversationId) { setStatus(null); return; }
+    rpc.call("getCoordinatorStatus", { conversationId }).then(
+      (next) => { if (id !== request.current) return; setStatus(next as Status); setError(null); },
+      (cause) => { if (id !== request.current) return; setError(cause instanceof Error ? cause.message : String(cause)); },
     );
-  }, [rpc]);
-  useEffect(refetch, [refetch]);
-  useRealtime("voice-coordinator", refetch);
+  }, [rpc, conversationId]);
+  useEffect(() => { setStatus(null); refetch(); return () => { request.current += 1; }; }, [refetch]);
+  useRealtime("voice-coordinator", (payload) => {
+    const changed = (payload as { conversationId?: unknown } | null)?.conversationId;
+    if (!conversationId || typeof changed !== "string" || changed === conversationId) refetch();
+  });
   useRealtime("config-changed", refetch);
   return { status, error, refetch, rpc };
 }
@@ -117,15 +128,32 @@ export function VoiceQuestionInteraction({ interaction, submit, cancel }: Plugin
   );
 }
 
-/** The Voice page card: inspection and recovery for the hidden coordinator. */
-export function CoordinatorCard() {
-  const { status, error, refetch, rpc } = useCoordinatorStatus();
-  const callState = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
+/**
+ * The session-scoped Coordinator debug view: the hidden coordinator behind ONE
+ * logical session, labelled for debugging. It never opens anything by itself.
+ */
+export function CoordinatorCard({ conversationId, legacy = false }: { conversationId: string | null; legacy?: boolean }) {
+  const { status, error, refetch, rpc } = useCoordinatorStatus(conversationId);
   const bridge = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getBridgeSnapshot);
   const [busy, setBusy] = useState(false);
-  const [showConversations, setShowConversations] = useState(false);
-  if (!status || !status.enabled) return null;
+  if (!conversationId || legacy) {
+    return (
+      <section aria-label="Voice coordinator" className="rounded-lg border border-border bg-card px-3.5 py-3 text-sm text-muted-foreground">
+        This session was recorded as a single call before coordinator mode. It has no coordinator thread.
+      </section>
+    );
+  }
+  if (error && !status) {
+    return (
+      <section aria-label="Voice coordinator" className="space-y-2 rounded-lg border border-destructive/30 bg-card px-3.5 py-3 text-sm">
+        <p role="alert" className="text-destructive">Could not load the coordinator. {error}</p>
+        <Button type="button" variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={refetch}>Retry</Button>
+      </section>
+    );
+  }
+  if (!status) return <p role="status" className="py-3 text-center text-sm text-muted-foreground">Loading coordinator…</p>;
   const conversation = status.conversation;
+  const working = bridge?.conversationId === conversationId && bridge.working;
   const run = async (action: () => Promise<unknown>, success?: string) => {
     setBusy(true);
     try {
@@ -148,39 +176,15 @@ export function CoordinatorCard() {
     <section aria-label="Voice coordinator" className="space-y-3 rounded-lg border border-border bg-card px-3.5 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0 leading-tight">
-          <div className="text-sm font-medium text-foreground">Coordinator</div>
+          <div className="text-sm font-medium text-foreground">Coordinator <span className="text-xs font-normal text-muted-foreground">debug view for this session</span></div>
           <div className="truncate text-xs text-muted-foreground">
             {conversation
-              ? `${conversation.providerId ?? "provider pending"}${conversation.model ? ` · ${conversation.model}` : ""} · ${conversation.currentCallNonce ? "on a call" : conversation.status === "released" ? "released" : "idle"}${bridge?.working ? " · working" : ""}`
-              : "No conversation yet. The first call creates one."}
+              ? `${conversation.providerId ?? "provider pending"}${conversation.model ? ` · ${conversation.model}` : ""} · ${conversation.currentCallNonce ? "on a call" : conversation.status === "released" ? "runtime released" : "idle"}${working ? " · working" : ""}`
+              : status.enabled ? "No coordinator thread yet. The next call on this session creates one." : "Coordinator mode is off; this session recorded no coordinator."}
           </div>
           {conversation?.topic ? <div className="truncate text-xs text-muted-foreground">Topic: {conversation.topic}</div> : null}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-          {conversation?.coordinatorThreadId ? (
-            <Button type="button" variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => inspect(conversation.coordinatorThreadId!)}>
-              Open coordinator
-            </Button>
-          ) : null}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            className="min-h-11 sm:min-h-8"
-            aria-label="Start a separate conversation with a fresh coordinator. The current one finishes its accepted work."
-            onClick={() => {
-              if (callState !== "idle") {
-                voiceAgent.stopFromSurface();
-                voiceAgent.startConversationFresh();
-                return;
-              }
-              void run(() => rpc.call("newConversation", null), "New conversation ready for the next call.");
-            }}
-          >
-            New conversation
-          </Button>
-        </div>
+
       </div>
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
       {openQuestion ? (
@@ -224,24 +228,9 @@ export function CoordinatorCard() {
           </ul>
         </div>
       ) : null}
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-        <span>{status.queuedUpdates === 0 ? "No queued updates" : `${status.queuedUpdates} queued update${status.queuedUpdates === 1 ? "" : "s"} waiting for a quiet moment`}</span>
-        {status.conversations.length > 1 ? (
-          <button type="button" className="underline-offset-2 hover:underline" onClick={() => setShowConversations((value) => !value)}>
-            {showConversations ? "Hide conversations" : `${status.conversations.length} conversations`}
-          </button>
-        ) : null}
+      <div className="text-xs text-muted-foreground">
+        {status.queuedUpdates === 0 ? "No queued updates" : `${status.queuedUpdates} queued update${status.queuedUpdates === 1 ? "" : "s"} waiting for a quiet moment`}
       </div>
-      {showConversations ? (
-        <ul className="space-y-1 text-xs">
-          {status.conversations.map((row) => (
-            <li key={row.id} className="flex items-center justify-between gap-2">
-              <span className="truncate">{row.current ? "Current · " : ""}{new Date(row.updatedAt).toLocaleString()} · {row.status}</span>
-              {row.coordinatorThreadId ? <button type="button" className="shrink-0 underline-offset-2 hover:underline" onClick={() => inspect(row.coordinatorThreadId!)}>Open</button> : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
       {status.watch.length > 0 && conversation ? (
         <div>
           <div className="mb-1 text-xs font-medium text-muted-foreground">Watched threads</div>
@@ -261,6 +250,11 @@ export function CoordinatorCard() {
               </li>
             ))}
           </ul>
+        </div>
+      ) : null}
+      {conversation?.coordinatorThreadId ? (
+        <div className="h-[65vh] min-h-80 overflow-hidden rounded-md border border-border" aria-label="Coordinator thread">
+          <ThreadChat threadId={conversation.coordinatorThreadId} />
         </div>
       ) : null}
       {status.recentReplies.length > 0 ? (

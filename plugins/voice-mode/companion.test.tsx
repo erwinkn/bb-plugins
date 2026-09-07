@@ -95,19 +95,19 @@ test("drawer controls share call state, survive view changes, and only stop on e
   assert.equal(stop.mock.callCount(), 1);
 });
 
-const sessionRow = (id: string) => ({ id, startedAt: 1000, lastEventAt: 5000, events: 2, ended: true, costUsd: 0, preview: `Session ${id}`, hasError: false, device: null });
+const sessionRow = (id: string) => ({ id, title:`Session ${id}`,createdAt:1000,updatedAt:5000,coordinatorThreadId:null,callIds:[id],currentCallNonce:null,legacy:false });
 const pageRpc = {
-  listSessions: () => ({ sessions: [sessionRow("a"), sessionRow("b")], hasMore: false }),
+  listVoiceSessions: () => ({ sessions: [sessionRow("a"), sessionRow("b")], hasMore: false }),
   listPlugins: () => ({ plugins: [] }),
   requestPresence: () => ({ ok: true }),
   logEvent: () => ({ ok: true }),
-  getSessionEvents: (input: unknown) => ({ events: [{ id: 1, ts: 1000, kind: "user", payload: JSON.stringify({ text: `Transcript ${(input as { sessionId: string }).sessionId}` }) }] }),
+  getVoiceSession: (input: unknown) => ({ session:sessionRow((input as {sessionId:string}).sessionId), events: [{ id: 1, ts: 1000, kind: "user", payload: JSON.stringify({ text: `Transcript ${(input as { sessionId: string }).sessionId}` }) }] }),
 };
 
 test("session creation is above history; call controls only show during a call", async (t) => {
   const call = voiceAgent as unknown as { state: "idle" | "connecting" | "live" | "muted"; emitChange(): void };
   const setState = (state: typeof call.state) => { call.state = state; call.emitChange(); };
-  const start = t.mock.method(voiceAgent, "toggleFromSurface", () => setState("connecting"));
+  const start = t.mock.method(voiceAgent, "startConversation", () => setState("connecting"));
   const stop = t.mock.method(voiceAgent, "stopFromSurface", () => setState("idle"));
   const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: pageRpc });
   const ui = within(slot.container);
@@ -144,47 +144,44 @@ test("session search has a label and filters can be cleared", async () => {
   try {
     await ui.findByRole("button", { name: /Session a/ });
     fireEvent.change(ui.getByRole("searchbox", { name: "Search sessions" }), { target: { value: "missing" } });
-    fireEvent.click(ui.getByRole("button", { name: "Errors" }));
-    assert.equal(ui.getByRole("button", { name: "Errors" }).getAttribute("aria-pressed"), "true");
     assert.ok(ui.getByText("No sessions match."));
     fireEvent.click(ui.getByRole("button", { name: "Clear filters" }));
-    assert.equal(ui.getByRole("button", { name: "Errors" }).getAttribute("aria-pressed"), "false");
     assert.ok(ui.getByRole("button", { name: /Session a/ }));
   } finally { slot.lifecycle.unmount(); }
 });
 
 test("switching transcripts rejects late results and shows retryable errors", async () => {
-  let resolveA!: (result: ReturnType<typeof pageRpc.getSessionEvents>) => void;
+  let resolveA!: (result: ReturnType<typeof pageRpc.getVoiceSession>) => void;
   let failB = true;
   const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: { ...pageRpc,
-    getSessionEvents: (input: unknown) => {
+    getVoiceSession: (input: unknown) => {
       const { sessionId } = input as { sessionId: string };
       if (sessionId === "a") return new Promise(resolve => { resolveA = resolve; });
       if (failB) throw new Error("Transcript unavailable");
-      return pageRpc.getSessionEvents({ sessionId });
+      return pageRpc.getVoiceSession({ sessionId });
     },
   } });
   const ui = within(slot.container);
   try {
     fireEvent.click(await ui.findByRole("button", { name: /Session a/ }));
-    await ui.findByText("Loading transcript…");
+    await ui.findByText("Loading session…");
     fireEvent.click(ui.getByRole("button", { name: /All sessions/ }));
     fireEvent.click(ui.getByRole("button", { name: /Session b/ }));
     await ui.findByRole("alert");
-    await act(async () => resolveA(pageRpc.getSessionEvents({ sessionId: "a" })));
+    await act(async () => resolveA(pageRpc.getVoiceSession({ sessionId: "a" })));
     assert.equal(ui.queryByText("Transcript a"), null);
     failB = false;
-    fireEvent.click(ui.getByRole("button", { name: "Retry transcript" }));
+    fireEvent.click(ui.getByRole("button", { name: "Retry session" }));
     await ui.findByText("Transcript b");
-    fireEvent.click(ui.getByRole("button", { name: "Conversation" }));
-    assert.equal(ui.getByRole("button", { name: "Conversation" }).getAttribute("aria-pressed"), "true");
+    fireEvent.click(ui.getByRole("tab", { name: "Conversation" }));
+    assert.equal(ui.getByRole("tab", { name: "Conversation" }).getAttribute("aria-selected"), "true");
   } finally { slot.lifecycle.unmount(); }
 });
 
 test("a failed session list shows a retry instead of endless loading", async () => {
   let fail = true;
   const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: { ...pageRpc,
-    listSessions: () => {
+    listVoiceSessions: () => {
       if (fail) throw new Error("History unavailable");
       return { sessions: [], hasMore: false };
     },
@@ -216,7 +213,7 @@ test("Escape returns to history from a transcript and preserves input and handle
     assert.equal(document.activeElement === ui.getByRole("button", { name: /All sessions/ }), true);
     const handled = new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
     handled.preventDefault();
-    fireEvent(ui.getByRole("button", { name: "Conversation" }), handled);
+    fireEvent(ui.getByRole("tab", { name: "Conversation" }), handled);
     assert.ok(ui.getByText("Transcript a"));
     assert.equal(back.mock.callCount(), 0);
     fireEvent.keyDown(ui.getByRole("button", { name: /All sessions/ }), { key: "Escape" });
@@ -237,7 +234,7 @@ test("returning from a session absent from history focuses the history heading",
   t.mock.method(voiceAgent, "getState", () => "live");
   t.mock.method(voiceAgent, "getSessionId", () => "unlisted");
   const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: { ...pageRpc,
-    listSessions: () => ({ sessions: [], hasMore: false }),
+    listVoiceSessions: () => ({ sessions: [], hasMore: false }),
   } });
   const ui = within(slot.container);
   try {
@@ -256,28 +253,28 @@ test("transcript navigation remains outside the scrolling content", async () => 
   try {
     fireEvent.click(await ui.findByRole("button", { name: /Session a/ }));
     await ui.findByText("Transcript a");
-    const navigation = ui.getByRole("navigation", { name: "Transcript navigation" });
+    const navigation = ui.getByRole("navigation", { name: "Session navigation" });
     const content = ui.getByRole("region", { name: "Session content" });
     assert.ok(within(navigation).getByRole("button", { name: /All sessions/ }));
-    assert.ok(within(navigation).getByRole("group", { name: "Transcript filters" }));
+    assert.ok(within(navigation).getByRole("tablist", { name: "Session views" }));
     assert.equal(content.contains(navigation), false);
     assert.ok(content.contains(ui.getByText("Transcript a")));
     assert.ok(navigation.compareDocumentPosition(content) & dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
   } finally { slot.lifecycle.unmount(); }
 });
 
-test("session rows announce live and error status even when both apply", async () => {
+test("logical session rows announce live status", async () => {
   const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: { ...pageRpc,
-    listSessions: () => ({ sessions: [
-      { ...sessionRow("live"), ended: false, hasError: true },
+    listVoiceSessions: () => ({ sessions: [
+      { ...sessionRow("live"), currentCallNonce:"live-call" },
       { ...sessionRow("error"), hasError: true },
       sessionRow("ended"),
     ], hasMore: false }),
   } });
   const ui = within(slot.container);
   try {
-    assert.ok(await ui.findByRole("button", { name: /Session live.*Live session.*Session has errors/ }));
-    assert.ok(ui.getByRole("button", { name: /Session error.*Session has errors/ }));
+    assert.ok(await ui.findByRole("button", { name: /Session live.*Live session/ }));
+    assert.ok(ui.getByRole("button", { name: /Session error/ }));
     assert.doesNotMatch(ui.getByRole("button", { name: /Session ended/ }).textContent ?? "", /Live session|Session has errors/);
   } finally { slot.lifecycle.unmount(); }
 });
@@ -312,7 +309,7 @@ test("Voice inspection is optional, stays in the area, and preserves the convers
     await ui.findByText("Transcript a");
     act(() => viewWorkspace.open([view("a")], "new", "reuse"));
     assert.equal(ui.getByTestId("bb-thread-chat").getAttribute("data-thread-id"), "a");
-    fireEvent.click(ui.getByRole("button", { name: "Conversation" }));
+    fireEvent.click(ui.getByRole("button", { name: "Session" }));
     assert.equal(ui.queryByTestId("bb-thread-chat"), null);
     assert.ok(ui.getByText("Transcript a"));
     fireEvent.click(ui.getByRole("button", { name: "Threads (1)" }));
@@ -323,4 +320,35 @@ test("Voice inspection is optional, stays in the area, and preserves the convers
     assert.equal(stopped.mock.callCount(), 0);
     assert.equal(slot.inspection.navigateCalls.length, 0);
   } finally { slot.lifecycle.unmount(); viewWorkspace.clear(); }
+});
+
+test("session selection shows one conversation; coordinator inspection and continuation stay scoped", async(t)=>{
+  const start=t.mock.method(voiceAgent,"startConversation",()=>{});
+  const stopped=t.mock.method(voiceAgent,"stopFromSurface",()=>{});
+  const requested:string[]=[];
+  const slot=renderSlot({component:SessionsPanel},{},{rpc:{...pageRpc,
+    getVoiceSession:(input:unknown)=>({...pageRpc.getVoiceSession(input),events:[
+      {id:1,ts:1000,kind:"user",payload:JSON.stringify({text:"Check work"}),callId:"a"},
+      {id:2,ts:1001,kind:"tool.result",payload:JSON.stringify({name:"delegate_to_coordinator",output:"internal handoff text"}),callId:"a"},
+      {id:3,ts:1002,kind:"assistant",payload:JSON.stringify({responseId:"answer",text:"Two threads are active."}),callId:"a"},
+    ]}),
+    getCoordinatorStatus:(input:unknown)=>{requested.push((input as {conversationId:string}).conversationId);return {enabled:true,conversation:{id:"a",coordinatorThreadId:"coord_a",providerId:"codex",model:null,hostId:null,currentCallNonce:null,topic:null,status:"released"},requests:[],questions:[],pendingInteractions:[],watch:[],queuedUpdates:0,recentReplies:[],conversations:[]};},
+  }});
+  const ui=within(slot.container);
+  try {
+    fireEvent.click(await ui.findByRole("button",{name:/Session a/}));
+    await ui.findByText("Two threads are active.");
+    assert.equal(start.mock.callCount(),0);
+    assert.equal(ui.queryByText("internal handoff text"),null);
+    assert.equal(ui.getByRole("tab",{name:"Conversation"}).getAttribute("aria-selected"),"true");
+    assert.equal(ui.queryByTestId("bb-thread-chat"),null);
+    fireEvent.click(ui.getByRole("tab",{name:"Coordinator"}));
+    assert.equal((await ui.findByTestId("bb-thread-chat")).getAttribute("data-thread-id"),"coord_a");
+    assert.deepEqual(requested,["a"]);
+    fireEvent.click(ui.getByRole("tab",{name:"Conversation"}));
+    fireEvent.click(ui.getByRole("button",{name:"Continue this session"}));
+    assert.deepEqual(start.mock.calls[0].arguments,["a"]);
+    assert.equal(stopped.mock.callCount(),0);
+    assert.equal(slot.inspection.navigateCalls.length,0);
+  } finally {slot.lifecycle.unmount();}
 });

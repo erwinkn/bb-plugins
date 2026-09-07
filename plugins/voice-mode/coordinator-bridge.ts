@@ -79,6 +79,7 @@ export class CoordinatorBridge {
   private openQuestion: { id: string; text: string } | null = null;
   private liveAt: number;
   private disposed = false;
+  private acknowledgments = new Map<number, string>();
 
   constructor(private readonly host: BridgeHost, readonly conversationId: string, private readonly userTurnOf: () => number) {
     this.liveAt = host.now();
@@ -124,7 +125,9 @@ export class CoordinatorBridge {
   /** The user started speaking: unsent speculative handoffs are held, not sent. */
   onSpeechStarted() {
     if (this.pending && this.pending.status === "waiting-transcript") this.supersedePending("user continued speaking");
-    if (this.active?.playing) this.finishSpeech("interrupted");
+    if (this.active) this.finishSpeech("interrupted");
+    this.replyQueue = this.replyQueue.filter(reply => !reply.replyId.startsWith("local_ack_"));
+    this.acknowledgments.clear();
   }
 
   // ---- realtime tools ----
@@ -150,6 +153,7 @@ export class CoordinatorBridge {
       speechEndedAt: bound.at(-1)?.speechEndedAt ?? null,
     };
     this.pending = handoff;
+    this.acknowledgments.set(this.userTurnOf(), requestId);
     this.host.log("handoff.recorded", { requestId, callId, boundItems: handoff.boundItemIds, urgency, answersQuestionId });
     this.host.changed();
     if (!this.tryDispatch()) {
@@ -161,7 +165,29 @@ export class CoordinatorBridge {
       }, TRANSCRIPT_WAIT_MS);
       (handoff.timer as { unref?: () => void }).unref?.();
     }
-    return `Handoff ${requestId} recorded; the coordinator will reply. Say at most two words or nothing.`;
+    return `Handoff ${requestId} recorded; the coordinator will reply. Wait silently; the bridge handles acknowledgment and the final answer.`;
+  }
+
+  /** Called after the original tool response settles, never as a model tool follow-up. */
+  acknowledge(turn: number, alreadySpoke: boolean) {
+    const requestId = this.acknowledgments.get(turn);
+    this.acknowledgments.delete(turn);
+    if (!requestId || alreadySpoke || turn !== this.userTurnOf()) return;
+    if (this.replyQueue.some(reply => reply.requestId === requestId && reply.kind !== "progress")) return;
+    const reply: PublishedReply = {
+      v: 1, replyId: `local_ack_${requestId}`, conversationId: this.conversationId, seq: -1,
+      requestId, batchId: null, questionId: null, kind: "progress", source: "bridge",
+      speech: "On it.", detail: null, threadIds: [], receipts: [], focusThreadId: null,
+      targetCallNonce: this.host.nonce(), createdAt: this.host.now(),
+    };
+    this.replyQueue.unshift(reply);
+    this.drain();
+  }
+
+  speechIdentity(responseId: string | null) {
+    if (!responseId || this.active?.responseId !== responseId) return null;
+    return { replyId: this.active.reply.replyId, requestId: this.active.reply.requestId,
+      source: this.active.reply.replyId.startsWith("local_ack_") ? "acknowledgment" : "coordinator" };
   }
 
   remainSilent(): string {
@@ -327,7 +353,7 @@ export class CoordinatorBridge {
       type: "response.create",
       response: {
         conversation: "none",
-        metadata: { bb_voice_source: "coordinator_reply", bb_reply_id: reply.replyId },
+        metadata: { bb_voice_source: "coordinator_reply", bb_reply_id: reply.replyId, bb_request_id: reply.requestId ?? "", bb_speech_source: reply.replyId.startsWith("local_ack_") ? "acknowledgment" : "coordinator" },
         instructions,
         input: [{ type: "message", role: "user", content: [{ type: "input_text", text: reply.speech }] }],
         tools: [],
@@ -346,7 +372,7 @@ export class CoordinatorBridge {
   /** Whether the response with this id was started by the bridge. */
   ownsResponse(responseId: string | null, metadata: Record<string, unknown> | undefined): boolean {
     if (metadata?.bb_voice_source === "coordinator_reply") {
-      if (this.active && responseId && (this.active.responseId === null || this.active.responseId === responseId)) this.active.responseId = responseId;
+      if (this.active && metadata.bb_reply_id === this.active.reply.replyId && responseId && (this.active.responseId === null || this.active.responseId === responseId)) this.active.responseId = responseId;
       return true;
     }
     return !!responseId && this.active?.responseId === responseId;
@@ -354,15 +380,15 @@ export class CoordinatorBridge {
 
   onResponseDone(responseId: string | null, status: string) {
     const active = this.active;
-    if (!active || (active.responseId !== null && active.responseId !== responseId)) return;
+    if (!active || !responseId || active.responseId !== responseId) return;
     if (status === "cancelled" && !active.playing) { this.finishSpeech("interrupted"); return; }
     if (status !== "completed" && !active.playing) { this.finishSpeech("interrupted"); return; }
     if (!active.playing) this.report(active.reply, "generated");
   }
 
-  onAudioStarted() {
+  onAudioStarted(responseId: string | null) {
     const active = this.active;
-    if (!active) return;
+    if (!active || !responseId || active.responseId !== responseId) return;
     active.playing = true;
     const handoff = active.reply.requestId ? this.dispatched.get(active.reply.requestId) : null;
     this.host.log("reply.playing", {
@@ -374,12 +400,12 @@ export class CoordinatorBridge {
     this.report(active.reply, "playing");
   }
 
-  onAudioStopped() {
-    if (this.active?.playing) this.finishSpeech("delivered");
+  onAudioStopped(responseId: string | null) {
+    if (responseId && this.active?.responseId === responseId && this.active.playing) this.finishSpeech("delivered");
   }
 
-  onAudioCleared() {
-    if (this.active) this.finishSpeech(this.active.playing ? "interrupted" : "superseded");
+  onAudioCleared(responseId: string | null) {
+    if (responseId && this.active?.responseId === responseId) this.finishSpeech(this.active.playing ? "interrupted" : "superseded");
   }
 
   private finishSpeech(state: "delivered" | "interrupted" | "superseded") {
@@ -396,7 +422,7 @@ export class CoordinatorBridge {
     const threads = reply.threadIds.length ? ` Threads: ${reply.threadIds.join(", ")}.` : "";
     const question = reply.kind === "clarification" && reply.questionId ? ` Question id: ${reply.questionId}; delegate the user's answer with answers_question_id.` : "";
     this.addContext(`[bb coordinator ${reply.kind} ${reply.replyId}, ${label}] ${reply.speech}${threads}${question}`);
-    this.host.log(`reply.${state}`, { replyId: reply.replyId, kind: reply.kind });
+    this.host.log(`reply.${state}`, { replyId: reply.replyId, requestId: reply.requestId, responseId: active.responseId, kind: reply.kind });
     this.report(reply, state);
     this.host.changed();
     this.drain();

@@ -155,7 +155,7 @@ What the plugin guarantees in this mode:
   are read out as a brief digest after the opening request of the next call
   is answered. The coordinator runtime is released once its work settles.
 - One coordinator per logical conversation. Calls resume the last
-  conversation by default; **New conversation** on the Voice page starts a
+  conversation by default; **New session** on the Voice page starts a
   separate coordinator, and the old one finishes its work without speaking
   into the new call.
 
@@ -165,10 +165,39 @@ defaults. The initial supported choice is Codex with its default model. An
 unavailable provider or model is reported as a recoverable failure. Normal
 permissions apply; the plugin never forces full permissions.
 
-The Voice page shows a coordinator card with **Open coordinator**, pending
-work with retry, the current question with an answer form, pending approvals,
-watched threads, queued updates, and **New conversation**. The composer pill
-shows "Working…" while a request is with the coordinator.
+The Voice page opens to a list of logical sessions. Select one to read the
+conversation, with one assistant identity. **Continue** resumes that session
+and its coordinator; **New session** creates a separate conversation. Selecting
+history starts no work. Old physical-call transcripts remain available and
+are linked to their existing conversation where that association is known.
+Continuing an older standalone call gives it a new logical session without
+rewriting its history.
+
+The session's **Coordinator** tab shows its hidden thread, pending work with
+retry, questions, pending approvals, watched threads, and queued updates.
+**Diagnostics** shows the original event log. Thread inspection stays inside
+Voice and preserves the call. The composer pill shows "Working…" while a
+request is with the coordinator.
+
+For delegated requests, the bridge speaks one short acknowledgment after the
+tool response settles, unless that response already spoke. It does not ask the
+realtime model to speak again after the tool result. Coordinator progress for
+individual requests is retained for debugging but is silent. One final reply
+per request is accepted. Questions and background digests keep their separate
+delivery rules. Model compliance with the instruction to delegate silently
+still needs live testing.
+
+The coordinator can use `voice_overview` to get one fresh snapshot of up to 30
+active or recent threads, drawn from the 200 most recent threads and the
+existing 30-minute recent-work window. The snapshot includes titles and
+runtime status. It is not evidence that a task is complete; detailed checks
+still use native BB tools when required.
+
+Speech logs include response, item, request and reply IDs, user-turn numbers,
+and monotonic event timing. Playback events are matched to their response;
+a late event cannot finish a different reply. The conversation view uses IDs
+to combine transcript and playback records. Historical speech without those
+IDs keeps an unknown playback state; matching words alone are not evidence.
 
 Verified so far: deterministic fake-host and fake-realtime tests for bridge
 ordering and recovery, and a disposable hidden thread spawned into a

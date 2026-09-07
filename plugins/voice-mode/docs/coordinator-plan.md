@@ -23,6 +23,26 @@ embedded ThreadChat makes it available inside Voice. The SDK has response
 methods; their live interaction-kind support needs verification before adding
 spoken answers for native approvals. This is not an automatic approval path.
 
+## Session and speech revision
+
+The next 7 September iteration groups physical calls into logical sessions.
+The default session tab is a unified user/assistant conversation, with a
+secondary Coordinator tab and raw Diagnostics tab. Continue selects that
+session's coordinator; New session creates another. History selection is
+read-only, and existing events are retained.
+
+The bridge owns the starting acknowledgment. It suppresses its own
+acknowledgment if the original model response already spoke, makes no model
+follow-up after delegation, and waits for that response and tool execution to
+settle before speaking. Coordinator progress is diagnostic-only for direct
+requests. Each request accepts one final reply. Background digests remain
+subject to the existing full idle gate.
+
+A coordinator-only overview tool supplies a bounded fresh status snapshot.
+Response and playback IDs plus monotonic timestamps support investigation of
+interruption and repeated speech. No VAD, voice, realtime model, or coordinator
+reasoning setting is changed by this revision.
+
 ## Intended behavior
 
 Keep the current fast voice connection. Use a real, hidden BB thread to interpret

@@ -139,8 +139,8 @@ export class CoordinatorManager {
    * one when asked. Re-surfaces unresolved questions and redelivers answers
    * that were submitted but never reached the coordinator.
    */
-  async startCall(input: { nonce: string; sequence: number; view: { threadId: string | null; projectId: string | null }; newConversation: boolean }): Promise<{ conversationId: string; resumed: boolean; coordinatorThreadId: string | null; queuedUpdates: number }> {
-    const currentId = this.store.currentConversationId();
+  async startCall(input: { nonce: string; sequence: number; view: { threadId: string | null; projectId: string | null }; newConversation: boolean; conversationId?: string }): Promise<{ conversationId: string; resumed: boolean; coordinatorThreadId: string | null; queuedUpdates: number }> {
+    const currentId = input.conversationId ?? this.store.currentConversationId();
     let conversation = input.newConversation ? null : currentId ? this.store.getConversation(currentId) : null;
     if (conversation && input.newConversation === false && conversation.status !== "active" && conversation.status !== "released") conversation = null;
     const resumed = conversation !== null && conversation.callStartedAt !== null;
@@ -531,6 +531,7 @@ export class CoordinatorManager {
     }
     if (!requestId && !batchId && !bootstrap && openRequests.length > 0) requestId = openRequests[0].id;
     const request = requestId ? this.store.getRequest(requestId) : null;
+    if (requestId && params.kind === "final" && this.store.listReplies(conversation.id, { requestId }).some(r => r.kind === "final")) return "A final reply is already recorded for this request.";
 
     // State and watch changes are data about the conversation, not new instructions.
     const threadIds = uniqueIds([...(params.thread_ids ?? []), ...(params.receipts ?? []).map((receipt) => receipt.thread_id).filter((id): id is string => !!id)]);
@@ -556,6 +557,11 @@ export class CoordinatorManager {
       receipts: params.receipts ?? [],
       focusThreadId: requestId && !batchId ? params.present?.focus_thread_id ?? null : null,
     };
+    if (params.kind === "progress" && !batchId) {
+      const progress = this.store.recordReply({ conversationId: conversation.id, requestId, batchId, questionId: null, kind: "progress", source: "tool", body, ready: true, delivery: "silent", targetCallNonce: conversation.currentCallNonce });
+      this.publishStatus(conversation.id);
+      return `Recorded progress ${progress.id} in diagnostics only. The voice layer already acknowledges requests. Send one final answer when done.`;
+    }
     if (bootstrap || params.kind === "silent") {
       const silent = this.store.recordReply({ conversationId: conversation.id, requestId, batchId, questionId: null, kind: "silent", source: "tool", body, ready: true, delivery: "silent", targetCallNonce: conversation.currentCallNonce });
       if (batchId) { this.store.setBatchStatus(batchId, "answered"); this.markBatchUpdates(batchId, "skipped"); }
@@ -903,7 +909,7 @@ export class CoordinatorManager {
           const ready = this.store.updateReply(reply.id, { ready: true });
           if (ready.targetCallNonce && ready.delivery === "pending") this.publishReply(ready);
         }
-        if (replies.length === 0) this.fallbackReply(conversation, request, lastAssistantText);
+        if (!replies.some(reply => reply.kind !== "progress")) this.fallbackReply(conversation, request, lastAssistantText);
         this.settleRequest(request.id, null);
       }
       for (const batch of this.store.listBatches(conversation.id, ["sent"])) {
