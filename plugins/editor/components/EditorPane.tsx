@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ComponentType, Ref } from "react";
-import { useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
+import { Markdown, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import { AUTO_SAVE_DELAY_MS, lineHeightFor, monoFontFamily, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
@@ -13,6 +13,18 @@ import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } fro
 import type { MenuItem } from "./ContextMenu";
 import { GoToLine } from "./GoToLine";
 import { Toolbar, type SaveIndicator } from "./Toolbar";
+
+/** Files that open as a rendered preview, with the editor one switch away. */
+const PREVIEW_EXTENSIONS = new Set(["md", "markdown"]);
+
+export function hasPreview(path: string): boolean {
+  const name = path.split("/").at(-1) ?? path;
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && PREVIEW_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
+/** Which previewed files the user switched to the editor, for this page. */
+const editingByPath = new Map<string, boolean>();
 
 export interface EditorPaneHandle {
   isDirty(): boolean;
@@ -79,6 +91,15 @@ export function EditorPane({
   const [assets, setAssets] = useState<{ baseUrl: string } | { error: string } | null>(null);
   const [surfaceStatus, setSurfaceStatus] = useState<PierreSurfaceStatus>({ kind: "loading" });
   const [goToLineOpen, setGoToLineOpen] = useState(false);
+  // A Markdown file opens as its rendered preview. The editor is one switch
+  // away and the choice is remembered for the file while the page lives.
+  const previewable = hasPreview(path);
+  const [, rerender] = useState(0);
+  const editing = !previewable || (editingByPath.get(path) ?? false);
+  const setEditing = (next: boolean) => {
+    editingByPath.set(path, next);
+    rerender((n) => n + 1);
+  };
 
   const file = useFileSession({ source, path });
   const state = file.state;
@@ -171,14 +192,23 @@ export function EditorPane({
   const unsupported = state?.load.kind === "unsupported";
   const readOnly = !isEditor || unsupported;
 
+  // Find, replace and go-to-line need the editor, so they leave the preview.
+  const withEditor = (run: () => void) => {
+    if (editing) run();
+    else setEditing(true);
+  };
+
   const menuItems: MenuItem[] = [
     { label: "Save file", shortcut: "⌘S", disabled: !(state?.dirty ?? false), onSelect: () => void save() },
     { label: "Discard changes", disabled: !(state?.hasEdits ?? false), onSelect: discardEdits },
     { label: "Reload from disk", disabled: state?.hasEdits ?? true, onSelect: reloadFile },
     { type: "separator" },
-    { label: "Find…", shortcut: "⌘F", onSelect: () => runOnSurface(surfaceRef, (handle) => handle.openSearch()) },
-    { label: "Find and replace…", onSelect: () => runOnSurface(surfaceRef, (handle) => handle.openSearchReplace()) },
-    { label: "Go to line…", onSelect: () => setGoToLineOpen(true) },
+    ...(previewable
+      ? [{ type: "toggle", label: "Edit the source", checked: editing, onToggle: setEditing } satisfies MenuItem, { type: "separator" } satisfies MenuItem]
+      : []),
+    { label: "Find…", shortcut: "⌘F", onSelect: () => withEditor(() => runOnSurface(surfaceRef, (handle) => handle.openSearch())) },
+    { label: "Find and replace…", onSelect: () => withEditor(() => runOnSurface(surfaceRef, (handle) => handle.openSearchReplace())) },
+    { label: "Go to line…", onSelect: () => withEditor(() => setGoToLineOpen(true)) },
     { type: "separator" },
     ...(onOpenInTab === null ? [] : [{ label: "Open in new tab", onSelect: onOpenInTab } as MenuItem]),
     { label: "Copy relative path", onSelect: () => void copyText(state?.relativePath ?? path, "Relative path copied") },
@@ -191,7 +221,7 @@ export function EditorPane({
     { type: "toggle", label: "Auto save", checked: prefs.autoSave !== "off", onToggle: (next) => onSetPref("autoSave", next ? "afterDelay" : "off") },
   ];
 
-  const loading = state === null || state.load.kind === "loading" || (assets === null && !unsupported);
+  const loading = state === null || state.load.kind === "loading" || (assets === null && !unsupported && editing);
   return (
     <div ref={rootRef} className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <Toolbar
@@ -201,11 +231,12 @@ export function EditorPane({
         canGoForward={history.canForward}
         onBack={history.back}
         onForward={history.forward}
-        onFind={() => runOnSurface(surfaceRef, (handle) => handle.openSearch())}
+        onFind={() => withEditor(() => runOnSurface(surfaceRef, (handle) => handle.openSearch()))}
         menuItems={menuItems}
         treeOpen={treeOpen}
         treeSide={treeSide}
         onToggleTree={onToggleTree}
+        editing={previewable && !unsupported ? { active: editing, onToggle: () => setEditing(!editing) } : undefined}
       />
       <Notices
         state={state}
@@ -223,6 +254,12 @@ export function EditorPane({
         {unsupported ? (
           <div className="absolute inset-0 overflow-auto bg-background">
             {Original ? <Original /> : <p className="p-4 text-sm text-muted-foreground">{state.load.reason}</p>}
+          </div>
+        ) : !editing && state !== null && state.load.kind === "ready" ? (
+          // The preview follows the shared buffer, so unsaved edits from the
+          // Changes tab or an earlier draft show here too.
+          <div className="absolute inset-0 overflow-auto bg-background" data-testid="markdown-preview">
+            <Markdown content={state.content} className="mx-auto max-w-3xl px-6 py-5" />
           </div>
         ) : assets !== null && "baseUrl" in assets && state !== null && state.load.kind === "ready" ? (
           <PierreSurface

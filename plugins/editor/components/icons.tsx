@@ -23,6 +23,7 @@ import {
   LinkSquare01Icon,
   LockIcon,
   MoreHorizontalIcon,
+  PencilEdit02Icon,
   RefreshIcon,
   Search01Icon,
   SidebarLeftIcon,
@@ -57,6 +58,7 @@ export const FolderAddGlyph = make(FolderAddIcon);
 export const FolderIcon = make(Folder01Icon);
 export const FolderOpenGlyph = make(FolderOpenIcon);
 export const MoreIcon = make(MoreHorizontalIcon);
+export const EditGlyph = make(PencilEdit02Icon);
 export const RefreshGlyph = make(RefreshIcon);
 export const RevertGlyph = make(ArrowTurnBackwardIcon);
 export const SearchIcon = make(Search01Icon);
