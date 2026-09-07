@@ -71,6 +71,10 @@ export function ThreadRow({
     if (!editing && restoreRowFocus.current) {
       restoreRowFocus.current = false;
       rowRef.current?.focus();
+      // BB can restore composer focus while handling the same Escape event.
+      // Restore the row after that event and its menu cleanup have completed.
+      const frame = requestAnimationFrame(() => rowRef.current?.focus());
+      return () => cancelAnimationFrame(frame);
     }
   }, [editing]);
   const longPress = useLongPressMenu(menuOpen);
