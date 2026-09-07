@@ -11,8 +11,6 @@ export interface ClientState {
   expandedArchives: string[];
   /** Selected saved space; an id missing from the catalog means All projects. */
   spaceId: string | null;
-  /** Ad-hoc project selection used while no saved space is selected. */
-  projectIds: string[];
 }
 const KEY = "bb-plugin-erwin-activity:v1";
 const DEFAULT: ClientState = {
@@ -24,7 +22,6 @@ const DEFAULT: ClientState = {
   drafts: [],
   expandedArchives: [],
   spaceId: null,
-  projectIds: [],
 };
 const strings = (value: unknown): string[] =>
   Array.isArray(value)
@@ -48,8 +45,9 @@ export function parseState(raw: string | null): ClientState {
         (key) => key.startsWith("thread:") || key.startsWith("new:"),
       ),
       spaceId:
-        typeof value.spaceId === "string" && value.spaceId ? value.spaceId : null,
-      projectIds: strings(value.projectIds).filter(Boolean),
+        typeof value.spaceId === "string" && value.spaceId
+          ? value.spaceId
+          : null,
     };
   } catch {
     return DEFAULT;

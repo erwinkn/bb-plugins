@@ -5,19 +5,22 @@ import {
   experimental_useSidebarThreadActions,
   experimental_useProviders,
   useRealtimeConnectionState,
+  useRpc,
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
-import {
-  STATUSES,
-  STATUS_LABEL,
-  statusOf,
-  threadTitle,
-} from "./lib/status";
+import type { projectContract } from "./lib/project-contract";
+import { STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
 import { useSpaces } from "./lib/use-spaces";
 import { inScope, newSpaceId, resolveScope } from "./lib/spaces";
 import { DisplayMenu } from "./components/menus";
+import {
+  ManageView,
+  ProjectRemoveForm,
+  ProjectRenameForm,
+} from "./components/manage-view";
+import { ProjectHeaderMenu } from "./components/project-header-menu";
 import { ScopeMenu, type SpaceEdit } from "./components/scope-menu";
 import { SpaceForm } from "./components/space-form";
 import { NewThreadButton } from "./components/new-thread-button";
@@ -39,48 +42,58 @@ function Group({
   title,
   children,
   archive = false,
+  wrapHeader = (header) => header,
+  belowHeader,
 }: {
   id: string;
   title: string;
   archive?: boolean;
   children: ReactNode;
+  /** Wraps the header button, e.g. in a context menu. */
+  wrapHeader?: (header: ReactNode) => ReactNode;
+  /** Shown between the header and the rows, even while collapsed. */
+  belowHeader?: ReactNode;
 }) {
   const { collapsed, expandedArchives } = useClientState();
   const closed = archive
     ? !expandedArchives.includes(id)
     : collapsed.includes(id);
+  const header = (
+    <button
+      type="button"
+      aria-expanded={!closed}
+      onClick={() =>
+        updateState((current) => ({
+          ...current,
+          ...(archive
+            ? { expandedArchives: toggleValue(current.expandedArchives, id) }
+            : { collapsed: toggleValue(current.collapsed, id) }),
+        }))
+      }
+      className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="min-w-0 flex-1 truncate text-left font-medium">
+        {title}
+      </span>
+      <svg
+        data-group-chevron=""
+        aria-hidden="true"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className={`size-4 shrink-0 ${closed ? "-rotate-90" : ""}`}
+      >
+        <path d="m4.5 6.25 3.5 3.5 3.5-3.5" />
+      </svg>
+    </button>
+  );
   return (
     <section aria-label={title} className="mt-5 first:mt-3">
-      <button
-        type="button"
-        aria-expanded={!closed}
-        onClick={() =>
-          updateState((current) => ({
-            ...current,
-            ...(archive
-              ? { expandedArchives: toggleValue(current.expandedArchives, id) }
-              : { collapsed: toggleValue(current.collapsed, id) }),
-          }))
-        }
-        className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        <span className="min-w-0 flex-1 truncate text-left font-medium">
-          {title}
-        </span>
-        <svg
-          data-group-chevron=""
-          aria-hidden="true"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={`size-4 shrink-0 ${closed ? "-rotate-90" : ""}`}
-        >
-          <path d="m4.5 6.25 3.5 3.5 3.5-3.5" />
-        </svg>
-      </button>
+      {wrapHeader(header)}
+      {belowHeader}
       {!closed && children}
     </section>
   );
@@ -90,14 +103,15 @@ function ThreadsList(props: PluginThreadListProps) {
   const { status, threads, projects } = experimental_useSidebarThreads();
   const state = useClientState();
   const spaces = useSpaces();
-  const scope = resolveScope(spaces.catalog, state);
-  const scopeKey =
-    scope.kind === "all"
-      ? "all"
-      : scope.kind === "space"
-        ? `space:${scope.space.id}`
-        : `projects:${[...scope.projectIds].sort().join(",")}`;
+  const scope = resolveScope(spaces.catalog, state.spaceId);
+  const scopeKey = scope.kind === "all" ? "all" : `space:${scope.space.id}`;
   const [edit, setEdit] = useState<SpaceEdit | null>(null);
+  const [view, setView] = useState<"threads" | "manage">("threads");
+  const [projectEdit, setProjectEdit] = useState<{
+    kind: "rename" | "remove";
+    id: string;
+  } | null>(null);
+  const projectRpc = useRpc<typeof projectContract>();
   const archives = useArchives(threads, state.showArchives);
   const archived = state.showArchives
     ? archives.threads
@@ -154,13 +168,23 @@ function ThreadsList(props: PluginThreadListProps) {
   const displayProjects = new Map(
     projects
       .filter((project) => inScope(scope, project.id))
-      .map((project) => [project.id, { id: project.id, name: project.name }]),
+      .map((project) => [
+        project.id,
+        {
+          id: project.id,
+          name: project.name,
+          isPersonal: project.isPersonal,
+          known: true,
+        },
+      ]),
   );
   for (const { thread } of [...visible, ...archived]) {
     if (!displayProjects.has(thread.projectId)) {
       displayProjects.set(thread.projectId, {
         id: thread.projectId,
         name: "No project",
+        isPersonal: false,
+        known: false,
       });
     }
   }
@@ -172,7 +196,12 @@ function ThreadsList(props: PluginThreadListProps) {
       inScope(scope, projectId) &&
       !displayProjects.has(projectId)
     ) {
-      displayProjects.set(projectId, { id: projectId, name: "No project" });
+      displayProjects.set(projectId, {
+        id: projectId,
+        name: "No project",
+        isPersonal: false,
+        known: false,
+      });
     }
   }
   const newDrafts = [...displayProjects.values()].filter(
@@ -191,51 +220,17 @@ function ThreadsList(props: PluginThreadListProps) {
     .map((project) => ({ id: project.id, name: project.name }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const selectAll = () =>
-    updateState((current) => ({ ...current, spaceId: null, projectIds: [] }));
+    updateState((current) => ({ ...current, spaceId: null }));
   const selectSpace = (spaceId: string) =>
-    updateState((current) => ({ ...current, spaceId, projectIds: [] }));
-  const toggleProject = (projectId: string) => {
-    if (scope.kind === "space") {
-      const { space } = scope;
-      const projectIds = toggleValue(space.projectIds, projectId);
-      void spaces
-        .save(
-          spaces.catalog.spaces.map((entry) =>
-            entry.id === space.id ? { ...entry, projectIds } : entry,
-          ),
-        )
-        .catch(report);
-      return;
-    }
-    const allIds = projects.map((project) => project.id);
-    const next = toggleValue(
-      scope.kind === "all" ? allIds : [...scope.projectIds],
-      projectId,
-    );
-    // Selecting nothing or everything both mean All projects.
-    const everything = allIds.every((id) => next.includes(id));
-    updateState((current) => ({
-      ...current,
-      spaceId: null,
-      projectIds: next.length === 0 || everything ? [] : next,
-    }));
-  };
-  // A new space starts with the ad-hoc selection when there is one, otherwise
-  // with the current thread's project. Other projects are added from the menu.
+    updateState((current) => ({ ...current, spaceId }));
+  // A new space starts with the current thread's project; the rest is chosen
+  // in Manage.
   const activeProject =
     projects.find((project) => project.id === props.activeProjectId) ?? null;
-  const seedProjectIds =
-    scope.kind === "projects"
-      ? [...scope.projectIds]
-      : activeProject
-        ? [activeProject.id]
-        : [];
-  const seedHint =
-    scope.kind === "projects"
-      ? `Starts with the ${seedProjectIds.length} selected ${seedProjectIds.length === 1 ? "project" : "projects"}.`
-      : activeProject
-        ? `Starts with ${activeProject.name}. Add projects from the menu.`
-        : "Add projects from the menu after creating it.";
+  const seedProjectIds = activeProject ? [activeProject.id] : [];
+  const seedHint = activeProject
+    ? `Starts with ${activeProject.name}. Add projects in Manage.`
+    : "Choose its projects in Manage after creating it.";
   const submitEdit = async (name: string) => {
     const list = spaces.catalog.spaces;
     if (edit === "create") {
@@ -264,7 +259,9 @@ function ThreadsList(props: PluginThreadListProps) {
     activeThread !== undefined &&
     !inScope(scope, activeThread.projectId);
   const spaceMissing =
-    state.spaceId !== null && scope.kind !== "space" && spaces.status === "ready";
+    state.spaceId !== null &&
+    scope.kind !== "space" &&
+    spaces.status === "ready";
   const scopePending = state.spaceId !== null && spaces.status === "loading";
   // Rows under a project header omit the project name, which would repeat it.
   const makeRow = (showProject: boolean) => {
@@ -283,9 +280,7 @@ function ThreadsList(props: PluginThreadListProps) {
         showProject={showProject}
         provider={providerNames.get(thread.providerId) ?? thread.providerId}
         parent={
-          thread.parentThreadId
-            ? titles.get(thread.parentThreadId)
-            : undefined
+          thread.parentThreadId ? titles.get(thread.parentThreadId) : undefined
         }
         active={props.activeThreadId === thread.id}
         onNavigate={props.onNavigate}
@@ -351,7 +346,13 @@ function ThreadsList(props: PluginThreadListProps) {
         />
       </Group>
     ) : null;
-  return (
+  const threadCounts = new Map<string, number>();
+  for (const thread of threads)
+    threadCounts.set(
+      thread.projectId,
+      (threadCounts.get(thread.projectId) ?? 0) + 1,
+    );
+  const shell = (content: ReactNode) => (
     <div
       data-activity-sidebar=""
       data-mobile-scroll={props.isCompactViewport ? "" : undefined}
@@ -362,16 +363,36 @@ function ThreadsList(props: PluginThreadListProps) {
           {MOBILE_SIDEBAR_SCROLL_CSS}
         </style>
       )}
+      {content}
+    </div>
+  );
+  if (view === "manage")
+    return shell(
+      <ManageView
+        spaces={spaces}
+        scope={scope}
+        sidebarProjects={projects}
+        threadCounts={threadCounts}
+        activeProjectId={props.activeProjectId || null}
+        compact={props.isCompactViewport}
+        onSelectAll={selectAll}
+        onSelectSpace={selectSpace}
+        onNewThread={openNew}
+        onBack={() => setView("threads")}
+        report={report}
+      />,
+    );
+  return shell(
+    <>
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
           <ScopeMenu
             scope={scope}
             catalog={spaces.catalog}
-            projects={scopeProjects}
             onSelectAll={selectAll}
             onSelectSpace={selectSpace}
-            onToggleProject={toggleProject}
             onEdit={setEdit}
+            onManage={() => setView("manage")}
           />
           <DisplayMenu />
           <NewThreadButton
@@ -502,6 +523,24 @@ function ThreadsList(props: PluginThreadListProps) {
                     const projectArchives = archived.filter(
                       ({ thread }) => thread.projectId === project.id,
                     );
+                    const toggleSpace = (spaceId: string) =>
+                      spaces
+                        .save(
+                          spaces.catalog.spaces.map((space) =>
+                            space.id === spaceId
+                              ? {
+                                  ...space,
+                                  projectIds: toggleValue(
+                                    space.projectIds,
+                                    project.id,
+                                  ),
+                                }
+                              : space,
+                          ),
+                        )
+                        .catch(report);
+                    const editing =
+                      projectEdit?.id === project.id ? projectEdit : null;
                     return rows.length ||
                       drafts.length ||
                       projectArchives.length ? (
@@ -509,6 +548,79 @@ function ThreadsList(props: PluginThreadListProps) {
                         key={project.id}
                         id={`project:${project.id}`}
                         title={project.name}
+                        wrapHeader={(header) =>
+                          !project.known ? (
+                            header
+                          ) : (
+                            <ProjectHeaderMenu
+                              projectId={project.id}
+                              projectName={project.name}
+                              isPersonal={project.isPersonal}
+                              spaces={spaces.catalog.spaces}
+                              onToggleSpace={toggleSpace}
+                              onAction={(action) => {
+                                if (action === "new-thread")
+                                  openNew(project.id);
+                                else if (action === "manage") setView("manage");
+                                else
+                                  setProjectEdit({
+                                    kind: action,
+                                    id: project.id,
+                                  });
+                              }}
+                            >
+                              {header}
+                            </ProjectHeaderMenu>
+                          )
+                        }
+                        belowHeader={
+                          editing?.kind === "rename" ? (
+                            <ProjectRenameForm
+                              project={{
+                                id: project.id,
+                                name: project.name,
+                                isPersonal: project.isPersonal,
+                                source: null,
+                              }}
+                              onSubmit={async (name) => {
+                                await projectRpc.call("renameProject", {
+                                  projectId: project.id,
+                                  name,
+                                });
+                              }}
+                              onClose={() => setProjectEdit(null)}
+                            />
+                          ) : editing?.kind === "remove" ? (
+                            <ProjectRemoveForm
+                              project={{
+                                id: project.id,
+                                name: project.name,
+                                isPersonal: project.isPersonal,
+                                source: null,
+                              }}
+                              threadCount={threadCounts.get(project.id) ?? 0}
+                              onSubmit={async () => {
+                                await projectRpc.call("deleteProject", {
+                                  projectId: project.id,
+                                });
+                                if (
+                                  spaces.catalog.spaces.some((space) =>
+                                    space.projectIds.includes(project.id),
+                                  )
+                                )
+                                  await spaces.save(
+                                    spaces.catalog.spaces.map((space) => ({
+                                      ...space,
+                                      projectIds: space.projectIds.filter(
+                                        (id) => id !== project.id,
+                                      ),
+                                    })),
+                                  );
+                              }}
+                              onClose={() => setProjectEdit(null)}
+                            />
+                          ) : null
+                        }
                       >
                         <ThreadRoots
                           label={project.name}
@@ -535,17 +647,28 @@ function ThreadsList(props: PluginThreadListProps) {
               !pinned.length &&
               !newDrafts.length && (
                 <p className="p-2 text-xs text-muted-foreground">
-                  {scope.kind === "space" && scope.projectIds.size === 0
-                    ? "No projects in this space. Choose projects from the heading menu."
-                    : scope.kind !== "all"
-                      ? "No matching threads in this scope."
-                      : "No matching threads."}
+                  {scope.kind === "space" && scope.projectIds.size === 0 ? (
+                    <>
+                      No projects in this space.{" "}
+                      <button
+                        type="button"
+                        className="underline"
+                        onClick={() => setView("manage")}
+                      >
+                        Choose projects
+                      </button>
+                    </>
+                  ) : scope.kind !== "all" ? (
+                    "No matching threads in this space."
+                  ) : (
+                    "No matching threads."
+                  )}
                 </p>
               )}
           </>
         )}
       </div>
-    </div>
+    </>,
   );
 }
 

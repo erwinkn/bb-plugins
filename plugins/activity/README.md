@@ -143,26 +143,50 @@ This is not atomic: children created or moved during the operation can escape
 the collected tree. BB's other archive buttons and keyboard shortcut keep their
 native behavior. No bulk read or delete actions are added.
 
-## Spaces
+## Spaces and project management
 
 A space is a named selection of projects. The Threads heading is the scope
-selector: it reads **All projects**, a space name, or **N projects** for an
-unsaved selection. Its menu lists All projects, each saved space, and a
-checklist of every BB project.
+selector: it reads **All projects** or a space name. Its menu lists All
+projects, each saved space, **New space…**, and **Manage spaces and
+projects…**.
 
-- **New space…** is always in the menu. It asks for a name and selects the new
-  space. The space starts with the current unsaved selection if there is one,
-  otherwise with the open thread's project, otherwise empty; the form says
-  which. An empty space shows a reminder to check projects from the menu.
-- In All projects every project is checked. Unchecking projects starts an
-  unsaved selection on this client. Unchecking the last project, or checking
-  every project again, returns to All projects.
-- With a space selected, toggling a project edits that space for every client.
+- **New space…** asks for a name and selects the new space. The space starts
+  with the open thread's project when there is one, otherwise empty; the form
+  says which. An empty space shows a **Choose projects** link into Manage.
   **Rename space…** and **Delete space…** use the same inline form under the
   heading. Enter saves; Escape cancels. Deleting a space never touches
   projects or threads. Names are trimmed, limited to 60 characters, and unique
-  ignoring case. A member project BB no longer lists appears as *Unavailable
-  project* so it can be removed.
+  ignoring case.
+- **Manage spaces and projects** replaces the thread list until **‹ Threads**.
+  The Spaces section lists All projects and every space with its project
+  count; clicking one selects it as the scope. Each space row has a menu with
+  Rename, Move up, Move down, and Delete. The Projects section lists BB's
+  projects with their folder (and a host badge when more than one host is
+  connected). With a space selected, a checkbox on each row toggles membership
+  for every client. A member project BB no longer lists appears as
+  *Unavailable project* so it can be removed.
+- Each project row has a menu: **New thread**, **Spaces ›** (a checklist of
+  every space), **Rename…**, **Change folder…**, **Move up**, **Move down**,
+  and **Remove…**. The personal project only offers New thread and Spaces.
+  Renaming, moving, changing the folder, and removing go through BB's own
+  project API, so BB's new-thread panel and every client see the same list.
+  **Remove…** deletes the project from BB with all of its threads; the form
+  says how many active threads that is and requires typing the project name.
+  The project is also dropped from every space. Files on disk are untouched.
+- **+ Add project…** takes a folder path with directory completion (type
+  `/Users/me/Co` and pick from the list; Tab or Enter accepts the highlighted
+  folder) or **Browse…** for the native folder dialog, and a project name that
+  defaults to the folder name. With more than one host, a host selector comes
+  first. When a space is selected the new project joins it. Browse… opens the
+  dialog on the machine that hosts the project; plugin frontends do not know
+  which host the client runs on, so on a remote host use the path field.
+- On desktop, the grip at the left of a space or project row drags it to a
+  new position; Move up and Move down do the same from the menu and are the
+  only way on phones.
+- In the by-project grouping, right-click or long-press a project header for
+  **New thread**, **Spaces ›**, **Rename…**, **Manage spaces and projects…**,
+  and **Remove…**. Rename and Remove open the same inline forms under the
+  header.
 - Space definitions are shared by every client of one BB server and stored in
   the plugin's key-value store as one document with a revision. A save that
   races another client's save fails with an error, and the form keeps your
@@ -183,10 +207,11 @@ checklist of every BB project.
 - **New thread** uses the active project when it is in scope, otherwise the
   space's only project, otherwise a menu of member projects. In All projects
   it keeps BB's behavior.
-- New BB projects are not added to any space automatically. SDK 0.4.47 has no
-  project-creation event that identifies the originating client.
+- Projects created outside Manage (BB's own panel, the CLI) are not added to
+  any space automatically. SDK 0.4.47 has no project-creation event that
+  identifies the originating client.
 - `bb activity spaces-export` prints the catalog. `bb activity spaces-import
-'<json>'` replaces it and bumps the revision. Use them for backups and for
+  '<json>'` replaces it and bumps the revision. Use them for backups and for
   moving definitions between BB servers.
 
 ## Draft limits
@@ -225,7 +250,8 @@ development. To remove it, run `bb plugin remove erwin-activity`.
 
 Tests cover status precedence, date sorting in both views, navigation, storage validation,
 draft text and attachments, fallback UI, a disconnected realtime connection, space
-filtering and editing, the space catalog RPC, and the spaces CLI.
+filtering and editing, the Manage view, project management through BB's API,
+the space catalog RPC, and the spaces CLI.
 They use the SDK's frontend harness. The live BB view still needs visual checks
 after SDK upgrades because the sidebar API is experimental.
 

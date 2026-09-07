@@ -50,9 +50,29 @@ const props = {
   onNavigate: vi.fn(),
   Original: () => <p>BB fallback</p>,
 };
+const managed = (
+  id: string,
+  name: string,
+  path: string,
+  hostId = "host-1",
+) => ({
+  id,
+  name,
+  isPersonal: false,
+  source: { id: `src-${id}`, hostId, path },
+});
+const inventory = {
+  projects: [
+    managed("project-1", "One", "/code/one"),
+    managed("project-2", "Two", "/code/two"),
+    managed("project-3", "Three", "/code/three"),
+  ],
+  hosts: [{ id: "host-1", name: "MacBook", connected: true }],
+};
 // A fake server: the save handler echoes the document with a bumped revision.
-function server(start: SpaceCatalog = initial) {
+function server(start: SpaceCatalog = initial, projectsStart = inventory) {
   let catalog = start;
+  let projectList = projectsStart;
   const saveSpaces = vi.fn(async (input: unknown) => {
     const { expectedRevision, spaces } = input as {
       expectedRevision: number;
@@ -63,12 +83,116 @@ function server(start: SpaceCatalog = initial) {
     catalog = { revision: catalog.revision + 1, spaces };
     return catalog;
   });
+  const createProject = vi.fn(async (input: unknown) => {
+    const { name, hostId, path } = input as {
+      name: string;
+      hostId: string;
+      path: string;
+    };
+    const created = managed("project-new", name, path, hostId);
+    projectList = {
+      ...projectList,
+      projects: [...projectList.projects, created],
+    };
+    return created;
+  });
+  const renameProject = vi.fn(async (input: unknown) => {
+    const { projectId, name } = input as { projectId: string; name: string };
+    projectList = {
+      ...projectList,
+      projects: projectList.projects.map((p) =>
+        p.id === projectId ? { ...p, name } : p,
+      ),
+    };
+    return projectList.projects.find((p) => p.id === projectId)!;
+  });
+  const deleteProject = vi.fn(async (input: unknown) => {
+    const { projectId } = input as { projectId: string };
+    projectList = {
+      ...projectList,
+      projects: projectList.projects.filter((p) => p.id !== projectId),
+    };
+    return { ok: true };
+  });
+  const reorderProject = vi.fn(async (input: unknown) => {
+    const { projectId, previousProjectId } = input as {
+      projectId: string;
+      previousProjectId: string | null;
+    };
+    const moving = projectList.projects.find((p) => p.id === projectId)!;
+    const rest = projectList.projects.filter((p) => p.id !== projectId);
+    const at = previousProjectId
+      ? rest.findIndex((p) => p.id === previousProjectId) + 1
+      : 0;
+    projectList = {
+      ...projectList,
+      projects: [...rest.slice(0, at), moving, ...rest.slice(at)],
+    };
+    return projectList;
+  });
+  const changeProjectFolder = vi.fn(async (input: unknown) => {
+    const { projectId, path } = input as { projectId: string; path: string };
+    projectList = {
+      ...projectList,
+      projects: projectList.projects.map((p) =>
+        p.id === projectId && p.source
+          ? { ...p, source: { ...p.source, path } }
+          : p,
+      ),
+    };
+    return projectList.projects.find((p) => p.id === projectId)!;
+  });
+  const listDirectory = vi.fn(async (input: unknown) => {
+    const { path } = input as { path?: string };
+    const directory = path ?? "/";
+    return {
+      directory,
+      parent: "/",
+      entries: [
+        { name: "alpha", path: `${directory}/alpha`.replace("//", "/") },
+        { name: "archive", path: `${directory}/archive`.replace("//", "/") },
+        { name: "beta", path: `${directory}/beta`.replace("//", "/") },
+      ],
+    };
+  });
+  const pickFolder = vi.fn(async () => ({ path: "/picked/gamma" }));
   return {
     getSpaces: async () => catalog,
     saveSpaces,
     listArchived: async () => [],
+    listProjects: async () => projectList,
+    createProject,
+    renameProject,
+    deleteProject,
+    reorderProject,
+    changeProjectFolder,
+    listDirectory,
+    pickFolder,
   };
 }
+async function openManage(slot: ReturnType<typeof renderSlot>) {
+  await openScope(slot);
+  fireEvent.click(
+    slot.getByRole("menuitem", {
+      name: "Manage spaces and projects…",
+      hidden: true,
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      slot.getByRole("heading", { name: "Spaces and projects" }),
+    ).toBeTruthy(),
+  );
+  await tick();
+}
+const rowMenu = async (slot: ReturnType<typeof renderSlot>, label: string) => {
+  fireEvent.keyDown(slot.getByRole("button", { name: label }), {
+    key: "Enter",
+  });
+  await tick();
+};
+const pickItem = (slot: ReturnType<typeof renderSlot>, name: string) =>
+  fireEvent.click(slot.getByRole("menuitem", { name, hidden: true }));
 const mounted: ReturnType<typeof renderSlot>[] = [];
 type Rpc = NonNullable<Parameters<typeof renderSlot>[2]>["rpc"];
 const mount = (rpc: Rpc = server(), overrides: Partial<typeof props> = {}) => {
@@ -131,10 +255,7 @@ describe("spaces", () => {
     );
     expect(
       parseState(localStorage.getItem("bb-plugin-erwin-activity:v1")),
-    ).toMatchObject({
-      spaceId: "one",
-      projectIds: [],
-    });
+    ).toMatchObject({ spaceId: "one" });
 
     fireEvent.click(slot.getByRole("button", { name: "Show all projects" }));
     expect(scopeButton(slot).getAttribute("aria-label")).toBe(
@@ -155,7 +276,7 @@ describe("spaces", () => {
     await tick();
     const form = slot.getByRole("form", { name: "New space" });
     expect(form.textContent).toContain(
-      "Starts with Two. Add projects from the menu.",
+      "Starts with Two. Add projects in Manage.",
     );
     fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
       target: { value: "Fresh" },
@@ -190,7 +311,7 @@ describe("spaces", () => {
     await tick();
     const form = slot.getByRole("form", { name: "New space" });
     expect(form.textContent).toContain(
-      "Add projects from the menu after creating it.",
+      "Choose its projects in Manage after creating it.",
     );
     fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
       target: { value: "Blank" },
@@ -206,84 +327,16 @@ describe("spaces", () => {
       ),
     );
     expect(rows(slot)).toEqual([]);
-    expect(slot.container.textContent).toContain(
-      "No projects in this space. Choose projects from the heading menu.",
-    );
-    // Checking a project from the menu adds it to the new space.
-    await openScope(slot);
+    expect(slot.container.textContent).toContain("No projects in this space.");
+    // The empty state leads to Manage, where a checkbox adds a project.
+    fireEvent.click(slot.getByRole("button", { name: "Choose projects" }));
+    await tick();
     fireEvent.click(
-      slot.getByRole("menuitemcheckbox", { name: "One", hidden: true }),
+      slot.getByRole("checkbox", { name: "Include One in Blank" }),
     );
     await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(2));
     expect(rpc.saveSpaces.mock.calls[1][0]).toMatchObject({
       spaces: [one, both, { name: "Blank", projectIds: ["project-1"] }],
-    });
-  });
-
-  it("starts an ad-hoc selection from All projects and saves it as a space", async () => {
-    const rpc = server();
-    const slot = mount(rpc);
-    await tick();
-    await openScope(slot);
-    const two = slot.getByRole("menuitemcheckbox", {
-      name: "Two",
-      hidden: true,
-    });
-    expect(two.getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(two);
-    await tick();
-    expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-      "Threads: 2 projects",
-    );
-    expect(rows(slot)).toEqual(["p1-root", "p1-child-of-p2"]);
-    // Unchecking the last project returns to All projects rather than an empty view.
-    fireEvent.click(
-      slot.getByRole("menuitemcheckbox", { name: "One", hidden: true }),
-    );
-    fireEvent.click(
-      slot.getByRole("menuitemcheckbox", { name: "Three", hidden: true }),
-    );
-    await tick();
-    expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-      "Threads: All projects",
-    );
-    fireEvent.click(
-      slot.getByRole("menuitemcheckbox", { name: "Two", hidden: true }),
-    );
-    await tick();
-
-    fireEvent.click(
-      slot.getByRole("menuitem", { name: "New space…", hidden: true }),
-    );
-    await tick();
-    const form = slot.getByRole("form", { name: "New space" });
-    expect(form.textContent).toContain("Starts with the 2 selected projects.");
-    await waitFor(() =>
-      expect(document.activeElement).toBe(
-        slot.getByRole("textbox", { name: "Space name" }),
-      ),
-    );
-    fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
-      target: { value: "  Mine " },
-    });
-    fireEvent.submit(form);
-    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
-    expect(rpc.saveSpaces.mock.calls[0][0]).toMatchObject({
-      expectedRevision: 1,
-      spaces: [
-        one,
-        both,
-        { name: "Mine", projectIds: ["project-1", "project-3"] },
-      ],
-    });
-    await waitFor(() =>
-      expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-        "Threads: Mine",
-      ),
-    );
-    expect(slot.queryByRole("form")).toBeNull();
-    expect(JSON.parse(localStorage.getItem(CACHE_KEY)!)).toMatchObject({
-      revision: 2,
     });
   });
 
@@ -297,20 +350,22 @@ describe("spaces", () => {
       ),
     );
 
-    await openScope(slot);
+    await openManage(slot);
     fireEvent.click(
-      slot.getByRole("menuitemcheckbox", { name: "Two", hidden: true }),
+      slot.getByRole("checkbox", { name: "Include Two in Only One" }),
     );
     await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
     expect(rpc.saveSpaces.mock.calls[0][0]).toEqual({
       expectedRevision: 1,
       spaces: [{ ...one, projectIds: ["project-1", "project-2"] }, both],
     });
+    fireEvent.click(slot.getByRole("button", { name: "Back to threads" }));
     await waitFor(() => expect(rows(slot)).toHaveLength(4));
     expect(scopeButton(slot).getAttribute("aria-label")).toBe(
       "Threads: Only One",
     );
 
+    await openScope(slot);
     fireEvent.click(
       slot.getByRole("menuitem", { name: "Rename space…", hidden: true }),
     );

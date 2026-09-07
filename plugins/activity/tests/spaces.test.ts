@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   inScope,
+  moveItem,
   newSpaceId,
   normalizeSpaces,
   resolveScope,
@@ -16,43 +17,44 @@ const catalog = {
 };
 
 describe("scope resolution", () => {
-  it("resolves a saved space, an ad-hoc selection, and All projects", () => {
-    const space = resolveScope(catalog, { spaceId: "work", projectIds: ["p9"] });
+  it("resolves a saved space and All projects", () => {
+    const space = resolveScope(catalog, "work");
     expect(space.kind).toBe("space");
     expect(inScope(space, "p1")).toBe(true);
     expect(inScope(space, "p9")).toBe(false);
     expect(scopeLabel(space)).toBe("Client work");
 
-    const adhoc = resolveScope(catalog, { spaceId: null, projectIds: ["p3"] });
-    expect(adhoc.kind).toBe("projects");
-    expect(inScope(adhoc, "p3")).toBe(true);
-    expect(inScope(adhoc, "p1")).toBe(false);
-    expect(scopeLabel(adhoc)).toBe("1 project");
-    expect(
-      scopeLabel(resolveScope(catalog, { spaceId: null, projectIds: ["a", "b"] })),
-    ).toBe("2 projects");
-
-    const all = resolveScope(catalog, { spaceId: null, projectIds: [] });
+    const all = resolveScope(catalog, null);
     expect(all.kind).toBe("all");
     expect(inScope(all, "anything")).toBe(true);
     expect(scopeLabel(all)).toBe("All projects");
   });
-  it("falls back when the selected space is gone, without reviving ad-hoc ids", () => {
-    // A saved-space selection clears projectIds, so this only guards the type.
-    const scope = resolveScope(catalog, { spaceId: "gone", projectIds: [] });
-    expect(scope.kind).toBe("all");
+  it("falls back to All projects when the selected space is gone", () => {
+    expect(resolveScope(catalog, "gone").kind).toBe("all");
   });
   it("treats an empty space as showing nothing", () => {
-    const scope = resolveScope(catalog, { spaceId: "empty", projectIds: [] });
+    const scope = resolveScope(catalog, "empty");
     expect(scope.kind).toBe("space");
     expect(inScope(scope, "p1")).toBe(false);
+  });
+});
+
+describe("moveItem", () => {
+  it("moves an item to a new index and ignores out-of-range moves", () => {
+    expect(moveItem(["a", "b", "c"], 0, 2)).toEqual(["b", "c", "a"]);
+    expect(moveItem(["a", "b", "c"], 2, 0)).toEqual(["c", "a", "b"]);
+    expect(moveItem(["a", "b", "c"], 1, 1)).toEqual(["a", "b", "c"]);
+    expect(moveItem(["a", "b", "c"], 1, 3)).toEqual(["a", "b", "c"]);
+    expect(moveItem(["a", "b", "c"], -1, 0)).toEqual(["a", "b", "c"]);
   });
 });
 
 describe("catalog normalization", () => {
   it("trims names and removes repeated project ids", () => {
     expect(
-      normalizeSpaces([{ id: "a", name: "  A  ", projectIds: ["x", "x", "y"] }]),
+      normalizeSpaces([
+        { id: "a", name: "  A  ", projectIds: ["x", "x", "y"] },
+      ]),
     ).toEqual([{ id: "a", name: "A", projectIds: ["x", "y"] }]);
   });
   it.each([

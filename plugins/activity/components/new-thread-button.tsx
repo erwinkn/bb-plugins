@@ -1,7 +1,6 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { inScope, type Scope } from "../lib/spaces";
+import { inScope, type Scope, type ScopeProject } from "../lib/spaces";
 import { MenuContent, menuItemClass } from "./menus";
-import type { ScopeProject } from "./scope-menu";
 
 const buttonClass =
   "rounded px-2 py-1 text-lg leading-none text-muted-foreground outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring";

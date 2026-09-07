@@ -1,13 +1,9 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { useRef } from "react";
 import type { SpaceCatalog } from "../lib/space-schema";
-import { inScope, scopeLabel, type Scope } from "../lib/spaces";
+import { scopeLabel, type Scope } from "../lib/spaces";
 import { MenuContent, menuItemClass } from "./menus";
 
-export interface ScopeProject {
-  id: string;
-  name: string;
-}
 export type SpaceEdit = "create" | "rename" | "delete";
 
 const chevron = (
@@ -25,25 +21,22 @@ const chevron = (
   </svg>
 );
 
-// The Threads heading is the scope selector: saved spaces above, the project
-// checklist below. In All projects every project is checked; unchecking one
-// starts an ad-hoc selection. With a space selected, toggling edits the space.
+// The Threads heading is the scope selector: All projects or a saved space.
+// Membership and project management live in the Manage view.
 export function ScopeMenu({
   scope,
   catalog,
-  projects,
   onSelectAll,
   onSelectSpace,
-  onToggleProject,
   onEdit,
+  onManage,
 }: {
   scope: Scope;
   catalog: SpaceCatalog;
-  projects: ScopeProject[];
   onSelectAll: () => void;
   onSelectSpace: (id: string) => void;
-  onToggleProject: (id: string) => void;
   onEdit: (edit: SpaceEdit) => void;
+  onManage: () => void;
 }) {
   const label = scopeLabel(scope);
   // An edit action opens a form that needs focus. Radix would otherwise move
@@ -53,13 +46,7 @@ export function ScopeMenu({
     editing.current = true;
     onEdit(kind);
   };
-  const radioValue =
-    scope.kind === "space" ? scope.space.id : scope.kind === "all" ? "all" : "";
-  // Members that BB no longer lists stay visible so they can be removed.
-  const listed = new Set(projects.map((project) => project.id));
-  const unavailable = [...(scope.projectIds ?? [])]
-    .filter((id) => !listed.has(id))
-    .map((id) => ({ id, name: "Unavailable project" }));
+  const radioValue = scope.kind === "space" ? scope.space.id : "all";
   return (
     <Menu.Root>
       <Menu.Trigger
@@ -101,35 +88,29 @@ export function ScopeMenu({
           ))}
         </Menu.RadioGroup>
         <Menu.Separator className="my-1 h-px bg-border" />
-        <Menu.Label className="px-2 py-1 text-xs text-muted-foreground">
-          {scope.kind === "space" ? `Projects in ${scope.space.name}` : "Projects"}
-        </Menu.Label>
-        {[...projects, ...unavailable].map((project) => (
-          <Menu.CheckboxItem
-            key={project.id}
-            checked={inScope(scope, project.id)}
-            onSelect={(event) => event.preventDefault()}
-            onCheckedChange={() => onToggleProject(project.id)}
-            className={menuItemClass}
-          >
-            <span className="min-w-0 flex-1 truncate">{project.name}</span>
-            <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
-          </Menu.CheckboxItem>
-        ))}
-        <Menu.Separator className="my-1 h-px bg-border" />
         <Menu.Item className={menuItemClass} onSelect={() => edit("create")}>
           New space…
         </Menu.Item>
         {scope.kind === "space" && (
           <>
-            <Menu.Item className={menuItemClass} onSelect={() => edit("rename")}>
+            <Menu.Item
+              className={menuItemClass}
+              onSelect={() => edit("rename")}
+            >
               Rename space…
             </Menu.Item>
-            <Menu.Item className={menuItemClass} onSelect={() => edit("delete")}>
+            <Menu.Item
+              className={menuItemClass}
+              onSelect={() => edit("delete")}
+            >
               Delete space…
             </Menu.Item>
           </>
         )}
+        <Menu.Separator className="my-1 h-px bg-border" />
+        <Menu.Item className={menuItemClass} onSelect={onManage}>
+          Manage spaces and projects…
+        </Menu.Item>
       </MenuContent>
     </Menu.Root>
   );

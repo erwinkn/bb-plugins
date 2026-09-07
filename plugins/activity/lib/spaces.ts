@@ -35,31 +35,26 @@ export function newSpaceId(): string {
   return `space-${random}`;
 }
 
-export interface ScopeSelection {
-  /** A saved space, or null for an ad-hoc or empty selection. */
-  spaceId: string | null;
-  /** Ad-hoc project selection; ignored while a saved space is selected. */
-  projectIds: string[];
+export interface ScopeProject {
+  id: string;
+  name: string;
 }
 export type Scope =
   | { kind: "all"; projectIds: null }
-  | { kind: "space"; space: Space; projectIds: Set<string> }
-  | { kind: "projects"; projectIds: Set<string> };
+  | { kind: "space"; space: Space; projectIds: Set<string> };
 
 // A selected space that no longer exists resolves to All projects; the
-// caller shows the notice. Ad-hoc selections with no projects mean All.
+// caller shows the notice.
 export function resolveScope(
   catalog: SpaceCatalog,
-  selection: ScopeSelection,
+  spaceId: string | null,
 ): Scope {
-  if (selection.spaceId) {
-    const space = catalog.spaces.find((s) => s.id === selection.spaceId);
-    if (space)
-      return { kind: "space", space, projectIds: new Set(space.projectIds) };
-  }
-  if (selection.projectIds.length)
-    return { kind: "projects", projectIds: new Set(selection.projectIds) };
-  return { kind: "all", projectIds: null };
+  const space = spaceId
+    ? catalog.spaces.find((s) => s.id === spaceId)
+    : undefined;
+  return space
+    ? { kind: "space", space, projectIds: new Set(space.projectIds) }
+    : { kind: "all", projectIds: null };
 }
 
 export function inScope(scope: Scope, projectId: string): boolean {
@@ -67,14 +62,25 @@ export function inScope(scope: Scope, projectId: string): boolean {
 }
 
 export function scopeLabel(scope: Scope): string {
-  switch (scope.kind) {
-    case "all":
-      return "All projects";
-    case "space":
-      return scope.space.name;
-    case "projects":
-      return scope.projectIds.size === 1
-        ? "1 project"
-        : `${scope.projectIds.size} projects`;
-  }
+  return scope.kind === "all" ? "All projects" : scope.space.name;
+}
+
+/** Move the item at `from` to `to`, returning a new array. */
+export function moveItem<T>(
+  items: readonly T[],
+  from: number,
+  to: number,
+): T[] {
+  if (
+    from === to ||
+    from < 0 ||
+    to < 0 ||
+    from >= items.length ||
+    to >= items.length
+  )
+    return [...items];
+  const next = [...items];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item as T);
+  return next;
 }

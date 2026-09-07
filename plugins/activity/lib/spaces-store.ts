@@ -54,7 +54,8 @@ export function registerSpaces(bb: BbPluginApi) {
   });
   bb.cli.register({
     name: "activity",
-    summary: "Threads sidebar spaces: named project selections shared by all clients",
+    summary:
+      "Threads sidebar spaces: named project selections shared by all clients",
     commands: [
       {
         name: "spaces-export",
