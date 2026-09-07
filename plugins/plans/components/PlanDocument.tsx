@@ -22,7 +22,9 @@ import {
   clearHighlightRanges,
   setHighlightRanges,
   supportsHighlights,
+  type HighlightEntry,
 } from "../lib/highlight-registry";
+import { KindBadge, kindOf } from "./CommentKind";
 import {
   definedContext,
   indexTextNodes,
@@ -42,6 +44,9 @@ interface PlanDocumentProps {
   visible?: boolean;
   comments: PlanComment[];
   activeCommentId: string | null;
+  /** Comment under the pointer, in the document or in the rail. */
+  hoveredCommentId?: string | null;
+  onHoverComment?: (commentId: string | null) => void;
   canComment: boolean;
   /** Quote being composed; its match is reported so the composer can warn. */
   pendingQuote: string | null;
@@ -67,6 +72,7 @@ const FLOATING_EDGE = 90;
 const COMPOSER_WIDTH = 320;
 const COMPOSER_MARGIN = 8;
 const COMPOSER_ARROW = 8;
+const TOOLTIP_WIDTH = 280;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -83,6 +89,8 @@ export function PlanDocument({
   visible = true,
   comments,
   activeCommentId,
+  hoveredCommentId = null,
+  onHoverComment,
   canComment,
   pendingQuote,
   pendingContext,
@@ -171,23 +179,22 @@ export function PlanDocument({
     return () => observer.disconnect();
   }, []);
 
-  // Paint anchors; unresolved comments read stronger than resolved ones.
+  // Paint anchors. Resolved comments stay unpainted; the active or hovered
+  // comment gets the emphasized tier of its kind.
   useEffect(() => {
     if (!supportsHighlights()) return;
-    const ranges: Range[] = [];
-    const active: Range[] = [];
-    const redlines: Range[] = [];
-    const positives: Range[] = [];
+    const entries: HighlightEntry[] = [];
     for (const comment of comments) {
       const range = rangesRef.current.get(comment.id);
-      if (range === undefined) continue;
-      if (!comment.resolved && comment.kind === "redline") redlines.push(range);
-      else if (!comment.resolved && comment.kind === "looksGood") positives.push(range);
-      else if (comment.id === activeCommentId) active.push(range);
-      else if (!comment.resolved) ranges.push(range);
+      if (range === undefined || comment.resolved) continue;
+      entries.push({
+        range,
+        kind: comment.kind ?? "comment",
+        emphasized: comment.id === activeCommentId || comment.id === hoveredCommentId,
+      });
     }
-    if (pendingRangeRef.current !== null) active.push(pendingRangeRef.current);
-    setHighlightRanges(ownerId, ranges, active, redlines, positives);
+    if (pendingRangeRef.current !== null) entries.push({ range: pendingRangeRef.current, kind: "comment", emphasized: true });
+    setHighlightRanges(ownerId, entries);
     return () => clearHighlightRanges(ownerId);
   });
 
@@ -202,6 +209,44 @@ export function PlanDocument({
     const target = bounds.top - origin.top + scroller.scrollTop - origin.height / 3;
     scroller.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
   }, [activeCommentId, visible, markdown]);
+
+  const commentAtPoint = (doc: Document, x: number, y: number): string | null => {
+    if (rangesRef.current.size === 0) return null;
+    const point = caretFromPoint(doc, x, y);
+    if (point === null) return null;
+    for (const [commentId, range] of rangesRef.current) {
+      if (range.isPointInRange(point.node, point.offset)) return commentId;
+    }
+    return null;
+  };
+
+  // Hover follows the same hit test as click; throttled to a frame because
+  // caretPositionFromPoint is not free on long documents.
+  const hoverFrame = useRef<number | null>(null);
+  // Only a hover that started in the document shows the tooltip; a hovered
+  // rail card already shows its own text.
+  const [pointerHoverId, setPointerHoverId] = useState<string | null>(null);
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!onHoverComment || isCoarse || event.pointerType === "touch") return;
+    if (hoverFrame.current !== null) return;
+    const { clientX, clientY, currentTarget } = event;
+    hoverFrame.current = requestAnimationFrame(() => {
+      hoverFrame.current = null;
+      const live = currentTarget.ownerDocument.getSelection();
+      if (live && !live.isCollapsed) return;
+      const id = commentAtPoint(currentTarget.ownerDocument, clientX, clientY);
+      setPointerHoverId(id);
+      onHoverComment(id);
+    });
+  };
+  const handlePointerLeave = () => {
+    if (hoverFrame.current !== null) {
+      cancelAnimationFrame(hoverFrame.current);
+      hoverFrame.current = null;
+    }
+    setPointerHoverId(null);
+    onHoverComment?.(null);
+  };
 
   const handleClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (rangesRef.current.size === 0) return;
@@ -276,6 +321,12 @@ export function PlanDocument({
   });
 
   const composerPosition = composerPlacement(pendingRangeRef.current, scrollRef.current);
+  const hovered =
+    hoveredCommentId === null || hoveredCommentId !== pointerHoverId || isCoarse
+      ? null
+      : comments.find((comment) => comment.id === hoveredCommentId) ?? null;
+  const hoverPosition =
+    hovered === null ? null : composerPlacement(rangesRef.current.get(hovered.id) ?? null, scrollRef.current, TOOLTIP_WIDTH);
   const showComposer = visible && composer !== undefined && pendingQuote !== null;
   const composerRef = useRef<HTMLDivElement>(null);
   // A quote near the bottom edge would push its composer out of view.
@@ -306,6 +357,8 @@ export function PlanDocument({
         <div
           ref={contentRef}
           onClick={handleClick}
+          onPointerMove={handlePointerMove}
+          onPointerLeave={handlePointerLeave}
           className={cn(
             "w-full px-4 pb-24 pt-5 md:pt-6",
             canComment && "cursor-text",
@@ -313,6 +366,9 @@ export function PlanDocument({
         >
           <Markdown content={markdown} />
         </div>
+        {visible && hovered !== null && hoverPosition !== null && pendingQuote === null ? (
+          <CommentTooltip comment={hovered} position={hoverPosition} />
+        ) : null}
         {showComposer && composerPosition !== null ? (
           <div
             ref={composerRef}
@@ -379,6 +435,31 @@ export function PlanDocument({
   );
 }
 
+/** What the hovered passage says, shown under it without stealing the pointer. */
+function CommentTooltip({ comment, position }: { comment: PlanComment; position: { top: number; left: number; arrowLeft: number } }) {
+  const kind = kindOf(comment);
+  return (
+    <div
+      role="tooltip"
+      className="pointer-events-none absolute z-10 animate-in fade-in-0 duration-100"
+      style={{ top: position.top, left: position.left, width: TOOLTIP_WIDTH }}
+    >
+      <span
+        aria-hidden
+        className="absolute -top-1 size-2 rotate-45 border-l border-t border-border bg-popover"
+        style={{ left: position.arrowLeft - 4 }}
+      />
+      <div className="space-y-1 rounded-md border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          <KindBadge kind={kind} />
+          {kind === "comment" || comment.body ? <span>{comment.sentAt === null ? "Draft" : "Sent"}</span> : null}
+        </div>
+        {comment.body ? <p className="whitespace-pre-wrap break-words leading-5">{comment.body}</p> : null}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Where the composer sits relative to the scroller's padding box: just under
  * the pending passage, with its arrow at the passage's horizontal centre.
@@ -386,6 +467,7 @@ export function PlanDocument({
 function composerPlacement(
   range: Range | null,
   scroller: HTMLElement | null,
+  width = COMPOSER_WIDTH,
 ): { top: number; left: number; arrowLeft: number } | null {
   if (range === null || scroller === null) return null;
   const bounds = range.getBoundingClientRect();
@@ -394,16 +476,16 @@ function composerPlacement(
   const rects = range.getClientRects();
   const last = rects.length > 0 ? rects[rects.length - 1] : bounds;
   const center = last.left + last.width / 2 - origin.left + scroller.scrollLeft;
-  const width = scroller.clientWidth;
+  const available = scroller.clientWidth;
   const left = clamp(
-    center - COMPOSER_WIDTH / 2,
+    center - width / 2,
     COMPOSER_MARGIN,
-    Math.max(COMPOSER_MARGIN, width - COMPOSER_WIDTH - COMPOSER_MARGIN),
+    Math.max(COMPOSER_MARGIN, available - width - COMPOSER_MARGIN),
   );
   return {
     top: bounds.bottom - origin.top + scroller.scrollTop + COMPOSER_ARROW + 2,
     left,
-    arrowLeft: clamp(center - left, 16, COMPOSER_WIDTH - 16),
+    arrowLeft: clamp(center - left, 16, width - 16),
   };
 }
 

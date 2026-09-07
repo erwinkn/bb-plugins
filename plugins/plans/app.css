@@ -3,18 +3,50 @@
    Highlight API, and small document adjustments. Colors come from host
    tokens so every BB palette stays intact. */
 
+/* Resting anchors stay quiet: a thin underline and a faint wash. The active
+   or hovered comment gets the strong version of the same colour. */
 ::highlight(plans-comment) {
-  background-color: color-mix(in oklab, var(--warning) 28%, transparent);
+  background-color: color-mix(in oklab, var(--warning) 12%, transparent);
   text-decoration: underline;
-  text-decoration-color: color-mix(in oklab, var(--warning) 70%, transparent);
-  text-decoration-thickness: 2px;
+  text-decoration-color: color-mix(in oklab, var(--warning) 55%, transparent);
+  text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
 
 ::highlight(plans-comment-active) {
-  background-color: color-mix(in oklab, var(--warning) 50%, transparent);
+  background-color: color-mix(in oklab, var(--warning) 38%, transparent);
   text-decoration: underline;
   text-decoration-color: var(--warning);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+::highlight(plans-redline) {
+  background-color: color-mix(in oklab, var(--destructive) 8%, transparent);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, var(--destructive) 70%, transparent);
+  text-decoration-thickness: 1.5px;
+}
+
+::highlight(plans-redline-active) {
+  background-color: color-mix(in oklab, var(--destructive) 22%, transparent);
+  text-decoration: line-through;
+  text-decoration-color: var(--destructive);
+  text-decoration-thickness: 2px;
+}
+
+::highlight(plans-looks-good) {
+  background-color: color-mix(in oklab, var(--success) 12%, transparent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--success) 60%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+::highlight(plans-looks-good-active) {
+  background-color: color-mix(in oklab, var(--success) 30%, transparent);
+  text-decoration: underline;
+  text-decoration-color: var(--success);
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
 }
@@ -29,15 +61,3 @@
   overscroll-behavior: contain;
 }
 
-::highlight(plans-redline) {
-  background-color: color-mix(in oklab, var(--destructive) 15%, transparent);
-  text-decoration: line-through;
-  text-decoration-color: var(--destructive);
-  text-decoration-thickness: 2px;
-}
-
-::highlight(plans-looks-good) {
-  background-color: color-mix(in oklab, var(--success) 25%, transparent);
-  text-decoration: underline;
-  text-decoration-color: var(--success);
-}

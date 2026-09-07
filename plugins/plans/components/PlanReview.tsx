@@ -77,6 +77,7 @@ export function PlanReview({
   const version = findVersion(plan, selectedVersionId) ?? latest;
   const [view, setView] = useState<ReviewView>("document");
   const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
+  const [hoveredCommentId, setHoveredCommentId] = useState<string | null>(null);
   const [anchors, setAnchors] = useState<AnchorMap>({});
   const [pendingMatch, setPendingMatch] = useState<QuoteMatch | null>(null);
   const [reviseOpen, setReviseOpen] = useState(false);
@@ -359,6 +360,8 @@ export function PlanReview({
               markdown={version.markdown}
               comments={comments}
               activeCommentId={activeCommentId}
+              hoveredCommentId={hoveredCommentId}
+              onHoverComment={setHoveredCommentId}
               canComment={canEdit}
               pendingQuote={pending?.quote ?? null}
               pendingContext={pending ?? undefined}
@@ -401,6 +404,8 @@ export function PlanReview({
                 setActiveCommentId(id);
                 if (id !== null) setView("document");
               }}
+              hoveredCommentId={hoveredCommentId}
+              onHover={setHoveredCommentId}
               actions={commentActions}
               canEdit={!isApproved && submitting === null}
               pending={pending}
@@ -415,6 +420,8 @@ export function PlanReview({
               anchors={anchors}
               activeCommentId={activeCommentId}
               onActivate={setActiveCommentId}
+              hoveredCommentId={hoveredCommentId}
+              onHover={setHoveredCommentId}
               actions={commentActions}
               canEdit={!isApproved && submitting === null}
               pending={pending}

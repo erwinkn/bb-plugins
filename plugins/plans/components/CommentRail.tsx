@@ -7,6 +7,7 @@ import type { PlanComment } from "../contract";
 import { formatRelativeTime } from "../lib/time";
 import type { QuoteContext, QuoteMatch } from "../lib/quote-anchor";
 import type { AnchorMap } from "./PlanDocument";
+import { KindBadge, kindOf, Quote } from "./CommentKind";
 
 export interface PendingComment extends QuoteContext {
   quote: string;
@@ -23,6 +24,9 @@ interface CommentRailProps {
   anchors: AnchorMap;
   activeCommentId: string | null;
   onActivate: (commentId: string | null) => void;
+  /** Hover is shared with the document so either side lights up the other. */
+  hoveredCommentId?: string | null;
+  onHover?: (commentId: string | null) => void;
   actions: CommentActions;
   /** Editing and deleting unsent comments on an unapproved plan. */
   canEdit: boolean;
@@ -40,6 +44,8 @@ export function CommentRail({
   anchors,
   activeCommentId,
   onActivate,
+  hoveredCommentId = null,
+  onHover,
   actions,
   canEdit,
   pending,
@@ -79,7 +85,9 @@ export function CommentRail({
                   comment={comment}
                   anchor={anchors[comment.id]}
                   isActive={comment.id === activeCommentId}
+                  isHovered={comment.id === hoveredCommentId}
                   onActivate={() => onActivate(comment.id === activeCommentId ? null : comment.id)}
+                  onHover={onHover}
                   actions={actions}
                   canEdit={canEdit}
                 />
@@ -178,47 +186,6 @@ export function CommentComposer({
   );
 }
 
-type CommentKind = NonNullable<PlanComment["kind"]>;
-
-/** Colors and labels follow the document highlights for the same kind. */
-const KIND_STYLE: Record<
-  CommentKind,
-  { border: string; text: string; icon: "X" | "Check" | null; label: string | null }
-> = {
-  comment: { border: "border-warning", text: "", icon: null, label: null },
-  redline: { border: "border-destructive", text: "text-destructive", icon: "X", label: "Redline" },
-  looksGood: { border: "border-success", text: "text-success", icon: "Check", label: "Looks good" },
-};
-
-function kindOf(comment: PlanComment): CommentKind {
-  return comment.kind ?? "comment";
-}
-
-function Quote({ text, kind, muted }: { text: string; kind: CommentKind; muted?: boolean }) {
-  return (
-    <blockquote
-      className={cn(
-        "border-l-2 pl-2.5 text-xs leading-5 text-muted-foreground",
-        muted ? "border-border" : KIND_STYLE[kind].border,
-        kind === "redline" && !muted && "line-through decoration-destructive/50",
-      )}
-    >
-      <span className="line-clamp-2 break-words">{text}</span>
-    </blockquote>
-  );
-}
-
-function KindBadge({ kind }: { kind: CommentKind }) {
-  const style = KIND_STYLE[kind];
-  if (style.label === null || style.icon === null) return null;
-  return (
-    <span className={cn("inline-flex items-center gap-1 font-medium", style.text)}>
-      <Icon name={style.icon} className="size-3" aria-hidden />
-      {style.label}
-    </span>
-  );
-}
-
 function anchorNote(anchor: QuoteMatch | undefined): string | null {
   if (anchor?.kind === "ambiguous")
     return `This passage appears ${anchor.count} times, so it is not highlighted.`;
@@ -230,12 +197,14 @@ interface CommentCardProps {
   comment: PlanComment;
   anchor?: QuoteMatch;
   isActive: boolean;
+  isHovered: boolean;
   onActivate: () => void;
+  onHover?: (commentId: string | null) => void;
   actions: CommentActions;
   canEdit: boolean;
 }
 
-function CommentCard({ comment, anchor, isActive, onActivate, actions, canEdit }: CommentCardProps) {
+function CommentCard({ comment, anchor, isActive, isHovered, onActivate, onHover, actions, canEdit }: CommentCardProps) {
   const [isEditing, setEditing] = useState(false);
   const [body, setBody] = useState(comment.body);
   const [isBusy, setBusy] = useState(false);
@@ -260,9 +229,14 @@ function CommentCard({ comment, anchor, isActive, onActivate, actions, canEdit }
   return (
     <article
       aria-current={isActive ? "true" : undefined}
+      onPointerEnter={(event) => {
+        if (event.pointerType !== "touch") onHover?.(comment.id);
+      }}
+      onPointerLeave={() => onHover?.(null)}
       className={cn(
         "group relative space-y-1.5 px-3 py-2.5 transition-colors duration-150",
         isActive && "bg-state-active",
+        isHovered && !isActive && "bg-state-hover",
         comment.resolved && !isActive && "opacity-70",
       )}
     >

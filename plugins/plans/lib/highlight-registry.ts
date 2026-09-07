@@ -1,14 +1,31 @@
 /**
  * Comment anchors are painted with the CSS Custom Highlight API so the host's
  * rendered Markdown DOM is never mutated. Highlight names are document-global,
- * so every mounted document contributes its ranges to two shared entries.
- * Browsers without the API simply show no anchors; comment cards still quote.
+ * so every mounted document contributes its ranges to the shared entries: one
+ * per annotation kind, plus an emphasized variant for the active or hovered
+ * comment. Browsers without the API simply show no anchors; comment cards
+ * still quote.
  */
 
 export const HIGHLIGHT_NAME = "plans-comment";
 export const ACTIVE_HIGHLIGHT_NAME = "plans-comment-active";
 
-type HighlightLike = { add(range: AbstractRange): void; clear(): void };
+export type HighlightKind = "comment" | "redline" | "looksGood";
+
+export interface HighlightEntry {
+  range: Range;
+  kind: HighlightKind;
+  /** Active or hovered: painted stronger, above the resting highlights. */
+  emphasized: boolean;
+}
+
+const NAMES: Record<HighlightKind, { rest: string; emphasis: string }> = {
+  comment: { rest: HIGHLIGHT_NAME, emphasis: ACTIVE_HIGHLIGHT_NAME },
+  redline: { rest: "plans-redline", emphasis: "plans-redline-active" },
+  looksGood: { rest: "plans-looks-good", emphasis: "plans-looks-good-active" },
+};
+
+type HighlightLike = { add(range: AbstractRange): void; clear(): void; priority?: number };
 type HighlightRegistry = {
   set(name: string, highlight: HighlightLike): void;
   delete(name: string): void;
@@ -25,29 +42,32 @@ function api(): { registry: HighlightRegistry; Highlight: HighlightConstructor }
 
 export const supportsHighlights = (): boolean => api() !== null;
 
-const owners = new Map<string, { ranges: Range[]; active: Range[]; redlines: Range[]; positives: Range[] }>();
+const owners = new Map<string, HighlightEntry[]>();
 
 function repaint(): void {
   const current = api();
   if (current === null) return;
-  const all: Range[] = [];
-  const active: Range[] = [];
-  const redlines: Range[] = [];
-  const positives: Range[] = [];
-  for (const entry of owners.values()) {
-    all.push(...entry.ranges);
-    active.push(...entry.active);
-    redlines.push(...entry.redlines);
-    positives.push(...entry.positives);
+  const groups = new Map<string, Range[]>();
+  for (const { rest, emphasis } of Object.values(NAMES)) {
+    groups.set(rest, []);
+    groups.set(emphasis, []);
   }
-  current.registry.set("plans-redline", new current.Highlight(...redlines));
-  current.registry.set("plans-looks-good", new current.Highlight(...positives));
-  current.registry.set(HIGHLIGHT_NAME, new current.Highlight(...all));
-  current.registry.set(ACTIVE_HIGHLIGHT_NAME, new current.Highlight(...active));
+  for (const entries of owners.values()) {
+    for (const entry of entries) {
+      const names = NAMES[entry.kind];
+      groups.get(entry.emphasized ? names.emphasis : names.rest)!.push(entry.range);
+    }
+  }
+  for (const [name, ranges] of groups) {
+    const highlight = new current.Highlight(...ranges);
+    // An emphasized passage paints over any resting highlight it overlaps.
+    if (name.endsWith("-active")) highlight.priority = 1;
+    current.registry.set(name, highlight);
+  }
 }
 
-export function setHighlightRanges(ownerId: string, ranges: Range[], active: Range[], redlines: Range[] = [], positives: Range[] = []): void {
-  owners.set(ownerId, { ranges, active, redlines, positives });
+export function setHighlightRanges(ownerId: string, entries: HighlightEntry[]): void {
+  owners.set(ownerId, entries);
   repaint();
 }
 

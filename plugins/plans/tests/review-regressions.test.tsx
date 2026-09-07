@@ -14,7 +14,7 @@ import { useState, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan, PlanComment } from "../contract";
 import { readDraft } from "../lib/draft-store";
-import { HIGHLIGHT_NAME } from "../lib/highlight-registry";
+import { ACTIVE_HIGHLIGHT_NAME, HIGHLIGHT_NAME } from "../lib/highlight-registry";
 import { commentsForVersion } from "../lib/plan-model";
 import { MAX_QUOTE_LENGTH, type QuoteMatch } from "../lib/quote-anchor";
 
@@ -390,6 +390,61 @@ describe("activating a comment from the document", () => {
     fireEvent.click(screen.getByText(/Keep the existing data/), { clientX: 10, clientY: 10 });
 
     expect(onActivateComment).toHaveBeenCalledWith("keep");
+  });
+
+  it("reports the comment under the pointer and shows what it says", async () => {
+    const onHoverComment = vi.fn();
+    const { content, rerender } = renderDocument({
+      markdown,
+      comments: [{ ...saved, body: "Keep this, it is load-bearing." }],
+      onHoverComment,
+    });
+    caretTarget = textNodeContaining(content(), "existing");
+    caretTarget.offset += 2;
+
+    fireEvent.pointerMove(screen.getByText(/Keep the existing data/), { clientX: 10, clientY: 10, pointerType: "mouse" });
+    await act(nextFrame);
+    expect(onHoverComment).toHaveBeenLastCalledWith("keep");
+
+    // jsdom has no layout; give the passage a box so the tooltip can be placed.
+    const rect = { top: 40, left: 20, width: 80, height: 16, bottom: 56, right: 100, x: 20, y: 40, toJSON() {} } as DOMRect;
+    const boundsSpy = vi.spyOn(Range.prototype, "getBoundingClientRect").mockReturnValue(rect);
+    Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
+    const rectsSpy = vi.spyOn(Range.prototype, "getClientRects").mockReturnValue([rect] as unknown as DOMRectList);
+    rerender(
+      <PlanDocument
+        markdown={markdown}
+        comments={[{ ...saved, body: "Keep this, it is load-bearing." }]}
+        activeCommentId={null}
+        hoveredCommentId="keep"
+        onHoverComment={onHoverComment}
+        canComment
+        pendingQuote={null}
+        onQuote={vi.fn()}
+        onActivateComment={vi.fn()}
+        onAnchorsChange={vi.fn()}
+        onPendingMatch={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("tooltip").textContent).toContain("Keep this, it is load-bearing.");
+    expect(paintedQuotes(ACTIVE_HIGHLIGHT_NAME)).toEqual(["existing data"]);
+    expect(paintedQuotes()).toEqual([]);
+    boundsSpy.mockRestore();
+    rectsSpy.mockRestore();
+
+    fireEvent.pointerLeave(content().firstElementChild!);
+    expect(onHoverComment).toHaveBeenLastCalledWith(null);
+  });
+
+  it("paints a rail-hovered redline in its emphasized tier without a tooltip", () => {
+    renderDocument({
+      markdown,
+      comments: [comment({ id: "cut", quote: "the cache", kind: "redline" })],
+      hoveredCommentId: "cut",
+    });
+    expect(paintedQuotes("plans-redline-active")).toEqual(["the cache"]);
+    expect(paintedQuotes("plans-redline")).toEqual([]);
+    expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
   it("does not jump to an old comment when a drag-select ends over its highlight", async () => {
