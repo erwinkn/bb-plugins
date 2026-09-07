@@ -84,7 +84,6 @@ interface SubmissionRow {
   question_ids_json: string;
   snapshot_json: string;
   error: string | null;
-  retry_of: string | null;
   created_at: number;
   settled_at: number | null;
 }
@@ -152,10 +151,8 @@ function rowToSubmission(row: SubmissionRow): Submission {
     questionIds: JSON.parse(row.question_ids_json) as string[],
     snapshot,
     error: row.error,
-    retryOf: row.retry_of,
     createdAt: row.created_at,
     settledAt: row.settled_at,
-    canRetry: false,
   };
 }
 
@@ -172,17 +169,6 @@ export class QuestionsStore {
         this.db.prepare(`DELETE FROM ${table} WHERE thread_id = ?`).run(threadId);
       }
     })();
-  }
-
-  /** Any later attempt supersedes a retry of older answers for the same question. */
-  hasNewerAttempt(threadId: string, submissionId: string, questionIds: string[]): boolean {
-    const query = this.db.prepare<[string, string, string], { found: number }>(
-      `SELECT 1 AS found FROM submissions s
-       WHERE s.thread_id = ? AND s.rowid > (SELECT rowid FROM submissions WHERE id = ?)
-         AND EXISTS (SELECT 1 FROM json_each(s.question_ids_json) WHERE value = ?)
-       LIMIT 1`,
-    );
-    return questionIds.some((id) => query.get(threadId, submissionId, id) !== undefined);
   }
 
   /** Insert a round with the next number for its thread. */
@@ -345,20 +331,18 @@ export class QuestionsStore {
     threadId: string;
     questionIds: string[];
     snapshot: Record<string, Answer>;
-    retryOf: string | null;
     createdAt: number;
   }): Submission {
     this.db
       .prepare(
-        `INSERT INTO submissions (id, thread_id, state, question_ids_json, snapshot_json, error, retry_of, created_at, settled_at)
-         VALUES (?, ?, 'pending', ?, ?, NULL, ?, ?, NULL)`,
+        `INSERT INTO submissions (id, thread_id, state, question_ids_json, snapshot_json, error, created_at, settled_at)
+         VALUES (?, ?, 'pending', ?, ?, NULL, ?, NULL)`,
       )
       .run(
         input.id,
         input.threadId,
         JSON.stringify(input.questionIds),
         JSON.stringify(input.snapshot),
-        input.retryOf,
         input.createdAt,
       );
     const submission = this.getSubmission(input.threadId, input.id);
@@ -372,14 +356,7 @@ export class QuestionsStore {
         "SELECT * FROM submissions WHERE id = ? AND thread_id = ?",
       )
       .get(submissionId, threadId);
-    return row ? this.submissionWithRetry(row) : null;
-  }
-
-  private submissionWithRetry(row: SubmissionRow): Submission {
-    const submission = rowToSubmission(row);
-    submission.canRetry = (submission.state === "failed" || submission.state === "uncertain")
-      && !this.hasNewerAttempt(submission.threadId, submission.id, submission.questionIds);
-    return submission;
+    return row ? rowToSubmission(row) : null;
   }
 
   listSubmissions(threadId: string, limit: number): Submission[] {
@@ -398,7 +375,7 @@ export class QuestionsStore {
         ) ORDER BY created_at DESC, rowid DESC`,
       )
       .all(threadId, limit);
-    return rows.map((row) => this.submissionWithRetry(row));
+    return rows.map(rowToSubmission);
   }
 
   /** Delivery succeeded: freeze the snapshot as the submitted answer. */
@@ -415,12 +392,19 @@ export class QuestionsStore {
       for (const questionId of input.submission.questionIds) {
         const answer = input.submission.snapshot[questionId];
         if (!answer) continue;
+        // A skipped optional question still has a submitted, empty answer.
+        this.db.prepare(`INSERT OR IGNORE INTO answers
+          (question_id, thread_id, round_id, draft_json, version, updated_at)
+          SELECT ?, ?, id, ?, 0, ? FROM rounds WHERE thread_id = ?
+          AND EXISTS (SELECT 1 FROM json_each(questions_json) WHERE json_extract(value, '$.id') = ?)`)
+          .run(questionId, input.threadId, JSON.stringify(answer), input.settledAt, input.threadId, questionId);
         this.db
           .prepare(
-            `UPDATE answers SET submitted_json = ?, submitted_at = ?, submission_id = ?, updated_at = ?
+            `UPDATE answers SET draft_json = COALESCE(draft_json, ?), submitted_json = ?, submitted_at = ?, submission_id = ?, updated_at = ?
              WHERE question_id = ? AND thread_id = ?`,
           )
           .run(
+            JSON.stringify(answer),
             JSON.stringify(answer),
             input.settledAt,
             input.submission.id,

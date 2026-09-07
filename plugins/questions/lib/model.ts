@@ -50,6 +50,7 @@ export type QuestionOption = z.infer<typeof questionOptionSchema>;
 export const questionSchema = z.object({
   id: z.string().min(1).max(64),
   title: z.string().trim().min(1).max(LIMITS.titleChars),
+  optional: z.boolean().optional(),
   help: z.string().max(LIMITS.helpChars).nullable(),
   /** null means a text-only question. */
   select: z.enum(["single", "multiple"]).nullable(),
@@ -144,12 +145,8 @@ export const submissionSchema = z.object({
   /** Frozen answers as they were at submit time, keyed by question id. */
   snapshot: z.record(z.string(), answerSchema),
   error: z.string().nullable(),
-  /** The id of the submission this one retried, if any. */
-  retryOf: z.string().nullable(),
   createdAt: z.number(),
   settledAt: z.number().nullable(),
-  /** Computed from all stored attempts, including attempts outside the list page. */
-  canRetry: z.boolean(),
 });
 export type Submission = z.infer<typeof submissionSchema>;
 
@@ -217,25 +214,15 @@ export type AnswerStatus = "empty" | "draft" | "done";
 export function answerStatus(state: AnswerState | undefined): AnswerStatus {
   if (!state) return "empty";
   const draft = state.draft;
-  if (!hasContent(draft)) return "empty";
   if (state.submitted !== null && answersEqual(draft, state.submitted)) return "done";
+  if (!hasContent(draft)) return "empty";
   return "draft";
 }
 
-/** Question ids whose draft differs from what was last submitted. */
-export function pendingQuestionIds(
-  rounds: Round[],
-  answers: Map<string, AnswerState>,
-): string[] {
-  const ids: string[] = [];
-  for (const round of rounds) {
-    for (const question of round.questions) {
-      const state = answers.get(question.id);
-      if (!state) continue;
-      if (answerStatus(state) === "draft" && hasContent(state.draft)) ids.push(question.id);
-    }
-  }
-  return ids;
+/** Submission is round-scoped; optional empty answers do not block it. */
+export function canSubmitRound(round: Round, answers: Map<string, AnswerState>): boolean {
+  return round.questions.every((q) => q.optional || hasContent(answers.get(q.id)?.draft))
+    && round.questions.some((q) => answerStatus(answers.get(q.id)) !== "done");
 }
 
 /** "Q1", "Q2", … numbered across every round of the thread, in order. */

@@ -1,5 +1,5 @@
 // The Questions side panel: one tab per round plus a global Summary, and one
-// Submit answered (N) button that sends every changed answer across rounds.
+// Submit button for the selected complete round.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Markdown } from "@get-bb/plugin-sdk/app";
 import type { PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
@@ -12,6 +12,7 @@ import {
   actionableFailures,
   answerText,
   hasContent,
+  canSubmitRound,
 } from "@/lib/model";
 import { type QuestionsController, type SubmitOutcome, useQuestions } from "@/hooks/useQuestions";
 import { subscribeRequestedRound, takeRequestedRound } from "@/lib/panel-navigation";
@@ -61,7 +62,7 @@ function RoundView({ controller, round, onJump, onError }: { controller: Questio
               <div key={question.id} className={cn("pb-0.5 pt-1", border ? "border-t border-[var(--border-seam)]" : "")} data-q={question.id}>
                 <div className="flex items-baseline gap-2 px-3 pt-1.5">
                   <span className="min-w-[26px] text-[12px] tabular-nums text-[var(--subtle-foreground)]">{label}</span>
-                  <span className="min-w-0 flex-1 text-[13px] font-medium [overflow-wrap:anywhere]">{question.title}</span>
+                  <span className="min-w-0 flex-1 text-[13px] font-medium [overflow-wrap:anywhere]">{question.title}{question.optional && <span className="ml-2 text-[12px] font-normal text-muted-foreground">Optional</span>}</span>
                   <TitleControls controller={controller} questionId={question.id} label={label} />
                 </div>
                 <QuestionEditor controller={controller} question={question} full onJump={onJump} onError={onError} />
@@ -80,7 +81,7 @@ function SummaryView({ controller, onJump }: { controller: QuestionsController; 
   const render = (item: { round: Round; question: Question }, draftLabel: boolean) => {
     const label = controller.labels.get(item.question.id) ?? item.question.id;
     const draft = controller.draftOf(item.question.id);
-    const text = hasContent(draft) ? answerText(item.question, draft) : "";
+    const text = hasContent(draft) ? answerText(item.question, draft) : !draftLabel && item.question.optional ? "Skipped (optional)" : "";
     return (
       <div key={item.question.id} className="flex items-start gap-2 rounded-md border-t border-[var(--border-seam)] px-2 py-1.5 hover:bg-[var(--state-hover)]">
         <span className="min-w-[26px] pt-px text-[12px] tabular-nums text-[var(--subtle-foreground)]">{label}</span>
@@ -120,14 +121,7 @@ function SummaryView({ controller, onJump }: { controller: QuestionsController; 
 }
 
 function SubmissionNotice({ controller, submission }: { controller: QuestionsController; submission: Submission }) {
-  const [busy, setBusy] = useState(false);
   const labels = submission.questionIds.map((id) => controller.labels.get(id) ?? id).join(", ");
-  const retry = async () => {
-    setBusy(true);
-    const outcome = await controller.retry(submission.id);
-    setBusy(false);
-    reportOutcome(outcome);
-  };
   return (
     <div role="alert" className="mx-3 mt-2.5 rounded-md border border-[var(--surface-destructive-border)] bg-[var(--surface-destructive)] px-2.5 py-2 text-[12px] text-foreground">
       <div className="font-medium">
@@ -136,13 +130,9 @@ function SubmissionNotice({ controller, submission }: { controller: QuestionsCon
       <div className="mt-0.5 text-muted-foreground">
         {submission.state === "failed"
           ? `The server refused the message: ${submission.error ?? "unknown error"}. Your answers are kept as drafts.`
-          : `The server did not confirm delivery${submission.error ? ` (${submission.error})` : ""}. Your answers are kept as drafts. Look in the thread for a user message mentioning submission ${submission.id.slice(0, 8)} before you retry; a retry sends the same frozen answers again and can duplicate them.`}
+          : `The server did not confirm delivery${submission.error ? ` (${submission.error})` : ""}. Your drafts are kept. Check the thread for submission ${submission.id.slice(0, 8)} before submitting again; this can duplicate answers.`}
       </div>
-      {submission.canRetry ? <div className="mt-1.5 flex gap-1.5">
-        <PanelButton small disabled={busy || controller.submitting} onClick={() => void retry()}>
-          Retry this submission
-        </PanelButton>
-      </div> : <div className="mt-1.5 text-muted-foreground">A newer attempt includes some of these answers. Check the thread, then submit any remaining drafts with Submit answered.</div>}
+      <div className="mt-1.5 text-muted-foreground">Check the result, then submit the complete round again if needed.</div>
     </div>
   );
 }
@@ -244,10 +234,11 @@ export function QuestionsPanel({ threadId, params }: PluginThreadPanelProps) {
 
   const activeRound = tab?.kind === "round" ? controller.rounds.find((round) => round.id === tab.roundId) ?? null : null;
   const openCount = controller.rounds.reduce((count, round) => count + round.questions.filter((question) => controller.statusOf(question.id) !== "done").length, 0);
-  const pending = controller.pendingIds.length;
+  const ready = activeRound !== null && canSubmitRound(activeRound, controller.answers);
 
   const onSubmit = async () => {
-    const outcome = await controller.submit();
+    if (!activeRound) return;
+    const outcome = await controller.submit(activeRound.id);
     reportOutcome(outcome);
   };
 
@@ -318,8 +309,8 @@ export function QuestionsPanel({ threadId, params }: PluginThreadPanelProps) {
             : "Draft saved"}
         </Hint>}
         <span className="flex-1" />
-        <PanelButton small primary disabled={pending === 0 || controller.submitting} aria-label="Submit every draft or changed answer in every round" onClick={() => void onSubmit()}>
-          Submit answered ({pending})
+        <PanelButton small primary disabled={!ready || controller.submitting} aria-label="Submit round" onClick={() => void onSubmit()}>
+          Submit
         </PanelButton>
       </div>
     </div>

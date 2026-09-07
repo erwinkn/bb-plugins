@@ -14,7 +14,6 @@ import {
   type Submission,
   type ThreadState,
   type ChangeSignal,
-  DIRECTIVE_NAME,
   LIMITS,
   answerSchema,
   answerStatus,
@@ -38,6 +37,7 @@ export const askInputSchema = z.object({
     .array(
       z.object({
         title: z.string().trim().min(1).max(LIMITS.titleChars),
+        optional: z.boolean().optional(),
         help: z.string().trim().max(LIMITS.helpChars).optional(),
         options: z
           .array(
@@ -69,7 +69,6 @@ export class QuestionsError extends Error {
 export interface AskResult {
   round: Round;
   labels: string[];
-  directive: string;
 }
 
 export interface SubmitItem {
@@ -97,10 +96,6 @@ export interface PathSearchResult {
   unavailable: string | null;
 }
 
-function directiveFor(roundId: string): string {
-  return `::${DIRECTIVE_NAME}{round="${roundId}"}`;
-}
-
 /** Sort out what a failed `threads.send` means for the outbox row. */
 export function classifySendError(error: unknown): { state: "failed" | "uncertain"; message: string } {
   const named = error as { name?: unknown; status?: unknown; message?: unknown } | null;
@@ -121,6 +116,7 @@ export interface ServiceDeps {
   sdk: BbPluginApi["sdk"];
   log: BbPluginApi["log"];
   publish: (signal: ChangeSignal) => void;
+  deliverInteraction?: (submission: Submission, confirmed: () => void) => Promise<boolean>;
   now?: () => number;
   newId?: (prefix: string) => string;
 }
@@ -202,6 +198,7 @@ export class QuestionsService {
       return {
         id: this.newId("q"),
         title: item.title,
+        optional: item.optional ?? false,
         help: item.help && item.help !== "" ? item.help : null,
         select,
         options,
@@ -229,7 +226,7 @@ export class QuestionsService {
     const allLabels = questionLabels([...existing, round]);
     const roundLabels = round.questions.map((question) => allLabels.get(question.id) ?? question.id);
     this.deps.publish({ threadId, kind: "round-created", roundId: round.id });
-    return { round, labels: roundLabels, directive: directiveFor(round.id) };
+    return { round, labels: roundLabels };
   }
 
   /** Bounded text report of every submitted answer, for the agent and CLI. */
@@ -253,7 +250,8 @@ export class QuestionsService {
         const submitted = state?.submitted ?? null;
         const entry = JSON.stringify({
           round: round.id, roundNumber: round.number, questionId: question.id, label,
-          question: question.title, options: question.options,
+          question: question.title, options: question.options, optional: question.optional ?? false,
+          skipped: Boolean(question.optional && submitted && !hasContent(submitted)),
           submitted, submittedAt: state?.submittedAt ?? null,
           hasUnsentChanges: status === "draft",
         });
@@ -428,6 +426,19 @@ export class QuestionsService {
     return projectId;
   }
 
+  /** Agent-only image access, restricted to a submitted attachment. */
+  async submittedImage(threadId: string, label: string, attachmentPath: string) {
+    const rounds = this.store.listRounds(threadId);
+    const id = [...questionLabels(rounds)].find(([id, name]) => id === label || name === label)?.[0];
+    if (!id) throw new QuestionsError("Unknown question.");
+    const { round } = this.requireQuestion(threadId, id);
+    const attachment = this.store.getAnswer(threadId, id)?.submitted?.attachments.find((a) => a.path === attachmentPath && a.type === "localImage");
+    if (!attachment) throw new QuestionsError("No submitted image at this path for this question.");
+    const result = await this.deps.sdk.projects.attachments.read({ projectId: this.roundProjectId(round), path: attachment.path });
+    if (result.sizeBytes > LIMITS.attachmentBytes || result.bytes.length > LIMITS.attachmentBytes || !isImageMime(result.mimeType)) throw new QuestionsError("Invalid submitted image.");
+    return { content: [{ type: "image" as const, mimeType: result.mimeType, data: Buffer.from(result.bytes).toString("base64") }] };
+  }
+
   /** Small image bytes for a preview, only for a path this question owns. */
   async readAttachmentPreview(input: {
     threadId: string;
@@ -495,7 +506,6 @@ export class QuestionsService {
     threadId: string;
     submissionId: string;
     items: SubmitItem[];
-    retryOf: string | null;
   }): Promise<SubmitResult> {
     const existing = this.store.getSubmission(input.threadId, input.submissionId);
     if (existing) return { outcome: "submitted", submission: existing };
@@ -503,43 +513,39 @@ export class QuestionsService {
 
     const prepared = this.store.transaction((): SubmitResult => {
       const inFlight = this.store.inFlightQuestionIds(input.threadId);
-      let questionIds: string[];
-      let snapshot: Record<string, Answer>;
-      if (input.retryOf !== null) {
-        const previous = this.store.getSubmission(input.threadId, input.retryOf);
-        if (!previous) throw new QuestionsError("Unknown submission to retry.");
-        if (previous.state !== "uncertain" && previous.state !== "failed") {
-          throw new QuestionsError("Only an uncertain or failed submission can be retried.");
-        }
-        if (this.store.hasNewerAttempt(input.threadId, previous.id, previous.questionIds)) {
-          throw new QuestionsError("This submission has a newer attempt. Retry the latest attempt instead.");
-        }
-        questionIds = previous.questionIds;
-        snapshot = previous.snapshot;
-      } else {
-        const conflicts: AnswerState[] = [];
-        questionIds = [];
-        snapshot = {};
-        const uniqueItems = new Map(input.items.map((item) => [item.questionId, item]));
-        for (const item of uniqueItems.values()) {
-          const found = findQuestion(rounds, item.questionId);
-          if (!found) throw new QuestionsError("Unknown question for this thread.");
-          const state = this.store.getAnswer(input.threadId, item.questionId);
-          if ((state?.version ?? 0) !== item.expectedVersion) {
-            conflicts.push(state ?? {
-              questionId: item.questionId, roundId: found.round.id, draft: null,
-              version: 0, submitted: null, submittedAt: null, submissionId: null,
-            });
-            continue;
-          }
-          if (!state || !hasContent(state.draft) || answersEqual(state.draft, state.submitted)) continue;
-          questionIds.push(item.questionId);
-          snapshot[item.questionId] = normalizeAnswer(state.draft as Answer);
-        }
-        if (conflicts.length > 0) {
-          return { outcome: "conflict", questionIds: conflicts.map((state) => state.questionId), states: conflicts };
-        }
+      const questionIds: string[] = [];
+      const snapshot: Record<string, Answer> = {};
+      const conflicts: AnswerState[] = [];
+      const uniqueItems = new Map(input.items.map((item) => [item.questionId, item]));
+      if (uniqueItems.size === 0) return { outcome: "nothing" };
+      const round = findQuestion(rounds, [...uniqueItems.keys()][0]!)?.round;
+      if (!round || uniqueItems.size !== round.questions.length || round.questions.some((q) => !uniqueItems.has(q.id))) {
+        throw new QuestionsError("Submit one complete round at a time.");
       }
+      let changed = false;
+      for (const item of uniqueItems.values()) {
+        const found = findQuestion(rounds, item.questionId);
+        if (!found) throw new QuestionsError("Unknown question for this thread.");
+        const state = this.store.getAnswer(input.threadId, item.questionId);
+        if ((state?.version ?? 0) !== item.expectedVersion) {
+          conflicts.push(state ?? {
+            questionId: item.questionId, roundId: found.round.id, draft: null,
+            version: 0, submitted: null, submittedAt: null, submissionId: null,
+          });
+          continue;
+        }
+        const draft = state?.draft ?? emptyAnswer();
+        if (!found.question.optional && !hasContent(draft)) {
+          throw new QuestionsError("Answer every required question before submitting this round.");
+        }
+        if (!state?.submitted || !answersEqual(draft, state.submitted)) changed = true;
+        questionIds.push(item.questionId);
+        snapshot[item.questionId] = normalizeAnswer(draft);
+      }
+      if (conflicts.length > 0) {
+        return { outcome: "conflict", questionIds: conflicts.map((state) => state.questionId), states: conflicts };
+      }
+      if (!changed) return { outcome: "nothing" };
       const overlapping = questionIds.filter((id) => inFlight.has(id));
       if (overlapping.length > 0) return { outcome: "in-flight", questionIds: overlapping };
       if (questionIds.length === 0) return { outcome: "nothing" };
@@ -548,7 +554,6 @@ export class QuestionsService {
         threadId: input.threadId,
         questionIds,
         snapshot,
-        retryOf: input.retryOf,
         createdAt: this.now(),
       });
       return { outcome: "submitted", submission };
@@ -572,13 +577,16 @@ export class QuestionsService {
       ),
     ];
     try {
-      const response = await this.deps.sdk.threads.send({
+      const native = await this.deps.deliverInteraction?.(submission, () => {
+        this.store.settleDelivered({ threadId: input.threadId, submission, state: "sent", settledAt: this.now() });
+      });
+      const response = native ? { delivery: "sent" } : await this.deps.sdk.threads.send({
         threadId: input.threadId,
         mode: "queue-if-active",
         input: parts,
       });
       const state = response.delivery === "queued" ? "queued" : "sent";
-      this.store.settleDelivered({ threadId: input.threadId, submission, state, settledAt: this.now() });
+      if (!native) this.store.settleDelivered({ threadId: input.threadId, submission, state, settledAt: this.now() });
     } catch (error) {
       const classified = classifySendError(error);
       this.deps.log.warn(

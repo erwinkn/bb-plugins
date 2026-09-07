@@ -8,6 +8,7 @@ import {
   findQuestion,
   questionLabels,
   referenceLabel,
+  hasContent,
 } from "./model";
 
 export interface SubmissionMessage {
@@ -16,6 +17,7 @@ export interface SubmissionMessage {
 }
 
 function renderAnswer(question: Question, answer: Answer): string[] {
+  if (question.optional && !hasContent(answer)) return ["Skipped (optional)."];
   const lines: string[] = [];
   if (answer.selected.length > 0) {
     for (const id of answer.selected) {
@@ -72,7 +74,7 @@ export function buildSubmissionMessage(
   }
   const header = `Answers to ${answered.join(", ")} from Questions (submission ${submissionId}).`;
   const footer =
-    "Unanswered questions stay open in Questions. Call questions_read for every submitted answer.";
+    "This round is submitted. Blank optional questions were skipped. Call questions_read for every submitted answer.";
   return {
     text: [header, "", sections.join("\n\n"), "", footer].join("\n"),
     attachments,

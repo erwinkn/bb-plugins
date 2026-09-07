@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import type { PluginMessageDirectiveProps, PluginThreadHeaderActionProps, PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
+import type { PluginMessageDirectiveProps, PluginPendingInteractionProps, PluginThreadHeaderActionProps, PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import {
   type Answer,
@@ -56,7 +56,7 @@ function answer(questionId: string, roundId: string, draft: Answer | null, versi
 }
 
 function submission(id: string, state: Submission["state"], questionIds: string[], createdAt: number): Submission {
-  return { id, threadId: THREAD, state, questionIds, snapshot: {}, error: state === "failed" ? "refused" : null, retryOf: null, createdAt, settledAt: createdAt, canRetry: state === "failed" || state === "uncertain" };
+  return { id, threadId: THREAD, state, questionIds, snapshot: {}, error: state === "failed" ? "refused" : null, createdAt, settledAt: createdAt };
 }
 
 /** In-memory backend that mirrors the real RPC contract semantics. */
@@ -119,15 +119,18 @@ function backend(initial: Partial<ThreadState> = {}) {
         unavailable: null,
       };
     },
-    questions_submit: async (input: { threadId: string; submissionId: string; items: { questionId: string; expectedVersion: number }[]; retryOf: string | null }) => {
+    questions_submit: async (input: { threadId: string; submissionId: string; items: { questionId: string; expectedVersion: number }[] }) => {
       calls.push({ method: "questions_submit", input });
-      const ids = input.retryOf ? state.submissions.find((item) => item.id === input.retryOf)?.questionIds ?? [] : input.items.map((item) => item.questionId);
+      const ids = input.items.map((item) => item.questionId);
       const created = submission(input.submissionId, "sent", ids, Date.now());
-      created.retryOf = input.retryOf;
       state.submissions = [created, ...state.submissions];
       for (const id of ids) {
         const current = state.answers.find((item) => item.questionId === id);
         if (current) current.submitted = current.draft;
+        else {
+          const roundId = state.rounds.find((r) => r.questions.some((q) => q.id === id))!.id;
+          state.answers.push(answer(id, roundId, emptyAnswer(), 0, emptyAnswer()));
+        }
       }
       return { outcome: "submitted" as const, submission: created };
     },
@@ -168,6 +171,24 @@ describe("registrations", () => {
 });
 
 describe("Questions panel", () => {
+  it("requires every required answer, lets optional answers stay blank, and submits only the active round", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("old")]), round("r2", 2, [question("required"), question("optional", { optional: true })])] });
+    const slot = mountPanel(server);
+    await slot.findByText("Optional");
+    const submit = slot.getByRole("button", { name: "Submit round" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(slot.getAllByLabelText("Your answer")[0]!, { target: { value: "   " } });
+    expect(submit.disabled).toBe(true);
+    fireEvent.change(slot.getAllByLabelText("Your answer")[0]!, { target: { value: "Required answer" } });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => expect(server.calls.some((c) => c.method === "questions_submit")).toBe(true));
+    expect(server.calls.find((c) => c.method === "questions_submit")!.input).toMatchObject({ items: [{ questionId: "required", expectedVersion: 1 }, { questionId: "optional", expectedVersion: 0 }] });
+    await waitFor(() => expect(submit.disabled).toBe(true));
+    expect(slot.getByRole("tab", { name: /Round 2/ }).textContent).toContain("2/2");
+    fireEvent.click(slot.getByRole("tab", { name: /Summary/ }));
+    expect(submit.disabled).toBe(true);
+  });
   it("sizes restored and edited text, reacts to width changes, and cleans up observers", async () => {
     let width = 200;
     const widthSpy = vi.spyOn(HTMLTextAreaElement.prototype, "clientWidth", "get").mockImplementation(() => width);
@@ -247,13 +268,13 @@ describe("Questions panel", () => {
   });
 
   it("keeps a partly superseded delivery warning without an invalid retry", async () => {
-    const old = { ...submission("old", "uncertain", ["q1", "q2"], 1), canRetry: false };
+    const old = { ...submission("old", "uncertain", ["q1", "q2"], 1) };
     const server = backend({ rounds: [round("r1", 1, [question("q1"), question("q2")])], submissions: [submission("new", "sent", ["q2"], 2), old] });
     const slot = mountPanel(server);
     const alert = await slot.findByRole("alert");
     expect(alert.textContent).toContain("Delivery of Q1, Q2 is uncertain.");
     expect(within(alert).queryByRole("button", { name: "Retry this submission" })).toBeNull();
-    expect(alert.textContent).toContain("submit any remaining drafts");
+    expect(alert.textContent).toContain("submit the complete round");
   });
   it("pastes images only into attachment-enabled answers", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1", { attachments: true }), question("q2")])] });
@@ -335,18 +356,18 @@ describe("Questions panel", () => {
     expect(slot.getByText(/Open · 2/)).toBeTruthy();
   });
 
-  it("saves an option choice with the base version and enables Submit answered", async () => {
+  it("saves an option choice with the base version and enables Submit", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const server = backend({
       rounds: [round("r1", 1, [question("q1", { select: "single", options: [{ id: "o1", label: "Panel" }, { id: "o2", label: "Thread" }] })])],
     });
     const slot = mountPanel(server);
     await slot.findByText("q1 title?");
-    const submit = slot.getByRole("button", { name: /Submit every draft/ });
+    const submit = slot.getByRole("button", { name: /Submit round/ });
     expect((submit as HTMLButtonElement).disabled).toBe(true);
-    expect((submit).textContent).toMatch("Submit answered (0)");
+    expect((submit).textContent).toMatch("Submit");
     fireEvent.click(slot.getByLabelText("Panel"));
-    expect((submit).textContent).toMatch("Submit answered (1)");
+    expect((submit).textContent).toMatch("Submit");
     expect((submit as HTMLButtonElement).disabled).toBe(false);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(500);
@@ -360,7 +381,7 @@ describe("Questions panel", () => {
     expect(sent.items).toEqual([{ questionId: "q1", expectedVersion: 1 }]);
     expect(sent.submissionId).toMatch(/^[0-9a-f-]{36}$/);
     await waitFor(() => expect(toasts.calls).toContain("success:Sent 1 answer."));
-    await waitFor(() => expect((slot.getByRole("button", { name: /Submit every draft/ })).textContent).toMatch("Submit answered (0)"));
+    await waitFor(() => expect((slot.getByRole("button", { name: /Submit round/ })).textContent).toMatch("Submit"));
     vi.useRealTimers();
   });
 
@@ -420,7 +441,7 @@ describe("Questions panel", () => {
     expect(slot.queryByRole("button", { name: "Remove plugins/activity/app.tsx" })).toBeNull();
   });
 
-  it("shows a retry notice for every attempt that still owns a question", async () => {
+  it("shows a delivery notice without the retired Retry button", async () => {
     const server = backend({
       rounds: [round("r1", 1, [question("q1"), question("q2")])],
       submissions: [submission("s2", "sent", ["q2"], 20), submission("s1", "uncertain", ["q1"], 10), submission("s0", "failed", ["q2"], 5)],
@@ -430,13 +451,12 @@ describe("Questions panel", () => {
     const alert = await slot.findByRole("alert");
     expect((alert).textContent).toMatch("Delivery of Q1 is uncertain.");
     expect((alert).textContent).toMatch("submission s1");
-    fireEvent.click(within(alert).getByRole("button", { name: "Retry this submission" }));
-    await waitFor(() => expect(server.calls.some((call) => call.method === "questions_submit")).toBe(true));
-    expect(server.calls.find((call) => call.method === "questions_submit")?.input).toMatchObject({ retryOf: "s1", items: [] });
+    expect(within(alert).queryByRole("button", { name: "Retry this submission" })).toBeNull();
+    expect(server.calls.some((call) => call.method === "questions_submit")).toBe(false);
   });
 
-  it("reuses the retry request id after a transport failure", async () => {
-    const server = backend({ rounds: [round("r1", 1, [question("q1")])], submissions: [submission("s1", "uncertain", ["q1"], 1)] });
+  it("reuses the complete-round request id after a transport failure", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])], answers: [answer("q1", "r1", { ...emptyAnswer(), text: "Answer" }, 1)] });
     const requests: string[] = [];
     const send = server.handlers.questions_submit;
     server.handlers.questions_submit = async (input) => {
@@ -445,9 +465,10 @@ describe("Questions panel", () => {
       return send(input);
     };
     const slot = mountPanel(server);
-    fireEvent.click(await slot.findByRole("button", { name: "Retry this submission" }));
-    await waitFor(() => expect(toasts.calls.some((text) => text.includes("retry was not confirmed"))).toBe(true));
-    fireEvent.click(slot.getByRole("button", { name: "Retry this submission" }));
+    await slot.findByText("q1 title?");
+    fireEvent.click(slot.getByRole("button", { name: "Submit round" }));
+    await waitFor(() => expect(toasts.calls.some((text) => text.includes("submission was not confirmed"))).toBe(true));
+    fireEvent.click(slot.getByRole("button", { name: "Submit round" }));
     await waitFor(() => expect(requests).toHaveLength(2));
     expect(requests[0]).toBe(requests[1]);
   });
@@ -464,6 +485,19 @@ describe("Questions panel", () => {
 });
 
 describe("Message directive", () => {
+  it("renders an inline round in the native interaction slot and supports cancellation", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1", { optional: true })], "inline")] });
+    const cancel = vi.fn(async () => {});
+    const slot = renderSlot<PluginPendingInteractionProps, typeof rpcContract>(app.pendingInteractions[0]!, {
+      interaction: { id: "interaction1", threadId: THREAD, title: "Round 1", payload: { roundId: "r1" }, createdAt: 1, expiresAt: 3_600_001 },
+      submit: async () => { throw new Error("Only validated RPC submission may resolve the interaction"); }, cancel,
+    }, { rpc: server.handlers, context: { projectId: "proj", threadId: THREAD } });
+    slots.push(slot);
+    await slot.findByText("Optional");
+    expect((slot.getByRole("button", { name: "Submit" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(slot.getByRole("button", { name: "Cancel" }));
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
   it("shares unsaved edits with the panel and submits them before debounce", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1")], "inline")] });
     const panel = mountPanel(server);
@@ -476,7 +510,7 @@ describe("Message directive", () => {
     expect((panelInput as HTMLTextAreaElement).value).toBe("inline edit");
     fireEvent.change(panelInput, { target: { value: "panel edit" } });
     expect((inlineInput as HTMLTextAreaElement).value).toBe("panel edit");
-    fireEvent.click(p.getByRole("button", { name: "Submit every draft or changed answer in every round" }));
+    fireEvent.click(p.getByRole("button", { name: "Submit round" }));
     await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_submit")).toHaveLength(1));
     expect(server.state.answers[0]!.submitted!.text).toBe("panel edit");
     expect(server.calls.filter((call) => call.method === "questions_save_draft")).toHaveLength(1);
@@ -498,10 +532,10 @@ describe("Message directive", () => {
     const send = server.handlers.questions_submit;
     let release!: () => void;
     server.handlers.questions_submit = async (input) => { await new Promise<void>((done) => { release = done; }); return send(input); };
-    fireEvent.click(p.getByRole("button", { name: "Submit every draft or changed answer in every round" }));
+    fireEvent.click(p.getByRole("button", { name: "Submit round" }));
     await waitFor(() => expect(release).toBeTypeOf("function"));
-    expect((i.getByRole("button", { name: /Submit answered/ }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(i.getByRole("button", { name: /Submit answered/ }));
+    expect((i.getByRole("button", { name: /Submit/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(i.getByRole("button", { name: /Submit/ }));
     await act(async () => release());
     await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_submit")).toHaveLength(1));
   });
@@ -536,12 +570,14 @@ describe("Message directive", () => {
     expect(slot.queryByRole("button", { name: "Attach file or image" })).toBeNull();
     fireEvent.click(slot.getByLabelText("Yes"));
     expect(slot.queryByRole("button", { name: "+ detail" })).toBeNull();
-    const submit = slot.getByRole("button", { name: /Submit answered/ });
-    expect((submit).textContent).toMatch("Submit answered (1)");
+    const submit = slot.getByRole("button", { name: /Submit/ });
+    expect((submit).textContent).toMatch("Submit");
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(slot.getByLabelText("Your answer"), { target: { value: "Required answer" } });
     fireEvent.click(submit);
     await waitFor(() => expect(server.calls.some((call) => call.method === "questions_submit")).toBe(true));
     const sent = server.calls.find((call) => call.method === "questions_submit")?.input as { items: { questionId: string }[] };
-    expect(sent.items.map((item) => item.questionId)).toEqual(["q2"]);
+    expect(sent.items.map((item) => item.questionId)).toEqual(["q2", "q3"]);
   });
 
   it("renders a compact card for a panel round that opens the panel", async () => {

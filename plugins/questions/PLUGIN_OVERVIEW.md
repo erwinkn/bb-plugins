@@ -13,8 +13,8 @@ place to ask and gives you a place to answer at your own pace.
 - Paste images into answer text areas when attachments are enabled. Selected
   workspace files stay visible inside the search control.
 - Follow-up rounds can quote your earlier submitted answers in place.
-- One **Submit answered (N)** button sends every new or changed answer across
-  all rounds as a normal message to the agent. Unanswered questions stay open.
+- One **Submit** button submits the selected round. Questions are required
+  by default; the agent can mark questions optional so you can skip them.
 - A lighter inline mode for up to five quick questions inside the thread.
 
 ## How it works
@@ -26,16 +26,17 @@ the panel, reloading, or restarting BB. Pending edits also have a browser
 backup when storage is available. Panel and inline views in the same browser
 share pending edits. Edits never change what was already submitted.
 
-Every submission is frozen before it is sent and carries its own id. If the
-server cannot confirm delivery, the panel says so and offers an explicit
-retry when no newer attempt covers those answers. It never retries a message
-on its own. If only part of an uncertain submission was superseded, its warning
-stays visible and directs you to check the thread and submit remaining drafts.
+Every submission is frozen before delivery and carries its own id. If the
+server cannot confirm delivery, the panel asks you to check the result before
+submitting the complete round again. It never retries a message on its own.
 
 ## For agents
 
-`questions_ask` creates a round and returns a directive line to place in the
-reply; the agent then ends its turn. Answers arrive as user messages, and
-`questions_read` lists every submitted answer with full details.
+`questions_ask` waits through BB's native input mechanism and renews hourly
+timeouts, so the thread shows that it needs attention while waiting. It returns
+submitted answers directly to the agent. Cancellation ends the wait but keeps
+drafts. If no live interaction remains, later submissions use a user message.
+`questions_read` lists submitted
+answers, and `questions_image` opens one submitted image for the agent.
 `questions_summary` keeps the Summary tab current. The `bb questions` command
 offers the same operations from a terminal.

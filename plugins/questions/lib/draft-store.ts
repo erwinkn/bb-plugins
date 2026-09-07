@@ -20,7 +20,6 @@ import {
   answerSchema,
   answerStatus,
   emptyAnswer,
-  pendingQuestionIds,
   questionLabels,
 } from "./model";
 
@@ -252,17 +251,6 @@ export class DraftStore {
 
   statusOf(questionId: string): "empty" | "draft" | "done" {
     return answerStatus(this.effectiveState(questionId));
-  }
-
-  pendingIds(): string[] {
-    const map = new Map<string, AnswerState>();
-    for (const round of this.rounds) {
-      for (const question of round.questions) {
-        const state = this.effectiveState(question.id);
-        if (state) map.set(question.id, state);
-      }
-    }
-    return pendingQuestionIds(this.rounds, map);
   }
 
   /** Question ids whose local edit is unresolved (conflict or unsaved). */

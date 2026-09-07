@@ -11,6 +11,7 @@ import {
   type ThreadState,
   LIMITS,
   REALTIME_CHANNEL,
+  canSubmitRound,
 } from "../lib/model";
 import { type Notice } from "../lib/draft-store";
 import { questionSession } from "../lib/question-session";
@@ -48,7 +49,6 @@ export interface QuestionsController {
   statusOf(questionId: string): "empty" | "draft" | "done";
   conflictOf(questionId: string): AnswerState | null;
   resolveConflict(questionId: string, choice: "mine" | "saved"): void;
-  pendingIds: string[];
   saving: boolean;
   draftStatus: "loading" | "saving" | "saved" | "unsaved" | "conflict";
   submitting: boolean;
@@ -58,9 +58,7 @@ export interface QuestionsController {
   update(questionId: string, updater: (draft: Answer) => Answer): void;
   clear(questionId: string): void;
   flush(): Promise<void>;
-  /** Send every pending answer, or only the given question ids. */
-  submit(onlyQuestionIds?: string[]): Promise<SubmitOutcome>;
-  retry(submissionId: string): Promise<SubmitOutcome>;
+  submit(roundId: string): Promise<SubmitOutcome>;
   uploadAttachment(questionId: string, file: File): Promise<void>;
   attachmentPreview(questionId: string, path: string): Promise<string | null>;
   searchPaths(query: string): Promise<PathSearch>;
@@ -162,15 +160,17 @@ export function useQuestions(threadId: string): QuestionsController {
   );
 
   const submit = useCallback(
-    async (onlyQuestionIds?: string[]): Promise<SubmitOutcome> => {
+    async (roundId: string): Promise<SubmitOutcome> => {
       if (session.submitting) return { kind: "error", message: "A submission is already running." };
       session.setSubmitting(true);
       let sendStarted = false;
       try {
         await store.flush();
-        const only = onlyQuestionIds ? new Set(onlyQuestionIds) : null;
-        const ids = store.pendingIds().filter((id) => only === null || only.has(id));
-        if (ids.length === 0) return { kind: "nothing" };
+        const round = store.rounds.find((r) => r.id === roundId);
+        if (!round) return { kind: "nothing" };
+        const states = new Map(round.questions.map((q) => [q.id, store.effectiveState(q.id)!]));
+        if (!canSubmitRound(round, states)) return { kind: "error", message: "Answer every required question before submitting this round." };
+        const ids = round.questions.map((q) => q.id);
         const items = ids.map((questionId) => ({
           questionId,
           expectedVersion: store.serverAnswer(questionId)?.version ?? 0,
@@ -182,7 +182,7 @@ export function useQuestions(threadId: string): QuestionsController {
           session.pendingSubmit && session.pendingSubmit.key === key ? session.pendingSubmit.id : newSubmissionId();
         session.pendingSubmit = { id: submissionId, key };
         sendStarted = true;
-        const result = await rpc.call("questions_submit", { threadId, submissionId, items, retryOf: null });
+        const result = await rpc.call("questions_submit", { threadId, submissionId, items });
         session.pendingSubmit = null;
         return finishSubmit(result);
       } catch (cause) {
@@ -192,27 +192,6 @@ export function useQuestions(threadId: string): QuestionsController {
           kind: "error",
           message: `The submission was not confirmed (${messageOf(cause)}). Your answers are still drafts. Check the thread for a message with this submission before you send again.`,
         };
-      } finally {
-        session.setSubmitting(false);
-      }
-    },
-    [finishSubmit, rpc, store, session, threadId],
-  );
-
-  const retry = useCallback(
-    async (retryOf: string): Promise<SubmitOutcome> => {
-      if (session.submitting) return { kind: "error", message: "A submission is already running." };
-      session.setSubmitting(true);
-      try {
-        const key = `retry:${retryOf}`;
-        const submissionId = session.pendingSubmit?.key === key ? session.pendingSubmit.id : newSubmissionId();
-        session.pendingSubmit = { id: submissionId, key };
-        const result = await rpc.call("questions_submit", { threadId, submissionId, items: [], retryOf });
-        session.pendingSubmit = null;
-        return finishSubmit(result);
-      } catch (cause) {
-        store.refresh();
-        return { kind: "error", message: `The retry was not confirmed: ${messageOf(cause)}` };
       } finally {
         session.setSubmitting(false);
       }
@@ -289,7 +268,6 @@ export function useQuestions(threadId: string): QuestionsController {
     statusOf: (questionId) => store.statusOf(questionId),
     conflictOf: (questionId) => store.localEdit(questionId)?.conflict ?? null,
     resolveConflict: (questionId, choice) => store.resolveConflict(questionId, choice),
-    pendingIds: store.pendingIds(),
     saving: store.saving,
     draftStatus: store.draftStatus,
     submitting,
@@ -300,7 +278,6 @@ export function useQuestions(threadId: string): QuestionsController {
     clear: (questionId) => store.clear(questionId),
     flush: () => store.flush(),
     submit,
-    retry,
     uploadAttachment,
     attachmentPreview,
     searchPaths,

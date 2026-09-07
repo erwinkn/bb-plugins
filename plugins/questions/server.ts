@@ -1,7 +1,7 @@
 // Questions plugin backend: a durable, thread-bound collection of agent
 // questions and user answers. Rounds are created by the agent tool or the
 // CLI, drafts and submissions live in the plugin's SQLite database, and
-// answers travel back to the owning thread as ordinary user messages.
+// answers resolve BB's user input interaction, with messages for late submissions.
 import path from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -14,9 +14,11 @@ import {
   roundSchema,
   submissionSchema,
   threadStateSchema,
+  hasContent,
 } from "./lib/model";
 import { MIGRATIONS, QuestionsStore } from "./server/store";
 import { QuestionsError, QuestionsService } from "./server/service";
+import { QuestionInteractions } from "./server/interactions";
 
 const threadArg = z.object({ threadId: z.string().min(1) });
 
@@ -79,8 +81,7 @@ export const rpcContract = defineRpcContract({
       items: z.array(
         z.object({ questionId: z.string().min(1), expectedVersion: z.number().int().nonnegative() }),
       ),
-      retryOf: z.string().nullable(),
-    }),
+    }).strict(),
     output: z.discriminatedUnion("outcome", [
       z.object({ outcome: z.literal("submitted"), submission: submissionSchema }),
       z.object({
@@ -114,6 +115,7 @@ const askToolSchema = z.object({
     .array(
       z.object({
         title: z.string().min(1).max(LIMITS.titleChars).describe("The question, as a full sentence."),
+        optional: z.boolean().optional().describe("Allow the user to skip this question. Questions are required by default."),
         help: z.string().max(LIMITS.helpChars).optional().describe("Optional context under the title."),
         options: z
           .array(z.string().min(1).max(LIMITS.optionChars))
@@ -141,10 +143,18 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = new QuestionsStore(db);
+  const interactions = new QuestionInteractions(bb);
+  const asking = new Set<string>();
+  function claimAsk(threadId: string): () => void {
+    if (asking.has(threadId)) throw new QuestionsError("This thread already has a Questions request in progress.");
+    asking.add(threadId);
+    return () => { asking.delete(threadId); };
+  }
   const service = new QuestionsService(store, {
     sdk: bb.sdk,
     log: bb.log,
     publish: (signal: ChangeSignal) => bb.realtime.publish(REALTIME_CHANNEL, signal),
+    deliverInteraction: (submission, confirmed) => interactions.deliver(submission, confirmed),
   });
   const recovered = service.recoverStalePending();
   if (recovered > 0) bb.log.warn(`${recovered} submission(s) were pending at startup and are now uncertain`);
@@ -181,8 +191,8 @@ export default async function plugin(bb: BbPluginApi) {
 
   const askInstructions = [
     "Use questions_ask when you need several answers from the user before you continue.",
-    "The call returns at once. The user answers in their own time, so after the call: put the returned directive line alone on its own line in your reply, say nothing else about how to answer, and end your turn.",
-    "Do not poll or wait in a loop. Answers arrive later as user messages that begin with 'Answers to'. Call questions_read to see every submitted answer, then ask a follow-up round if needed.",
+    "The call waits for the user. The plugin renews the one-hour BB interaction on timeout while the call remains active. Questions are required unless optional is true. The user submits a complete round, not partial answers.",
+    "Read the returned answers and continue. Use questions_image for submitted images; image paths alone do not show their contents. On cancellation or failure, do not automatically ask again. Drafts remain saved; late submissions arrive as user messages. Call questions_read for complete submitted records and attachment paths.",
     'Prefer mode "panel". Use mode "inline" only for up to 5 quick questions that need no attachments, references, or citations.',
     "For the quick single question that BB already offers, keep using the built-in question tool if it is available.",
   ].join(" ");
@@ -190,30 +200,46 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "questions_ask",
     description:
-      "Ask the user a round of structured questions in the BB Questions (side panel) or inline in the thread. Returns immediately; the user submits answers later as messages.",
+      "Ask a round of questions and wait for the user through BB's native interaction. Required by default; optional questions may be skipped. Renews on hourly timeout until answered or cancelled.",
     instructions: askInstructions,
     parameters: askToolSchema,
     presentation: {
       label: { pending: "Asking questions", completed: "Asked questions" },
       icon: { glyph: "MessageQuestion" },
     },
-    execute(params, ctx) {
+    async execute(params, ctx) {
+      let release: (() => void) | undefined;
       try {
+        release = claimAsk(ctx.threadId);
+        const pending = await bb.sdk.threads.interactions.list({ threadId: ctx.threadId });
+        if (pending.some((item) => item.status === "pending" || item.status === "resolving")) throw new QuestionsError("This thread already has a pending interaction. Finish it before asking another round.");
         const result = service.ask(ctx.threadId, ctx.projectId, params);
-        const where =
-          result.round.mode === "inline"
-            ? "The questions render inside your message where the directive appears."
-            : "The questions open in the Questions side panel.";
-        return [
-          `Created round ${result.round.number} (id ${result.round.id}) with ${result.labels.join(", ")}.`,
-          where,
-          `Put this line alone on its own line in your reply, then end your turn and wait:`,
-          result.directive,
-          "Answers arrive as user messages that begin with 'Answers to'. Use questions_read to list every submitted answer.",
-        ].join("\n");
+        const response = await interactions.wait(result.round, ctx.signal);
+        if ("outcome" in response) return {
+          content: [{ type: "text", text: `Questions ended: ${response.outcome === "cancelled" ? response.reason : "invalid response"}. Round ${result.round.id} and its drafts are saved. Do not ask again automatically; wait for the user.` }], isError: true,
+        };
+        // Return the frozen snapshot, never the current editable drafts.
+        const text = JSON.stringify({ round: result.round.id, submissionId: response.id,
+          answers: result.round.questions.map((q, i) => ({ label: result.labels[i], title: q.title,
+            optional: q.optional ?? false, skipped: Boolean(q.optional && !hasContent(response.snapshot[q.id])), answer: response.snapshot[q.id] })),
+          note: "Use questions_image with the question label and path to view each submitted image. Use questions_read for stored records." });
+        return Buffer.byteLength(text, "utf8") <= 512 * 1024 ? text
+          : `Round ${result.round.id} submitted (${response.id}). Call questions_read with round=${result.round.id} and follow its cursors to read all submitted answers.`;
       } catch (error) {
         return { content: [{ type: "text", text: errorMessage(error) }], isError: true };
+      } finally {
+        release?.();
       }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "questions_image",
+    description: "View one image the user submitted in Questions. Unsubmitted draft images are not accessible.",
+    parameters: z.object({ question: z.string().min(1), path: z.string().min(1) }),
+    async execute({ question, path }, ctx) {
+      try { return await service.submittedImage(ctx.threadId, question, path); }
+      catch (error) { return { content: [{ type: "text", text: errorMessage(error) }], isError: true }; }
     },
   });
 
@@ -341,6 +367,7 @@ export default async function plugin(bb: BbPluginApi) {
       },
     ],
     async run(argv, ctx) {
+      let release: (() => void) | undefined;
       try {
         const parsed = parseArgs(argv);
         const json = parsed.booleans.has("json");
@@ -349,6 +376,7 @@ export default async function plugin(bb: BbPluginApi) {
         const { threadId, projectId } = await resolveThread(parsed, ctx.threadId);
         switch (command) {
           case "ask": {
+            release = claimAsk(threadId);
             let input: unknown;
             const file = parsed.flags.get("file")?.[0];
             if (file !== undefined) {
@@ -386,14 +414,12 @@ export default async function plugin(bb: BbPluginApi) {
                 ],
               };
             }
+            const pending = await bb.sdk.threads.interactions.list({ threadId });
+            if (pending.some((item) => item.status === "pending" || item.status === "resolving")) throw new QuestionsError("This thread already has a pending interaction.");
             const result = service.ask(threadId, projectId, input);
-            const summary = `Created round ${result.round.number} (${result.round.id}) in ${threadId}: ${result.labels.join(", ")}.\nDirective for the agent reply: ${result.directive}`;
-            return {
-              exitCode: 0,
-              stdout: json
-                ? JSON.stringify({ round: result.round, labels: result.labels, directive: result.directive })
-                : summary,
-            };
+            const response = await interactions.wait(result.round, ctx.signal);
+            if ("outcome" in response) return { exitCode: 1, stderr: `Questions ended: ${response.outcome === "cancelled" ? response.reason : "invalid response"}. Round ${result.round.id} and its drafts are kept.` };
+            return { exitCode: 0, stdout: service.read(threadId, result.round.id) };
           }
           case "read":
             return { exitCode: 0, stdout: service.read(threadId, parsed.flags.get("round")?.[0] ?? null, parsed.flags.get("after")?.[0] ?? null) };
@@ -440,6 +466,8 @@ export default async function plugin(bb: BbPluginApi) {
         }
       } catch (error) {
         return { exitCode: 1, stderr: errorMessage(error) };
+      } finally {
+        release?.();
       }
     },
   });
