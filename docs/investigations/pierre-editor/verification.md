@@ -244,3 +244,28 @@ revert action. Restore does not recover executable mode metadata. Removal has
 an immediate hash check but cannot be atomic against external writes because
 BB's public remove API has no CAS parameter. Physical touch/IME tests remain
 for the user. PR #16 remains draft.
+
+## Changes UI refinements (2026-09-07)
+
+The default code font size is 12 px (18 px rows). The installed plugin's stored
+value of 13 was unset, so it follows the new default. Pierre's per-line gutter
+utility is off. A BB overlay control labelled **Revert** appears at the right
+edge of the comparison, on the first row of the changed block under the
+pointer, and reverts the hunk that holds it. The file row menu opens at the
+pointer with one item (Revert, Restore, or Delete…) and no explanatory text;
+the hover button is gone. New files show a green plus and deleted files a red
+minus in the list.
+
+Installed checks in the same fixture thread, tab visible:
+
+- Hovering a changed content row and its line-number gutter showed the control
+  on that block. Hovering a context row hid it. Moving right across the empty
+  part of the row kept it. The click reverted line 5 and Cmd+Z restored it.
+- In the split layout (viewport widened to 2200 px), hovering either side
+  showed the control at the right edge for the same hunk.
+- A real right-click on `deleted.txt` opened a menu with only **Restore**.
+  Escape closed it.
+
+Typecheck, both builds and all 131 tests pass. Touch devices still have no
+long-press path on iOS Safari for the row menu; the keyboard menu key and
+Shift+F10 remain.
