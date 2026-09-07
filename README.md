@@ -117,6 +117,46 @@ each remove/install cycle; a later plugin version may start storing data.
 
 ## Desired upstream changes
 
+### Favorite models across providers in one selector tab
+
+Add a Favorites tab to the model selector. Users should be able to star models
+from different providers and select them from one list without changing provider
+tabs first.
+
+Requested behavior:
+
+- Add a star control to each model row. Store favorites by provider ID and model
+  ID, since the same model can be available through more than one provider.
+- Show saved models together in a Favorites tab, with each model's provider
+  name or icon. Selecting a favorite must select both its provider and model.
+- Save favorites between sessions and remember the selected tab. Keep reasoning
+  level and service tier valid for the selected model.
+- Keep unavailable favorites visible with a clear reason and an unstar action.
+  Do not silently select a different provider or model.
+- Support keyboard navigation and mobile touch controls in both new-thread and
+  existing-thread selectors.
+
+Verified on 2026-09-07 against installed BB 0.42.1. The bundled SDK's
+`packages/plugin-sdk/src/app-contract.ts` exposes
+`experimental_ProviderModelPicker` with a controlled selection, routing,
+`allowProviderChange`, alignment, disabled state, and class name. It exposes no
+custom tab or favorites option. The frontend registration contract has no
+model-selector replacement slot. The installed picker renders provider tabs
+and the selected provider's model options.
+
+This belongs in BB's shared model picker and preference storage. A plugin can
+render its own picker or modify the DOM through a trusted content script, but
+adding a tab to the built-in selector would depend on internal UI details.
+If BB wants plugins to supply these lists, add a model-picker tab API that
+passes provider/model selections through the host's normal selection logic.
+
+Status: recorded here; no upstream issue filed and no plugin installed.
+Suggested issue title: `Add a Favorites tab for models across providers`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues), with the
+requested behavior above. Check new and existing threads, duplicate model names
+across providers, unavailable models, persisted preferences, keyboard use, and
+mobile layout.
+
 ### Name continuation threads after the issue or feature
 
 Continuing from another thread should produce a task name, not a title such as
