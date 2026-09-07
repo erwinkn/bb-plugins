@@ -132,3 +132,20 @@ asset build, BB build, and whitespace checks passed. Installed browser checks:
 
 This replaces the custom palette but retains Geist Mono, subdued line numbers,
 compact separators, and BB's background. Physical-device testing remains open.
+
+## Disposed session recovery
+
+The recovered two-file patch was verified with a browser harness using the
+real React hook and session registry, with an in-memory file transport:
+
+1. Open a file, retain its session, and disable the hook without unmounting it.
+2. Open and detach 26 other clean files, exceeding the 24-session idle cache.
+3. Enable the hook for the original path, edit its text, and save.
+
+Before the patch, the hook reused the disposed session. Save returned false
+and the file retained its original text. After the patch, the hook acquired
+a different live session; save returned true and the file held the edited
+text. The fix exposes the existing disposed flag through the session interface
+and checks it before reusing the hook's retained session.
+
+All 107 tests, typecheck, the BB build, and whitespace checks passed.

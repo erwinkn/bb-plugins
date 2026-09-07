@@ -115,6 +115,8 @@ export interface FileSession {
   readonly key: string;
   readonly path: string;
   readonly source: FileSessionSource;
+  /** True once the registry dropped this session. Acquire it again. */
+  readonly disposed: boolean;
   getSnapshot(): FileSessionSnapshot;
   subscribe(listener: () => void): () => void;
   /** Point the session at a newer transport. A later view may hold one. */

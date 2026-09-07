@@ -75,7 +75,7 @@ export function useFileSession(options: UseFileSessionOptions): UseFileSession {
 
   // Acquiring is idempotent: the registry returns the session for the key.
   const held = useRef<{ key: string; session: FileSession } | null>(null);
-  if (key !== null && path !== null && held.current?.key !== key) {
+  if (key !== null && path !== null && (held.current?.key !== key || held.current.session.disposed)) {
     // Supply the first seed before attach starts a read. Supplying it only in
     // the later effect would arrive while that read is already in flight.
     held.current = {
