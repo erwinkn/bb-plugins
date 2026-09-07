@@ -113,6 +113,42 @@ each remove/install cycle; a later plugin version may start storing data.
 
 ## Desired upstream changes
 
+### Name continuation threads after the issue or feature
+
+Continuing from another thread should produce a task name, not a title such as
+`Continue from @thread:thr_esipgqyceh`.
+
+Verified on 2026-09-07 against installed BB 0.42.1. In
+`src/services/threads/title-generation.ts`, `shouldGenerateThreadTitle` requires
+at least five words. `Continue from @thread:...` has three words, so metadata
+generation returns `too-short`. The fallback copies up to 80 characters from
+the prompt. Even when generation runs, its input is that shortened prompt,
+without resolving the source thread's task. The live continuation
+`thr_eqch4zryft` has no generated title and displays its raw continuation
+prompt, although its source thread is named `Edit files in sidebar`.
+
+Requested behavior:
+
+- Resolve continuation references before generating the title. Use the source
+  task context and the new instructions to name the issue or feature.
+- For a continuation with no new task instructions, use the source thread's
+  meaningful title as the fallback. Do not apply the five-word threshold to
+  this case or expose a raw thread ID as the task name.
+- If the new instructions change the task, generate a title for that task
+  instead of copying the old title. Preserve names explicitly set by the user.
+- Handle unavailable source threads without failing thread creation. Keep the
+  fallback useful, and avoid copying another unresolved continuation prompt.
+
+This belongs in BB's thread metadata generation, which also supplies branch
+names. The Threads plugin displays BB's stored title and fallback. A sidebar
+label override would leave other BB views with the unclear name. The public
+SDK has a rename action but no dedicated title-generation hook.
+
+Status: recorded here; no upstream issue filed. Manual sidebar renaming is
+available through PR #11, but does not correct automatic naming.
+Suggested issue title: `Name continuation threads from the referenced task context`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Change an installed plugin's Git ref without removing its data
 
 Add a source-change operation to BB's CLI and plugin API. It should validate

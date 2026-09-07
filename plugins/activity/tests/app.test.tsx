@@ -15,11 +15,16 @@ import { parseState, updateState, recordDraft } from "../lib/client-state";
 import { thread } from "./fixtures";
 
 const splitOverride = vi.hoisted(() => ({ enabled: false, drag: vi.fn() }));
+const renameOverride = vi.hoisted(() => ({ handler: null as null | ((id: string, title: string) => Promise<void>) }));
 vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@get-bb/plugin-sdk/app")>();
   return {
     ...actual,
+    experimental_useSidebarThreadActions: () => {
+      const actions = actual.experimental_useSidebarThreadActions();
+      return { ...actions, rename: renameOverride.handler ?? actions.rename };
+    },
     experimental_useSidebarThreadSplit: (id: string) =>
       splitOverride.enabled
         ? {
@@ -87,6 +92,7 @@ beforeEach(() => {
   localStorage.clear();
   updateState(() => parseState(null));
   vi.clearAllMocks();
+  renameOverride.handler = null;
 });
 afterEach(async () => {
   for (const slot of mountedSlots.splice(0)) slot.lifecycle.unmount();
@@ -98,6 +104,60 @@ afterEach(async () => {
 });
 
 describe("activity sidebar", () => {
+  it("keeps the name after a failed save and prevents duplicate submissions", async () => {
+    let rejectSave!: (error: Error) => void;
+    const rename = vi.fn().mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSave = reject; })).mockResolvedValue(undefined);
+    renameOverride.handler = rename;
+    const slot = mount();
+    fireEvent.contextMenu(slot.container.querySelector('[data-sidebar-thread-id="working"]')!);
+    fireEvent.click(within(await slot.findByRole("menu")).getByRole("menuitem", { name: "Rename" }));
+    fireEvent.change(slot.getByRole("textbox"), { target: { value: "Retry name" } });
+    const form = slot.getByRole("form", { name: "Rename thread" });
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(slot.getByRole("textbox"));
+    expect((slot.getByRole("textbox") as HTMLInputElement).readOnly).toBe(true);
+    await act(async () => rejectSave(new Error("offline")));
+    expect(slot.getByRole("alert").textContent).toContain("Try again");
+    expect((slot.getByRole("textbox") as HTMLInputElement).value).toBe("Retry name");
+    expect(document.activeElement).toBe(slot.getByRole("textbox"));
+    expect((slot.getByRole("textbox") as HTMLInputElement).readOnly).toBe(false);
+    fireEvent.submit(form);
+    await waitFor(() => expect(slot.queryByRole("textbox")).toBeNull());
+    expect(rename).toHaveBeenLastCalledWith("working", "Retry name");
+    expect(document.activeElement).toBe(slot.container.querySelector('[data-sidebar-thread-id="working"]'));
+  });
+  it.each([false, true])("renames a thread in compact mode %s without navigation", async (isCompactViewport) => {
+    const slot = renderSlot(app.threadLists[0], { ...props, isCompactViewport }, {
+      sidebarThreads: { threads, projects },
+    });
+    fireEvent.contextMenu(slot.container.querySelector('[data-sidebar-thread-id="child"]')!);
+    fireEvent.click(within(await slot.findByRole("menu")).getByRole("menuitem", { name: "Rename" }));
+    const input = slot.getByRole("textbox", { name: "Thread name" }) as HTMLInputElement;
+    expect(input.value).toBe("Blocked child");
+    fireEvent.change(input, { target: { value: "   " } });
+    expect((slot.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(input, { target: { value: "  New child name  " } });
+    fireEvent.submit(slot.getByRole("form", { name: "Rename thread" }));
+    await waitFor(() => expect(slot.queryByRole("textbox")).toBeNull());
+    expect(slot.inspection.sidebarActionCalls).toEqual([
+      { method: "rename", threadId: "child", title: "New child name" },
+    ]);
+    expect(props.onNavigate).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(slot.container.querySelector('[data-sidebar-thread-id="child"]'));
+  });
+  it.each(["Cancel", "Escape", "unchanged"])("closes rename with %s without saving", async (method) => {
+    const slot = mount();
+    fireEvent.contextMenu(slot.container.querySelector('[data-sidebar-thread-id="working"]')!);
+    fireEvent.click(within(await slot.findByRole("menu")).getByRole("menuitem", { name: "Rename" }));
+    if (method === "Cancel") fireEvent.click(slot.getByRole("button", { name: "Cancel" }));
+    else if (method === "Escape") fireEvent.keyDown(slot.getByRole("textbox"), { key: "Escape" });
+    else fireEvent.submit(slot.getByRole("form", { name: "Rename thread" }));
+    expect(slot.queryByRole("textbox")).toBeNull();
+    expect(slot.inspection.sidebarActionCalls).toEqual([]);
+    expect(document.activeElement).toBe(slot.container.querySelector('[data-sidebar-thread-id="working"]'));
+  });
   it.each(["status", "project"] as const)(
     "keeps pins above %s groups, including children and filtered statuses",
     (groupBy) => {

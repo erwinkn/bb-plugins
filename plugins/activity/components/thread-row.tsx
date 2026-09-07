@@ -1,5 +1,5 @@
 import * as Menu from "@radix-ui/react-context-menu";
-import { useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   useRpc,
   useBbNavigate,
@@ -54,6 +54,29 @@ export function ThreadRow({
   const actions = experimental_useSidebarThreadActions();
   const scope = usePortalScopeProps();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const savingRef = useRef(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const menuOpenedEditor = useRef(false);
+  const rowRef = useRef<HTMLAnchorElement>(null);
+  const restoreRowFocus = useRef(false);
+  const closeEditor = () => {
+    restoreRowFocus.current = true;
+    setEditing(false);
+  };
+  useLayoutEffect(() => {
+    if (!editing && restoreRowFocus.current) {
+      restoreRowFocus.current = false;
+      rowRef.current?.focus();
+      // BB can restore composer focus while handling the same Escape event.
+      // Restore the row after that event and its menu cleanup have completed.
+      const frame = requestAnimationFrame(() => rowRef.current?.focus());
+      return () => cancelAnimationFrame(frame);
+    }
+  }, [editing]);
   const longPress = useLongPressMenu(menuOpen);
   // A long press can produce a click on release. Keep keyboard and BB shortcut
   // clicks (detail === 0) available, but require a fresh pointer press otherwise.
@@ -74,7 +97,59 @@ export function ThreadRow({
       <div
         className={`group relative flex min-w-0 items-center rounded-md ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
       >
-        <Menu.Root
+        {editing ? (
+          <form
+            aria-label="Rename thread"
+            className="flex min-w-0 flex-1 flex-wrap gap-2 p-2"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!savingRef.current) closeEditor();
+              }
+            }}
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const nextTitle = draftTitle.trim();
+              if (!nextTitle || savingRef.current) return;
+              if (nextTitle === title) {
+                closeEditor();
+                return;
+              }
+              savingRef.current = true;
+              setSaving(true);
+              setRenameError(null);
+              renameInputRef.current?.focus();
+              try {
+                await actions.rename(thread.id, nextTitle);
+                closeEditor();
+              } catch {
+                setRenameError("Could not rename the thread. Try again.");
+              } finally {
+                savingRef.current = false;
+                setSaving(false);
+              }
+            }}
+          >
+            <input
+              ref={renameInputRef}
+              aria-label="Thread name"
+              autoFocus
+              onFocus={(event) => event.currentTarget.select()}
+              value={draftTitle}
+              readOnly={saving}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              className="w-full min-w-0 rounded-md border border-border bg-background px-2 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            <button type="submit" disabled={saving || !draftTitle.trim()} className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button type="button" disabled={saving} onClick={closeEditor} className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+              Cancel
+            </button>
+            {renameError && <p role="alert" className="w-full text-sm text-destructive">{renameError}</p>}
+          </form>
+        ) : <Menu.Root
           onOpenChange={(open) => {
             setMenuOpen(open);
             if (open) suppressClick.current = true;
@@ -90,6 +165,7 @@ export function ThreadRow({
           >
             <Menu.Trigger asChild>
               <a
+                ref={rowRef}
                 {...(!thread.isArchived ? splitProps : {})}
                 {...longPress}
                 href={`/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(thread.id)}`}
@@ -203,6 +279,14 @@ export function ThreadRow({
           <Menu.Portal>
             <Menu.Content
               {...scope}
+              onCloseAutoFocus={(event) => {
+                if (menuOpenedEditor.current) {
+                  menuOpenedEditor.current = false;
+                  event.preventDefault();
+                  // The editor may already be closed when Radix restores focus.
+                  (renameInputRef.current ?? rowRef.current)?.focus();
+                }
+              }}
               aria-label={`Actions for ${title}`}
               className="z-50 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
             >
@@ -216,6 +300,17 @@ export function ThreadRow({
               )}
               {!thread.isArchived && (
                 <>
+                  <Menu.Item
+                    className={menuItemClass}
+                    onSelect={() => {
+                      menuOpenedEditor.current = true;
+                      setDraftTitle(title);
+                      setRenameError(null);
+                      setEditing(true);
+                    }}
+                  >
+                    Rename
+                  </Menu.Item>
                   <Menu.Item
                     className={menuItemClass}
                     onSelect={() => {
@@ -253,7 +348,7 @@ export function ThreadRow({
               </Menu.Item>
             </Menu.Content>
           </Menu.Portal>
-        </Menu.Root>
+        </Menu.Root>}
       </div>
       {children}
     </li>
