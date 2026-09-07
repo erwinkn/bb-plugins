@@ -8,6 +8,8 @@ export interface EditorPrefs {
   lineNumbers: boolean;
   autoSave: AutoSave;
   fileTreeSide: TreeSide;
+  /** Draw BB's own diffs (timeline, diff panel) with this plugin's viewer. */
+  bbDiffs: boolean;
 }
 
 const DEFAULT_PREFS: EditorPrefs = {
@@ -16,6 +18,7 @@ const DEFAULT_PREFS: EditorPrefs = {
   lineNumbers: true,
   autoSave: "off",
   fileTreeSide: "right",
+  bbDiffs: true,
 };
 
 export const AUTO_SAVE_DELAY_MS = 1000;
@@ -24,7 +27,7 @@ export const AUTO_SAVE_DELAY_MS = 1000;
 export function prefsFrom(values: Record<string, unknown> | null | undefined): EditorPrefs {
   const fontSize = Number(values?.fontSize);
   const autoSave = values?.autoSave;
-  const bool = (key: "wordWrap" | "lineNumbers") =>
+  const bool = (key: "wordWrap" | "lineNumbers" | "bbDiffs") =>
     typeof values?.[key] === "boolean" ? (values[key] as boolean) : DEFAULT_PREFS[key];
   return {
     fontSize: Number.isFinite(fontSize) && fontSize >= 9 && fontSize <= 24 ? Math.round(fontSize) : DEFAULT_PREFS.fontSize,
@@ -32,6 +35,7 @@ export function prefsFrom(values: Record<string, unknown> | null | undefined): E
     lineNumbers: bool("lineNumbers"),
     autoSave: autoSave === "onBlur" || autoSave === "afterDelay" ? autoSave : "off",
     fileTreeSide: values?.fileTreeSide === "left" ? "left" : "right",
+    bbDiffs: bool("bbDiffs"),
   };
 }
 

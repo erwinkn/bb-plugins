@@ -14,6 +14,7 @@ import { prefsFrom, type EditorPrefs } from "@/lib/editor-options";
 import { EDITOR_COMMANDS, isCommandAvailable, runEditorCommand } from "@/lib/editor-commands";
 import { Workbench, type WorkbenchProps } from "@/components/Workbench";
 import { DiffWorkbench } from "@/components/DiffWorkbench";
+import { BbDiffRenderer } from "@/components/BbDiffRenderer";
 
 type SetPref = WorkbenchProps["onSetPref"];
 
@@ -179,6 +180,15 @@ export default definePluginApp((app) => {
     icon: "GitDiff",
     layout: "flush",
     component: ThreadChangesPanel,
+  });
+
+  // Exclusive: BB's timeline diffs, its diff panel's bodies and other plugins'
+  // `experimental_Diff` calls all render here while this plugin is enabled.
+  app.slots.experimental_diffRenderer({
+    id: "pierre-diffs",
+    title: "Pierre diffs",
+    description: "Draws BB's diffs with the same viewer as the Changes tab.",
+    component: BbDiffRenderer,
   });
 
   app.slots.commandPaletteAction({

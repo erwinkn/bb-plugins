@@ -305,6 +305,12 @@ export default async function plugin(bb: BbPluginApi) {
       options: ["left", "right"],
       default: "right",
     },
+    bbDiffs: {
+      type: "boolean",
+      label: "Draw BB's diffs",
+      description: "Render the timeline's file diffs and the diff panel's bodies with this viewer instead of BB's.",
+      default: true,
+    },
   });
 
   // The bundle is served through the plugin's own HTTP routes, one per file

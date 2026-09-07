@@ -2,7 +2,9 @@ import type {
   CodeView as CodeViewClass,
   DiffsThemeNames,
   FileContents,
+  FileDiff as FileDiffClass,
   FileDiffMetadata,
+  ParsedPatch,
   ThemeRegistration,
 } from "@pierre/diffs";
 import type { Editor as EditorClass } from "@pierre/diffs/edit";
@@ -17,10 +19,13 @@ export interface PierreBundle {
   CodeView: typeof CodeViewClass;
   diffAcceptRejectHunk: typeof import("@pierre/diffs").diffAcceptRejectHunk;
   Editor: typeof EditorClass;
+  /** The non-virtualized diff, for one block inside a page that scrolls itself. */
+  FileDiff: typeof FileDiffClass;
   parseDiffFromFile: (
     oldFile: FileContents | null,
     newFile: FileContents | null,
   ) => FileDiffMetadata;
+  parsePatchFiles: (patch: string, cacheKeyPrefix?: string, throwOnError?: boolean) => ParsedPatch[];
   registerCustomTheme: (name: string, loader: () => Promise<ThemeRegistration>) => void;
   getLineEndingType: (content: string) => "CRLF" | "CR" | "LF" | "none";
   getOrCreateWorkerPoolSingleton: (props: {
