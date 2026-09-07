@@ -134,7 +134,8 @@ name. Cancel or Escape discards the edit. Empty names cannot be saved. A failed
 save keeps the entered name and shows an error so you can try again.
 There is no actions button. A normal
 click or tap still opens the thread. Archive collects all active descendants,
-including hidden children, then archives them deepest first and the selected
+including hidden children and restored descendants below archived ancestors,
+then archives them deepest first and the selected
 thread last through BB's public API. BB handles runtime and terminal cleanup.
 The operation stops on failure and reports partial progress; completed archives
 are not rolled back. Discovery finishes before any archive requests are sent.

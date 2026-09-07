@@ -34,8 +34,9 @@ describe("archive API", () => {
     const siblings = Array.from({ length: 200 }, (_, i) => child(`child-${i}`));
     const host = createFakePluginHost({ sdk: { threads: {
       list: async (args) => {
-        expect(args).toMatchObject({ archived: false, includeHidden: true, limit: 200 });
+        expect(args).toMatchObject({ includeHidden: true, limit: 200 });
         expect(archived).toEqual([]);
+        if (args?.archived) return [];
         if (args?.parentThreadId === "root") return args.offset === 0 ? siblings : [child("last")];
         if (args?.parentThreadId === "child-0") return [child("grandchild")];
         if (args?.parentThreadId === "grandchild") return [child("great-grandchild")];
@@ -50,9 +51,26 @@ describe("archive API", () => {
     } finally { await host.harness.lifecycle.dispose(); }
   });
 
+  it("finds active descendants below archived ancestors without archiving those ancestors again", async () => {
+    const host = createFakePluginHost({ sdk: { threads: {
+      list: async ({ parentThreadId, archived } = {}) =>
+        parentThreadId === "root" && archived ? [child("archived-child")]
+          : parentThreadId === "archived-child" && !archived ? [child("restored-grandchild")] : [],
+      archive: async () => ({ ok: true }),
+    } } });
+    plugin(host.bb);
+    try {
+      await host.harness.behavior.callRpc("archiveTree", { threadId: "root" });
+      expect(host.harness.inspection.sdk.callsTo("threads.archive")).toEqual([
+        [{ threadId: "restored-grandchild" }], [{ threadId: "root" }],
+      ]);
+    } finally { await host.harness.lifecycle.dispose(); }
+  });
+
   it.each(["cycle", "read failure"])("does not archive anything on discovery %s", async (failure) => {
     const host = createFakePluginHost({ sdk: { threads: {
-      list: async ({ parentThreadId } = {}) => {
+      list: async ({ parentThreadId, archived } = {}) => {
+        if (archived) return [];
         if (parentThreadId === "root") return [child("child")];
         if (failure === "cycle") return [child("root")];
         throw new Error("Read failed");
@@ -68,7 +86,7 @@ describe("archive API", () => {
   it("reports partial failure and leaves ancestors unarchived", async () => {
     const archived: string[] = [];
     const host = createFakePluginHost({ sdk: { threads: {
-      list: async ({ parentThreadId } = {}) => parentThreadId === "root" ? [child("child")] : parentThreadId === "child" ? [child("grandchild")] : [],
+      list: async ({ parentThreadId, archived } = {}) => archived ? [] : parentThreadId === "root" ? [child("child")] : parentThreadId === "child" ? [child("grandchild")] : [],
       archive: async ({ threadId }) => {
         if (threadId === "child") throw new Error("Offline");
         archived.push(threadId);
