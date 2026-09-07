@@ -4,12 +4,8 @@ import {
   useRealtimeConnectionState,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
-import {
-  catalogSchema,
-  type Space,
-  type SpaceCatalog,
-  type spaceContract,
-} from "./space-contract";
+import type { spaceContract } from "./space-contract";
+import { catalogSchema, type Space, type SpaceCatalog } from "./space-schema";
 import { EMPTY_CATALOG } from "./spaces";
 
 // The last catalog this client saw. It renders immediately on the next load

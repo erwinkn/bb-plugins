@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { SPACE_NAME_MAX } from "../lib/space-contract";
+import { SPACE_NAME_MAX } from "../lib/space-schema";
 import type { SpaceEdit } from "./scope-menu";
 
 const buttonClass =

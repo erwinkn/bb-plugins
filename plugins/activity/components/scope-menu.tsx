@@ -1,6 +1,6 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { useRef } from "react";
-import type { SpaceCatalog } from "../lib/space-contract";
+import type { SpaceCatalog } from "../lib/space-schema";
 import { inScope, scopeLabel, type Scope } from "../lib/spaces";
 import { MenuContent, menuItemClass } from "./menus";
 

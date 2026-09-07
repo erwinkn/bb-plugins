@@ -1,4 +1,4 @@
-import { SPACE_NAME_MAX, type Space, type SpaceCatalog } from "./space-contract";
+import { SPACE_NAME_MAX, type Space, type SpaceCatalog } from "./space-schema";
 
 export const EMPTY_CATALOG: SpaceCatalog = { revision: 0, spaces: [] };
 

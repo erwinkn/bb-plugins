@@ -1,10 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import {
-  catalogSchema,
-  spaceContract,
-  type Space,
-  type SpaceCatalog,
-} from "./space-contract";
+import { spaceContract } from "./space-contract";
+import { catalogSchema, type Space, type SpaceCatalog } from "./space-schema";
 import { EMPTY_CATALOG, normalizeSpaces, SpaceValidationError } from "./spaces";
 
 export const SPACES_KEY = "spaces";

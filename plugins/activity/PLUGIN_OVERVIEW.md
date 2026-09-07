@@ -18,7 +18,8 @@
 - `server.ts`: archive list and restore RPCs through BB, with change signals.
 - `lib/archive-contract.ts`: validated archive RPC contract.
 - `lib/use-archives.ts`: paged archive loading and refresh handling.
-- `lib/space-contract.ts`: space catalog schema and RPC contract.
+- `lib/space-schema.ts`: space catalog schema shared by server and frontend.
+- `lib/space-contract.ts`: space RPC contract (server; frontend imports its type).
 - `lib/spaces.ts`: catalog normalization and scope resolution shared by both sides.
 - `lib/spaces-store.ts`: key-value catalog with revision checks, realtime
   signals, and the `bb activity` export/import CLI.
