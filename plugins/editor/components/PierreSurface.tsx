@@ -483,17 +483,15 @@ function buildOptions(
       const state = stateRef.current;
       const version = ++cacheRevision;
       if (state !== null) state.version = version;
-      const current = item.id === itemIdOf(latest.current);
       if ("fileDiff" in event) {
         event.fileDiff.cacheKey = `${CACHE_NAMESPACE}\0${item.id}\0diff\0${version}`;
-        if (current && event.newFile !== null) {
-          latest.current.onChange?.(event.newFile.contents, latest.current.viewId);
-        }
       } else {
         event.file.cacheKey = `${CACHE_NAMESPACE}\0${item.id}\0file\0${version}`;
-        if (current) latest.current.onChange?.(event.file.contents, latest.current.viewId);
       }
-      // Completing an edit session is not a save; the owner decides that.
+      // onItemEditChange already delivered each text change. Completion can
+      // run while a newer external document replaces this editor; echoing
+      // its old text here would overwrite that document and re-arm auto save.
+      // Accept only into Pierre's cache, never back into the file session.
       return "accept";
     },
   };
