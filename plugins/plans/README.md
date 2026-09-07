@@ -34,7 +34,7 @@ or resume before new agent tools become available.
 3. Select **Send feedback** to request a revision in the original thread.
 4. The agent submits the revision with the same plan ID and the expected version
    ID. Compare the versions. Earlier comments retain their original version.
-5. After reviewing the revision, select **Approve and start**. The plugin sends
+5. After reviewing the revision, select **Approve**. The plugin sends
    that exact plan version to the original thread for implementation.
 
 Feedback and approval use BB's queue-if-active mode. If the thread is working,

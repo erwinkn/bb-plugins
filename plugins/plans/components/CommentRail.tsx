@@ -26,12 +26,8 @@ interface CommentRailProps {
   actions: CommentActions;
   /** Editing and deleting unsent comments on an unapproved plan. */
   canEdit: boolean;
+  /** A comment being composed elsewhere; keeps the empty prompt out of the way. */
   pending: PendingComment | null;
-  pendingMatch: QuoteMatch | null;
-  onPendingChange: (pending: PendingComment | null) => void;
-  onPendingSubmit: (pending: PendingComment) => Promise<void>;
-  /** The rail renders the composer inline; narrow layouts host it elsewhere. */
-  showComposer: boolean;
   /** Off when a tab already names the rail. */
   showHeader?: boolean;
   /** Copy for the empty rail; defaults to the select-text prompt. */
@@ -47,10 +43,6 @@ export function CommentRail({
   actions,
   canEdit,
   pending,
-  pendingMatch,
-  onPendingChange,
-  onPendingSubmit,
-  showComposer,
   showHeader = true,
   emptyMessage,
   className,
@@ -72,20 +64,8 @@ export function CommentRail({
         </div>
       ) : null}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        {showComposer && pending !== null ? (
-          <div className="border-b border-border p-3">
-            <h3 className="mb-3 text-sm font-semibold">New comment</h3>
-            <CommentComposer
-              pending={pending}
-              match={pendingMatch}
-              onChange={onPendingChange}
-              onCancel={() => onPendingChange(null)}
-              onSubmit={onPendingSubmit}
-            />
-          </div>
-        ) : null}
         {comments.length === 0 && pending === null ? (
-          <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+          <p className="px-4 py-6 text-sm text-muted-foreground">
             {emptyMessage ??
               (canEdit
                 ? "Select text in the plan to leave a comment."

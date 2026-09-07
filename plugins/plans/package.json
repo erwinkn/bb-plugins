@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "Plans",
-    "description": "Review agent plans as Markdown: comment on selected text, compare versions, send feedback, or approve and start.",
+    "description": "Review agent plans as Markdown: comment on selected text, compare versions, send feedback, or approve.",
     "branding": {
       "icon": "ListTodo"
     },

@@ -5,6 +5,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { Markdown } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
@@ -43,6 +44,11 @@ interface PlanDocumentProps {
   /** Quote being composed; its match is reported so the composer can warn. */
   pendingQuote: string | null;
   onPendingMatch: (match: QuoteMatch | null) => void;
+  /**
+   * Composer for the pending quote. It floats beside the passage when the
+   * quote anchors, and at the top of the document when it does not.
+   */
+  composer?: ReactNode;
   /** The user asked to comment on the current selection. */
   onQuote: (quote: string) => void;
   onAnnotate?: (quote: string, kind: "redline" | "looksGood") => Promise<void>;
@@ -54,6 +60,9 @@ interface PlanDocumentProps {
 
 const FLOATING_OFFSET = 116;
 const FLOATING_EDGE = 90;
+const COMPOSER_WIDTH = 320;
+const COMPOSER_MARGIN = 8;
+const COMPOSER_ARROW = 8;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -73,6 +82,7 @@ export function PlanDocument({
   canComment,
   pendingQuote,
   onPendingMatch,
+  composer,
   onQuote,
   onAnnotate,
   onActivateComment,
@@ -146,6 +156,15 @@ export function PlanDocument({
       if (frame !== null) cancelAnimationFrame(frame);
     };
   }, [anchor]);
+
+  // The composer sits at coordinates read from the DOM; recompute on resize.
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (scroller === null || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => forceRepaint((n) => n + 1));
+    observer.observe(scroller);
+    return () => observer.disconnect();
+  }, []);
 
   // Paint anchors; unresolved comments read stronger than resolved ones.
   useEffect(() => {
@@ -250,6 +269,15 @@ export function PlanDocument({
     return () => doc.removeEventListener("keydown", onKeyDown);
   });
 
+  const composerPosition = composerPlacement(pendingRangeRef.current, scrollRef.current);
+  const showComposer = visible && composer !== undefined && pendingQuote !== null;
+  const composerRef = useRef<HTMLDivElement>(null);
+  // A quote near the bottom edge would push its composer out of view.
+  useEffect(() => {
+    if (!showComposer) return;
+    composerRef.current?.scrollIntoView({ block: "nearest" });
+  }, [showComposer, pendingQuote]);
+
   const showFloating = visible && selection !== null && !isCoarse;
   const showBar = visible && selection !== null && isCoarse;
   const tooLong = selection?.tooLong === true;
@@ -279,6 +307,24 @@ export function PlanDocument({
         >
           <Markdown content={markdown} />
         </div>
+        {showComposer && composerPosition !== null ? (
+          <div
+            ref={composerRef}
+            role="dialog"
+            aria-label="New comment"
+            className="absolute z-20 animate-in fade-in-0 zoom-in-95 duration-150"
+            style={{ top: composerPosition.top, left: composerPosition.left, width: COMPOSER_WIDTH }}
+          >
+            <span
+              aria-hidden
+              className="absolute -top-1 size-2 rotate-45 border-l border-t border-border bg-popover"
+              style={{ left: composerPosition.arrowLeft - 4 }}
+            />
+            <div className="rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg">
+              {composer}
+            </div>
+          </div>
+        ) : null}
         {showFloating ? (
           <div
             className="pointer-events-none absolute z-10 -translate-x-1/2 animate-in fade-in-0 zoom-in-95 duration-150"
@@ -298,6 +344,19 @@ export function PlanDocument({
           </div>
         ) : null}
       </div>
+      {showComposer && composerPosition === null ? (
+        <div
+          ref={composerRef}
+          role="dialog"
+          aria-label="New comment"
+          className="absolute inset-x-0 top-2 z-20 mx-auto animate-in fade-in-0 zoom-in-95 duration-150"
+          style={{ width: COMPOSER_WIDTH, maxWidth: "calc(100% - 16px)" }}
+        >
+          <div className="rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-lg">
+            {composer}
+          </div>
+        </div>
+      ) : null}
       {showBar ? (
         <div className="absolute inset-x-0 bottom-0 z-10 flex justify-center p-3 animate-in slide-in-from-bottom-2 fade-in-0 duration-150">
           {tooLong ? (
@@ -312,6 +371,34 @@ export function PlanDocument({
       ) : null}
     </div>
   );
+}
+
+/**
+ * Where the composer sits relative to the scroller's padding box: just under
+ * the pending passage, with its arrow at the passage's horizontal centre.
+ */
+function composerPlacement(
+  range: Range | null,
+  scroller: HTMLElement | null,
+): { top: number; left: number; arrowLeft: number } | null {
+  if (range === null || scroller === null) return null;
+  const bounds = range.getBoundingClientRect();
+  if (bounds.width === 0 && bounds.height === 0) return null;
+  const origin = scroller.getBoundingClientRect();
+  const rects = range.getClientRects();
+  const last = rects.length > 0 ? rects[rects.length - 1] : bounds;
+  const center = last.left + last.width / 2 - origin.left + scroller.scrollLeft;
+  const width = scroller.clientWidth;
+  const left = clamp(
+    center - COMPOSER_WIDTH / 2,
+    COMPOSER_MARGIN,
+    Math.max(COMPOSER_MARGIN, width - COMPOSER_WIDTH - COMPOSER_MARGIN),
+  );
+  return {
+    top: bounds.bottom - origin.top + scroller.scrollTop + COMPOSER_ARROW + 2,
+    left,
+    arrowLeft: clamp(center - left, 16, COMPOSER_WIDTH - 16),
+  };
 }
 
 function caretFromPoint(

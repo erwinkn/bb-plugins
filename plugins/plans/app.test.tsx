@@ -161,7 +161,7 @@ describe("review", () => {
     await waitFor(() => expect(send).toHaveProperty("disabled", false));
     fireEvent.click(send);
     await waitFor(() => expect(backend.plans.get("plan-1")?.status).toBe("revising"));
-    expect(slot.getByRole("button", { name: "Approve and start" })).toHaveProperty("disabled", true);
+    expect(slot.getByRole("button", { name: "Approve" })).toHaveProperty("disabled", true);
     const submit = slot.inspection.rpcCalls.find((call) => call.method === "submitReview");
     expect(submit?.input).toMatchObject({ id: "plan-1", versionId: "v1", action: "feedback", note: "Tighten the scope." });
     expect(typeof (submit?.input as { requestId: string }).requestId).toBe("string");
@@ -172,16 +172,16 @@ describe("review", () => {
   it("allows approval after sent feedback has a newer revision without resolve controls", async () => {
     const backend = fakeBackend([makePlan({ versions: [version(1), version(2)], comments: [comment({ sentAt: now })] })]);
     slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
-    expect(await slot.findByRole("button", { name: "Approve and start" })).toHaveProperty("disabled", false);
+    expect(await slot.findByRole("button", { name: "Approve" })).toHaveProperty("disabled", false);
     expect(slot.queryByRole("button", { name: /Resolve/ })).toBeNull();
   });
 
   it("asks before approving a real plan, then submits", async () => {
     const backend = fakeBackend([makePlan()]);
     slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
-    fireEvent.click(await slot.findByRole("button", { name: "Approve and start" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Approve" }));
     const dialog = await slot.findByRole("alertdialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Approve and start" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(backend.plans.get("plan-1")?.status).toBe("approved"));
     await slot.findByText(/Approval sent to the thread/);
   });
@@ -258,20 +258,20 @@ describe("thread panel", () => {
   it("resets the chosen plan when a mounted panel switches threads", async () => {
     const backend = fakeBackend([makePlan()]);
     slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
-    await slot.findByRole("button", { name: "Approve and start" });
+    await slot.findByRole("button", { name: "Approve" });
     slot.lifecycle.rerender(createElement(threadAction.component, { threadId: "thr_empty", params: null }));
     await slot.findByLabelText("Plan Markdown");
     expect(slot.queryByText("This plan belongs to another thread")).toBeNull();
-    expect(slot.queryByRole("button", { name: "Approve and start" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "Approve" })).toBeNull();
     slot.lifecycle.rerender(createElement(threadAction.component, { threadId: "thr_1", params: null }));
-    await slot.findByRole("button", { name: "Approve and start" });
+    await slot.findByRole("button", { name: "Approve" });
   });
 
   it("rejects a requested plan from another thread", async () => {
     const backend = fakeBackend([makePlan({ threadId: "thr_other" })]);
     slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
     await slot.findByText("This plan belongs to another thread");
-    expect(slot.queryByRole("button", { name: "Approve and start" })).toBeNull();
+    expect(slot.queryByRole("button", { name: "Approve" })).toBeNull();
     expect(slot.queryByLabelText("Note for the agent")).toBeNull();
     expect(slot.queryByText("Add rate limiting")).toBeNull();
   });
@@ -282,7 +282,7 @@ describe("thread panel", () => {
     slot = render(threadAction, { threadId: "thr_1", params: { planId: plan.id } }, {
       rpc: { ...backend.rpc, list: () => [] },
     });
-    expect(await slot.findByRole("button", { name: "Approve and start" })).toBeTruthy();
+    expect(await slot.findByRole("button", { name: "Approve" })).toBeTruthy();
     expect(slot.getByRole("heading", { name: plan.title })).toBeTruthy();
   });
 

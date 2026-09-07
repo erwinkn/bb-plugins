@@ -43,10 +43,11 @@ interface ReviewFooterProps {
 }
 
 const NOTE_MAX_ROWS = 6;
+const NOTE_LINE_HEIGHT = 20;
 
 /**
  * The decision bar: a note for the agent plus the two explicit outcomes.
- * "Send feedback" keeps the plan in review; "Approve and start" hands it to
+ * "Send feedback" keeps the plan in review; "Approve" hands it to
  * the agent. Both explain why they are unavailable instead of failing later.
  */
 export function ReviewFooter({
@@ -73,8 +74,9 @@ export function ReviewFooter({
     const element = textareaRef.current;
     if (element === null) return;
     element.style.height = "auto";
-    const lineHeight = 24;
-    element.style.height = `${Math.min(element.scrollHeight + 2, lineHeight * NOTE_MAX_ROWS + 16)}px`;
+    // Border-box: content + padding (14px) + border (2px). One line matches the
+    // 36px buttons beside it.
+    element.style.height = `${Math.min(element.scrollHeight + 2, NOTE_LINE_HEIGHT * NOTE_MAX_ROWS + 16)}px`;
   }, [note]);
 
   if (plan.status === "approved") {
@@ -109,9 +111,7 @@ export function ReviewFooter({
         ? plan.sample
           ? `${pending} draft ${pending === 1 ? "comment" : "comments"} will be marked as sent.`
           : `${pending} draft ${pending === 1 ? "comment" : "comments"} will be sent with feedback.`
-        : plan.sample
-          ? "No open comments. Approving only marks the sample as approved."
-          : "No open comments. Approving sends the go-ahead to the thread."
+        : null
       : gate.approveReason;
 
   return (
@@ -138,7 +138,7 @@ export function ReviewFooter({
           aria-label="Note for the agent"
           rows={1}
           disabled={busy}
-          className="order-1 min-w-0 min-h-9 resize-none leading-6 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="order-1 min-w-0 min-h-9 resize-none py-[7px] leading-5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         />
         {failure ? (
           <div role="alert" className="order-first col-span-full flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">
@@ -155,10 +155,12 @@ export function ReviewFooter({
           </div>
         ) : null}
         <div className="contents">
-          <p className="order-2 col-span-full min-w-0 text-xs text-muted-foreground @3xl:order-3" aria-live="polite">
-            {persistFailed ? "Draft not saved in this browser. " : null}
-            {hint}
-          </p>
+          {persistFailed || hint ? (
+            <p className="order-2 col-span-full min-w-0 text-xs text-muted-foreground @3xl:order-3" aria-live="polite">
+              {persistFailed ? "Draft not saved in this browser. " : null}
+              {hint}
+            </p>
+          ) : null}
           <div className="order-3 flex items-center justify-end gap-2 @3xl:order-2">
             <Button
               type="button"
@@ -184,11 +186,11 @@ export function ReviewFooter({
                 ) : (
                   <Icon name="Play" className="size-4" aria-hidden />
                 )}
-                Approve and start
+                Approve
               </Button>
               <AlertDialogContent>
                 <AlertDialogHeader>
-                  <AlertDialogTitle>Approve this plan and start?</AlertDialogTitle>
+                  <AlertDialogTitle>Approve this plan?</AlertDialogTitle>
                   <AlertDialogDescription>
                     The approval{note.trim() ? " and your note are" : " is"} sent to the linked
                     thread, queued if the agent is busy. The agent starts from the plan when it
@@ -203,7 +205,7 @@ export function ReviewFooter({
                       onSubmit("approve");
                     }}
                   >
-                    Approve and start
+                    Approve
                   </AlertDialogAction>
                 </AlertDialogFooter>
               </AlertDialogContent>

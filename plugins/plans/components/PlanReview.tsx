@@ -19,6 +19,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
+import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
+import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse";
 import { cn } from "@/lib/utils";
 import type { Plan } from "../contract";
 import { useContainerWidth, RAIL_BREAKPOINT_PX } from "../hooks/useContainerWidth";
@@ -67,6 +69,8 @@ export function PlanReview({
   const rootRef = useRef<HTMLDivElement>(null);
   const width = useContainerWidth(rootRef);
   const isWide = width !== null && width >= RAIL_BREAKPOINT_PX;
+  // Phones get a sheet for the composer; every other layout anchors it to the text.
+  const isMobile = useIsCompactViewport() || usePointerCoarse();
 
   const latest = latestVersion(plan);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
@@ -357,6 +361,17 @@ export function PlanReview({
               canComment={canEdit}
               pendingQuote={pending?.quote ?? null}
               onPendingMatch={setPendingMatch}
+              composer={
+                !isMobile && pending ? (
+                  <CommentComposer
+                    pending={pending}
+                    match={pendingMatch}
+                    onChange={setPending}
+                    onCancel={() => setPending(null)}
+                    onSubmit={submitPending}
+                  />
+                ) : undefined
+              }
               onAnnotate={async (quote, kind) => {
                 try {
                   await runMutation(() => api.call("addComment", { id: plan.id, versionId: version.id, quote, kind, body: "" }));
@@ -387,10 +402,6 @@ export function PlanReview({
               actions={commentActions}
               canEdit={!isApproved && submitting === null}
               pending={pending}
-              pendingMatch={pendingMatch}
-              onPendingChange={setPending}
-              onPendingSubmit={submitPending}
-              showComposer={false}
               showHeader={false}
             />
           ) : null}
@@ -405,10 +416,6 @@ export function PlanReview({
               actions={commentActions}
               canEdit={!isApproved && submitting === null}
               pending={pending}
-              pendingMatch={pendingMatch}
-              onPendingChange={setPending}
-              onPendingSubmit={submitPending}
-              showComposer
               emptyMessage={view === "changes" && canEdit ? "Open Document to comment on the text." : undefined}
             />
           </aside>
@@ -431,7 +438,7 @@ export function PlanReview({
         />
       ) : null}
 
-      {!isWide ? (
+      {isMobile ? (
         <Dialog open={pending !== null && view === "document"} onOpenChange={(open) => !open && setPending(null)}>
           <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
             <DialogHeader>
