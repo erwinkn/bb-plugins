@@ -9,9 +9,6 @@ const MENU_NAV_KEYS = new Set([
   "PageUp",
 ]);
 
-export const MENU_ITEM_LAST_HOVERED_CLASS =
-  "data-[last-hovered]:bg-state-hover data-[last-hovered]:text-foreground";
-
 interface MenuHoverContextValue {
   lastHoveredId: string | null;
   setLastHovered: (id: string) => void;

@@ -172,58 +172,42 @@ BB's lifecycle cleanup, and report partial failures.
 ### Editable plugin diff renderers and Git targets
 
 Allow a plugin to edit a live working file inside BB's native diff viewer.
-BB 0.42.1 already has `experimental_diffRenderer`, but the installed host passes
-only patch text, path, display options, optional complete sides and `Original`.
-It does not pass environment/host identity, revision target, a file hash, save
-or refresh actions. Complete diff text alone does not identify a writable file.
+`experimental_diffRenderer` (BB 0.42.1) passes only patch text, path, display
+options, optional complete sides and `Original`: no environment or host
+identity, revision target, file hash, or save/refresh actions, so a
+replacement can only render. Extend the contract with source and revision
+identity and optional live-file read/save/refresh; keep historical and
+patch-only callers read-only and `Original` as the fallback. Two smaller gaps:
+`commandPaletteAction` has no shortcut field, so ⌘D cannot be pointed at a
+plugin's Changes tab, and the diff panel's frame (scope picker, file list) has
+no replacement slot.
 
-Extend the contract with semantic source and revision identity and optional
-live-file read/save/refresh capabilities. Keep historical and patch-only callers
-read-only. Pass the existing selection-to-chat action to replacements too.
-Keep `Original` as the fallback and test environment and timeline callers.
-
-Also add explicit staged and unstaged environment diff targets and index-content
-reads. The current SDK targets are `uncommitted`, `branch_committed`, `all` and
-`commit`; `uncommitted` compares HEAD with the working tree and combines index
-and unstaged changes. `diffPatch` reads patches; it does not apply them. Any new
-stage, unstage or revert API should check disk/index generations and report a
-conflict when the patch is stale.
+Add explicit staged and unstaged diff targets and index-content reads. The
+current targets are `uncommitted`, `branch_committed`, `all` and `commit`;
+`uncommitted` combines index and unstaged changes, and `diffPatch` only reads
+patches. Any stage, unstage or revert API should check disk/index generations
+and report a stale patch as a conflict.
 
 Expose raw porcelain status or an `unmerged` flag on
-`environments.status().workspace.workingTree.files`. SDK 0.4.47 reports `U`
-conflicts per file, but folds `AA` (both added) into `A`. A markerless both-added
-conflict cannot be distinguished from a normal addition. The editor blocks
-reported `U` conflicts and conflict markers; it cannot detect this remaining
-case through the public worktree API. Status can also be cached for three
-seconds by BB. The file save still checks its content hash.
+`environments.status().workspace.workingTree.files`. SDK 0.4.47 folds `AA`
+(both added) into `A`, so a markerless both-added conflict looks like a normal
+addition; the editor blocks `U` conflicts and conflict markers but cannot
+detect this case.
 
-Pierre should expose public methods for search, replace, and find-again.
-Version 1.4.1 only exposes those actions through editor key commands; the plugin
-uses a reserved custom key binding for toolbar search. A public command method
-would remove that DOM dependency.
+Pierre 1.4.1 exposes search, replace and find-again only through editor key
+commands; the plugin uses a reserved key binding for toolbar search. A public
+command method would remove that DOM dependency.
 
 For editor lifecycle support, add plugin tab dirty state, close negotiation,
-retitle and line-location delivery to file openers. Plugins must still preserve
-drafts across unmounts and disconnects.
-
-The editor plugin now renders BB's diffs read-only through
-`experimental_diffRenderer` (timeline rows, diff panel bodies). Two gaps remain
-around it: `commandPaletteAction` has no shortcut field, so ⌘D cannot be
-pointed at a plugin's Changes tab, and the diff panel's frame (scope picker,
-file list, expand-all) has no replacement slot. Let a plugin bind a shortcut to
-a palette action, or add a slot for the diff panel as a whole.
-
-The [feasibility report](docs/investigations/pierre-editor/README.md) records
-installed SDK and runtime evidence, an isolated Pierre 1.4.1 compile probe,
-and a phased plugin proposal. A dedicated editable diff action tab is feasible
-with existing APIs; native diff editing needs the contract extension above.
+retitle and line-location delivery to file openers. File removal needs an
+expected-hash precondition, and revision reads need file mode metadata so a
+restored file can keep its executable bit.
 
 Status: recorded locally on 2026-09-07; no upstream issue filed.
 Suggested issue titles: `Pass semantic edit context to plugin diff renderers`,
 `Expose staged and unstaged Git targets with guarded patch actions`, and
 `Add dirty state and lifecycle controls for plugin editor tabs`.
-File separate requests in [BB issues](https://github.com/get-bb/bb/issues), with
-the relevant evidence and acceptance checks from the report.
+File separate requests in [BB issues](https://github.com/get-bb/bb/issues).
 
 ### Share individual threads with guests
 

@@ -1,163 +1,89 @@
 # bb-plugin-erwin-editor
 
-A Pierre file editor for BB with **Files** and **Changes** tabs. Both tabs use
-one predefined code theme and share the same file buffer and save queue.
-The canvas, controls, and menus use BB's current interface theme.
-Plugin id: `erwin-editor`. Disable the bundled `monaco-editor` plugin before
-installing this one.
+A Pierre file editor for BB with **Files** and **Changes** tabs that share one
+code theme, one file buffer and one save queue. Plugin id: `erwin-editor`.
+Disable the bundled `monaco-editor` plugin before installing this one.
 
 ## Files
 
-Open the right panel, select **+**, then **Files**. The file tree supports
-quick open, new files and folders, rename, delete, and opening a file in its
-own tab. Its position, width, and last selected file are retained. The New
-thread screen also has a Files tab for the project's default checkout.
+Open the right panel, select **+**, then **Files**. The tree supports quick
+open (`⌘P`), new files and folders, rename, delete, and opening a file in its
+own tab; its side, width and last file are retained. The New thread screen has
+the same tab for the project's default checkout. File links this plugin claims
+open in the same editor. `⌘S` saves, `⌘F` finds.
 
-File links claimed by this plugin open in the same editor. Use `⌘S` to save,
-`⌘F` to find text, and `⌘P` for quick open. The toolbar has file history,
-path actions, find, and display settings. File icons come from `@pierre/trees`,
-the coloured set BB's own file trees use, so a `.tsx` or `.rs` file looks the
-same here as in BB. The editor uses Geist Mono, quiet line
-numbers, and compact diff separators. Choose a predefined theme from **Theme…**
-in the Files menu or **Extensions → Editor → Code theme**. Both controls save
-the same selection for Files and Changes. The default, **Follow BB**, uses BB's
-current code colors. Other choices include Pierre, GitHub, VS Code,
-Catppuccin, and Tokyo Night. Each uses its light or dark variant to match BB's
-mode. A theme without a variant uses Pierre for that mode. Plugin theme
-selection does not change BB's global theme.
+Icons come from `@pierre/trees`, the set BB's own trees use. The editor uses
+Geist Mono and Shiki highlighting through Pierre; there are no language
+services (completions, diagnostics, folding, minimap). **Theme…** in the Files
+menu and **Extensions → Editor → Code theme** save one selection for both
+tabs. **Follow BB** (default) uses BB's current code colors; the other choices
+(Pierre, GitHub, VS Code, Catppuccin, Tokyo Night, …) use their light or dark
+variant to match BB's mode and never change BB's global theme.
 
-The editor uses Pierre's text editing and Shiki syntax highlighting. It has
-no language services: no completions, diagnostics, hover information, symbol
-navigation, rename, formatting, code folding, sticky scroll, or minimap.
+A `.md` file opens as a rendered preview; the pencil button switches to the
+editor and back, per file, for the page's life. The preview follows the shared
+buffer. Relative images load through a short-lived lease for the workspace
+root; relative links to files under the root open in the same pane. In
+Changes, the eye button in the file row renders the new side, and its links
+open in the Files tab.
 
 ## Changes
 
-Open **+ → Changes**, or run **Editor: open changes** from the command palette.
-Choose a file in the change list and select a comparison:
+Open **+ → Changes** or run **Editor: open changes**. Pick a file and a
+comparison: **Uncommitted** (working tree vs HEAD, including untracked
+files), **All changes** (working tree vs the merge base with a branch), **All
+commits** (HEAD vs that merge base, read-only) or **a commit** (vs its parent,
+read-only). The scope menu lists branch commits newest first, ten at a time
+with **Show more**, and **Find commit…** accepts a hash. Panel links accept
+`{ target, path }` with target types `uncommitted`, `all`, `branch_committed`
+(optional `mergeBaseBranch`) and `commit` (`sha`).
 
-- **Uncommitted:** the working tree against HEAD, including staged and
-  unstaged changes and untracked files.
-- **All changes:** the working tree against the merge base with a branch.
-- **All commits:** HEAD against that merge base; read-only.
-- **A commit:** that commit against its parent; read-only.
+Side-by-side or unified, word wrap, unchanged lines, file navigation and
+refresh are in the toolbar. Narrow panels use unified and switch between list
+and comparison. For a working-tree comparison the new side is editable and
+uses the same session as Files; a focused view owns editing and other views
+follow. Deleted, binary, oversized and conflicted files are read-only.
 
-The scope menu lists branch commits, newest first, with subjects and short
-hashes. It shows ten first; **Show more** and **Show less** expand and collapse
-the list without closing the menu. **Find commit…** accepts a hash directly.
-The list comes from BB's workspace status relative to the comparison base, so
-it also works without a published PR. As in BB's own status, commits already
-represented in the base branch are omitted. Loading failures offer Retry.
-Arrow keys, Home, End, and Escape work in the menu. Long subjects truncate,
-with the full returned subject and hash available in the tooltip.
-
-The tab offers side-by-side and unified layouts, word wrap, unchanged lines,
-file navigation, refresh, and opening the working file in Files. A comparison
-with no changed lines shows file contents, so pure renames and empty added
-files can still be edited. Narrow panels
-use the unified layout and switch between the list and comparison.
-
-For a working-tree comparison, edit the new side and save with `⌘S` or the
-save action. Edits use the same session as Files. A focused view owns editing;
-other views show its current text. The old side is always read-only.
-Deleted files, binary files, type changes, oversized comparisons,
-and detected conflict contents cannot be edited in Changes. A file that moves
-on disk during loading must be refreshed before editing.
-
-Panel links accept `{ target, path }`, where `target` has type `uncommitted`,
-`all`, `branch_committed`, or `commit`. Branch targets may include
-`mergeBaseBranch`; commit targets require `sha`. The tab validates these values.
-BB's built-in diff tab remains available.
-
-### Markdown preview
-
-A `.md` or `.markdown` file opens in the Files tab as a rendered preview, in
-BB's chat typography. The pencil button in the toolbar (also **Edit the
-source** in the menu) switches to the editor and back; the choice is kept per
-file while the page is open. The preview follows the shared buffer, so unsaved
-edits from the Changes tab show there too. Find and Go to line switch to the
-editor first.
-
-Relative images load through a short-lived preview lease for the workspace
-root, requested only when the document has one and renewed before it lapses.
-Relative links to files under the root open in the same pane; other links keep
-BB's behaviour. Paths inside fenced code are left as written.
-
-In the Changes tab a Markdown file opens as its comparison; the eye button in
-the file row shows the new side rendered, and links there open the target in
-the Files tab. Files removed by the comparison have no rendered side.
-
-### Revert actions
-
-Hover changed lines and select the **Revert** control at the right edge of the
-comparison, or place the cursor in a hunk and choose **Revert hunk at cursor**
-from the file toolbar menu. The control appears only beside changed lines and
-reverts the hunk that contains them. Pierre applies the change as an edit:
-Undo works, and the normal save or auto-save setting applies. Reverting all
-lines in a new file leaves an empty file.
-
-Right-click a file in the Changes list (long-press on a touch screen, or press
-the Menu key or Shift+F10 on a focused row) to **Revert** a modified file,
-**Restore** a deleted file, or **Delete** a new file. The list marks new files with a green A and deleted
-files with a red D. New-file deletion
-always asks for confirmation. Replacing unsaved edits also asks first. Whole
-file actions take effect on disk immediately and update shared editor sessions.
-
-These actions restore the left side of the selected working comparison: HEAD
-for Uncommitted, or the merge base for All changes. Saved commit comparisons
-stay read-only. The Git staging area is unchanged; staged changes can remain
-in Git even after the working file is restored. Renames, copies, file type
-changes, binary files and oversized files do not have revert actions yet.
-Restoring a deleted text file restores its contents, not its previous executable
-permission bits.
-
-Revert checks both the baseline hash and the live file hash. Writes use CAS;
-restore creates only an absent path. Actions share the session save queue and
-keep text typed while a remote action runs. Deletion stops queued auto-save
-from recreating the file. BB's remove API has no hash precondition: deletion
-checks the hash immediately before a non-recursive, root-confined remove, but
-cannot make that check and removal atomic against an external process.
+**Revert.** Hover changed lines for the revert control at the right edge, or
+use **Revert hunk at cursor** in the file menu; Pierre applies it as an
+undoable edit. Right-click (long-press on touch) a list row to **Revert** a
+modified file, **Restore** a deleted one, or **Delete** a new one; the list
+marks these with a green **A** and a red **D**. Deleting a new file or
+replacing unsaved edits asks first. Whole-file actions write the selected
+comparison's left side (HEAD or the merge base), check both the baseline and
+the live hash, use CAS writes, and leave the Git index alone. Renames, copies,
+type changes, binary and oversized files have no whole-file action; restore
+does not recover the executable bit; BB's remove API has no hash precondition,
+so deletion checks the hash immediately before a non-recursive remove.
 
 ## BB's own diffs
 
-The plugin registers BB's `experimental_diffRenderer` slot, so every diff BB
-draws from a patch renders with this viewer: the file diffs inside timeline
-tool rows, the file bodies of the environment diff panel (⌘D), and any other
-plugin's `experimental_Diff`. They use the same code theme, font size, and
-Geist Mono as the Changes tab. BB keeps its own frame around them: the tool
-row header, the panel's scope picker and file list, and the split/unified,
-wrap, and line-number choices, which the renderer follows.
-
-These diffs are read-only. BB hands the renderer a patch and, in the diff
-panel, both complete sides; it does not say which environment the file lives
-in, so nothing here writes. When the sides agree with every hunk of the patch,
-the hunk separators expand unchanged lines from them; timeline diffs come
-without sides and show the patch alone. Text that is not a single-file patch,
-or any render failure, goes back to BB's renderer, and the **Draw BB's diffs**
-setting turns the replacement off without disabling the plugin.
+The plugin registers `experimental_diffRenderer`, so the diffs BB draws from
+a patch — timeline tool rows, the environment diff panel's bodies (⌘D), other
+plugins' `experimental_Diff` — render with this viewer at the plugin's theme
+and font. BB keeps its frame (row header, scope picker, file list) and its
+split/wrap/line-number choices. These diffs are read-only: the slot carries a
+patch and, in the panel, both sides, but no environment or save context. When
+the sides agree with every hunk, the separators expand unchanged lines from
+them; timeline rows carry no sides. Non-patch text, a render failure, or the
+**Draw BB's diffs** setting hand the request back to BB's renderer.
 
 ## Saves and drafts
 
-Saves compare the file's content hash with the last read hash. If another
-process changes the file, the save stops. Reload the file or explicitly choose
-to overwrite it. A save in progress does not discard text typed after it began.
-Undo back to the saved text clears the unsaved state. Undo history lasts for
-the mounted editor; switching files starts a new history.
+A save compares the file's hash with the last read; if the file changed, the
+save stops with Reload or Overwrite. Typing during a save is kept. Undo back
+to the saved text clears the unsaved state; undo history lasts for the mounted
+editor. Unsaved drafts are stored in this browser: a draft of the current disk
+version is restored on open, one of an older version waits for an explicit
+restore or discard, and the UI says when storage cannot keep one.
 
-Unsaved drafts are stored in this browser. A draft from the current disk
-version is restored when the file opens. A draft from an older version is kept
-for an explicit restore or discard decision. The UI reports when browser
-storage cannot retain a draft. Drafts do not sync between devices.
-
-Open files follow changes made outside the editor. The plugin's host module
-keeps a native watch on each workspace root an open panel uses, and every
-batch of changes reaches the page as one realtime message: the open files it
-names are re-read, the file tree reloads when a file appears or disappears,
-and the change list refreshes. A clean file takes the new text; a file with
-unsaved edits keeps them and reports the changed base. A poll on focus and
-every 30 seconds remains as a backstop, and runs every 5 seconds for a root
-the host cannot watch. A lost connection or a restarted host worker triggers
-a full re-read. BB does not yet expose tab-close negotiation to plugins, so
-durable drafts provide recovery when a tab or window closes.
+The host module keeps a native watch on each workspace root an open panel
+uses; each batch reaches the page as one realtime message that re-reads the
+named open files, reloads the tree on add or remove, and refreshes the change
+list. A clean file takes the new text; a dirty one keeps its edits and reports
+the changed base. A poll every 30 s (5 s for an unwatchable root) and on focus
+is the backstop; a lost connection or restarted host worker re-reads
+everything.
 
 ## Settings
 
@@ -166,15 +92,12 @@ Extensions → Editor:
 | Setting | Default | Notes |
 | --- | --- | --- |
 | Font size | 12 | 9 to 24; Geist Mono with BB monospace fallback |
-| Code theme | Follow BB | Predefined theme shared by Files and Changes |
+| Code theme | Follow BB | Shared by Files, Changes and BB's diffs |
 | Wrap long lines | off | Shared by Files and Changes |
 | Show line numbers | on | Shared by Files and Changes |
-| Auto save | off | `onBlur` or `afterDelay`; the delay is one second |
-| File tree side | right | Also controls the Changes list position |
-| Draw BB's diffs | on | Timeline diffs and diff panel bodies use this viewer; off hands them back to BB |
-
-Existing editor preferences are retained. The former `codePalette` preview
-setting is replaced by `Code theme`, which starts at Follow BB.
+| Auto save | off | `onBlur` or `afterDelay` (one second) |
+| File tree side | right | Also the Changes list side |
+| Draw BB's diffs | on | Off hands timeline and panel diffs back to BB |
 
 ## Install and develop
 
@@ -187,62 +110,30 @@ npm test
 bb plugin build
 ```
 
-Normal Git installation:
-
-```sh
-bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin erwin-editor
-```
-
-Follow the repository's draft-PR and branch-install procedure for changes.
-Do not remove an existing installation to change its source: removal deletes
-plugin state. See the repository README for source migration limits in BB.
-
-`bb plugin dev` rebuilds the plugin app. The lazy Pierre bundle is separate.
-The server builds `dist/pierre` on first use when it is missing or older than
-its entry files, build script, package manifest, or lockfile. Run
-`npm run build:pierre` to build it in advance. Runtime dependencies include
-esbuild because Git installations build the assets on demand. If npm policy
-blocks the esbuild platform binary, run the build command in the installed
-plugin directory and resolve the reported installation error.
+Install with
+`bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin erwin-editor`
+and follow the repository's draft-PR and branch-install procedure for changes.
+`bb plugin dev` rebuilds the app; the lazy Pierre bundle is separate, and the
+server builds `dist/pierre` on first use when it is missing or stale (hence
+esbuild is a runtime dependency).
 
 ## Layout
 
-- `app.tsx` registers file openers, Files, Changes, palette actions, and the
-  diff renderer replacement.
-- `components/PierreSurface.tsx` adapts the lazy vanilla Pierre runtime to BB's
-  React UI. `pierre-bundle/` and `scripts/stage-assets.mjs` build its ESM assets
-  and syntax worker. The lazy bundle does not include a second React runtime.
-- `components/BbDiffRenderer.tsx` is the `experimental_diffRenderer` component.
-  `PierreDiffBlock.tsx` renders one content-height diff with Pierre's plain
-  `FileDiff`; `lib/bb-diff.ts` parses BB's patch and checks the supplied sides
-  against it before they enable context expansion.
-- `components/ui/` and `lib/portal-scope.ts` contain the BB 0.42.1 dropdown
-  and responsive overlay source, shared with this repository's provider-usage plugin.
-- `components/Workbench.tsx` and `EditorPane.tsx` provide the Files UI.
-  `DiffWorkbench.tsx` and `EditableDiffPane.tsx` provide Changes. Both share
-  `Toolbar.tsx` buttons, `ResizeHandle.tsx`, `MarkdownPreview.tsx` and
-  `lib/markdown-preview.ts`.
-- `lib/file-session.ts` holds buffers, file hashes, save queues, draft storage,
-  and ownership shared by both views.
-- `lib/file-icons.ts` resolves a path to a `@pierre/trees` icon and its colour.
-- `lib/pierre-theme.ts` adapts BB's active code theme. `lib/languages.ts`
-  defines file patterns and grammar selection.
-- `server.ts` resolves file sources, reads and writes through the BB SDK,
-  lists and reads Git comparisons, and serves the Pierre assets.
+- `app.tsx` registers the file opener, Files, Changes, palette actions and the
+  diff renderer.
+- `components/PierreSurface.tsx` wraps the lazy vanilla Pierre runtime
+  (`pierre-bundle/`, built by `scripts/stage-assets.mjs`) for a pane;
+  `PierreDiffBlock.tsx` wraps Pierre's plain `FileDiff` for `BbDiffRenderer.tsx`,
+  with `lib/bb-diff.ts` parsing BB's patch and checking its sides.
+- `Workbench.tsx`/`EditorPane.tsx` are Files; `DiffWorkbench.tsx`/
+  `EditableDiffPane.tsx` are Changes. They share `Toolbar.tsx`,
+  `ResizeHandle.tsx` and `MarkdownPreview.tsx`.
+- `components/ui/` is the BB 0.42.1 dropdown and responsive drawer, shared with
+  the provider-usage plugin, used by the scope menu.
+- `lib/file-session.ts` holds buffers, hashes, save queues, drafts and view
+  ownership. `lib/pierre-theme.ts` adapts BB's code theme; `lib/file-icons.ts`
+  resolves `@pierre/trees` icons.
+- `server.ts` resolves sources, reads and writes through the SDK, lists and
+  reads Git comparisons, and serves the Pierre assets. `host.ts` watches files.
 
-## Upstream needs
-
-BB needs tab dirty indicators, close negotiation, and file-tab retitling.
-File removal needs an expected-hash precondition. Git discard needs a public
-host-routed operation with explicit worktree/index scope, and revision reads
-need file mode metadata to restore executable files.
-The `experimental_diffRenderer` slot receives a patch without environment or
-save context, so the replaced diffs stay read-only; editing them needs that
-context in the slot. The ⌘D shortcut cannot be pointed at the Changes tab,
-because `commandPaletteAction` has no shortcut field, and the diff panel's
-frame (scope picker, file list) has no replacement slot. Pierre needs public programmatic search commands;
-the current adapter uses its keyboard command path.
-
-See the [investigation](../../docs/investigations/pierre-editor/README.md) for
-API evidence and the migration rationale. The [verification report](../../docs/investigations/pierre-editor/verification.md)
-records installed checks and remaining device-test limits.
+Upstream needs are recorded in the repository README.

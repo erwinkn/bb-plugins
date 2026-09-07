@@ -99,6 +99,24 @@ function splitScopes(scope: string | readonly string[]): string[] {
   return list.flatMap((entry) => entry.split(",").map((part) => part.trim()).filter((part) => part !== ""));
 }
 
+/**
+ * Pierre's single-theme renderer writes its own host background. These
+ * overrides go into the shadow root so BB's color modes and user palettes
+ * stay intact; token colors still come from the selected syntax theme.
+ */
+export const PIERRE_HOST_CSS = `
+  :host {
+    background-color: var(--background);
+    --diffs-bg: var(--background);
+    --diffs-bg-buffer-override: var(--background);
+    --diffs-fg-number-override: color-mix(in srgb, var(--foreground) 55%, var(--background));
+    --diffs-min-number-column-width: 2ch;
+    --diffs-bg-selection-override: color-mix(in srgb, var(--foreground) 20%, var(--background));
+    --diffs-bg-selection-number-override: var(--background);
+    --diffs-selection-number-fg: var(--foreground);
+  }
+`;
+
 const registered = new Set<string>();
 
 /**

@@ -16,11 +16,7 @@ import {
   isLastInputKeyboard,
   preventOverlayTriggerSelection,
 } from "./overlay-trigger.js";
-import {
-  MENU_ITEM_LAST_HOVERED_CLASS,
-  MenuHoverProvider,
-  useMenuItemHover,
-} from "./menu-item-hover.js";
+import { MenuHoverProvider, useMenuItemHover } from "./menu-item-hover.js";
 import { LIST_HOVER_TRANSITION } from "./motion.js";
 
 const MENU_ITEM_NEUTRAL_STATE_CLASS =

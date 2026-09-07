@@ -2,24 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { FileDiff, FileDiffMetadata, FileDiffOptions } from "@pierre/diffs";
 import { loadPierre, type PierreRuntime } from "@/lib/pierre-loader";
-import { applyPierreTheme, synchronizePierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
+import { applyPierreTheme, PIERRE_HOST_CSS, synchronizePierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
 import { fileDiffFromPatch, loadedSides, patchRowEstimate, type DiffSide } from "@/lib/bb-diff";
 import { cn } from "@/lib/utils";
-
-// The same host overrides `PierreSurface` uses: BB's background and gutter
-// colors, with token colors from the selected syntax theme.
-const BLOCK_CSS = `
-  :host {
-    background-color: var(--background);
-    --diffs-bg: var(--background);
-    --diffs-bg-buffer-override: var(--background);
-    --diffs-fg-number-override: color-mix(in srgb, var(--foreground) 55%, var(--background));
-    --diffs-min-number-column-width: 2ch;
-    --diffs-bg-selection-override: color-mix(in srgb, var(--foreground) 20%, var(--background));
-    --diffs-bg-selection-number-override: var(--background);
-    --diffs-selection-number-fg: var(--foreground);
-  }
-`;
 
 export type PierreDiffBlockStatus =
   | { kind: "loading" }
@@ -183,7 +168,7 @@ function buildOptions(
     overflow: props.wrap ? "wrap" : "scroll",
     disableLineNumbers: !props.lineNumbers,
     disableFileHeader: true,
-    unsafeCSS: BLOCK_CSS,
+    unsafeCSS: PIERRE_HOST_CSS,
     hunkSeparators: "line-info-basic",
     enableGutterUtility: false,
     expansionLineCount: 20,

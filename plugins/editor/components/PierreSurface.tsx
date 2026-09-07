@@ -3,27 +3,11 @@ import type { CSSProperties, Ref } from "react";
 import type { CodeView, CodeViewItem, CodeViewOptions } from "@pierre/diffs";
 import type { Editor, EditorFocusOptions, EditorKeymap, EditorViewState } from "@pierre/diffs/edit";
 import { loadPierre, type PierreRuntime } from "@/lib/pierre-loader";
-import { applyPierreTheme, synchronizePierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
+import { applyPierreTheme, PIERRE_HOST_CSS, synchronizePierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
 import { cn } from "@/lib/utils";
 import { revertHunkEdit } from "@/lib/revert-hunk";
 import { createPierreItem } from "@/lib/pierre-item";
 import { RevertGlyph } from "./icons";
-
-// Pierre's single-theme renderer writes its own host background. Override it
-// inside the shadow root so both BB color modes and user palettes stay intact.
-// Token colors still come from the selected syntax theme.
-const SURFACE_CSS = `
-  :host {
-    background-color: var(--background);
-    --diffs-bg: var(--background);
-    --diffs-bg-buffer-override: var(--background);
-    --diffs-fg-number-override: color-mix(in srgb, var(--foreground) 55%, var(--background));
-    --diffs-min-number-column-width: 2ch;
-    --diffs-bg-selection-override: color-mix(in srgb, var(--foreground) 20%, var(--background));
-    --diffs-bg-selection-number-override: var(--background);
-    --diffs-selection-number-fg: var(--foreground);
-  }
-`;
 
 /**
  * The changed rows under the pointer, as one block. The revert control sits
@@ -552,7 +536,7 @@ function buildOptions(
     overflow: props.wrap === true ? "wrap" : "scroll",
     disableLineNumbers: props.lineNumbers === false,
     disableFileHeader: props.fileHeader !== true,
-    unsafeCSS: SURFACE_CSS,
+    unsafeCSS: PIERRE_HOST_CSS,
     hunkSeparators: "line-info-basic",
     // The hunk revert control is BB's own overlay (see `hoveredBlockAt`), so
     // Pierre's per-line gutter utility stays off.
