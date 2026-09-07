@@ -341,3 +341,12 @@ scope menu uses: the icon registry, unused menu variants, the coarse-pointer
 constants and the media-query helpers are gone, and the app bundle shrank
 from 623 KB to 515 KB. Monaco-era language fields and dead theme helpers were
 removed with their tests. Typecheck, all tests and the three builds pass.
+
+## Device checks by the user (2026-09-07, evening)
+
+On a phone and on the desktop: long press opened the row menus; a shell
+append to the open README appeared at once in the preview; in a fixture
+child thread, the relative image loaded, the sibling link opened its file in
+the same pane, and the fenced sample stayed raw. The anchor link opened a new
+tab at the app root, because BB's renderer treats it as a link; the preview
+now scrolls to the heading itself, and the user confirmed the fix.
