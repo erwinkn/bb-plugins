@@ -41,26 +41,30 @@ test("contract exposes the methods the frontend calls", () => {
   assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffList", "diffRead", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
 });
 
-test("local code palettes leave the global BB theme unchanged and existing pairs keep their behavior", async (t) => {
-  let themeId = "default";
-  const { bb, harness } = createFakePluginHost({
+test("settings and the picker share predefined themes without changing BB's global theme", async (t) => {
+  let { bb, harness } = createFakePluginHost({
     pluginId: "erwin-editor",
-    sdk: { theme: { get: async () => ({ themeId }), set: async (id) => { themeId = id; return { themeId }; } } },
+    settings: { codePalette: "conductor" }, // An older installation falls back to Follow BB.
+    sdk: { theme: { get: async () => ({ themeId: "default" }) } },
   });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   const readTheme = async () => rpcContract.theme.output.parse(await harness.behavior.callRpc("theme", null));
-  assert.deepEqual(await readTheme(), { pair: "conductor", themeId: "default" });
-  await harness.behavior.callRpc("applyTheme", { pair: "bb" });
-  assert.deepEqual(await readTheme(), { pair: "default", themeId: "default" });
-  await harness.behavior.callRpc("applyTheme", { pair: "conductor" });
-  assert.deepEqual(await readTheme(), { pair: "conductor", themeId: "default" });
-  assert.equal(harness.inspection.sdk.callsTo("theme.set").length, 0);
+  assert.deepEqual(await readTheme(), { pair: "bb", themeId: "default" });
   await harness.behavior.callRpc("applyTheme", { pair: "tokyo-night" });
-  assert.deepEqual(await readTheme(), { pair: "tokyo-night", themeId: "plugin:erwin-editor:tokyo-night" });
-  await harness.behavior.callRpc("applyTheme", { pair: "conductor" });
-  assert.deepEqual(await readTheme(), { pair: "conductor", themeId: "plugin:erwin-editor:tokyo-night" });
-  assert.equal(harness.inspection.sdk.callsTo("theme.set").length, 1);
+  assert.deepEqual(await readTheme(), { pair: "tokyo-night", themeId: "default" });
+  await harness.behavior.setSettings({ codeTheme: "GitHub" });
+  assert.deepEqual(await readTheme(), { pair: "github", themeId: "default" });
+  await harness.behavior.callRpc("setSetting", { key: "codeTheme", value: "Catppuccin Mocha" });
+  assert.equal((await readTheme()).pair, "catppuccin-mocha");
+  assert.equal(harness.inspection.sdk.callsTo("theme.set").length, 0);
+  ({ bb, harness } = await harness.lifecycle.reload(plugin));
+  assert.equal((await readTheme()).pair, "catppuccin-mocha");
+  await harness.behavior.callRpc("applyTheme", { pair: "bb" });
+  assert.equal((await readTheme()).pair, "bb");
+  await assert.rejects(() => harness.behavior.callRpc("applyTheme", { pair: "conductor" }));
+  await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "codeTheme", value: "Unknown" }));
+  assert.equal(harness.inspection.sdk.callsTo("theme.set").length, 0);
 });
 
 test("read, write, and tree refuse paths that leave the workspace", async (t) => {

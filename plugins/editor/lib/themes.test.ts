@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { BB_DEFAULT, CONDUCTOR, FOLLOW_BB, bbThemeId, manifestThemes, pairIdFromBbTheme, THEME_PAIRS, themeNameFor, themePair } from "./themes";
+import { BB_DEFAULT, CODE_THEME_CHOICES, codeThemeId, codeThemeLabel, FOLLOW_BB, bbThemeId, manifestThemes, pairIdFromBbTheme, THEME_PAIRS, themeNameFor, themePair } from "./themes";
 
 const modules = path.join(import.meta.dirname, "..", "node_modules");
 
@@ -48,8 +48,15 @@ test("themeNameFor picks the mode's theme and BB's default pair", () => {
   assert.equal(themeNameFor(BB_DEFAULT, "dark"), "pierre-dark");
   assert.equal(themeNameFor("nope", "dark"), null);
   assert.equal(themePair("github")?.label, "GitHub");
-  assert.equal(themeNameFor(CONDUCTOR, "dark"), "conductor-dark");
-  assert.equal(themeNameFor(CONDUCTOR, "light"), "conductor-light");
   assert.equal(themeNameFor(FOLLOW_BB, "dark"), "bb");
-  assert.ok(!manifestThemes("").some((entry) => entry.id === CONDUCTOR || entry.id === FOLLOW_BB));
+  assert.ok(!manifestThemes("").some((entry) => entry.id === "conductor" || entry.id === FOLLOW_BB));
+});
+
+test("settings labels and picker ids round-trip through the same catalog", () => {
+  assert.equal(new Set(CODE_THEME_CHOICES.map((choice) => choice.label)).size, CODE_THEME_CHOICES.length);
+  for (const choice of CODE_THEME_CHOICES) {
+    assert.equal(codeThemeId(choice.label), choice.id);
+    assert.equal(codeThemeLabel(choice.id), choice.label);
+  }
+  for (const value of [undefined, null, "conductor", "unknown", {}]) assert.equal(codeThemeId(value), FOLLOW_BB);
 });

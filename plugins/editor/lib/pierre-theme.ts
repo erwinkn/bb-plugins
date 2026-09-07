@@ -1,8 +1,7 @@
 import { experimental_useCodeTheme, useSettings, type PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
 import type { ThemeRegistration } from "@pierre/diffs";
 import type { PierreRuntime } from "./pierre-loader.js";
-import { conductorCodeTheme } from "./conductor-palette.js";
-import { FOLLOW_BB } from "./themes.js";
+import { codeThemeId, FOLLOW_BB, themeNameFor } from "./themes.js";
 
 /**
  * A theme ready for a Pierre surface: the name Pierre resolves it under, and
@@ -37,24 +36,21 @@ export function usePierreTheme(preview: string | null = null): PierreThemeInput 
   return resolvePierreTheme({
     mode: state.mode,
     theme: state.theme,
-    palette: values?.codePalette === "bb" ? "bb" : "conductor",
+    selection: codeThemeId(values?.codeTheme),
     preview,
   });
 }
 
 /** Resolve local preview and persisted palette without changing BB's theme. */
-export function resolvePierreTheme({ mode, theme, palette, preview = null }: {
+export function resolvePierreTheme({ mode, theme, selection, preview = null }: {
   mode: "dark" | "light";
   theme: PluginCodeThemeData | null;
-  palette: "conductor" | "bb";
+  selection: string;
   preview?: string | null;
 }): PierreThemeInput {
   const fallback = mode === "dark" ? "pierre-dark" : "pierre-light";
-  if (preview === "conductor-dark" || preview === "conductor-light" || (preview === null && palette === "conductor")) {
-    const data = conductorCodeTheme(mode);
-    return { id: pierreThemeName(data), type: mode, data, fallback };
-  }
-  if (preview !== null && preview !== FOLLOW_BB) return { id: preview, type: mode, data: null, fallback: preview };
+  const name = preview ?? themeNameFor(selection, mode) ?? FOLLOW_BB;
+  if (name !== FOLLOW_BB) return { id: name, type: mode, data: null, fallback: name };
   if (theme === null) return { id: fallback, type: mode, data: null, fallback };
   return { id: pierreThemeName(theme), type: theme.type, data: theme, fallback };
 }

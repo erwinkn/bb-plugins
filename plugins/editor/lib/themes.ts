@@ -1,9 +1,7 @@
 /**
- * Code themes the Files view can put on BB. Each entry is a dark/light pair
- * that the plugin contributes to BB as an app theme (see `bb.themes` in
- * package.json): choosing one sets BB's theme, so BB's previews, the diff
- * view, and this editor all paint with it. The CSS of every entry is empty,
- * so BB keeps its default palette and only the code theme changes.
+ * Predefined dark/light pairs shared by Files, Changes, and plugin settings.
+ * Choosing one in the plugin changes only its code colors. The pairs are
+ * also available separately in BB's app-theme menu via `bb.themes`.
  *
  * Every name here is one BB's own code-theme registry resolves (Pierre's
  * family plus Shiki's bundled VS Code themes). The same themes ship as lazy
@@ -28,8 +26,6 @@ export const BB_DEFAULT = "default";
 
 /** Editor-side marker for "paint with whatever BB's code theme is". */
 export const FOLLOW_BB = "bb";
-/** Local syntax palette; it is deliberately not a BB app-theme contribution. */
-export const CONDUCTOR = "conductor";
 
 export const THEME_PAIRS: readonly ThemePair[] = [
   { id: "pierre-soft", label: "Pierre Soft", dark: "pierre-dark-soft", light: "pierre-light-soft" },
@@ -73,6 +69,21 @@ export const THEME_PAIRS: readonly ThemePair[] = [
 
 const BY_ID = new Map(THEME_PAIRS.map((pair) => [pair.id, pair]));
 
+/** SDK select settings display their stored strings, so use readable labels. */
+export const CODE_THEME_CHOICES = [
+  { id: FOLLOW_BB, label: "Follow BB" },
+  { id: BB_DEFAULT, label: "Pierre" },
+  ...THEME_PAIRS,
+] as const;
+
+export function codeThemeId(value: unknown): string {
+  return CODE_THEME_CHOICES.find((choice) => choice.label === value)?.id ?? FOLLOW_BB;
+}
+
+export function codeThemeLabel(id: string): string {
+  return CODE_THEME_CHOICES.find((choice) => choice.id === id)?.label ?? "Follow BB";
+}
+
 export function themePair(id: string): ThemePair | undefined {
   return BY_ID.get(id);
 }
@@ -93,7 +104,6 @@ export function pairIdFromBbTheme(pluginId: string, themeId: string): string | n
 
 /** The theme name a pair uses in `mode`; BB's default pair for `default`. */
 export function themeNameFor(pairId: string, mode: ThemeType): string | null {
-  if (pairId === CONDUCTOR) return `conductor-${mode}`;
   if (pairId === FOLLOW_BB) return FOLLOW_BB;
   if (pairId === BB_DEFAULT) return mode === "dark" ? "pierre-dark" : "pierre-light";
   const pair = BY_ID.get(pairId);

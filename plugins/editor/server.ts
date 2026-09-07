@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { listLocalTree } from "./lib/local-tree.js";
-import { BB_DEFAULT, CONDUCTOR, FOLLOW_BB, bbThemeId, pairIdFromBbTheme, THEME_PAIRS } from "./lib/themes.js";
+import { CODE_THEME_CHOICES, codeThemeId, codeThemeLabel } from "./lib/themes.js";
 import { diffEntrySchema, diffTargetSchema, hasConflictMarkers, isWorkingTreeTarget, type DiffTarget } from "./lib/diff-contract.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
@@ -132,21 +132,20 @@ export const rpcContract = defineRpcContract({
       z.object({ key: z.literal("lineNumbers"), value: z.boolean() }),
       z.object({ key: z.literal("autoSave"), value: z.enum(["off", "onBlur", "afterDelay"]) }),
       z.object({ key: z.literal("fileTreeSide"), value: z.enum(["left", "right"]) }),
-      z.object({ key: z.literal("codePalette"), value: z.enum(["conductor", "bb"]) }),
+      z.object({ key: z.literal("codeTheme"), value: z.enum(CODE_THEME_CHOICES.map((choice) => choice.label) as [string, ...string[]]) }),
     ]),
     output: z.null(),
   },
   /**
-   * The selected local palette or active BB pair, with BB's own theme id
-   * retained so choosing local colors never changes the global theme.
+   * The shared plugin selection, with BB's theme id for callers that follow BB.
    */
   theme: {
     input: z.null(),
     output: z.object({ pair: z.string().nullable(), themeId: z.string() }),
   },
-  /** Choose a local palette, or apply an existing BB code-theme pair. */
+  /** Choose a predefined theme for both Files and Changes. */
   applyTheme: {
-    input: z.object({ pair: z.enum([CONDUCTOR, FOLLOW_BB, BB_DEFAULT, ...THEME_PAIRS.map((pair) => pair.id)] as [string, ...string[]]) }),
+    input: z.object({ pair: z.enum(CODE_THEME_CHOICES.map((choice) => choice.id) as [string, ...string[]]) }),
     output: z.null(),
   },
 });
@@ -233,7 +232,13 @@ export default async function plugin(bb: BbPluginApi) {
     },
     wordWrap: { type: "boolean", label: "Wrap long lines", default: false },
     lineNumbers: { type: "boolean", label: "Show line numbers", default: true },
-    codePalette: { type: "select", label: "Code palette", options: [CONDUCTOR, FOLLOW_BB], default: CONDUCTOR },
+    codeTheme: {
+      type: "select",
+      label: "Code theme",
+      description: "Syntax colors for Files and Changes. Follows BB's light or dark mode and keeps BB's background.",
+      options: CODE_THEME_CHOICES.map((choice) => choice.label),
+      default: "Follow BB",
+    },
     autoSave: {
       type: "select",
       label: "Auto save",
@@ -620,17 +625,12 @@ export default async function plugin(bb: BbPluginApi) {
 
     async theme() {
       const { themeId } = await bb.sdk.theme.get();
-      const { codePalette } = await settings.get();
-      return { pair: codePalette === CONDUCTOR ? CONDUCTOR : (pairIdFromBbTheme(bb.pluginId, themeId) ?? FOLLOW_BB), themeId };
+      const { codeTheme } = await settings.get();
+      return { pair: codeThemeId(codeTheme), themeId };
     },
 
     async applyTheme({ pair }) {
-      if (pair === CONDUCTOR || pair === FOLLOW_BB) {
-        await settings.experimental_set({ codePalette: pair });
-        return null;
-      }
-      await bb.sdk.theme.set(pair === BB_DEFAULT ? BB_DEFAULT : bbThemeId(bb.pluginId, pair));
-      await settings.experimental_set({ codePalette: FOLLOW_BB });
+      await settings.experimental_set({ codeTheme: codeThemeLabel(pair) });
       return null;
     },
   });

@@ -148,19 +148,22 @@ test("theme synchronization also supports main-thread rendering and exposes load
   await assert.rejects(() => synchronizePierreTheme(runtime, input(null)), /theme failed to load/);
 });
 
-test("local palette and preview choices preserve BB's theme document", () => {
+test("Files and Changes resolve the same predefined selection in each mode", () => {
   const bb = theme();
   const original = JSON.stringify(bb);
-  const local = resolvePierreTheme({ mode: "dark", theme: bb, palette: "conductor" });
-  assert.equal(local.data?.name, "Conductor-inspired dark");
-  const follow = resolvePierreTheme({ mode: "dark", theme: bb, palette: "conductor", preview: "bb" });
+  const local = resolvePierreTheme({ mode: "dark", theme: bb, selection: "github" });
+  assert.equal(local.id, "github-dark");
+  assert.equal(local.data, null);
+  assert.equal(resolvePierreTheme({ mode: "light", theme: bb, selection: "github" }).id, "github-light");
+  const follow = resolvePierreTheme({ mode: "dark", theme: bb, selection: "github", preview: "bb" });
   assert.equal(follow.data, bb);
-  const preview = resolvePierreTheme({ mode: "dark", theme: bb, palette: "conductor", preview: "tokyo-night" });
+  const preview = resolvePierreTheme({ mode: "dark", theme: bb, selection: "github", preview: "tokyo-night" });
   assert.equal(preview.id, "tokyo-night");
   assert.equal(preview.data, null);
-  const restored = resolvePierreTheme({ mode: "dark", theme: bb, palette: "conductor", preview: null });
-  assert.equal(restored.id, local.id);
-  assert.equal(resolvePierreTheme({ mode: "light", theme: null, palette: "conductor", preview: "conductor-light" }).data?.type, "light");
-  assert.equal(resolvePierreTheme({ mode: "dark", theme: bb, palette: "bb" }).data, bb);
+  const restored = resolvePierreTheme({ mode: "dark", theme: bb, selection: "github", preview: null });
+  assert.deepEqual(restored, local);
+  assert.equal(resolvePierreTheme({ mode: "dark", theme: bb, selection: "bb" }).data, bb);
+  assert.equal(resolvePierreTheme({ mode: "dark", theme: bb, selection: "conductor" }).data, bb);
+  assert.equal(resolvePierreTheme({ mode: "light", theme: null, selection: "bb" }).fallback, "pierre-light");
   assert.equal(JSON.stringify(bb), original);
 });

@@ -476,7 +476,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           current={themePicker.current}
           onPreview={(pair) => setThemePreview(pair === null ? null : themeNameFor(pair, bbTheme.mode))}
           onChoose={(pair) => {
-            // Keep the preview up until BB's theme arrives, so the switch does not flash.
+            // Keep the preview up until the shared setting arrives, so the switch does not flash.
             rpc
               .call("applyTheme", { pair })
               .then(() => setThemePreview(null))

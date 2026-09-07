@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BB_DEFAULT, CONDUCTOR, FOLLOW_BB, THEME_PAIRS, type ThemeType } from "@/lib/themes";
+import { CODE_THEME_CHOICES, FOLLOW_BB, themeNameFor, type ThemeType } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 import { CheckIcon, SearchIcon } from "./icons";
 
@@ -10,9 +10,8 @@ interface Choice {
 }
 
 /**
- * Previews the local Conductor palette or BB code themes. Conductor and
- * Follow BB change only this plugin's palette setting; the remaining pairs
- * retain their existing BB theme selection behavior. Escape restores colors.
+ * Previews predefined themes. A selection updates the shared Files/Changes
+ * setting; Escape restores the saved colors without changing the setting.
  */
 export function ThemePicker({
   mode,
@@ -22,7 +21,7 @@ export function ThemePicker({
   onClose,
 }: {
   mode: ThemeType;
-  /** The local palette or current BB pair; null while loading. */
+  /** The selected plugin theme; null while loading. */
   current: string | null;
   onPreview: (pair: string | null) => void;
   onChoose: (pair: string) => void;
@@ -33,12 +32,10 @@ export function ThemePicker({
   const listRef = useRef<HTMLUListElement | null>(null);
 
   const choices = useMemo<Choice[]>(
-    () => [
-      { id: CONDUCTOR, label: "Conductor", detail: "Editor and Changes only" },
-      { id: FOLLOW_BB, label: "Follow BB", detail: "Current BB code theme" },
-      { id: BB_DEFAULT, label: "BB default", detail: mode === "dark" ? "pierre-dark" : "pierre-light" },
-      ...THEME_PAIRS.map((pair) => ({ id: pair.id, label: pair.label, detail: pair[mode] })),
-    ],
+    () => CODE_THEME_CHOICES.map((choice) => ({
+      ...choice,
+      detail: choice.id === FOLLOW_BB ? "Current BB code theme" : themeNameFor(choice.id, mode),
+    })),
     [mode],
   );
   const matches = useMemo(() => {

@@ -1,7 +1,7 @@
 # bb-plugin-erwin-editor
 
 A Pierre file editor for BB with **Files** and **Changes** tabs. Both tabs use
-a Conductor-inspired code palette and share the same file buffer and save queue.
+one predefined code theme and share the same file buffer and save queue.
 The canvas, controls, and menus use BB's current interface theme.
 Plugin id: `erwin-editor`. Disable the bundled `monaco-editor` plugin before
 installing this one.
@@ -16,9 +16,17 @@ thread screen also has a Files tab for the project's default checkout.
 File links claimed by this plugin open in the same editor. Use `⌘S` to save,
 `⌘F` to find text, and `⌘P` for quick open. The toolbar has file history,
 path actions, find, and display settings. The editor uses Geist Mono, quiet line
-numbers, and compact diff separators. The Theme picker offers Conductor for
-this plugin only, Follow BB for BB's current code colors, and the existing
-shared BB theme pairs. Choosing Conductor does not change BB's global theme.
+numbers, and compact diff separators. Choose a predefined theme from **Theme…**
+in the Files menu or **Extensions → Editor → Code theme**. Both controls save
+the same selection for Files and Changes. The default, **Follow BB**, uses BB's
+current code colors. Other choices include Pierre, GitHub, VS Code,
+Catppuccin, and Tokyo Night. Each uses its light or dark variant to match BB's
+mode. A theme without a variant uses Pierre for that mode. Plugin theme
+selection does not change BB's global theme.
+
+Conductor's default `conductor-dark` and `conductor-light` themes are custom
+palettes defined in its app bundle. This plugin uses bundled predefined themes
+instead; no Conductor palette is included.
 
 The editor uses Pierre's text editing and Shiki syntax highlighting. It does
 not provide Monaco's completions, diagnostics, hover information, symbol
@@ -80,13 +88,14 @@ Extensions → Editor:
 | Setting | Default | Notes |
 | --- | --- | --- |
 | Font size | 13 | 9 to 24; Geist Mono with BB monospace fallback |
-| Code palette | conductor | Local Conductor-inspired colors, or `bb` to follow BB |
+| Code theme | Follow BB | Predefined theme shared by Files and Changes |
 | Wrap long lines | off | Shared by Files and Changes |
 | Show line numbers | on | Shared by Files and Changes |
 | Auto save | off | `onBlur` or `afterDelay`; the delay is one second |
 | File tree side | right | Also controls the Changes list position |
 
-Existing values for these settings are retained during the migration.
+Existing editor preferences are retained. The former `codePalette` preview
+setting is replaced by `Code theme`, which starts at Follow BB.
 
 ## Install and develop
 
