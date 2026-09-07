@@ -133,12 +133,17 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   // Deferred directories load on expand; one request per path until it lands.
   const deferredRequests = useRef(new Set<string>());
+  // A refresh starts a new generation; deferred results from before it are dropped.
+  const treeGeneration = useRef(0);
   const loadTree = useCallback(() => {
+    treeGeneration.current += 1;
+    const generation = treeGeneration.current;
     deferredRequests.current.clear();
     setTree((current) => ({ ...current, isLoading: true, error: null }));
     return rpc
       .call("tree", { source })
       .then((result) => {
+        if (generation !== treeGeneration.current) return;
         setTree({ entries: result.entries, root: result.root, truncated: result.truncated, isLoading: false, error: null });
       })
       .catch((error: unknown) => {
@@ -151,9 +156,11 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     (subpath: string) => {
       if (deferredRequests.current.has(subpath)) return;
       deferredRequests.current.add(subpath);
+      const generation = treeGeneration.current;
       rpc
         .call("tree", { source, subpath })
         .then((result) => {
+          if (generation !== treeGeneration.current) return;
           setTree((current) => {
             const prefix = `${subpath}/`;
             const kept = current.entries.filter((entry) => entry.path !== subpath && !entry.path.startsWith(prefix));
@@ -264,32 +271,40 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       // disk first; a failed save (conflict, error) leaves the name alone.
       if (movesOpenFile && paneRef.current?.isDirty()) {
         const saved = await paneRef.current.save();
-        if (!saved) throw new Error("Save the open file before renaming it");
+        // Typing during the save leaves the buffer dirty again; a save now
+        // would still target the old name, so the rename waits for a clean file.
+        if (!saved || paneRef.current.isDirty()) throw new Error("Save the open file before renaming it");
       }
       await rpc.call("rename", { path, source, newPath });
-      await loadTree();
       // History follows the rename (the old paths no longer exist), and the
-      // open file's new name replaces its entry rather than adding one.
+      // open file's new name replaces its entry rather than adding one. The
+      // editor moves to the new name before the tree reloads, so no save can
+      // recreate the old path in between.
       const renamed = (entry: string) =>
         entry === path ? newPath : kind === "directory" && entry.startsWith(prefix) ? `${newPath}/${entry.slice(prefix.length)}` : entry;
       setHistory((current) => ({ ...current, paths: current.paths.map(renamed) }));
       if (movesOpenFile && activePath !== null) show(renamed(activePath), { record: false });
+      await loadTree();
     },
     [activePath, loadTree, rpc, show, source],
   );
 
   const deleteEntry = useCallback(
     async (path: string, kind: CreateKind) => {
+      const removed = (entry: string) => entry === path || (kind === "directory" && entry.startsWith(`${path}/`));
+      const gone = activePath !== null && removed(activePath);
+      // Deleting the open file would take its unsaved edits with it.
+      if (gone && paneRef.current?.isDirty()) throw new Error("The open file has unsaved changes; save or discard them first");
       await rpc.call("remove", { path, source, kind });
       await loadTree();
-      const gone = activePath !== null && (activePath === path || (kind === "directory" && activePath.startsWith(`${path}/`)));
-      if (gone) {
-        setActivePath(null);
-        setHistory((current) => {
-          const paths = current.paths.filter((entry) => entry !== activePath && !(kind === "directory" && entry.startsWith(`${path}/`)));
-          return { paths, index: paths.length - 1 };
-        });
-      }
+      if (gone) setActivePath(null);
+      // Deleted paths leave history; the index stays on the same entry.
+      setHistory((current) => {
+        const paths = current.paths.filter((entry) => !removed(entry));
+        if (gone) return { paths, index: paths.length - 1 };
+        const removedBefore = current.paths.slice(0, current.index).filter(removed).length;
+        return { paths, index: current.index - removedBefore };
+      });
       toast.success(`Deleted ${path}`);
     },
     [activePath, loadTree, rpc, source],
@@ -383,7 +398,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
                 const next = pendingOpen;
                 setPendingOpen(null);
                 void paneRef.current?.save().then((saved) => {
-                  if (saved) navigateTo(next);
+                  // Typing during the save dirties the buffer again; the banner returns.
+                  if (saved && !paneRef.current?.isDirty()) navigateTo(next);
+                  else setPendingOpen(next);
                 });
               }}
             >

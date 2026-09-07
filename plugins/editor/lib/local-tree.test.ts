@@ -20,6 +20,7 @@ async function fixture(): Promise<string> {
   await writeFile(path.join(root, "node_modules", "pkg", "index.js"), "");
   await symlink(path.join(root, "src"), path.join(root, "src-link"));
   await symlink(path.join(root, "missing"), path.join(root, "dangling"));
+  await symlink(os.homedir(), path.join(root, "escape"));
   return root;
 }
 
@@ -44,6 +45,11 @@ test("listLocalTree includes dotfiles, hides VCS internals, and defers node_modu
   assert.deepEqual(inner.entries, [{ path: "node_modules/pkg", kind: "directory", deferred: true }]);
   const deeper = await listLocalTree(root, "node_modules/pkg", 1000);
   assert.deepEqual(deeper.entries, [{ path: "node_modules/pkg/index.js", kind: "file" }]);
+  // A symlink inside the workspace lists; one that leaves it lists nothing.
+  const linked = await listLocalTree(root, "src-link", 1000);
+  assert.deepEqual(linked.entries, [{ path: "src-link/index.ts", kind: "file" }]);
+  assert.deepEqual(byPath.get("escape"), { path: "escape", kind: "directory", deferred: true });
+  assert.deepEqual(await listLocalTree(root, "escape", 1000), { entries: [], truncated: false });
   // The limit truncates instead of listing forever.
   const capped = await listLocalTree(root, "", 2);
   assert.equal(capped.entries.length, 2);

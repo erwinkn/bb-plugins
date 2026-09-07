@@ -8,7 +8,7 @@
  * `.DS_Store`, `Thumbs.db`). Listed but not descended into: `node_modules`
  * and directory symlinks; those come back `deferred` and load when expanded.
  */
-import { readdir, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Dirent } from "node:fs";
 
@@ -39,8 +39,21 @@ const DEFERRED_DIRECTORY_NAMES = new Set(["node_modules"]);
 export async function listLocalTree(rootPath: string, subpath: string, limit: number): Promise<TreeListing> {
   const entries: TreeEntry[] = [];
   const start = subpath === "" ? rootPath : path.join(rootPath, ...subpath.split("/"));
+  // A symlinked directory is listed only when it stays inside the workspace;
+  // one that points elsewhere shows as an empty folder.
+  if (subpath !== "" && !(await staysInside(rootPath, start))) return { entries, truncated: false };
   const truncated = await walk(start, rootPath, entries, limit, subpath === "");
   return { entries, truncated };
+}
+
+async function staysInside(rootPath: string, target: string): Promise<boolean> {
+  try {
+    const root = await realpath(rootPath);
+    const real = await realpath(target);
+    return real === root || real.startsWith(root + path.sep);
+  } catch {
+    return false;
+  }
 }
 
 /** Returns true when `limit` stopped the walk. */

@@ -72,9 +72,15 @@ export function FileTree({
     });
   }, [activePath]);
 
-  // Runs again once the ancestors above expand, when the row first exists.
+  // Scroll to the open file once per path: it may only get a row after its
+  // ancestors expand, but later folder toggles must not pull the tree back.
+  const scrolledTo = useRef<string | null>(null);
   useEffect(() => {
-    activeRowRef.current?.scrollIntoView({ block: "nearest" });
+    if (activePath === null || scrolledTo.current === activePath) return;
+    const row = activeRowRef.current;
+    if (row === null) return;
+    row.scrollIntoView({ block: "nearest" });
+    scrolledTo.current = activePath;
   }, [activePath, entries.length, expanded]);
 
   const effectiveExpanded = useMemo(
