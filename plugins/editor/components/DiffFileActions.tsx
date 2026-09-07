@@ -6,7 +6,7 @@ import { isWorkingTreeTarget, type DiffEntry, type DiffTarget } from "@/lib/diff
 import { acquireFileSession, peekFileSession } from "@/lib/file-session";
 import { useFileSessionIo } from "@/lib/use-file-session";
 import { ContextMenu, menuAt, type MenuState } from "./ContextMenu";
-import { useLongPress } from "./ui/hooks/use-long-press";
+import { useLongPress } from "@/lib/use-long-press";
 
 /**
  * The row's context menu: one action, named for what happens to the file.

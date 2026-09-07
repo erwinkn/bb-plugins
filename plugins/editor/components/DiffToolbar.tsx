@@ -22,7 +22,6 @@ import {
 } from "@/lib/diff-view-state";
 import type { EditorPrefs } from "@/lib/editor-options";
 import { ContextMenu, menuAt, type MenuItem, type MenuState } from "./ContextMenu";
-import { DiffScopeMenu, type ScopeMenuItem } from "./DiffScopeMenu";
 import type { SetPref } from "./EditorPane";
 import { SaveDot, ToolbarButton, type SaveIndicator } from "./Toolbar";
 import {
@@ -44,6 +43,7 @@ import {
 } from "./icons";
 
 const ROW_CLASS = "flex h-9 shrink-0 items-center gap-0.5 border-b border-border/60 bg-background pr-1.5 pl-1";
+const SCOPE_MENU_CLASS = "w-[340px] max-w-[calc(100vw-16px)]";
 
 export interface ScopeBarProps {
   threadId: string;
@@ -91,7 +91,7 @@ export function ScopeBar({
   onPrompt,
 }: ScopeBarProps) {
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [scopeOpen, setScopeOpen] = useState(false);
+  const [scopeMenu, setScopeMenu] = useState<MenuState | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [commits, setCommits] = useState<{ sha: string; subject: string }[]>([]);
   const [commitStatus, setCommitStatus] = useState<"loading" | "ready" | "error">("loading");
@@ -121,6 +121,7 @@ export function ScopeBar({
       setCommitMessage(error instanceof Error ? error.message : "Could not load commits");
     });
   }, [rpc, threadId, commitBase]);
+  const scopeOpen = scopeMenu !== null;
   useEffect(() => {
     if (!scopeOpen) return;
     loadCommits();
@@ -146,35 +147,35 @@ export function ScopeBar({
     onChooseTarget({ type: scope, mergeBaseBranch: commitBase });
   };
 
-  const scopeItems: ScopeMenuItem[] = [
-    ...SCOPE_ORDER.map((scope): ScopeMenuItem => {
+  const scopeItems: MenuItem[] = [
+    ...SCOPE_ORDER.map((scope): MenuItem => {
       const wordingFor = describeTarget({ type: scope }, commitBase);
       return {
-        type: "radio", label: wordingFor.label, title: wordingFor.detail,
+        type: "toggle", label: wordingFor.label, title: wordingFor.detail,
         icon: scopeIcon(scope), checked: target.type === scope,
         onToggle: () => chooseScope(scope),
       };
     }),
     { type: "separator" },
     { type: "label", label: commitBase ? `Commits · compared with ${commitBase}` : "Commits" },
-    ...(commitStatus === "loading" ? [{ label: "Loading commits…", disabled: true, onSelect: () => {} } satisfies ScopeMenuItem]
-      : commitStatus === "error" ? [{ label: "Retry loading commits", title: commitMessage ?? undefined, onSelect: loadCommits, keepOpen: true } satisfies ScopeMenuItem]
+    ...(commitStatus === "loading" ? [{ label: "Loading commits…", disabled: true, onSelect: () => {} } satisfies MenuItem]
+      : commitStatus === "error" ? [{ label: "Retry loading commits", title: commitMessage ?? undefined, onSelect: loadCommits, keepOpen: true } satisfies MenuItem]
       : [
-        ...commits.slice(0, expanded ? undefined : 10).map((commit): ScopeMenuItem => ({
-          type: "radio", id: commit.sha, icon: <CommitGlyph />,
+        ...commits.slice(0, expanded ? undefined : 10).map((commit): MenuItem => ({
+          type: "toggle", icon: <CommitGlyph />,
           label: commit.subject || "Untitled commit", shortcut: shortSha(commit.sha),
           title: `${commit.subject}\n${commit.sha}`,
           checked: target.type === "commit" && commit.sha.startsWith(target.sha),
           onToggle: () => onChooseTarget({ type: "commit", sha: commit.sha }),
         })),
-        ...(commits.length === 0 ? [{ type: "label", label: commitMessage ?? "No commits on this branch" } satisfies ScopeMenuItem] : []),
-        ...(commits.length > 0 && commitMessage ? [{ type: "label", label: commitMessage } satisfies ScopeMenuItem] : []),
+        ...(commits.length === 0 ? [{ type: "label", label: commitMessage ?? "No commits on this branch" } satisfies MenuItem] : []),
+        ...(commits.length > 0 && commitMessage ? [{ type: "label", label: commitMessage } satisfies MenuItem] : []),
       ]),
     ...(commitStatus === "ready" && commits.length > 10 ? [{
-      id: "expand-commits", label: expanded ? "Show less" : `Show more (${commits.length - 10})`,
+      label: expanded ? "Show less" : `Show more (${commits.length - 10})`,
       icon: <ChevronIcon open={!expanded} />, keepOpen: true,
       onSelect: () => setExpanded((value) => !value),
-    } satisfies ScopeMenuItem] : []),
+    } satisfies MenuItem] : []),
     { type: "separator" },
     { label: "Find commit…", icon: <BranchGlyph />, onSelect: () => chooseScope("commit") },
   ];
@@ -192,13 +193,15 @@ export function ScopeBar({
   return (
     <>
       <div className={ROW_CLASS}>
-        <DiffScopeMenu items={scopeItems} open={scopeOpen} onOpenChange={(open) => {
-          setScopeOpen(open);
-          if (open) setExpanded(false);
-        }}>
         <button
           type="button"
           title={wording.detail}
+          aria-haspopup="menu"
+          aria-expanded={scopeOpen}
+          onClick={(event) => {
+            setExpanded(false);
+            setScopeMenu(menuAt(event.currentTarget, [], SCOPE_MENU_CLASS));
+          }}
           className={cn(
             "flex min-w-0 shrink cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-foreground",
             "hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
@@ -208,7 +211,6 @@ export function ScopeBar({
           <span className="truncate">{activeCommit?.subject || wording.label}</span>
           <ChevronIcon open className="text-muted-foreground" />
         </button>
-        </DiffScopeMenu>
         <Summary summary={summary} isLoading={isLoading} />
         <ToolbarButton label="Refresh" onClick={onRefresh}>
           <RefreshGlyph className={cn(isLoading && "animate-spin")} />
@@ -232,6 +234,7 @@ export function ScopeBar({
           }}
         />
       )}
+      <ContextMenu state={scopeMenu && { ...scopeMenu, items: scopeItems }} onClose={() => setScopeMenu(null)} />
       <ContextMenu state={menu} onClose={() => setMenu(null)} />
     </>
   );

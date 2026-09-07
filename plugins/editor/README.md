@@ -128,8 +128,6 @@ esbuild is a runtime dependency).
 - `Workbench.tsx`/`EditorPane.tsx` are Files; `DiffWorkbench.tsx`/
   `EditableDiffPane.tsx` are Changes. They share `Toolbar.tsx`,
   `ResizeHandle.tsx` and `MarkdownPreview.tsx`.
-- `components/ui/` is the BB 0.42.1 dropdown and responsive drawer, shared with
-  the provider-usage plugin, used by the scope menu.
 - `lib/file-session.ts` holds buffers, hashes, save queues, drafts and view
   ownership. `lib/pierre-theme.ts` adapts BB's code theme; `lib/file-icons.ts`
   resolves `@pierre/trees` icons.

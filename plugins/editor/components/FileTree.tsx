@@ -3,7 +3,7 @@ import { ancestorsOf, buildTree, filterTree, type FlatEntry, type TreeNode } fro
 import { copyText } from "@/lib/editor-commands";
 import { cn } from "@/lib/utils";
 import { ContextMenu, type MenuState } from "./ContextMenu";
-import { useLongPress, type MenuPoint } from "./ui/hooks/use-long-press";
+import { useLongPress, type MenuPoint } from "@/lib/use-long-press";
 import { ChevronIcon, FileAddGlyph, FileIcon, FolderAddGlyph, FolderIcon, FolderOpenGlyph, RefreshGlyph } from "./icons";
 
 export type CreateKind = "file" | "directory";

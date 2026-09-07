@@ -111,7 +111,6 @@ test("plugin uses only public SDK imports and declared packages", () => {
       /^clsx$/,
       /^tailwind-merge$/,
       /^@hugeicons\//,
-      /^@radix-ui\/react-(dropdown-menu|slot)$/,
       /^shiki\//,
       /^@shikijs\/(langs|themes)\//,
       /^@pierre\/theme\//,
