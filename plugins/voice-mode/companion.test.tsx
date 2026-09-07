@@ -298,3 +298,29 @@ test("app-wide controller receives stop, mute, and thread events without a Voice
     assert.equal(notice.mock.callCount(), 1);
   } finally { slot.lifecycle.unmount(); }
 });
+
+test("Voice inspection is optional, stays in the area, and preserves the conversation on return", async (t) => {
+  viewWorkspace.clear();
+  const stopped = t.mock.method(voiceAgent, "stopFromSurface", () => {});
+  const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: pageRpc });
+  const ui = within(slot.container);
+  try {
+    await ui.findByRole("heading", { name: "Voice sessions" });
+    assert.equal(ui.queryByTestId("bb-thread-chat"), null);
+    assert.equal(ui.queryByRole("group", { name: "Voice area" }), null);
+    fireEvent.click(await ui.findByRole("button", { name: /Session a/ }));
+    await ui.findByText("Transcript a");
+    act(() => viewWorkspace.open([view("a")], "new", "reuse"));
+    assert.equal(ui.getByTestId("bb-thread-chat").getAttribute("data-thread-id"), "a");
+    fireEvent.click(ui.getByRole("button", { name: "Conversation" }));
+    assert.equal(ui.queryByTestId("bb-thread-chat"), null);
+    assert.ok(ui.getByText("Transcript a"));
+    fireEvent.click(ui.getByRole("button", { name: "Threads (1)" }));
+    assert.ok(ui.getByTestId("bb-thread-chat"));
+    fireEvent.click(ui.getByRole("button", { name: "Close Thread a" }));
+    assert.equal(ui.queryByTestId("bb-thread-chat"), null);
+    assert.ok(ui.getByText("Transcript a"));
+    assert.equal(stopped.mock.callCount(), 0);
+    assert.equal(slot.inspection.navigateCalls.length, 0);
+  } finally { slot.lifecycle.unmount(); viewWorkspace.clear(); }
+});

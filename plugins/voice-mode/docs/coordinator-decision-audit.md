@@ -9,7 +9,7 @@ This records implementation choices where the plan left room for judgment.
 | Decision | Alternative | Confidence | Failure case |
 | --- | --- | --- | --- |
 | Use a trusted agent prompt to interpret conditional authority and select watched threads. | Intercept every native action in BB core. | Medium | The coordinator can still misread intent or omit a watch entry. Live model tests remain necessary. |
-| Resolve spoken answers in the plugin and cancel the corresponding native interaction row. | Wait for a new SDK response API. | Medium | BB history says cancelled even though the plugin delivered an answer. The plugin stores submission and delivery separately. |
+| Resolve spoken answers in the plugin and cancel the corresponding native interaction row. | Verify and use the existing SDK response methods. | Medium | BB history says cancelled even though the plugin delivered an answer. The plugin stores submission and delivery separately. |
 | Keep unknown delivery unknown when history lookup fails or returns no marker. Retry checks again without resending. | Retry after a timeout or missing marker. | High | A request that never arrived can remain blocked until the user inspects the coordinator. This avoids an automatic duplicate action. |
 | Retain an unreachable coordinator's identity, and block a second create after an unconfirmed create. | Replace an unreachable thread immediately. | High | Recovery may need a new logical conversation after the user checks the old one. |
 | Wait up to four seconds for transcription, then reject incomplete input at the server. | Execute the voice model's interpretation or wait without a limit. | Medium | Slow transcription asks the user to repeat a valid request. This needs measurement in real calls. |
@@ -31,3 +31,20 @@ Verdict: I stand behind this as a draft for controlled user testing. I do not
 claim that the live voice workflow is fully verified. The remaining exceptions
 are live model interpretation, physical audio behavior, latency, and the SDK
 interaction workaround. No merge or general release is part of this change.
+
+## Dedicated Voice area follow-up
+
+The user requested this revision in the same branch and PR on 7 September.
+
+| Decision | Alternative | Confidence | Failure case |
+| --- | --- | --- | --- |
+| Put optional Threads content in the Voice page, with Conversation returning to the preserved history view. | Register fixed side-panel tabs on both clients. | High | Fixed tabs open automatically on the first desktop visit. The in-page choice avoids that unsolicited inspection. |
+| Preserve the existing view preference storage key and apply it to both clients. | Rename the key and migrate it. | High | The old internal name says mobile, although the UI now explains the shared behavior. |
+| Keep the conversation component mounted while inspection is shown. | Unmount and reload its history each time. | High | Hidden listeners need to avoid handling Escape or stealing focus; the Escape handler is disabled while hidden. |
+| Remove the work-thread panel entry and reject legacy native navigation RPCs. | Keep them as alternate entry points. | High | A stale frontend reports that it needs an update; it cannot navigate a voice request into another work thread. |
+| Open Voice through the app-wide binding when a new call starts. | Leave new calls on whichever work thread was open. | Medium | Actual mobile navigation and microphone continuity still need a physical call test. Call ownership stays in the existing app-wide singleton. |
+| Keep native permission decisions in BB's UI until the existing SDK response methods are verified and wired to explicit spoken answers. | Infer approval from speech and bypass BB's interaction API. | High | Some permission requests still need the user to look at the app, inside Voice's optional thread view. |
+
+Verdict: suitable for the existing draft and local user test. Physical desktop
+and mobile microphone continuity remains unverified. No new branch, PR, merge,
+or session-data reset is part of this revision.

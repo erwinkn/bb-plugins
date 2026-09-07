@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useRealtime, useRpc, experimental_useSidebarThreadActions } from "@get-bb/plugin-sdk/app";
+import { useRealtime, useRpc, useBbNavigate, experimental_useSidebarThreadActions } from "@get-bb/plugin-sdk/app";
 import { voiceAgent } from "./voice-agent";
 import type { rpcContract } from "./server";
 
@@ -29,11 +29,13 @@ export function VoiceController() {
     }
   });
   const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
   const sidebarActions = experimental_useSidebarThreadActions();
   useEffect(() => voiceAgent.bindGlobal({
     rpc,
+    openVoice: () => navigate.toPluginPanel("sessions"),
     context: { threadId: null, projectId: null, onNewThreadScreen: false },
     openNewThread: (projectId) => sidebarActions.openNewThread({ ...(projectId ? { projectId } : {}), focusPrompt: true }),
-  }), [rpc, sidebarActions]);
+  }), [rpc, sidebarActions, navigate]);
   return null;
 }

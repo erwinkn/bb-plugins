@@ -7,19 +7,17 @@
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "./components/ui/button";
 import {
-  experimental_useAppPanel,
   experimental_useSidebarThreadActions,
   useBbContext,
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
-import { clientDescriptor } from "./client-identity";
 import { voiceAgent } from "./voice-agent";
 import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
 import { viewWorkspace } from "./view-workspace";
 import { actionStatus, pairToolEvents } from "./session-events";
-import { COMPANION_TAB } from "./companion";
+import { CompanionTab } from "./companion";
 import { CoordinatorCard } from "./coordinator-panel";
 import { cn } from "@/lib/utils";
 
@@ -543,8 +541,9 @@ function TranscriptBody({ events, plugins, filter }: { events: EventRow[]; plugi
  * ones something else already handled (e.g. closing a dialog), so Escape
  * still means "dismiss" inside nested UI.
  */
-function useEscapeToClose(onBack?: () => void) {
+function useEscapeToClose(onBack?: () => void, active = true) {
   useEffect(() => {
+    if (!active) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const target = event.target;
@@ -563,14 +562,38 @@ function useEscapeToClose(onBack?: () => void) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onBack]);
+  }, [onBack, active]);
 }
 
 export function SessionsPanel() {
+  const [inspecting, setInspecting] = useState(false);
+  const views = useSyncExternalStore(viewWorkspace.subscribe, viewWorkspace.get);
+  const root = useRef<HTMLDivElement>(null);
+  const showThreads = inspecting && views.views.length > 0;
+  useEffect(() => viewWorkspace.registerPresenter({
+    available: () => document.visibilityState !== "hidden" && !!root.current,
+    reveal: () => { setInspecting(true); return true; },
+  }), []);
+  return (
+    <div ref={root} className="flex h-full min-h-0 flex-col">
+      {views.views.length > 0 ? (
+        <div role="group" aria-label="Voice area" className="flex shrink-0 gap-2 border-b border-border p-2">
+          <Button variant={showThreads ? "ghost" : "secondary"} aria-pressed={!showThreads} onClick={() => setInspecting(false)}>Conversation</Button>
+          <Button variant={showThreads ? "secondary" : "ghost"} aria-pressed={showThreads} onClick={() => setInspecting(true)}>Threads ({views.views.length})</Button>
+        </div>
+      ) : null}
+      <div hidden={showThreads} className={showThreads ? "hidden" : "min-h-0 flex-1"}>
+        <SessionHistoryPanel active={!showThreads} />
+      </div>
+      {showThreads ? <div className="min-h-0 flex-1"><CompanionTab /></div> : null}
+    </div>
+  );
+}
+
+function SessionHistoryPanel({ active }: { active: boolean }) {
   const rpc = useRpc<typeof rpcContract>();
   const { threadId, projectId } = useBbContext();
   const sidebarActions = experimental_useSidebarThreadActions();
-  const appPanel = experimental_useAppPanel();
 
   // The Voice page has no composer, so nothing else binds the voice agent
   // here. Install a fallback binding so the FAB can actually start a call from a
@@ -592,10 +615,6 @@ export function SessionsPanel() {
     });
   }, [rpc, threadId, projectId, sidebarActions]);
 
-  useEffect(() => viewWorkspace.registerPresenter({
-    available: () => clientDescriptor.mobile && document.visibilityState !== "hidden",
-    reveal: () => appPanel.openFixedTab({ surface: { kind: "current" }, tab: COMPANION_TAB }),
-  }), [appPanel]);
   const [sessions, setSessions] = useState<SessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -614,7 +633,7 @@ export function SessionsPanel() {
     }
   }, [selected]);
   const backToSessions = useCallback(() => setSelected(null), []);
-  useEscapeToClose(selected ? backToSessions : undefined);
+  useEscapeToClose(selected ? backToSessions : undefined, active);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState<string | null>(null);

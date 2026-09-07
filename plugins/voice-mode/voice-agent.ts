@@ -40,10 +40,8 @@ interface RemotePresence {
 }
 
 /**
- * Tools that do real work AND navigate (spawn/diff, then `bb.sdk.threads.open`).
- * Unlike a pure-navigation tool we don't refuse these — we run them with
- * `focus:false` on a live mobile call so the work happens without backgrounding
- * the call. The server honors the flag by skipping its `threads.open`.
+ * Older servers can navigate after spawning work or reading a diff. Keep
+ * focus:false in these calls until all installed backends use the Voice area.
  */
 const FOCUS_SUPPRESSIBLE_TOOLS = new Set(["start_thread", "show_diff"]);
 
@@ -76,6 +74,7 @@ export interface Bindings {
    */
   composer?: ComposerBinding;
   openNewThread: (projectId: string | null) => void;
+  openVoice?: () => void;
 }
 
 interface SessionHandle {
@@ -1078,7 +1077,7 @@ export class VoiceAgent {
     let status: "success" | "error" | undefined;
     let presentation: string | undefined;
     let label: string | undefined;
-    const shown = clientDescriptor.mobile ? this.workspace.current() : null;
+    const shown = this.workspace.current();
     const context = shown
       ? { threadId: shown.threadId, projectId: shown.projectId, onNewThreadScreen: false }
       : bindings?.context;
@@ -1118,8 +1117,8 @@ export class VoiceAgent {
         name === "start_thread" &&
         !(typeof args.prompt === "string" && args.prompt.trim())
       ) {
-        if (clientDescriptor.mobile && (this.state === "live" || this.state === "muted")) {
-          throw new Error("Ask the user to dictate a prompt for the new thread. Opening the New thread screen during a mobile call can interrupt the microphone.");
+        if (this.state === "live" || this.state === "muted") {
+          throw new Error("Ask the user to dictate the new thread prompt. Keep the conversation in Voice.");
         }
         // No dictated prompt: never fabricate one — open bb's New thread screen
         // with the project preselected and let the user type it themselves.
@@ -1130,10 +1129,9 @@ export class VoiceAgent {
         bindings.openNewThread(projectId);
         output =
           "Opened the New thread screen with the project preselected. The user will type the prompt themselves; no thread exists yet.";
-      } else if (!clientDescriptor.mobile && ["focus_threads", "manage_views", "set_view_behavior"].includes(name)) {
-        throw new Error("Drawer tools are mobile-only. On desktop, use focus_thread to navigate to a thread.");
+
       } else if (
-        clientDescriptor.mobile && (this.state === "live" || this.state === "muted") &&
+        (this.state === "live" || this.state === "muted") &&
         (name === "focus_thread" || name === "focus_threads")
       ) {
         const ids = name === "focus_thread" ? [args.thread_id] : args.thread_ids;
@@ -1172,12 +1170,9 @@ export class VoiceAgent {
         output = result.output;
         status = result.status;
       } else {
-        // These tools navigate (…→ threads.open) which would background a live
-        // mobile call — tell the server not to focus so the work still happens but
-        // nothing navigates. (The promptless start_thread is handled above.)
+        // Also suppress navigation on older backends during rolling reloads.
         const suppressFocus =
           FOCUS_SUPPRESSIBLE_TOOLS.has(name) &&
-          clientDescriptor.mobile &&
           (this.state === "live" || this.state === "muted");
         if (suppressFocus) this.logDiag("nav.suppressedFocus", { name });
         const result = await bindings.rpc.call("runTool", {
@@ -1241,7 +1236,7 @@ export class VoiceAgent {
         quietForMs: Date.now() - this.conversationChangedAt,
       }),
       view: () => {
-        const shown = clientDescriptor.mobile ? this.workspace.current() : null;
+        const shown = this.workspace.current();
         if (shown) return { threadId: shown.threadId, projectId: shown.projectId, onNewThreadScreen: false };
         return this.bindings?.context ?? { threadId: null, projectId: null, onNewThreadScreen: false };
       },
@@ -1253,12 +1248,10 @@ export class VoiceAgent {
       applyFocus: async (threadId: string) => {
         const rpc = this.bindings?.rpc;
         if (!rpc || !this.nonce) return;
-        if (clientDescriptor.mobile && (this.state === "live" || this.state === "muted")) {
-          const { views, preference } = await rpc.call("resolveThreadViews", { threadIds: [threadId] });
-          this.workspace.open(views, "auto", preference);
-          return;
-        }
-        await rpc.call("applyPresentation", { nonce: this.nonce, threadId });
+        const nonce = this.nonce;
+        const { views, preference } = await rpc.call("resolveThreadViews", { threadIds: [threadId] });
+        if (this.nonce !== nonce || !(this.state === "live" || this.state === "muted")) return;
+        this.workspace.open(views, "auto", preference);
       },
       changed: () => this.refreshBridgeSnapshot(),
     };
@@ -1268,6 +1261,8 @@ export class VoiceAgent {
   private async start() {
     const bindings = this.bindings;
     if (!bindings) return;
+    const openVoice = [...this.bindingSources.values()].map(source => source.bindings.openVoice).find(Boolean);
+    openVoice?.();
     // Assign the nonce before entering "connecting" so that state's presence
     // broadcast already carries our identity.
     const nonce = crypto.randomUUID();

@@ -77,28 +77,31 @@ shows a reconnecting notice during this period. A failed connection ends the
 call immediately. A closed event channel also ends the call because it cannot
 resume speech events or tool responses.
 
-## Mobile views beside the call
+## One Voice area on mobile and desktop
 
-On mobile, “show that thread” opens a drawer without leaving the voice call.
-“Show all my running threads” keeps them in the drawer's thread switcher.
-These are views inside one drawer, not separate native bb tabs. Closing a view
-does not stop its thread or the call. To start a thread during a mobile call,
-dictate its prompt. A request without a prompt asks for one and keeps the call
-on screen.
+Start a call from Voice, the composer button, or the shortcut. A new call opens
+Voice. Give instructions and hear progress and results in that conversation;
+opening a work thread is not required.
 
-Behavior → Mobile thread drawer controls whether a new thread replaces the
-shown one or joins the switcher. “Always keep threads in the mobile drawer”
-saves that preference; an explicit request can override it. The collection lasts
-for the current app session. Supported destinations are the Voice page and
-existing thread panels; unsupported mobile surfaces report the limitation.
+Visual inspection is optional. Ask "show that thread" to see it inside Voice,
+or "show my running threads" to add them to its thread switcher. Select
+Conversation to return without ending the call. Closing a view does not stop
+its thread. No extra Voice Mode entry appears in a work thread's side panel.
+There is no fixed Views side-panel tab that opens automatically on desktop.
 
-Desktop `focus_thread` continues navigating to the requested thread from both
-the composer and Voice page. Mobile settings do not change that behavior.
-Per-entry-point desktop navigation/side-panel settings and native multi-tab
-behavior are a [separate design](docs/desktop-navigation-plan.md).
+Settings → Behavior → Thread views in Voice controls whether a requested view
+replaces the selected view or joins the switcher. The existing saved preference
+is preserved and now applies on both devices. Creating work and reading diffs
+never navigate to work threads. A missing work prompt is requested by voice.
 
-See [the mobile design and device checklist](docs/thread-views.md) for SDK limits
-and the shared session/plugin logging behavior.
+The embedded view uses BB's supported ThreadChat component. If it cannot open,
+Voice reports that and keeps the call running. The current plugin routes native permission decisions to BB's approval UI,
+which can be inspected inside Voice. The SDK exposes interaction response
+methods; live support for each interaction kind still needs verification. The
+plugin never automatically approves them.
+
+Older mobile and desktop navigation proposals under docs/ describe the previous
+flow. This dedicated Voice area supersedes their entry-point navigation rules.
 
 ## Coordinator mode
 
@@ -171,7 +174,7 @@ Verified so far: deterministic fake-host and fake-realtime tests for bridge
 ordering and recovery, and a disposable hidden thread spawned into a
 personal environment on this machine through the same BB contracts. Not yet
 verified: physical desktop and mobile calls (audio interruption, playback
-tracking, the mobile drawer), live model behavior for conditional requests,
+tracking, embedded thread inspection), live model behavior for conditional requests,
 and the 3–5 second first-useful-answer target.
 The bridge logs `handoff.dispatched` (transcript wait) and `reply.playing`
 (milliseconds since the end of speech and since the handoff) in each session
@@ -278,8 +281,8 @@ bb plugin dev          # rebuild + reload on save
 bb plugin logs voice-mode -f # tool traffic and errors
 ```
 
-Mobile calls additionally expose `focus_threads`, `manage_views`, and
-`set_view_behavior` for the drawer. Desktop retains its navigation tool set.
+Both clients expose `focus_threads`, `manage_views`, and `set_view_behavior`
+for optional inspection inside Voice. Native pane navigation is not exposed.
 
 ## Call controls and saved data
 

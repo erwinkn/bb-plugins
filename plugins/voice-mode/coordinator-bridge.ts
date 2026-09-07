@@ -336,7 +336,10 @@ export class CoordinatorBridge {
     });
     if (!sent) { this.active = null; return; }
     this.host.log("reply.speaking", { replyId: reply.replyId, kind: reply.kind, requestId: reply.requestId, batchId: reply.batchId, text: reply.speech });
-    if (reply.focusThreadId) void this.host.applyFocus(reply.focusThreadId).catch((error) => this.host.log("reply.focusFailed", { replyId: reply.replyId, error: error instanceof Error ? error.message : String(error) }));
+    if (reply.focusThreadId && reply.kind !== "update") void this.host.applyFocus(reply.focusThreadId).catch((error) => {
+      this.host.log("reply.focusFailed", { replyId: reply.replyId, error: error instanceof Error ? error.message : String(error) });
+      if (this.host.nonce() === reply.targetCallNonce) this.enqueueLocalReply("I could not show that thread here. Open the Voice area to inspect it. The call can continue.", "failure");
+    });
     this.host.changed();
   }
 

@@ -1,15 +1,11 @@
-// Mobile-only host drawer, with a window-local collection of typed views.
+// Optional thread inspection inside Voice, shared by desktop and mobile.
 // Additional first-party renderers can join WorkspaceView when bb supports them.
 import React, { Component, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { ThreadChat } from "@get-bb/plugin-sdk/app";
-import type { ExperimentalPluginFixedTabReference } from "@get-bb/plugin-sdk/app";
 import { viewWorkspace } from "./view-workspace";
 import { voiceAgent } from "./voice-agent";
 import { LiveCallControls } from "./voice-chrome";
 import { useDrawerViewport } from "./hooks/useDrawerViewport";
-
-export const COMPANION_TAB: ExperimentalPluginFixedTabReference = { panelId: "sessions", id: "companion" };
-export const THREAD_WORKSPACE_ACTION = "thread-workspace";
 
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };

@@ -48,7 +48,7 @@ export class ViewWorkspace {
   open(views: readonly WorkspaceView[], disposition: OpenDisposition, preference: "reuse" | "new") {
     if (!views.length) throw new Error("No threads were selected.");
     const presenter = [...this.presenters.values()].reverse().find(p => p.available());
-    if (!presenter) throw new Error("This screen cannot show threads beside the call. Start a call from Voice or a thread page.");
+    if (!presenter) throw new Error("Open the Voice area to inspect threads. The call is still running.");
     // A batch always preserves every requested item, regardless of the default.
     const mode = disposition === "auto" ? preference : disposition;
     const reuse = views.length === 1 && mode === "reuse";
@@ -63,7 +63,7 @@ export class ViewWorkspace {
       }
     }
     // Reveal first; a rejected/throwing host must leave the collection intact.
-    if (!presenter.reveal()) throw new Error("This screen declined to open the thread panel. The call is still running.");
+    if (!presenter.reveal()) throw new Error("The Voice area could not show the thread. The call is still running.");
     this.set({ views: next, activeId: views[0].id });
   }
   select(id: string) {

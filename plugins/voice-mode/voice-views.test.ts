@@ -54,28 +54,19 @@ test("mobile openings use local drawers with correlated tool events", async () =
   assert.equal(f.calls.some(call => call.method === "runTool" || call.method === "sendCompanion"), false);
 });
 
-test("desktop focus_thread retains server navigation even if a local presenter exists", async () => {
-  for (const entry of ["composer", "voice"]) {
-    const f = fixture(false);
-    if (entry === "voice") f.agent.bind({ ...f.base, context: { threadId: null, projectId: null, onNewThreadScreen: false } });
-    f.workspace.registerPresenter({ available: () => true, reveal: () => { throw new Error("Desktop must not use the drawer"); } });
-    const result = await f.execute("focus_thread", { thread_id: "a" });
-    assert.equal(result.status, "success");
-    assert.equal(result.presentation, "navigation");
-    assert.equal(f.calls.some(call => call.method === "resolveThreadViews"), false);
-    assert.equal(f.calls.filter(call => call.method === "runTool" && call.args.name === "focus_thread").length, 1);
-    assert.equal(f.workspace.get().views.length, 0);
-  }
-});
-
-test("stale desktop sessions cannot activate mobile drawer tools", async () => {
+test("desktop focus and batch inspection stay inside Voice and keep the call", async () => {
   const f = fixture(false);
-  for (const name of ["focus_threads", "manage_views", "set_view_behavior"]) {
-    const result = await f.execute(name, { action: "clear", thread_ids: ["a"], behavior: "new" });
-    assert.equal(result.status, "error");
-    assert.match(result.output, /mobile-only/);
+  f.workspace.registerPresenter({ available: () => true, reveal: () => true });
+  for (const name of ["focus_thread", "focus_threads"]) {
+    const result = await f.execute(name, { thread_id: "a", thread_ids: ["a", "b"] });
+    assert.equal(result.status, "success");
+    assert.equal(result.presentation, "panel");
   }
-  assert.equal(f.calls.some(call => call.method === "runTool" || call.method === "resolveThreadViews"), false);
+  assert.equal(f.workspace.get().views.length, 2);
+  await f.execute("manage_views", { action: "clear" });
+  assert.equal(f.workspace.get().views.length, 0);
+  assert.equal(f.calls.some(call => call.method === "runTool"), false);
+  assert.equal(f.internal.state, "live");
 });
 
 test("a host rejection, exception, or absent presenter returns an error to the model", async () => {
@@ -166,25 +157,20 @@ test("page and composer bindings take priority over app-wide fallback through na
 });
 
 
-test("promptless mobile starts keep live and muted calls in place; desktop still opens the draft", async () => {
-  for (const state of ["live", "muted"]) {
-    const f = fixture();
+test("new work stays in Voice on both clients, with missing prompts asked aloud", async () => {
+  for (const mobile of [false, true]) for (const state of ["live", "muted"]) {
+    const f = fixture(mobile);
     f.internal.state = state;
     let opened = false;
     f.agent.bind({ ...f.base, openNewThread() { opened = true; } });
     const result = await f.execute("start_thread", { project_id: "p" });
     assert.equal(result.status, "error");
-    assert.match(result.output, /Ask the user to dictate a prompt/);
+    assert.match(result.output, /Ask the user to dictate/);
     assert.equal(opened, false);
     assert.equal(f.calls.some(call => call.method === "runTool"), false);
-    assert.equal(f.internal.state, state);
     const prompted = await f.execute("start_thread", { project_id: "p", prompt: "Build the page" });
     assert.equal(prompted.status, "success");
     assert.equal(f.calls.find(call => call.method === "runTool")?.args.args.focus, false);
+    assert.equal(f.internal.state, state);
   }
-  const desktop = fixture(false);
-  let project: string | null = null;
-  desktop.agent.bind({ ...desktop.base, openNewThread(id) { project = id; } });
-  assert.equal((await desktop.execute("start_thread", { project_id: "p" })).status, "success");
-  assert.equal(project, "p");
 });

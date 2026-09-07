@@ -37,7 +37,7 @@ test("declined or throwing opens leave tabs and selection unchanged", () => {
   store.open([view("a")], "auto", "reuse");
   const before = store.get();
   const unregister = store.registerPresenter({ available: () => true, reveal: () => false });
-  assert.throws(() => store.open([view("b")], "reuse", "reuse"), /declined/);
+  assert.throws(() => store.open([view("b")], "reuse", "reuse"), /could not show/);
   assert.equal(store.get(), before);
   unregister();
   store.registerPresenter({ available: () => true, reveal: () => { throw new Error("Host unavailable"); } });
@@ -48,12 +48,12 @@ test("declined or throwing opens leave tabs and selection unchanged", () => {
 test("windows are isolated and unmounted or unavailable presenters cannot receive opens", () => {
   const otherWindow = workspace();
   const ownWindow = new ViewWorkspace();
-  assert.throws(() => ownWindow.open([view("a")], "auto", "reuse"), /cannot show/);
+  assert.throws(() => ownWindow.open([view("a")], "auto", "reuse"), /Open the Voice area/);
   assert.equal(otherWindow.get().views.length, 0);
   const unregister = ownWindow.registerPresenter({ available: () => true, reveal: () => true });
   unregister();
   ownWindow.registerPresenter({ available: () => false, reveal: () => { throw new Error("Must not run"); } });
-  assert.throws(() => ownWindow.open([view("a")], "auto", "reuse"), /cannot show/);
+  assert.throws(() => ownWindow.open([view("a")], "auto", "reuse"), /Open the Voice area/);
 });
 
 test("context follows selected views only while a panel is visible; closing restores another tab", () => {

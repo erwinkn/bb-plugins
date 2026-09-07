@@ -146,7 +146,7 @@ export const rpcContract = defineRpcContract({
     input: z.object({ conversationId: z.string().min(1), threadId: z.string().min(1), watched: z.boolean() }).strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
-  /** Apply a coordinator presentation request (desktop navigation) from the owning call. */
+  /** Legacy presentation RPC: rejects stale clients instead of navigating away. */
   applyPresentation: {
     input: z.object({ nonce: z.string().min(1), threadId: z.string().min(1) }).strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
@@ -548,28 +548,27 @@ export function toolSchemas(pluginCommands: PluginCommandInfo[] = [], mobile = f
     { type: "function", name: "list_threads", description: "List recent bb threads (id, title, status). Optionally filter by project id.", parameters: { type: "object", properties: { project_id: { type: "string" }, limit: { type: "number", description: "Max threads to return (default 15)." } } } },
     { type: "function", name: "search_threads", description: "Full-text search bb threads by title/content. Returns matching thread ids and titles.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
     { type: "function", name: "read_thread", description: "Read a thread's details and its latest assistant output.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
-    { type: "function", name: "focus_thread", description: mobile ? "Show a thread in the mobile drawer without leaving the call. Reopening a thread selects its existing view. disposition: auto uses the mobile preference, reuse replaces the active view, new keeps existing views." : "Open/focus a thread in the user's bb app window, navigating to that thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, ...(mobile ? { disposition: { type: "string", enum: ["auto", "reuse", "new"] } } : {}) }, required: ["thread_id"] } },
-    { type: "function", name: "focus_threads", description: "Show several threads in the mobile drawer switcher, preserving existing views. To show all running threads, first call list_live_threads and exclude recently-finished entries; pass their IDs here. Up to 100 per batch; split larger lists into batches.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
-    { type: "function", name: "manage_views", description: "List, select, or close the views in the mobile drawer. Get view IDs using list. clear closes all views only when the user asks. Closing a view does not stop its thread or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
-    { type: "function", name: "set_view_behavior", description: "Save how future mobile drawer opens behave. Use only when the user asks for a lasting mobile preference: reuse replaces the active view; new keeps views in the switcher. Desktop always navigates normally. Explicit mobile requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
-    { type: "function", name: "set_pane", description: "Change a thread pane's presentation in the bb app: spotlight, clear-spotlight, maximize, restore, or toggle.", parameters: { type: "object", properties: { thread_id: { type: "string" }, action: { type: "string", enum: ["spotlight", "clear-spotlight", "maximize", "restore", "toggle"] } }, required: ["thread_id", "action"] } },
+    { type: "function", name: "focus_thread", description: "Show a thread inside Voice only when the user asks for visual inspection. The call continues.", parameters: { type: "object", properties: { thread_id: { type: "string" }, disposition: { type: "string", enum: ["auto", "reuse", "new"] } }, required: ["thread_id"] } },
+    { type: "function", name: "focus_threads", description: "Show several threads inside Voice only when requested. Preserves existing views. First resolve the requested threads; do not open views for ordinary progress reports.", parameters: { type: "object", properties: { thread_ids: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 } }, required: ["thread_ids"] } },
+    { type: "function", name: "manage_views", description: "List, select, or close optional thread views inside Voice. Closing a view does not stop work or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
+    { type: "function", name: "set_view_behavior", description: "Save a requested lasting preference for thread views in Voice on desktop and mobile: reuse replaces the active view; new keeps views. Explicit requests and batches override this preference.", parameters: { type: "object", properties: { behavior: { type: "string", enum: ["reuse", "new"] } }, required: ["behavior"] } },
     { type: "function", name: "send_to_thread", description: "Send a message to a thread's agent. Starts a turn if idle, queues/steers if running.", parameters: { type: "object", properties: { thread_id: { type: "string" }, message: { type: "string" } }, required: ["thread_id", "message"] } },
-    { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; With no prompt, this opens bb's New thread screen for the user to type their own. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
+    { type: "function", name: "start_thread", description: "Start a new agent thread in a project. Only pass prompt when the user dictated actual work; With no prompt, ask the user to dictate the work; stay in Voice. Runs on the project's default machine unless machine_id is given — if the project lives on several connected machines and the user didn't say which, check list_machines and ask one short question instead of guessing.", parameters: { type: "object", properties: { project_id: { type: "string", description: "Project id; defaults to the user's current project." }, prompt: { type: "string", description: "The user's own instruction for the agent, verbatim. Omit if they didn't give one." }, title: { type: "string" }, machine_id: { type: "string", description: "Machine (host) id to run on, from list_machines. Omit to use the project's default machine." } } } },
     { type: "function", name: "stop_thread", description: "Stop a running thread.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "archive_thread", description: "Archive a thread (and its children).", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "rename_thread", description: "Rename a thread.", parameters: { type: "object", properties: { thread_id: { type: "string" }, title: { type: "string" } }, required: ["thread_id", "title"] } },
-    { type: "function", name: "show_diff", description: "Summarize a thread's workspace diff (changed files, additions/deletions) and focus the thread so the user can see it.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
+    { type: "function", name: "show_diff", description: "Summarize a thread's workspace diff (changed files, additions/deletions) without opening the thread. Read useful results aloud.", parameters: { type: "object", properties: { thread_id: { type: "string" } }, required: ["thread_id"] } },
     { type: "function", name: "update_instructions", description: "Propose new standing instructions for the user to review and save in Voice Mode settings. This does not change the active prompt. Pass the COMPLETE new instructions text, not a diff. Use only when the user asks for a lasting behavior change.", parameters: { type: "object", properties: { instructions: { type: "string", description: "The full replacement instructions." }, reason: { type: "string", description: "One short sentence: why, quoting the user's request." } }, required: ["instructions", "reason"] } },
     // Handled locally in the bb app frontend, never reaches runTool:
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into).", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
-  ].filter(tool => mobile || !["focus_threads", "manage_views", "set_view_behavior"].includes(tool.name));
+  ];
 }
 
 /**
  * Realtime tools in coordinator mode. The voice model can hand work to the
  * coordinator, stay silent, end the call, read the current view, and edit the
- * local composer or mobile drawer. It has no tool that changes bb state.
+ * local composer or optional thread views. It has no tool that changes bb state.
  */
 export function coordinatorToolSchemas(mobile = false) {
   return [
@@ -593,21 +592,17 @@ export function coordinatorToolSchemas(mobile = false) {
     { type: "function", name: "get_context", description: "Get the user's current bb context: the thread and project currently in view, including the thread's status and latest assistant output. Read-only." },
     { type: "function", name: "set_composer_text", description: "Replace the text in the user's message composer (the box they type prompts into). The user reviews and sends it themselves.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
     { type: "function", name: "append_composer_text", description: "Append text to the user's message composer.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
-    ...(mobile
-      ? [{ type: "function", name: "manage_views", description: "List, select, or close the views in the mobile drawer. Closing a view does not stop its thread or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } }]
-      : []),
+    { type: "function", name: "manage_views", description: "List, select, or close optional thread views inside Voice. Closing a view does not stop work or the call.", parameters: { type: "object", properties: { action: { type: "string", enum: ["list", "select", "close", "clear"] }, view_id: { type: "string" } }, required: ["action"] } },
   ];
 }
 
-export function threadViewInstructions(mobile: boolean) {
-  return mobile
-    ? "Mobile thread views: focus_thread shows a thread in the drawer without navigating away from the call. disposition new preserves other views and reuse replaces the selected view. focus_threads opens a batch into the drawer switcher, not separate native bb tabs. For all running threads, use list_live_threads and exclude recently-finished entries. Use manage_views to list, select, or close mobile views. Use set_view_behavior only for an explicitly requested lasting mobile preference. Call get_context for the thread currently shown. If the drawer is unavailable, report the limitation; do not navigate away from the mobile call."
-    : "Desktop navigation: focus_thread opens and navigates to the requested thread, as usual, regardless of where the call started. There is no desktop companion-view mode in this version. Call get_context after navigation for the current thread. Mobile drawer preferences do not apply to desktop.";
+export function threadViewInstructions(_mobile: boolean) {
+  return "Voice is the dedicated conversation on desktop and mobile. Assume the user is listening without looking. Read progress and results aloud; do not require opening work threads. Only focus_thread/focus_threads when the user asks for visual inspection, inside Voice. Use manage_views for those optional views. If inspection is unavailable, explain by voice and continue the call; do not navigate away. New work runs without opening its thread. Ask for a missing prompt by voice. Use set_view_behavior only for a requested lasting preference. Call get_context for the optional thread currently shown.";
 }
 
 const DEFAULT_PROMPT = `You are Aide, a concise voice operator for bb — the user's agentic IDE where coding agents run in threads inside projects.
 
-The user talks to you to drive bb hands-free. You can list/search/read threads, focus them on screen, spotlight or maximize panes, send messages to agent threads, start new threads, stop or archive threads, summarize diffs, and edit the user's prompt composer.
+The user talks to you to drive bb hands-free. You can list/search/read threads, optionally inspect them inside Voice, send messages to agent threads, start new threads, stop or archive threads, summarize diffs, and edit the user's prompt composer.
 
 Rules:
 - Be extremely succinct. One short sentence by default ("Done.", "Focused.", "Sent."). Never narrate what you're about to do, never enumerate options, never restate the user's request. Add detail only when asked.
@@ -1249,22 +1244,13 @@ export default async function plugin(bb: BbPluginApi) {
         if (behavior !== "reuse" && behavior !== "new") throw new Error("Invalid view behavior.");
         await writeConfig({ mobileViewBehavior: behavior });
         bb.realtime.publish("config-changed", {});
-        return "Saved the mobile drawer preference. Desktop navigation is unchanged.";
+        return "Saved the thread view preference for Voice on desktop and mobile.";
       }
       case "focus_threads":
       case "manage_views":
-        throw new Error("This tool requires an updated Voice Mode frontend on the calling device.");
-      case "focus_thread": {
-        const { delivered } = await bb.sdk.threads.open({ threadId: str("thread_id"), file: null });
-        if (delivered <= 0) throw new Error("No connected bb window received the action.");
-        return "Focused.";
-      }
-      case "set_pane": {
-        const action = str("action") as "spotlight" | "clear-spotlight" | "maximize" | "restore" | "toggle";
-        const { delivered } = await bb.sdk.threads.paneAction({ threadId: str("thread_id"), action });
-        if (delivered <= 0) throw new Error("No connected bb window received the action.");
-        return `Pane ${action} applied.`;
-      }
+      case "focus_thread":
+      case "set_pane":
+        throw new Error("Thread inspection is handled inside Voice on the calling device. Update the frontend; do not navigate to a work thread.");
       case "send_to_thread": {
         await bb.sdk.threads.send({
           threadId: str("thread_id"),
@@ -1296,13 +1282,8 @@ export default async function plugin(bb: BbPluginApi) {
           prompt,
           ...(typeof args.title === "string" && args.title ? { title: args.title } : {}),
         });
-        // `threads.open` navigates every connected window — which backgrounds a
-        // live mobile call (and yanks other windows). The client sets focus:false
-        // when it must not navigate; the thread still spawns and runs.
-        const shouldFocus = args.focus !== false;
-        if (shouldFocus) {
-          await bb.sdk.threads.open({ threadId: thread.id, file: null }).catch(() => undefined);
-        }
+        // Work starts without changing the user's Voice area or other windows.
+        const shouldFocus = false;
         const started = (await withMachines([describeThread(thread)]))[0];
         return JSON.stringify(
           shouldFocus
@@ -1383,13 +1364,6 @@ export default async function plugin(bb: BbPluginApi) {
             ? { environmentId, target: "all", mergeBaseBranch }
             : { environmentId, target: "uncommitted" },
         );
-        // Like start_thread, show_diff both computes something useful AND
-        // navigates (threads.open). Skip the navigation when the client asks
-        // (focus:false) so a live mobile call isn't backgrounded — the diff
-        // summary is still returned either way.
-        if (args.focus !== false) {
-          await bb.sdk.threads.open({ threadId, file: null }).catch(() => undefined);
-        }
         if (diff.outcome !== "available") return `Diff not available (${diff.outcome}).`;
         const files = diff.files.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions }));
         return JSON.stringify({ shortstat: diff.shortstat, files: files.slice(0, 50) });
@@ -1528,7 +1502,7 @@ export default async function plugin(bb: BbPluginApi) {
         type: "realtime",
         model,
         instructions: coordinatorConfig.enabled
-          ? `${COORDINATOR_VOICE_PROMPT}\n\n${mobile ? "Mobile: the app shows threads in a drawer beside the call; manage_views lists or closes them. Do not navigate away from the call." : "Desktop: the coordinator can ask the app to show a thread."}\n\n${contextLine}`
+          ? `${COORDINATOR_VOICE_PROMPT}\n\n${threadViewInstructions(mobile)}\n\n${contextLine}`
           : `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\n${contextLine}`,
         audio: {
           input: {
@@ -1849,9 +1823,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async applyPresentation({ nonce, threadId }) {
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
-      const { delivered } = await bb.sdk.threads.open({ threadId, file: null });
-      if (delivered <= 0) throw new Error("No connected bb window received the action.");
-      return { ok: true as const };
+      throw new Error("Thread inspection is handled inside Voice on the calling device. Update the frontend; the call is unchanged.");
     },
     async listCoordinatorProviders(input) {
       const hosts = await bb.sdk.hosts.list();

@@ -56,7 +56,9 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
   const calls: { method: string; args: Any }[] = [];
   const logs: { kind: string; payload: Any }[] = [];
   const agent = new VoiceAgent();
+  let voiceOpens = 0;
   agent.bind({
+    openVoice: () => { voiceOpens += 1; },
     rpc: { call: (async (method: string, args: Any) => {
       calls.push({ method, args });
       if (method === "logEvent") { logs.push({ kind: args.kind, payload: args.payload }); return { ok: true }; }
@@ -88,7 +90,7 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
     v: 1, replyId: "reply_1", conversationId: "conv_1", seq: 1, requestId: null, batchId: null, questionId: null, kind: "final", source: "tool",
     speech: "Done.", detail: null, threadIds: [], receipts: [], targetCallNonce: agent.getSessionId(), focusThreadId: null, createdAt: 0, ...overrides,
   });
-  return { agent, dc, calls, logs, submits, deliveries, reply, tick: (ms: number) => t.mock.timers.tick(ms) };
+  return { agent, dc, calls, logs, submits, deliveries, reply, voiceOpens, tick: (ms: number) => t.mock.timers.tick(ms) };
 }
 
 function speak(dc: { emit(type: string, extra?: Record<string, Any>): void }, itemId: string) {
@@ -292,4 +294,24 @@ test("the direct path stays unchanged when the server reports no conversation", 
   assert.equal(calls.some((call) => call.method === "submitRequest"), false);
   agent.ingestCoordinatorSignal("voice-reply", { v: 1 });
   assert.equal(dc.responses().filter((event) => event.response?.metadata?.bb_voice_source === "coordinator_reply").length, 0);
+});
+
+
+test("starting a call opens Voice once and ordinary replies need no work-thread view", async (t) => {
+  const { agent, dc, calls, reply, voiceOpens, tick } = await coordinatorFixture(t);
+  assert.equal(voiceOpens, 1);
+  agent.ingestCoordinatorSignal("voice-reply", reply({ requestId: "r_work", speech: "The review thread finished the requested changes.", threadIds: ["thr_work"] }));
+  tick(1);
+  assert.equal(dc.bridgeResponses().length, 1);
+  assert.equal(calls.some(call => call.method === "resolveThreadViews" || call.method === "applyPresentation"), false);
+  assert.equal(agent.getState(), "live");
+});
+
+test("a background digest cannot open a work-thread view even with a presentation field", async (t) => {
+  const { agent, dc, calls, reply, tick } = await coordinatorFixture(t);
+  agent.ingestCoordinatorSignal("voice-reply", reply({ kind: "update", batchId: "batch_test", speech: "The review finished.", focusThreadId: "thr_work" }));
+  tick(3000);
+  assert.equal(dc.bridgeResponses().length, 1);
+  assert.equal(calls.some(call => call.method === "resolveThreadViews" || call.method === "applyPresentation"), false);
+  assert.equal(agent.getState(), "live");
 });

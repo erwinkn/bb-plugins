@@ -165,28 +165,22 @@ Status: recorded here; no upstream issue filed.
 Suggested issue title: `Add Stop and send to voice dictation`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
-### Plugin interactions: return the row id and accept a plugin-side answer
+### Plugin interactions: expose the pending row id
 
-Voice Mode's coordinator asks the user questions through `bb.ui.requestInput`
-so that a real pending interaction keeps the question alive in the app. Two
-gaps in the 0.4.47 Plugin SDK make the spoken-answer path indirect:
+Voice Mode asks questions through `bb.ui.requestInput`. In SDK 0.4.47 this
+returns the answer promise but does not expose the pending interaction id.
+The plugin currently looks up its own payload with `threads.interactions.list`.
+An API that exposes the id before the answer arrives would remove that lookup.
 
-- `bb.ui.requestInput` does not return the pending interaction's id. The
-  plugin has to look it up with `threads.interactions.list` and match its own
-  payload, and cancels the native row through `threads.interactions.cancel`
-  once the user answered by voice.
-- There is no SDK call that submits a value to the plugin's own pending
-  interaction. A spoken answer therefore resolves the tool call in memory and
-  cancels the native row, instead of resolving the row itself. The row's
-  recorded resolution is then "cancelled", not "submitted".
-
-Both belong in the plugin API: `requestInput` should return `{ id, result }`
-(or expose the id before the promise settles), and
-`threads.interactions.respond` should accept a value for a plugin-owned
-interaction so a plugin can answer on the user's behalf from another channel.
+Correction to the earlier note: the SDK does expose `threads.interactions.respond`
+and `threads.interactions.resolve`. We have not established which plugin-owned
+and native interaction kinds accept these calls in the live runtime. The current
+spoken-answer path resolves the plugin waiter and cancels the native row; that
+workaround is an implementation choice, not proof that BB has no response API.
+Validate those existing methods before requesting an additional answer API.
 
 Status: recorded here; no upstream issue filed.
-Suggested issue title: `Plugin interactions: expose the pending row id and allow a plugin-side answer`.
+Suggested issue title: `Plugin interactions: expose the pending requestInput row id`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 ## Upstream issues

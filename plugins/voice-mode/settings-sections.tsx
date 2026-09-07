@@ -328,7 +328,7 @@ export function BehaviorSettings() {
     <div className="space-y-5">
       <PromptEditor />
 
-      <Group label="Mobile thread drawer" hint="On mobile, show threads without leaving the call. Desktop still navigates directly to threads.">
+      <Group label="Thread views in Voice" hint="Optional thread inspection stays inside Voice on desktop and mobile. The call continues.">
         <label htmlFor="voice-mode-view-behavior" className="mb-2 block text-sm">When showing a thread on mobile</label>
         <select id="voice-mode-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
           onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>

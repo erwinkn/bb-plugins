@@ -303,9 +303,10 @@ test("only watched threads feed the inbox, batches wait for the opening answer, 
   assert.doesNotMatch(digest.text, /Built/, "third thread waits for the next batch");
   const again = await rpc("reserveUpdateBatch", { conversationId, nonce: "call-1", msSinceCallLive: 1000 });
   assert.equal(again.reason, "batch-in-flight");
-  await harness.behavior.callAgentTool("voice_reply", { batch_id: reserved.batch.id, kind: "progress", speech: "Docs failed on the build script; CI finished its second pass." }, { threadId: coordinatorId() });
+  await harness.behavior.callAgentTool("voice_reply", { batch_id: reserved.batch.id, kind: "progress", speech: "Docs failed on the build script; CI finished its second pass.", present: { focus_thread_id: "thr_docs" } }, { threadId: coordinatorId() });
   const update = harness.inspection.realtimeSignals.filter((signal) => signal.channel === "voice-reply").map((signal) => signal.payload as Any).find((reply) => reply.kind === "update");
   assert.equal(update.batchId, reserved.batch.id);
+  assert.equal(update.focusThreadId, null, "a background digest cannot request visual inspection");
   await rpc("reportReplyDelivery", { replyId: update.replyId, nonce: "call-1", state: "delivered" });
   status = await rpc("getCoordinatorStatus", null);
   assert.equal(status.queuedUpdates, 1);

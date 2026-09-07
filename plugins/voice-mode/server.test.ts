@@ -77,23 +77,18 @@ test("server tool failures carry explicit status and do not create a separate se
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("desktop calls retain the original focus tool and exclude mobile-only controls", () => {
-  const desktop = toolSchemas([], false);
-  const mobile = toolSchemas([], true);
-  for (const name of ["focus_threads", "manage_views", "set_view_behavior"]) {
-    assert.equal(desktop.some(tool => tool.name === name), false);
-    assert.equal(mobile.some(tool => tool.name === name), true);
+test("both clients offer optional inspection inside Voice without native pane tools", () => {
+  for (const mobile of [false, true]) {
+    const tools = toolSchemas([], mobile);
+    for (const name of ["focus_thread", "focus_threads", "manage_views", "set_view_behavior"]) assert.ok(tools.some(tool => tool.name === name));
+    assert.equal(tools.some(tool => tool.name === "set_pane"), false);
+    assert.match(threadViewInstructions(mobile), /listening without looking/);
+    assert.match(threadViewInstructions(mobile), /do not navigate away/);
   }
-  const focusDesktop = desktop.find(tool => tool.name === "focus_thread") as any;
-  const focusMobile = mobile.find(tool => tool.name === "focus_thread") as any;
-  assert.equal("disposition" in focusDesktop.parameters.properties, false);
-  assert.equal("disposition" in focusMobile.parameters.properties, true);
-  assert.match(threadViewInstructions(false), /navigates to the requested thread/);
-  assert.match(threadViewInstructions(true), /do not navigate away/);
-  assert.deepEqual(toolSchemas(), desktop);
+  assert.deepEqual(toolSchemas([], false), toolSchemas([], true));
 });
 
-test("mobile settings never replace desktop navigation and migrate the prototype preference", async () => {
+test("shared Voice inspection preserves and migrates the existing view preference", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
   try {
     await bb.storage.kv.set("config", { viewBehavior: "new" });
@@ -107,7 +102,7 @@ test("mobile settings never replace desktop navigation and migrate the prototype
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("desktop focus still opens the real bb thread through the original SDK operation", async () => {
+test("stale server focus requests cannot navigate a work thread", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode", sdk: {
     threads: { open: async () => ({ delivered: 1 }) },
   } });
@@ -116,8 +111,9 @@ test("desktop focus still opens the real bb thread through the original SDK oper
     const result = await harness.behavior.callRpc("runTool", {
       name: "focus_thread", args: { thread_id: "target" }, threadId: "source", projectId: "project",
     }) as any;
-    assert.deepEqual(result, { output: "Focused.", status: "success" });
-    assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 1);
+    assert.equal(result.status, "error");
+    assert.match(result.output, /inside Voice/);
+    assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 0);
   } finally { await harness.lifecycle.dispose(); }
 });
 

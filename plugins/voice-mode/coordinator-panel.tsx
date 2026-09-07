@@ -3,10 +3,11 @@
 // native pending-question form, and the settings section for the dedicated
 // coordinator provider/model.
 import React, { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { useBbNavigate, useRealtime, useRpc, type PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
+import { useRealtime, useRpc, type PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { Button } from "./components/ui/button";
+import { viewWorkspace } from "./view-workspace";
 import { voiceAgent } from "./voice-agent";
 import { cn } from "@/lib/utils";
 
@@ -119,7 +120,6 @@ export function VoiceQuestionInteraction({ interaction, submit, cancel }: Plugin
 /** The Voice page card: inspection and recovery for the hidden coordinator. */
 export function CoordinatorCard() {
   const { status, error, refetch, rpc } = useCoordinatorStatus();
-  const navigate = useBbNavigate();
   const callState = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const bridge = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getBridgeSnapshot);
   const [busy, setBusy] = useState(false);
@@ -138,6 +138,10 @@ export function CoordinatorCard() {
       setBusy(false);
     }
   };
+  const inspect = (threadId: string) => void run(async () => {
+    const { views, preference } = await rpc.call("resolveThreadViews", { threadIds: [threadId] });
+    viewWorkspace.open(views, "auto", preference);
+  });
   const openQuestion = status.questions.find((question) => question.status === "pending" || question.status === "unresolved");
   const activeRequests = status.requests.filter((request) => request.status !== "settled").slice(0, 6);
   return (
@@ -154,7 +158,7 @@ export function CoordinatorCard() {
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
           {conversation?.coordinatorThreadId ? (
-            <Button type="button" variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => navigate.toThread(conversation.coordinatorThreadId!)}>
+            <Button type="button" variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => inspect(conversation.coordinatorThreadId!)}>
               Open coordinator
             </Button>
           ) : null}
@@ -193,11 +197,11 @@ export function CoordinatorCard() {
       ) : null}
       {status.pendingInteractions.length > 0 ? (
         <div className="rounded-md border border-destructive/30 p-3 text-sm">
-          <div className="mb-1 text-xs font-medium text-muted-foreground">Needs your decision in the coordinator thread</div>
+          <div className="mb-1 text-xs font-medium text-muted-foreground">Needs your decision. Open here to answer.</div>
           {status.pendingInteractions.map((interaction) => (
             <div key={interaction.id} className="flex flex-wrap items-center justify-between gap-2">
               <span className="min-w-0 break-words">{interaction.title} <span className="text-xs text-muted-foreground">({interaction.kind})</span></span>
-              <Button type="button" variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => navigate.toThread(interaction.threadId)}>Open</Button>
+              <Button type="button" variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => inspect(interaction.threadId)}>Open</Button>
             </div>
           ))}
         </div>
@@ -233,7 +237,7 @@ export function CoordinatorCard() {
           {status.conversations.map((row) => (
             <li key={row.id} className="flex items-center justify-between gap-2">
               <span className="truncate">{row.current ? "Current · " : ""}{new Date(row.updatedAt).toLocaleString()} · {row.status}</span>
-              {row.coordinatorThreadId ? <button type="button" className="shrink-0 underline-offset-2 hover:underline" onClick={() => navigate.toThread(row.coordinatorThreadId!)}>Open</button> : null}
+              {row.coordinatorThreadId ? <button type="button" className="shrink-0 underline-offset-2 hover:underline" onClick={() => inspect(row.coordinatorThreadId!)}>Open</button> : null}
             </li>
           ))}
         </ul>
@@ -244,7 +248,7 @@ export function CoordinatorCard() {
           <ul className="flex flex-wrap gap-1.5">
             {status.watch.map((row) => (
               <li key={row.threadId} className="flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs">
-                <button type="button" className="underline-offset-2 hover:underline" onClick={() => navigate.toThread(row.threadId)} title={`Watched because: ${row.reason}`}>{row.threadId}</button>
+                <button type="button" className="underline-offset-2 hover:underline" onClick={() => inspect(row.threadId)} title={`Watched because: ${row.reason}`}>{row.threadId}</button>
                 <button
                   type="button"
                   aria-label={`Stop watching ${row.threadId}`}

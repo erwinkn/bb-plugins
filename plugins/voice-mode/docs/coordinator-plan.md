@@ -5,6 +5,24 @@ Status: implemented as an opt-in setting (Settings → Coordinator) on
 "Coordinator mode" section records what is verified and what still needs a
 physical call. This document remains the design reference.
 
+
+## Dedicated Voice area revision
+
+The 7 September follow-up replaces the earlier desktop navigation and mobile
+side-panel assumptions. Voice is one dedicated conversation on both clients.
+Instructions, progress, and results work through audio without opening work
+threads. New calls open Voice. Optional inspection uses its in-page Threads
+view only when requested; returning to Conversation or closing a view keeps the
+call and session history. No extra thread-panel action or fixed Views tab is
+registered. Native navigation RPCs reject stale callers rather than navigating.
+Background digests cannot carry a presentation request. Coordinator inspection
+and approval links also use the in-page view.
+
+The current plugin routes native permission decisions to the host UI. The
+embedded ThreadChat makes it available inside Voice. The SDK has response
+methods; their live interaction-kind support needs verification before adding
+spoken answers for native approvals. This is not an automatic approval path.
+
 ## Intended behavior
 
 Keep the current fast voice connection. Use a real, hidden BB thread to interpret

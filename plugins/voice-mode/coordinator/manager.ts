@@ -554,7 +554,7 @@ export class CoordinatorManager {
       detail: params.detail ?? null,
       threadIds,
       receipts: params.receipts ?? [],
-      focusThreadId: params.present?.focus_thread_id ?? null,
+      focusThreadId: requestId && !batchId ? params.present?.focus_thread_id ?? null : null,
     };
     if (bootstrap || params.kind === "silent") {
       const silent = this.store.recordReply({ conversationId: conversation.id, requestId, batchId, questionId: null, kind: "silent", source: "tool", body, ready: true, delivery: "silent", targetCallNonce: conversation.currentCallNonce });
