@@ -132,6 +132,15 @@ export interface QuoteContext {
 
 export const CONTEXT_LENGTH = 48;
 
+/** Context with only its defined fields, for RPC inputs that reject `undefined`. */
+export function definedContext(context: QuoteContext): QuoteContext {
+  return {
+    ...(context.prefix !== undefined ? { prefix: context.prefix } : {}),
+    ...(context.suffix !== undefined ? { suffix: context.suffix } : {}),
+    ...(context.position !== undefined ? { position: context.position } : {}),
+  };
+}
+
 function occurrences(haystack: string, needle: string): number[] {
   const found: number[] = [];
   let from = 0;

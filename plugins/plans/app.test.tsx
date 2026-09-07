@@ -137,6 +137,10 @@ beforeEach(() => {
   window.localStorage.clear();
   Element.prototype.scrollTo ??= () => {};
   Element.prototype.scrollIntoView ??= () => {};
+  if (typeof Range.prototype.getBoundingClientRect !== "function") {
+    Range.prototype.getBoundingClientRect = () =>
+      ({ top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0, x: 0, y: 0, toJSON() {} }) as DOMRect;
+  }
 });
 afterEach(() => {
   slot?.lifecycle.unmount();
@@ -231,6 +235,21 @@ describe("comments", () => {
     expect(slot.getByRole("combobox", { name: "Plan view: Comments" })).toBeTruthy();
     expect(slot.getByRole("button", { name: "Show this passage in the plan" })).toBeTruthy();
   }, 15000);
+
+  it("saves a pending comment that predates selection context without sending undefined fields", async () => {
+    const backend = fakeBackend([makePlan()]);
+    window.localStorage.setItem(
+      "bb-plugin-erwin-plans:draft:plan-1:v1",
+      JSON.stringify({ note: "", pendingComment: { quote: "Step 1.", body: "Older draft" } }),
+    );
+    slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
+    fireEvent.click(await slot.findByRole("button", { name: "Add comment" }));
+    await waitFor(() => expect(backend.plans.get("plan-1")?.comments).toHaveLength(1));
+    const input = slot.inspection.rpcCalls.find((call) => call.method === "addComment")?.input as Record<string, unknown>;
+    expect(input).toMatchObject({ quote: "Step 1.", body: "Older draft" });
+    expect(Object.keys(input)).not.toContain("prefix");
+    expect(Object.values(input)).not.toContain(undefined);
+  });
 
   it("lets a draft comment be edited and deleted, but not a sent one", async () => {
     const backend = fakeBackend([

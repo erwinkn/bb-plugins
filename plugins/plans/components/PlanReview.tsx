@@ -35,7 +35,7 @@ import {
   sortedVersions,
   unresolvedComments,
 } from "../lib/plan-model";
-import type { QuoteMatch } from "../lib/quote-anchor";
+import { definedContext, type QuoteMatch } from "../lib/quote-anchor";
 import { CommentComposer, CommentRail, type CommentActions, type PendingComment } from "./CommentRail";
 import { PlanChanges } from "./PlanChanges";
 import { PlanDocument, type AnchorMap } from "./PlanDocument";
@@ -170,9 +170,7 @@ export function PlanReview({
           versionId: version.id,
           quote: pending.quote,
           body: pending.body,
-          prefix: pending.prefix,
-          suffix: pending.suffix,
-          position: pending.position,
+          ...definedContext(pending),
         }),
       );
       updateDraft({ pendingComment: null });

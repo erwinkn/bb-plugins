@@ -24,6 +24,7 @@ import {
   supportsHighlights,
 } from "../lib/highlight-registry";
 import {
+  definedContext,
   indexTextNodes,
   MAX_QUOTE_LENGTH,
   matchQuote,
@@ -224,7 +225,7 @@ export function PlanDocument({
   const commitQuote = (kind?: "redline" | "looksGood") => {
     const recent = takeRecent();
     if (recent === null) return;
-    const context = { prefix: recent.prefix, suffix: recent.suffix, position: recent.position };
+    const context = definedContext(recent);
     if (kind && onAnnotate) void onAnnotate(recent.quote, kind, context);
     else onQuote(recent.quote, context);
     clearDocumentSelection(contentRef.current);
