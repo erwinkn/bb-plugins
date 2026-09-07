@@ -268,7 +268,7 @@ export function ThreadRow({
                   <span
                     className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
                   >
-                    {parent && !nested ? "↳ " : ""}
+                    {thread.parentThreadId && !nested ? "↳ " : ""}
                     {pullRequest && (
                       <span
                         data-thread-pull-request=""

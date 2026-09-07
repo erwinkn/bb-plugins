@@ -6,6 +6,22 @@ import {
 import plugin from "../server";
 
 describe("archive API", () => {
+  it.each([
+    { title: " Archived parent ", titleFallback: "Fallback", expected: "Archived parent" },
+    { title: null, titleFallback: " Fallback ", expected: "Fallback" },
+  ])("fetches only the requested parent title: $expected", async ({ title, titleFallback, expected }) => {
+    const host = createFakePluginHost({ sdk: { threads: {
+      get: async () => makeThreadResponse({ id: "parent", title, titleFallback, archivedAt: 123 }),
+    } } });
+    plugin(host.bb);
+    try {
+      await expect(host.harness.behavior.callRpc("parentTitle", { threadId: "parent" })).resolves.toBe(expected);
+      expect(host.harness.inspection.sdk.callsTo("threads.get")).toEqual([[{ threadId: "parent" }]]);
+      expect(host.harness.inspection.sdk.callsTo("threads.list")).toEqual([]);
+      await expect(host.harness.behavior.callRpc("parentTitle", { threadId: "" })).rejects.toThrow();
+    } finally { await host.harness.lifecycle.dispose(); }
+  });
+
   const child = (id: string) => ({
     ...makeThreadResponse({ id }),
     environmentName: null,

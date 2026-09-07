@@ -56,7 +56,7 @@ export function statusOf(
   return "done";
 }
 
-export function threadTitle(thread: PluginSidebarThread): string {
+export function threadTitle(thread: Pick<PluginSidebarThread, "title" | "titleFallback">): string {
   return (
     thread.title?.trim() || thread.titleFallback?.trim() || "Untitled thread"
   );

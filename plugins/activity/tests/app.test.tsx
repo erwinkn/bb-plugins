@@ -1842,6 +1842,37 @@ describe("activity sidebar", () => {
     expect(meta("pinned").textContent).toBe("One");
     expect(slot.getByRole("region", { name: "One" })).toBeTruthy();
   });
+  it.each([false, true])("fetches a missing parent title on focus with compact=%s, without loading archives", async (isCompactViewport) => {
+    const parentTitle = vi.fn(async () => "Archived parent name");
+    const listArchived = vi.fn(async () => []);
+    const slot = renderSlot(app.threadLists[0], { ...props, isCompactViewport }, {
+      sidebarThreads: { projects, threads: [thread({ id: "restored", parentThreadId: "missing-parent" })] },
+      rpc: { parentTitle, listArchived },
+    });
+    expect(parentTitle).not.toHaveBeenCalled();
+    const row = slot.container.querySelector('[data-sidebar-thread-id="restored"]')!;
+    fireEvent.focus(row);
+    await waitFor(() => expect(slot.getByRole("tooltip").textContent).toContain("Child of Archived parent name"));
+    expect(parentTitle).toHaveBeenCalledWith({ threadId: "missing-parent" });
+    expect(slot.getByRole("tooltip").textContent).not.toContain("missing-parent");
+    expect(listArchived).not.toHaveBeenCalled();
+    expect(slot.queryByRole("button", { name: "Archived" })).toBeNull();
+  });
+  it("shows an unavailable parent and retries on reopening the card", async () => {
+    const parentTitle = vi.fn().mockRejectedValueOnce(new Error("Offline")).mockResolvedValue("Recovered parent");
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { projects, threads: [thread({ id: "restored", parentThreadId: "missing-parent" })] },
+      rpc: { parentTitle },
+    });
+    const row = slot.container.querySelector('[data-sidebar-thread-id="restored"]')!;
+    fireEvent.focus(row);
+    await waitFor(() => expect(slot.getByRole("tooltip").textContent).toContain("Unavailable"));
+    fireEvent.keyDown(row, { key: "Escape" });
+    fireEvent.blur(row);
+    fireEvent.focus(row);
+    await waitFor(() => expect(slot.getByRole("tooltip").textContent).toContain("Recovered parent"));
+    expect(parentTitle).toHaveBeenCalledTimes(2);
+  });
   it("shows child details on keyboard focus and closes them with Escape", () => {
     const slot = mount();
     const row = slot.container.querySelector(
@@ -1851,6 +1882,7 @@ describe("activity sidebar", () => {
     expect(slot.getByRole("tooltip").textContent).toContain(
       "Child of Running parent",
     );
+    expect(slot.inspection.rpcCalls.some(call => call.method === "parentTitle")).toBe(false);
     const card = document.querySelector('[data-thread-info="child"]')!;
     expect(
       Array.from(card.querySelectorAll("dt")).map((e) => e.textContent),

@@ -183,7 +183,7 @@ function ThreadsList(props: PluginThreadListProps) {
         provider={providerNames.get(thread.providerId) ?? thread.providerId}
         parent={
           thread.parentThreadId
-            ? (titles.get(thread.parentThreadId) ?? thread.parentThreadId)
+            ? titles.get(thread.parentThreadId)
             : undefined
         }
         active={props.activeThreadId === thread.id}

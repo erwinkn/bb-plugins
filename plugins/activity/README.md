@@ -64,6 +64,9 @@ Project view nests children within the same project.
 If a parent is missing, archived, or hidden by a status filter, its visible
 children appear as separate roots. Cross-project children appear under their
 own project in Project view. Parent names appear in the hover info card.
+If a parent's title is absent from the sidebar data, opening the info card
+fetches only that thread's title, without loading the archive list. A failed
+lookup shows Unavailable and retries when the card is reopened.
 If project details are missing, its threads remain in a No project group.
 Each missing project keeps its own group until BB supplies its name.
 
