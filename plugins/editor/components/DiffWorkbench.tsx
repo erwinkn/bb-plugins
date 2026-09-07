@@ -180,15 +180,11 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
 
   const chooseTarget = useCallback(
     (next: DiffTarget) => {
-      setTarget((current) => {
-        if (sameTarget(current, next)) return current;
-        // Each comparison remembers its own file; unsaved work is kept by
-        // the session behind the file, not by this pane.
-        setSelected(readLastPath(threadId, next));
-        return next;
-      });
+      if (sameTarget(target, next)) return;
+      setTarget(next);
+      setSelected(readLastPath(threadId, next));
     },
-    [threadId],
+    [target, threadId],
   );
 
   const refresh = useCallback(() => {
@@ -313,6 +309,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
   return (
     <div ref={rootRef} className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background text-foreground">
       <ScopeBar
+        threadId={threadId}
         target={target}
         baseBranch={list.baseBranch}
         summary={summary}

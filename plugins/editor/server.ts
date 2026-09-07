@@ -41,6 +41,13 @@ export type FileSource = z.infer<typeof sourceSchema>;
 const fileSchema = z.object({ path: z.string().min(1), source: sourceSchema }).strict();
 
 export const rpcContract = defineRpcContract({
+  diffCommits: {
+    input: z.object({ threadId: z.string().regex(BB_ID), target: diffTargetSchema }).strict(),
+    output: z.object({
+      commits: z.array(z.object({ sha: z.string(), subject: z.string() })),
+      baseBranch: z.string().nullable(), message: z.string().nullable(),
+    }),
+  },
   diffList: {
     input: z.object({ threadId: z.string().regex(BB_ID), target: diffTargetSchema }).strict(),
     output: z.object({
@@ -433,6 +440,26 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(rpcContract, {
+    async diffCommits({ threadId, target }) {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (thread.environmentId === null) throw new Error("This thread has no workspace");
+      const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
+      const baseBranch = ((target.type === "all" || target.type === "branch_committed") ? target.mergeBaseBranch : undefined)
+        ?? environment.mergeBaseBranch ?? environment.baseBranch ?? environment.defaultBranch ?? null;
+      const status = await bb.sdk.environments.status({ environmentId: environment.id, ...(baseBranch ? { mergeBaseBranch: baseBranch } : {}) });
+      if (status.outcome !== "available") {
+        return { commits: [], baseBranch, message: status.outcome === "not_applicable" ? status.message : status.failure.message };
+      }
+      const base = status.workspace.mergeBase;
+      if (!base?.baseRef) return { commits: [], baseBranch, message: "No base comparison available" };
+      // The SDK returns Git traversal order, oldest first. Preserve that order
+      // in reverse, rather than sorting by author dates that can be misleading.
+      return {
+        commits: base.commits.slice(-MAX_TREE_ENTRIES).reverse().map(({ sha, subject }) => ({ sha, subject: subject.slice(0, 500) })),
+        baseBranch: base.mergeBaseBranch,
+        message: base.commits.length > MAX_TREE_ENTRIES ? `Showing the latest ${MAX_TREE_ENTRIES} commits` : null,
+      };
+    },
     async diffList({ threadId, target }) {
       const data = await listDiff(threadId, target);
       const { result, environment } = data;

@@ -9,7 +9,7 @@ PR #16 stays in draft until the user permits review readiness.
 ## Automated checks
 
 `npm run typecheck`, `npm test`, `npm run build:pierre`, `bb plugin build`,
-and `git diff --check` pass. The current suite has 110 passing tests.
+and `git diff --check` pass. The current suite has 112 passing tests.
 The asset build produces 11.5 MB and 398 lazy chunks. Its dependency check
 rejects React, React DOM, and Scheduler in the lazy runtime.
 
@@ -177,3 +177,35 @@ external update. No unhandled browser errors were reported.
 
 All 110 tests, typecheck, the BB build, and whitespace checks pass. Physical
 mobile keyboards and IME remain outside these browser checks.
+
+## Scope menu follow-up
+
+The menu uses the BB 0.42.1 dropdown source already vendored by the
+provider-usage plugin, with its responsive drawer, overlay scope, and icon
+support. It lists Uncommitted, All changes, All commits, and individual branch
+commits. Subjects truncate while hashes and selection marks remain visible.
+Ten commits are shown first; Show more and Show less keep the menu open.
+
+The acceptance workspace has fourteen branch commits for this check, including
+Unicode and duplicate subjects. Existing uncommitted file fixtures remain intact.
+Backend tests cover more than ten commits, Git traversal order rather than
+incorrect author-date sorting, explicit base branches, unavailable status, and
+an empty comparison. The complete suite now has 112 passing tests.
+
+Installed desktop checks passed for the collapsed and expanded lists,
+Home/End/Escape, the selected commit mark, rendering an actual read-only commit
+comparison, and returning to Uncommitted. At 390 × 844, the BB drawer remained
+open during expansion and collapse; changing scope kept the Changes panel open.
+No browser errors were reported. The browser tab must be active for Pierre's
+animation-frame rendering; a hidden test tab initially caused false failures.
+
+### Decision audit
+
+| Choice | Alternative | Confidence | Limit |
+| --- | --- | --- | --- |
+| Use BB workspace commits against the selected base | Query GitHub PR commits separately | High | BB omits commits whose patches are already in the base; this follows All commits, not the full GitHub event history. |
+| Use the shared BB dropdown and mobile drawer | Extend the old custom context menu | High | Adds vendored UI support files; these need to follow future BB component updates. |
+| Show ten commits, then expand in place | A submenu or a separate commit browser | High | Very long histories require scrolling. The response is bounded to 10,000 commits and 500 characters per subject. |
+
+These choices are suitable for this change. Physical phone and IME checks remain
+for the user; viewport tests do not replace them.

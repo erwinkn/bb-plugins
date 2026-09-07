@@ -41,9 +41,18 @@ Choose a file in the change list and select a comparison:
 
 - **Uncommitted:** the working tree against HEAD, including staged and
   unstaged changes and untracked files.
-- **All on branch:** the working tree against the merge base with a branch.
-- **Committed:** HEAD against that merge base; read-only.
+- **All changes:** the working tree against the merge base with a branch.
+- **All commits:** HEAD against that merge base; read-only.
 - **A commit:** that commit against its parent; read-only.
+
+The scope menu lists branch commits, newest first, with subjects and short
+hashes. It shows ten first; **Show more** and **Show less** expand and collapse
+the list without closing the menu. **Find commit…** accepts a hash directly.
+The list comes from BB's workspace status relative to the comparison base, so
+it also works without a published PR. As in BB's own status, commits already
+represented in the base branch are omitted. Loading failures offer Retry.
+Arrow keys, Home, End, and Escape work in the menu. Long subjects truncate,
+with the full returned subject and hash available in the tooltip.
 
 The tab offers side-by-side and unified layouts, word wrap, unchanged lines,
 file navigation, refresh, and opening the working file in Files. A comparison
@@ -132,6 +141,8 @@ plugin directory and resolve the reported installation error.
 - `components/PierreSurface.tsx` adapts the lazy vanilla Pierre runtime to BB's
   React UI. `pierre-bundle/` and `scripts/stage-assets.mjs` build its ESM assets
   and syntax worker. The lazy bundle does not include a second React runtime.
+- `components/ui/` and `lib/portal-scope.ts` contain the BB 0.42.1 dropdown
+  and responsive overlay source, shared with this repository's provider-usage plugin.
 - `components/Workbench.tsx` and `EditorPane.tsx` provide the Files UI.
   `DiffWorkbench.tsx` and `EditableDiffPane.tsx` provide Changes.
 - `lib/file-session.ts` holds buffers, file hashes, save queues, draft storage,

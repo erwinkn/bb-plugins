@@ -109,9 +109,9 @@ export function describeTarget(target: DiffTarget, baseBranch: string | null): T
     case "uncommitted":
       return { label: "Uncommitted", detail: "Everything you changed since the last commit" };
     case "all":
-      return { label: "All on branch", detail: `Commits and uncommitted changes, compared with ${against}` };
+      return { label: "All changes", detail: `Commits and uncommitted changes, compared with ${against}` };
     case "branch_committed":
-      return { label: "Committed", detail: `Only the commits on this branch, compared with ${against}` };
+      return { label: "All commits", detail: `Only the commits on this branch, compared with ${against}` };
     case "commit":
       return { label: shortSha(target.sha), detail: `The one commit ${shortSha(target.sha)}` };
   }

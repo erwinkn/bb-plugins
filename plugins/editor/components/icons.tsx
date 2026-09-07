@@ -8,6 +8,9 @@ import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
   BracesIcon,
+  GitBranchIcon,
+  GitCommitIcon,
+  GitCompareIcon,
   Cancel01Icon,
   ComputerTerminal01Icon,
   File01Icon,
@@ -38,6 +41,10 @@ function make(icon: IconSvgElement) {
     return <HugeiconsIcon icon={icon} strokeWidth={1.5} className={cn("size-3.5 shrink-0", className)} aria-hidden />;
   };
 }
+
+export const BranchGlyph = make(GitBranchIcon);
+export const CommitGlyph = make(GitCommitIcon);
+export const CompareGlyph = make(GitCompareIcon);
 
 export const ArrowLeftIcon = make(ArrowLeft01Icon);
 export const ArrowRightIcon = make(ArrowRight01Icon);

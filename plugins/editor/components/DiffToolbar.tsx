@@ -5,6 +5,8 @@
  * tab without looking different.
  */
 import { useEffect, useRef, useState } from "react";
+import { useRpc } from "@get-bb/plugin-sdk/app";
+import type { rpcContract } from "../server";
 import { cn } from "@/lib/utils";
 import type { DiffEntry, DiffTarget } from "@/lib/diff-contract";
 import {
@@ -21,9 +23,14 @@ import {
 } from "@/lib/diff-view-state";
 import type { EditorPrefs } from "@/lib/editor-options";
 import { ContextMenu, menuAt, type MenuItem, type MenuState } from "./ContextMenu";
+import { DiffScopeMenu, type ScopeMenuItem } from "./DiffScopeMenu";
 import type { SetPref } from "./EditorPane";
 import { ToolbarButton } from "./Toolbar";
 import {
+  BranchGlyph,
+  CommitGlyph,
+  CompareGlyph,
+  FileAddGlyph,
   ArrowLeftIcon,
   ArrowRightIcon,
   ChevronIcon,
@@ -39,6 +46,7 @@ import {
 const ROW_CLASS = "flex h-9 shrink-0 items-center gap-0.5 border-b border-border/60 bg-background pr-1.5 pl-1";
 
 export interface ScopeBarProps {
+  threadId: string;
   target: DiffTarget;
   baseBranch: string | null;
   summary: ChangeSummary | null;
@@ -67,6 +75,7 @@ export interface ScopePrompt {
 const SCOPE_ORDER: readonly Exclude<DiffScope, "commit">[] = ["uncommitted", "all", "branch_committed"];
 
 export function ScopeBar({
+  threadId,
   target,
   baseBranch,
   summary,
@@ -82,7 +91,39 @@ export function ScopeBar({
   onPrompt,
 }: ScopeBarProps) {
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [scopeOpen, setScopeOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [commits, setCommits] = useState<{ sha: string; subject: string }[]>([]);
+  const [commitStatus, setCommitStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [commitMessage, setCommitMessage] = useState<string | null>(null);
+  const rpc = useRpc<typeof rpcContract>();
+  const request = useRef(0);
+  const commitBase = comparisonBranch(target, baseBranch) ?? baseBranch;
+  useEffect(() => {
+    request.current += 1;
+    setCommits([]);
+    setExpanded(false);
+    setScopeOpen(false);
+    return () => { request.current += 1; };
+  }, [threadId, commitBase]);
+  const loadCommits = () => {
+    const generation = ++request.current;
+    setCommitStatus("loading");
+    setCommitMessage(null);
+    void rpc.call("diffCommits", { threadId, target }).then((result) => {
+      if (generation !== request.current) return;
+      setCommits(result.commits);
+      setCommitMessage(result.message);
+      setCommitStatus("ready");
+    }).catch((error: unknown) => {
+      if (generation !== request.current) return;
+      setCommitStatus("error");
+      setCommitMessage(error instanceof Error ? error.message : "Could not load commits");
+    });
+  };
   const wording = describeTarget(target, baseBranch);
+  const activeCommit = target.type === "commit" ? commits.find((commit) => commit.sha.startsWith(target.sha)) : null;
+  const scopeIcon = (scope: DiffScope) => scope === "uncommitted" ? <FileAddGlyph /> : scope === "all" ? <CompareGlyph /> : <CommitGlyph />;
 
   const chooseScope = (scope: DiffScope) => {
     if (scope === "commit") {
@@ -93,34 +134,44 @@ export function ScopeBar({
       onChooseTarget({ type: "uncommitted" });
       return;
     }
-    if (baseBranch === null) {
+    if (commitBase === null) {
       onPrompt({ kind: "branch", scope });
       return;
     }
-    onChooseTarget({ type: scope });
+    onChooseTarget({ type: scope, mergeBaseBranch: commitBase });
   };
 
-  const scopeItems: MenuItem[] = [
-    ...SCOPE_ORDER.map((scope): MenuItem => {
-      const wordingFor = describeTarget(scope === "uncommitted" ? { type: "uncommitted" } : { type: scope }, baseBranch);
+  const scopeItems: ScopeMenuItem[] = [
+    ...SCOPE_ORDER.map((scope): ScopeMenuItem => {
+      const wordingFor = describeTarget({ type: scope }, commitBase);
       return {
-        type: "toggle",
-        label: wordingFor.detail,
-        checked: target.type === scope,
-        onToggle: () => {
-          setMenu(null);
-          chooseScope(scope);
-        },
+        type: "radio", label: wordingFor.label, title: wordingFor.detail,
+        icon: scopeIcon(scope), checked: target.type === scope,
+        onToggle: () => chooseScope(scope),
       };
     }),
     { type: "separator" },
-    {
-      label: target.type === "commit" ? `Another commit… (now ${shortSha(target.sha)})` : "One commit…",
-      onSelect: () => {
-        setMenu(null);
-        chooseScope("commit");
-      },
-    },
+    { type: "label", label: commitBase ? `Commits · compared with ${commitBase}` : "Commits" },
+    ...(commitStatus === "loading" ? [{ label: "Loading commits…", disabled: true, onSelect: () => {} } satisfies ScopeMenuItem]
+      : commitStatus === "error" ? [{ label: "Retry loading commits", title: commitMessage ?? undefined, onSelect: loadCommits, keepOpen: true } satisfies ScopeMenuItem]
+      : [
+        ...commits.slice(0, expanded ? undefined : 10).map((commit): ScopeMenuItem => ({
+          type: "radio", id: commit.sha, icon: <CommitGlyph />,
+          label: commit.subject || "Untitled commit", shortcut: shortSha(commit.sha),
+          title: `${commit.subject}\n${commit.sha}`,
+          checked: target.type === "commit" && commit.sha.startsWith(target.sha),
+          onToggle: () => onChooseTarget({ type: "commit", sha: commit.sha }),
+        })),
+        ...(commits.length === 0 ? [{ type: "label", label: commitMessage ?? "No commits on this branch" } satisfies ScopeMenuItem] : []),
+        ...(commits.length > 0 && commitMessage ? [{ type: "label", label: commitMessage } satisfies ScopeMenuItem] : []),
+      ]),
+    { type: "separator" },
+    { label: "Find commit…", icon: <BranchGlyph />, onSelect: () => chooseScope("commit") },
+    ...(commitStatus === "ready" && commits.length > 10 ? [{
+      id: "expand-commits", label: expanded ? "Show less" : `Show more (${commits.length - 10})`,
+      icon: <ChevronIcon open={!expanded} />, keepOpen: true,
+      onSelect: () => setExpanded((value) => !value),
+    } satisfies ScopeMenuItem] : []),
   ];
 
   const viewItems: MenuItem[] = [
@@ -136,20 +187,23 @@ export function ScopeBar({
   return (
     <>
       <div className={ROW_CLASS}>
+        <DiffScopeMenu items={scopeItems} open={scopeOpen} onOpenChange={(open) => {
+          setScopeOpen(open);
+          if (open) { setExpanded(false); loadCommits(); }
+        }}>
         <button
           type="button"
-          onClick={(event) => setMenu(menuAt(event.currentTarget, scopeItems))}
           title={wording.detail}
-          aria-haspopup="menu"
-          aria-expanded={menu !== null}
           className={cn(
             "flex min-w-0 shrink cursor-pointer items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-foreground",
             "hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
           )}
         >
-          <span className="truncate">{wording.label}</span>
+          {scopeIcon(target.type)}
+          <span className="truncate">{activeCommit?.subject || wording.label}</span>
           <ChevronIcon open className="text-muted-foreground" />
         </button>
+        </DiffScopeMenu>
         <Summary summary={summary} isLoading={isLoading} />
         <ToolbarButton label="Refresh" onClick={onRefresh}>
           <RefreshGlyph className={cn(isLoading && "animate-spin")} />

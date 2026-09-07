@@ -38,7 +38,7 @@ test("workspace without a thread or project asks for a project", async (t) => {
 });
 
 test("contract exposes the methods the frontend calls", () => {
-  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffList", "diffRead", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
+  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffCommits", "diffList", "diffRead", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
 });
 
 test("settings and the picker share predefined themes without changing BB's global theme", async (t) => {
@@ -105,6 +105,7 @@ test("plugin uses only public SDK imports and declared packages", () => {
       /^clsx$/,
       /^tailwind-merge$/,
       /^@hugeicons\//,
+      /^@radix-ui\/react-(dropdown-menu|slot)$/,
       /^shiki\//,
       /^@shikijs\/(langs|themes)\//,
       /^@pierre\/theme\//,
@@ -442,4 +443,62 @@ test("unresolved conflict contents stay read-only with LF and CRLF", async (t) =
     assert.equal(typeof result.reason, "string");
     assert.match(result.reason ?? "", /merge conflict/);
   }
+});
+
+test("commit menu returns every branch commit newest first and uses the selected base", async (t) => {
+  const status = statusWith([]);
+  assert.equal(status.outcome, "available");
+  if (status.outcome !== "available") return;
+  status.workspace.mergeBase = {
+    aheadCount: 13, behindCount: 0, baseRef: "abcdef0", mergeBaseBranch: "release/next",
+    hasCommittedUnmergedChanges: true, files: [], insertions: 1, deletions: 0, lineStatsComplete: true,
+    commits: Array.from({ length: 13 }, (_, i) => ({
+      sha: String(i).padStart(40, "0"), shortSha: String(i), subject: `Commit ${i}`,
+      authorName: "Author", authoredAt: 13 - i,
+    })),
+  };
+  const { harness } = await diffHost({ status: async () => status });
+  t.after(() => harness.lifecycle.dispose());
+  const result = rpcContract.diffCommits.output.parse(await harness.behavior.callRpc("diffCommits", {
+    threadId: "thr_test", target: { type: "branch_committed", mergeBaseBranch: "release/next" },
+  }));
+  assert.equal(result.commits.length, 13);
+  assert.equal(result.commits[0]?.subject, "Commit 12");
+  assert.equal(result.commits[12]?.subject, "Commit 0");
+  assert.equal(result.baseBranch, "release/next");
+  assert.equal(result.message, null);
+  assert.deepEqual(harness.inspection.sdk.callsTo("environments.status")[0]?.[0], {
+    environmentId: "env_test", mergeBaseBranch: "release/next",
+  });
+  assert.equal(harness.inspection.sdk.callsTo("environments.diffFiles").length, 0);
+  assert.equal(harness.inspection.sdk.callsTo("files.read").length, 0);
+});
+
+test("commit menu distinguishes no base, no commits, and an unavailable workspace", async (t) => {
+  for (const status of [
+    statusWith([]),
+    { outcome: "not_applicable", message: "Not a Git workspace" } as Status,
+  ]) {
+    const { harness } = await diffHost({ status: async () => status });
+    t.after(() => harness.lifecycle.dispose());
+    const result = rpcContract.diffCommits.output.parse(await harness.behavior.callRpc("diffCommits", {
+      threadId: "thr_test", target: { type: "uncommitted" },
+    }));
+    assert.deepEqual(result.commits, []);
+    assert.ok(result.message);
+    assert.equal(result.baseBranch, "main");
+  }
+  const status = statusWith([]);
+  if (status.outcome !== "available") throw new Error("invalid fixture");
+  status.workspace.mergeBase = {
+    aheadCount: 0, behindCount: 0, baseRef: "abcdef0", mergeBaseBranch: "main", commits: [],
+    hasCommittedUnmergedChanges: false, files: [], insertions: 0, deletions: 0, lineStatsComplete: true,
+  };
+  const { harness } = await diffHost({ status: async () => status });
+  t.after(() => harness.lifecycle.dispose());
+  const result = rpcContract.diffCommits.output.parse(await harness.behavior.callRpc("diffCommits", {
+    threadId: "thr_test", target: { type: "commit", sha: "abcdef0" },
+  }));
+  assert.deepEqual(result.commits, []);
+  assert.equal(result.message, null);
 });
