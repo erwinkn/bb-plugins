@@ -3,6 +3,7 @@ import test from "node:test";
 import type { DiffEntry } from "./diff-contract";
 import {
   canCompare,
+  diffSessionSync,
   changeLabel,
   comparisonBranch,
   describeTarget,
@@ -179,4 +180,22 @@ test("stored view preferences fall back to the default value by value", () => {
   });
   // A width below the minimum is raised, not accepted.
   assert.equal(viewPrefsFrom({ listWidth: 10 }).listWidth >= 140, true);
+});
+
+test("a save keeps the active file even when it leaves the change list", () => {
+  const previous = [entry("a.ts"), entry("b.ts")];
+  assert.equal(selectionAfterRefresh([entry("b.ts")], "a.ts", previous, "a.ts"), "a.ts");
+  assert.equal(selectionAfterRefresh([], "a.ts", previous, "a.ts"), "a.ts");
+  assert.equal(selectionAfterRefresh([entry("b.ts")], "a.ts", previous), "b.ts");
+  assert.equal(selectionAfterRefresh([], "a.ts", previous), null);
+  assert.equal(selectionAfterRefresh([entry("b.ts")], "b.ts", previous, "a.ts"), "b.ts");
+});
+
+test("saves acknowledge the new hash while external reads revalidate the diff", () => {
+  const state = { load: { kind: "ready" as const }, hasEdits: false, sha256: "new", savedContentSource: "write" as const };
+  assert.equal(diffSessionSync("old", state), "saved");
+  assert.equal(diffSessionSync("new", state), "none");
+  assert.equal(diffSessionSync("old", { ...state, savedContentSource: "read" }), "read");
+  assert.equal(diffSessionSync("old", { ...state, hasEdits: true }), "none");
+  assert.equal(diffSessionSync(null, state), "none");
 });

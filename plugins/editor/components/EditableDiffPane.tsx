@@ -10,7 +10,7 @@ import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { DiffEntry, DiffTarget } from "@/lib/diff-contract";
 import { AUTO_SAVE_DELAY_MS, type EditorPrefs } from "@/lib/editor-options";
-import { changeLabel, targetKey, unavailableReason, type DiffLayout } from "@/lib/diff-view-state";
+import { changeLabel, diffSessionSync, targetKey, unavailableReason, type DiffLayout } from "@/lib/diff-view-state";
 import type { FileSessionSource, FileSessionSnapshot } from "@/lib/file-session";
 import { useFileSession } from "@/lib/use-file-session";
 import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } from "./PierreSurface";
@@ -172,17 +172,20 @@ export function EditableDiffPane({
     void refreshFile();
   }, [refreshNonce, refreshFile]);
 
-  /**
-   * The session may hold a later version of the file than the comparison was
-   * built from, because it existed before this pane opened or because the file
-   * changed on disk. With no unsaved work, the comparison is read again so
-   * that both sides come from the same version. With unsaved work nothing is
-   * replaced; the notice offers the choice instead.
-   */
+  /** Saves keep the live editor; external reads still revalidate the comparison. */
   const resynced = useRef<string | null>(null);
   useEffect(() => {
     if (data === null || state === null || state.load.kind !== "ready") return;
-    if (state.hasEdits || state.sha256 === null || data.sha256 === null || state.sha256 === data.sha256) return;
+    const action = diffSessionSync(data.sha256, state);
+    if (action === "none") return;
+    if (action === "saved") {
+      // Pierre already has the edited document. A successful save changes
+      // the disk hash, not the baseline, cursor, selection, scroll or history.
+      setRead((current) => current.kind === "ready" && current.data === data
+        ? { kind: "ready", data: { ...data, sha256: state.sha256, newContent: state.savedContent } }
+        : current);
+      return;
+    }
     const pair = `${data.sha256}|${state.sha256}`;
     if (resynced.current === pair) return;
     resynced.current = pair;

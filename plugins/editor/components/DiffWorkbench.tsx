@@ -145,9 +145,12 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
   // A refresh replaces the list; results from an earlier one are dropped, and
   // the file stays open when the new list still has it.
   const generation = useRef(0);
+  const savedSelection = useRef<{ key: string; path: string | null } | null>(null);
   useEffect(() => {
     generation.current += 1;
     const mine = generation.current;
+    const savedPath = savedSelection.current?.key === key ? savedSelection.current.path : null;
+    savedSelection.current = null;
     setList((current) => ({ ...current, isLoading: true, error: null }));
     void rpc
       .call("diffList", { threadId, target })
@@ -164,7 +167,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
           isLoading: false,
           error: null,
         });
-        setSelected((current) => selectionAfterRefresh(result.files, current, previousFiles.current));
+        setSelected((current) => selectionAfterRefresh(result.files, current, previousFiles.current, savedPath));
         previousFiles.current = result.files;
       })
       .catch((error: unknown) => {
@@ -189,10 +192,18 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
   );
 
   const refresh = useCallback(() => {
+    savedSelection.current = null;
     setListNonce((nonce) => nonce + 1);
     setRefreshNonce((nonce) => nonce + 1);
   }, []);
-  const refreshList = useCallback(() => setListNonce((nonce) => nonce + 1), []);
+  const refreshListAfterSave = useCallback(() => {
+    savedSelection.current = { key, path: selected };
+    setListNonce((nonce) => nonce + 1);
+  }, [key, selected]);
+  const refreshList = useCallback(() => {
+    savedSelection.current = null;
+    setListNonce((nonce) => nonce + 1);
+  }, []);
 
   const setViewPref = useCallback(<K extends keyof DiffViewPrefs>(prefKey: K, value: DiffViewPrefs[K]) => {
     setView((current) => ({ ...current, [prefKey]: value }));
@@ -259,7 +270,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
   ) : null;
 
   const paneColumn = showPane ? (
-    selected === null || entry === null ? (
+    selected === null ? (
       <EmptyPane
         listOpen={listOpen}
         hasFiles={list.files.length > 0}
@@ -294,7 +305,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
         listSide={listSide}
         onToggleList={() => setViewPref("listOpen", !view.listOpen)}
         onOpenFile={openFile}
-        onSaved={refreshList}
+        onSaved={refreshListAfterSave}
       />
     )
   ) : null;

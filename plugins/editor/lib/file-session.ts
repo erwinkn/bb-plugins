@@ -89,6 +89,8 @@ export interface FileSessionSnapshot {
   readonly content: string;
   /** The text last known to be on disk. */
   readonly savedContent: string;
+  /** How the saved text and hash were obtained. Writes do not replace the editor. */
+  readonly savedContentSource: "read" | "write";
   readonly sha256: string | null;
   readonly absolutePath: string;
   readonly relativePath: string;
@@ -298,6 +300,7 @@ class Session implements FileSession {
       save: { kind: "clean" },
       content: "",
       savedContent: "",
+      savedContentSource: "read",
       sha256: null,
       absolutePath: "",
       relativePath: this.path,
@@ -455,6 +458,7 @@ class Session implements FileSession {
       save: hasEdits ? { kind: "dirty" } : { kind: "clean" },
       content,
       savedContent: read.content,
+      savedContentSource: "read",
       sha256: read.sha256,
       absolutePath: read.absolutePath,
       relativePath: read.relativePath,
@@ -518,6 +522,7 @@ class Session implements FileSession {
         this.draftBaseSha256 = result.sha256;
         this.patch({
           savedContent: content,
+          savedContentSource: "write",
           sha256: result.sha256,
           save: stillDirty ? { kind: "dirty" } : { kind: "clean" },
           draft: stillDirty ? this.snapshot.draft : { kind: "none" },

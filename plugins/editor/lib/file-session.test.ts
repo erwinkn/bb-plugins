@@ -577,3 +577,18 @@ test("a backslash in a file name is kept, so two files stay apart", () => {
   assert.notEqual(sessionKeyFor(WORKSPACE, "a\\b.txt"), sessionKeyFor(WORKSPACE, "a/b.txt"));
   assert.equal(normalizePath("a\\b.txt"), "a\\b.txt");
 });
+
+
+test("saved text distinguishes a write from a later external read", async () => {
+  const disk = new Disk();
+  const { session } = open(disk);
+  await settle();
+  assert.equal(session.getSnapshot().savedContentSource, "read");
+  session.setContent("local edit", "view-1");
+  assert.equal(await session.save(), true);
+  assert.equal(session.getSnapshot().savedContentSource, "write");
+  disk.content = "external edit";
+  await session.refresh();
+  assert.equal(session.getSnapshot().savedContentSource, "read");
+  assert.equal(session.getSnapshot().content, "external edit");
+});

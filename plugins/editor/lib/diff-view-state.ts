@@ -4,6 +4,7 @@
  * it. Panel parameters and stored values are untrusted, so everything that
  * enters from outside passes through a parser here.
  */
+import type { FileSessionSnapshot } from "./file-session.js";
 import type { DiffEntry, DiffTarget } from "./diff-contract.js";
 import { clampTreeWidth, DEFAULT_TREE_WIDTH, MIN_TREE_WIDTH } from "./layout-storage.js";
 
@@ -190,7 +191,11 @@ export function selectionAfterRefresh(
   files: readonly DiffEntry[],
   selected: string | null,
   previous: readonly DiffEntry[] = [],
+  savedPath: string | null = null,
 ): string | null {
+  // Saving back to the baseline may remove the file from Git's list. Keep
+  // the active editor open; explicit refresh still reconciles selection.
+  if (selected !== null && selected === savedPath) return selected;
   if (files.length === 0) return null;
   if (selected !== null && files.some((file) => file.path === selected)) return selected;
   const wasAt = previous.findIndex((file) => file.path === selected);
@@ -312,3 +317,12 @@ export function storeLastPath(workspaceKey: string, target: DiffTarget, path: st
 }
 
 export { clampTreeWidth };
+
+/** A saved hash is an acknowledgement; an external read needs a new comparison. */
+export function diffSessionSync(
+  comparisonHash: string | null,
+  state: Pick<FileSessionSnapshot, "load" | "hasEdits" | "sha256" | "savedContentSource">,
+): "none" | "saved" | "read" {
+  if (state.load.kind !== "ready" || state.hasEdits || comparisonHash === null || state.sha256 === null || comparisonHash === state.sha256) return "none";
+  return state.savedContentSource === "write" ? "saved" : "read";
+}
