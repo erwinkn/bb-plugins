@@ -118,7 +118,7 @@ function Row({
       title={title}
       aria-current={active ? "true" : undefined}
       className={cn(
-        "flex w-full cursor-pointer items-center gap-1.5 py-1 pr-9 pl-3 text-left text-[13px] leading-5",
+        "flex w-full cursor-pointer items-center gap-1.5 py-1 pr-3 pl-3 text-left text-[13px] leading-5",
         "hover:bg-state-hover focus-visible:bg-state-hover focus-visible:outline-none",
         "max-md:pointer-coarse:min-h-8",
         active ? "bg-state-hover text-foreground" : "text-foreground/85",
@@ -144,11 +144,18 @@ function Row({
 
 /**
  * What the row says on its right: the changed line counts for an ordinary
- * edit, and the words for anything else, because "renamed" or "no comparison"
+ * edit, a plus or minus in the same colors for a file that is new or gone,
+ * and the words for anything else, because "renamed" or "no comparison"
  * matters more than a count.
  */
 function ChangeMark({ entry, unavailable, label }: { entry: DiffEntry; unavailable: boolean; label: string }) {
   if (unavailable) return <span className="shrink-0 text-[11px] text-subtle-foreground">no comparison</span>;
+  if (entry.changeKind === "added" || entry.origin === "untracked") {
+    return <span className="shrink-0 font-mono text-[11px] text-success-foreground" role="img" aria-label={label} title={label}>+</span>;
+  }
+  if (entry.changeKind === "deleted") {
+    return <span className="shrink-0 font-mono text-[11px] text-destructive" role="img" aria-label={label} title={label}>&minus;</span>;
+  }
   if (entry.changeKind !== "modified" || entry.origin !== "tracked") {
     return <span className="shrink-0 text-[11px] text-subtle-foreground">{label}</span>;
   }

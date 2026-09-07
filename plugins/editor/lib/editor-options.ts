@@ -11,7 +11,7 @@ export interface EditorPrefs {
 }
 
 export const DEFAULT_PREFS: EditorPrefs = {
-  fontSize: 13,
+  fontSize: 12,
   wordWrap: false,
   lineNumbers: true,
   autoSave: "off",

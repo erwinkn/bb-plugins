@@ -246,7 +246,7 @@ export default async function plugin(bb: BbPluginApi) {
       type: "number",
       label: "Font size",
       experimental_schema: z.number().int().min(9).max(24),
-      default: 13,
+      default: 12,
     },
     wordWrap: { type: "boolean", label: "Wrap long lines", default: false },
     lineNumbers: { type: "boolean", label: "Show line numbers", default: true },

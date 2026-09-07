@@ -74,13 +74,17 @@ BB's built-in diff tab remains available.
 
 ### Revert actions
 
-Hover a diff line number and select **Revert hunk**, or place the cursor in a
-hunk and choose **Revert hunk at cursor** from the file toolbar menu. Pierre
-applies the change as an edit: Undo works, and the normal save or auto-save
-setting applies. Reverting all lines in a new file leaves an empty file.
+Hover changed lines and select the **Revert** control at the right edge of the
+comparison, or place the cursor in a hunk and choose **Revert hunk at cursor**
+from the file toolbar menu. The control appears only beside changed lines and
+reverts the hunk that contains them. Pierre applies the change as an edit:
+Undo works, and the normal save or auto-save setting applies. Reverting all
+lines in a new file leaves an empty file.
 
-Right-click a file in the Changes list, or use its **…** button, to revert a
-modified file, restore a deleted file, or delete a new file. New-file deletion
+Right-click a file in the Changes list (or press the Menu key or Shift+F10 on
+a focused row) to **Revert** a modified file, **Restore** a deleted file, or
+**Delete** a new file. The list marks new files with a green plus and deleted
+files with a red minus. New-file deletion
 always asks for confirmation. Replacing unsaved edits also asks first. Whole
 file actions take effect on disk immediately and update shared editor sessions.
 
@@ -123,7 +127,7 @@ Extensions → Editor:
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| Font size | 13 | 9 to 24; Geist Mono with BB monospace fallback |
+| Font size | 12 | 9 to 24; Geist Mono with BB monospace fallback |
 | Code theme | Follow BB | Predefined theme shared by Files and Changes |
 | Wrap long lines | off | Shared by Files and Changes |
 | Show line numbers | on | Shared by Files and Changes |

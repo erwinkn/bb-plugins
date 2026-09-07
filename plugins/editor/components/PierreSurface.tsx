@@ -7,6 +7,7 @@ import { applyPierreTheme, synchronizePierreTheme, type PierreThemeInput } from 
 import { cn } from "@/lib/utils";
 import { revertHunkEdit } from "@/lib/revert-hunk";
 import { createPierreItem } from "@/lib/pierre-item";
+import { RevertGlyph } from "./icons";
 
 // Pierre's single-theme renderer writes its own host background. Override it
 // inside the shadow root so both BB color modes and user palettes stay intact.
@@ -22,14 +23,21 @@ const SURFACE_CSS = `
     --diffs-bg-selection-number-override: var(--background);
     --diffs-selection-number-fg: var(--foreground);
   }
-  /* BB owns the shared custom element. Its line-number layer otherwise covers
-     the custom gutter action supplied by this Pierre version. */
-  [data-gutter-utility-slot] { z-index: 5; }
-  [data-utility-button]:focus-visible {
-    outline: 2px solid var(--ring);
-    outline-offset: 2px;
-  }
 `;
+
+/**
+ * The changed rows under the pointer, as one block. The revert control sits
+ * beside its first row and reverts the hunk that holds it.
+ */
+interface HoveredBlock {
+  /** Identity of the block, so a move inside it does not re-render. */
+  key: string;
+  /** Offsets from the surface's own box. */
+  top: number;
+  bottom: number;
+  lineNumber: number;
+  side: "additions" | "deletions";
+}
 
 /** Where the caret goes when the surface takes focus. */
 export interface PierreFocusTarget {
@@ -176,6 +184,9 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<PierreSurfaceStatus>({ kind: "loading" });
   const [fileComparison, setFileComparison] = useState(false);
+  const [hovered, setHovered] = useState<HoveredBlock | null>(null);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const revertButtonRef = useRef<HTMLButtonElement | null>(null);
   const stateRef = useRef<SurfaceState | null>(null);
   // Pierre's callbacks outlive the render that created them, so they read the
   // current props from here instead of closing over that render's values.
@@ -276,6 +287,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   // else updates it in place.
   const docKey = documentKey(props);
   useEffect(() => {
+    setHovered(null);
     const state = stateRef.current;
     if (state === null) return;
     if (state.docKey !== docKey) {
@@ -367,12 +379,45 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     [],
   );
 
+  const revertable = props.allowRevertHunk === true && props.readOnly !== true && props.oldContent !== undefined;
+  useEffect(() => {
+    if (!revertable) setHovered(null);
+  }, [revertable]);
+
+  /** Follows the pointer into and out of changed rows; the button is part of the block. */
+  const trackPointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!revertable || event.pointerType === "touch") return;
+    const surface = surfaceRef.current;
+    if (surface === null) return;
+    const path = event.nativeEvent.composedPath();
+    const block = hoveredBlockAt(path, surface);
+    if (block !== null) {
+      setHovered((current) => (current?.key === block.key ? current : block));
+      return;
+    }
+    const onButton = revertButtonRef.current !== null && path.includes(revertButtonRef.current);
+    if (onButton) return;
+    const y = event.clientY - surface.getBoundingClientRect().top;
+    setHovered((current) => (current !== null && y >= current.top && y < current.bottom ? current : null));
+  };
+  const revertHovered = () => {
+    if (hovered === null) return;
+    setHovered(null);
+    revertAtLine(stateRef.current, latest.current, hovered.lineNumber, hovered.side);
+  };
+
   return (
     <div
+      ref={surfaceRef}
       className={cn("relative flex h-full w-full min-h-0 flex-col", className)}
       style={cssVariables(style, { fontSize, lineHeight, fontFamily, tabSize })}
       data-pierre-status={status.kind}
+      onPointerMove={trackPointer}
+      onPointerLeave={() => setHovered(null)}
+      onScroll={() => setHovered(null)}
       onKeyDown={(event) => {
+        // Typing moves the rows, so the control waits for the next pointer move.
+        setHovered(null);
         // Pierre has no save command, so the surface owns this one shortcut and
         // stops the browser from opening its own save dialog.
         if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "s") {
@@ -389,8 +434,67 @@ export default function PierreSurface(props: PierreSurfaceProps) {
         </div>
       ) : null}
       <div ref={hostRef} className="relative min-h-0 w-full flex-1 overflow-auto" />
+      {hovered !== null ? (
+        <button
+          ref={revertButtonRef}
+          type="button"
+          data-testid="revert-hunk"
+          title="Revert this hunk"
+          aria-label={`Revert the hunk at line ${hovered.lineNumber}`}
+          style={{ top: hovered.top }}
+          className={cn(
+            "absolute right-4 z-10 flex h-5 cursor-pointer items-center gap-1 rounded-md border border-border bg-background pr-1.5 pl-1",
+            "text-[11px] leading-none text-muted-foreground shadow-sm hover:bg-state-hover hover:text-foreground",
+            "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none animate-in fade-in-0 duration-100",
+          )}
+          // The editor keeps its focus and selection; the click is the whole gesture.
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            revertHovered();
+          }}
+        >
+          <RevertGlyph className="size-3" />
+          Revert
+        </button>
+      ) : null}
     </div>
   );
+}
+
+/**
+ * The block of changed rows under the pointer, from the event's composed
+ * path into Pierre's shadow root. Pierre renders each row as one element with
+ * `data-line` and `data-line-type`, and the rows of one column are siblings,
+ * in both the unified and the split layout. A context row or the gap
+ * between hunks gives null.
+ */
+function hoveredBlockAt(path: EventTarget[], surface: HTMLElement): HoveredBlock | null {
+  const row = path.find(
+    (node): node is HTMLElement => node instanceof HTMLElement && node.dataset.line !== undefined && node.dataset.lineType !== undefined,
+  );
+  if (row === undefined || !isChangedRow(row)) return null;
+  let first = row;
+  while (first.previousElementSibling instanceof HTMLElement && isChangedRow(first.previousElementSibling)) {
+    first = first.previousElementSibling;
+  }
+  let last = row;
+  while (last.nextElementSibling instanceof HTMLElement && isChangedRow(last.nextElementSibling)) {
+    last = last.nextElementSibling;
+  }
+  const lineNumber = Number(first.dataset.line);
+  if (!Number.isInteger(lineNumber) || lineNumber < 1) return null;
+  const origin = surface.getBoundingClientRect().top;
+  const top = first.getBoundingClientRect().top - origin;
+  const bottom = last.getBoundingClientRect().bottom - origin;
+  const side = first.dataset.lineType === "change-deletion" ? "deletions" : "additions";
+  return { key: `${side}:${lineNumber}:${Math.round(top)}`, top, bottom, lineNumber, side };
+}
+
+function isChangedRow(element: HTMLElement): boolean {
+  const type = element.dataset.lineType;
+  return type === "change-addition" || type === "change-deletion";
 }
 
 /**
@@ -445,23 +549,9 @@ function buildOptions(
     disableFileHeader: props.fileHeader !== true,
     unsafeCSS: SURFACE_CSS,
     hunkSeparators: "line-info-basic",
-    enableGutterUtility: props.allowRevertHunk === true && props.readOnly !== true,
-    renderGutterUtility: (getHoveredRow) => {
-      if (!latest.current.allowRevertHunk || latest.current.readOnly) return null;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = "↶";
-      button.title = "Revert hunk";
-      button.setAttribute("aria-label", "Revert hunk");
-      button.style.cssText = "cursor:pointer;color:var(--foreground);background:var(--background);border:1px solid var(--border);border-radius:4px;width:20px;height:20px;line-height:16px;font-size:16px";
-      button.onpointerdown = (event) => { event.preventDefault(); event.stopPropagation(); };
-      button.onclick = (event) => {
-        event.preventDefault(); event.stopPropagation();
-        const row = getHoveredRow();
-        if (row) revertAtLine(stateRef.current, latest.current, row.lineNumber, "side" in row && row.side === "deletions" ? "deletions" : "additions");
-      };
-      return button;
-    },
+    // The hunk revert control is BB's own overlay (see `hoveredBlockAt`), so
+    // Pierre's per-line gutter utility stays off.
+    enableGutterUtility: false,
     expansionLineCount: 20,
     lineHoverHighlight: "number",
     expandUnchanged: props.expandUnchanged ?? false,

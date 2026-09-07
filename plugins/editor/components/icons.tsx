@@ -7,6 +7,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
+  ArrowTurnBackwardIcon,
   BracesIcon,
   GitBranchIcon,
   GitCommitIcon,
@@ -57,6 +58,7 @@ export const FolderIcon = make(Folder01Icon);
 export const FolderOpenGlyph = make(FolderOpenIcon);
 export const MoreIcon = make(MoreHorizontalIcon);
 export const RefreshGlyph = make(RefreshIcon);
+export const RevertGlyph = make(ArrowTurnBackwardIcon);
 export const SearchIcon = make(Search01Icon);
 export const SidebarLeftGlyph = make(SidebarLeftIcon);
 export const SidebarRightGlyph = make(SidebarRightIcon);

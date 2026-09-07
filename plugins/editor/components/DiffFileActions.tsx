@@ -5,16 +5,18 @@ import type { rpcContract } from "../server";
 import { isWorkingTreeTarget, type DiffEntry, type DiffTarget } from "@/lib/diff-contract";
 import { acquireFileSession, peekFileSession } from "@/lib/file-session";
 import { useFileSessionIo } from "@/lib/use-file-session";
-import { MoreIcon } from "./icons";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { ContextMenu, menuAt, type MenuState } from "./ContextMenu";
 
-/** The row menu is also reachable by keyboard and on touch screens. */
+/**
+ * The row's context menu: one action, named for what happens to the file.
+ * It opens from a right click, and from the keyboard's menu key or Shift+F10.
+ */
 export function DiffFileActions({ children, entry, target, threadId, onChanged }: {
   children: ReactNode; entry: DiffEntry; target: DiffTarget; threadId: string; onChanged: () => void;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const io = useFileSessionIo();
-  const [open, setOpen] = useState(false);
+  const [menu, setMenu] = useState<MenuState | null>(null);
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
   const [confirmation, setConfirmation] = useState<{ deleting: boolean; run: () => Promise<void> } | null>(null);
@@ -23,7 +25,7 @@ export function DiffFileActions({ children, entry, target, threadId, onChanged }
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; detach.current?.(); }; }, []);
   const enabled = isWorkingTreeTarget(target) && !entry.binary && entry.loadMode !== "too_large"
     && ["modified", "added", "deleted"].includes(entry.changeKind);
-  const label = entry.changeKind === "added" ? "Delete new file…" : entry.changeKind === "deleted" ? "Restore file" : "Revert file";
+  const label = entry.changeKind === "added" ? "Delete…" : entry.changeKind === "deleted" ? "Restore" : "Revert";
   const finish = () => {
     detach.current?.(); detach.current = null; running.current = false;
     if (mounted.current) { setBusy(false); setConfirmation(null); }
@@ -68,22 +70,22 @@ export function DiffFileActions({ children, entry, target, threadId, onChanged }
       toast.error(error instanceof Error ? error.message : "Could not read the comparison"); finish();
     }
   };
+  const items = [{ label, disabled: !enabled || busy || confirmation !== null, onSelect: () => void prepare() }];
   return (
-    <div className="group/file-action relative" onContextMenu={(event) => { event.preventDefault(); setOpen(true); }}
-      onKeyDown={(event) => { if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) { event.preventDefault(); setOpen(true); } }}>
+    <div
+      onContextMenu={(event) => {
+        event.preventDefault();
+        const anchor = event.currentTarget;
+        setMenu({ x: event.clientX, y: event.clientY, anchor, items });
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+        event.preventDefault();
+        setMenu(menuAt(event.currentTarget, items));
+      }}
+    >
       {children}
-      <DropdownMenu open={open} onOpenChange={setOpen}>
-        <DropdownMenuTrigger asChild>
-          <button type="button" aria-label={`Actions for ${entry.path}`} title="File actions"
-            className="absolute top-0.5 right-1 flex size-6 items-center justify-center rounded bg-background text-muted-foreground opacity-0 hover:bg-state-hover focus:opacity-100 group-hover/file-action:opacity-100 max-md:opacity-100"><MoreIcon /></button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" mobileTitle={entry.path}>
-          <DropdownMenuItem disabled={!enabled || busy || confirmation !== null} onSelect={() => void prepare()}>{label}</DropdownMenuItem>
-          <p className="max-w-64 px-2 py-1 text-xs text-muted-foreground">
-            {enabled ? "Restore the left side of this comparison. The staging area is unchanged." : "Available for text files in working comparisons. Renames and type changes are not supported."}
-          </p>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <ContextMenu state={menu} onClose={() => setMenu(null)} />
       {confirmation ? (
         <div role="alertdialog" aria-label={confirmation.deleting ? `Delete ${entry.path}?` : `Revert ${entry.path}?`}
           className="bg-destructive/10 px-3 py-2 text-xs" onKeyDown={(event) => { if (event.key === "Escape" && !busy) { event.stopPropagation(); finish(); } }}>
