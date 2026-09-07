@@ -143,3 +143,25 @@ Alternative: remove the legacy notification transport and migrate its stored
 field too. Confidence: high. This UI cleanup does not change update scheduling
 or session data. Existing settings tests, typecheck, and build cover the change.
 I stand behind this change under the user's standing PR and reload authorization.
+
+
+## Parent-first work overviews
+
+The user requested child work grouped under parent threads as the default spoken
+overview. Updated built-in voice preferences, coordinator policy, and the
+overview tool instructions. Added parentThreadId to the live-thread snapshot.
+
+- Use BB parent IDs, resolving missing parents only when needed. Alternative:
+  infer workstreams from titles. Confidence: high. The bounded snapshot may omit
+  a parent, so the instructions require lookup rather than guessing.
+- Keep child details for useful status, blockers, or explicit detail requests.
+  Alternative: never mention children. Confidence: high. This preserves material
+  information while keeping the usual overview focused on parent work.
+- Preserve saved user instructions and session history. Alternative: rewrite
+  saved prompts. Confidence: high. The coordinator policy applies the default
+  format even with older saved preferences; explicit user requests take priority.
+- Updated the existing bounded overview test to verify parent IDs. All 27
+  coordinator tests pass, including the 4096-character instruction limit.
+  Spoken compliance still requires a live call.
+
+I stand behind this change under the user's standing PR and reload authorization.

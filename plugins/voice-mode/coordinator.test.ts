@@ -565,12 +565,13 @@ test("the overview tool is coordinator-only and returns a bounded fresh snapshot
   t.after(()=>harness.lifecycle.dispose());
   const {conversationId} = await claim("overview-call");
   await rpc("submitRequest",{envelope:envelope(conversationId,"overview-call","overview_request","What is active?")});
-  for (let n=0;n<40;n++) world.threads.set(`work_${n}`,makeThreadResponse({id:`work_${n}`,title:`Work ${n}`,projectId:"proj_app",status:"active",updatedAt:Date.now(),runtime:{displayStatus:"active",hostReconnectGraceExpiresAt:null}}));
+  for (let n=0;n<40;n++) world.threads.set(`work_${n}`,makeThreadResponse({id:`work_${n}`,title:`Work ${n}`,parentThreadId:n===0?null:"work_0",projectId:"proj_app",status:"active",updatedAt:Date.now(),runtime:{displayStatus:"active",hostReconnectGraceExpiresAt:null}}));
   const rejected = await harness.behavior.callAgentTool("voice_overview",{}, {threadId:"work_0"}) as Any;
   assert.equal(rejected.isError,true);
   const before = harness.inspection.sdk.callsTo("threads.timeline").length;
   const result = JSON.parse(String(await harness.behavior.callAgentTool("voice_overview",{}, {threadId:coordinatorId()})));
   assert.equal(result.threads.length,30); assert.equal(result.truncated,true);
+  for (const thread of result.threads) assert.equal(thread.parentThreadId,thread.id === "work_0" ? null : "work_0");
   assert.ok(Math.abs(Date.now()-result.asOf)<1000);
   assert.equal(harness.inspection.sdk.callsTo("threads.timeline").length,before);
 });

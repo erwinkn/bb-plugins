@@ -226,7 +226,10 @@ model compliance and device playback still need physical call testing.
 The coordinator can use `voice_overview` to get one fresh snapshot of up to 30
 active or recent threads, drawn from the 200 most recent threads and the
 existing 30-minute recent-work window. The snapshot includes titles and
-runtime status. It is not evidence that a task is complete; detailed checks
+runtime status and parent-thread IDs. Overviews group child work under its
+parent and focus speech on parent workstreams by default. Child details are
+included for useful status, blockers, or an explicit request for detail.
+The snapshot is not evidence that a task is complete; detailed checks
 still use native BB tools when required.
 
 Speech logs include response, item, request and reply IDs, user-turn numbers,
