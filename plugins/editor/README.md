@@ -83,8 +83,8 @@ lines in a new file leaves an empty file.
 
 Right-click a file in the Changes list (or press the Menu key or Shift+F10 on
 a focused row) to **Revert** a modified file, **Restore** a deleted file, or
-**Delete** a new file. The list marks new files with a green plus and deleted
-files with a red minus. New-file deletion
+**Delete** a new file. The list marks new files with a green A and deleted
+files with a red D. New-file deletion
 always asks for confirmation. Replacing unsaved edits also asks first. Whole
 file actions take effect on disk immediately and update shared editor sessions.
 

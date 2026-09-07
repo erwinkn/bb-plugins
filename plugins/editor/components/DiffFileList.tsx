@@ -144,17 +144,17 @@ function Row({
 
 /**
  * What the row says on its right: the changed line counts for an ordinary
- * edit, a plus or minus in the same colors for a file that is new or gone,
+ * edit, an A or D in the same colors for a file that is new or gone,
  * and the words for anything else, because "renamed" or "no comparison"
  * matters more than a count.
  */
 function ChangeMark({ entry, unavailable, label }: { entry: DiffEntry; unavailable: boolean; label: string }) {
   if (unavailable) return <span className="shrink-0 text-[11px] text-subtle-foreground">no comparison</span>;
   if (entry.changeKind === "added" || entry.origin === "untracked") {
-    return <span className="shrink-0 font-mono text-xs font-medium text-success-foreground" role="img" aria-label={label} title={label}>+</span>;
+    return <span className="shrink-0 font-mono text-[11px] font-medium text-success-foreground" role="img" aria-label={label} title={label}>A</span>;
   }
   if (entry.changeKind === "deleted") {
-    return <span className="shrink-0 font-mono text-xs font-medium text-destructive" role="img" aria-label={label} title={label}>&minus;</span>;
+    return <span className="shrink-0 font-mono text-[11px] font-medium text-destructive" role="img" aria-label={label} title={label}>D</span>;
   }
   if (entry.changeKind !== "modified" || entry.origin !== "tracked") {
     return <span className="shrink-0 text-[11px] text-subtle-foreground">{label}</span>;

@@ -253,8 +253,8 @@ utility is off. A BB overlay control labelled **Revert** appears at the right
 edge of the comparison, on the first row of the changed block under the
 pointer, and reverts the hunk that holds it. The file row menu opens at the
 pointer with one item (Revert, Restore, or Delete…) and no explanatory text;
-the hover button is gone. New files show a green plus and deleted files a red
-minus in the list.
+the hover button is gone. New files show a green A and deleted files a red D
+in the list.
 
 Installed checks in the same fixture thread, tab visible:
 
