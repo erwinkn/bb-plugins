@@ -110,6 +110,21 @@ export function DisplayMenu() {
             <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
           </Menu.CheckboxItem>
         ))}
+        <Menu.CheckboxItem
+          checked={state.showArchives}
+          onSelect={(event) => event.preventDefault()}
+          onCheckedChange={(showArchives) =>
+            updateState((current) => ({
+              ...current,
+              showArchives: showArchives === true,
+            }))
+          }
+          className={menuItemClass}
+        >
+          <span aria-hidden="true" className="size-4" />
+          <span className="flex-1">Archived</span>
+          <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
+        </Menu.CheckboxItem>
       </MenuContent>
     </Menu.Root>
   );

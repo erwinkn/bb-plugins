@@ -151,6 +151,7 @@ describe("client storage boundary", () => {
       ),
     ).toEqual({
       hidden: ["done"],
+      showArchives: false,
       drafts: ["thread:1"],
       collapsed: [],
       expandedArchives: [],

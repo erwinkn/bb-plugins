@@ -40,7 +40,10 @@ function sidebarThread(thread: ArchivedThread): PluginSidebarThread {
   };
 }
 
-export function useArchives(activeThreads: readonly PluginSidebarThread[]) {
+export function useArchives(
+  activeThreads: readonly PluginSidebarThread[],
+  enabled: boolean,
+) {
   const rpc = useRpc<typeof archiveContract>();
   const connection = useRealtimeConnectionState();
   const [revision, setRevision] = useState(0);
@@ -55,6 +58,11 @@ export function useArchives(activeThreads: readonly PluginSidebarThread[]) {
     .join(",");
   useEffect(() => {
     let cancelled = false;
+    if (!enabled) {
+      setThreads((current) => (current.length ? [] : current));
+      setError(null);
+      return;
+    }
     async function load() {
       const result: PluginSidebarThread[] = [];
       for (let offset = 0; ; offset += 200) {
@@ -79,6 +87,6 @@ export function useArchives(activeThreads: readonly PluginSidebarThread[]) {
     return () => {
       cancelled = true;
     };
-  }, [rpc, connection, revision, membership]);
+  }, [rpc, connection, revision, membership, enabled]);
   return { threads, error, refresh };
 }

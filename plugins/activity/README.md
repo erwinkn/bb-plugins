@@ -37,7 +37,8 @@ Pinned threads keep all available descendants beneath them, regardless of status
 project, or a descendant's own pin. Status filters do not hide these families.
 A pinned child appears as a root here only when it has no available pinned ancestor.
 Each thread appears once. Child previews and Show more work as in other families.
-Archived threads remain hidden. The display menu offers **Date updated**
+Archived threads stay hidden until you enable Archived in Threads display options.
+The display menu offers **Date updated**
 (the default) and **Date created**, both newest first. The choice applies in
 both Status and Project views and stays when you switch views or reload.
 The sort uses BB's `updatedAt` or `createdAt`, not attention events.
@@ -66,8 +67,9 @@ own project in Project view. Parent names appear in the hover info card.
 If project details are missing, its threads remain in a No project group.
 Each missing project keeps its own group until BB supplies its name.
 
-The display menu switches between Status and Project grouping and shows or
-hides each status. Status groups keep the order above. Project groups sort by
+The display menu switches between Status and Project grouping and shows or hides
+each status. **Archived** is the last option under **Show statuses**, below **Done**.
+Status groups keep the order above. Project groups sort by
 name. Pins, roots, and siblings follow the selected date sort.
 Children in each family stay below their parent. A child's timestamp or pin does not
 move its parent. New-thread drafts have no thread timestamp and appear after dated
@@ -178,10 +180,12 @@ release passes the menu tests.
 
 ## Archived threads
 
-Status view has an Archived section after the active groups. Project view has
-an Archived section inside each project, including projects with only archives.
-The sections start collapsed and remember their state per client. Status filters
-do not hide archived threads. The selected date sort also applies to archives.
+Archived threads are hidden by default. Enable **Archived** under **Show statuses**
+in Threads display options to show them. Status view then has an Archived section
+after the active groups. Project view has an Archived section inside each
+project, including projects with only archives. The sections start collapsed
+and remember their state per client. Status filters do not hide archived
+threads. The selected date sort also applies to archives.
 
 Expand a section to browse its threads. Rows use the same paging and child
 groups as active threads. Archived rows offer only two actions: open the row
@@ -190,7 +194,8 @@ read/unread, split, drag-to-split, or archive controls. Restoration uses BB's ex
 BB's general thread navigation because the sidebar open action only knows
 active threads. Restore a thread before using pin, read, or split actions.
 
-The backend reads visible archives in pages of 200 through BB's public SDK.
-Hidden background threads stay hidden. The list refreshes on archive and delete
-events, plugin restores, sidebar membership changes, and reconnection. Failed
-loads show a Retry button; active threads remain available.
+The backend reads visible archives in pages of 200 through BB's public SDK only
+while the setting is enabled. Hidden background threads stay hidden. The list
+refreshes on archive and delete events, plugin restores, sidebar membership
+changes, and reconnection. Failed loads show a Retry button; active threads
+remain available.

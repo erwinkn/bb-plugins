@@ -268,10 +268,66 @@ describe("activity sidebar", () => {
     environmentBranchName: null,
     environmentWorkspaceDisplayKind: "other",
   }));
+  it("hides archives until the display setting is enabled", async () => {
+    const list = vi.fn(async () => archiveRows);
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { projects, threads: [] },
+      rpc: { listArchived: list },
+    });
+    await act(async () => {});
+    expect(list).not.toHaveBeenCalled();
+    expect(slot.queryByRole("button", { name: "Archived" })).toBeNull();
+
+    fireEvent.keyDown(
+      slot.getByRole("button", { name: "Threads display options" }),
+      { key: "Enter" },
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const toggle = slot.getByRole("menuitemcheckbox", {
+      name: "Archived",
+      hidden: true,
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith({ offset: 0 }),
+    );
+    const archive = await slot.findByRole("button", {
+      name: "Archived",
+      hidden: true,
+    });
+    expect(archive.getAttribute("aria-expanded")).toBe("false");
+    expect(
+      parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
+        .showArchives,
+    ).toBe(true);
+
+    fireEvent.click(
+      slot.getByRole("menuitemcheckbox", {
+        name: "Archived",
+        hidden: true,
+      }),
+    );
+    expect(
+      slot.queryByRole("button", { name: "Archived", hidden: true }),
+    ).toBeNull();
+    expect(
+      parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
+        .showArchives,
+    ).toBe(false);
+  });
   it.each(["status", "project"] as const)(
     "browses and restores archives in %s view",
     async (groupBy) => {
-      updateState((state) => ({ ...state, groupBy, hidden: ["done"] }));
+      updateState((state) => ({
+        ...state,
+        groupBy,
+        hidden: ["done"],
+        showArchives: true,
+      }));
       const restore = vi.fn(async () => ({ ok: true }));
       const slot = renderSlot(app.threadLists[0], props, {
         sidebarThreads: { projects, threads: [] },
@@ -321,6 +377,7 @@ describe("activity sidebar", () => {
   it("does not expose split gestures or other active actions for archives", async () => {
     splitOverride.enabled = true;
     try {
+      updateState((state) => ({ ...state, showArchives: true }));
       const slot = renderSlot(app.threadLists[0], props, {
         rpc: { listArchived: async () => archiveRows },
       });
@@ -344,6 +401,7 @@ describe("activity sidebar", () => {
     }
   });
   it("loads every archive page, limits mounted rows, and refreshes on restore signals", async () => {
+    updateState((state) => ({ ...state, showArchives: true }));
     const firstPage = Array.from({ length: 200 }, (_, index) => ({
       ...archiveRows[0],
       id: `page-${index}`,
@@ -381,6 +439,7 @@ describe("activity sidebar", () => {
     );
   });
   it("retains archive expansion on remount", async () => {
+    updateState((state) => ({ ...state, showArchives: true }));
     const options = { rpc: { listArchived: async () => archiveRows } };
     let slot = renderSlot(app.threadLists[0], props, options);
     fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
@@ -389,6 +448,7 @@ describe("activity sidebar", () => {
     expect(await slot.findByText("Old thread 0")).toBeTruthy();
   });
   it("retries archive loading without hiding active threads", async () => {
+    updateState((state) => ({ ...state, showArchives: true }));
     const list = vi
       .fn()
       .mockRejectedValueOnce(new Error("Offline"))
@@ -404,6 +464,7 @@ describe("activity sidebar", () => {
     expect(slot.queryByText("Cannot load archived threads.")).toBeNull();
   });
   it("reports restore errors and keeps the archive available", async () => {
+    updateState((state) => ({ ...state, showArchives: true }));
     const slot = renderSlot(app.threadLists[0], props, {
       rpc: {
         listArchived: async () => archiveRows,
@@ -1906,7 +1967,14 @@ describe("activity sidebar", () => {
       slot
         .getAllByRole("menuitemcheckbox", { hidden: true })
         .map((item) => item.textContent?.replace("✓", "")),
-    ).toEqual(["Needs Attention", "Unread", "Working", "Draft", "Done"]);
+    ).toEqual([
+      "Needs Attention",
+      "Unread",
+      "Working",
+      "Draft",
+      "Done",
+      "Archived",
+    ]);
     fireEvent.click(
       slot.getByRole("menuitemcheckbox", { name: "Done", hidden: true }),
     );

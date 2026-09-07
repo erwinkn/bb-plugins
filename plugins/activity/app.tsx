@@ -83,15 +83,17 @@ function Group({
 
 function ThreadsList(props: PluginThreadListProps) {
   const { status, threads, projects } = experimental_useSidebarThreads();
-  const archives = useArchives(threads);
-  const archived = archives.threads.map((thread) => ({
-    thread,
-    status: "done" as const,
-  }));
+  const state = useClientState();
+  const archives = useArchives(threads, state.showArchives);
+  const archived = state.showArchives
+    ? archives.threads.map((thread) => ({
+        thread,
+        status: "done" as const,
+      }))
+    : [];
   const { providers } = experimental_useProviders();
   const actions = experimental_useSidebarThreadActions();
   const connection = useRealtimeConnectionState();
-  const state = useClientState();
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -277,7 +279,7 @@ function ThreadsList(props: PluginThreadListProps) {
             Reconnecting… Statuses can be out of date.
           </p>
         )}
-        {archives.error && (
+        {state.showArchives && archives.error && (
           <div role="alert" className="mt-2 text-xs text-destructive">
             Cannot load archived threads.
             <button className="ml-2 underline" onClick={archives.refresh}>
