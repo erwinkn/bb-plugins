@@ -60,6 +60,7 @@ export function ThreadRow({
   const [renameError, setRenameError] = useState<string | null>(null);
   const savingRef = useRef(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const menuOpenedEditor = useRef(false);
   const rowRef = useRef<HTMLAnchorElement>(null);
   const restoreRowFocus = useRef(false);
   const closeEditor = () => {
@@ -275,9 +276,11 @@ export function ThreadRow({
             <Menu.Content
               {...scope}
               onCloseAutoFocus={(event) => {
-                if (renameInputRef.current) {
+                if (menuOpenedEditor.current) {
+                  menuOpenedEditor.current = false;
                   event.preventDefault();
-                  renameInputRef.current.focus();
+                  // The editor may already be closed when Radix restores focus.
+                  (renameInputRef.current ?? rowRef.current)?.focus();
                 }
               }}
               aria-label={`Actions for ${title}`}
@@ -296,6 +299,7 @@ export function ThreadRow({
                   <Menu.Item
                     className={menuItemClass}
                     onSelect={() => {
+                      menuOpenedEditor.current = true;
                       setDraftTitle(title);
                       setRenameError(null);
                       setEditing(true);
