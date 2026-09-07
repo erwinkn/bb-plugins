@@ -67,6 +67,7 @@ function FileOpener({ path, source, Original }: PluginFileOpenerProps) {
   const { prefs, setPref } = usePrefs();
   return (
     <Workbench
+      key={workspaceKeyFor(source)}
       surface="opener"
       source={source}
       initialPath={path}
@@ -123,6 +124,7 @@ function FilesPanelBody({ workspace, initialPath }: { workspace: WorkspaceState;
   }
   return (
     <Workbench
+      key={workspaceKeyFor(workspace.source)}
       surface="panel"
       source={workspace.source}
       initialPath={initialPath}

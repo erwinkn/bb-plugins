@@ -72,6 +72,8 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     index: firstPath === null ? -1 : 0,
   }));
   const [pendingOpen, setPendingOpen] = useState<PendingNavigation | null>(null);
+  const pendingRef = useRef(pendingOpen);
+  pendingRef.current = pendingOpen;
   const [treeOpen, setTreeOpen] = useState(() => readTreeOpen(surface));
   const [treeWidth, setTreeWidth] = useState(readTreeWidth);
   const [width, setWidth] = useState(0);
@@ -147,6 +149,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         setTree({ entries: result.entries, root: result.root, truncated: result.truncated, isLoading: false, error: null });
       })
       .catch((error: unknown) => {
+        if (generation !== treeGeneration.current) return;
         treeRequested.current = false;
         setTree({ ...EMPTY_TREE, error: error instanceof Error ? error.message : "Could not list files" });
       });
@@ -169,6 +172,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           if (result.truncated) toast.message(`Showing the first entries of ${subpath}; it is larger.`);
         })
         .catch((error: unknown) => {
+          if (generation !== treeGeneration.current) return;
           deferredRequests.current.delete(subpath);
           toast.error(error instanceof Error ? error.message : `Could not list ${subpath}`);
         });
@@ -295,9 +299,16 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       const gone = activePath !== null && removed(activePath);
       // Deleting the open file would take its unsaved edits with it.
       if (gone && paneRef.current?.isDirty()) throw new Error("The open file has unsaved changes; save or discard them first");
-      await rpc.call("remove", { path, source, kind });
-      await loadTree();
+      // The editor lets go of the file before the request, so nothing typed
+      // while it runs can be lost with it; a failed request brings it back.
       if (gone) setActivePath(null);
+      try {
+        await rpc.call("remove", { path, source, kind });
+      } catch (error) {
+        if (gone) setActivePath(activePath);
+        throw error;
+      }
+      await loadTree();
       // Deleted paths leave history; the index stays on the same entry.
       setHistory((current) => {
         const paths = current.paths.filter((entry) => !removed(entry));
@@ -398,6 +409,8 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
                 const next = pendingOpen;
                 setPendingOpen(null);
                 void paneRef.current?.save().then((saved) => {
+                  // A file chosen during the save has its own banner; it wins.
+                  if (pendingRef.current !== null) return;
                   // Typing during the save dirties the buffer again; the banner returns.
                   if (saved && !paneRef.current?.isDirty()) navigateTo(next);
                   else setPendingOpen(next);

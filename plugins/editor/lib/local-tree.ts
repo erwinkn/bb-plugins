@@ -39,25 +39,29 @@ const DEFERRED_DIRECTORY_NAMES = new Set(["node_modules"]);
 export async function listLocalTree(rootPath: string, subpath: string, limit: number): Promise<TreeListing> {
   const entries: TreeEntry[] = [];
   const start = subpath === "" ? rootPath : path.join(rootPath, ...subpath.split("/"));
-  // A symlinked directory is listed only when it stays inside the workspace;
-  // one that points elsewhere shows as an empty folder.
-  if (subpath !== "" && !(await staysInside(rootPath, start))) return { entries, truncated: false };
-  const truncated = await walk(start, rootPath, entries, limit, subpath === "");
+  // The walk reads the resolved directory, never the path that named it, so
+  // a symlink swapped after the check cannot lead it elsewhere. A symlinked
+  // directory lists only when it stays inside the workspace; one that points
+  // elsewhere shows as an empty folder.
+  const real = await resolveInside(rootPath, start);
+  if (real === null) return { entries, truncated: false };
+  const truncated = await walk(real, subpath, entries, limit, subpath === "");
   return { entries, truncated };
 }
 
-async function staysInside(rootPath: string, target: string): Promise<boolean> {
+/** The real path of `target` when it is the workspace root or under it; null otherwise. */
+async function resolveInside(rootPath: string, target: string): Promise<string | null> {
   try {
     const root = await realpath(rootPath);
     const real = await realpath(target);
-    return real === root || real.startsWith(root + path.sep);
+    return real === root || real.startsWith(root + path.sep) ? real : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-/** Returns true when `limit` stopped the walk. */
-async function walk(dir: string, root: string, out: TreeEntry[], limit: number, recurse: boolean): Promise<boolean> {
+/** Returns true when `limit` stopped the walk. `relativeDir` is the workspace-relative name of `dir`. */
+async function walk(dir: string, relativeDir: string, out: TreeEntry[], limit: number, recurse: boolean): Promise<boolean> {
   let dirents: Dirent[];
   try {
     dirents = await readdir(dir, { withFileTypes: true });
@@ -69,14 +73,14 @@ async function walk(dir: string, root: string, out: TreeEntry[], limit: number, 
     if (EXCLUDED_NAMES.has(dirent.name)) continue;
     if (out.length >= limit) return true;
     const absolute = path.join(dir, dirent.name);
-    const relative = toPosix(path.relative(root, absolute));
+    const relative = relativeDir === "" ? dirent.name : `${relativeDir}/${dirent.name}`;
     if (dirent.isDirectory()) {
       if (!recurse || DEFERRED_DIRECTORY_NAMES.has(dirent.name)) {
         out.push({ path: relative, kind: "directory", deferred: true });
         continue;
       }
       out.push({ path: relative, kind: "directory" });
-      if (await walk(absolute, root, out, limit, recurse)) return true;
+      if (await walk(absolute, relative, out, limit, recurse)) return true;
       continue;
     }
     if (dirent.isSymbolicLink()) {
@@ -94,6 +98,3 @@ async function walk(dir: string, root: string, out: TreeEntry[], limit: number, 
   return false;
 }
 
-function toPosix(relative: string): string {
-  return relative.split(path.sep).join("/");
-}
