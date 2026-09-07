@@ -26,19 +26,24 @@ or resume before new agent tools become available.
 ## Review flow
 
 1. Ask the agent to submit a plan for review in BB. The included `plan-review`
-   skill uses `plans_submit` and tells it to wait. The tool returns a
-   plan ID and version ID. New tools become available when BB starts or resumes
-   the provider session.
+   skill uses `plans_submit`, then blocks on `bb plans wait` until you decide.
+   New tools become available when BB starts or resumes the provider session.
 2. Open **Review plan** in the thread, or use its **Plan** header button. Select text to add a comment, or add a general
    review note. Draft text stays in this browser; saved comments stay in BB.
-3. Select **Send feedback** to request a revision in the original thread.
+3. Select **Send feedback**. The waiting `bb plans wait` command returns your
+   comments and note as JSON inside the agent's current turn.
 4. The agent submits the revision with the same plan ID and the expected version
-   ID. Compare the versions. Earlier comments retain their original version.
-5. After reviewing the revision, select **Approve**. The plugin sends
-   that exact plan version to the original thread for implementation.
+   ID and waits again. Compare the versions. Earlier comments retain their original version.
+5. After reviewing the revision, select **Approve**. The wait returns
+   `status: "approved"` and the agent implements that exact version.
 
-Feedback and approval use BB's queue-if-active mode. If the thread is working,
-BB queues the message. Approval does not authorize a merge or deployment.
+The decision never repeats the plan text: the agent already has it, and
+`bb plans get PLAN_ID --version VERSION_ID` fetches it after context loss.
+If no `wait` is attached when you decide (the agent's turn ended, or it never
+waited), the plugin falls back to a compact thread message with the same
+content, queued if the thread is busy. The **Message the thread when no agent
+is waiting** setting turns that fallback off. Approval does not authorize a
+merge or deployment.
 
 The panel lists only plans from its thread. If none exists, paste Markdown
 to create one. New plans are linked to that thread automatically.
@@ -47,18 +52,31 @@ Legacy sample records remain in storage and never send agent messages.
 ## Agent commands
 
 The native `plans_submit` tool accepts `title`, `markdown`, and optional `planId`
-and `expectedVersionId`. A revision must belong to the calling thread. After
-submission, the agent must stop and wait for the user.
-
-An existing session can use the CLI:
+and `expectedVersionId`. A revision must belong to the calling thread. It
+returns the plan and version IDs plus the `bb plans wait` command to run next.
 
 ```sh
-bb plans submit ./plan.md 'Storage migration'
-bb plans get PLAN_ID
-bb plans submit ./plan.md 'Storage migration' PLAN_ID EXPECTED_VERSION_ID
-bb plans list
-bb plans list 10
+bb plans wait PLAN_ID --version VERSION_ID [--timeout 1200]
+bb plans submit ./plan.md 'Storage migration' --wait
+bb plans submit ./plan.md 'Storage migration' PLAN_ID EXPECTED_VERSION_ID --wait
+bb plans get PLAN_ID --version VERSION_ID
+bb plans list [10]
+bb plans review PLAN_ID VERSION_ID feedback --comment 'quoted text::what to change' --redline 'drop this' --note 'General note'
+bb plans review PLAN_ID VERSION_ID approve --looks-good 'keep this'
 ```
+
+`wait` blocks until the reviewer decides on that version, then prints the
+decision as JSON: `status` (`feedback` or `approved`), `note`, `comments` with
+their `quote`, `body`, and `kind`, and an `instruction`. It exits 0 with
+`status: "pending"` when the timeout (default 20 minutes, max 24 hours) passes;
+run it again to keep waiting. A wait on a version that was replaced returns
+`status: "superseded"` with the latest version ID. Decisions are stored, so a
+wait that starts after the decision returns immediately, and a wait that is
+interrupted (plugin reload, shell time limit) loses nothing. Providers whose
+shell tool has a time limit should run `wait` in the background and await it.
+
+`review` lets another thread act as the reviewer, for example a parent thread
+reviewing a child's plan. A thread cannot review its own plan.
 
 File reads run on the invoking thread's machine through BB's file API. The CLI
 must have a BB thread and working directory. It does not read a remote file from

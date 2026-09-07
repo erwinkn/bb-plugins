@@ -167,6 +167,67 @@ describe("Plans review workflow", () => {
     }, { threadId: "other-thread" })).rejects.toThrow(/another thread/);
   });
 
+  it("hands the decision to a waiting agent and skips the thread message", async () => {
+    const { harness, rpc, plan, send } = await setup();
+    const versionId = plan.versions[0]!.id;
+    await rpc("addComment", { id: plan.id, versionId, quote: "existing data", body: "Name the table." });
+    const waiting = harness.behavior.runCli(["wait", plan.id, "--version", versionId, "--timeout", "30"], { threadId: "thread-1", signal: new AbortController().signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await rpc("submitReview", { id: plan.id, versionId, action: "feedback", note: "Be specific.", requestId: "attended" });
+    const result = await waiting;
+    expect(result.exitCode).toBe(0);
+    const decision = JSON.parse(result.stdout!);
+    expect(decision).toMatchObject({ status: "feedback", planId: plan.id, versionId, note: "Be specific.", comments: [{ quote: "existing data", body: "Name the table.", kind: "comment" }] });
+    expect(decision.instruction).toMatch(/plans_submit/);
+    expect(JSON.stringify(decision)).not.toContain("Keep the existing data");
+    expect(send).not.toHaveBeenCalled();
+    // A later wait on the same version reads the stored decision.
+    const again = await harness.behavior.runCli(["wait", plan.id, "--version", versionId, "--timeout", "1"], { threadId: "thread-1", signal: new AbortController().signal });
+    expect(JSON.parse(again.stdout!).status).toBe("feedback");
+  });
+
+  it("times out with a pending status and reports superseded versions", async () => {
+    const { harness, rpc, plan } = await setup();
+    const versionId = plan.versions[0]!.id;
+    const pending = await harness.behavior.runCli(["wait", plan.id, "--timeout", "1"], { threadId: "thread-1", signal: new AbortController().signal });
+    expect(JSON.parse(pending.stdout!)).toMatchObject({ status: "pending", versionId });
+    const waiting = harness.behavior.runCli(["wait", plan.id, "--version", versionId, "--timeout", "30"], { threadId: "thread-1", signal: new AbortController().signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const revised = await rpc("revise", { id: plan.id, expectedVersionId: versionId, markdown: "Changed" });
+    expect(JSON.parse((await waiting).stdout!)).toMatchObject({ status: "superseded", latestVersionId: revised.versions[1]!.id });
+  }, 10_000);
+
+  it("messages the thread without the plan text when nobody is waiting, unless disabled", async () => {
+    const { harness, rpc, plan, send } = await setup();
+    const versionId = plan.versions[0]!.id;
+    await rpc("submitReview", { id: plan.id, versionId, action: "approve", note: "Go.", requestId: "unattended" });
+    const text = (send.mock.calls[0]![0] as { input: Array<{ text: string }> }).input[0]!.text;
+    expect(text).toContain("approved plan");
+    expect(text).toContain(`bb plans get ${plan.id} --version ${versionId}`);
+    expect(text).not.toContain("Keep the existing data");
+    await harness.behavior.setSettings({ notifyThreadWhenUnattended: false });
+    const second = await rpc("create", { title: "Quiet", markdown: "Quiet plan", threadId: "thread-1" });
+    await rpc("submitReview", { id: second.id, versionId: second.versions[0]!.id, action: "approve", note: "", requestId: "quiet" });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets another thread review a plan through the CLI, but never the plan's own thread", async () => {
+    const { harness, plan } = await setup();
+    const versionId = plan.versions[0]!.id;
+    const self = await harness.behavior.runCli(["review", plan.id, versionId, "feedback", "--note", "x"], { threadId: "thread-1", signal: new AbortController().signal });
+    expect(self.exitCode).toBe(1);
+    expect(self.stderr).toMatch(/own plan/);
+    const parent = await harness.behavior.runCli(["review", plan.id, versionId, "feedback", "--redline", "existing data", "--comment", "A plan::Rename it", "--note", "From the parent."], { threadId: "parent-thread", signal: new AbortController().signal });
+    expect(parent.exitCode).toBe(0);
+    const got = await harness.behavior.runCli(["get", plan.id, "--version", versionId], { threadId: "thread-1", signal: new AbortController().signal });
+    const shown = JSON.parse(got.stdout!);
+    expect(shown.status).toBe("revising");
+    expect(shown.comments).toEqual([
+      expect.objectContaining({ quote: "existing data", kind: "redline", sent: true }),
+      expect.objectContaining({ quote: "A plan", body: "Rename it", kind: "comment", sent: true }),
+    ]);
+  });
+
   it("reads submitted files on the invoking environment host", async () => {
     const { harness } = await setup();
     harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ id: "thread-1", projectId: "project-1", environmentId: "remote-environment" }));

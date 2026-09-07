@@ -1,14 +1,52 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { addCommentSchema, createSchema, planSchema, reviseSchema, reviewSchema, type Plan } from "./contract";
+import { addCommentSchema, createSchema, planSchema, reviseSchema, reviewSchema, type Plan, type PlanComment } from "./contract";
 import type { z } from "zod";
 
-export function createPlanService(bb: BbPluginApi) {
+/** What a waiting agent receives once the reviewer decides on a version. */
+export interface ReviewDecision {
+  status: "feedback" | "approved";
+  planId: string;
+  versionId: string;
+  versionNumber: number;
+  note: string;
+  comments: Array<Pick<PlanComment, "quote" | "body"> & { kind: NonNullable<PlanComment["kind"]>; versionId: string }>;
+  receipt: string;
+  instruction: string;
+}
+
+export type WaitResult =
+  | ReviewDecision
+  | { status: "pending"; planId: string; versionId: string; instruction: string }
+  | { status: "superseded"; planId: string; versionId: string; latestVersionId: string; instruction: string };
+
+export interface WaitInput {
+  id: string;
+  versionId?: string;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}
+
+export interface PlanServiceOptions {
+  /** Whether to message the thread when no `wait` call is attached. Read per review. */
+  notifyUnattended?: () => Promise<boolean>;
+}
+
+const ANNOTATION_GUIDE = "Annotation kinds: redline requests removal of the quoted text; looksGood records that the passage needs no change; comment contains the user's requested change or question.";
+
+export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions = {}) {
   const db = bb.storage.database();
   bb.storage.migrate(db, [
     "CREATE TABLE plans (id TEXT PRIMARY KEY, body TEXT NOT NULL)",
     "CREATE TABLE deliveries (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL)",
+    "ALTER TABLE deliveries ADD COLUMN decision TEXT",
   ]);
+  type WaiterEvent = { kind: "decision"; decision: ReviewDecision } | { kind: "revised"; latestVersionId: string };
+  const waiters = new Map<string, Set<(event: WaiterEvent) => void>>();
+  const notifyWaiters = (planId: string, event: WaiterEvent) => {
+    for (const listener of [...(waiters.get(planId) ?? [])]) listener(event);
+  };
+  const notifyUnattended = options.notifyUnattended ?? (async () => true);
   const get = ({ id }: { id: string }): Plan => {
     const row = db.prepare("SELECT body FROM plans WHERE id = ?").get(id) as { body: string } | undefined;
     if (!row) throw new Error("Plan not found.");
@@ -66,24 +104,89 @@ export function createPlanService(bb: BbPluginApi) {
     const plan = editable(id);
     const previous = current(plan, expectedVersionId);
     if (previous.markdown === markdown && plan.status !== "revising") return plan;
-    plan.versions.push({ id: randomUUID(), number: previous.number + 1, markdown, createdAt: Date.now() });
+    const next = { id: randomUUID(), number: previous.number + 1, markdown, createdAt: Date.now() };
+    plan.versions.push(next);
     plan.status = "review";
     const saved = save(plan);
     if (plan.threadId) bb.realtime.publish("plan-submitted", { id: plan.id, threadId: plan.threadId });
+    notifyWaiters(plan.id, { kind: "revised", latestVersionId: next.id });
     return saved;
+  };
+  /** Comments a review delivers: every unsent one for feedback, positives only for approval. */
+  const delivered = (plan: Plan, action: "feedback" | "approve") =>
+    plan.comments.filter((item) => !item.resolved && item.sentAt === null && (action === "feedback" || item.kind === "looksGood"));
+  const decisionFor = (plan: Plan, version: Plan["versions"][number], input: z.infer<typeof reviewSchema>): ReviewDecision => ({
+    status: input.action === "approve" ? "approved" : "feedback",
+    planId: plan.id,
+    versionId: version.id,
+    versionNumber: version.number,
+    note: input.note,
+    comments: delivered(plan, input.action).map(({ quote, body, kind, versionId }) => ({ quote, body, kind: kind ?? "comment", versionId })),
+    receipt: input.requestId,
+    instruction: input.action === "approve"
+      ? `Implement plan ${plan.id} version ${version.number} exactly. Run \`bb plans get ${plan.id} --version ${version.id}\` if it is no longer in context. This does not authorize a merge or deployment.`
+      : `Revise plan ${plan.id} with plans_submit (planId, expectedVersionId ${version.id}) or \`bb plans submit\`, then wait for review again. Do not implement yet.`,
+  });
+  const storedDecision = (planId: string, versionId: string): ReviewDecision | null => {
+    const rows = db.prepare("SELECT decision FROM deliveries WHERE plan_id = ? AND state = 'sent' AND decision IS NOT NULL").all(planId) as { decision: string }[];
+    for (const { decision } of rows) {
+      const parsed = JSON.parse(decision) as ReviewDecision;
+      if (parsed.versionId === versionId) return parsed;
+    }
+    return null;
   };
   const completeDelivery = (input: z.infer<typeof reviewSchema>) => {
     const plan = get({ id: input.id });
-    current(plan, input.versionId);
+    const version = current(plan, input.versionId);
+    const decision = decisionFor(plan, version, input);
     plan.status = input.action === "approve" ? "approved" : "revising";
-    for (const item of plan.comments) {
-      if (!item.resolved && item.sentAt === null && (input.action === "feedback" || item.kind === "looksGood")) item.sentAt = Date.now();
-    }
-    return db.transaction(() => {
-      const result = save(plan);
-      db.prepare("UPDATE deliveries SET state = 'sent' WHERE id = ?").run(input.requestId);
-      return result;
+    for (const item of delivered(plan, input.action)) item.sentAt = Date.now();
+    const result = db.transaction(() => {
+      const saved = save(plan);
+      db.prepare("UPDATE deliveries SET state = 'sent', decision = ? WHERE id = ?").run(JSON.stringify(decision), input.requestId);
+      return saved;
     })();
+    notifyWaiters(plan.id, { kind: "decision", decision });
+    return result;
+  };
+  const wait = ({ id, versionId, timeoutMs, signal }: WaitInput): Promise<WaitResult> => {
+    const plan = get({ id });
+    const latest = plan.versions.at(-1)!;
+    const version = versionId ? plan.versions.find((item) => item.id === versionId) : latest;
+    if (!version) throw new Error("Version not found.");
+    const done = storedDecision(plan.id, version.id);
+    if (done) return Promise.resolve(done);
+    if (version.id !== latest.id) {
+      return Promise.resolve({ status: "superseded", planId: plan.id, versionId: version.id, latestVersionId: latest.id,
+        instruction: `Version ${version.number} was replaced without a review. Wait on the latest version ${latest.id} instead.` });
+    }
+    if (signal?.aborted) throw new Error("Wait cancelled.");
+    return new Promise<WaitResult>((resolve, reject) => {
+      const set = waiters.get(plan.id) ?? new Set();
+      waiters.set(plan.id, set);
+      const cleanup = () => {
+        set.delete(onEvent);
+        if (set.size === 0) waiters.delete(plan.id);
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const onEvent = (event: WaiterEvent) => {
+        cleanup();
+        const latestVersionId = event.kind === "decision" ? event.decision.versionId : event.latestVersionId;
+        resolve(event.kind === "decision" && latestVersionId === version.id
+          ? event.decision
+          : { status: "superseded", planId: plan.id, versionId: version.id, latestVersionId,
+              instruction: `Version ${version.number} was replaced. Wait on version ${latestVersionId} instead.` });
+      };
+      const onAbort = () => { cleanup(); reject(new Error("Wait cancelled.")); };
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve({ status: "pending", planId: plan.id, versionId: version.id,
+          instruction: `No review yet. Run \`bb plans wait ${plan.id} --version ${version.id}\` again to keep waiting.` });
+      }, timeoutMs);
+      set.add(onEvent);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   };
   const submitReview = async (input: z.infer<typeof reviewSchema>) => {
     input = reviewSchema.parse(input);
@@ -110,11 +213,16 @@ export function createPlanService(bb: BbPluginApi) {
       const thread = await bb.sdk.threads.get({ threadId: plan.threadId });
       if (thread.deletedAt || thread.archivedAt) throw new Error("The linked thread is deleted or archived. Restore it before sending a review.");
     }
-    const annotations = JSON.stringify(unsent.map(({ id, versionId, quote, body, kind }) => ({ id, versionId, quote, body, kind: kind ?? "comment" })), null, 2);
-    const annotationGuide = "Annotation kinds: redline requests removal of the quoted text; looksGood records that the passage needs no change; comment contains the user's requested change or question.";
+    // An agent blocked in `bb plans wait` gets the decision as its command
+    // result. The thread message is only for agents that are not waiting; it
+    // never repeats the plan text, which the agent already has or can fetch.
+    const attended = (waiters.get(plan.id)?.size ?? 0) > 0;
+    const notify = plan.threadId !== null && !attended && (await notifyUnattended()) ? plan.threadId : null;
+    const annotations = JSON.stringify(delivered(plan, input.action).map(({ versionId, quote, body, kind }) => ({ versionId, quote, body, kind: kind ?? "comment" })), null, 2);
+    const fetchHint = `Run \`bb plans get ${plan.id} --version ${version.id}\` if the plan text is no longer in context.`;
     const text = input.action === "approve"
-      ? `The user approved plan ${plan.id}, version ${version.number} (${version.id}), and asked you to start implementation. Implement this exact plan. This does not authorize a merge or deployment.\n\n${version.markdown}\n\nPositive annotations:\n${annotations}\n${annotationGuide}\n\nUser note: ${input.note}`
-      : `The user requests changes to plan ${plan.id}, version ${version.number} (${version.id}). Revise the plan using plans_submit with planId and expectedVersionId ${version.id}, then stop for review. Do not start implementation.\n\nReview comments (each versionId identifies the reviewed snapshot):\n${annotations}\n${annotationGuide}\n\nUser note: ${input.note}\n\nCurrent plan:\n${version.markdown}`;
+      ? `The user approved plan ${plan.id}, version ${version.number} (${version.id}), and asked you to start implementation. Implement that exact version. ${fetchHint} This does not authorize a merge or deployment.\n\nPositive annotations:\n${annotations}\n${ANNOTATION_GUIDE}\n\nUser note: ${input.note}`
+      : `The user requests changes to plan ${plan.id}, version ${version.number} (${version.id}). Revise the plan using plans_submit with planId and expectedVersionId ${version.id}, then wait for review with \`bb plans wait\`. Do not start implementation. ${fetchHint}\n\nReview comments (each versionId identifies the reviewed snapshot):\n${annotations}\n${ANNOTATION_GUIDE}\n\nUser note: ${input.note}`;
     // The SDK preflight above yields. Recheck inside the synchronous transaction
     // so two browser windows cannot deliver the same plan at the same time.
     db.transaction(() => {
@@ -123,9 +231,9 @@ export function createPlanService(bb: BbPluginApi) {
       if (fresh.updatedAt !== plan.updatedAt || JSON.stringify(fresh) !== JSON.stringify(plan)) throw new Error("The review changed. Refresh before sending.");
       db.prepare("INSERT INTO deliveries (id, plan_id, payload, state) VALUES (?, ?, ?, 'pending')").run(input.requestId, plan.id, JSON.stringify(input));
     })();
-    if (plan.threadId) {
+    if (notify !== null) {
       try {
-        await bb.sdk.threads.send({ threadId: plan.threadId, mode: "queue-if-active", input: [{ type: "text", text: `${text}\n\nReview receipt: ${input.requestId}`, mentions: [] }] });
+        await bb.sdk.threads.send({ threadId: notify, mode: "queue-if-active", input: [{ type: "text", text: `${text}\n\nReview receipt: ${input.requestId}`, mentions: [] }] });
       } catch (error) {
         bb.log.error(`Review delivery ${input.requestId} failed: ${error instanceof Error ? error.message : String(error)}`);
         throw new Error(`Delivery could not be confirmed. Check the linked thread for review receipt ${input.requestId} before retrying. Use bb plans delivery ${input.requestId} to inspect and resolve the delivery.`);
@@ -133,8 +241,20 @@ export function createPlanService(bb: BbPluginApi) {
     }
     return completeDelivery(input);
   };
+  /** One version with its comments: what an agent needs after context loss. */
+  const version = ({ id, versionId }: { id: string; versionId?: string }) => {
+    const plan = get({ id });
+    const item = versionId ? plan.versions.find((v) => v.id === versionId) : plan.versions.at(-1);
+    if (!item) throw new Error("Version not found.");
+    return {
+      planId: plan.id, title: plan.title, status: plan.status, threadId: plan.threadId,
+      latestVersionId: plan.versions.at(-1)!.id,
+      version: item,
+      comments: plan.comments.filter((c) => c.versionId === item.id).map(({ id, quote, body, kind, resolved, sentAt }) => ({ id, quote, body, kind: kind ?? "comment", resolved, sent: sentAt !== null })),
+    };
+  };
   return {
-    get, create, revise, submitReview,
+    get, create, revise, submitReview, wait, version,
     list: ({ threadId, offset = 0 }: { threadId?: string; offset?: number }) => {
       const rows = db.prepare("SELECT body FROM plans WHERE (? IS NULL OR json_extract(body, '$.threadId') = ?) ORDER BY json_extract(body, '$.updatedAt') DESC, id LIMIT 10 OFFSET ?").all(threadId ?? null, threadId ?? null, offset) as { body: string }[];
       return rows.map(({ body }) => planSchema.parse(JSON.parse(body)))
