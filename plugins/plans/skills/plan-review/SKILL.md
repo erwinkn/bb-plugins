@@ -30,6 +30,11 @@ If your shell tool has a time limit, run the CLI in the background and await
 its output. The plugin does not control the provider's native plan mode. If
 that mode is active, its native approval step remains separate.
 
+Some providers cannot hold a tool call open. There `plans_submit` returns
+`status: "submitted"` with an `instruction`; follow it and run the given
+`bb plans wait` command. If the tool call itself fails with a timeout, the plan
+was still saved: find it with `bb plans list` and run `bb plans wait` on it.
+
 ## Read the result
 
 `status` tells you what happened:

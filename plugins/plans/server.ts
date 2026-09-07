@@ -70,7 +70,19 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
       description: "When a review lands while no `bb plans wait` call is attached, send a compact message to the linked thread so the agent still hears about it.",
       default: true,
     },
+    nonBlockingProviders: {
+      type: "string",
+      label: "Providers whose tool calls cannot block",
+      description: "Comma-separated provider IDs whose tool calls time out quickly (Cursor's MCP client stops after 60 seconds). For these, plans_submit returns at once with the `bb plans wait` command to run instead of blocking on the review.",
+      default: "acp-cursor",
+    },
   });
+  const isNonBlocking = async (threadId: string) => {
+    const listed = (await settings.get()).nonBlockingProviders.split(",").map((item) => item.trim()).filter(Boolean);
+    if (listed.length === 0) return false;
+    const thread = await bb.sdk.threads.get({ threadId });
+    return listed.includes(thread.providerId);
+  };
   const service = createPlanService(bb, {
     notifyUnattended: async () => (await settings.get()).notifyThreadWhenUnattended,
     interactionChunkMs: options.interactionChunkMs,
@@ -79,7 +91,7 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
   bb.rpc.register(plansContract, rpcHandlers);
   bb.agents.registerTool({
     name: "plans_submit",
-    description: "Submit a Markdown plan to the Plans review panel, or submit a revised version, then block until the user sends feedback or approves. The result is the decision as JSON (status feedback|approved with comments and note). This tool does not itself enforce provider plan mode.",
+    description: "Submit a Markdown plan to the Plans review panel, or submit a revised version, then block until the user sends feedback or approves. The result is the decision as JSON (status feedback|approved with comments and note). On providers whose tool calls cannot block, it returns status submitted with the `bb plans wait` command to run instead. This tool does not itself enforce provider plan mode.",
     presentation: { label: { pending: "Awaiting plan review", completed: "Plan reviewed" } },
     parameters: z.object({ title: z.string().min(1).max(200), markdown: z.string().min(1).max(100_000), planId: z.string().optional(), expectedVersionId: z.string().optional() }),
     async execute({ title, markdown, planId, expectedVersionId }, { threadId, signal }) {
@@ -93,6 +105,9 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
         plan = await service.create({ title, markdown, threadId });
       }
       const versionId = plan.versions.at(-1)!.id;
+      if (await isNonBlocking(threadId)) {
+        return JSON.stringify({ status: "submitted", planId: plan.id, versionId, instruction: waitInstruction(plan.id, versionId) });
+      }
       const result = await wait({ id: plan.id, versionId, timeoutMs: TOOL_WAIT_MS, signal, hold: true });
       return JSON.stringify(result);
     },

@@ -52,7 +52,14 @@ setting turns that fallback off. Approval does not authorize a merge or
 deployment.
 
 BB caps one interaction at an hour; the plugin re-requests it while the agent
-keeps waiting, so a review can take longer than that.
+keeps waiting, so a review can take longer than that. BB also allows one
+pending interaction per thread; a second wait on the same thread keeps waiting
+without its own prompt.
+
+Cursor's MCP client times out tool calls after 60 seconds, so on providers
+listed in the **Providers whose tool calls cannot block** setting (default
+`acp-cursor`) `plans_submit` returns `status: "submitted"` at once and the
+agent runs `bb plans wait` instead, which holds the same prompt.
 
 The panel lists only plans from its thread. If none exists, paste Markdown
 to create one. New plans are linked to that thread automatically.

@@ -360,6 +360,36 @@ Status: recorded here; no upstream issue filed.
 Suggested issue title: `Add Stop and send to voice dictation`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Long-running plugin tool calls: heartbeat Cursor and abort orphaned calls
+
+The Plans plugin blocks `plans_submit` on `bb.ui.requestInput` so a review
+works like a native user question. With Codex the call held for 95 s and 63 s
+and returned the decision in-turn. With the Cursor ACP provider the call failed
+after 60 s with `MCP error -32001: Request timed out`, while the plugin's
+`execute` kept running: its `signal` was not aborted, so the interaction stayed
+pending and the wait counted as attended. BB fixed the same client timeout for
+opencode with progress heartbeats in
+[PR #1945](https://github.com/get-bb/bb/pull/1945).
+
+Requested behavior:
+
+- Send MCP progress heartbeats to Cursor's client while a plugin tool call is
+  pending, as for opencode.
+- Abort the tool call's `signal` when the provider abandons the request
+  (timeout, turn end), so plugins can release held interactions.
+- Expose a provider capability such as `supportsLongRunningToolCalls` in
+  `PluginAgentConfigurationContext`, so plugins can withhold blocking tools
+  without a provider id list. The plugin currently keeps a
+  `nonBlockingProviders` setting defaulting to `acp-cursor`.
+
+Also observed: a thread spawned right after `bb plugin update` still resolved
+the previous global-skills snapshot (`/Users/erwin/.bb/runtime/global-skills/
+<old hash>/skills/plan-review/SKILL.md`), so the agent read the stale skill.
+
+Verified on 2026-09-07. No upstream issue filed. Suggested issue title:
+`Plugin tool calls: heartbeat Cursor's MCP client and abort orphaned calls`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this
