@@ -15,8 +15,11 @@ import type { FileSessionSource, FileSessionSnapshot } from "@/lib/file-session"
 import { useFileSession } from "@/lib/use-file-session";
 import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } from "./PierreSurface";
 import { usePierreTheme } from "@/lib/pierre-theme";
-import { NoticeAction, NoticeRow, type SetPref } from "./EditorPane";
-import { FileBar, type DiffSaveIndicator } from "./DiffToolbar";
+import { hasPreview, NoticeAction, NoticeRow, type SetPref } from "./EditorPane";
+import { MarkdownPreview } from "./MarkdownPreview";
+import { workspaceRoot } from "@/lib/markdown-preview";
+import { FileBar } from "./DiffToolbar";
+import type { SaveIndicator } from "./Toolbar";
 import type { MenuItem } from "./ContextMenu";
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
 import { cn } from "@/lib/utils";
@@ -67,6 +70,8 @@ export interface EditableDiffPaneProps {
   onToggleList: () => void;
   /** Opens the same file in the Files tab; null when that is not possible. */
   onOpenFile: (() => void) | null;
+  /** Opens another workspace file, for a link in the rendered preview. */
+  onOpenPath: (path: string) => void;
   /** A save changed the file, so the change list needs new counts. */
   onSaved: () => void;
 }
@@ -87,6 +92,7 @@ export function EditableDiffPane({
   listSide,
   onToggleList,
   onOpenFile,
+  onOpenPath,
   onSaved,
 }: EditableDiffPaneProps) {
   const rpc = useRpc<typeof rpcContract>();
@@ -96,6 +102,8 @@ export function EditableDiffPane({
   const surfaceRef = useRef<PierreSurfaceHandle | null>(null);
   const [read, setRead] = useState<ReadState>({ kind: "loading" });
   const [surfaceStatus, setSurfaceStatus] = useState<PierreSurfaceStatus>({ kind: "loading" });
+  // A Markdown comparison opens as a diff; its rendered new side is one switch away.
+  const [previewing, setPreviewing] = useState(false);
   /** Rises when the pane itself asks for the comparison again. */
   const [resyncNonce, setResyncNonce] = useState(0);
   const key = targetKey(target);
@@ -266,6 +274,8 @@ export function EditableDiffPane({
   // so the comparison follows what the user types.
   const oldSide = data?.oldContent ?? null;
   const newSide = data === null ? null : editable && state !== null ? state.content : data.newContent;
+  const previewable = hasPreview(path) && newSide !== null;
+  const showPreview = previewable && previewing;
   // A working file must finish its session load before it can accept edits.
   // Otherwise a slow read exposes the session's initial empty document, and
   // typing into it invalidates the read that would have loaded the file.
@@ -293,6 +303,7 @@ export function EditableDiffPane({
         listOpen={listOpen}
         listSide={listSide}
         onToggleList={onToggleList}
+        preview={previewable ? { active: previewing, onToggle: () => setPreviewing((value) => !value) } : undefined}
       />
       <Notices
         read={read}
@@ -310,7 +321,17 @@ export function EditableDiffPane({
         onOpenFile={onOpenFile}
       />
       <div className="relative min-h-0 flex-1">
-        {data !== null && baseUrl !== null && sessionReady ? (
+        {showPreview && data !== null && newSide !== null ? (
+          // The new side as it renders, following the shared buffer like the Files tab.
+          <MarkdownPreview
+            source={data.source}
+            path={path}
+            relativePath={data.relativePath || path}
+            rootPath={workspaceRoot(data.absolutePath, data.relativePath)}
+            content={newSide}
+            onOpenPath={onOpenPath}
+          />
+        ) : data !== null && baseUrl !== null && sessionReady ? (
           <PierreSurface
             ref={surfaceRef}
             baseUrl={baseUrl}
@@ -344,7 +365,7 @@ export function EditableDiffPane({
             className="absolute inset-0"
           />
         ) : null}
-        <PaneState read={visibleRead} surface={surfaceStatus} entry={entry} onOpenFile={onOpenFile} />
+        {showPreview ? null : <PaneState read={visibleRead} surface={surfaceStatus} entry={entry} onOpenFile={onOpenFile} />}
       </div>
     </div>
   );
@@ -497,7 +518,7 @@ function Notices({
   return <>{rows}</>;
 }
 
-function indicatorFor(read: ReadState, state: FileSessionSnapshot | null): DiffSaveIndicator {
+function indicatorFor(read: ReadState, state: FileSessionSnapshot | null): SaveIndicator {
   if (read.kind === "error") return "error";
   if (state === null) return "clean";
   switch (state.save.kind) {

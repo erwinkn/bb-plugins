@@ -97,7 +97,7 @@ function FilePath({ path }: { path: string }) {
   );
 }
 
-function SaveDot({ indicator }: { indicator: SaveIndicator }) {
+export function SaveDot({ indicator }: { indicator: SaveIndicator }) {
   if (indicator === "clean") return null;
   const label =
     indicator === "saving" ? "Saving…" : indicator === "error" ? "Could not open or save this file" : "Unsaved changes (⌘S to save)";

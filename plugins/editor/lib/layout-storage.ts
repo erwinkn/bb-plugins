@@ -4,7 +4,7 @@ const PREFIX = "bb-plugin-erwin-editor:";
 
 export const DEFAULT_TREE_WIDTH = 200;
 export const MIN_TREE_WIDTH = 140;
-export const MIN_EDITOR_WIDTH = 200;
+const MIN_EDITOR_WIDTH = 200;
 
 export function clampTreeWidth(width: number, available: number): number {
   const max = Math.max(MIN_TREE_WIDTH, available - MIN_EDITOR_WIDTH);

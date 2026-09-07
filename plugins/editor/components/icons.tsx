@@ -30,6 +30,7 @@ import {
   SidebarRightIcon,
   SourceCodeIcon,
   TextAlignLeft01Icon,
+  ViewIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { cn } from "@/lib/utils";
@@ -59,6 +60,7 @@ export const FolderIcon = make(Folder01Icon);
 export const FolderOpenGlyph = make(FolderOpenIcon);
 export const MoreIcon = make(MoreHorizontalIcon);
 export const EditGlyph = make(PencilEdit02Icon);
+export const PreviewGlyph = make(ViewIcon);
 export const RefreshGlyph = make(RefreshIcon);
 export const RevertGlyph = make(ArrowTurnBackwardIcon);
 export const SearchIcon = make(Search01Icon);
@@ -91,7 +93,7 @@ const SHELL = new Set(["sh", "bash", "zsh", "fish", "ps1", "bat", "cmd"]);
 
 export type FileKind = "code" | "data" | "doc" | "image" | "lock" | "shell" | "generic";
 
-export function fileKind(path: string): FileKind {
+function fileKind(path: string): FileKind {
   const name = path.split(/[\\/]/).at(-1) ?? path;
   const lower = name.toLowerCase();
   if (lower.endsWith(".lock") || lower === "package-lock.json" || lower === "yarn.lock" || lower === "pnpm-lock.yaml") return "lock";

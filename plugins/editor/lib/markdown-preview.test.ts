@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hasMarkdownImage, rewriteMarkdownPaths, workspacePathFromHref } from "./markdown-preview.js";
+import { hasMarkdownImage, rewriteMarkdownPaths, workspacePathFromHref, workspaceRoot } from "./markdown-preview.js";
 
 const at = { filePath: "docs/guide/intro.md", baseUrl: "/preview/abc" };
 
@@ -63,4 +63,11 @@ test("file links BB rendered under the root map back to workspace paths", () => 
   for (const href of ["file:///work/other/a.md", "file:///work/space", "file:///work/space/", "https://example.com", "#x", "file:///work/spaced/a.md"]) {
     assert.equal(workspacePathFromHref(href, "/work/space"), null, href);
   }
+});
+
+test("the workspace root is the absolute path without its root-relative tail", () => {
+  assert.equal(workspaceRoot("/repo/docs/guide.md", "docs/guide.md"), "/repo");
+  assert.equal(workspaceRoot("C:\\repo\\docs\\guide.md", "docs\\guide.md"), "C:\\repo");
+  assert.equal(workspaceRoot("/repo/docs/guide.md", ""), "");
+  assert.equal(workspaceRoot("/elsewhere/guide.md", "docs/guide.md"), "");
 });

@@ -31,12 +31,8 @@ export interface UseFileSessionOptions {
   source: FileSessionSource;
   /** Null shows no file; the hook then holds no session. */
   path: string | null;
-  /** False keeps a read-only view, for example a historical revision. */
-  enabled?: boolean;
   /** Content the caller already read, for example from the diff RPC. */
   seed?: SessionSeed | null;
-  /** A transport other than the plugin RPC. Tests use this. */
-  io?: FileSessionIo;
 }
 
 export interface UseFileSession {
@@ -66,12 +62,10 @@ const NEVER_CHANGES = () => NO_OP;
  * share the text, the dirty state and the save queue.
  */
 export function useFileSession(options: UseFileSessionOptions): UseFileSession {
-  const { source, path, seed = null, enabled = true } = options;
-  const rpcIo = useFileSessionIo();
-  const io = options.io ?? rpcIo;
+  const { source, path, seed = null } = options;
+  const io = useFileSessionIo();
   const viewId = useId();
-  const active = enabled && path !== null;
-  const key = active ? sessionKeyFor(source, path) : null;
+  const key = path === null ? null : sessionKeyFor(source, path);
 
   // Acquiring is idempotent: the registry returns the session for the key.
   const held = useRef<{ key: string; session: FileSession } | null>(null);

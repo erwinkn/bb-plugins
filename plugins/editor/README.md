@@ -81,6 +81,15 @@ file while the page is open. The preview follows the shared buffer, so unsaved
 edits from the Changes tab show there too. Find and Go to line switch to the
 editor first.
 
+Relative images load through a short-lived preview lease for the workspace
+root, requested only when the document has one and renewed before it lapses.
+Relative links to files under the root open in the same pane; other links keep
+BB's behaviour. Paths inside fenced code are left as written.
+
+In the Changes tab a Markdown file opens as its comparison; the eye button in
+the file row shows the new side rendered, and links there open the target in
+the Files tab. Files removed by the comparison have no rendered side.
+
 ### Revert actions
 
 Hover changed lines and select the **Revert** control at the right edge of the
@@ -90,9 +99,9 @@ reverts the hunk that contains them. Pierre applies the change as an edit:
 Undo works, and the normal save or auto-save setting applies. Reverting all
 lines in a new file leaves an empty file.
 
-Right-click a file in the Changes list (or press the Menu key or Shift+F10 on
-a focused row) to **Revert** a modified file, **Restore** a deleted file, or
-**Delete** a new file. The list marks new files with a green A and deleted
+Right-click a file in the Changes list (long-press on a touch screen, or press
+the Menu key or Shift+F10 on a focused row) to **Revert** a modified file,
+**Restore** a deleted file, or **Delete** a new file. The list marks new files with a green A and deleted
 files with a red D. New-file deletion
 always asks for confirmation. Replacing unsaved edits also asks first. Whole
 file actions take effect on disk immediately and update shared editor sessions.
@@ -184,7 +193,9 @@ plugin directory and resolve the reported installation error.
 - `components/ui/` and `lib/portal-scope.ts` contain the BB 0.42.1 dropdown
   and responsive overlay source, shared with this repository's provider-usage plugin.
 - `components/Workbench.tsx` and `EditorPane.tsx` provide the Files UI.
-  `DiffWorkbench.tsx` and `EditableDiffPane.tsx` provide Changes.
+  `DiffWorkbench.tsx` and `EditableDiffPane.tsx` provide Changes. Both share
+  `Toolbar.tsx` buttons, `ResizeHandle.tsx`, `MarkdownPreview.tsx` and
+  `lib/markdown-preview.ts`.
 - `lib/file-session.ts` holds buffers, file hashes, save queues, draft storage,
   and ownership shared by both views.
 - `lib/pierre-theme.ts` adapts BB's active code theme. `lib/languages.ts`

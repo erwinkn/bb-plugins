@@ -76,11 +76,6 @@ export function loadPierre(
   return bootPromise;
 }
 
-/** Drops the cached runtime. For tests only. */
-export function resetPierreForTests(): void {
-  bootPromise = null;
-}
-
 async function boot(baseUrl: string, highlighter: PierreHighlighter): Promise<PierreRuntime> {
   const bundle = (await import(/* @vite-ignore */ `${baseUrl}/editor.js`)) as Partial<PierreBundle>;
   const missing = (

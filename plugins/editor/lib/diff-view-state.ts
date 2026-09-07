@@ -6,16 +6,14 @@
  */
 import type { FileSessionSnapshot } from "./file-session.js";
 import type { DiffEntry, DiffTarget } from "./diff-contract.js";
-import { clampTreeWidth, DEFAULT_TREE_WIDTH, MIN_TREE_WIDTH } from "./layout-storage.js";
+import { DEFAULT_TREE_WIDTH, MIN_TREE_WIDTH } from "./layout-storage.js";
 
 export type DiffScope = DiffTarget["type"];
-
-export const DIFF_SCOPES: readonly DiffScope[] = ["uncommitted", "all", "branch_committed", "commit"];
 
 /** Below this the split view has too little room per side, so it shows unified. */
 export const SPLIT_MIN_WIDTH_PX = 560;
 /** Below this the list and the comparison take turns instead of sharing the row. */
-export const COMPACT_BREAKPOINT_PX = 620;
+const COMPACT_BREAKPOINT_PX = 620;
 
 const COMMIT_PATTERN = /^[a-fA-F0-9]{7,40}$/;
 /** Matches the reference rule the server applies, so bad input never leaves the client. */
@@ -315,8 +313,6 @@ export function readLastPath(workspaceKey: string, target: DiffTarget): string |
 export function storeLastPath(workspaceKey: string, target: DiffTarget, path: string | null): void {
   write(`path:${workspaceKey}:${targetKey(target)}`, path);
 }
-
-export { clampTreeWidth };
 
 /** A saved hash is an acknowledgement; an external read needs a new comparison. */
 export function diffSessionSync(

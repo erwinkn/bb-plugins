@@ -13,6 +13,7 @@ import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } fro
 import type { MenuItem } from "./ContextMenu";
 import { GoToLine } from "./GoToLine";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { workspaceRoot } from "@/lib/markdown-preview";
 import { Toolbar, type SaveIndicator } from "./Toolbar";
 
 /** Files that open as a rendered preview, with the editor one switch away. */
@@ -274,7 +275,6 @@ export function EditorPane({
         isEditor={isEditor}
         onTakeOver={claimEditor}
         onOverwrite={() => void overwrite()}
-        onReload={reloadFile}
         onDiscard={discardEdits}
         onRestoreDraft={file.restoreDraft}
         onDiscardDraft={file.discardDraft}
@@ -291,7 +291,7 @@ export function EditorPane({
             source={source}
             path={path}
             relativePath={state.relativePath || path}
-            rootPath={workspaceRoot(state)}
+            rootPath={workspaceRoot(state.absolutePath, state.relativePath)}
             content={state.content}
             onOpenPath={onOpenPath}
           />
@@ -349,13 +349,6 @@ function runOnSurface(ref: { current: PierreSurfaceHandle | null }, run: (handle
   run(handle);
 }
 
-/** The workspace root the file was read from: its absolute path minus its root-relative one. */
-function workspaceRoot(state: FileSessionSnapshot): string {
-  const { absolutePath, relativePath } = state;
-  if (relativePath === "" || !absolutePath.endsWith(relativePath)) return "";
-  return absolutePath.slice(0, absolutePath.length - relativePath.length).replace(/[\\/]+$/, "");
-}
-
 function indicatorFor(state: FileSessionSnapshot | null, surface: PierreSurfaceStatus): SaveIndicator {
   if (state === null) return "clean";
   if (state.load.kind === "error" || surface.kind === "error") return "error";
@@ -379,7 +372,6 @@ function Notices({
   isEditor,
   onTakeOver,
   onOverwrite,
-  onReload,
   onDiscard,
   onRestoreDraft,
   onDiscardDraft,
@@ -390,7 +382,6 @@ function Notices({
   isEditor: boolean;
   onTakeOver: () => void;
   onOverwrite: () => void;
-  onReload: () => void;
   onDiscard: () => void;
   onRestoreDraft: () => void;
   onDiscardDraft: () => void;

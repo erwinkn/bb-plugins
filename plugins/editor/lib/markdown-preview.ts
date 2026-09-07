@@ -88,3 +88,9 @@ export function workspacePathFromHref(href: string, rootPath: string): string | 
   if (root === "") return null;
   return pathname.startsWith(`${root}/`) && pathname.length > root.length + 1 ? pathname.slice(root.length + 1) : null;
 }
+
+/** The workspace root a file was read from: its absolute path minus its root-relative one. */
+export function workspaceRoot(absolutePath: string, relativePath: string): string {
+  if (relativePath === "" || !absolutePath.endsWith(relativePath)) return "";
+  return absolutePath.slice(0, absolutePath.length - relativePath.length).replace(/[\\/]+$/, "");
+}

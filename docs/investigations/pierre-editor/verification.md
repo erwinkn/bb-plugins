@@ -279,3 +279,40 @@ a code block and a task list. The switch mounted the editor and moved focus
 into it. Text typed at the top reached disk through auto save and appeared in
 the preview on switching back; deleting it restored the fixture. Typecheck and
 builds pass.
+
+## Touch menus, preview paths, cleanup (2026-09-07)
+
+A long press on a Files tree row or a Changes list row opens the same menu a
+right-click does, because iOS Safari fires no `contextmenu` for touch. Find,
+replace and Go to line from a Markdown preview switch to the editor and run
+once it exists.
+
+Relative images in a preview load through a preview lease for the workspace
+root (`previewBase` RPC, renewed a minute before it lapses). Relative links
+are rewritten to root-relative paths and a plain click on one opens the file
+in the same pane; the listener is native and in the capture phase so it runs
+before the host's link handler. The server now picks the POSIX or Windows path
+API from the root's shape, so `relativePath` values are POSIX on POSIX roots.
+
+The Changes tab shows the eye button for a Markdown file with a new side. It
+renders that side with the same component; a link there opens the target in
+the Files tab.
+
+Cleanup: `lib/bb-tokens.ts` (Monaco chrome colours) is gone; the two
+`ResizeHandle` copies are one component; `SaveDot` is shared by both
+toolbars; unused options, re-exports and a test-only reset were removed.
+
+Installed checks in the fixture thread (`/tmp/bb-pierre-qa-0907`):
+
+- Files: `md-preview/index.md` rendered its image from the lease and the
+  sibling link opened `sibling.md` in the same pane.
+- Changes, Uncommitted: `md-preview/index.md` (new file) showed **Show the
+  preview**; the preview rendered the image and a line appended to the working
+  file; **Show the comparison** returned to the diff. The sibling link opened
+  `sibling.md` in a Files tab.
+- The shared handle: ArrowLeft on the tree separator (tree on the right) grew
+  the column from 200 to 224 px and stored 224; ArrowRight returned it.
+
+Typecheck, `--noUnusedLocals --noUnusedParameters`, both builds and all 143
+tests pass. Physical phones, IME composition and remote-host latency were not
+tested from this session; they need a device.

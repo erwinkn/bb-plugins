@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { EditorPane, NoticeAction, NoticeRow, type EditorPaneHandle, type SetPref } from "./EditorPane";
 import { FileTree, type CreateKind } from "./FileTree";
 import { QuickOpen } from "./QuickOpen";
+import { ResizeHandle } from "./ResizeHandle";
 import { ThemePicker } from "./ThemePicker";
 import { themeNameFor } from "@/lib/themes";
 import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
@@ -55,7 +56,6 @@ interface PendingNavigation {
   historyIndex: number | null;
 }
 const COMPACT_BREAKPOINT_PX = 420;
-const KEYBOARD_RESIZE_STEP_PX = 24;
 const HISTORY_LIMIT = 50;
 
 export function Workbench({ surface, source, initialPath, workspaceKey, label, prefs, onSetPref, Original }: WorkbenchProps) {
@@ -328,21 +328,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     });
   }, [surface]);
 
-  // The handle's pointer listeners are bound when the drag starts, so they
-  // read the width through a ref rather than the render they closed over.
-  const treeWidthRef = useRef(treeWidth);
-  treeWidthRef.current = treeWidth;
-  const resizeStart = useRef(treeWidth);
   const treeOnRight = prefs.fileTreeSide === "right";
-  const resizeBy = (delta: number) => {
-    const next = clampTreeWidth(resizeStart.current + (treeOnRight ? -delta : delta), width);
-    treeWidthRef.current = next;
-    setTreeWidth(next);
-  };
-  const resizeEnd = () => {
-    resizeStart.current = treeWidthRef.current;
-    storeTreeWidth(treeWidthRef.current);
-  };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
@@ -384,11 +370,11 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       {compact ? null : (
         <ResizeHandle
           side={treeOnRight ? "left" : "right"}
-          onResizeStart={() => {
-            resizeStart.current = treeWidth;
-          }}
-          onResize={resizeBy}
-          onResizeEnd={resizeEnd}
+          label="Resize the file tree"
+          width={treeWidth}
+          available={width}
+          onResize={setTreeWidth}
+          onResizeEnd={storeTreeWidth}
         />
       )}
     </div>
@@ -537,74 +523,6 @@ function EmptyState({
           Go to file <kbd className="ml-1 text-muted-foreground">⌘P</kbd>
         </button>
       </div>
-    </div>
-  );
-}
-
-function ResizeHandle({
-  side,
-  onResizeStart,
-  onResize,
-  onResizeEnd,
-}: {
-  /** Edge of the tree column the handle sits on. */
-  side: "left" | "right";
-  onResizeStart: () => void;
-  onResize: (deltaX: number) => void;
-  onResizeEnd: () => void;
-}) {
-  const [dragging, setDragging] = useState(false);
-  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const target = event.currentTarget;
-    const pointerId = event.pointerId;
-    const startX = event.clientX;
-    setDragging(true);
-    onResizeStart();
-    target.setPointerCapture(pointerId);
-    const move = (moveEvent: PointerEvent) => {
-      if (moveEvent.pointerId === pointerId) onResize(moveEvent.clientX - startX);
-    };
-    const finish = (finishEvent: PointerEvent) => {
-      if (finishEvent.pointerId !== pointerId) return;
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", finish);
-      target.removeEventListener("pointercancel", finish);
-      if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-      setDragging(false);
-      onResizeEnd();
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", finish);
-    target.addEventListener("pointercancel", finish);
-  };
-  const grow = side === "right" ? 1 : -1;
-  return (
-    <div
-      role="separator"
-      aria-label="Resize the file tree"
-      aria-orientation="vertical"
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (event.key === "ArrowLeft") onResize(-KEYBOARD_RESIZE_STEP_PX * grow);
-        else if (event.key === "ArrowRight") onResize(KEYBOARD_RESIZE_STEP_PX * grow);
-        else return;
-        event.preventDefault();
-        onResizeEnd();
-      }}
-      className={cn(
-        "absolute top-0 z-10 h-full w-px bg-transparent transition-colors",
-        side === "right" ? "-right-px" : "-left-px",
-        "hover:bg-ring/50 focus-visible:bg-ring focus-visible:outline-none",
-        dragging && "bg-ring/60",
-      )}
-    >
-      <div
-        aria-hidden
-        onPointerDown={handlePointerDown}
-        className={cn("absolute top-0 h-full w-2.5 cursor-col-resize touch-none bg-transparent", side === "right" ? "-right-1" : "-left-1")}
-      />
     </div>
   );
 }

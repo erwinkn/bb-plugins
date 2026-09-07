@@ -77,7 +77,7 @@ export function GoToLine({
 }
 
 /** `12` or `12:5`, inside the file. Anything else has no target. */
-export function parseTarget(value: string, lineCount: number): { line: number; character: number } | null {
+function parseTarget(value: string, lineCount: number): { line: number; character: number } | null {
   const match = /^\s*(\d+)\s*(?::\s*(\d+)\s*)?$/.exec(value);
   if (match === null) return null;
   const line = Number(match[1]);

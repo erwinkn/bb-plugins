@@ -14,7 +14,6 @@ import {
   describeTarget,
   isBranchRef,
   isCommitHash,
-  needsBranch,
   shortSha,
   type ChangeSummary,
   type DiffLayout,
@@ -25,7 +24,7 @@ import type { EditorPrefs } from "@/lib/editor-options";
 import { ContextMenu, menuAt, type MenuItem, type MenuState } from "./ContextMenu";
 import { DiffScopeMenu, type ScopeMenuItem } from "./DiffScopeMenu";
 import type { SetPref } from "./EditorPane";
-import { ToolbarButton } from "./Toolbar";
+import { SaveDot, ToolbarButton, type SaveIndicator } from "./Toolbar";
 import {
   BranchGlyph,
   CommitGlyph,
@@ -38,6 +37,7 @@ import {
   ExternalIcon,
   FileIcon,
   MoreIcon,
+  PreviewGlyph,
   RefreshGlyph,
   SidebarLeftGlyph,
   SidebarRightGlyph,
@@ -323,12 +323,10 @@ function ValuePrompt({
   );
 }
 
-export type DiffSaveIndicator = "clean" | "dirty" | "saving" | "error";
-
 export interface FileBarProps {
   entry: DiffEntry | null;
   path: string;
-  indicator: DiffSaveIndicator;
+  indicator: SaveIndicator;
   canPrevious: boolean;
   canNext: boolean;
   onPrevious: () => void;
@@ -338,6 +336,8 @@ export interface FileBarProps {
   listOpen: boolean;
   listSide: "left" | "right";
   onToggleList: () => void;
+  /** The rendered view of a previewable file, when the comparison can switch to it. */
+  preview?: { active: boolean; onToggle: () => void };
 }
 
 /** The row above the comparison: file navigation, the file, and its actions. */
@@ -354,6 +354,7 @@ export function FileBar({
   listOpen,
   listSide,
   onToggleList,
+  preview,
 }: FileBarProps) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const ListGlyph = listSide === "right" ? SidebarRightGlyph : SidebarLeftGlyph;
@@ -370,6 +371,11 @@ export function FileBar({
         <FilePath path={path} previousPath={entry?.previousPath ?? null} />
         <SaveDot indicator={indicator} />
       </div>
+      {preview === undefined ? null : (
+        <ToolbarButton label={preview.active ? "Show the comparison" : "Show the preview"} onClick={preview.onToggle} pressed={preview.active}>
+          <PreviewGlyph />
+        </ToolbarButton>
+      )}
       <ToolbarButton label="File actions" onClick={(event) => setMenu(menuAt(event.currentTarget, menuItems))} pressed={menu !== null}>
         <MoreIcon />
       </ToolbarButton>
@@ -398,23 +404,3 @@ function FilePath({ path, previousPath }: { path: string; previousPath: string |
     </span>
   );
 }
-
-function SaveDot({ indicator }: { indicator: DiffSaveIndicator }) {
-  if (indicator === "clean") return null;
-  const label =
-    indicator === "saving" ? "Saving…" : indicator === "error" ? "This file could not be read or saved" : "Unsaved changes (⌘S to save)";
-  return (
-    <span className="flex size-3.5 shrink-0 items-center justify-center" title={label} role="status" aria-label={label}>
-      <span
-        className={cn(
-          "size-2 rounded-full transition-colors",
-          indicator === "saving" && "animate-pulse bg-foreground",
-          indicator === "dirty" && "bg-foreground",
-          indicator === "error" && "bg-destructive",
-        )}
-      />
-    </span>
-  );
-}
-
-export { needsBranch };

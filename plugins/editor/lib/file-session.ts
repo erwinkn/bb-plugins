@@ -167,7 +167,7 @@ export interface DraftStore {
 const DRAFT_PREFIX = "erwin-editor:draft:v1:";
 const DRAFT_DEBOUNCE_MS = 400;
 /** Bigger buffers are not kept for a later session; the store cannot hold them. */
-export const MAX_DRAFT_CHARS = 1_000_000;
+const MAX_DRAFT_CHARS = 1_000_000;
 /** Detached, clean sessions kept for their undo history and view state. */
 const MAX_IDLE_SESSIONS = 24;
 
@@ -221,7 +221,7 @@ export function memoryDraftStore(): DraftStore {
 }
 
 /** Drafts in `localStorage`; they survive a reload of the BB window. */
-export function localDraftStore(): DraftStore {
+function localDraftStore(): DraftStore {
   return {
     read(key) {
       try {
@@ -875,7 +875,7 @@ export function peekFileSession(source: FileSessionSource, path: string): FileSe
 }
 
 /** Listen for any change in any session; for lists that mark unsaved files. */
-export function subscribeSessions(listener: () => void): () => void {
+function subscribeSessions(listener: () => void): () => void {
   registryListeners.add(listener);
   return () => registryListeners.delete(listener);
 }
@@ -892,7 +892,7 @@ export function dirtyPaths(source: FileSessionSource): ReadonlySet<string> {
 }
 
 /** Write every pending draft now. The window calls this before it goes away. */
-export function flushAllDrafts(): void {
+function flushAllDrafts(): void {
   for (const session of sessions.values()) session.flushDraft();
 }
 
@@ -937,9 +937,9 @@ export function subscribeDirtyPaths(
  *
  * This is a poll. A host file watch is a separate, larger piece of work.
  */
-export const REFRESH_INTERVAL_MS = 5_000;
-export const LARGE_FILE_CHARS = 512 * 1024;
-export const SLOW_REFRESH_INTERVAL_MS = 30_000;
+const REFRESH_INTERVAL_MS = 5_000;
+const LARGE_FILE_CHARS = 512 * 1024;
+const SLOW_REFRESH_INTERVAL_MS = 30_000;
 
 const refreshedAt = new Map<string, number>();
 let watchTimer: ReturnType<typeof setInterval> | null = null;

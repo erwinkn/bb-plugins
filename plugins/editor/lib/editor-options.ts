@@ -10,7 +10,7 @@ export interface EditorPrefs {
   fileTreeSide: TreeSide;
 }
 
-export const DEFAULT_PREFS: EditorPrefs = {
+const DEFAULT_PREFS: EditorPrefs = {
   fontSize: 12,
   wordWrap: false,
   lineNumbers: true,

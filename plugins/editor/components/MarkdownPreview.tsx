@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Markdown, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
+import { Markdown, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
+import type { FileSessionSource } from "@/lib/file-session";
 import { hasMarkdownImage, rewriteMarkdownPaths, workspacePathFromHref } from "@/lib/markdown-preview";
 
 /** Renew a lease this long before it expires, so an image never loads from a dead one. */
@@ -12,7 +13,7 @@ interface Lease {
 }
 
 export interface MarkdownPreviewProps {
-  source: PluginFileOpenerSource;
+  source: FileSessionSource;
   path: string;
   /** The document's path relative to `rootPath`, the workspace root the lease serves. */
   relativePath: string;
