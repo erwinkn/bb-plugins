@@ -54,6 +54,11 @@ export function ThreadRow({
   const actions = experimental_useSidebarThreadActions();
   const scope = usePortalScopeProps();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const savingRef = useRef(false);
   const longPress = useLongPressMenu(menuOpen);
   // A long press can produce a click on release. Keep keyboard and BB shortcut
   // clicks (detail === 0) available, but require a fresh pointer press otherwise.
@@ -74,7 +79,57 @@ export function ThreadRow({
       <div
         className={`group relative flex min-w-0 items-center rounded-md ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
       >
-        <Menu.Root
+        {editing ? (
+          <form
+            aria-label="Rename thread"
+            className="flex min-w-0 flex-1 flex-wrap gap-2 p-2"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!savingRef.current) setEditing(false);
+              }
+            }}
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const nextTitle = draftTitle.trim();
+              if (!nextTitle || savingRef.current) return;
+              if (nextTitle === title) {
+                setEditing(false);
+                return;
+              }
+              savingRef.current = true;
+              setSaving(true);
+              setRenameError(null);
+              try {
+                await actions.rename(thread.id, nextTitle);
+                setEditing(false);
+              } catch {
+                setRenameError("Could not rename the thread. Try again.");
+              } finally {
+                savingRef.current = false;
+                setSaving(false);
+              }
+            }}
+          >
+            <input
+              aria-label="Thread name"
+              autoFocus
+              onFocus={(event) => event.currentTarget.select()}
+              value={draftTitle}
+              disabled={saving}
+              onChange={(event) => setDraftTitle(event.target.value)}
+              className="w-full min-w-0 rounded-md border border-border bg-background px-2 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+            <button type="submit" disabled={saving || !draftTitle.trim()} className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button type="button" disabled={saving} onClick={() => setEditing(false)} className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+              Cancel
+            </button>
+            {renameError && <p role="alert" className="w-full text-sm text-destructive">{renameError}</p>}
+          </form>
+        ) : <Menu.Root
           onOpenChange={(open) => {
             setMenuOpen(open);
             if (open) suppressClick.current = true;
@@ -219,6 +274,16 @@ export function ThreadRow({
                   <Menu.Item
                     className={menuItemClass}
                     onSelect={() => {
+                      setDraftTitle(title);
+                      setRenameError(null);
+                      setEditing(true);
+                    }}
+                  >
+                    Rename
+                  </Menu.Item>
+                  <Menu.Item
+                    className={menuItemClass}
+                    onSelect={() => {
                       void actions
                         .setRead(thread.id, thread.isUnread)
                         .catch(onError);
@@ -253,7 +318,7 @@ export function ThreadRow({
               </Menu.Item>
             </Menu.Content>
           </Menu.Portal>
-        </Menu.Root>
+        </Menu.Root>}
       </div>
       {children}
     </li>

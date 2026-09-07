@@ -103,13 +103,16 @@ icon. Child arrows stay separate from status icons. Group headers have plain lab
 centered collapse chevrons, with no status icons, counts, or hover descriptions.
 The status menu retains its colored icons. The layout uses BB's theme tokens.
 
-Active rows use BB's native open, split, pin, read, and archive actions. The plugin also keeps
+Active rows use BB's native open, split, rename, pin, read, and archive actions. The plugin also keeps
 the attributes needed for BB's thread navigation shortcuts. Right-click a row
 on desktop or hold it for 450 ms on mobile to open its actions. Scrolling,
 releasing early, or cancelling the touch cancels the hold. With keyboard focus
 on a row, press Shift+F10 or the Menu key. While a touch menu is open, a temporary
 selection guard prevents the native hold from selecting background text. It is
 removed on close or unmount; desktop menus are unchanged.
+Select Rename to edit the thread name in the row. Save or Enter applies the
+name. Cancel or Escape discards the edit. Empty names cannot be saved. A failed
+save keeps the entered name and shows an error so you can try again.
 There is no actions button. A normal
 click or tap still opens the thread. Archive uses BB's native flow, which also
 archives child threads and closes their open panes. No bulk read or delete
