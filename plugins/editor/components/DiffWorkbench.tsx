@@ -243,6 +243,9 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
       className={cn("relative flex h-full shrink-0 flex-col", !compact && (listOnRight ? "border-l border-border/60" : "border-r border-border/60"))}
     >
       <DiffFileList
+        threadId={threadId}
+        target={target}
+        onChanged={refresh}
         files={list.files}
         title={wording.label}
         activePath={selected}

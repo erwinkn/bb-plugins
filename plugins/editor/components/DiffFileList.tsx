@@ -6,11 +6,15 @@
  */
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
-import type { DiffEntry } from "@/lib/diff-contract";
+import { DiffFileActions } from "./DiffFileActions";
+import type { DiffEntry, DiffTarget } from "@/lib/diff-contract";
 import { changeLabel, unavailableReason } from "@/lib/diff-view-state";
 import { FileIcon, RefreshGlyph } from "./icons";
 
 export interface DiffFileListProps {
+  threadId: string;
+  target: DiffTarget;
+  onChanged: () => void;
   files: readonly DiffEntry[];
   /** Short name of what is compared, shown as the list heading. */
   title: string;
@@ -27,6 +31,7 @@ export interface DiffFileListProps {
 }
 
 export function DiffFileList({
+  threadId, target, onChanged,
   files,
   title,
   activePath,
@@ -66,14 +71,17 @@ export function DiffFileList({
         ) : null}
         <ul role="list" className="flex flex-col">
           {files.map((entry) => (
-            <Row
-              key={entry.path}
-              entry={entry}
-              active={entry.path === activePath}
-              dirty={dirtyPaths.has(entry.path)}
-              rowRef={entry.path === activePath ? activeRef : undefined}
-              onSelect={() => onSelect(entry.path)}
-            />
+            <li key={`${JSON.stringify(target)}:${entry.path}`}>
+              <DiffFileActions entry={entry} target={target} threadId={threadId} onChanged={onChanged}>
+                <Row
+                  entry={entry}
+                  active={entry.path === activePath}
+                  dirty={dirtyPaths.has(entry.path)}
+                  rowRef={entry.path === activePath ? activeRef : undefined}
+                  onSelect={() => onSelect(entry.path)}
+                />
+              </DiffFileActions>
+            </li>
           ))}
         </ul>
         {truncated ? <Note tone="muted">The list shows the first files only. This comparison is larger.</Note> : null}
@@ -103,36 +111,34 @@ function Row({
     (entry.previousPath === null ? entry.path : `${entry.previousPath} → ${entry.path}`) +
     `\n${label}${unavailable === null ? "" : `\n${unavailable}`}`;
   return (
-    <li>
-      <button
-        type="button"
-        ref={rowRef}
-        onClick={onSelect}
-        title={title}
-        aria-current={active ? "true" : undefined}
-        className={cn(
-          "flex w-full cursor-pointer items-center gap-1.5 py-1 pr-2 pl-3 text-left text-[13px] leading-5",
-          "hover:bg-state-hover focus-visible:bg-state-hover focus-visible:outline-none",
-          "max-md:pointer-coarse:min-h-8",
-          active ? "bg-state-hover text-foreground" : "text-foreground/85",
-        )}
-      >
-        <FileIcon path={name} className={cn("shrink-0", active ? "text-file-accent" : "text-muted-foreground", unavailable !== null && "opacity-50")} />
-        <span className={cn("flex min-w-0 flex-1 items-baseline gap-1.5", unavailable !== null && "text-muted-foreground")}>
-          <span className="shrink-0 truncate">{name}</span>
-          {directory === "" ? null : <span className="min-w-0 truncate text-[11px] text-subtle-foreground">{directory}</span>}
-        </span>
-        {dirty ? (
-          <span
-            className="size-1.5 shrink-0 rounded-full bg-foreground"
-            role="status"
-            aria-label="Unsaved changes"
-            title="Unsaved changes"
-          />
-        ) : null}
-        <ChangeMark entry={entry} unavailable={unavailable !== null} label={label} />
-      </button>
-    </li>
+    <button
+      type="button"
+      ref={rowRef}
+      onClick={onSelect}
+      title={title}
+      aria-current={active ? "true" : undefined}
+      className={cn(
+        "flex w-full cursor-pointer items-center gap-1.5 py-1 pr-9 pl-3 text-left text-[13px] leading-5",
+        "hover:bg-state-hover focus-visible:bg-state-hover focus-visible:outline-none",
+        "max-md:pointer-coarse:min-h-8",
+        active ? "bg-state-hover text-foreground" : "text-foreground/85",
+      )}
+    >
+      <FileIcon path={name} className={cn("shrink-0", active ? "text-file-accent" : "text-muted-foreground", unavailable !== null && "opacity-50")} />
+      <span className={cn("flex min-w-0 flex-1 items-baseline gap-1.5", unavailable !== null && "text-muted-foreground")}>
+        <span className="shrink-0 truncate">{name}</span>
+        {directory === "" ? null : <span className="min-w-0 truncate text-[11px] text-subtle-foreground">{directory}</span>}
+      </span>
+      {dirty ? (
+        <span
+          className="size-1.5 shrink-0 rounded-full bg-foreground"
+          role="status"
+          aria-label="Unsaved changes"
+          title="Unsaved changes"
+        />
+      ) : null}
+      <ChangeMark entry={entry} unavailable={unavailable !== null} label={label} />
+    </button>
   );
 }
 

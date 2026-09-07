@@ -70,7 +70,34 @@ on disk during loading must be refreshed before editing.
 Panel links accept `{ target, path }`, where `target` has type `uncommitted`,
 `all`, `branch_committed`, or `commit`. Branch targets may include
 `mergeBaseBranch`; commit targets require `sha`. The tab validates these values.
-BB's built-in diff tab remains available. There are no stage or revert actions.
+BB's built-in diff tab remains available.
+
+### Revert actions
+
+Hover a diff line number and select **Revert hunk**, or place the cursor in a
+hunk and choose **Revert hunk at cursor** from the file toolbar menu. Pierre
+applies the change as an edit: Undo works, and the normal save or auto-save
+setting applies. Reverting all lines in a new file leaves an empty file.
+
+Right-click a file in the Changes list, or use its **…** button, to revert a
+modified file, restore a deleted file, or delete a new file. New-file deletion
+always asks for confirmation. Replacing unsaved edits also asks first. Whole
+file actions take effect on disk immediately and update shared editor sessions.
+
+These actions restore the left side of the selected working comparison: HEAD
+for Uncommitted, or the merge base for All changes. Saved commit comparisons
+stay read-only. The Git staging area is unchanged; staged changes can remain
+in Git even after the working file is restored. Renames, copies, file type
+changes, binary files and oversized files do not have revert actions yet.
+Restoring a deleted text file restores its contents, not its previous executable
+permission bits.
+
+Revert checks both the baseline hash and the live file hash. Writes use CAS;
+restore creates only an absent path. Actions share the session save queue and
+keep text typed while a remote action runs. Deletion stops queued auto-save
+from recreating the file. BB's remove API has no hash precondition: deletion
+checks the hash immediately before a non-recursive, root-confined remove, but
+cannot make that check and removal atomic against an external process.
 
 ## Saves and drafts
 
@@ -155,6 +182,9 @@ plugin directory and resolve the reported installation error.
 ## Upstream needs
 
 BB needs tab dirty indicators, close negotiation, and file-tab retitling.
+File removal needs an expected-hash precondition. Git discard needs a public
+host-routed operation with explicit worktree/index scope, and revision reads
+need file mode metadata to restore executable files.
 Replacing BB's native diff renderer with safe editing also needs environment
 and save context in that slot. Pierre needs public programmatic search commands;
 the current adapter uses its keyboard command path.

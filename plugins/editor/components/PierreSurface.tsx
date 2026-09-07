@@ -5,6 +5,7 @@ import type { Editor, EditorFocusOptions, EditorKeymap, EditorViewState } from "
 import { loadPierre, type PierreRuntime } from "@/lib/pierre-loader";
 import { applyPierreTheme, synchronizePierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
 import { cn } from "@/lib/utils";
+import { revertHunkEdit } from "@/lib/revert-hunk";
 import { createPierreItem } from "@/lib/pierre-item";
 
 // Pierre's single-theme renderer writes its own host background. Override it
@@ -21,6 +22,9 @@ const SURFACE_CSS = `
     --diffs-bg-selection-number-override: var(--background);
     --diffs-selection-number-fg: var(--foreground);
   }
+  /* BB owns the shared custom element. Its line-number layer otherwise covers
+     the custom gutter action supplied by this Pierre version. */
+  [data-gutter-utility-slot] { z-index: 5; }
   [data-utility-button]:focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
@@ -70,6 +74,7 @@ export interface PierreSurfaceProps {
   /** The old side's name, for a rename. Defaults to `name`. */
   oldName?: string;
   readOnly?: boolean;
+  allowRevertHunk?: boolean;
   diffStyle?: "split" | "unified";
   wrap?: boolean;
   lineNumbers?: boolean;
@@ -105,6 +110,7 @@ export interface PierreSurfaceHandle {
   setEditable(editable: boolean): void;
   focus(target?: PierreFocusTarget): boolean;
   blur(): void;
+  revertHunk(): boolean;
   undo(): boolean;
   redo(): boolean;
   canUndo(): boolean;
@@ -246,6 +252,8 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     props.fileHeader,
     props.expandUnchanged,
     props.stickyHeader,
+    props.allowRevertHunk,
+    props.readOnly,
   ].join("|");
   useEffect(() => {
     const state = stateRef.current;
@@ -335,6 +343,11 @@ export default function PierreSurface(props: PierreSurfaceProps) {
         return true;
       },
       blur: () => editorOf(stateRef.current)?.blur(),
+      revertHunk: () => {
+        const editor = editorOf(stateRef.current);
+        const selection = editor?.getViewState().selections?.[0];
+        return revertAtLine(stateRef.current, latest.current, (selection?.end.line ?? 0) + 1, "additions");
+      },
       undo: () => run(stateRef.current, (editor) => editor.undo()),
       redo: () => run(stateRef.current, (editor) => editor.redo()),
       canUndo: () => editorOf(stateRef.current)?.canUndo ?? false,
@@ -432,6 +445,23 @@ function buildOptions(
     disableFileHeader: props.fileHeader !== true,
     unsafeCSS: SURFACE_CSS,
     hunkSeparators: "line-info-basic",
+    enableGutterUtility: props.allowRevertHunk === true && props.readOnly !== true,
+    renderGutterUtility: (getHoveredRow) => {
+      if (!latest.current.allowRevertHunk || latest.current.readOnly) return null;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "↶";
+      button.title = "Revert hunk";
+      button.setAttribute("aria-label", "Revert hunk");
+      button.style.cssText = "cursor:pointer;color:var(--foreground);background:var(--background);border:1px solid var(--border);border-radius:4px;width:20px;height:20px;line-height:16px;font-size:16px";
+      button.onpointerdown = (event) => { event.preventDefault(); event.stopPropagation(); };
+      button.onclick = (event) => {
+        event.preventDefault(); event.stopPropagation();
+        const row = getHoveredRow();
+        if (row) revertAtLine(stateRef.current, latest.current, row.lineNumber, "side" in row && row.side === "deletions" ? "deletions" : "additions");
+      };
+      return button;
+    },
     expansionLineCount: 20,
     lineHoverHighlight: "number",
     expandUnchanged: props.expandUnchanged ?? false,
@@ -572,4 +602,15 @@ function deepestActiveElement(): Element | null {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Apply through Pierre's edit API to keep the cursor and the undo timeline. */
+function revertAtLine(state: SurfaceState | null, props: PierreSurfaceProps, line: number, side: "additions" | "deletions"): boolean {
+  const editor = editorOf(state);
+  if (!state || !editor || !props.allowRevertHunk || props.readOnly || props.oldContent === undefined) return false;
+  const edit = revertHunkEdit(state.runtime, props.name, props.oldContent, editor.getText(), line, side);
+  if (!edit) return false;
+  editor.applyEdits([edit]);
+  editor.focus();
+  return true;
 }

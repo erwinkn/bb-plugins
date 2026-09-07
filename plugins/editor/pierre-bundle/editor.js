@@ -15,6 +15,7 @@ import { registerCustomTheme as registerPierreTheme } from "@pierre/diffs";
 
 export {
   CodeView,
+  diffAcceptRejectHunk,
   DIFFS_TAG_NAME,
   disposeHighlighter,
   getFiletypeFromFileName,

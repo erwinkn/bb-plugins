@@ -15,6 +15,7 @@ import type { WorkerPoolManager } from "@pierre/diffs/worker";
  */
 export interface PierreBundle {
   CodeView: typeof CodeViewClass;
+  diffAcceptRejectHunk: typeof import("@pierre/diffs").diffAcceptRejectHunk;
   Editor: typeof EditorClass;
   parseDiffFromFile: (
     oldFile: FileContents | null,

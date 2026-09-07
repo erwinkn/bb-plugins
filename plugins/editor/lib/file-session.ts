@@ -129,6 +129,8 @@ export interface FileSession {
   claimEditor(viewId: string): void;
   /** Report edited text from a view. */
   setContent(text: string, viewId: string): void;
+  /** Serialize a confirmed file action with saves; keep any later typing. */
+  mutateFile(expected: { content: string; sha256: string | null }, action: () => Promise<SessionSeed | null>): Promise<void>;
   /** Install a caller's read. It is ignored when the session has edits or a draft. */
   seed(seed: SessionSeed): void;
   /** Write with `expectedSha256`. Resolves true when the text reached disk. */
@@ -476,6 +478,34 @@ class Session implements FileSession {
       () => undefined,
     );
     return run;
+  }
+
+  mutateFile(expected: { content: string; sha256: string | null }, action: () => Promise<SessionSeed | null>): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.disposed || this.snapshot.content !== expected.content || this.snapshot.sha256 !== expected.sha256) {
+        throw new Error("The file changed. Try the action again.");
+      }
+      if (this.snapshot.save.kind === "conflict" || this.snapshot.staleBase) throw new Error("Resolve the file conflict first");
+      const version = this.version;
+      const result = await action();
+      if (result === null) {
+        const changed = this.version !== version;
+        this.version += 1;
+        this.patch({ load: { kind: "unsupported", reason: "This file was deleted. Reopen it after restoring it." },
+          save: { kind: "clean" }, savedContent: changed ? "" : this.snapshot.content,
+          sha256: null, staleBase: false });
+        if (changed) this.flushDraft();
+        else this.clearDraft();
+      } else if (this.version === version) {
+        this.clearDraft();
+        this.installDisk({ kind: "text", ...result }, { applyDraft: false });
+      } else {
+        // Do not discard typing made while the remote action was in flight.
+        this.draftBaseSha256 = result.sha256;
+        this.patch({ savedContent: result.content, sha256: result.sha256, savedContentSource: "write", save: { kind: "dirty" } });
+        this.persistDraftSoon();
+      }
+    });
   }
 
   save(): Promise<boolean> {

@@ -246,6 +246,9 @@ export function EditableDiffPane({
   useEffect(() => () => forgetEditor(paneId), [paneId]);
 
   const menuItems: MenuItem[] = [
+    { label: "Revert hunk at cursor", disabled: readOnly, onSelect: () => {
+      if (!surfaceRef.current?.revertHunk()) toast.info("Place the cursor in a changed hunk first");
+    } },
     { label: "Save file", shortcut: "⌘S", disabled: !dirty || conflicted, onSelect: save },
     { label: "Discard changes", disabled: !dirty, onSelect: () => reload(true) },
     { label: "Reload from disk", disabled: dirty || !editable, onSelect: () => reload(false) },
@@ -319,6 +322,7 @@ export function EditableDiffPane({
             oldContent={oldSide}
             oldName={data.previousPath ?? undefined}
             readOnly={readOnly}
+            allowRevertHunk={!readOnly}
             diffStyle={layout}
             wrap={prefs.wordWrap}
             lineNumbers={prefs.lineNumbers}

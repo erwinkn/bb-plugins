@@ -41,6 +41,16 @@ export type FileSource = z.infer<typeof sourceSchema>;
 const fileSchema = z.object({ path: z.string().min(1), source: sourceSchema }).strict();
 
 export const rpcContract = defineRpcContract({
+  diffRevert: {
+    input: z.object({ threadId: z.string().regex(BB_ID), target: diffTargetSchema,
+      path: z.string().min(1).max(4096), expectedSha256: z.string().nullable(),
+      expectedBaselineSha256: z.string().nullable(), confirmDelete: z.boolean(),
+    }).strict(),
+    output: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("deleted") }),
+      z.object({ kind: z.literal("written"), content: z.string(), sha256: z.string(), absolutePath: z.string(), relativePath: z.string() }),
+    ]),
+  },
   diffCommits: {
     input: z.object({ threadId: z.string().regex(BB_ID), target: diffTargetSchema }).strict(),
     output: z.object({
@@ -61,6 +71,7 @@ export const rpcContract = defineRpcContract({
       z.object({
         kind: z.literal("text"), source: sourceSchema, path: z.string(), previousPath: z.string().nullable(),
         oldContent: z.string().nullable(), newContent: z.string().nullable(), editable: z.boolean(), reason: z.string().nullable(),
+        baselineSha256: z.string().nullable(),
         changeKind: diffEntrySchema.shape.changeKind, origin: diffEntrySchema.shape.origin,
         sha256: z.string().nullable(), absolutePath: z.string(), relativePath: z.string(),
       }),
@@ -439,41 +450,7 @@ export default async function plugin(bb: BbPluginApi) {
     return null;
   }
 
-  bb.rpc.register(rpcContract, {
-    async diffCommits({ threadId, target }) {
-      const thread = await bb.sdk.threads.get({ threadId });
-      if (thread.environmentId === null) throw new Error("This thread has no workspace");
-      const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
-      const baseBranch = ((target.type === "all" || target.type === "branch_committed") ? target.mergeBaseBranch : undefined)
-        ?? environment.mergeBaseBranch ?? environment.baseBranch ?? environment.defaultBranch ?? null;
-      const status = await bb.sdk.environments.status({ environmentId: environment.id, ...(baseBranch ? { mergeBaseBranch: baseBranch } : {}) });
-      if (status.outcome !== "available") {
-        return { commits: [], baseBranch, message: status.outcome === "not_applicable" ? status.message : status.failure.message };
-      }
-      const base = status.workspace.mergeBase;
-      if (!base?.baseRef) return { commits: [], baseBranch, message: "No base comparison available" };
-      // The SDK returns Git traversal order, oldest first. Preserve that order
-      // in reverse, rather than sorting by author dates that can be misleading.
-      return {
-        commits: base.commits.slice(-MAX_TREE_ENTRIES).reverse().map(({ sha, subject }) => ({ sha, subject: subject.slice(0, 500) })),
-        baseBranch: base.mergeBaseBranch,
-        message: base.commits.length > MAX_TREE_ENTRIES ? `Showing the latest ${MAX_TREE_ENTRIES} commits` : null,
-      };
-    },
-    async diffList({ threadId, target }) {
-      const data = await listDiff(threadId, target);
-      const { result, environment } = data;
-      return {
-        source: data.source, root: environment.path!,
-        label: environment.branchName ?? environment.name ?? path.basename(environment.path!),
-        baseBranch: data.baseBranch, target: data.target,
-        files: result.outcome === "available" ? result.files.slice(0, MAX_TREE_ENTRIES) : [],
-        truncated: result.outcome === "available" && (result.truncated || result.files.length > MAX_TREE_ENTRIES),
-        message: data.message,
-      };
-    },
-
-    async diffRead({ threadId, target: requested, path: filePath }) {
+  async function readDiff({ threadId, target: requested, path: filePath }: { threadId: string; target: DiffTarget; path: string }) {
       assertInsideWorkspace(filePath);
       const { result, environment, source, target, message } = await listDiff(threadId, requested);
       if (result.outcome !== "available" || message !== null) return { kind: "unsupported" as const, reason: message ?? "This comparison is unavailable" };
@@ -516,10 +493,76 @@ export default async function plugin(bb: BbPluginApi) {
         kind: "text" as const, source, path: filePath, previousPath: entry.previousPath,
         oldContent: entry.changeKind === "added" || entry.origin === "untracked" ? null : oldFile.content,
         newContent: entry.changeKind === "deleted" ? null : newFile.content,
+        baselineSha256: entry.changeKind === "added" || entry.origin === "untracked" ? null : createHash("sha256").update(oldFile.content).digest("hex"),
         changeKind: entry.changeKind, origin: entry.origin, editable, reason, sha256,
         absolutePath: resolved.path, relativePath: relativeTo(resolved.rootPath, resolved.path),
       };
+    }
+
+  bb.rpc.register(rpcContract, {
+    async diffRevert(input) {
+      if (!isWorkingTreeTarget(input.target)) throw new Error("Saved revisions are read-only");
+      const data = await readDiff(input);
+      if (data.kind !== "text") throw new Error(data.reason);
+      if (!["modified", "added", "deleted"].includes(data.changeKind)) throw new Error("Reverting renames, copies and file type changes is not supported");
+      if (data.baselineSha256 !== input.expectedBaselineSha256 || data.sha256 !== input.expectedSha256) {
+        throw new Error("The comparison changed. Refresh before reverting.");
+      }
+      if (data.newContent !== null && !data.editable) throw new Error(data.reason ?? "This file is read-only");
+      const target = await resolveTarget(data.source, data.path);
+      if (data.oldContent === null) {
+        if (!input.confirmDelete) throw new Error("Confirm deletion of this new file first");
+        // The public remove API has no CAS parameter. Re-read immediately before
+        // removal; rootPath confines the operation and recursive is always false.
+        const live = await bb.sdk.files.read(target);
+        if (live.sha256 !== input.expectedSha256) throw new Error("The file changed. Refresh before deleting.");
+        await bb.sdk.files.remove({ ...target, recursive: false });
+        return { kind: "deleted" as const };
+      }
+      if (data.newContent === null) {
+        const blocked = await conflictBlock(data.source.environmentId!, data.path);
+        if (blocked) throw new Error(blocked);
+      }
+      const written = await bb.sdk.files.write({ ...target, content: data.oldContent, contentEncoding: "utf8",
+        createParents: true, expectedSha256: input.expectedSha256 });
+      if (written.outcome !== "written") throw new Error("The file changed. Refresh before reverting.");
+      return { kind: "written" as const, content: data.oldContent, sha256: written.sha256,
+        absolutePath: data.absolutePath, relativePath: data.relativePath };
     },
+    async diffCommits({ threadId, target }) {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (thread.environmentId === null) throw new Error("This thread has no workspace");
+      const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
+      const baseBranch = ((target.type === "all" || target.type === "branch_committed") ? target.mergeBaseBranch : undefined)
+        ?? environment.mergeBaseBranch ?? environment.baseBranch ?? environment.defaultBranch ?? null;
+      const status = await bb.sdk.environments.status({ environmentId: environment.id, ...(baseBranch ? { mergeBaseBranch: baseBranch } : {}) });
+      if (status.outcome !== "available") {
+        return { commits: [], baseBranch, message: status.outcome === "not_applicable" ? status.message : status.failure.message };
+      }
+      const base = status.workspace.mergeBase;
+      if (!base?.baseRef) return { commits: [], baseBranch, message: "No base comparison available" };
+      // The SDK returns Git traversal order, oldest first. Preserve that order
+      // in reverse, rather than sorting by author dates that can be misleading.
+      return {
+        commits: base.commits.slice(-MAX_TREE_ENTRIES).reverse().map(({ sha, subject }) => ({ sha, subject: subject.slice(0, 500) })),
+        baseBranch: base.mergeBaseBranch,
+        message: base.commits.length > MAX_TREE_ENTRIES ? `Showing the latest ${MAX_TREE_ENTRIES} commits` : null,
+      };
+    },
+    async diffList({ threadId, target }) {
+      const data = await listDiff(threadId, target);
+      const { result, environment } = data;
+      return {
+        source: data.source, root: environment.path!,
+        label: environment.branchName ?? environment.name ?? path.basename(environment.path!),
+        baseBranch: data.baseBranch, target: data.target,
+        files: result.outcome === "available" ? result.files.slice(0, MAX_TREE_ENTRIES) : [],
+        truncated: result.outcome === "available" && (result.truncated || result.files.length > MAX_TREE_ENTRIES),
+        message: data.message,
+      };
+    },
+
+    diffRead: readDiff,
     assets: () => assets(),
 
     async workspace({ threadId, projectId }) {

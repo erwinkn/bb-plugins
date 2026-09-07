@@ -592,3 +592,44 @@ test("saved text distinguishes a write from a later external read", async () => 
   assert.equal(session.getSnapshot().savedContentSource, "read");
   assert.equal(session.getSnapshot().content, "external edit");
 });
+
+test("file action refuses edits made after its confirmation snapshot", async () => {
+  const disk = new Disk(); const { session } = open(disk); await settle();
+  const expected = session.getSnapshot();
+  session.setContent("later typing", "view-1");
+  await assert.rejects(() => session.mutateFile(expected, async () => { throw new Error("must not run"); }), /file changed/);
+  assert.equal(session.getSnapshot().content, "later typing");
+});
+
+test("file action waits for a save and refuses the obsolete hash", async () => {
+  const disk = new Disk(); const { session } = open(disk); await settle();
+  session.setContent("edited", "view-1"); disk.holdWrites = true;
+  const saved = session.save(); await settle();
+  const mutation = session.mutateFile(session.getSnapshot(), async () => { throw new Error("must not run"); });
+  const rejected = assert.rejects(() => mutation, /file changed/);
+  disk.releaseWrites(); await saved; await rejected;
+});
+
+test("file revert updates shared views and keeps typing made during the action", async () => {
+  const disk = new Disk(); const { session } = open(disk); await settle();
+  let release!: () => void;
+  const action = session.mutateFile(session.getSnapshot(), async () => {
+    await new Promise<void>((resolve) => { release = resolve; });
+    disk.content = "baseline";
+    return { content: disk.content, sha256: hash(disk.content), absolutePath: "/workspace/a.txt", relativePath: "a.txt" };
+  });
+  await settle(); session.setContent("typed during revert", "view-1"); release(); await action;
+  assert.equal(session.getSnapshot().content, "typed during revert");
+  assert.equal(session.getSnapshot().savedContent, "baseline");
+  assert.equal(session.getSnapshot().dirty, true);
+});
+
+test("deletion prevents queued auto-save from recreating the file", async () => {
+  const disk = new Disk(); const drafts = memoryDraftStore(); const { session } = open(disk, "a.txt", drafts); await settle();
+  session.setContent("draft", "view-1"); session.flushDraft();
+  await session.mutateFile(session.getSnapshot(), async () => null);
+  assert.equal(await session.save(), false);
+  assert.equal(disk.writes, 0);
+  assert.equal(drafts.read(session.key), null);
+  assert.equal(session.getSnapshot().load.kind, "unsupported");
+});

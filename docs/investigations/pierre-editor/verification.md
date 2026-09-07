@@ -211,3 +211,36 @@ animation-frame rendering; a hidden test tab initially caused false failures.
 
 These choices are suitable for this change. Physical phone and IME checks remain
 for the user; viewport tests do not replace them.
+
+## Hunk and file revert actions — 2026-09-07
+
+Pierre 1.4.1 provides `diffAcceptRejectHunk` and `Editor.applyEdits`. The
+adapter resolves a hunk against the live document and applies a minimal text
+edit through Pierre. The gutter button and toolbar action both support Undo.
+BB's shared custom-element stylesheet required a z-index adjustment to keep
+the custom gutter button above the line number.
+
+Typecheck, app build and lazy bundle build pass. All 131 tests pass. New cases
+cover separate hunks, additions, deletions, empty files, Unicode, CRLF, missing
+final newlines, stale comparison hashes, CAS writes, concurrent file creation,
+confirmation enforcement, remote host/root routing, serialized saves, typing
+during a revert, and deletion preventing a later auto-save from recreating a file.
+
+Installed acceptance checks in `thr_bxkzwcmcak` used disposable files under
+`/tmp/bb-pierre-qa-0907/revert-tests`:
+
+- A real right-click opened the file menu. Revert restored the YAML baseline
+  on disk; Restore recreated the deleted JSON file.
+- New-file deletion left the file intact until confirmation. Cancel kept it;
+  Delete removed it. The mobile drawer and Cancel kept Changes open at 390 × 844.
+- Both the toolbar action and a real gutter click reverted the first Python
+  hunk while preserving a distant second hunk. Undo restored it.
+- With auto-save after delay, the hunk change reached disk without replacing
+  the surface DOM node or changing the cursor/view state. Undo also saved.
+
+Working-file contents change; the Git index does not. Historical comparisons,
+renames, copies, binary files, type changes and oversized files have no file
+revert action. Restore does not recover executable mode metadata. Removal has
+an immediate hash check but cannot be atomic against external writes because
+BB's public remove API has no CAS parameter. Physical touch/IME tests remain
+for the user. PR #16 remains draft.

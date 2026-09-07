@@ -69,3 +69,19 @@ only acknowledge the highlight cache; actual changes reach the shared session
 through its edit-change callback. Repeating the old completion text can replace
 a newer external read. The installed external-write test now passes.
 I stand behind these changes; the remaining device-test limits are unchanged.
+
+## Revert actions
+
+Use Pierre's hunk resolver and undoable edit API, rather than reconstructing a
+patch from rendered DOM. Compute from the live text at click time so earlier
+edits cannot leave stale line offsets. Hunk reverts follow normal save settings;
+whole-file actions write immediately and serialize with the shared file session.
+Confidence: high; both paths were checked in the installed plugin.
+
+Restore the selected comparison's left side only for working comparisons.
+Historical comparisons stay read-only. The public SDK has no index-discard
+operation, so the UI states that staging stays unchanged. Renames, binary files,
+type changes and mode restoration need separate support. New-file deletion and
+discarding unsaved text require confirmation. Write/restore use CAS; deletion
+uses an immediate re-read and non-recursive removal because atomic conditional
+removal is not available. These limits are recorded in the plugin README.

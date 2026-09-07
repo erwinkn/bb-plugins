@@ -38,7 +38,7 @@ test("workspace without a thread or project asks for a project", async (t) => {
 });
 
 test("contract exposes the methods the frontend calls", () => {
-  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffCommits", "diffList", "diffRead", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
+  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffCommits", "diffList", "diffRead", "diffRevert", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
 });
 
 test("settings and the picker share predefined themes without changing BB's global theme", async (t) => {
@@ -224,6 +224,8 @@ function statusWith(files: { path: string; status: "M" | "U" }[]): Status {
 
 async function diffHost(options: {
   entry?: Partial<typeof modifiedEntry>;
+  write?: BbPluginApi["sdk"]["files"]["write"];
+  remove?: BbPluginApi["sdk"]["files"]["remove"];
   liveContent?: string;
   newContent?: string;
   oldContent?: string;
@@ -253,6 +255,8 @@ async function diffHost(options: {
         })),
       },
       files: {
+        ...(options.write ? { write: options.write } : {}),
+        ...(options.remove ? { remove: options.remove } : {}),
         read: async ({ path: filePath }) => ({
           path: filePath, content: options.liveContent ?? newContent, contentEncoding: "utf8",
           sha256: "live-hash", sizeBytes: 4, mimeType: "text/plain",
@@ -501,4 +505,59 @@ test("commit menu distinguishes no base, no commits, and an unavailable workspac
   }));
   assert.deepEqual(result.commits, []);
   assert.equal(result.message, null);
+});
+
+const baselineHash = createHash("sha256").update("old\n").digest("hex");
+const revertInput = { threadId: "thr_test", target: { type: "uncommitted" }, path: "a.ts",
+  expectedSha256: "live-hash", expectedBaselineSha256: baselineHash, confirmDelete: false };
+
+test("file revert writes the baseline with CAS and preserves host confinement", async (t) => {
+  const { harness } = await diffHost({ write: async (args) => {
+    assert.equal(args.content, "old\n"); assert.equal(args.expectedSha256, "live-hash");
+    assert.equal(args.hostId, "host_remote"); assert.equal(args.rootPath, "/workspace");
+    return { outcome: "written", sha256: baselineHash, sizeBytes: 4 };
+  } });
+  t.after(() => harness.lifecycle.dispose());
+  const result = rpcContract.diffRevert.output.parse(await harness.behavior.callRpc("diffRevert", revertInput));
+  assert.equal(result.kind, "written");
+});
+
+test("file revert refuses stale files, changed baselines, snapshots and conflicts", async (t) => {
+  const { harness } = await diffHost(); t.after(() => harness.lifecycle.dispose());
+  for (const input of [
+    { ...revertInput, expectedSha256: "outdated" },
+    { ...revertInput, expectedBaselineSha256: "outdated" },
+    { ...revertInput, target: { type: "commit", sha: "abcdef0" } },
+    { ...revertInput, path: "../a.ts" },
+  ]) await assert.rejects(() => harness.behavior.callRpc("diffRevert", input));
+  assert.equal(harness.inspection.sdk.callsTo("files.write").length, 0);
+  assert.equal(harness.inspection.sdk.callsTo("files.remove").length, 0);
+  const conflict = await diffHost({ status: async () => statusWith([{ path: "a.ts", status: "U" }]) });
+  t.after(() => conflict.harness.lifecycle.dispose());
+  await assert.rejects(() => conflict.harness.behavior.callRpc("diffRevert", revertInput), /conflict/);
+});
+
+test("restore creates only an absent file and refuses a concurrent creation", async (t) => {
+  let exists = false;
+  const { harness } = await diffHost({ entry: { changeKind: "deleted" }, write: async (args) => {
+    assert.equal(args.expectedSha256, null);
+    if (exists) return { outcome: "conflict", currentSha256: "concurrent" };
+    exists = true; return { outcome: "written", sha256: baselineHash, sizeBytes: 4 };
+  } });
+  t.after(() => harness.lifecycle.dispose());
+  const input = { ...revertInput, expectedSha256: null };
+  await harness.behavior.callRpc("diffRevert", input);
+  await assert.rejects(() => harness.behavior.callRpc("diffRevert", input), /file changed/);
+});
+
+test("deleting a new file requires confirmation and never removes recursively", async (t) => {
+  const { harness } = await diffHost({ entry: { changeKind: "added", origin: "untracked" }, remove: async () => ({ ok: true }) });
+  t.after(() => harness.lifecycle.dispose());
+  const input = { ...revertInput, expectedBaselineSha256: null };
+  await assert.rejects(() => harness.behavior.callRpc("diffRevert", input), /Confirm deletion/);
+  assert.equal(harness.inspection.sdk.callsTo("files.remove").length, 0);
+  await harness.behavior.callRpc("diffRevert", { ...input, confirmDelete: true });
+  assert.deepEqual(harness.inspection.sdk.callsTo("files.remove")[0]?.[0], {
+    path: "/workspace/a.ts", rootPath: "/workspace", hostId: "host_remote", recursive: false,
+  });
 });
