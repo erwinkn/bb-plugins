@@ -302,6 +302,18 @@ available through PR #11, but does not correct automatic naming.
 Suggested issue title: `Name continuation threads from the referenced task context`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Hide the plugin attribution line in native input popups
+
+BB renders "Requested by Questions" above the plugin's input controls.
+The public pending-interaction registration has no option to hide that line.
+Allow a compact presentation that omits the attribution, without removing
+the native waiting state. This belongs in BB's
+`PluginPendingInteractionComposer`, not in the Questions form.
+
+Status: no upstream issue filed. Suggested issue title:
+`Allow compact native input popups without repeated plugin attribution`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Change an installed plugin's Git ref without removing its data
 
 Add a source-change operation to BB's CLI and plugin API. It should support

@@ -485,6 +485,24 @@ describe("Questions panel", () => {
 });
 
 describe("Message directive", () => {
+  it("uses only one action row under the host heading for a native panel round", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
+    const cancel = vi.fn(async () => {});
+    const slot = renderSlot<PluginPendingInteractionProps, typeof rpcContract>(app.pendingInteractions[0]!, {
+      interaction: { id: "interaction1", threadId: THREAD, title: "Round 1 — 1 question", payload: { roundId: "r1" }, createdAt: 1, expiresAt: 3_600_001 },
+      submit: async () => {}, cancel,
+    }, { rpc: server.handlers, context: { projectId: "proj", threadId: THREAD } });
+    slots.push(slot);
+    const open = await slot.findByRole("button", { name: "Open" });
+    const close = slot.getByRole("button", { name: "Cancel" });
+    expect(open.parentElement).toBe(close.parentElement);
+    expect(slot.queryByText(/Round 1/)).toBeNull();
+    expect(open.parentElement?.className).not.toContain("border");
+    fireEvent.click(open);
+    expect(slot.inspection.navigateCalls).toHaveLength(1);
+    fireEvent.click(close);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
   it("renders an inline round in the native interaction slot and supports cancellation", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1", { optional: true })], "inline")] });
     const cancel = vi.fn(async () => {});
@@ -584,7 +602,7 @@ describe("Message directive", () => {
     const server = backend({ rounds: [round("r1", 1, Array.from({ length: 6 }, (_, i) => question(`q${i + 1}`)))] });
     const slot = mountDirective(server, "r1");
     const button = await slot.findByRole("button", { name: "Open" });
-    expect(slot.getByText("Round 1: 6 questions (0/6)")).toBeTruthy();
+    expect(slot.getByText("Round 1 — 6 questions (0/6)")).toBeTruthy();
     fireEvent.click(button);
     expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ method: "openThreadPanel" });
   });
@@ -595,10 +613,10 @@ describe("Message directive", () => {
       answers: [answer("q1", "r1", { ...emptyAnswer(), text: "Draft" }, 1)],
     });
     const slot = mountDirective(server, "r1");
-    await slot.findByText("Round 1: 1 question (0/1)");
+    await slot.findByText("Round 1 — 1 question (0/1)");
     server.state.answers[0]!.submitted = { ...emptyAnswer(), text: "Sent" };
     await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
-    await slot.findByText("Round 1: 1 question (1/1)");
+    await slot.findByText("Round 1 — 1 question (1/1)");
   });
 
   it("opens the panel without params and selects the older round it was asked for", async () => {

@@ -16,18 +16,19 @@ import { reportOutcome } from "./QuestionsPanel";
 
 export const QUESTIONS_ACTION_ID = "questions";
 
-function RoundCard({ threadId, round, answers }: { threadId: string; round: Round; answers: AnswerState[] }) {
+function RoundCard({ threadId, round, answers, cancel }: { threadId: string; round: Round; answers: AnswerState[]; cancel?: () => Promise<void> }) {
   const navigate = useBbNavigate();
   const submitted = round.questions.filter((question) => {
     const state = answers.find((item) => item.questionId === question.id);
     return state?.submitted !== null && state?.submitted !== undefined;
   }).length;
   return (
-    <div className="my-1 flex max-w-[720px] flex-wrap items-center gap-2 rounded-md border border-border bg-[var(--surface-raised)] px-2.5 py-1.5 text-[12px] text-muted-foreground">
-      <span className="text-foreground">
-        Round {round.number}: {round.questions.length} question{round.questions.length === 1 ? "" : "s"} ({submitted}/{round.questions.length})
+    <div className={cancel ? "flex items-center justify-end gap-2" : "my-1 flex max-w-[720px] flex-wrap items-center gap-2 rounded-md border border-border bg-[var(--surface-raised)] px-2.5 py-1.5 text-[12px] text-muted-foreground"}>
+      {!cancel && <><span className="text-foreground">
+        Round {round.number} — {round.questions.length} question{round.questions.length === 1 ? "" : "s"} ({submitted}/{round.questions.length})
       </span>
-      <span className="flex-1" />
+      <span className="flex-1" /></>}
+      {cancel && <PanelButton small onClick={() => void cancel().catch((error) => toast.error(String(error)))}>Cancel</PanelButton>}
       <PanelButton
         small
         primary={submitted < round.questions.length}
@@ -117,7 +118,7 @@ export function InlineEditor({ threadId, round }: { threadId: string; round: Rou
   );
 }
 
-function RoundDisplay({ threadId, roundId }: { threadId: string; roundId: string }) {
+function RoundDisplay({ threadId, roundId, cancel }: { threadId: string; roundId: string; cancel?: () => Promise<void> }) {
   const rpc = useRpc<typeof rpcContract>();
   const [state, setState] = useState<{ round: Round | null; answers: AnswerState[]; labels: Record<string, string> } | null | "error">(null);
   const load = useCallback(() => {
@@ -133,8 +134,11 @@ function RoundDisplay({ threadId, roundId }: { threadId: string; roundId: string
   if (state === null) return <Hint>Loading questions…</Hint>;
   if (state === "error") return <Hint>Questions could not be loaded.</Hint>;
   if (state.round === null) return <Hint>This questions round no longer exists.</Hint>;
-  if (state.round.mode === "inline") return <InlineEditor threadId={threadId} round={state.round} />;
-  return <RoundCard threadId={threadId} round={state.round} answers={state.answers} />;
+  if (state.round.mode === "inline") return <>
+    <InlineEditor threadId={threadId} round={state.round} />
+    {cancel && <PanelButton small onClick={() => void cancel().catch((error) => toast.error(String(error)))}>Cancel</PanelButton>}
+  </>;
+  return <RoundCard threadId={threadId} round={state.round} answers={state.answers} cancel={cancel} />;
 }
 
 export function QuestionsDirective({ attributes, message }: PluginMessageDirectiveProps) {
@@ -144,8 +148,5 @@ export function QuestionsDirective({ attributes, message }: PluginMessageDirecti
 export function QuestionsInteraction({ interaction, cancel }: PluginPendingInteractionProps) {
   const payload = interaction.payload;
   const roundId = payload && typeof payload === "object" && !Array.isArray(payload) && typeof payload.roundId === "string" ? payload.roundId : "";
-  return <div>
-    <RoundDisplay threadId={interaction.threadId} roundId={roundId} />
-    <PanelButton small onClick={() => void cancel().catch((error) => toast.error(String(error)))}>Cancel</PanelButton>
-  </div>;
+  return <RoundDisplay threadId={interaction.threadId} roundId={roundId} cancel={cancel} />;
 }

@@ -18,7 +18,7 @@ export class QuestionInteractions {
         this.active.set(round.threadId, entry);
         const result = await this.bb.ui.requestInput({
           threadId: round.threadId, rendererId: INPUT_RENDERER,
-          title: `Round ${round.number}: ${round.questions.length} question${round.questions.length === 1 ? "" : "s"}`,
+          title: `Round ${round.number} — ${round.questions.length} question${round.questions.length === 1 ? "" : "s"}`,
           payload: { roundId: round.id }, timeoutMs: INPUT_TIMEOUT_MS,
         }, { signal });
         if (result.outcome === "cancelled" && result.reason === "timeout" && !signal?.aborted) {
