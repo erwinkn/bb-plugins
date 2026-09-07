@@ -43,8 +43,8 @@ test("session history and plugin logs preserve the same actions and error detail
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("realtime tools only delegate, stay silent, or end the call", () => {
-  assert.deepEqual(coordinatorToolSchemas().map(tool => tool.name), ["delegate_to_coordinator", "remain_silent", "end_call"]);
+test("realtime tools expose bounded quick actions without destructive or arbitrary tools", () => {
+  assert.deepEqual(coordinatorToolSchemas().map(tool => tool.name), ["lookup_targets", "quick_action", "delegate_to_coordinator", "remain_silent", "end_call"]);
 });
 
 test("obsolete view preferences are ignored without changing other saved settings", async () => {

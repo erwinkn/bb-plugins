@@ -3,6 +3,7 @@
 // the plugin boundary; nothing here trusts the realtime model, the coordinator
 // model, or persisted rows blindly.
 import { z } from "zod";
+import { quickActionSchema } from "../quick-actions.ts";
 
 export const ENVELOPE_VERSION = 1 as const;
 
@@ -50,6 +51,7 @@ export const userRequestEnvelopeSchema = z
     /** Set when the user is answering a coordinator question by voice. */
     answersQuestionId: z.string().max(64).nullable(),
     view: viewSnapshotSchema,
+    quickAction: quickActionSchema.optional(),
   })
   .strict();
 export type UserRequestEnvelope = z.infer<typeof userRequestEnvelopeSchema>;

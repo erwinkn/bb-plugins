@@ -3,6 +3,7 @@
 // under the right gate, tracks what the user actually heard, and reserves
 // background-update batches at quiet boundaries. Everything here is driven by
 // data-channel events the VoiceAgent forwards; nothing touches audio directly.
+import { quickActionSchema, type QuickAction } from "./quick-actions.ts";
 import { publishedReplySchema, type PublishedReply, type UserRequestEnvelope } from "./coordinator/envelopes.ts";
 import { QUIET_INTERVAL_MS, refuseBackgroundSpeech, refuseDirectSpeech, type VoiceIdleFacts } from "./coordinator/scheduler.ts";
 
@@ -23,6 +24,7 @@ export interface BridgeHost {
   speaking(): void;
   changed(): void;
   inputUnavailable(turn: number): void;
+  cancelQuickRequest(requestId: string): void;
 }
 
 interface UserItem {
@@ -42,6 +44,7 @@ export interface PendingHandoff {
   urgency: "new" | "steer" | "after_current";
   answersQuestionId: string | null;
   boundItemIds: string[];
+  quickAction?: QuickAction;
   createdAt: number;
   status: "waiting-transcript" | "dispatching" | "dispatched" | "superseded" | "cancelled" | "failed";
   timer: ReturnType<typeof setTimeout> | null;
@@ -149,6 +152,12 @@ export class CoordinatorBridge {
 
   /** The user started speaking: unsent speculative handoffs are held, not sent. */
   onSpeechStarted() {
+    for (const handoff of this.dispatched.values()) {
+      if (!handoff.quickAction || handoff.status === "cancelled") continue;
+      handoff.status = "cancelled";
+      this.host.cancelQuickRequest(handoff.requestId);
+      void this.host.rpc("cancelQuickRequest", {conversationId:this.conversationId,callNonce:this.host.nonce(),requestId:handoff.requestId}).catch(() => undefined);
+    }
     if (this.pending && this.pending.status === "waiting-transcript") this.supersedePending("user continued speaking");
     if (this.active) this.finishSpeech("interrupted");
     this.replyQueue = this.replyQueue.filter(reply => !reply.replyId.startsWith("local_ack_") && !reply.replyId.startsWith("local_input_"));
@@ -157,7 +166,8 @@ export class CoordinatorBridge {
 
   // ---- realtime tools ----
 
-  delegate(callId: string, args: Record<string, unknown>): string {
+  delegate(callId: string, args: Record<string, unknown>, quick = false): string {
+    const quickAction = quick ? quickActionSchema.parse(args.action) : undefined;
     if (this.inputUnavailable()) return "The last sentence could not be transcribed. No request was accepted. Wait silently; the bridge asks the user to repeat it.";
     const request = typeof args.request === "string" ? args.request.trim() : "";
     const urgency = args.urgency === "steer" || args.urgency === "after_current" ? args.urgency : "new";
@@ -173,6 +183,7 @@ export class CoordinatorBridge {
       urgency,
       answersQuestionId,
       boundItemIds: bound.map((item) => item.itemId),
+      ...(quickAction ? {quickAction} : {}),
       createdAt: this.host.now(),
       status: "waiting-transcript",
       timer: null,
@@ -290,6 +301,7 @@ export class CoordinatorBridge {
       urgency: handoff.urgency,
       answersQuestionId: handoff.answersQuestionId,
       view: this.host.view(),
+      ...(handoff.quickAction ? {quickAction:handoff.quickAction} : {}),
     };
     // Consumed items never bind to a later handoff; superseded ones stay.
     const lastIndex = this.items.findIndex((item) => item.itemId === handoff.boundItemIds.at(-1));
@@ -299,15 +311,18 @@ export class CoordinatorBridge {
     const waitedMs = this.host.now() - handoff.createdAt;
     try {
       const receipt = await this.host.rpc<{ status: string; receipt: { delivery: string } | null; error: string | null }>("submitRequest", { envelope });
-      handoff.status = receipt.status === "failed" ? "failed" : "dispatched";
+      if ((handoff as PendingHandoff).status !== "cancelled") handoff.status = receipt.status === "failed" || receipt.status === "quick_cancelled" ? "failed" : "dispatched";
+      if (receipt.status === "accepted") delete handoff.quickAction;
+      if (receipt.status === "quick_cancelled") { this.dispatched.delete(handoff.requestId); this.acknowledgments.delete(this.userTurnOf()); }
       this.host.log("handoff.dispatched", { requestId: handoff.requestId, status: receipt.status, delivery: receipt.receipt?.delivery ?? null, error: receipt.error, transcriptWaitMs: waitedMs, transcriptAvailable: envelope.transcriptAvailable });
       if (envelope.answersQuestionId && receipt.status !== "failed" && this.openQuestion?.id === envelope.answersQuestionId) this.openQuestion = null;
     } catch (error) {
       handoff.status = "failed";
+      for (const [turn, acknowledgment] of this.acknowledgments) if (acknowledgment.requestId === handoff.requestId) this.acknowledgments.delete(turn);
       const message = error instanceof Error ? error.message : String(error);
       this.host.log("handoff.failed", { requestId: handoff.requestId, error: message });
       if (this.host.nonce() === nonce) {
-        this.enqueueLocalReply("I could not start that request. Please try again.", "failure");
+        this.enqueueLocalReply(handoff.quickAction ? "I could not confirm that action. I will not repeat it automatically." : "I could not start that request. Please try again.", "failure");
       }
     }
     this.host.changed();

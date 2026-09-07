@@ -10,7 +10,7 @@ work-thread workspace and optional coordinator design.
 | Decision | Alternative considered | Confidence and limit |
 | --- | --- | --- |
 | Use one mandatory coordinator for each logical conversation, which can span several calls. | A fresh coordinator for each connection, or one shared across all conversations. | High. Reconnect preserves context; New conversation starts a separate history. Provider settings apply when its coordinator is created. |
-| Keep the realtime model limited to delegation, silence, and ending the call. | Give it direct BB mutation or composer tools. | High. The server rejects other tools. The coordinator still interprets intent with a model; this does not make every action deterministic. |
+| Give the realtime model bounded navigation and informational thread-message tools, while other work uses the coordinator. | Delegate every interaction. | Medium. This follows the later user request. The quick-action audit below covers its semantic limits. |
 | Let the native BB workspace own thread pages, projects, splits, composers, and file previews. | Embed and maintain a second work-thread workspace in Voice. | High. The global call owner survives page changes. BB controls split fallback and pane limits. |
 | Use a separate structured `voice_ui` tool and wait for its receipt before speaking the result. | Put navigation hints in `voice_reply` or parse speech into UI actions. | High. Speech never causes navigation. Background batches cannot issue UI commands. |
 | Execute UI commands only in the client that owns the physical call. | Use a server navigation broadcast to every BB window. | High within the trusted frontend. BB plugin RPC does not expose an authenticated client identity; the nonce is a routing identifier, not a secret credential. |
@@ -78,3 +78,26 @@ I stand behind this recovery change for the user's draft PR and local test.
 It fixes the confirmed availability and recovery defects. It does not establish
 that the underlying transcription service will recognize the next recording.
 The user's existing PR and reload authorization covers this update.
+
+
+## Direct quick actions — 7 September 2026
+
+The user requested direct realtime navigation and simple thread messages. The
+optional scope question has no answer yet. The default is comments and read-only
+status requests; small implementation requests still use the coordinator.
+
+| Decision | Alternative | Confidence and possible failure |
+| --- | --- | --- |
+| Limit direct messages to quoted comments and read-only status requests. | Also send small implementation requests directly. | Medium. This is the narrower interpretation of simple requests while clarification is pending. It can keep some short requests slower. |
+| Use a strict action schema, verbatim text checks, and conservative operation-word routing for messages. | Add a model-based intent classifier before each message. | Medium. Phrase meaning remains model-driven. The word check is not a multilingual safety boundary. Recipient instructions explicitly prohibit state changes for these messages; an agent could still misinterpret quoted content. There is no direct destructive SDK operation. |
+| Reuse the stored request, reply, watched-update, and UI command paths. | Add a separate fast-path conversation or browser automation. | High. Quick requests have a distinct running state so coordinator idle events cannot settle them. |
+| Admit one quick effect per spoken input and queue every direct message. | Permit multiple effects or direct steering. | High. Multiple targets or steps must use the coordinator. A second tool call does not imply a second user authorization. |
+| Cancel pending quick work on new speech, hangup, or expiry; preserve cancellation before submission. | Let accepted UI waits finish after a correction. | High for tested transitions. An SDK send already in flight cannot be undone; cancellation records uncertainty and does not retry it. |
+| Bound direct SDK waits by the existing UI action budget of 20 seconds. | Wait indefinitely or retry after a timeout. | Medium. A slow valid operation can be reported as uncertain. Its effects are not repeated. |
+| Preserve unknown delivery across reload and watch message targets before sending. | Resend when no response arrives. | High. Later thread results can still reach Voice. A missing receipt may require inspection rather than a retry. |
+| Use read-only search with hidden-thread filtering and explicit truncation. | Require pasted IDs or silently treat a partial list as complete. | High. Ambiguous names still require a spoken question. |
+| Speak stored results through the bridge, including sent versus queued status. | Let the realtime model improvise tool completion replies. | High for delivery ownership. The fixed quick-result text is currently English, as are the existing bridge recovery messages. Live voice wording and latency still need testing. |
+
+I support this bounded fast path for the draft and local test. I do not claim
+that a word filter proves arbitrary natural-language messages harmless. Direct
+implementation requests remain outside this revision pending the user's answer.

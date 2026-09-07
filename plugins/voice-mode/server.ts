@@ -1,3 +1,4 @@
+import { quickActionSchema } from "./quick-actions.ts";
 import { LEGACY_DEFAULT_PROMPT } from "./legacy-prompt.ts";
 import { UiCommandSchema, UiActionResultSchema, voiceUiParamsSchema, type UiAction, type UiCommand } from "./ui-actions.ts";
 import { UI_COMMAND_MIGRATIONS, UiCommandManager } from "./ui-command-manager.ts";
@@ -27,7 +28,7 @@ import {
 import { sessionEventLog } from "./session-events.ts";
 import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
 import { userRequestEnvelopeSchema, voiceAskParamsSchema, voiceReplyParamsSchema, publishedReplySchema } from "./coordinator/envelopes.ts";
-import { COORDINATOR_MIGRATIONS, CoordinatorStore } from "./coordinator/store.ts";
+import { COORDINATOR_MIGRATIONS, QUICK_ACTION_MIGRATIONS, CoordinatorStore } from "./coordinator/store.ts";
 import { CoordinatorManager, DEFAULT_COORDINATOR_CONFIG, type CoordinatorConfig } from "./coordinator/manager.ts";
 import { COORDINATOR_INSTRUCTIONS, DEFAULT_VOICE_PREFERENCES, realtimeInstructions, VOICE_ASK_TOOL_INSTRUCTIONS, VOICE_REPLY_TOOL_INSTRUCTIONS } from "./coordinator/prompts.ts";
 
@@ -90,6 +91,14 @@ const requestReceiptSchema = z
   .strict();
 
 export const rpcContract = defineRpcContract({
+  lookupVoiceTargets: {
+    input: z.object({nonce:z.string().min(1),query:z.string().max(200)}).strict(),
+    output: z.object({threads:z.array(z.object({id:z.string(),title:z.string().nullable(),projectId:z.string().nullable(),parentThreadId:z.string().nullable(),status:z.string()}).strict()),projects:z.array(z.object({id:z.string(),name:z.string()}).strict()),truncated:z.boolean()}).strict(),
+  },
+  cancelQuickRequest: {
+    input:z.object({conversationId:z.string().min(1),callNonce:z.string().min(1),requestId:z.string().min(1)}).strict(),
+    output:z.object({ok:z.boolean()}).strict(),
+  },
   pendingUiCommands: {
     input: z.object({ conversationId: z.string().min(1), callNonce: z.string().min(1) }).strict(),
     output: z.object({ commands: z.array(UiCommandSchema), revokedCommandIds: z.array(z.string()) }).strict(),
@@ -403,13 +412,15 @@ function truncate(text: string, max = 4000): string {
   return text.length > max ? `${text.slice(0, max)}\n…[truncated]` : text;
 }
 
-/** The voice model only hands requests to the coordinator or controls speech. */
+/** Realtime tools: bounded fast actions and the coordinator for other work. */
 export function coordinatorToolSchemas() {
   return [
+    {type:"function",name:"lookup_targets",description:"Find accessible threads and projects by spoken name. Read-only. Resolve ambiguity by asking the user; never invent IDs. This does not open or message anything.",parameters:{type:"object",properties:{query:{type:"string"}},required:["query"]}},
+    {type:"function",name:"quick_action",description:"One explicitly requested non-destructive navigation or short verbatim comment/status request to one thread. Messages queue if busy; never steer. Do not use for implementation, complex work, destructive actions, drafts, or answers to coordinator questions. The bridge validates the transcript and speaks the receipt; call silently.",parameters:{type:"object",properties:{request:{type:"string"},acknowledgment:{type:"string"},action:z.toJSONSchema(quickActionSchema,{target:"draft-7"})},required:["request","action"]}},
     {
       type: "function",
       name: "delegate_to_coordinator",
-      description: "Hand the user's request to the bb coordinator, which does the actual work and replies later. Pass the user's own words verbatim in request. Use for anything about threads, projects, agents, work, results, diffs, archiving, stopping, starting, or plugin commands.",
+      description: "Hand the user's request to the bb coordinator, which does the actual work and replies later. Pass the user's own words verbatim in request. Use for complex work, implementation requests, destructive actions, interruption, ambiguous scope, coordinator answers, and anything outside quick_action.",
       parameters: {
         type: "object",
         properties: {
@@ -487,6 +498,7 @@ export default async function plugin(bb: BbPluginApi) {
     )`,
     ...COORDINATOR_MIGRATIONS,
     ...UI_COMMAND_MIGRATIONS,
+    ...QUICK_ACTION_MIGRATIONS,
   ]);
 
   // Reject new event data at the quota; never silently delete saved transcripts.
@@ -630,6 +642,11 @@ export default async function plugin(bb: BbPluginApi) {
     store: coordinatorStore,
     config: async () => (await readConfig()).coordinator,
     preferences: () => activePrompt(),
+    quickUi: async (envelope, action, signal) => {
+      const resolved = await resolveUiAction(action, signal);
+      if (signal.aborted) return {status:"cancelled",detail:"The request was cancelled."};
+      return uiCommands.issue({conversationId:envelope.conversationId,callNonce:envelope.callNonce,requestId:envelope.requestId,action:resolved},signal);
+    },
     onRequestEnded: requestId => uiCommands.cancelRequest(requestId),
   });
   bb.onDispose(() => coordinator.dispose());
@@ -638,7 +655,7 @@ export default async function plugin(bb: BbPluginApi) {
     const request = coordinatorStore.getRequest(command.requestId);
     return currentCall().nonce === command.callNonce && conversation?.currentCallNonce === command.callNonce
       && !!request && request.conversationId === command.conversationId && request.callNonce === command.callNonce
-      && request.status === "accepted" && coordinatorStore.listBatches(command.conversationId, ["reserved", "sent"]).length === 0;
+      && (request.status === "accepted" || request.status === "quick_running") && coordinatorStore.listBatches(command.conversationId, ["reserved", "sent"]).length === 0;
   }
   const liveUiCall = (command: UiCommand) => currentCall().nonce === command.callNonce
     && coordinatorStore.getConversation(command.conversationId)?.currentCallNonce === command.callNonce;
@@ -1052,6 +1069,22 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
+    async lookupVoiceTargets({nonce,query}) {
+      if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
+      const [search,projects] = await Promise.all([
+        query.trim() ? bb.sdk.threads.search({query:query.trim(),limitPerGroup:"20"}).then(result => ({matches:Object.values(result).flatMap(group => group.results.map(entry=>entry.thread)),total:Object.values(result).reduce((sum,group)=>sum+group.total,0)})) : bb.sdk.threads.list({includeHidden:false,limit:40}).then(matches=>({matches,total:matches.length})),
+        bb.sdk.projects.list({includePersonal:true}),
+      ]);
+      if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
+      const {matches,total} = search;
+      return {threads:matches.filter(thread=>thread.visibility !== "hidden").slice(0,40).map(thread=>({id:thread.id,title:thread.title,projectId:thread.projectId,parentThreadId:thread.parentThreadId,status:thread.status})),
+        projects:projects.filter(project=>!query.trim() || project.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())).slice(0,40).map(project=>({id:project.id,name:project.name})),truncated:total>matches.length || matches.length>=40 || projects.length>40};
+    },
+    async cancelQuickRequest({conversationId,callNonce,requestId}) {
+      if (currentCall().nonce !== callNonce) return {ok:false};
+      coordinator.cancelQuickRequest(conversationId,callNonce,requestId);
+      return {ok:true};
+    },
     async pendingUiCommands(input) { return { commands: uiCommands.pending(input), revokedCommandIds: uiCommands.revoked(input) }; },
     async claimUiCommand(input) { return uiCommands.claim(input); },
     async reportUiCommandResult(input) { return uiCommands.report(input); },

@@ -16,6 +16,11 @@ import {
  * Appended to the plugin's migration list. Never reorder or edit shipped
  * statements; add new ones at the end.
  */
+// Appended after all existing plugin migrations by server.ts.
+export const QUICK_ACTION_MIGRATIONS = [
+  `CREATE TABLE IF NOT EXISTS voice_quick_cancellations (call_nonce TEXT NOT NULL, request_id TEXT NOT NULL, PRIMARY KEY (call_nonce, request_id))`,
+];
+
 export const COORDINATOR_MIGRATIONS: string[] = [
   `CREATE TABLE IF NOT EXISTS voice_conversations (
     id TEXT PRIMARY KEY,
@@ -168,7 +173,7 @@ export interface ConversationRow {
   state: ConversationState;
 }
 
-export type RequestStatus = "recorded" | "dispatching" | "accepted" | "dispatch_unknown" | "failed" | "settled";
+export type RequestStatus = "recorded" | "dispatching" | "accepted" | "dispatch_unknown" | "failed" | "settled" | "quick_running" | "quick_unknown" | "quick_cancelled";
 export interface RequestReceipt {
   delivery: "sent" | "queued";
   coordinatorThreadId: string;
@@ -386,6 +391,22 @@ export class CoordinatorStore {
       dispatchedAt: (row.dispatched_at as number | null) ?? null,
       settledAt: (row.settled_at as number | null) ?? null,
     };
+  }
+
+  priorQuickRequest(envelope: UserRequestEnvelope): RequestRow | null {
+    const row = this.db.prepare(`SELECT * FROM voice_requests r WHERE r.conversation_id = ? AND r.call_nonce = ? AND r.id != ?
+      AND json_type(r.envelope_json, '$.quickAction') IS NOT NULL
+      AND EXISTS (SELECT 1 FROM json_each(r.envelope_json, '$.utteranceItemIds') old JOIN json_each(?) current ON old.value = current.value)
+      ORDER BY r.seq DESC LIMIT 1`).get(envelope.conversationId, envelope.callNonce, envelope.requestId, JSON.stringify(envelope.utteranceItemIds)) as Record<string, unknown> | undefined;
+    return row ? this.rowToRequest(row) : null;
+  }
+
+  cancelQuick(callNonce: string, requestId: string) {
+    this.db.prepare("INSERT OR IGNORE INTO voice_quick_cancellations (call_nonce, request_id) VALUES (?, ?)").run(callNonce, requestId);
+  }
+
+  quickCancelled(callNonce: string, requestId: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM voice_quick_cancellations WHERE call_nonce = ? AND request_id = ?").get(callNonce, requestId);
   }
 
   getRequest(id: string): RequestRow | null {

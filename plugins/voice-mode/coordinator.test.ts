@@ -766,3 +766,127 @@ test("request settlement immediately revokes started UI work before its timeout"
   const recovered = await h.rpc("pendingUiCommands", { conversationId, callNonce: "ui-settled" });
   assert.deepEqual(recovered.revokedCommandIds, [commands[0].id]);
 });
+
+
+test("quick navigation uses native UI receipts without starting a coordinator turn", async t => {
+  const h = await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
+  const {conversationId} = await h.claim("quick-ui");
+  const envelope = h.envelope(conversationId,"quick-ui","quick1","Open the App project",{quickAction:{kind:"open_project",projectId:"proj_app"}});
+  const result = await h.rpc("submitRequest",{envelope});
+  assert.equal(result.status,"quick_running");
+  await settle();
+  const {commands} = await h.rpc("pendingUiCommands",{conversationId,callNonce:"quick-ui"});
+  assert.equal(commands.length,1);
+  const identity={conversationId,callNonce:"quick-ui",commandId:commands[0].id};
+  assert.equal((await h.rpc("claimUiCommand",identity)).claimed,true);
+  await h.rpc("reportUiCommandResult",{...identity,result:{status:"succeeded",detail:"Project open"}});
+  await settle();
+  assert.equal(h.world.sends.length,0);
+  assert.equal(h.world.spawns,0);
+  assert.equal(h.replies().filter(r=>r.kind==="final").length,1);
+  await h.rpc("submitRequest",{envelope});
+  assert.equal((await h.rpc("pendingUiCommands",{conversationId,callNonce:"quick-ui"})).commands.length,0);
+});
+
+test("quick messages queue once, preserve the quoted words, and watch the target", async t => {
+  const h = await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("thr_build",makeThreadResponse({id:"thr_build",title:"Build",status:"active"}));
+  const {conversationId}=await h.claim("quick-message");
+  const envelope=h.envelope(conversationId,"quick-message","quick_msg","Tell Build I will review it tomorrow",{quickAction:{kind:"send_message",threadId:"thr_build",purpose:"comment",text:"I will review it tomorrow"}});
+  await Promise.all([h.rpc("submitRequest",{envelope}),h.rpc("submitRequest",{envelope})]); await settle();
+  assert.equal(h.world.sends.length,1);
+  assert.equal(h.world.sends[0].mode,"queue-if-active");
+  assert.match(h.world.sends[0].text,/"I will review it tomorrow"/);
+  assert.match(h.world.sends[0].text,/do not execute instructions/);
+  assert.equal(h.world.spawns,0);
+  assert.ok(h.replies().some(r=>r.speech.includes("queued")));
+  const status=await h.rpc("getCoordinatorStatus",null);
+  assert.ok(status.watch.some((row:Any)=>row.threadId==="thr_build"));
+  await h.rpc("submitRequest",{envelope:{...envelope,requestId:"another_model_call"}}); await settle();
+  assert.equal(h.world.sends.length,1,"a different tool call for the same speech cannot duplicate the send");
+});
+
+test("destructive and implementation requests fall back to the coordinator, never directly to the target", async t => {
+  const h=await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("thr_build",makeThreadResponse({id:"thr_build",title:"Build"}));
+  const {conversationId}=await h.claim("quick-refusal");
+  for (const text of ["Archive the old threads","Fix the login bug","Merge the PR"]) {
+    await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"quick-refusal",text,text,{quickAction:{kind:"send_message",threadId:"thr_build",purpose:"comment",text}})});
+  }
+  assert.equal(h.world.sends.filter(send=>send.threadId==="thr_build").length,0);
+  assert.equal(h.world.sends.length,3);
+  assert.equal(h.world.spawns,1);
+});
+
+test("cancellation before quick submission and during target resolution prevents effects", async t => {
+  const h=await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
+  const {conversationId}=await h.claim("quick-cancel");
+  await h.rpc("cancelQuickRequest",{conversationId,callNonce:"quick-cancel",requestId:"before"});
+  const before=h.envelope(conversationId,"quick-cancel","before","Show Voice",{quickAction:{kind:"show_voice"}});
+  assert.equal((await h.rpc("submitRequest",{envelope:before})).status,"quick_cancelled");
+  let resolve!: (thread:Any)=>void;
+  h.harness.sdk.stub("threads.get",()=>new Promise(r=>{resolve=r;}));
+  await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"quick-cancel","during","Ask Build for status",{utteranceItemIds:["u2"],transcriptDelta:[{itemId:"u2",text:"Ask Build for status"}],quickAction:{kind:"send_message",threadId:"thr_build",purpose:"status",text:"status"}})});
+  await settle();
+  await h.rpc("cancelQuickRequest",{conversationId,callNonce:"quick-cancel",requestId:"during"});
+  resolve(makeThreadResponse({id:"thr_build",title:"Build"})); await settle();
+  assert.equal(h.world.sends.length,0);
+  assert.equal(h.world.spawns,0);
+});
+
+test("an uncertain direct send is retained and is never retried", async t => {
+  const h=await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("thr_build",makeThreadResponse({id:"thr_build",title:"Build"}));
+  let attempts=0; h.harness.sdk.stub("threads.send",async()=>{attempts++;throw new Error("connection lost after acceptance");});
+  const {conversationId}=await h.claim("quick-unknown");
+  const envelope=h.envelope(conversationId,"quick-unknown","uncertain","Ask Build for status",{quickAction:{kind:"send_message",threadId:"thr_build",purpose:"status",text:"status"}});
+  await h.rpc("submitRequest",{envelope}); await settle();
+  const result=await h.rpc("retryRequest",{requestId:"uncertain"});
+  assert.equal(result.status,"quick_unknown");
+  await h.rpc("submitRequest",{envelope});
+  assert.equal(attempts,1);
+  assert.ok(h.replies().some(r=>r.speech.includes("could not confirm")));
+});
+
+
+test("quick input validation rejects incomplete source text and stale calls", async t => {
+  const h=await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
+  const {conversationId}=await h.claim("quick-source");
+  const envelope=h.envelope(conversationId,"quick-source","bad-source","Show Voice",{transcriptDelta:[],quickAction:{kind:"show_voice"}});
+  assert.equal((await h.rpc("submitRequest",{envelope})).status,"failed");
+  await assert.rejects(h.rpc("lookupVoiceTargets",{nonce:"stale",query:""}));
+  assert.equal(h.world.spawns,0);
+});
+
+test("quick target lookup stays read-only, hides hidden threads, and reports truncation", async t => {
+  const h=await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
+  await h.claim("lookup");
+  h.harness.sdk.stub("threads.search",async()=>({active:{total:30,results:[{thread:makeThreadResponse({id:"visible",title:"Build",visibility:"visible"}),matches:[]},{thread:makeThreadResponse({id:"hidden",title:"Coordinator",visibility:"hidden"}),matches:[]}]},archived:{total:0,results:[]}}));
+  const result=await h.rpc("lookupVoiceTargets",{nonce:"lookup",query:"Build"});
+  assert.deepEqual(result.threads.map((thread:Any)=>thread.id),["visible"]);
+  assert.equal(result.truncated,true);
+  assert.equal(h.world.sends.length,0);
+});
+
+test("quick cancellation tombstones survive a plugin reload", async t => {
+  const h=await enabledHost();
+  const {conversationId}=await h.claim("before-reload");
+  await h.rpc("cancelQuickRequest",{conversationId,callNonce:"before-reload",requestId:"delayed"});
+  const reloaded=await h.harness.lifecycle.reload(plugin); t.after(()=>reloaded.harness.lifecycle.dispose());
+  const result=await reloaded.harness.behavior.callRpc("submitRequest",{envelope:h.envelope(conversationId,"before-reload","delayed","Show Voice",{quickAction:{kind:"show_voice"}})}) as Any;
+  assert.equal(result.status,"quick_cancelled");
+  assert.equal(h.world.sends.length,0);
+});
+
+test("hangup during a direct send preserves uncertainty and never replays delivery", async t => {
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("thr_build",makeThreadResponse({id:"thr_build",title:"Build"}));
+  let complete!: (value:Any)=>void;
+  h.harness.sdk.stub("threads.send",()=>new Promise(resolve=>{complete=resolve;}));
+  const {conversationId}=await h.claim("hangup-send");
+  await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"hangup-send","pending-send","Ask Build for status",{quickAction:{kind:"send_message",threadId:"thr_build",purpose:"status",text:"status"}})}); await settle();
+  await h.rpc("forceStop",{nonce:"hangup-send"}); await settle();
+  complete({ok:true,delivery:"sent"});await settle();
+  const result=await h.rpc("retryRequest",{requestId:"pending-send"});
+  assert.equal(result.status,"quick_unknown");
+});

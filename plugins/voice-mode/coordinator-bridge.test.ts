@@ -541,3 +541,55 @@ test("an empty fragment prevents dispatch of a partially transcribed utterance",
   assert.equal(submits().length, 0);
   assert.ok(logs.some(e => e.kind === "handoff.rejected"));
 });
+
+
+test("quick actions share transcript validation and never dispatch guessed words", async t => {
+  const {dc,submits}=await coordinatorFixture(t);
+  speak(dc,"quick_input");
+  dc.emit("response.created",{response:{id:"quick_response"}});
+  dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"quick_call",arguments:JSON.stringify({request:"Open Build",action:{kind:"open_thread",threadId:"thr_build"}})});
+  await settle(); assert.equal(submits().length,0);
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"quick_input",transcript:"Open Build in a split"});
+  await settle();
+  assert.equal(submits().length,1);
+  assert.equal(submits()[0].originalText,"Open Build in a split");
+  assert.equal(submits()[0].quickAction.kind,"open_thread");
+});
+
+test("new speech cancels an in-flight quick action locally and on the server", async t => {
+  let accept!: (value:Any)=>void;
+  const {agent,dc,calls,submits}=await coordinatorFixture(t,{submit:()=>new Promise(resolve=>{accept=resolve;})});
+  speak(dc,"quick_input");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"quick_input",transcript:"Show Voice"});
+  dc.emit("response.created",{response:{id:"quick_response"}});
+  dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"quick_call",arguments:JSON.stringify({request:"Show Voice",action:{kind:"show_voice"}})});
+  await settle();
+  const requestId=submits()[0].requestId;
+  dc.emit("input_audio_buffer.speech_started");
+  assert.ok(calls.some(call=>call.method==="cancelQuickRequest" && call.args.requestId===requestId));
+  assert.ok((agent as any).cancelledQuickRequests.has(requestId));
+  accept({status:"quick_cancelled",receipt:null,error:null}); await settle();
+});
+
+test("quick actions cannot bypass empty input or expose destructive action shapes", async t => {
+  const {dc,submits}=await coordinatorFixture(t);
+  speak(dc,"empty_quick");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"empty_quick",transcript:""});
+  dc.emit("response.created",{response:{id:"guess_quick"}});
+  dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"bad_quick",arguments:JSON.stringify({request:"Archive Build",action:{kind:"archive_thread",threadId:"thr_build"}})});
+  await settle(); assert.equal(submits().length,0);
+});
+
+
+test("a lost quick-submit response never claims non-delivery or asks for an automatic retry", async t => {
+  const {dc,logs,tick}=await coordinatorFixture(t,{submit:async()=>{throw new Error("response lost");}});
+  speak(dc,"quick_rpc");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"quick_rpc",transcript:"Show Voice"});
+  dc.emit("response.created",{response:{id:"quick_rpc_response"}});
+  dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"quick_rpc_call",arguments:JSON.stringify({request:"Show Voice",action:{kind:"show_voice"}})});
+  await settle();
+  dc.emit("response.done",{response:{id:"quick_rpc_response",status:"completed"}});
+  tick(2500); await settle();
+  assert.ok(logs.some(event=>event.kind==="reply.speaking" && event.payload.text.includes("could not confirm")));
+  assert.ok(!logs.some(event=>event.kind==="reply.speaking" && event.payload.text.includes("Please try again")));
+});

@@ -137,11 +137,12 @@ export class VoiceAgent {
   private uiConnectionGeneration = 0;
   private bufferedUiCommands = new Map<string, UiCommand>();
   private revokedUiCommands = new Set<string>();
+  private cancelledQuickRequests = new Set<string>();
   private uiCommands = new Map<string, { command: UiCommand; result?: UiActionResult }>();
 
   private ownsUiCommand(command: UiCommand): boolean {
     return this.session !== null && (this.state === "live" || this.state === "muted") &&
-      this.nonce === command.callNonce && this.logicalConversationId === command.conversationId;
+      this.nonce === command.callNonce && this.logicalConversationId === command.conversationId && !this.cancelledQuickRequests.has(command.requestId);
   }
 
   setUiConnectionState(connected: boolean): void {
@@ -1071,6 +1072,7 @@ export class VoiceAgent {
     this.uiChain = Promise.resolve();
     this.resetUiRecovery();
     this.uiCommands.clear();
+    this.cancelledQuickRequests.clear();
     this.revokedUiCommands.clear();
     this.bufferedUiCommands.clear();
     this.uiReady = false;
@@ -1130,13 +1132,22 @@ export class VoiceAgent {
       } else if (this.interruptedResponses.has(String(event.response_id))) {
         requestResponseAfter = false;
         throw new Error("Held: this response was interrupted. Wait for the user's next complete request.");
-      } else if (name === "delegate_to_coordinator") {
+      } else if (name === "lookup_targets") {
+        const origin = this.responseIdentity.get(String(event.response_id));
+        const result = await bindings.rpc.call("lookupVoiceTargets", {nonce:toolSessionId,query:typeof args.query === "string" ? args.query : ""});
+        if (origin?.userTurn !== this.userTurn || this.interruptedResponses.has(String(event.response_id))) {
+          requestResponseAfter = false;
+          throw new Error("The lookup belongs to an earlier spoken turn.");
+        }
+        output = JSON.stringify(result);
+        status = "success";
+      } else if (name === "delegate_to_coordinator" || name === "quick_action") {
         const origin = typeof event.response_id === "string" ? this.responseIdentity.get(event.response_id) : null;
         if (!origin || origin.userTurn !== this.userTurn || this.userSpeaking) {
           requestResponseAfter = false;
           throw new Error("Held: the user continued speaking. Wait for their complete current request.");
         }
-        output = this.bridge.delegate(callId, args);
+        output = this.bridge.delegate(callId, args, name === "quick_action");
         requestResponseAfter = false;
         this.delegatedTurn = this.userTurn;
         status = "success";
@@ -1237,6 +1248,7 @@ export class VoiceAgent {
       },
       changed: () => this.refreshBridgeSnapshot(),
       inputUnavailable: (turn: number) => this.cancelUntranscribedResponse(turn),
+      cancelQuickRequest: (requestId: string) => { this.cancelledQuickRequests.add(requestId); },
     };
     return new CoordinatorBridge(host, conversationId, () => this.userTurn);
   }

@@ -59,9 +59,21 @@ page cannot open one.
 
 Voice gives one short acknowledgment, works quietly, and reports useful results
 or a material blocker. It does not narrate internal dispatch or coordinator
-activity. The realtime model handles conversation and speech; the coordinator
-resolves intent and works through BB's native tools. There is no direct realtime
-mutation path or fallback mode.
+activity. The realtime model can look up targets and directly request one
+native navigation action or send one short comment or read-only status request
+to a thread. Messages queue if the thread is busy. Implementation requests,
+complex work, interruptions, destructive actions, and drafts use the coordinator.
+There are no direct archive, delete, stop, shell, or composer-submit tools.
+
+Quick actions use the same transcript validation and durable request/reply
+records. A repeated tool call for the same spoken input cannot repeat a quick
+action. New speech cancels pending quick actions; an accepted thread message
+cannot be taken back. Unknown delivery is never retried automatically. Message
+targets are watched so their later results reach the voice conversation.
+The server sends comments as quoted information with no permission to change
+state, and status requests explicitly ask for a read-only answer. A conservative
+operation-word check sends potentially actionable requests to the coordinator;
+this is not a general natural-language safety classifier.
 
 Empty or failed transcripts cannot start work. Voice cancels the affected
 realtime response and asks once for the missed sentence. Requests wait up to
@@ -70,8 +82,8 @@ restart rejected work. The conversation marks speech with no usable transcript,
 and Diagnostics records per-item results, timing, and provider error details.
 The plugin does not record raw microphone audio.
 
-The coordinator requests UI actions through `voice_ui`, separately from
-`voice_reply`. The server records each command and binds it to the request and
+Quick navigation and the coordinator’s `voice_ui` tool share one UI command
+path. Neither uses speech text to trigger navigation. The server records each command and binds it to the request and
 physical call. Only the client running that call applies it. Other BB windows
 can show call status without changing their own workspace. Commands are claimed
 before execution, so repeated delivery cannot repeat a draft edit or navigation.
