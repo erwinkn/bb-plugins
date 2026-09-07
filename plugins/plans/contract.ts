@@ -7,10 +7,11 @@ export const versionSchema = z.object({ id, number: z.number().int().positive(),
 export const annotationKindSchema = z.enum(["comment", "redline", "looksGood"]);
 /** Text beside a quote; see CONTEXT_LENGTH in lib/quote-anchor.ts. */
 const context = z.string().max(200);
+const position = z.number().int().nonnegative();
 export const commentSchema = z.object({
   id, versionId: id, quote: z.string().max(10_000), body: z.string().trim().max(10_000),
   kind: annotationKindSchema.optional(),
-  prefix: context.optional(), suffix: context.optional(),
+  prefix: context.optional(), suffix: context.optional(), position: position.optional(),
   resolved: z.boolean(), createdAt: z.number(), sentAt: z.number().nullable(),
 });
 export const planSchema = z.object({
@@ -27,7 +28,7 @@ export const reviewSchema = z.object({ id, versionId: id, action: z.enum(["feedb
 export const addCommentSchema = z.object({
   id, versionId: id, quote: z.string().max(10_000),
   body: z.string().trim().max(10_000).default(""), kind: annotationKindSchema.optional(),
-  prefix: context.optional(), suffix: context.optional(),
+  prefix: context.optional(), suffix: context.optional(), position: position.optional(),
 }).superRefine((value, ctx) => {
   if ((!value.kind || value.kind === "comment") && !value.body) {
     ctx.addIssue({ code: "custom", path: ["body"], message: "Write a comment before saving." });

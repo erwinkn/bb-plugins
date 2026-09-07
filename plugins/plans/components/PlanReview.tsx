@@ -172,6 +172,7 @@ export function PlanReview({
           body: pending.body,
           prefix: pending.prefix,
           suffix: pending.suffix,
+          position: pending.position,
         }),
       );
       updateDraft({ pendingComment: null });

@@ -57,7 +57,7 @@ export function useSelectionQuote(
         setCurrent(null);
         return;
       }
-      const { quote, prefix, suffix } = selectionForRange(indexTextNodes(content), range);
+      const { quote, prefix, suffix, position } = selectionForRange(indexTextNodes(content), range);
       if (quote.length < MIN_QUOTE_LENGTH) {
         setCurrent(null);
         return;
@@ -68,6 +68,7 @@ export function useSelectionQuote(
         quote,
         prefix,
         suffix,
+        position,
         tooLong: quote.length > MAX_QUOTE_LENGTH,
         rect: {
           top: bounds.top - origin.top + scroller.scrollTop,

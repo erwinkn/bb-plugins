@@ -137,7 +137,7 @@ export function PlanDocument({
       anchorsRef.current = anchors;
       onAnchorsChange(anchors);
     }
-  }, [comments, onAnchorsChange, onPendingMatch, pendingQuote, pendingContext?.prefix, pendingContext?.suffix]);
+  }, [comments, onAnchorsChange, onPendingMatch, pendingQuote, pendingContext?.prefix, pendingContext?.suffix, pendingContext?.position]);
 
   useLayoutEffect(() => {
     anchor();
@@ -224,7 +224,7 @@ export function PlanDocument({
   const commitQuote = (kind?: "redline" | "looksGood") => {
     const recent = takeRecent();
     if (recent === null) return;
-    const context = { prefix: recent.prefix, suffix: recent.suffix };
+    const context = { prefix: recent.prefix, suffix: recent.suffix, position: recent.position };
     if (kind && onAnnotate) void onAnnotate(recent.quote, kind, context);
     else onQuote(recent.quote, context);
     clearDocumentSelection(contentRef.current);

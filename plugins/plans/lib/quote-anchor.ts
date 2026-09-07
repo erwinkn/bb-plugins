@@ -126,6 +126,8 @@ export type QuoteMatch =
 export interface QuoteContext {
   prefix?: string;
   suffix?: string;
+  /** Offset of the quote in the normalized text when it was selected; a hint, verified before use. */
+  position?: number;
 }
 
 export const CONTEXT_LENGTH = 48;
@@ -156,9 +158,10 @@ function agreement(expected: string, actual: string, fromEnd: boolean): number {
 
 /**
  * Finds the quote in the index text. One occurrence is a match. Several are
- * ambiguous unless the stored context picks out exactly one: the occurrence
- * whose neighbours agree most with `prefix` and `suffix` wins, and a tie stays
- * ambiguous rather than guessing.
+ * ambiguous unless the stored context picks out exactly one: the recorded
+ * position wins when the quote is still there (identical repeats), otherwise
+ * the occurrence whose neighbours agree most with `prefix` and `suffix`, and a
+ * tie stays ambiguous rather than guessing.
  */
 export function matchQuote(indexText: string, quote: string, context: QuoteContext = {}): QuoteMatch {
   const needle = normalizeQuote(quote);
@@ -166,6 +169,9 @@ export function matchQuote(indexText: string, quote: string, context: QuoteConte
   const found = occurrences(indexText, needle);
   if (found.length === 0) return { kind: "missing" };
   if (found.length === 1) return { kind: "unique", start: found[0]!, end: found[0]! + needle.length };
+  if (context.position !== undefined && found.includes(context.position)) {
+    return { kind: "unique", start: context.position, end: context.position + needle.length };
+  }
   const prefix = context.prefix ?? "";
   const suffix = context.suffix ?? "";
   if (prefix.length === 0 && suffix.length === 0) return { kind: "ambiguous", count: found.length };
@@ -283,6 +289,7 @@ export function selectionForRange(index: TextIndex, range: Range): { quote: stri
         quote: index.text.slice(start, end),
         prefix: index.text.slice(Math.max(0, start - CONTEXT_LENGTH), start),
         suffix: index.text.slice(end, end + CONTEXT_LENGTH),
+        position: start,
       };
     }
   }

@@ -8,7 +8,7 @@
 
 export interface ReviewDraft {
   note: string;
-  pendingComment: { quote: string; body: string; prefix?: string; suffix?: string } | null;
+  pendingComment: { quote: string; body: string; prefix?: string; suffix?: string; position?: number } | null;
 }
 
 export const EMPTY_DRAFT: ReviewDraft = { note: "", pendingComment: null };
@@ -47,6 +47,7 @@ function parseDraft(raw: string): ReviewDraft {
           body: pending.body,
           ...(typeof pending.prefix === "string" ? { prefix: pending.prefix } : {}),
           ...(typeof pending.suffix === "string" ? { suffix: pending.suffix } : {}),
+          ...(typeof pending.position === "number" ? { position: pending.position } : {}),
         }
       : null;
   return { note, pendingComment };
