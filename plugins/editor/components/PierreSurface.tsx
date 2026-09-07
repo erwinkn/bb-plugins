@@ -444,8 +444,8 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           // As tall as one row, so it sits on the block's first line.
           style={{ top: hovered.top, height: lineHeight ?? 20 }}
           className={cn(
-            "absolute right-4 z-10 flex cursor-pointer items-center gap-1 rounded-md border border-border bg-background pr-1.5 pl-1",
-            "text-[11px] leading-none text-muted-foreground shadow-sm hover:bg-state-hover hover:text-foreground",
+            "absolute right-3 z-10 flex w-5 cursor-pointer items-center justify-center rounded-sm",
+            "text-muted-foreground hover:text-foreground",
             "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none animate-in fade-in-0 duration-100",
           )}
           // The editor keeps its focus and selection; the click is the whole gesture.
@@ -456,8 +456,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
             revertHovered();
           }}
         >
-          <RevertGlyph className="size-3" />
-          Revert
+          <RevertGlyph />
         </button>
       ) : null}
     </div>
