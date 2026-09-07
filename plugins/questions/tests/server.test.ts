@@ -59,6 +59,43 @@ async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHos
 }
 
 describe("Questions backend", () => {
+  it.each([true, false])("settles a response crossing hourly expiry before renewing, accepted=%s", async (accepted) => {
+    const h = await setup();
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const respond = vi.fn(async () => {
+      await gate;
+      if (!accepted) throw new Error("Response rejected after expiry");
+      return { status: "resolved" };
+    });
+    h.harness.sdk.stub("threads.interactions.respond", respond);
+    vi.useFakeTimers();
+    try {
+      const call = h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "At expiry?" }] }, { threadId: "t", projectId: "proj_t" });
+      await vi.advanceTimersByTimeAsync(0);
+      const q = (await h.state()).rounds[0]!.questions[0]!;
+      await h.save(q, { ...emptyAnswer(), text: "Kept" });
+      const submission = h.submit([q.id]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(respond).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(3_600_000);
+      expect(h.harness.pendingInteractions).toHaveLength(0);
+      finish();
+      await submission;
+      await vi.advanceTimersByTimeAsync(0);
+      if (accepted) {
+        expect(JSON.parse(await call as string).answers[0].answer.text).toBe("Kept");
+        expect(h.harness.pendingInteractions).toHaveLength(0);
+        expect((await h.state()).answers[0]!.submitted!.text).toBe("Kept");
+      } else {
+        expect(h.harness.pendingInteractions).toHaveLength(1);
+        expect((await h.state()).answers[0]!.submitted).toBeNull();
+        h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
+        await call;
+      }
+      expect(h.send).not.toHaveBeenCalled();
+    } finally { finish(); vi.useRealTimers(); }
+  });
   it("submits through the renewed native interaction without a fallback message", async () => {
     const h = await setup();
     vi.useFakeTimers();

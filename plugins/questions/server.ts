@@ -132,7 +132,7 @@ const askToolSchema = z.object({
           .optional()
           .describe('Side panel only: labels of earlier questions ("Q3") whose submitted answers this question builds on.'),
         attachments: z.boolean().optional().describe("Side panel only: let the user attach files or images."),
-        references: z.boolean().optional().describe("Side panel only: let the user pick workspace files or links."),
+        references: z.boolean().optional().describe("Side panel only: let the user pick workspace files."),
         confidence: z.boolean().optional().describe("Side panel only: ask for a low, medium, or high confidence."),
       }),
     )

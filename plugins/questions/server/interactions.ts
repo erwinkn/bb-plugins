@@ -3,7 +3,7 @@ import type { Round, Submission } from "../lib/model";
 
 export const INPUT_TIMEOUT_MS = 60 * 60 * 1000;
 export const INPUT_RENDERER = "round";
-type WaitingRound = { round: Round; submission?: Submission; confirmation?: Promise<void> };
+type WaitingRound = { round: Round; submission?: Submission; confirmation?: Promise<void>; delivery?: Promise<boolean> };
 
 /** One host-owned waiting interaction per thread. Drafts remain in SQLite. */
 export class QuestionInteractions {
@@ -12,7 +12,7 @@ export class QuestionInteractions {
 
   async wait(round: Round, signal?: AbortSignal): Promise<Submission | PluginInteractionResult> {
     if (this.active.has(round.threadId)) throw new Error("This thread already has a Questions interaction open.");
-    let entry: WaitingRound = { round };
+    const entry: WaitingRound = { round };
     try {
       for (;;) {
         this.active.set(round.threadId, entry);
@@ -22,7 +22,11 @@ export class QuestionInteractions {
           payload: { roundId: round.id }, timeoutMs: INPUT_TIMEOUT_MS,
         }, { signal });
         if (result.outcome === "cancelled" && result.reason === "timeout" && !signal?.aborted) {
-          entry = { round };
+          // A response may finish as the host expires the interaction. Do not
+          // create another waiter until that response has a known outcome.
+          const delivered = await entry.delivery?.catch(() => false);
+          if (delivered && entry.submission) return entry.submission;
+          if (signal?.aborted) return result;
           continue;
         }
         if (result.outcome === "submitted") {
@@ -42,9 +46,16 @@ export class QuestionInteractions {
   }
 
   /** False means no waiting call for this round: late answers use a message. */
-  async deliver(submission: Submission, confirmed: () => void): Promise<boolean> {
+  deliver(submission: Submission, confirmed: () => void): Promise<boolean> {
     const entry = this.active.get(submission.threadId);
-    if (!entry || !submission.questionIds.every((id) => entry.round.questions.some((q) => q.id === id))) return false;
+    if (!entry || !submission.questionIds.every((id) => entry.round.questions.some((q) => q.id === id))) return Promise.resolve(false);
+    // Claim before the first asynchronous step, including interaction lookup.
+    const delivery = this.respond(entry, submission, confirmed);
+    entry.delivery = delivery;
+    return delivery;
+  }
+
+  private async respond(entry: WaitingRound, submission: Submission, confirmed: () => void): Promise<boolean> {
     const pending = await this.bb.sdk.threads.interactions.list({ threadId: submission.threadId });
     if (this.active.get(submission.threadId) !== entry) throw new Error("The interaction ended or renewed. Check the result before submitting again.");
     const interaction = pending.find((item) => item.origin?.kind === "plugin"

@@ -1,4 +1,4 @@
-// Searchable multi-select of workspace paths and links. Typing only updates
+// Searchable multi-select of workspace paths. Typing only updates
 // the result list; the input and caret are never re-mounted. Mouse and
 // keyboard share one active row.
 import { useCallback, useEffect, useId, useRef, useState } from "react";
@@ -96,8 +96,8 @@ export function ReferencePicker({
   const [serverHits, setServerHits] = useState<{ query: string; hits: Candidate[] }>({ query: "", hits: [] });
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
-  // Server hits count only when they answer the current query; a pasted
-  // link or path is always selectable.
+  // Only show workspace hits for the current query. Existing saved links
+  // remain visible as badges, but this picker creates workspace references.
   const hits: Candidate[] = [
     ...(serverHits.query === query ? serverHits.hits : []),
   ];
