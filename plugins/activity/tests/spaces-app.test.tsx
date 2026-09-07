@@ -144,6 +144,82 @@ describe("spaces", () => {
     expect(rows(slot)).toHaveLength(4);
   });
 
+  it("creates a space from All projects seeded with the current thread's project", async () => {
+    const rpc = server();
+    const slot = mount(rpc);
+    await tick();
+    await openScope(slot);
+    fireEvent.click(
+      slot.getByRole("menuitem", { name: "New space…", hidden: true }),
+    );
+    await tick();
+    const form = slot.getByRole("form", { name: "New space" });
+    expect(form.textContent).toContain(
+      "Starts with Two. Add projects from the menu.",
+    );
+    fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
+      target: { value: "Fresh" },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
+    expect(rpc.saveSpaces.mock.calls[0][0]).toMatchObject({
+      spaces: [one, both, { name: "Fresh", projectIds: ["project-2"] }],
+    });
+    await waitFor(() =>
+      expect(scopeButton(slot).getAttribute("aria-label")).toBe(
+        "Threads: Fresh",
+      ),
+    );
+    expect(rows(slot)).toEqual(["p2-child-of-p1", "p2-root"]);
+  });
+
+  it("creates an empty space without a current thread and explains the next step", async () => {
+    const rpc = server();
+    const slot = mount(rpc, { activeThreadId: "", activeProjectId: "" });
+    await tick();
+    await openScope(slot);
+    // Also available while a space is selected.
+    fireEvent.click(
+      slot.getByRole("menuitemradio", { name: "Both", hidden: true }),
+    );
+    await tick();
+    await openScope(slot);
+    fireEvent.click(
+      slot.getByRole("menuitem", { name: "New space…", hidden: true }),
+    );
+    await tick();
+    const form = slot.getByRole("form", { name: "New space" });
+    expect(form.textContent).toContain(
+      "Add projects from the menu after creating it.",
+    );
+    fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
+      target: { value: "Blank" },
+    });
+    fireEvent.submit(form);
+    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
+    expect(rpc.saveSpaces.mock.calls[0][0]).toMatchObject({
+      spaces: [one, both, { name: "Blank", projectIds: [] }],
+    });
+    await waitFor(() =>
+      expect(scopeButton(slot).getAttribute("aria-label")).toBe(
+        "Threads: Blank",
+      ),
+    );
+    expect(rows(slot)).toEqual([]);
+    expect(slot.container.textContent).toContain(
+      "No projects in this space. Choose projects from the heading menu.",
+    );
+    // Checking a project from the menu adds it to the new space.
+    await openScope(slot);
+    fireEvent.click(
+      slot.getByRole("menuitemcheckbox", { name: "One", hidden: true }),
+    );
+    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(2));
+    expect(rpc.saveSpaces.mock.calls[1][0]).toMatchObject({
+      spaces: [one, both, { name: "Blank", projectIds: ["project-1"] }],
+    });
+  });
+
   it("starts an ad-hoc selection from All projects and saves it as a space", async () => {
     const rpc = server();
     const slot = mount(rpc);
@@ -177,10 +253,11 @@ describe("spaces", () => {
     await tick();
 
     fireEvent.click(
-      slot.getByRole("menuitem", { name: "Save as space…", hidden: true }),
+      slot.getByRole("menuitem", { name: "New space…", hidden: true }),
     );
     await tick();
-    const form = slot.getByRole("form", { name: "Save as space" });
+    const form = slot.getByRole("form", { name: "New space" });
+    expect(form.textContent).toContain("Starts with the 2 selected projects.");
     await waitFor(() =>
       expect(document.activeElement).toBe(
         slot.getByRole("textbox", { name: "Space name" }),

@@ -10,12 +10,15 @@ const buttonClass =
 export function SpaceForm({
   edit,
   spaceName,
+  hint,
   onSubmit,
   onClose,
 }: {
   edit: SpaceEdit;
   /** The selected space's name for rename and delete. */
   spaceName?: string;
+  /** What a new space starts with. */
+  hint?: string;
   onSubmit: (name: string) => Promise<void>;
   onClose: () => void;
 }) {
@@ -36,7 +39,7 @@ export function SpaceForm({
   const trimmed = name.trim();
   const label =
     edit === "create"
-      ? "Save as space"
+      ? "New space"
       : edit === "rename"
         ? "Rename space"
         : "Delete space";
@@ -94,7 +97,13 @@ export function SpaceForm({
         disabled={saving || (edit !== "delete" && !trimmed)}
         className={`${buttonClass} ${edit === "delete" ? "text-destructive" : ""}`}
       >
-        {saving ? "Saving…" : edit === "delete" ? "Delete" : "Save"}
+        {saving
+          ? "Saving…"
+          : edit === "delete"
+            ? "Delete"
+            : edit === "create"
+              ? "Create"
+              : "Save"}
       </button>
       <button
         type="button"
@@ -104,6 +113,9 @@ export function SpaceForm({
       >
         Cancel
       </button>
+      {hint && !error && (
+        <p className="w-full text-xs text-muted-foreground">{hint}</p>
+      )}
       {error && (
         <p role="alert" className="w-full text-xs text-destructive">
           {error}

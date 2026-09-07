@@ -116,14 +116,10 @@ export function ScopeMenu({
             <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
           </Menu.CheckboxItem>
         ))}
-        {scope.kind !== "all" && (
-          <Menu.Separator className="my-1 h-px bg-border" />
-        )}
-        {scope.kind === "projects" && (
-          <Menu.Item className={menuItemClass} onSelect={() => edit("create")}>
-            Save as space…
-          </Menu.Item>
-        )}
+        <Menu.Separator className="my-1 h-px bg-border" />
+        <Menu.Item className={menuItemClass} onSelect={() => edit("create")}>
+          New space…
+        </Menu.Item>
         {scope.kind === "space" && (
           <>
             <Menu.Item className={menuItemClass} onSelect={() => edit("rename")}>

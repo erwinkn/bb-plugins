@@ -150,10 +150,13 @@ selector: it reads **All projects**, a space name, or **N projects** for an
 unsaved selection. Its menu lists All projects, each saved space, and a
 checklist of every BB project.
 
+- **New space…** is always in the menu. It asks for a name and selects the new
+  space. The space starts with the current unsaved selection if there is one,
+  otherwise with the open thread's project, otherwise empty; the form says
+  which. An empty space shows a reminder to check projects from the menu.
 - In All projects every project is checked. Unchecking projects starts an
   unsaved selection on this client. Unchecking the last project, or checking
-  every project again, returns to All projects. **Save as space…** names the
-  selection and selects the new space.
+  every project again, returns to All projects.
 - With a space selected, toggling a project edits that space for every client.
   **Rename space…** and **Delete space…** use the same inline form under the
   heading. Enter saves; Escape cancels. Deleting a space never touches

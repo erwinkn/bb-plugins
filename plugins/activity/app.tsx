@@ -220,14 +220,27 @@ function ThreadsList(props: PluginThreadListProps) {
       projectIds: next.length === 0 || everything ? [] : next,
     }));
   };
+  // A new space starts with the ad-hoc selection when there is one, otherwise
+  // with the current thread's project. Other projects are added from the menu.
+  const activeProject =
+    projects.find((project) => project.id === props.activeProjectId) ?? null;
+  const seedProjectIds =
+    scope.kind === "projects"
+      ? [...scope.projectIds]
+      : activeProject
+        ? [activeProject.id]
+        : [];
+  const seedHint =
+    scope.kind === "projects"
+      ? `Starts with the ${seedProjectIds.length} selected ${seedProjectIds.length === 1 ? "project" : "projects"}.`
+      : activeProject
+        ? `Starts with ${activeProject.name}. Add projects from the menu.`
+        : "Add projects from the menu after creating it.";
   const submitEdit = async (name: string) => {
     const list = spaces.catalog.spaces;
     if (edit === "create") {
       const id = newSpaceId();
-      await spaces.save([
-        ...list,
-        { id, name, projectIds: [...(scope.projectIds ?? [])] },
-      ]);
+      await spaces.save([...list, { id, name, projectIds: seedProjectIds }]);
       selectSpace(id);
     } else if (scope.kind === "space") {
       const { space } = scope;
@@ -373,6 +386,7 @@ function ThreadsList(props: PluginThreadListProps) {
             key={edit}
             edit={edit}
             spaceName={scope.kind === "space" ? scope.space.name : undefined}
+            hint={edit === "create" ? seedHint : undefined}
             onSubmit={submitEdit}
             onClose={() => setEdit(null)}
           />
