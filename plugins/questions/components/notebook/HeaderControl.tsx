@@ -7,6 +7,7 @@ import type { rpcContract } from "../../server";
 import { Icon } from "@/components/ui/icon";
 import { type ChangeSignal, REALTIME_CHANNEL, answerStatus } from "@/lib/model";
 import { cn } from "@/lib/utils";
+import { requestRound, takeRequestedRound } from "@/lib/panel-navigation";
 import { NOTEBOOK_ACTION_ID } from "./InlineRound";
 
 const OPENED_KEY = "bb-questions-opened";
@@ -36,8 +37,15 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
       mounted.current = false;
     };
   }, []);
-  const open = (roundId?: string) =>
-    navigate.openThreadPanel({ actionId: NOTEBOOK_ACTION_ID, title: "Questions", params: roundId ? { roundId } : undefined });
+  // Always open without params: the host keys the tab by action + params,
+  // so params would open a second Questions tab. The round to show travels
+  // through panel-navigation instead.
+  const open = (roundId?: string) => {
+    if (roundId) requestRound(threadId, roundId);
+    const opened = navigate.openThreadPanel({ actionId: NOTEBOOK_ACTION_ID, title: "Questions" });
+    if (!opened && roundId) takeRequestedRound(threadId);
+    return opened;
+  };
   /** Reload counts; a stale reply for an earlier thread or request is ignored. */
   const refresh = (openRoundId?: string) => {
     const seq = (requestSeq.current += 1);

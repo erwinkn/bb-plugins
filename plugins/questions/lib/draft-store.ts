@@ -106,6 +106,7 @@ export class DraftStore {
   private readonly local = new Map<string, LocalEdit>();
   private readonly dirty = new Set<string>();
   private readonly timers = new Map<string, unknown>();
+  private readonly heldSaves = new Set<string>();
   private readonly inFlight = new Map<string, Promise<SaveOutcome>>();
   private readonly listeners = new Set<() => void>();
   private failures = 0;
@@ -298,7 +299,7 @@ export class DraftStore {
       for (const [questionId, backup] of backups) this.restoreBackup(questionId, backup);
     }
     for (const [questionId, edit] of this.local) {
-      if (edit.conflict !== null || this.inFlight.has(questionId)) continue;
+      if (edit.conflict !== null || this.inFlight.has(questionId) || this.heldSaves.has(questionId)) continue;
       const server = this.serverAnswer(questionId);
       const serverVersion = server?.version ?? 0;
       if (serverVersion > edit.baseVersion && server) {
@@ -409,6 +410,7 @@ export class DraftStore {
 
   private scheduleSave(questionId: string, delay = this.debounceMs): void {
     this.cancelTimer(questionId);
+    if (this.heldSaves.has(questionId)) return;
     const handle = this.setTimer(() => {
       this.timers.delete(questionId);
       void this.save(questionId);
@@ -416,8 +418,25 @@ export class DraftStore {
     this.timers.set(questionId, handle);
   }
 
+  /** Keep edits local while an upload owns this answer's saved version. */
+  holdSaves(questionId: string): () => void {
+    this.heldSaves.add(questionId);
+    this.cancelTimer(questionId);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.heldSaves.delete(questionId);
+      if (this.local.get(questionId)?.conflict === null) {
+        if (this.disposed) void this.save(questionId);
+        else this.scheduleSave(questionId, 0);
+      }
+    };
+  }
+
   /** Save one question's local edit now; resolves when the attempt settles. */
   save(questionId: string): Promise<SaveOutcome> {
+    if (this.heldSaves.has(questionId)) return Promise.resolve("skipped");
     const existing = this.inFlight.get(questionId);
     if (existing) return existing;
     const edit = this.local.get(questionId);
@@ -442,6 +461,14 @@ export class DraftStore {
             this.local.delete(questionId);
             this.backups?.remove(this.threadId, questionId);
           }
+          return "saved";
+        }
+        if (current && sameDraft(result.state.draft, current.answer)) {
+          this.replaceServerAnswer(result.state);
+          this.local.delete(questionId);
+          this.dirty.delete(questionId);
+          this.cancelTimer(questionId);
+          this.backups?.remove(this.threadId, questionId);
           return "saved";
         }
         if (current) {
@@ -482,6 +509,7 @@ export class DraftStore {
    * conflict is unresolved, so callers never send stale drafts.
    */
   async flush(): Promise<void> {
+    if (this.heldSaves.size > 0) throw new Error("Wait for the attachment upload to finish before submitting.");
     for (const questionId of [...this.timers.keys()]) this.cancelTimer(questionId);
     // Loop only for edits that arrived during a successful save; a failed
     // transport rejects at once and leaves the backoff timer in charge.
@@ -517,11 +545,14 @@ export class DraftStore {
    * After an upload changed the server draft, keep the newest local text and
    * adopt the server's attachment list on top of the new version.
    */
-  mergeUploaded(state: AnswerState): void {
+  mergeUploaded(state: AnswerState, beforePaths?: string[]): void {
+    const previous = new Set(beforePaths ?? this.serverAnswer(state.questionId)?.draft?.attachments.map((item) => item.path) ?? []);
     this.replaceServerAnswer(state);
     const edit = this.local.get(state.questionId);
     if (edit && state.draft) {
-      edit.answer = { ...edit.answer, attachments: state.draft.attachments };
+      const kept = new Set(edit.answer.attachments.map((item) => item.path));
+      const added = state.draft.attachments.filter((item) => !previous.has(item.path) && !kept.has(item.path));
+      edit.answer = { ...edit.answer, attachments: [...edit.answer.attachments, ...added] };
       edit.baseVersion = state.version;
       this.dirty.add(state.questionId);
       this.writeBackup(state.questionId, edit);

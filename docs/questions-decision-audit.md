@@ -189,22 +189,46 @@ states the alternative and a case in which the chosen behavior causes a problem.
     case: an existing skill continues choosing its old question tool until it
     is explicitly updated or instructed to use Questions.
 
-## Verification
+## Follow-up
+
+### Live-test correction
+
+The approved single-panel behavior needed a correction after installation.
+BB uses panel params as part of tab identity. Round-specific params therefore
+created duplicate Questions tabs. All opens now use the same params, with a
+separate in-memory requested-round channel. Confidence: high. The alternative
+is multiple host tabs or losing the requested round when opening a message
+card. A browser reload can discard a pending navigation request, but cannot
+discard the saved round or answers. This corrects the agreed interaction;
+it does not add a new question mode or change data storage. Follow-up checks
+are recorded in `questions-live-checks.md` and the PR.
+
+The review also found that saving typed text during an upload could invalidate
+that upload's version check. The client now holds that answer's saves while
+the upload is active, but keeps typing and browser backups enabled. It resumes
+saving afterward and preserves attachment removals made during the upload.
+Confidence: high. The alternative is appending to whichever server draft is
+current; that needs more merge logic to avoid hiding a different client's edit.
+Submitting during an upload asks the user to wait. Identical-content version
+conflicts are now accepted without a conflict prompt; different drafts still
+require a choice. Both cases have regression tests.
+
+### Initial verification before installation
 
 - 48 automated tests passed: 15 backend, 17 draft-store, 16 rendered UI tests.
 - TypeScript passed, including tests.
 - `bb plugin types --check` matched host SDK 0.4.47.
 - A separate copy built with production dependencies only.
-- The real installed plugin has not been tested on desktop or mobile.
-- No commit, push, PR, installation, or merge has occurred in this step.
+- At that point, the installed plugin had not been tested on desktop or mobile.
+- The initial audit preceded the commit, push, PR, and installation.
 
-## Verdict and next step
+## Initial verdict and approved next step
 
-I stand behind the implementation as a candidate for live testing, but not an
-unqualified production-ready verdict. The exceptions are live host verification
-and the unresolved safe return from a branch installation to main. There are
-no implementation commits yet to endorse individually.
+At the initial gate, I stood behind the implementation as a candidate for live
+testing, but not an unqualified production-ready verdict. The exceptions were
+live host verification and the unresolved safe return from a branch installation
+to main. There were no implementation commits to endorse individually then.
 
-Review these choices before the commit. After triage, the requested workflow is:
+The user has now authorized the requested workflow:
 commit, push, open a draft PR, install Questions from that branch, and verify
 desktop and mobile behavior. Leave the merge decision to the user.

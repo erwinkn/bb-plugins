@@ -116,6 +116,8 @@ absolute path. The CLI never prints draft content.
   to the project's prompt attachments through BB's SDK and sent as real
   `localImage` or `localFile` parts. Limits: 8 MB per file, 10 files per
   question. Images up to 400 KB get a thumbnail in the panel.
+  Typing remains available during upload. That answer's saves pause until the
+  upload finishes, then resume. Submit waits until the upload is complete.
 - References (only with `references: true`) come from a live fuzzy search of
   the thread's workspace on its own host. A pasted `https://` link or a path
   containing `/` is also selectable. Workspace file badges open BB's preview;

@@ -97,6 +97,42 @@ describe("DraftStore", () => {
     vi.useFakeTimers();
   });
 
+  it("holds saves during upload while preserving typing and attachment removals", async () => {
+    const oldFile = { type: "localImage" as const, path: "old.png", name: "old.png", sizeBytes: 1, mimeType: "image/png" };
+    const newFile = { ...oldFile, path: "new.png", name: "new.png" };
+    const server = fakeServer([answerState(Q2, { ...typed("before"), attachments: [oldFile] }, 1)]);
+    const store = new DraftStore({ threadId: THREAD, transport: server.transport, backups: null });
+    await store.load();
+    await store.flush();
+    const release = store.holdSaves(Q2);
+    store.edit(Q2, () => typed("typed during upload"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(server.saves).toHaveLength(0);
+    await expect(store.flush()).rejects.toThrow("Wait for the attachment upload");
+    const uploaded = answerState(Q2, { ...typed("before"), attachments: [oldFile, newFile] }, 2);
+    server.answers.set(Q2, uploaded);
+    await store.load(); // Realtime may arrive before the upload RPC reply.
+    expect(store.conflicts()).toEqual([]);
+    store.mergeUploaded(uploaded, [oldFile.path]);
+    release();
+    await store.flush();
+    expect(server.answers.get(Q2)?.draft).toEqual({ ...typed("typed during upload"), attachments: [newFile] });
+    expect(store.conflicts()).toEqual([]);
+  });
+
+  it("accepts an identical draft saved by another view without a conflict", async () => {
+    const server = fakeServer();
+    const store = new DraftStore({ threadId: THREAD, transport: server.transport, backups: null });
+    await store.load();
+    store.edit(Q2, () => typed("same draft"));
+    server.externalWrite(Q2, typed("same draft"));
+    await store.flush();
+    expect(store.conflicts()).toEqual([]);
+    expect(store.unresolvedIds()).toEqual([]);
+    expect(store.currentNotices).toEqual([]);
+    expect(store.serverAnswer(Q2)?.version).toBe(1);
+  });
+
   it("saves a debounced edit with the version at which the edit started", async () => {
     const server = fakeServer();
     const store = new DraftStore({ threadId: THREAD, transport: server.transport, backups: null, debounceMs: 100 });

@@ -351,6 +351,68 @@ describe("Message directive", () => {
     expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ method: "openThreadPanel" });
   });
 
+  it("opens the panel without params and selects the older round it was asked for", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")]), round("r2", 2, [question("q2")])] });
+    const card = mountDirective(server, "r1");
+    fireEvent.click(await card.findByRole("button", { name: "Open notebook" }));
+    expect(card.inspection.navigateCalls.at(-1)).toEqual({ method: "openThreadPanel", options: { actionId: "notebook", title: "Questions" } });
+    // The tab mounts after the click, as it does for a first open.
+    const panel = mountPanel(server);
+    await panel.findByText("q1 title?");
+    expect(panel.getByRole("tab", { name: /Round 1/ }).getAttribute("aria-selected")).toBe("true");
+    expect(panel.getByRole("tab", { name: /Round 2/ }).getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("switches an open panel to the card's round, and waits for a round its state has not loaded yet", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")]), round("r2", 2, [question("q2")])] });
+    const panel = mountPanel(server);
+    await panel.findByText("q2 title?");
+    expect(panel.getByRole("tab", { name: /Round 2/ }).getAttribute("aria-selected")).toBe("true");
+    // Already-open panel: the card for round 1 switches the tab in place.
+    // Slot queries span the document, so scope each card to its own container.
+    const older = mountDirective(server, "r1");
+    fireEvent.click(await within(older.container).findByRole("button", { name: "Open notebook" }));
+    await waitFor(() => expect(panel.getByRole("tab", { name: /Round 1/ }).getAttribute("aria-selected")).toBe("true"));
+
+    // The panel's state lags: rounds 3 and 4 exist for the directive but not
+    // for the panel until the next refresh. The request for round 3 must
+    // survive that refresh and beat the "newest round" default (round 4).
+    const lagging = [...server.state.rounds];
+    const full = [...lagging, round("r3", 3, [question("q3")]), round("r4", 4, [question("q4")])];
+    let released = false;
+    const listState = server.handlers.questions_state;
+    server.handlers.questions_state = async () => ({ ...(await listState()), rounds: released ? full : lagging });
+    server.state.rounds = full;
+    const newer = mountDirective(server, "r3");
+    fireEvent.click(await within(newer.container).findByRole("button", { name: "Open notebook" }));
+    await panel.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
+    await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_state").length).toBeGreaterThanOrEqual(2));
+    const tabs = within(panel.container);
+    expect(tabs.queryByRole("tab", { name: /Round 3/ })).toBeNull();
+    expect(tabs.getByRole("tab", { name: /Round 1/ }).getAttribute("aria-selected")).toBe("true");
+    released = true;
+    await panel.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r4" });
+    await tabs.findByText("q3 title?");
+    expect(tabs.getByRole("tab", { name: /Round 3/ }).getAttribute("aria-selected")).toBe("true");
+    expect(tabs.getByRole("tab", { name: /Round 4/ }).getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("drops the round request when the host declines to open the panel", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")]), round("r2", 2, [question("q2")])] });
+    const registration = app.messageDirectives[0]!;
+    const card = renderSlot<PluginMessageDirectiveProps, typeof rpcContract>(
+      registration,
+      { attributes: { round: "r1" }, source: "::questions{round=\"r1\"}", message: { id: "m1", threadId: THREAD, turnId: null, projectId: "proj" }, openWorkspaceFile: null },
+      { rpc: server.handlers, context: { projectId: "proj", threadId: THREAD }, openThreadPanel: () => false },
+    );
+    slots.push(card);
+    fireEvent.click(await card.findByRole("button", { name: "Open notebook" }));
+    expect(toasts.calls.at(-1)).toMatch(/no side panel/);
+    const panel = mountPanel(server);
+    await panel.findByText("q2 title?");
+    expect(panel.getByRole("tab", { name: /Round 2/ }).getAttribute("aria-selected")).toBe("true");
+  });
+
   it("lets the user resolve a save conflict inline and shows load errors", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const server = backend({
@@ -415,7 +477,9 @@ describe("Header control", () => {
     await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r2" });
     await slot.findByRole("button", { name: "Questions, 3 open" });
     await waitFor(() => expect(openThreadPanel).toHaveBeenCalledTimes(2));
-    expect(openThreadPanel).toHaveBeenLastCalledWith({ actionId: "notebook", title: "Questions", params: { roundId: "r2" } });
+    // No params: the host keys tabs by action + params, and a second params
+    // value would open a second Questions tab.
+    expect(openThreadPanel).toHaveBeenLastCalledWith({ actionId: "notebook", title: "Questions" });
     await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r2" });
     await slot.behavior.emitRealtime("questions-changed", { threadId: "other", kind: "round-created", roundId: "r3" });
     await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_state").length).toBeGreaterThanOrEqual(3));

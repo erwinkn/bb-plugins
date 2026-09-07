@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import type { rpcContract } from "../../server";
 import { type AnswerState, type ChangeSignal, type Round, REALTIME_CHANNEL, hasContent } from "@/lib/model";
 import { useNotebook } from "@/hooks/useNotebook";
+import { requestRound, takeRequestedRound } from "@/lib/panel-navigation";
 import { cn } from "@/lib/utils";
 import { Hint, PanelButton } from "./primitives";
 import { QuestionEditor } from "./QuestionEditor";
@@ -23,7 +24,6 @@ function NotebookCard({ threadId, round, answers, labels }: { threadId: string; 
   }).length;
   const first = round.questions[0];
   const range = first ? `${labels[first.id] ?? ""}${round.questions.length > 1 ? `–${labels[round.questions[round.questions.length - 1]!.id] ?? ""}` : ""}` : "";
-  void threadId;
   return (
     <div className="my-1 flex max-w-[720px] flex-wrap items-center gap-2 rounded-md border border-border bg-[var(--surface-raised)] px-2.5 py-1.5 text-[12px] text-muted-foreground">
       <span className="font-medium text-foreground">Questions · round {round.number}</span>
@@ -36,8 +36,13 @@ function NotebookCard({ threadId, round, answers, labels }: { threadId: string; 
         small
         primary={submitted < round.questions.length}
         onClick={() => {
-          const opened = navigate.openThreadPanel({ actionId: NOTEBOOK_ACTION_ID, title: "Questions", params: { roundId: round.id } });
-          if (!opened) toast.error("Open the Questions notebook from the panel launcher; this view has no side panel.");
+          // No params: the host would open a second tab for a new params value.
+          requestRound(threadId, round.id);
+          const opened = navigate.openThreadPanel({ actionId: NOTEBOOK_ACTION_ID, title: "Questions" });
+          if (!opened) {
+            takeRequestedRound(threadId);
+            toast.error("Open the Questions notebook from the panel launcher; this view has no side panel.");
+          }
         }}
       >
         Open notebook

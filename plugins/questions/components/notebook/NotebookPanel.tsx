@@ -14,6 +14,7 @@ import {
   hasContent,
 } from "@/lib/model";
 import { type Notebook, type SubmitOutcome, useNotebook } from "@/hooks/useNotebook";
+import { subscribeRequestedRound, takeRequestedRound } from "@/lib/panel-navigation";
 import { Hint, IconButton, PanelButton } from "./primitives";
 import { QuestionEditor } from "./QuestionEditor";
 
@@ -190,8 +191,11 @@ export function reportOutcome(outcome: SubmitOutcome) {
 
 export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
   const notebook = useNotebook(threadId);
+  // `params.roundId` only comes from tabs persisted by an earlier version;
+  // new opens carry the round through panel-navigation instead.
   const requested = params && typeof params === "object" && !Array.isArray(params) && typeof params.roundId === "string" ? params.roundId : null;
   const [tab, setTab] = useState<Tab | null>(requested ? { kind: "round", roundId: requested } : null);
+  const [wanted, setWanted] = useState<string | null>(null);
   const knownRounds = useRef<Set<string> | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -210,6 +214,27 @@ export function NotebookPanel({ threadId, params }: PluginThreadPanelProps) {
     const newest = fresh[fresh.length - 1];
     if (newest) setTab({ kind: "round", roundId: newest.id });
   }, [notebook.rounds, notebook.status, tab]);
+
+  // A round requested by the header or a message card, whether the request
+  // arrived before this tab mounted or while it was already open. Declared
+  // after the default-tab effect so its setTab is applied last and wins.
+  useEffect(() => {
+    const take = () => {
+      const roundId = takeRequestedRound(threadId);
+      if (roundId !== null) setWanted(roundId);
+    };
+    const unsubscribe = subscribeRequestedRound(threadId, take);
+    take();
+    return unsubscribe;
+  }, [threadId]);
+  useEffect(() => {
+    if (wanted === null || notebook.status !== "ready") return;
+    // A round the panel does not know yet may arrive with the next refresh
+    // (the card can render before this panel's state loads); keep waiting.
+    if (!notebook.rounds.some((round) => round.id === wanted)) return;
+    setTab({ kind: "round", roundId: wanted });
+    setWanted(null);
+  }, [notebook.rounds, notebook.status, wanted]);
 
   const notices = notebook.notices;
   useEffect(() => {

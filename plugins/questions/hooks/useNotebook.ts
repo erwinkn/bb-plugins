@@ -172,6 +172,7 @@ export function useNotebook(threadId: string): Notebook {
     async (onlyQuestionIds?: string[]): Promise<SubmitOutcome> => {
       if (submitting) return { kind: "error", message: "A submission is already running." };
       setSubmitting(true);
+      let sendStarted = false;
       try {
         await store.flush();
         const only = onlyQuestionIds ? new Set(onlyQuestionIds) : null;
@@ -187,10 +188,12 @@ export function useNotebook(threadId: string): Notebook {
         const submissionId =
           pendingSubmit.current && pendingSubmit.current.key === key ? pendingSubmit.current.id : newSubmissionId();
         pendingSubmit.current = { id: submissionId, key };
+        sendStarted = true;
         const result = await rpc.call("questions_submit", { threadId, submissionId, items, retryOf: null });
         pendingSubmit.current = null;
         return finishSubmit(result);
       } catch (cause) {
+        if (!sendStarted) return { kind: "error", message: messageOf(cause) };
         store.refresh();
         return {
           kind: "error",
@@ -229,20 +232,26 @@ export function useNotebook(threadId: string): Notebook {
         const dataBase64 = await readFileBase64(file);
         await store.flush();
         const expectedVersion = store.serverAnswer(questionId)?.version ?? 0;
-        const result = await rpc.call("questions_upload_attachment", {
-          threadId,
-          questionId,
-          expectedVersion,
-          name: file.name,
-          mimeType: file.type === "" ? null : file.type,
-          dataBase64,
-        });
-        if (result.outcome === "conflict") {
-          store.replaceServerAnswer(result.state);
-          store.refresh();
-          throw new Error("This answer changed in another window before the upload; the file was not attached. Try again.");
+        const beforePaths = store.draftOf(questionId).attachments.map((item) => item.path);
+        const releaseSaves = store.holdSaves(questionId);
+        try {
+          const result = await rpc.call("questions_upload_attachment", {
+            threadId,
+            questionId,
+            expectedVersion,
+            name: file.name,
+            mimeType: file.type === "" ? null : file.type,
+            dataBase64,
+          });
+          if (result.outcome === "conflict") {
+            store.replaceServerAnswer(result.state);
+            store.refresh();
+            throw new Error("This answer changed in another window before the upload; the file was not attached. Try again.");
+          }
+          store.mergeUploaded(result.state, beforePaths);
+        } finally {
+          releaseSaves();
         }
-        store.mergeUploaded(result.state);
       });
       uploadQueue.current = job.catch(() => undefined);
       return job;
