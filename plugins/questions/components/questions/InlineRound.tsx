@@ -1,7 +1,7 @@
 // The `::questions{round="…"}` directive. An inline round renders its
 // questions right here; a panel round renders a compact card that opens
 // the side panel. Attributes are untrusted: the round is fetched by id.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginMessageDirectiveProps, PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
@@ -53,8 +53,7 @@ export function InlineEditor({ threadId, round }: { threadId: string; round: Rou
   const notices = controller.notices;
   useEffect(() => {
     for (const notice of notices) {
-      toast.warning(notice.text);
-      controller.dismissNotice(notice.id);
+      if (controller.dismissNotice(notice.id)) toast.warning(notice.text);
     }
     // Each notice is shown once; dismissing mutates the store, not React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -120,33 +119,48 @@ export function InlineEditor({ threadId, round }: { threadId: string; round: Rou
 
 function RoundDisplay({ threadId, roundId, cancel }: { threadId: string; roundId: string; cancel?: () => Promise<void> }) {
   const rpc = useRpc<typeof rpcContract>();
-  const [state, setState] = useState<{ round: Round | null; answers: AnswerState[]; labels: Record<string, string> } | null | "error">(null);
+  const [state, setState] = useState<{ round: Round | null; answers: AnswerState[]; labels: Record<string, string> } | null>(null);
+  const [failed, setFailed] = useState(false);
+  const requestSeq = useRef(0);
   const load = useCallback(() => {
     if (roundId === "") return;
-    rpc.call("questions_round", { threadId, roundId }).then(setState, () => setState("error"));
+    const seq = ++requestSeq.current;
+    rpc.call("questions_round", { threadId, roundId }).then((result) => {
+      if (seq !== requestSeq.current) return;
+      setState(result);
+      setFailed(false);
+    }, () => {
+      if (seq === requestSeq.current) setFailed(true);
+    });
   }, [roundId, rpc, threadId]);
-  useEffect(() => load(), [load]);
+  useEffect(() => { load(); return () => { requestSeq.current += 1; }; }, [load]);
   useRealtime(REALTIME_CHANNEL, (payload) => {
     const signal = payload as Partial<ChangeSignal> | null;
-    if (signal && signal.threadId === threadId && state !== null && state !== "error" && state.round?.mode !== "inline") load();
+    if (signal && signal.threadId === threadId) load();
   });
   if (roundId === "") return <Hint>Questions round missing.</Hint>;
-  if (state === null) return <Hint>Loading questions…</Hint>;
-  if (state === "error") return <Hint>Questions could not be loaded.</Hint>;
+  if (state === null) return <>
+    <Hint>{failed ? "Questions could not be loaded." : "Loading questions…"}</Hint>
+    {failed && <PanelButton small onClick={load}>Try again</PanelButton>}
+    {cancel && <PanelButton small onClick={() => void cancel().catch((error) => toast.error(String(error)))}>Cancel</PanelButton>}
+  </>;
   if (state.round === null) return <Hint>This questions round no longer exists.</Hint>;
   if (state.round.mode === "inline") return <>
     <InlineEditor threadId={threadId} round={state.round} />
     {cancel && <PanelButton small onClick={() => void cancel().catch((error) => toast.error(String(error)))}>Cancel</PanelButton>}
   </>;
-  return <RoundCard threadId={threadId} round={state.round} answers={state.answers} cancel={cancel} />;
+  return <>
+    <RoundCard threadId={threadId} round={state.round} answers={state.answers} cancel={cancel} />
+    {failed && <div role="status"><Hint>Could not refresh questions.</Hint> <PanelButton small onClick={load}>Try again</PanelButton></div>}
+  </>;
 }
 
 export function QuestionsDirective({ attributes, message }: PluginMessageDirectiveProps) {
-  return <RoundDisplay threadId={message.threadId} roundId={typeof attributes.round === "string" ? attributes.round.trim() : ""} />;
+  return <RoundDisplay key={`${message.threadId}:${attributes.round}`} threadId={message.threadId} roundId={typeof attributes.round === "string" ? attributes.round.trim() : ""} />;
 }
 
 export function QuestionsInteraction({ interaction, cancel }: PluginPendingInteractionProps) {
   const payload = interaction.payload;
   const roundId = payload && typeof payload === "object" && !Array.isArray(payload) && typeof payload.roundId === "string" ? payload.roundId : "";
-  return <RoundDisplay threadId={interaction.threadId} roundId={roundId} cancel={cancel} />;
+  return <RoundDisplay key={`${interaction.threadId}:${roundId}`} threadId={interaction.threadId} roundId={roundId} cancel={cancel} />;
 }

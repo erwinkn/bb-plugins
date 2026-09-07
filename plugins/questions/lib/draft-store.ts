@@ -215,9 +215,11 @@ export class DraftStore {
     return this.notices;
   }
 
-  dismissNotice(id: number): void {
+  dismissNotice(id: number): boolean {
+    if (!this.notices.some((notice) => notice.id === id)) return false;
     this.notices = this.notices.filter((notice) => notice.id !== id);
     this.emit();
+    return true;
   }
 
   serverAnswer(questionId: string): AnswerState | undefined {

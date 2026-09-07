@@ -211,8 +211,7 @@ export function QuestionsPanel({ threadId, params }: PluginThreadPanelProps) {
   const notices = controller.notices;
   useEffect(() => {
     for (const notice of notices) {
-      toast.warning(notice.text);
-      controller.dismissNotice(notice.id);
+      if (controller.dismissNotice(notice.id)) toast.warning(notice.text);
     }
     // Each notice is shown once; dismissing mutates the store, not React state.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -2,9 +2,6 @@
 
 A private GitHub collection of BB plugins.
 
-`questions` adds saved question rounds in a thread panel, partial answer
-submission, and a basic in-thread form. See [Questions](plugins/questions/README.md).
-
 `erwin-activity` adds a status-first thread list: Needs Attention, Unread,
 Working, Draft, and Done. It also supports project grouping. See
 [Threads](plugins/activity/README.md) for local installation and draft limits.
@@ -152,46 +149,6 @@ each remove/install cycle; a later plugin version may start storing data.
 
 ## Desired upstream changes
 
-### Case handling in workspace path search
-
-The Questions picker delegates fuzzy search to `bb.sdk.environments.paths`.
-On 2026-09-07, with SDK 0.4.47, query `Agents` returned no paths for this
-workspace, while `agents` returned `AGENTS.md` first. The public query accepts
-no case-sensitivity option. This may be intentional smart-case behavior, but
-it is unexpected in a general file picker.
-
-Add an explicit case-insensitive search option, or make that the file-picker
-default. Keep ranking and file discovery in BB. Questions currently lowercases
-the search query as a local workaround; it does not change returned paths.
-
-Status: reproduced through the installed Questions RPC. No issue filed yet.
-Suggested issue title: `Support case-insensitive fuzzy workspace path queries`.
-File the request in [BB issues](https://github.com/get-bb/bb/issues).
-
-### Rename saved plugin panel actions
-
-The public SDK has no API to migrate a saved thread panel tab to a new action
-ID. Plugin authors must keep a legacy registration or ask users to close and
-reopen the tab. Add a plugin-scoped action-ID migration that preserves saved
-tab parameters and avoids duplicate tabs. This belongs in BB core and its
-public SDK. No upstream issue filed.
-
-### Idempotent message delivery for plugins
-
-The Questions plugin saves answers before sending them to their thread.
-BB 0.42.1 exposes no caller-supplied idempotency key on `threads.send`.
-If BB accepts a message but its response is lost, the plugin cannot safely
-assume that another send will not duplicate it. A plugin database transaction
-cannot cover BB's message dispatch.
-
-Add a caller-supplied request key, scoped to the plugin and target thread,
-and a way to read the delivery result by that key. Repeated requests should
-return the original result without adding another message.
-
-This belongs in BB core and its public SDK. No upstream issue filed.
-Suggested issue title: `Support idempotent thread message delivery from plugins`.
-File the request in [BB issues](https://github.com/get-bb/bb/issues).
-
 ### Recursive thread archiving
 
 BB's native archive action archives a thread and its direct children, but not
@@ -300,18 +257,6 @@ SDK has a rename action but no dedicated title-generation hook.
 Status: recorded here; no upstream issue filed. Manual sidebar renaming is
 available through PR #11, but does not correct automatic naming.
 Suggested issue title: `Name continuation threads from the referenced task context`.
-File the request in [BB issues](https://github.com/get-bb/bb/issues).
-
-### Hide the plugin attribution line in native input popups
-
-BB renders "Requested by Questions" above the plugin's input controls.
-The public pending-interaction registration has no option to hide that line.
-Allow a compact presentation that omits the attribution, without removing
-the native waiting state. This belongs in BB's
-`PluginPendingInteractionComposer`, not in the Questions form.
-
-Status: no upstream issue filed. Suggested issue title:
-`Allow compact native input popups without repeated plugin attribution`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 ### Change an installed plugin's Git ref without removing its data
@@ -442,34 +387,6 @@ scheduled sending only.
 
 Status: recorded here; no upstream issue filed.
 Suggested issue title: `Add Stop and send to voice dictation`.
-File the request in [BB issues](https://github.com/get-bb/bb/issues).
-
-### Keep AskUserQuestion open until the user answers
-
-The built-in `ask-user-question` plugin currently calls `bb.ui.requestInput`
-without a timeout override. BB applies a default timeout of 10 minutes, and
-the API accepts only 1 to 3,600,000 milliseconds. After the timeout, the
-plugin returns an error to the agent and a later answer cannot complete that
-tool call.
-
-There is a separate timeout path for ACP clients. OpenCode's MCP client used
-to time out after 60 seconds because the BB bridge did not send progress while
-the question was open. BB fixed that path in [PR #1945](https://github.com/get-bb/bb/pull/1945)
-by sending progress heartbeats. This fix does not remove the built-in
-10-minute interaction timeout.
-
-Requested behavior:
-
-- Add an explicit no-timeout option for plugin interactions, such as
-  `timeoutMs: null`, and expose it for `AskUserQuestion`.
-- Keep cancellation, stopping the thread, server restart, and plugin disposal
-  as terminal paths for a no-timeout interaction.
-- Make the default configurable so users can choose a bounded timeout or no
-  timeout. A no-timeout default can leave an unattended thread blocked.
-
-This belongs in BB core and the bundled `ask-user-question` plugin, not in
-this collection. Verified on 2026-09-07 against BB 0.42.1. No upstream issue
-filed. Suggested issue title: `Make AskUserQuestion timeout configurable or disableable`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 ## Upstream issues

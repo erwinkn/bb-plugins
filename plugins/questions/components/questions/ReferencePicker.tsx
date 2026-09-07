@@ -137,7 +137,7 @@ export function ReferencePicker({
               }))
             : [];
           setServerHits({ query: value, hits: candidates });
-          setActive((current) => Math.min(current, Math.max(candidates.length, 0)));
+          setActive((current) => Math.min(current, Math.max(candidates.length - 1, 0)));
         },
         () => {
           if (seq !== requestSeq.current) return;

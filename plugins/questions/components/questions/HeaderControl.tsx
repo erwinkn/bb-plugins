@@ -67,13 +67,11 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
         const created = openRoundId ? state.rounds.find((round) => round.id === openRoundId) : undefined;
         if (created && created.mode === "panel" && rememberOpened(forThread, created.id)) open(created.id);
       },
-      () => {
-        if (mounted.current && seq === requestSeq.current) setCounts(null);
-      },
+      () => { /* Keep the last successful counts and the panel launcher. */ },
     );
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => refresh(), [threadId]);
+  useEffect(() => { setCounts(null); refresh(); }, [threadId]);
   useRealtime(REALTIME_CHANNEL, (payload) => {
     const signal = payload as Partial<ChangeSignal> | null;
     if (!signal || signal.threadId !== threadId) return;

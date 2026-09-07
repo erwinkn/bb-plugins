@@ -441,6 +441,29 @@ describe("Questions panel", () => {
     expect(slot.queryByRole("button", { name: "Remove plugins/activity/app.tsx" })).toBeNull();
   });
 
+  it("clamps the keyboard row when reopening with fewer results", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1", { references: true })])] });
+    const original = server.handlers.questions_search_paths;
+    let shrink = false;
+    server.handlers.questions_search_paths = async (input) => {
+      const result = await original(input);
+      return { ...result, hits: shrink ? result.hits.slice(0, 1) : result.hits };
+    };
+    const slot = mountPanel(server);
+    await slot.findByText("q1 title?");
+    const input = slot.getByRole("combobox", { name: "Search files" });
+    fireEvent.change(input, { target: { value: "." } });
+    await slot.findByRole("option", { name: /README/ });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "Escape" });
+    shrink = true;
+    fireEvent.focus(input);
+    await waitFor(() => expect(slot.queryByRole("option", { name: /README/ })).toBeNull());
+    const option = slot.getByRole("option", { name: /app\.tsx/ });
+    expect(input.getAttribute("aria-activedescendant")).toBe(option.id);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(option.getAttribute("aria-selected")).toBe("true");
+  });
   it("shows a delivery notice without the retired Retry button", async () => {
     const server = backend({
       rounds: [round("r1", 1, [question("q1"), question("q2")])],
@@ -485,6 +508,41 @@ describe("Questions panel", () => {
 });
 
 describe("Message directive", () => {
+  it("keeps a loaded card after refresh failure and recovers on retry", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
+    const original = server.handlers.questions_round;
+    let fail = false;
+    server.handlers.questions_round = async (input) => { if (fail) throw new Error("offline"); return original(input); };
+    const slot = mountDirective(server, "r1");
+    await slot.findByRole("button", { name: "Open" });
+    fail = true;
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
+    await slot.findByText("Could not refresh questions.");
+    expect(slot.getByRole("button", { name: "Open" })).toBeTruthy();
+    fail = false;
+    fireEvent.click(slot.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(slot.queryByText("Could not refresh questions.")).toBeNull());
+  });
+  it("recovers an initial card failure on realtime", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
+    const original = server.handlers.questions_round;
+    let fail = true;
+    server.handlers.questions_round = async (input) => { if (fail) throw new Error("offline"); return original(input); };
+    const slot = mountDirective(server, "r1");
+    await slot.findByRole("button", { name: "Try again" });
+    fail = false;
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
+    await slot.findByRole("button", { name: "Open" });
+  });
+  it("shows a shared save failure only once with both views mounted", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")], "inline")] });
+    server.handlers.questions_save_draft = async () => { throw new Error("offline"); };
+    const panel = mountPanel(server);
+    const inline = mountDirective(server, "r1");
+    await within(inline.container).findByLabelText("Your answer");
+    fireEvent.change(await within(panel.container).findByLabelText("Your answer"), { target: { value: "draft" } });
+    await waitFor(() => expect(toasts.calls.filter((text) => text.startsWith("warning:"))).toHaveLength(1));
+  });
   it("uses only one action row under the host heading for a native panel round", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
     const cancel = vi.fn(async () => {});
@@ -737,6 +795,18 @@ describe("Header control", () => {
     return { slot, openThreadPanel };
   }
 
+  it("keeps the launcher after a failed refresh", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
+    const original = server.handlers.questions_state;
+    let fail = false;
+    server.handlers.questions_state = async () => { if (fail) throw new Error("offline"); return original(); };
+    const { slot, openThreadPanel } = mountHeader(server);
+    await slot.findByRole("button", { name: "Questions, 1 open" });
+    fail = true;
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
+    fireEvent.click(slot.getByRole("button", { name: "Questions, 1 open" }));
+    expect(openThreadPanel).toHaveBeenCalledTimes(1);
+  });
   it("shows the open count, opens the panel on click, and auto-opens once per new round", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1"), question("q2")])] });
     const { slot, openThreadPanel } = mountHeader(server);

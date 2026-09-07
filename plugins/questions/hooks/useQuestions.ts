@@ -54,7 +54,7 @@ export interface QuestionsController {
   submitting: boolean;
   backupMode: "browser" | "none";
   notices: Notice[];
-  dismissNotice(id: number): void;
+  dismissNotice(id: number): boolean;
   update(questionId: string, updater: (draft: Answer) => Answer): void;
   clear(questionId: string): void;
   flush(): Promise<void>;
