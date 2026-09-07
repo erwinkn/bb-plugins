@@ -117,6 +117,31 @@ each remove/install cycle; a later plugin version may start storing data.
 
 ## Desired upstream changes
 
+### Share individual threads with guests
+
+Add sharing for individual BB threads, with read-only access as the first
+priority. Recipients should be able to open a shared conversation in a browser
+without access to other threads, projects, files, or instance settings.
+
+Let the owner preview the shared content, choose whether future messages are
+included, and revoke access. Tool output and attachments should require explicit
+selection before sharing.
+
+As a later extension, allow guests to log in and send messages to threads for
+which the owner grants permission. Identify each sender and keep agent approval
+decisions with the owner. Sending messages can trigger agent actions in the
+owner's environment, so read and send permissions must be separate and enforced
+by the server.
+
+This belongs upstream in BB's authentication, thread permissions, and Connect
+support. Verified against BB 0.42.1: `bb connect` describes shared ports as
+owner-session-only. The [BB configuration documentation](https://github.com/get-bb/bb/blob/main/docs/configuration.md)
+also requires the owner's account session; these URLs are not guest links.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Thread-scoped guest sharing with read-only links and optional messaging`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Favorite models across providers in one selector tab
 
 Add a Favorites tab to the model selector. Users should be able to star models
