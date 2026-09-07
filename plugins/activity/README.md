@@ -85,17 +85,19 @@ whole-sidebar scroll option, so compact mode applies a small CSS adapter to
 BB's `data-sidebar` regions. It applies only while this list is mounted and
 does not change host inline styles. Check this host layout after BB upgrades.
 
-Rows have three lines. The first line shows the title with the status marker
-at its right end. The second line shows muted project and branch text. The
-third line shows the age for the selected date, which refreshes each minute,
-and the pull request for the thread's branch when BB reports one. The pull
-request shows a state-colored icon and its number: green for open, amber for
-an open pull request that needs you, violet for merged, red for closed, and
-muted for a draft. Text that does not fit fades out at the right edge of each
-line instead of showing an ellipsis. The provider, the full branch, and the
-pull request title appear in an instant info card to the right on hover or
-keyboard focus. The pull request lookup uses BB's per-row sidebar hook, so BB
-owns its polling and staleness rules.
+Rows have two lines. The first line shows the title with the status marker
+at its right end. The second line shows muted metadata: the pull request for
+the thread's branch when BB reports one, then the project name, then the
+branch. Under a project header the project name is omitted, because it would
+repeat the header. The age for the selected date sits at the right end of
+that line and refreshes each minute. The pull request shows a state-colored
+icon and its number: green for open, amber for an open pull request that
+needs you, violet for merged, red for closed, and muted for a draft. Metadata
+that does not fit fades out before the age instead of showing an ellipsis;
+the title fades before the status marker. The provider, the full branch, and
+the pull request title appear in an instant info card to the right on hover
+or keyboard focus. The pull request lookup uses BB's per-row sidebar hook, so
+BB owns its polling and staleness rules.
 The card uses a 14 px title and 12 px details, with visible labels and values
 aligned in two columns. The branch and parent stay fully readable. Labels,
 provider, and dates use BB's subtle text color; status and values use the normal

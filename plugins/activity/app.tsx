@@ -174,6 +174,7 @@ function ThreadsList(props: PluginThreadListProps) {
       status={status}
       depth={depth}
       project={projectNames.get(thread.projectId) ?? "No project"}
+      showProject={state.groupBy !== "project"}
       provider={providerNames.get(thread.providerId) ?? thread.providerId}
       parent={
         thread.parentThreadId

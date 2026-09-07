@@ -1610,12 +1610,22 @@ describe("activity sidebar", () => {
     expect(card.textContent).not.toContain("Manage Environment");
     expect(slot.inspection.sidebarActionCalls).toEqual([]);
   });
-  it("shows the age and pull request on a third line and in the info card", async () => {
+  it("shows the pull request, project, and branch with a right-aligned age, and the PR in the info card", async () => {
     const slot = renderSlot(app.threadLists[0], props, {
       sidebarThreads: {
         projects,
         threads: [
-          thread({ id: "open", title: "Open", updatedAt: 100 }),
+          thread({
+            id: "open",
+            title: "Open",
+            updatedAt: 100,
+            environment: {
+              id: "env",
+              name: "Local",
+              branchName: "feat/prod-step",
+              workspaceDisplayKind: "managed-worktree",
+            },
+          }),
           thread({ id: "merged", title: "Merged", updatedAt: 100 }),
           thread({ id: "none", title: "None", updatedAt: 100 }),
         ],
@@ -1643,23 +1653,25 @@ describe("activity sidebar", () => {
       ) as HTMLElement;
     const lines = (id: string) =>
       Array.from(row(id).children).filter((e) => e.tagName === "SPAN");
-    // Title, project and branch, then age and pull request.
-    expect(lines("open")).toHaveLength(3);
-    const third = lines("open")[2]!;
-    expect(third.querySelector("time")).not.toBeNull();
-    expect(third.textContent).toContain("#2683");
+    // Title line, then one metadata line.
+    expect(lines("open")).toHaveLength(2);
+    const meta = lines("open")[1] as HTMLElement;
+    // PR · project · branch on the left, age last.
+    expect(meta.firstElementChild?.textContent).toBe("#2683·One·feat/prod-step");
+    expect(meta.lastElementChild?.tagName).toBe("TIME");
     expect(
-      within(third as HTMLElement).getByRole("img", {
+      within(meta).getByRole("img", {
         name: "Open pull request #2683, checks failed",
       }),
     ).toBeTruthy();
     expect(row("open").textContent).not.toContain("Reduce prod step overhead");
     expect(
-      within(lines("merged")[2] as HTMLElement).getByRole("img", {
+      within(lines("merged")[1] as HTMLElement).getByRole("img", {
         name: "Merged pull request #12",
       }),
     ).toBeTruthy();
-    expect(lines("none")[2]!.querySelector("time")).not.toBeNull();
+    expect(lines("none")[1]!.firstElementChild?.textContent).toBe("One");
+    expect(lines("none")[1]!.querySelector("time")).not.toBeNull();
     expect(row("none").querySelector("[data-thread-pull-request]")).toBeNull();
     // A link cannot nest another link; the info card carries the title.
     expect(row("open").querySelector("a")).toBeNull();
@@ -1680,6 +1692,42 @@ describe("activity sidebar", () => {
     expect(slot.getByRole("tooltip").textContent).toContain(
       "Open pull request #2683, checks failed: Reduce prod step overhead",
     );
+  });
+  it("drops the project name from rows under a project header", () => {
+    updateState((state) => ({ ...state, groupBy: "project" }));
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: [
+          thread({
+            id: "branch",
+            environment: {
+              id: "env",
+              name: "Local",
+              branchName: "feature/activity",
+              workspaceDisplayKind: "managed-worktree",
+            },
+          }),
+          thread({ id: "plain" }),
+        ],
+      },
+      sidebarPullRequests: {
+        branch: {
+          number: 7,
+          title: "Seven",
+          url: "https://github.com/example/repo/pull/7",
+          state: "open",
+          attention: "none",
+        },
+      },
+    });
+    const meta = (id: string) =>
+      slot.container.querySelector(
+        `[data-sidebar-thread-id="${id}"] > span:nth-child(2) > span`,
+      )!;
+    expect(meta("branch").textContent).toBe("#7·feature/activity");
+    expect(meta("plain").textContent).toBe("");
+    expect(slot.getByRole("region", { name: "One" })).toBeTruthy();
   });
   it("shows child details on keyboard focus and closes them with Escape", () => {
     const slot = mount();

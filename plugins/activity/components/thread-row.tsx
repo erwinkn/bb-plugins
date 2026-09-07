@@ -31,6 +31,7 @@ export function ThreadRow({
   thread,
   status,
   project,
+  showProject,
   provider,
   parent,
   depth = 0,
@@ -44,6 +45,8 @@ export function ThreadRow({
   thread: PluginSidebarThread;
   status: Status;
   project: string;
+  /** False under a project header, where the name would repeat. */
+  showProject: boolean;
   provider: string;
   parent?: string;
   depth?: number;
@@ -260,21 +263,37 @@ export function ThreadRow({
                     </span>
                   )}
                 </span>
-                <span
-                  className={`mt-0.5 flex min-w-0 items-center gap-1 text-xs leading-4 text-[var(--subtle-foreground)] ${fadeClass}`}
-                >
-                  {parent && !nested ? "↳ " : ""}
-                  <span className="shrink-0">{project}</span>
-                  {branch && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span className="shrink-0">{branch}</span>
-                    </>
-                  )}
-                </span>
-                <span
-                  className={`mt-0.5 flex min-w-0 items-center gap-1 text-xs leading-4 text-[var(--subtle-foreground)] ${fadeClass}`}
-                >
+                <span className="mt-0.5 flex min-w-0 items-center gap-2 text-xs leading-4 text-[var(--subtle-foreground)]">
+                  <span
+                    className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
+                  >
+                    {parent && !nested ? "↳ " : ""}
+                    {pullRequest && (
+                      <span
+                        data-thread-pull-request=""
+                        className="flex shrink-0 items-center gap-1"
+                      >
+                        <PullRequestIcon pullRequest={pullRequest} />
+                        <span className="tabular-nums">
+                          #{pullRequest.number}
+                        </span>
+                      </span>
+                    )}
+                    {showProject && (
+                      <>
+                        {pullRequest && <span aria-hidden="true">·</span>}
+                        <span className="shrink-0">{project}</span>
+                      </>
+                    )}
+                    {branch && (
+                      <>
+                        {(pullRequest || showProject) && (
+                          <span aria-hidden="true">·</span>
+                        )}
+                        <span className="shrink-0">{branch}</span>
+                      </>
+                    )}
+                  </span>
                   <time
                     dateTime={new Date(timestamp).toISOString()}
                     aria-label={`${sortBy === "created" ? "Created" : "Updated"} ${new Date(timestamp).toLocaleString()}`}
@@ -282,18 +301,6 @@ export function ThreadRow({
                   >
                     {relativeAge(timestamp, now)}
                   </time>
-                  {pullRequest && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span
-                        data-thread-pull-request=""
-                        className="flex shrink-0 items-center gap-1"
-                      >
-                        <PullRequestIcon pullRequest={pullRequest} />
-                        <span className="tabular-nums">#{pullRequest.number}</span>
-                      </span>
-                    </>
-                  )}
                 </span>
               </a>
             </Menu.Trigger>
