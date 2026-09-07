@@ -59,6 +59,7 @@ export function ThreadRow({
   const [saving, setSaving] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
   const savingRef = useRef(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const longPress = useLongPressMenu(menuOpen);
   // A long press can produce a click on release. Keep keyboard and BB shortcut
   // clicks (detail === 0) available, but require a fresh pointer press otherwise.
@@ -113,6 +114,7 @@ export function ThreadRow({
             }}
           >
             <input
+              ref={renameInputRef}
               aria-label="Thread name"
               autoFocus
               onFocus={(event) => event.currentTarget.select()}
@@ -258,6 +260,12 @@ export function ThreadRow({
           <Menu.Portal>
             <Menu.Content
               {...scope}
+              onCloseAutoFocus={(event) => {
+                if (renameInputRef.current) {
+                  event.preventDefault();
+                  renameInputRef.current.focus();
+                }
+              }}
               aria-label={`Actions for ${title}`}
               className="z-50 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
             >
