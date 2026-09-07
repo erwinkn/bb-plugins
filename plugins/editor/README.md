@@ -15,7 +15,9 @@ thread screen also has a Files tab for the project's default checkout.
 
 File links claimed by this plugin open in the same editor. Use `⌘S` to save,
 `⌘F` to find text, and `⌘P` for quick open. The toolbar has file history,
-path actions, find, and display settings. The editor uses Geist Mono, quiet line
+path actions, find, and display settings. File icons come from `@pierre/trees`,
+the coloured set BB's own file trees use, so a `.tsx` or `.rs` file looks the
+same here as in BB. The editor uses Geist Mono, quiet line
 numbers, and compact diff separators. Choose a predefined theme from **Theme…**
 in the Files menu or **Extensions → Editor → Code theme**. Both controls save
 the same selection for Files and Changes. The default, **Follow BB**, uses BB's
@@ -198,6 +200,7 @@ plugin directory and resolve the reported installation error.
   `lib/markdown-preview.ts`.
 - `lib/file-session.ts` holds buffers, file hashes, save queues, draft storage,
   and ownership shared by both views.
+- `lib/file-icons.ts` resolves a path to a `@pierre/trees` icon and its colour.
 - `lib/pierre-theme.ts` adapts BB's active code theme. `lib/languages.ts`
   defines file patterns and grammar selection.
 - `server.ts` resolves file sources, reads and writes through the BB SDK,

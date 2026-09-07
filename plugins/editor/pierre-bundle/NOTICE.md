@@ -20,5 +20,9 @@ The Apache-2.0 license of `@pierre/diffs` requires that a distribution keeps the
 license and the attribution notices. `dist/pierre/LICENSES.txt` satisfies that,
 and the table above names the source for a reader who has only this repository.
 
+The panel bundle (`dist/app.js`) also includes the file-type icon sprite and
+name resolver of `@pierre/trees` 1.0.0-beta.6 (Apache-2.0), the set BB's own
+file trees use. Its license text is in `node_modules/@pierre/trees/LICENSE.md`.
+
 No code from other Pierre integrations is copied into this plugin. The bundle
 entries adapt the published `@pierre/diffs` API and load the licensed Geist Mono font.
