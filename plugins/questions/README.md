@@ -39,14 +39,19 @@ durable path for rounds that need more than one quick answer.
 Choice questions include **Other**, which opens a text area. Deselecting it
 clears that text. It replaces a single choice and can accompany multiple
 choices. An empty Other selection is saved as a draft but is not a submitted
-answer. Existing typed answers remain visible. Sections are no longer offered;
+answer. Older single-choice answers with typed notes keep those notes in a
+separate text area, without selecting Other. Selecting Other keeps the notes
+and clears the choice. Sections are no longer offered;
 old saved section labels are ignored.
 
 For attachment-enabled panel questions, paste images into answer or option
 detail text areas, or use the top-right paperclip. The background fade under
-the paperclip covers text without adding a separate control row. File search
+the paperclip covers text without adding a separate control row. When no text
+area is open, the paperclip appears at the right of the Other row. It attaches
+a file without changing the selected choice. File search
 waits for a query, and selected badges stay inside the control above results.
 The footer shows save status, including a failure or conflict when needed.
+It does not show a save indicator during the initial load.
 
 | | Panel | Inline (in the message) |
 | --- | --- | --- |
@@ -101,6 +106,11 @@ absolute path. The CLI never prints draft content.
   remembers the version it started from; if another window saved a newer
   draft in between, the panel keeps the local text and asks which version to
   keep. Nothing is overwritten silently. Exact whitespace is preserved.
+  Panel and inline views in the same browser runtime share one thread session,
+  including pending edits, the submission lock, request ids, and upload queue.
+  The last view to close flushes its edits. An immediate reopen joins that
+  pending save. Sessions with unsaved edits or an unconfirmed request id stay
+  in memory until resolved or until the browser runtime ends.
 - **Browser backup**: unsaved edits are also mirrored in the browser's local
   storage per thread and question. Save failures back off (1 s to 30 s) and
   retry; the footer says when the browser cannot keep a copy. This backup has
@@ -113,11 +123,16 @@ absolute path. The CLI never prints draft content.
   delivery (`sent`, or `queued` when the agent is busy).
 - **Uncertain delivery**: when the server does not confirm (timeout, 5xx,
   restart mid-send), the outbox row becomes `uncertain`, the drafts stay
-  drafts, and the panel shows a warning with an explicit **Retry** button. The
+  drafts, and the panel shows a warning with an explicit **Retry** button when
+  the server permits that retry. The
   retry sends the same frozen answers and can duplicate the message, so the
   warning asks the user to check the thread for the submission id first. There
   are no automatic message retries. A retry is refused when a newer attempt already
-  covers one of its questions.
+  covers one of its questions. The server computes `canRetry` from all stored
+  attempts, not just the recent list. A partly superseded warning stays
+  visible without a Retry button. It asks the user to check the thread and
+  submit any remaining drafts. Repeating an unconfirmed retry request in the
+  same browser session uses the same request id.
 - **Failed delivery** (the server refused the message) keeps the drafts and
   shows the reason.
 - The plugin only ever sends to the owning thread; it never spawns threads.

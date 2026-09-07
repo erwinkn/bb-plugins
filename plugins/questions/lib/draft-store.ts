@@ -45,7 +45,16 @@ function mergeAnswerStates(known: AnswerState | undefined, incoming: AnswerState
 
 /** Byte-exact comparison: drafts keep whitespace, so no normalization here. */
 function sameDraft(a: Answer | null | undefined, b: Answer | null | undefined): boolean {
-  return JSON.stringify(a ? answerSchema.parse(a) : null) === JSON.stringify(b ? answerSchema.parse(b) : null);
+  // Local input can exceed schema limits before the server rejects a save.
+  // Sort object keys without validating or changing any answer content.
+  const stable = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(stable);
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stable(item)]));
+    }
+    return value;
+  };
+  return JSON.stringify(stable(a ?? null)) === JSON.stringify(stable(b ?? null));
 }
 
 export type SaveResponse =
@@ -94,6 +103,7 @@ export interface DraftStoreOptions {
 const MAX_BACKOFF_MS = 30_000;
 
 export class DraftStore {
+  private flushing: Promise<void> | null = null;
   readonly threadId: string;
   private readonly transport: DraftTransport;
   private readonly backups: BackupStorage | null;
@@ -190,10 +200,11 @@ export class DraftStore {
     return this.inFlight.size > 0;
   }
 
-  get draftStatus(): "saving" | "saved" | "unsaved" | "conflict" {
+  get draftStatus(): "loading" | "saving" | "saved" | "unsaved" | "conflict" {
     if ([...this.local.values()].some((edit) => edit.conflict !== null)) return "conflict";
     if (this.loadError || (this.failures > 0 && this.local.size > 0)) return "unsaved";
-    if (!this.server || this.local.size > 0 || this.inFlight.size > 0) return "saving";
+    if (!this.server) return "loading";
+    if (this.local.size > 0 || this.inFlight.size > 0) return "saving";
     return "saved";
   }
 
@@ -515,7 +526,14 @@ export class DraftStore {
    * Persist every local edit. Rejects when an edit could not be saved or a
    * conflict is unresolved, so callers never send stale drafts.
    */
-  async flush(): Promise<void> {
+  flush(): Promise<void> {
+    if (this.flushing) return this.flushing;
+    const run = this.flushPending().finally(() => { this.flushing = null; });
+    this.flushing = run;
+    return run;
+  }
+
+  private async flushPending(): Promise<void> {
     if (this.heldSaves.size > 0) throw new Error("Wait for the attachment upload to finish before submitting.");
     for (const questionId of [...this.timers.keys()]) this.cancelTimer(questionId);
     // Loop only for edits that arrived during a successful save; a failed

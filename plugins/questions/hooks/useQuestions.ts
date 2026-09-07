@@ -1,5 +1,5 @@
 // React binding for the DraftStore plus the submission and attachment RPCs.
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import {
@@ -12,7 +12,8 @@ import {
   LIMITS,
   REALTIME_CHANNEL,
 } from "../lib/model";
-import { DraftStore, type Notice, createLocalStorageBackups } from "../lib/draft-store";
+import { type Notice } from "../lib/draft-store";
+import { questionSession } from "../lib/question-session";
 
 export type SubmitOutcome =
   | { kind: "submitted"; submission: Submission }
@@ -49,7 +50,7 @@ export interface QuestionsController {
   resolveConflict(questionId: string, choice: "mine" | "saved"): void;
   pendingIds: string[];
   saving: boolean;
-  draftStatus: "saving" | "saved" | "unsaved" | "conflict";
+  draftStatus: "loading" | "saving" | "saved" | "unsaved" | "conflict";
   submitting: boolean;
   backupMode: "browser" | "none";
   notices: Notice[];
@@ -95,24 +96,17 @@ function readFileBase64(file: File): Promise<string> {
 
 export function useQuestions(threadId: string): QuestionsController {
   const rpc = useRpc<typeof rpcContract>();
-  const store = useMemo(
-    () =>
-      new DraftStore({
-        threadId,
-        transport: {
-          loadState: () => rpc.call("questions_state", { threadId }),
-          saveDraft: (questionId, draft, expectedVersion) =>
-            rpc.call("questions_save_draft", { threadId, questionId, draft, expectedVersion }),
-        },
-        backups: createLocalStorageBackups(),
-      }),
+  const transport = useMemo(
+    () => ({
+      loadState: () => rpc.call("questions_state", { threadId }),
+      saveDraft: (questionId: string, draft: Answer, expectedVersion: number) =>
+        rpc.call("questions_save_draft", { threadId, questionId, draft, expectedVersion }),
+    }),
     [rpc, threadId],
   );
-  useEffect(() => {
-    store.activate();
-    void store.load();
-    return () => store.dispose();
-  }, [store]);
+  const session = useMemo(() => questionSession(threadId, transport), [threadId, transport]);
+  const store = session.store;
+  useEffect(() => session.retain(transport), [session, transport]);
   useSyncExternalStore(
     useCallback((listener: () => void) => store.subscribe(listener), [store]),
     () => store.snapshot(),
@@ -133,9 +127,7 @@ export function useQuestions(threadId: string): QuestionsController {
     seenConnection.current = connection;
   }, [connection, store]);
 
-  const [submitting, setSubmitting] = useState(false);
-  const pendingSubmit = useRef<{ id: string; key: string } | null>(null);
-  const uploadQueue = useRef(Promise.resolve());
+  const submitting = useSyncExternalStore(session.subscribe, () => session.submitting, () => session.submitting);
 
   const labels = store.labels;
   const rounds = store.rounds;
@@ -171,8 +163,8 @@ export function useQuestions(threadId: string): QuestionsController {
 
   const submit = useCallback(
     async (onlyQuestionIds?: string[]): Promise<SubmitOutcome> => {
-      if (submitting) return { kind: "error", message: "A submission is already running." };
-      setSubmitting(true);
+      if (session.submitting) return { kind: "error", message: "A submission is already running." };
+      session.setSubmitting(true);
       let sendStarted = false;
       try {
         await store.flush();
@@ -187,11 +179,11 @@ export function useQuestions(threadId: string): QuestionsController {
         // server replays the stored outcome instead of sending twice.
         const key = items.map((item) => `${item.questionId}@${item.expectedVersion}`).join("|");
         const submissionId =
-          pendingSubmit.current && pendingSubmit.current.key === key ? pendingSubmit.current.id : newSubmissionId();
-        pendingSubmit.current = { id: submissionId, key };
+          session.pendingSubmit && session.pendingSubmit.key === key ? session.pendingSubmit.id : newSubmissionId();
+        session.pendingSubmit = { id: submissionId, key };
         sendStarted = true;
         const result = await rpc.call("questions_submit", { threadId, submissionId, items, retryOf: null });
-        pendingSubmit.current = null;
+        session.pendingSubmit = null;
         return finishSubmit(result);
       } catch (cause) {
         if (!sendStarted) return { kind: "error", message: messageOf(cause) };
@@ -201,32 +193,36 @@ export function useQuestions(threadId: string): QuestionsController {
           message: `The submission was not confirmed (${messageOf(cause)}). Your answers are still drafts. Check the thread for a message with this submission before you send again.`,
         };
       } finally {
-        setSubmitting(false);
+        session.setSubmitting(false);
       }
     },
-    [finishSubmit, rpc, store, submitting, threadId],
+    [finishSubmit, rpc, store, session, threadId],
   );
 
   const retry = useCallback(
     async (retryOf: string): Promise<SubmitOutcome> => {
-      if (submitting) return { kind: "error", message: "A submission is already running." };
-      setSubmitting(true);
+      if (session.submitting) return { kind: "error", message: "A submission is already running." };
+      session.setSubmitting(true);
       try {
-        const result = await rpc.call("questions_submit", { threadId, submissionId: newSubmissionId(), items: [], retryOf });
+        const key = `retry:${retryOf}`;
+        const submissionId = session.pendingSubmit?.key === key ? session.pendingSubmit.id : newSubmissionId();
+        session.pendingSubmit = { id: submissionId, key };
+        const result = await rpc.call("questions_submit", { threadId, submissionId, items: [], retryOf });
+        session.pendingSubmit = null;
         return finishSubmit(result);
       } catch (cause) {
         store.refresh();
         return { kind: "error", message: `The retry was not confirmed: ${messageOf(cause)}` };
       } finally {
-        setSubmitting(false);
+        session.setSubmitting(false);
       }
     },
-    [finishSubmit, rpc, store, submitting, threadId],
+    [finishSubmit, rpc, store, session, threadId],
   );
 
   const uploadAttachment = useCallback(
     (questionId: string, file: File) => {
-      const job = uploadQueue.current.then(async () => {
+      const job = session.uploadQueue.then(async () => {
         if (file.size > LIMITS.attachmentBytes) {
           throw new Error(`${file.name} is larger than ${Math.round(LIMITS.attachmentBytes / (1024 * 1024))} MB.`);
         }
@@ -254,10 +250,10 @@ export function useQuestions(threadId: string): QuestionsController {
           releaseSaves();
         }
       });
-      uploadQueue.current = job.catch(() => undefined);
+      session.uploadQueue = job.catch(() => undefined);
       return job;
     },
-    [rpc, store, threadId],
+    [rpc, store, session, threadId],
   );
 
   const attachmentPreview = useCallback(

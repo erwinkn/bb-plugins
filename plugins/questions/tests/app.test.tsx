@@ -29,7 +29,8 @@ vi.mock("sonner", () => {
 });
 
 const app = await loadPluginApp(() => import("../app"));
-const THREAD = "thr_1";
+let THREAD = "thr_1";
+let threadSequence = 1;
 
 function question(id: string, overrides: Partial<Question> = {}): Question {
   return {
@@ -55,7 +56,7 @@ function answer(questionId: string, roundId: string, draft: Answer | null, versi
 }
 
 function submission(id: string, state: Submission["state"], questionIds: string[], createdAt: number): Submission {
-  return { id, threadId: THREAD, state, questionIds, snapshot: {}, error: state === "failed" ? "refused" : null, retryOf: null, createdAt, settledAt: createdAt };
+  return { id, threadId: THREAD, state, questionIds, snapshot: {}, error: state === "failed" ? "refused" : null, retryOf: null, createdAt, settledAt: createdAt, canRetry: state === "failed" || state === "uncertain" };
 }
 
 /** In-memory backend that mirrors the real RPC contract semantics. */
@@ -147,6 +148,7 @@ function mountPanel(server: ReturnType<typeof backend>, params: Record<string, s
 }
 
 beforeEach(() => {
+  THREAD = `thr_${++threadSequence}`;
   toasts.calls.length = 0;
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -166,6 +168,55 @@ describe("registrations", () => {
 });
 
 describe("Questions panel", () => {
+  it("does not claim to save while the first load is pending", async () => {
+    const server = backend();
+    let resolve!: (state: ThreadState) => void;
+    server.handlers.questions_state = () => new Promise((done) => { resolve = done; });
+    const slot = mountPanel(server);
+    await slot.findByText("Loading questions…");
+    expect(slot.queryByText("Saving draft…")).toBeNull();
+    expect(slot.queryByText("Draft saved")).toBeNull();
+    await act(async () => resolve(server.state));
+    await slot.findByText("Draft saved");
+  });
+
+  it("can attach to a selected choice without selecting Other", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1", { attachments: true, select: "single", options: [{ id: "a", label: "A" }] })])] });
+    const slot = mountPanel(server);
+    fireEvent.click(await slot.findByRole("radio", { name: "A" }));
+    fireEvent.click(slot.getByRole("button", { name: "Attach file or image" }));
+    fireEvent.change(slot.getByLabelText("Choose files"), { target: { files: [new File(["abc"], "choice.png", { type: "image/png" })] } });
+    await slot.findByRole("button", { name: "Remove choice.png" });
+    expect((slot.getByRole("radio", { name: /^A/ }) as HTMLInputElement).checked).toBe(true);
+    expect((slot.getByRole("radio", { name: "Other" }) as HTMLInputElement).checked).toBe(false);
+    expect(server.state.answers[0]!.draft!.selected).toEqual(["a"]);
+    expect(server.state.answers[0]!.draft!.attachments).toHaveLength(1);
+  });
+
+  it("keeps legacy single-choice notes separate from Other", async () => {
+    const server = backend({
+      rounds: [round("r1", 1, [question("q1", { select: "single", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] })])],
+      answers: [answer("q1", "r1", { ...emptyAnswer(), selected: ["a"], text: "Original notes" }, 1)],
+    });
+    const slot = mountPanel(server);
+    await slot.findByLabelText("Additional notes");
+    expect(slot.getAllByRole("radio").filter((input) => (input as HTMLInputElement).checked)).toHaveLength(1);
+    fireEvent.click(slot.getByRole("radio", { name: "B" }));
+    expect((slot.getByLabelText("Additional notes") as HTMLTextAreaElement).value).toBe("Original notes");
+    fireEvent.click(slot.getByRole("radio", { name: "Other" }));
+    expect((slot.getByLabelText("Answer in your own words") as HTMLTextAreaElement).value).toBe("Original notes");
+    expect(slot.getAllByRole("radio").filter((input) => (input as HTMLInputElement).checked)).toHaveLength(1);
+  });
+
+  it("keeps a partly superseded delivery warning without an invalid retry", async () => {
+    const old = { ...submission("old", "uncertain", ["q1", "q2"], 1), canRetry: false };
+    const server = backend({ rounds: [round("r1", 1, [question("q1"), question("q2")])], submissions: [submission("new", "sent", ["q2"], 2), old] });
+    const slot = mountPanel(server);
+    const alert = await slot.findByRole("alert");
+    expect(alert.textContent).toContain("Delivery of Q1, Q2 is uncertain.");
+    expect(within(alert).queryByRole("button", { name: "Retry this submission" })).toBeNull();
+    expect(alert.textContent).toContain("submit any remaining drafts");
+  });
   it("pastes images only into attachment-enabled answers", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1", { attachments: true }), question("q2")])] });
     const slot = mountPanel(server);
@@ -346,6 +397,23 @@ describe("Questions panel", () => {
     expect(server.calls.find((call) => call.method === "questions_submit")?.input).toMatchObject({ retryOf: "s1", items: [] });
   });
 
+  it("reuses the retry request id after a transport failure", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])], submissions: [submission("s1", "uncertain", ["q1"], 1)] });
+    const requests: string[] = [];
+    const send = server.handlers.questions_submit;
+    server.handlers.questions_submit = async (input) => {
+      requests.push(input.submissionId);
+      if (requests.length === 1) throw new Error("connection lost");
+      return send(input);
+    };
+    const slot = mountPanel(server);
+    fireEvent.click(await slot.findByRole("button", { name: "Retry this submission" }));
+    await waitFor(() => expect(toasts.calls.some((text) => text.includes("retry was not confirmed"))).toBe(true));
+    fireEvent.click(slot.getByRole("button", { name: "Retry this submission" }));
+    await waitFor(() => expect(requests).toHaveLength(2));
+    expect(requests[0]).toBe(requests[1]);
+  });
+
   it("switches to a round that arrives over realtime and keeps the tab on reload", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
     const slot = mountPanel(server);
@@ -358,6 +426,47 @@ describe("Questions panel", () => {
 });
 
 describe("Message directive", () => {
+  it("shares unsaved edits with the panel and submits them before debounce", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")], "inline")] });
+    const panel = mountPanel(server);
+    const inline = mountDirective(server, "r1");
+    const p = within(panel.container);
+    const i = within(inline.container);
+    const panelInput = await p.findByLabelText("Your answer");
+    const inlineInput = await i.findByLabelText("Your answer");
+    fireEvent.change(inlineInput, { target: { value: "inline edit" } });
+    expect((panelInput as HTMLTextAreaElement).value).toBe("inline edit");
+    fireEvent.change(panelInput, { target: { value: "panel edit" } });
+    expect((inlineInput as HTMLTextAreaElement).value).toBe("panel edit");
+    fireEvent.click(p.getByRole("button", { name: "Submit every draft or changed answer in every round" }));
+    await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_submit")).toHaveLength(1));
+    expect(server.state.answers[0]!.submitted!.text).toBe("panel edit");
+    expect(server.calls.filter((call) => call.method === "questions_save_draft")).toHaveLength(1);
+    expect(p.queryByRole("alert")).toBeNull();
+    expect(i.queryByRole("alert")).toBeNull();
+    inline.lifecycle.unmount();
+    fireEvent.change(panelInput, { target: { value: "still mounted" } });
+    await waitFor(() => expect(server.state.answers[0]!.draft!.text).toBe("still mounted"));
+  });
+
+  it("shares the synchronous send lock across panel and inline buttons", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")], "inline")] });
+    const panel = mountPanel(server);
+    const inline = mountDirective(server, "r1");
+    const p = within(panel.container);
+    const i = within(inline.container);
+    fireEvent.change(await p.findByLabelText("Your answer"), { target: { value: "one send" } });
+    await i.findByLabelText("Your answer");
+    const send = server.handlers.questions_submit;
+    let release!: () => void;
+    server.handlers.questions_submit = async (input) => { await new Promise<void>((done) => { release = done; }); return send(input); };
+    fireEvent.click(p.getByRole("button", { name: "Submit every draft or changed answer in every round" }));
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    expect((i.getByRole("button", { name: /Submit answered/ }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(i.getByRole("button", { name: /Submit answered/ }));
+    await act(async () => release());
+    await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_submit")).toHaveLength(1));
+  });
   function mountDirective(server: ReturnType<typeof backend>, roundId: string) {
     const registration = app.messageDirectives[0]!;
     const slot = renderSlot<PluginMessageDirectiveProps, typeof rpcContract>(
@@ -506,6 +615,8 @@ describe("Message directive", () => {
     expect(slot.queryByRole("alert")).toBeNull();
     vi.useRealTimers();
 
+    // A separate thread has its own initial load; same-thread views now share it.
+    THREAD = `thr_${++threadSequence}`;
     const broken = backend({ rounds: [round("r2", 1, [question("q9")], "inline")] });
     broken.handlers.questions_state = async () => {
       throw new Error("server down");

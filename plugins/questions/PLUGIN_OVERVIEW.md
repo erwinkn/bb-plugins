@@ -23,11 +23,14 @@ Questions, drafts, and submitted answers live in the plugin's own database on
 the BB server, scoped to the thread. Drafts are saved as you type with version
 checks that detect edits from another window. Saved drafts survive closing
 the panel, reloading, or restarting BB. Pending edits also have a browser
-backup when storage is available. Edits never change what was already submitted.
+backup when storage is available. Panel and inline views in the same browser
+share pending edits. Edits never change what was already submitted.
 
 Every submission is frozen before it is sent and carries its own id. If the
 server cannot confirm delivery, the panel says so and offers an explicit
-retry rather than sending again on its own.
+retry when no newer attempt covers those answers. It never retries a message
+on its own. If only part of an uncertain submission was superseded, its warning
+stays visible and directs you to check the thread and submit remaining drafts.
 
 ## For agents
 

@@ -51,6 +51,24 @@ async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHos
 }
 
 describe("Questions backend", () => {
+  it("disables retry for partial supersession even outside the recent list", async () => {
+    const h = await setup();
+    const [a, b, c] = (await h.ask([{ title: "A?" }, { title: "B?" }, { title: "C?" }])).questions;
+    for (const q of [a!, b!, c!]) await h.save(q, { ...emptyAnswer(), text: "answer" });
+    h.send.mockRejectedValueOnce(new Error("network timeout"));
+    await h.submit([a!.id, b!.id]);
+    expect((await h.state()).submissions.find((s) => s.id === uuid("s1"))!.canRetry).toBe(true);
+    await h.submit([b!.id], "s2");
+    // More recent unrelated sends push the overlapping send outside the page.
+    for (let index = 0; index < 21; index++) {
+      await h.save(c!, { ...emptyAnswer(), text: `answer ${index}` }, index + 1);
+      await h.submit([c!.id], `later${index}`, index + 2);
+    }
+    const submissions = (await h.state()).submissions;
+    expect(submissions.some((s) => s.id === uuid("s2"))).toBe(false);
+    expect(submissions.find((s) => s.id === uuid("s1"))!.canRetry).toBe(false);
+    await expect(h.submit([], "retry", 1, "s1")).rejects.toThrow("newer attempt");
+  });
   it("keeps an empty Other selection as a draft without submitting an empty answer", async () => {
     const h = await setup();
     const q = (await h.ask([{ title: "Choose?", options: ["A"] }])).questions[0]!;

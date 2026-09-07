@@ -138,11 +138,11 @@ function SubmissionNotice({ controller, submission }: { controller: QuestionsCon
           ? `The server refused the message: ${submission.error ?? "unknown error"}. Your answers are kept as drafts.`
           : `The server did not confirm delivery${submission.error ? ` (${submission.error})` : ""}. Your answers are kept as drafts. Look in the thread for a user message mentioning submission ${submission.id.slice(0, 8)} before you retry; a retry sends the same frozen answers again and can duplicate them.`}
       </div>
-      <div className="mt-1.5 flex gap-1.5">
+      {submission.canRetry ? <div className="mt-1.5 flex gap-1.5">
         <PanelButton small disabled={busy || controller.submitting} onClick={() => void retry()}>
           Retry this submission
         </PanelButton>
-      </div>
+      </div> : <div className="mt-1.5 text-muted-foreground">A newer attempt includes some of these answers. Check the thread, then submit any remaining drafts with Submit answered.</div>}
     </div>
   );
 }
@@ -311,12 +311,12 @@ export function QuestionsPanel({ threadId, params }: PluginThreadPanelProps) {
         ) : null}
       </div>
       <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-t border-border py-1.5 pl-3 pr-2">
-        <Hint role="status">
+        {controller.draftStatus !== "loading" && <Hint role="status">
           {controller.draftStatus === "saving" ? "Saving draft…"
             : controller.draftStatus === "conflict" ? "Draft conflict"
             : controller.draftStatus === "unsaved" ? "Draft not saved"
             : "Draft saved"}
-        </Hint>
+        </Hint>}
         <span className="flex-1" />
         <PanelButton small primary disabled={pending === 0 || controller.submitting} aria-label="Submit every draft or changed answer in every round" onClick={() => void onSubmit()}>
           Submit answered ({pending})

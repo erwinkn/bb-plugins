@@ -155,6 +155,7 @@ function rowToSubmission(row: SubmissionRow): Submission {
     retryOf: row.retry_of,
     createdAt: row.created_at,
     settledAt: row.settled_at,
+    canRetry: false,
   };
 }
 
@@ -371,7 +372,14 @@ export class QuestionsStore {
         "SELECT * FROM submissions WHERE id = ? AND thread_id = ?",
       )
       .get(submissionId, threadId);
-    return row ? rowToSubmission(row) : null;
+    return row ? this.submissionWithRetry(row) : null;
+  }
+
+  private submissionWithRetry(row: SubmissionRow): Submission {
+    const submission = rowToSubmission(row);
+    submission.canRetry = (submission.state === "failed" || submission.state === "uncertain")
+      && !this.hasNewerAttempt(submission.threadId, submission.id, submission.questionIds);
+    return submission;
   }
 
   listSubmissions(threadId: string, limit: number): Submission[] {
@@ -390,7 +398,7 @@ export class QuestionsStore {
         ) ORDER BY created_at DESC, rowid DESC`,
       )
       .all(threadId, limit);
-    return rows.map(rowToSubmission);
+    return rows.map((row) => this.submissionWithRetry(row));
   }
 
   /** Delivery succeeded: freeze the snapshot as the submitted answer. */

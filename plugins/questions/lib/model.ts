@@ -148,6 +148,8 @@ export const submissionSchema = z.object({
   retryOf: z.string().nullable(),
   createdAt: z.number(),
   settledAt: z.number().nullable(),
+  /** Computed from all stored attempts, including attempts outside the list page. */
+  canRetry: z.boolean(),
 });
 export type Submission = z.infer<typeof submissionSchema>;
 

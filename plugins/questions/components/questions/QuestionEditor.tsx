@@ -207,13 +207,16 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
   const update = (updater: (current: Answer) => Answer) => controller.update(question.id, updater);
   const hasOptions = question.options.length > 0;
   const showAttachments = full && question.attachments;
-  const otherSelected = draft.other ?? (draft.text !== "");
-  const showText = !hasOptions || otherSelected;
+  // Earlier versions allowed notes alongside a single choice. Keep those
+  // notes visible and editable without checking a second radio or migrating data.
+  const legacyNotes = question.select === "single" && draft.selected.length > 0 && draft.other !== true && draft.text !== "";
+  const otherSelected = !legacyNotes && (draft.other ?? (draft.text !== ""));
+  const showText = !hasOptions || otherSelected || legacyNotes;
   const help = question.help;
 
   const selectOption = (optionId: string, checked: boolean) => {
     update((current) => {
-      if (question.select === "single") return { ...current, selected: [optionId], other: false, text: "", details: Object.fromEntries(Object.entries(current.details).filter(([id]) => id === optionId)) };
+      if (question.select === "single") return { ...current, selected: [optionId], other: false, text: legacyNotes ? current.text : "", details: Object.fromEntries(Object.entries(current.details).filter(([id]) => id === optionId)) };
       if (checked) {
         return current.selected.includes(optionId) ? current : { ...current, selected: [...current.selected, optionId] };
       }
@@ -349,14 +352,19 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
               </div>
             );
           })}
-          <label className="flex min-h-7 cursor-pointer items-center gap-2.5 rounded-md px-2 py-[3px] text-[13px]">
-            {question.select === "single" ? (
-              <Radio name={groupName} checked={otherSelected} onChange={() => selectOther(true)} onClick={(event) => { if (otherSelected) { event.preventDefault(); selectOther(false); } }} />
-            ) : (
-              <Checkbox checked={otherSelected} onCheckedChange={(checked) => selectOther(checked === true)} />
-            )}
-            <span>Other</span>
-          </label>
+          <div className="flex items-center">
+            <label className="flex min-h-7 flex-1 cursor-pointer items-center gap-2.5 rounded-md px-2 py-[3px] text-[13px]">
+              {question.select === "single" ? (
+                <Radio name={groupName} checked={otherSelected} onChange={() => selectOther(true)} onClick={(event) => { if (otherSelected) { event.preventDefault(); selectOther(false); } }} />
+              ) : (
+                <Checkbox checked={otherSelected} onCheckedChange={(checked) => selectOther(checked === true)} />
+              )}
+              <span>Other</span>
+            </label>
+            {showAttachments && !showText ? (
+              <IconButton icon="Paperclip" label="Attach file or image" size={26} className="mr-2" disabled={uploading} onClick={() => fileInput.current?.click()} />
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -365,7 +373,7 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
           <TextArea
             ref={textRef}
             rows={2}
-            aria-label={hasOptions ? "Answer in your own words" : "Your answer"}
+            aria-label={legacyNotes ? "Additional notes" : hasOptions ? "Answer in your own words" : "Your answer"}
             placeholder={hasOptions ? "Something else, or a mix of options" : "Type here"}
             className={cn(showAttachments && "min-h-[70px]")}
             value={draft.text}
@@ -375,27 +383,19 @@ export function QuestionEditor({ controller, question, full, onJump, onError, he
             }}
           />
           {showAttachments ? (
-            <>
-              <IconButton
-                icon="Paperclip"
-                label="Attach file or image"
-                size={26}
-                className="absolute right-[5px] top-[5px] bg-background shadow-[-5px_3px_7px_3px_var(--background)]"
-                disabled={uploading}
-                onClick={() => fileInput.current?.click()}
-              />
-              <input
-                ref={fileInput}
-                type="file"
-                multiple
-                className="sr-only"
-                aria-label="Choose files"
-                onChange={(event) => void attach(event.target.files)}
-              />
-            </>
+            <IconButton
+              icon="Paperclip"
+              label="Attach file or image"
+              size={26}
+              className="absolute right-[5px] top-[5px] bg-background shadow-[-5px_3px_7px_3px_var(--background)]"
+              disabled={uploading}
+              onClick={() => fileInput.current?.click()}
+            />
           ) : null}
         </div>
       ) : null}
+
+      {showAttachments ? <input ref={fileInput} type="file" multiple className="sr-only" aria-label="Choose files" onChange={(event) => void attach(event.target.files)} /> : null}
 
       {full && question.confidence ? (
         <div className="mt-2 flex items-center gap-2.5">

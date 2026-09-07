@@ -6,7 +6,7 @@ import {
   type DraftTransport,
   type SaveResponse,
 } from "../lib/draft-store";
-import { type Answer, type AnswerState, type ThreadState, emptyAnswer } from "../lib/model";
+import { type Answer, type AnswerState, type ThreadState, emptyAnswer, LIMITS } from "../lib/model";
 
 const THREAD = "thr_1";
 const Q1 = "q_1";
@@ -95,6 +95,26 @@ async function settle() {
 describe("DraftStore", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+  });
+
+  it("keeps over-limit local text through refresh and reports real conflicts", async () => {
+    const server = fakeServer();
+    const store = new DraftStore({ threadId: THREAD, transport: server.transport, backups: null });
+    expect(store.draftStatus).toBe("loading");
+    await store.load();
+    const long = "x".repeat(LIMITS.answerTextChars + 1);
+    store.edit(Q2, () => typed(long));
+    server.externalWrite(Q2, typed("elsewhere"));
+    await store.load();
+    expect(store.error).toBeNull();
+    expect(store.draftOf(Q2).text).toBe(long);
+    expect(store.conflicts()).toContain(Q2);
+    store.resolveConflict(Q2, "mine");
+    server.externalWrite(Q2, typed("newer elsewhere"));
+    await store.save(Q2);
+    expect(store.draftOf(Q2).text).toBe(long);
+    expect(store.conflicts()).toContain(Q2);
+    store.dispose();
   });
 
   it("reports pending, saved, failed, and conflicting draft states accurately", async () => {
