@@ -97,3 +97,12 @@ root, uses subdued line numbers and a stable gutter width, and uses compact
 hunk separators with 20-line expansion. Conductor and Follow BB are local
 palette choices in the existing picker. Other theme pairs retain their
 existing shared BB theme behavior.
+
+Installed styling revision `88f4769` passed the 108-test suite, typecheck,
+asset build, and BB build. Browser checks confirmed Geist Mono loaded, the
+editor background matched BB in both system color modes, and the observed
+keyword/string/entity colors reached the rendered tokens. Theme preview and
+Escape preserved unsaved text and undo history. Follow BB changed the code
+colors while retaining BB's canvas background. The 390 px comparison retained
+its layout without horizontal page overflow. No unhandled browser errors were
+reported. The installed palette is Conductor, and auto save is afterDelay.
