@@ -1,8 +1,12 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useEffect, useState, type ReactNode } from "react";
-import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
+import type {
+  PluginSidebarPullRequest,
+  PluginSidebarThread,
+} from "@get-bb/plugin-sdk/app";
 import { STATUS_LABEL, threadTitle, type Status } from "../lib/status";
 import { usePortalScopeProps } from "../lib/portal-scope";
+import { PullRequestIcon, pullRequestSummary } from "./pull-request";
 import { StatusIcon } from "./status-icon";
 
 function Detail({ label, children }: { label: string; children: ReactNode }) {
@@ -20,6 +24,7 @@ export function ThreadInfo({
   project,
   provider,
   parent,
+  pullRequest,
   disabled,
   children,
 }: {
@@ -28,6 +33,7 @@ export function ThreadInfo({
   project: string;
   provider: string;
   parent?: string;
+  pullRequest: PluginSidebarPullRequest | null;
   disabled: boolean;
   children: ReactNode;
 }) {
@@ -68,6 +74,9 @@ export function ThreadInfo({
     environment,
     thread.isPinned ? "Pinned" : null,
     parent ? `Child of ${parent}` : null,
+    pullRequest
+      ? `${pullRequestSummary(pullRequest)}: ${pullRequest.title}`
+      : null,
     ...dates.map((date) => `${date.label}: ${date.text}`),
   ]
     .filter(Boolean)
@@ -123,6 +132,20 @@ export function ThreadInfo({
                 </Detail>
               )}
               {parent && <Detail label="Parent">{parent}</Detail>}
+              {pullRequest && (
+                <Detail label="PR">
+                  <span className="flex items-start gap-1.5">
+                    <PullRequestIcon
+                      pullRequest={pullRequest}
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0">
+                      <span className="tabular-nums">#{pullRequest.number}</span>{" "}
+                      {pullRequest.title}
+                    </span>
+                  </span>
+                </Detail>
+              )}
             </dl>
             <dl className="mb-0 mt-3 grid grid-cols-[64px_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-border pt-2 text-xs leading-4 text-[var(--subtle-foreground)]">
               {dates.map((date) => (

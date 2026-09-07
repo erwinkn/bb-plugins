@@ -17,7 +17,7 @@ import {
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
 import { DisplayMenu } from "./components/menus";
-import { ThreadRow } from "./components/thread-row";
+import { ThreadRow, fadeClass } from "./components/thread-row";
 import { ThreadChildren } from "./components/thread-children";
 import { ThreadRoots } from "./components/thread-roots";
 import { DraftObserver } from "./components/draft-observer";
@@ -162,63 +162,78 @@ function ThreadsList(props: PluginThreadListProps) {
     actions.openNewThread({ projectId: id, focusPrompt: true });
     props.onNavigate();
   };
-  const row = (
-    { thread, status, children }: ThreadNode,
-    depth = 0,
-  ): ReactNode => (
-    <ThreadRow
-      key={thread.id}
-      now={now}
-      sortBy={state.sortBy}
-      thread={thread}
-      status={status}
-      depth={depth}
-      project={projectNames.get(thread.projectId) ?? "No project"}
-      provider={providerNames.get(thread.providerId) ?? thread.providerId}
-      parent={
-        thread.parentThreadId
-          ? (titles.get(thread.parentThreadId) ?? thread.parentThreadId)
-          : undefined
-      }
-      active={props.activeThreadId === thread.id}
-      onNavigate={props.onNavigate}
-      onError={report}
-    >
-      {children.length > 0 && (
-        <ThreadChildren
-          nodes={children}
-          parentTitle={threadTitle(thread)}
-          depth={depth + 1}
-          activeThreadId={props.activeThreadId}
-          renderRow={row}
-        />
-      )}
-    </ThreadRow>
-  );
+  // Rows under a project header omit the project name, which would repeat it.
+  const makeRow = (showProject: boolean) => {
+    const row = (
+      { thread, status, children }: ThreadNode,
+      depth = 0,
+    ): ReactNode => (
+      <ThreadRow
+        key={thread.id}
+        now={now}
+        sortBy={state.sortBy}
+        thread={thread}
+        status={status}
+        depth={depth}
+        project={projectNames.get(thread.projectId) ?? "No project"}
+        showProject={showProject}
+        provider={providerNames.get(thread.providerId) ?? thread.providerId}
+        parent={
+          thread.parentThreadId
+            ? (titles.get(thread.parentThreadId) ?? thread.parentThreadId)
+            : undefined
+        }
+        active={props.activeThreadId === thread.id}
+        onNavigate={props.onNavigate}
+        onError={report}
+      >
+        {children.length > 0 && (
+          <ThreadChildren
+            nodes={children}
+            parentTitle={threadTitle(thread)}
+            depth={depth + 1}
+            activeThreadId={props.activeThreadId}
+            renderRow={row}
+          />
+        )}
+      </ThreadRow>
+    );
+    return row;
+  };
+  const row = makeRow(true);
+  const projectRow = makeRow(false);
   const draftRow = (project: { id: string; name: string }) => (
     <li key={`new:${project.id}`}>
       <button
         type="button"
         onClick={() => openNew(project.id)}
-        className="relative flex w-full items-center rounded-md py-2 pl-8 pr-2 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full flex-col rounded-md px-2 py-2 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <span
-          role="img"
-          aria-label="Draft"
-          className="absolute left-2 top-2.5 flex size-4 items-center justify-center"
-        >
-          <StatusIcon status="draft" />
-        </span>
-        <span className="min-w-0">
-          <span className="block truncate">New thread draft</span>
-          <span className="block truncate text-[11px] text-muted-foreground">
-            {project.name}
+        <span className="flex min-w-0 items-center gap-2 self-stretch">
+          <span className={`min-w-0 flex-1 leading-5 ${fadeClass}`}>
+            New thread draft
           </span>
+          <span
+            role="img"
+            aria-label="Draft"
+            className="flex size-4 shrink-0 items-center justify-center"
+          >
+            <StatusIcon status="draft" />
+          </span>
+        </span>
+        <span
+          className={`mt-0.5 block self-stretch text-xs leading-4 text-[var(--subtle-foreground)] ${fadeClass}`}
+        >
+          {project.name}
         </span>
       </button>
     </li>
   );
-  const archiveGroup = (id: string, rows: typeof archived) =>
+  const archiveGroup = (
+    id: string,
+    rows: typeof archived,
+    renderRow: typeof row = row,
+  ) =>
     rows.length > 0 ? (
       <Group id={id} title="Archived" archive>
         <ThreadRoots
@@ -227,7 +242,7 @@ function ThreadsList(props: PluginThreadListProps) {
           nodes={buildThreadTree(rows, state.sortBy)}
           drafts={[]}
           activeThreadId={props.activeThreadId}
-          renderRow={(node) => row(node)}
+          renderRow={(node) => renderRow(node)}
           renderDraft={draftRow}
         />
       </Group>
@@ -355,12 +370,13 @@ function ThreadsList(props: PluginThreadListProps) {
                           nodes={rows}
                           drafts={drafts}
                           activeThreadId={props.activeThreadId}
-                          renderRow={(node) => row(node)}
+                          renderRow={(node) => projectRow(node)}
                           renderDraft={draftRow}
                         />
                         {archiveGroup(
                           `archive:project:${project.id}`,
                           projectArchives,
+                          projectRow,
                         )}
                       </Group>
                     ) : null;
