@@ -3,25 +3,14 @@
 // the native pending-question form, and the settings section for the
 // dedicated coordinator provider/model.
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { ThreadChat, useRealtime, useRpc, type PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
+import { ThreadChat, experimental_useSidebarThreadActions, useRealtime, useRpc, type PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { Button } from "./components/ui/button";
-import { viewWorkspace } from "./view-workspace";
 import { voiceAgent } from "./voice-agent";
 import { cn } from "@/lib/utils";
 
-type Status = Awaited<ReturnType<ReturnType<typeof useRpc<typeof rpcContract>>["call"]>> & {
-  enabled: boolean;
-  conversation: { id: string; status: string; coordinatorThreadId: string | null; providerId: string | null; model: string | null; hostId: string | null; currentCallNonce: string | null; topic: string | null; discussedThreadId: string | null } | null;
-  requests: { id: string; seq: number; status: string; text: string; delivery: string | null; error: string | null; createdAt: number }[];
-  questions: { id: string; question: string; options: string[]; allowFreeText: boolean; status: string; createdAt: number }[];
-  pendingInteractions: { id: string; threadId: string; title: string; kind: string }[];
-  watch: { threadId: string; reason: string; addedAt: number }[];
-  queuedUpdates: number;
-  recentReplies: { id: string; kind: string; speech: string; delivery: string; createdAt: number; threadIds: string[] }[];
-  conversations: { id: string; createdAt: number; updatedAt: number; status: string; coordinatorThreadId: string | null; current: boolean }[];
-};
+import type { CoordinatorStatus as Status } from "./coordinator/manager.ts";
 
 /**
  * Coordinator status for ONE logical session. Scoped by conversation id so the
@@ -135,6 +124,7 @@ export function VoiceQuestionInteraction({ interaction, submit, cancel }: Plugin
 export function CoordinatorCard({ conversationId, legacy = false }: { conversationId: string | null; legacy?: boolean }) {
   const { status, error, refetch, rpc } = useCoordinatorStatus(conversationId);
   const bridge = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getBridgeSnapshot);
+  const threads = experimental_useSidebarThreadActions();
   const [busy, setBusy] = useState(false);
   if (!conversationId || legacy) {
     return (
@@ -166,10 +156,9 @@ export function CoordinatorCard({ conversationId, legacy = false }: { conversati
       setBusy(false);
     }
   };
-  const inspect = (threadId: string) => void run(async () => {
-    const { views } = await rpc.call("resolveThreadViews", { threadIds: [threadId] });
-    viewWorkspace.open(views);
-  });
+  // Debug links open the thread in bb's own workspace (host navigation, same
+  // as clicking it in the sidebar). Only the coordinator debug thread is embedded.
+  const inspect = (threadId: string) => threads.open(threadId);
   const openQuestion = status.questions.find((question) => question.status === "pending" || question.status === "unresolved");
   const activeRequests = status.requests.filter((request) => request.status !== "settled").slice(0, 6);
   return (
@@ -180,7 +169,7 @@ export function CoordinatorCard({ conversationId, legacy = false }: { conversati
           <div className="truncate text-xs text-muted-foreground">
             {conversation
               ? `${conversation.providerId ?? "provider pending"}${conversation.model ? ` · ${conversation.model}` : ""} · ${conversation.currentCallNonce ? "on a call" : conversation.status === "released" ? "runtime released" : "idle"}${working ? " · working" : ""}`
-              : status.enabled ? "No coordinator thread yet. The next call on this session creates one." : "Coordinator mode is off; this session recorded no coordinator."}
+              : "No coordinator thread yet. The next call on this session creates one."}
           </div>
           {conversation?.topic ? <div className="truncate text-xs text-muted-foreground">Topic: {conversation.topic}</div> : null}
         </div>

@@ -42,6 +42,7 @@ export class CoordinatorUnavailableError extends Error {
 
 interface ManagerDeps {
   preferences?: () => string;
+  onRequestEnded?: (requestId: string) => void;
   bb: BbPluginApi;
   store: CoordinatorStore;
   config: () => Promise<CoordinatorConfig>;
@@ -54,7 +55,6 @@ interface QuestionWaiter {
 }
 
 export interface CoordinatorStatus {
-  enabled: boolean;
   conversation: {
     id: string;
     status: string;
@@ -100,6 +100,7 @@ export class CoordinatorManager {
   private readonly readConfig: () => Promise<CoordinatorConfig>;
   private readonly now: () => number;
   private readonly preferences: () => string;
+  private readonly onRequestEnded: (requestId: string) => void;
   private readonly locks = new KeyedLock();
   private readonly questionWaiters = new Map<string, QuestionWaiter>();
   /** Native interaction ids seen for the coordinator that are not ours. */
@@ -112,6 +113,7 @@ export class CoordinatorManager {
     this.readConfig = deps.config;
     this.now = deps.now ?? Date.now;
     this.preferences = deps.preferences ?? (() => "");
+    this.onRequestEnded = deps.onRequestEnded ?? (() => {});
   }
 
   dispose() {
@@ -518,7 +520,7 @@ export class CoordinatorManager {
     if (!bootstrap && !requestId && !batchId) return "No active request or batch: keep this intermediate text internal.";
     const debugRequested = /debug|diagnos|troubleshoot|coordinator.*(?:log|status|work)/i.test(request?.envelope.originalText ?? "");
     const routingNoise = /\b(?:delegat\w*|dispatch\w*|rout(?:e|ed|ing)|assign\w*)\b.*\b(?:thread|coordinator|agent)\b|\bcoordinator[’']?s?\b/i.test(`${params.speech}\n${params.detail ?? ""}`);
-    const internal = params.kind === "silent" || (!batchId && (params.kind === "assigned" || params.kind === "progress"));
+    const internal = params.kind === "silent" || (!batchId && params.kind === "assigned");
     if (!debugRequested && routingNoise && !internal) {
       return {content:[{type:"text",text:"Keep routing and coordinator details internal. Record assignment receipts with kind assigned; otherwise rewrite only the material result or blocker in the assistant’s own voice."}],isError:true};
     }
@@ -554,9 +556,9 @@ export class CoordinatorManager {
       detail: params.detail ?? null,
       threadIds,
       receipts: params.receipts ?? [],
-      focusThreadId: requestId && !batchId ? params.present?.focus_thread_id ?? null : null,
+      focusThreadId: null,
     };
-    if ((params.kind === "progress" || params.kind === "assigned") && !batchId) {
+    if (params.kind === "assigned" && !batchId) {
       const progress = this.store.recordReply({ conversationId: conversation.id, requestId, batchId, questionId: null, kind: params.kind, source: "tool", body, ready: true, delivery: "silent", targetCallNonce: conversation.currentCallNonce });
       this.publishStatus(conversation.id);
       return `Recorded ${params.kind} ${progress.id} internally. Work quietly; report only a material blocker or changed results.`;
@@ -642,7 +644,6 @@ export class CoordinatorManager {
       threadIds: reply.body.threadIds,
       receipts: reply.body.receipts,
       targetCallNonce: reply.targetCallNonce,
-      focusThreadId: reply.body.focusThreadId,
       createdAt: reply.createdAt,
     };
     this.bb.realtime.publish(REPLY_CHANNEL, payload);
@@ -668,7 +669,6 @@ export class CoordinatorManager {
         threadIds: reply.body.threadIds,
         receipts: reply.body.receipts,
         targetCallNonce: reply.targetCallNonce,
-        focusThreadId: reply.body.focusThreadId,
         createdAt: reply.createdAt,
       }));
   }
@@ -937,6 +937,7 @@ export class CoordinatorManager {
     const request = this.store.getRequest(requestId);
     if (!request || request.status === "settled") return;
     this.store.updateRequest(requestId, { status: "settled", settledAt: this.now() });
+    this.onRequestEnded(requestId);
     void replyId;
   }
 
@@ -965,7 +966,10 @@ export class CoordinatorManager {
     const conversation = this.store.conversationByCoordinator(threadId);
     if (!conversation) return;
     const open = this.store.listRequests(conversation.id, ["accepted", "dispatching", "dispatch_unknown"]);
-    for (const request of open) this.store.updateRequest(request.id, { status: "failed", error: error ?? "coordinator failed" });
+    for (const request of open) {
+      this.store.updateRequest(request.id, { status: "failed", error: error ?? "coordinator failed" });
+      this.onRequestEnded(request.id);
+    }
     for (const batch of this.store.listBatches(conversation.id, ["sent"])) {
       this.store.setBatchStatus(batch.id, "failed");
       this.markBatchUpdates(batch.id, "queued");
@@ -1086,10 +1090,9 @@ export class CoordinatorManager {
     const currentId = this.store.currentConversationId();
     const conversations = this.store.listConversations(10).map((row) => ({ id: row.id, createdAt: row.createdAt, updatedAt: row.updatedAt, status: row.status, coordinatorThreadId: row.coordinatorThreadId, current: row.id === currentId }));
     if (!conversation) {
-      return { enabled: true, conversation: null, requests: [], questions: [], pendingInteractions: [], watch: [], queuedUpdates: 0, recentReplies: [], conversations };
+      return { conversation: null, requests: [], questions: [], pendingInteractions: [], watch: [], queuedUpdates: 0, recentReplies: [], conversations };
     }
     return {
-      enabled: true,
       conversation: {
         id: conversation.id,
         status: conversation.status,

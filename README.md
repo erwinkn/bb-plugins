@@ -201,6 +201,28 @@ Status: recorded here; no upstream issue filed.
 Suggested issue title: `Allow quiet coalescing of plugin-owned background messages`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Native UI command results for plugins
+
+Voice Mode now uses local SDK navigation, composer bindings, and file previews.
+In SDK 0.4.47, `toThread`, `toProject`, and sidebar `open` return no result.
+Sidebar `open` ignores unknown IDs and may fall back from a split to ordinary
+navigation. File preview returns an acceptance boolean, not rendering status.
+It also depends on the calling surface: BB 0.42.1 gives the app overlay a
+default handler that returns false, while page-level surfaces supply a preview
+handler. Voice binds the active page capability instead.
+Voice can observe route and composer state, but cannot derive every native
+placement or preview outcome from these return values.
+
+A request-scoped result from native UI methods could report the resolved target,
+actual placement, and an unavailable or cancelled outcome. File preview could
+separately report accepted and loaded. This would remove plugin-specific waits
+and avoid claims based only on dispatch. It should remain local to the calling
+client and preserve BB's native permission and navigation rules.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Return scoped outcomes from native plugin UI actions`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this

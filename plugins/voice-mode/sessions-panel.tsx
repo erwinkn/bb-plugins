@@ -7,18 +7,12 @@
 // (which collapses on mobile) or switch sidebars to talk.
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "./components/ui/button";
-import {
-  experimental_useSidebarThreadActions,
-  useBbContext,
-  useRealtime,
-  useRpc,
-} from "@get-bb/plugin-sdk/app";
+import { useBbNavigate, useRealtime, useRpc, type PluginNavPanelProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import { voiceAgent } from "./voice-agent";
+import { VOICE_CONVERSATION_SUBPATH, nativeUi } from "./native-ui";
 import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
-import { viewWorkspace } from "./view-workspace";
 import { actionStatus, pairToolEvents } from "./session-events";
-import { CompanionTab } from "./companion";
 import { CoordinatorCard } from "./coordinator-panel";
 import { activeConversationId, resolveSession, sessionApi, startConversation, type VoiceSessionRow } from "./session-api";
 import { describeDelivery, projectConversation, type ConversationMessage } from "./session-projection";
@@ -38,6 +32,8 @@ interface PluginMeta {
   name: string;
   iconUrl: string | null;
 }
+
+const NO_PLUGINS: ReadonlyMap<string, PluginMeta> = new Map();
 
 function fmtTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -332,7 +328,7 @@ function SpeechRow({ row }: { row: Extract<Row, { kind: "speech" }> }) {
   );
 }
 
-function ActionRow({ row, plugins }: { row: Extract<Row, { kind: "action" }>; plugins: Map<string, PluginMeta> }) {
+function ActionRow({ row, plugins }: { row: Extract<Row, { kind: "action" }>; plugins: ReadonlyMap<string, PluginMeta> }) {
   const meta = actionMeta(row.name);
   const pending = row.output === null;
   const isError = !pending && row.status === "error";
@@ -473,7 +469,7 @@ function FilterBar({ value, onChange }: { value: TranscriptFilter; onChange: (ne
   );
 }
 
-function TranscriptBody({ events, plugins, filter }: { events: EventRow[]; plugins: Map<string, PluginMeta>; filter: TranscriptFilter }) {
+function TranscriptBody({ events, plugins, filter }: { events: EventRow[]; plugins: ReadonlyMap<string, PluginMeta>; filter: TranscriptFilter }) {
   const rows = buildRows(events).filter((row) => rowMatchesFilter(row, filter));
   if (rows.length === 0) {
     return <p className="py-3 text-center text-sm text-muted-foreground">Nothing matches this filter.</p>;
@@ -536,27 +532,18 @@ function useEscapeToClose(onBack?: () => void, active = true) {
   }, [onBack, active]);
 }
 
-export function SessionsPanel() {
-  const [inspecting, setInspecting] = useState(false);
-  const views = useSyncExternalStore(viewWorkspace.subscribe, viewWorkspace.get);
-  const root = useRef<HTMLDivElement>(null);
-  const showThreads = inspecting && views.views.length > 0;
-  useEffect(() => viewWorkspace.registerPresenter({
-    available: () => document.visibilityState !== "hidden" && !!root.current,
-    reveal: () => { setInspecting(true); return true; },
-  }), []);
+/**
+ * The Voice nav panel. Threads and projects are never embedded here: voice
+ * opens them in bb's own workspace through the native UI controller, and the
+ * `conversation` sub-path (used by the show_voice action) brings the current
+ * call's conversation view back on screen.
+ */
+export function SessionsPanel({ subPath = "" }: Partial<PluginNavPanelProps>) {
   return (
-    <div ref={root} className="flex h-full min-h-0 flex-col">
-      {views.views.length > 0 ? (
-        <div role="group" aria-label="Voice area" className="flex shrink-0 gap-2 border-b border-border p-2">
-          <Button variant={showThreads ? "ghost" : "secondary"} aria-pressed={!showThreads} onClick={() => setInspecting(false)}>Session</Button>
-          <Button variant={showThreads ? "secondary" : "ghost"} aria-pressed={showThreads} onClick={() => setInspecting(true)}>Threads ({views.views.length})</Button>
-        </div>
-      ) : null}
-      <div hidden={showThreads} className={showThreads ? "hidden" : "min-h-0 flex-1"}>
-        <SessionHistoryPanel active={!showThreads} />
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1">
+        <SessionHistoryPanel active showConversation={subPath === VOICE_CONVERSATION_SUBPATH} />
       </div>
-      {showThreads ? <div className="min-h-0 flex-1"><CompanionTab /></div> : null}
     </div>
   );
 }
@@ -609,30 +596,9 @@ function ConversationView({ events, live }: { events: EventRow[]; live: boolean 
   );
 }
 
-function SessionHistoryPanel({ active }: { active: boolean }) {
+function SessionHistoryPanel({ active, showConversation }: { active: boolean; showConversation: boolean }) {
   const rpc = useRpc<typeof rpcContract>();
   const api = sessionApi(rpc);
-  const { threadId, projectId } = useBbContext();
-  const sidebarActions = experimental_useSidebarThreadActions();
-
-  // The Voice page has no composer, so nothing else binds the voice agent
-  // here. Install a fallback binding so the call console can actually start a
-  // call from a cold page — but only when nothing richer is already bound (a
-  // live composer's binding, which its text tools target, must win). We
-  // deliberately bind no composer: with nothing to type into, the text tools
-  // report that honestly rather than silently opening a thread behind the
-  // user's back. Everything else runs through rpc, which works from anywhere.
-  useEffect(() => {
-    return voiceAgent.bindFallback({
-      rpc,
-      context: { threadId: threadId ?? null, projectId: projectId ?? null, onNewThreadScreen: false },
-      openNewThread: (targetProjectId) =>
-        sidebarActions.openNewThread({
-          ...(targetProjectId ? { projectId: targetProjectId } : {}),
-          focusPrompt: true,
-        }),
-    });
-  }, [rpc, threadId, projectId, sidebarActions]);
 
   const [sessions, setSessions] = useState<VoiceSessionRow[] | null>(null);
   const [hasMore, setHasMore] = useState(false);
@@ -664,7 +630,9 @@ function SessionHistoryPanel({ active }: { active: boolean }) {
   const activeSession = useSyncExternalStore(voiceAgent.subscribe, activeConversationId);
   const [filter, setFilter] = useState<TranscriptFilter>("all");
   const [search, setSearch] = useState("");
-  const [plugins, setPlugins] = useState<Map<string, PluginMeta>>(() => new Map());
+  // Historical transcripts may hold plugin-command rows from earlier voice
+  // sessions; they render by plugin id, as the backend no longer lists plugins.
+  const plugins = NO_PLUGINS;
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pendingBottom = useRef(false);
@@ -746,12 +714,6 @@ function SessionHistoryPanel({ active }: { active: boolean }) {
     refreshNewest();
   }, [refreshNewest]);
   useEffect(() => {
-    rpc.call("listPlugins", null).then(
-      (result) => setPlugins(new Map(result.plugins.map((plugin) => [plugin.id, plugin]))),
-      () => undefined,
-    );
-  }, [rpc]);
-  useEffect(() => {
     setDetail(null);
     setDetailError(null);
     setTab("conversation");
@@ -769,6 +731,30 @@ function SessionHistoryPanel({ active }: { active: boolean }) {
     setSelected(activeSession);
     refreshNewest();
   }, [activeSession, callState, refreshNewest]);
+
+  // Voice's show_voice action: select the current call's conversation view
+  // (or a named session's), confirming only when something is really shown.
+  const selectConversation = useCallback((conversationId: string | null): boolean => {
+    const target = conversationId ?? activeConversationId();
+    if (!target) return false;
+    setSelected(target);
+    setTab("conversation");
+    return true;
+  }, []);
+  // File preview is a surface capability, so this page lends its own handler.
+  const navigate = useBbNavigate();
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
+  useEffect(() => nativeUi.bind({
+    kind: "voice-panel",
+    showConversation: selectConversation,
+    openFilePreview: (options) => navigateRef.current.experimental_openFilePreview(options),
+  }), [selectConversation]);
+  // Arriving on the `conversation` sub-path (or the live session becoming
+  // known while on it) shows the current conversation without a click.
+  useEffect(() => {
+    if (showConversation && activeSession) selectConversation(activeSession);
+  }, [showConversation, activeSession, selectConversation]);
 
   // The selected session in list terms, resolving older call ids to their session.
   const matchingDetail = detail && selected && (detail.session.id === selected || detail.session.callIds.includes(selected)) ? detail : null;

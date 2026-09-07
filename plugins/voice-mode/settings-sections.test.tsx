@@ -111,3 +111,18 @@ test("prompt updates refresh a clean editor but preserve unsaved edits", async (
     assert.equal(editor.value, content);
   } finally { slot.lifecycle.unmount(); }
 });
+
+test("behavior settings keep the prompt and drop the legacy plugin-command and tool catalogue controls", async () => {
+  const { BehaviorSettings } = await import("./settings-sections.tsx");
+  const slot = renderSlot({ component: BehaviorSettings }, {}, { rpc: {
+    getPrompt: () => ({ content: "Current", defaultContent: "Default", versions: [], proposal: null }),
+  } });
+  try {
+    const ui = within(slot.container);
+    await act(async () => { await Promise.resolve(); });
+    assert.ok(ui.getByRole("textbox", { name: "Voice instructions" }));
+    assert.equal(ui.queryByRole("combobox"), null, "no plugin exposure picker");
+    assert.equal(ui.queryByRole("button", { name: /built-in tools/i }), null);
+    assert.equal(slot.inspection.rpcCalls.some(call => call.method === "getTools" || call.method === "listPlugins"), false);
+  } finally { slot.lifecycle.unmount(); }
+});

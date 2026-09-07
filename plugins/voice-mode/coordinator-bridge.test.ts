@@ -1,9 +1,9 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { VoiceAgent } from "./voice-agent.ts";
-import { ViewWorkspace } from "./view-workspace.ts";
+import { nativeUi } from "./native-ui.ts";
 import { TRANSCRIPT_WAIT_MS } from "./coordinator-bridge.ts";
-import type { PublishedReply } from "./coordinator/envelopes.ts";
+import { userRequestEnvelopeSchema, type PublishedReply } from "./coordinator/envelopes.ts";
 
 type Any = any;
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -56,11 +56,9 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
   Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
   const calls: { method: string; args: Any }[] = [];
   const logs: { kind: string; payload: Any }[] = [];
-  const workspace = new ViewWorkspace();
-  const agent = new VoiceAgent(workspace);
-  let voiceOpens = 0;
+  const agent = new VoiceAgent();
+  t.mock.method(nativeUi, "snapshot", () => ({ threadId: "thr_view", projectId: "proj_a", onNewThreadScreen: false, route: "/threads/thr_view", composers: [], draft: null, bound: true }));
   agent.bind({
-    openVoice: () => { voiceOpens += 1; },
     rpc: { call: (async (method: string, args: Any) => {
       calls.push({ method, args });
       if (method === "logEvent") { logs.push({ kind: args.kind, payload: args.payload }); return { ok: true }; }
@@ -74,7 +72,6 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
       return { ok: true };
     }) as never },
     context: { threadId: "thr_view", projectId: "proj_a", onNewThreadScreen: false },
-    openNewThread() {},
   });
   t.after(() => {
     agent.stop();
@@ -85,15 +82,15 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
   });
   agent.toggle();
   await settle();
-  assert.equal(agent.getState(), "live");
+  assert.equal(agent.getState(), options.coordinator === false ? "idle" : "live");
   const dc = channels.at(-1)!;
   const submits = () => calls.filter((call) => call.method === "submitRequest").map((call) => call.args.envelope);
   const deliveries = () => calls.filter((call) => call.method === "reportReplyDelivery").map((call) => call.args);
   const reply = (overrides: Partial<PublishedReply>): PublishedReply => ({
     v: 1, replyId: "reply_1", conversationId: "conv_1", seq: 1, requestId: null, batchId: null, questionId: null, kind: "final", source: "tool",
-    speech: "Done.", detail: null, threadIds: [], receipts: [], targetCallNonce: agent.getSessionId(), focusThreadId: null, createdAt: 0, ...overrides,
+    speech: "Done.", detail: null, threadIds: [], receipts: [], targetCallNonce: agent.getSessionId(), createdAt: 0, ...overrides,
   });
-  return { agent, workspace, dc, calls, logs, submits, deliveries, reply, voiceOpens, tick: (ms: number) => t.mock.timers.tick(ms) };
+  return { agent, dc, calls, logs, submits, deliveries, reply, tick: (ms: number) => t.mock.timers.tick(ms) };
 }
 
 function speak(dc: { emit(type: string, extra?: Record<string, Any>): void }, itemId: string) {
@@ -125,6 +122,7 @@ test("a handoff waits for the settled transcript and carries the user's words, n
   assert.deepEqual(envelope.utteranceItemIds, ["item_1"]);
   assert.equal(envelope.callNonce, dc ? envelope.callNonce : "");
   assert.equal(envelope.callSequence, 7);
+  assert.equal(userRequestEnvelopeSchema.safeParse(envelope).success, true);
   assert.deepEqual(envelope.view, { threadId: "thr_view", projectId: "proj_a", onNewThreadScreen: false });
   tick(1);
 });
@@ -287,23 +285,15 @@ test("remain_silent returns no speech and end_call stops once the goodbye has pl
   assert.equal(agent.getState(), "idle");
 });
 
-test("the direct path stays unchanged when the server reports no conversation", async (t) => {
-  const { agent, dc, calls } = await coordinatorFixture(t, { coordinator: false });
+test("a missing coordinator conversation stops startup without a direct fallback", async (t) => {
+  const { agent, calls } = await coordinatorFixture(t, { coordinator: false });
+  assert.equal(agent.getState(), "idle");
   assert.equal(agent.getBridgeSnapshot(), null);
-  dc.emit("response.created", { response: { id: "resp_1" } });
-  dc.emit("response.function_call_arguments.done", { name: "delegate_to_coordinator", call_id: "call_d", arguments: JSON.stringify({ request: "x" }) });
-  await settle();
-  // Without a bridge the call goes to the server like any other tool, where an unknown name is refused.
-  assert.ok(calls.some((call) => call.method === "runTool" && call.args.name === "delegate_to_coordinator"));
-  assert.equal(calls.some((call) => call.method === "submitRequest"), false);
-  agent.ingestCoordinatorSignal("voice-reply", { v: 1 });
-  assert.equal(dc.responses().filter((event) => event.response?.metadata?.bb_voice_source === "coordinator_reply").length, 0);
+  assert.equal(calls.some(call => call.method === "createCall" || call.method === "runTool"), false);
 });
 
-
-test("starting a call opens Voice once and ordinary replies need no work-thread view", async (t) => {
-  const { agent, dc, calls, reply, voiceOpens, tick } = await coordinatorFixture(t);
-  assert.equal(voiceOpens, 1);
+test("ordinary replies do not navigate away from the current route", async (t) => {
+  const { agent, dc, calls, reply, tick } = await coordinatorFixture(t);
   agent.ingestCoordinatorSignal("voice-reply", reply({ requestId: "r_work", speech: "The review thread finished the requested changes.", threadIds: ["thr_work"] }));
   tick(1);
   assert.equal(dc.bridgeResponses().length, 1);
@@ -313,7 +303,7 @@ test("starting a call opens Voice once and ordinary replies need no work-thread 
 
 test("a background digest cannot open a work-thread view even with a presentation field", async (t) => {
   const { agent, dc, calls, reply, tick } = await coordinatorFixture(t);
-  agent.ingestCoordinatorSignal("voice-reply", reply({ kind: "update", batchId: "batch_test", speech: "The review finished.", focusThreadId: "thr_work" }));
+  agent.ingestCoordinatorSignal("voice-reply", reply({ kind: "update", batchId: "batch_test", speech: "The review finished." }));
   tick(3000);
   assert.equal(dc.bridgeResponses().length, 1);
   assert.equal(calls.some(call => call.method === "resolveThreadViews" || call.method === "applyPresentation"), false);
@@ -422,16 +412,26 @@ test("a late tool from an interrupted response cannot dispatch while the user co
 });
 
 
-test("a coordinator reply opens a thread outside the call's starting project inside Voice", async (t) => {
-  const { agent, workspace, calls, reply, tick } = await coordinatorFixture(t);
-  workspace.registerPresenter({ available: () => true, reveal: () => true });
-  agent.ingestCoordinatorSignal("voice-reply", reply({ requestId: "show_other", speech: "Here is the build thread.", focusThreadId: "thr_other", threadIds: ["thr_other"] }));
+test("a reply carries speech without performing UI actions", async (t) => {
+  const { agent, calls, reply, tick } = await coordinatorFixture(t);
+  const execute = t.mock.method(nativeUi, "execute", async () => ({ status: "succeeded" as const, detail: "Shown" }));
+  agent.ingestCoordinatorSignal("voice-reply", reply({ speech: "Here is the build thread.", threadIds: ["thr_other"] }));
   tick(1);
   await settle();
-  assert.deepEqual(calls.find(call=>call.method === "resolveThreadViews")?.args, {threadIds:["thr_other"]});
-  assert.equal(workspace.get().views[0]?.threadId,"thr_other");
-  assert.equal(workspace.get().views[0]?.projectId,"proj_other");
-  assert.equal(workspace.get().activeId,"thread:thr_other");
-  assert.equal(agent.getState(),"live");
-  assert.equal(calls.some(call=>call.method === "applyPresentation" || call.method === "runTool"),false);
+  assert.equal(execute.mock.callCount(), 0);
+  assert.equal(agent.getState(), "live");
+  assert.equal(calls.some(call => call.method === "claimUiCommand"), false);
+});
+
+test("realtime mutation names cannot bypass the coordinator", async t => {
+  const { dc, calls } = await coordinatorFixture(t);
+  speak(dc, "input-mutation");
+  dc.emit("response.created", { response: { id: "mutation" } });
+  for (const name of ["start_thread", "focus_thread", "set_composer_text", "get_context"]) {
+    dc.emit("response.function_call_arguments.done", { response_id: "mutation", name, call_id: name, arguments: "{}" });
+  }
+  await settle();
+  assert.equal(calls.some(call => call.method === "runTool" || call.method === "claimUiCommand"), false);
+  assert.equal(dc.toolOutputs().length, 4);
+  assert.ok(dc.toolOutputs().every(event => event.item.output.includes("Unknown realtime tool")));
 });

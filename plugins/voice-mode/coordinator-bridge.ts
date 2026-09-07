@@ -21,7 +21,6 @@ export interface BridgeHost {
   now(): number;
   /** The bridge is about to send response.create; the host marks generation active. */
   speaking(): void;
-  applyFocus(threadId: string): Promise<void>;
   changed(): void;
 }
 
@@ -80,6 +79,7 @@ export class CoordinatorBridge {
   private openQuestion: { id: string; text: string } | null = null;
   private liveAt: number;
   private disposed = false;
+  private acknowledgedTurns = new Set<number>();
   private acknowledgments = new Map<number, {requestId:string;text:string}>();
 
   constructor(private readonly host: BridgeHost, readonly conversationId: string, private readonly userTurnOf: () => number) {
@@ -176,12 +176,14 @@ export class CoordinatorBridge {
     const acknowledgment = this.acknowledgments.get(turn);
     const requestId = acknowledgment?.requestId;
     this.acknowledgments.delete(turn);
-    if (!requestId || alreadySpoke || turn !== this.userTurnOf()) return;
+    if (!requestId || turn !== this.userTurnOf() || this.acknowledgedTurns.has(turn)) return;
+    this.acknowledgedTurns.add(turn);
+    if (alreadySpoke) return;
     if (this.replyQueue.some(reply => reply.requestId === requestId && reply.kind !== "progress")) return;
     const reply: PublishedReply = {
       v: 1, replyId: `local_ack_${requestId}`, conversationId: this.conversationId, seq: -1,
       requestId, batchId: null, questionId: null, kind: "progress", source: "bridge",
-      speech: acknowledgment!.text, detail: null, threadIds: [], receipts: [], focusThreadId: null,
+      speech: acknowledgment!.text, detail: null, threadIds: [], receipts: [],
       targetCallNonce: this.host.nonce(), createdAt: this.host.now(),
     };
     this.replyQueue.unshift(reply);
@@ -317,7 +319,7 @@ export class CoordinatorBridge {
   private enqueueLocalReply(speech: string, kind: "failure") {
     const reply: PublishedReply = {
       v: 1, replyId: `local_${this.host.now()}`, conversationId: this.conversationId, seq: Number.MAX_SAFE_INTEGER, requestId: null, batchId: null, questionId: null,
-      kind, source: "bridge", speech, detail: null, threadIds: [], receipts: [], targetCallNonce: this.host.nonce(), focusThreadId: null, createdAt: this.host.now(),
+      kind, source: "bridge", speech, detail: null, threadIds: [], receipts: [], targetCallNonce: this.host.nonce(), createdAt: this.host.now(),
     };
     this.replyQueue.push(reply);
     this.drain();
@@ -373,10 +375,6 @@ export class CoordinatorBridge {
     });
     if (!sent) { this.active = null; return; }
     this.host.log("reply.speaking", { replyId: reply.replyId, kind: reply.kind, requestId: reply.requestId, batchId: reply.batchId, text: reply.speech });
-    if (reply.focusThreadId && reply.kind !== "update") void this.host.applyFocus(reply.focusThreadId).catch((error) => {
-      this.host.log("reply.focusFailed", { replyId: reply.replyId, error: error instanceof Error ? error.message : String(error) });
-      if (this.host.nonce() === reply.targetCallNonce) this.enqueueLocalReply("I could not show that thread here. Open the Voice area to inspect it. The call can continue.", "failure");
-    });
     this.host.changed();
   }
 

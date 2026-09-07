@@ -12,6 +12,7 @@ const { installTestPluginRuntime, renderSlot } = await import("@get-bb/plugin-sd
 const { act, fireEvent, within } = await import("@testing-library/react");
 installTestPluginRuntime();
 const { voiceAgent } = await import("./voice-agent.ts");
+const { nativeUi } = await import("./native-ui.ts");
 const { SessionsPanel } = await import("./sessions-panel.tsx");
 after(() => dom.window.close());
 
@@ -33,7 +34,7 @@ function baseRpc(sessions: Any[] = [sessionRow("a"), sessionRow("b"), sessionRow
       if (!session) throw new Error("Voice session not found.");
       return { session, events: session.callIds.flatMap((callId: string, index: number) => [userEvent(index * 10 + 1, callId, `Words in ${callId}`)]) };
     },
-    getCoordinatorStatus: () => ({ enabled: true, conversation: null, requests: [], questions: [], pendingInteractions: [], watch: [], queuedUpdates: 0, recentReplies: [], conversations: [] }),
+    getCoordinatorStatus: () => ({ conversation: null, requests: [], questions: [], pendingInteractions: [], watch: [], queuedUpdates: 0, recentReplies: [], conversations: [] }),
   };
   return { rpc, detailCalls };
 }
@@ -148,5 +149,80 @@ test("Diagnostics shows raw events with call boundaries; live log signals refres
     assert.equal((ui.getByRole("combobox", { name: "Session view" }) as HTMLSelectElement).value, "diagnostics", "a refresh keeps the current view");
     fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "conversation" } });
     assert.equal(ui.queryByText(/internal words/), null, "the picker returns to the conversation");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("the Voice page embeds only coordinator debugging and opens work threads in bb's workspace", async () => {
+  const { rpc } = baseRpc();
+  const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: { ...rpc,
+    getCoordinatorStatus: () => ({ conversation: { id: "a", status: "active", coordinatorThreadId: "coord_a", providerId: "p", model: "m", hostId: null, currentCallNonce: null, topic: null, discussedThreadId: null }, requests: [], questions: [], pendingInteractions: [{ id: "i1", threadId: "thr_work", title: "Needs approval", kind: "permission" }], watch: [{ threadId: "thr_watched", reason: "started by voice", addedAt: 1 }], queuedUpdates: 0, recentReplies: [], conversations: [] }),
+  } });
+  const ui = within(slot.container);
+  try {
+    fireEvent.click(await ui.findByRole("button", { name: /Session a/ }));
+    await ui.findByText("Words in call_a_1");
+    assert.equal(ui.queryByRole("group", { name: "Voice area" }), null, "no Session/Threads switcher");
+    fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "coordinator" } });
+    const coordinator = within(await ui.findByRole("region", { name: "Voice coordinator" }));
+    fireEvent.click(await coordinator.findByRole("button", { name: "Open" }));
+    fireEvent.click(coordinator.getByRole("button", { name: "thr_watched" }));
+    assert.deepEqual(slot.inspection.sidebarActionCalls.map(call => call.threadId), ["thr_work", "thr_watched"]);
+    assert.equal(slot.inspection.rpcCalls.some(call => call.method === "resolveThreadViews"), false);
+    assert.deepEqual(ui.queryAllByTestId("bb-thread-chat").map(node => node.getAttribute("data-thread-id")), ["coord_a"], "only coordinator debugging is embedded");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("show_voice selects the current call's conversation through the panel binding, also from a debug view", async (t) => {
+  const connected = nativeUi.transportConnected();
+  nativeUi.setTransportConnected(true);
+  t.after(() => nativeUi.setTransportConnected(connected));
+  t.after(nativeUi.bind({
+    kind: "app",
+    context: () => ({ threadId: null, projectId: null }),
+    route: () => "/plugins/voice-mode/sessions",
+    navigate: { toProject: () => assert.fail("unexpected project navigation"), toPluginPanel: () => assert.fail("mounted panel needs no navigation") },
+    threads: { open: () => assert.fail("unexpected thread navigation"), openNewThread: () => assert.fail("unexpected composer navigation") },
+  }));
+  const showVoice = async () => {
+    let result!: Awaited<ReturnType<typeof nativeUi.execute>>;
+    await act(async () => { result = await nativeUi.execute({ kind: "show_voice" }, () => true); });
+    return result;
+  };
+  const { setState } = callControl(t);
+  t.mock.method(voiceAgent, "getSessionId", () => "call_a_2");
+  const { rpc } = baseRpc();
+  const slot = renderSlot({ component: SessionsPanel }, {}, { rpc });
+  const ui = within(slot.container);
+  try {
+    await ui.findByRole("button", { name: /Session a/ });
+    // No current call: the panel reports it cannot show a conversation.
+    let result = await showVoice();
+    assert.equal(result.status, "failed");
+    assert.match(result.detail, /no current conversation/);
+    assert.ok(ui.getByRole("heading", { name: "Voice sessions" }), "the list stays");
+    act(() => setState("live", "a"));
+    result = await showVoice();
+    assert.equal(result.status, "succeeded");
+    await ui.findByText("Words in call_a_1");
+    assert.equal((ui.getByRole("combobox", { name: "Session view" }) as HTMLSelectElement).value, "conversation");
+    // From the Diagnostics view, show_voice returns to the conversation.
+    fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "diagnostics" } });
+    result = await showVoice();
+    assert.equal(result.status, "succeeded");
+    assert.equal((ui.getByRole("combobox", { name: "Session view" }) as HTMLSelectElement).value, "conversation");
+    assert.equal(slot.inspection.navigateCalls.length, 0, "a mounted panel needs no navigation");
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("arriving on the conversation sub-path shows the live conversation without a click", async (t) => {
+  const { setState } = callControl(t);
+  t.mock.method(voiceAgent, "getSessionId", () => "call_b_1");
+  setState("live", "b");
+  const { rpc } = baseRpc();
+  const slot = renderSlot({ component: SessionsPanel }, { subPath: "conversation" }, { rpc });
+  const ui = within(slot.container);
+  try {
+    await ui.findByText("Words in call_b_1");
+    assert.ok(ui.getByText("Live now", { exact: false }));
   } finally { slot.lifecycle.unmount(); }
 });

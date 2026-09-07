@@ -18,7 +18,7 @@ test("the actual app exposes one Voice area and no extra thread panel on either 
       Object.defineProperty(globalThis, name, { value, configurable: true });
     }
     const file = join(directory, "app.mjs");
-    await build({ stdin: { contents: 'export { default, AideVoiceButton } from "./app"; export { viewWorkspace } from "./view-workspace";', resolveDir: process.cwd(), sourcefile: "registration.ts" }, outfile: file, bundle: true, platform: "node", format: "esm", packages: "external", loader: { ".css": "empty" }, jsx: "automatic", logLevel: "silent" });
+    await build({ stdin: { contents: 'export { default } from "./app";', resolveDir: process.cwd(), sourcefile: "registration.ts" }, outfile: file, bundle: true, platform: "node", format: "esm", packages: "external", loader: { ".css": "empty" }, jsx: "automatic", logLevel: "silent" });
     for (const mobile of [false, true]) {
       Object.defineProperty(dom.window.navigator, "userAgent", { value: mobile ? "Mozilla/5.0 (iPhone) Mobile Safari" : "Mozilla/5.0 (Macintosh; Intel Mac OS X) Chrome", configurable: true });
       const app = await loadPluginApp(() => import(`${pathToFileURL(file).href}?mobile=${mobile}`));
@@ -30,6 +30,12 @@ test("the actual app exposes one Voice area and no extra thread panel on either 
       assert.equal(page.fixedTabs?.length ?? 0, 0);
       assert.equal(app.threadPanelActions.some(action => action.id === "thread-workspace"), false);
       assert.equal(app.appOverlays.length, 1);
+      // No voice buttons inside composers: the only composer action is the
+      // invisible native-UI binding, and it is active in every composer scope.
+      const composer = app.composerCustomizations.find(entry => entry.id === "aide-voice");
+      assert.ok(composer);
+      assert.deepEqual(composer.actions?.map(action => action.id), ["composer-binding"]);
+      assert.equal(composer.scopes, undefined);
 
     }
   } finally {

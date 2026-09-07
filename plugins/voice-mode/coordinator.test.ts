@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost, makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import plugin, { COORDINATOR_MODE_SERVER_TOOLS } from "./server.ts";
+import plugin from "./server.ts";
 import { COORDINATOR_TITLE_PREFIX } from "./coordinator/prompts.ts";
 import { formatRequestMessage, userRequestEnvelopeSchema, type UserRequestEnvelope } from "./coordinator/envelopes.ts";
 
@@ -150,7 +150,7 @@ test("a hidden coordinator starts once in the personal environment with plugin a
   assert.equal(world.sends[1].mode, "queue-if-active");
   // Initial tool selection works before the mapping exists, through origin + title.
   const fresh = await harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "thr_unknown", title: `${COORDINATOR_TITLE_PREFIX}conv_x` }, origin: { kind: null, pluginId: "voice-mode" } }));
-  assert.deepEqual(fresh.tools.map((tool) => tool.name).sort(), ["voice_ask", "voice_overview", "voice_reply"]);
+  assert.deepEqual(fresh.tools.map((tool) => tool.name).sort(), ["voice_ask", "voice_overview", "voice_reply", "voice_ui"]);
   assert.match(fresh.instructions ?? "", /Never turn a question/);
   assert.ok((fresh.instructions ?? "").length <= 4096, "host instructions must retain the complete policy");
   assert.match(fresh.instructions ?? "", /bb thread tell --mode queue explicitly/);
@@ -187,10 +187,7 @@ test("an unavailable coordinator provider is a recoverable failure and never fal
   const failure = replies().find((reply) => reply.kind === "failure");
   assert.match(failure.speech, /could not start that work/);
   assert.equal(failure.targetCallNonce, "call-1");
-  const direct = await rpc("runTool", { name: "archive_thread", args: { thread_id: "thr_old" }, threadId: null, projectId: null });
-  assert.equal(direct.status, "error");
-  assert.match(direct.output, /Use delegate_to_coordinator/);
-  assert.equal(COORDINATOR_MODE_SERVER_TOOLS.has("send_to_thread"), false);
+  await assert.rejects(rpc("runTool", { name: "archive_thread", args: {} }));
 });
 
 test("voice_reply is validated against the stored coordinator mapping and final replies wait for the turn to settle", async (t) => {
@@ -201,9 +198,8 @@ test("voice_reply is validated against the stored coordinator mapping and final 
   const foreign = await harness.behavior.callAgentTool("voice_reply", { kind: "final", speech: "Done." }, { threadId: "thr_worker" }) as Any;
   assert.equal(foreign.isError, true);
   await idle(coordinatorId(), null); // bootstrap settles; r_1 was queued behind it
-  const progress = await harness.behavior.callAgentTool("voice_reply", { request_id: "r_1", kind: "progress", speech: "Checking the speech thread." }, { threadId: coordinatorId() });
-  assert.match(String(progress), /Recorded progress/);
-  assert.equal(replies().filter((reply) => reply.requestId === "r_1").length, 0, "progress is diagnostic-only; the bridge owns acknowledgment");
+  await assert.rejects(harness.behavior.callAgentTool("voice_reply", { request_id: "r_1", kind: "progress", speech: "Checking." }, { threadId: coordinatorId() }));
+  assert.equal(replies().filter(reply => reply.requestId === "r_1").length, 0, "only the bridge acknowledges a request");
   await harness.behavior.callAgentTool("voice_reply", {
     request_id: "r_1", kind: "final", speech: "Archived the old speech thread.", thread_ids: ["thr_speech"],
     receipts: [{ action: "archive", thread_id: "thr_speech", outcome: "done" }], state: { discussed_thread_id: "thr_speech", topic: "speech thread cleanup" },
@@ -307,10 +303,10 @@ test("only watched threads feed the inbox, batches wait for the opening answer, 
   assert.doesNotMatch(digest.text, /Built/, "third thread waits for the next batch");
   const again = await rpc("reserveUpdateBatch", { conversationId, nonce: "call-1", msSinceCallLive: 1000 });
   assert.equal(again.reason, "batch-in-flight");
-  await harness.behavior.callAgentTool("voice_reply", { batch_id: reserved.batch.id, kind: "progress", speech: "Docs failed on the build script; CI finished its second pass.", present: { focus_thread_id: "thr_docs" } }, { threadId: coordinatorId() });
+  await harness.behavior.callAgentTool("voice_reply", { batch_id: reserved.batch.id, kind: "final", speech: "Docs failed on the build script; CI finished its second pass." }, { threadId: coordinatorId() });
   const update = harness.inspection.realtimeSignals.filter((signal) => signal.channel === "voice-reply").map((signal) => signal.payload as Any).find((reply) => reply.kind === "update");
   assert.equal(update.batchId, reserved.batch.id);
-  assert.equal(update.focusThreadId, null, "a background digest cannot request visual inspection");
+  assert.equal("focusThreadId" in update, false, "speech replies cannot request navigation");
   await rpc("reportReplyDelivery", { replyId: update.replyId, nonce: "call-1", state: "delivered" });
   status = await rpc("getCoordinatorStatus", null);
   assert.equal(status.queuedUpdates, 1);
@@ -605,7 +601,7 @@ test("one assistant flow keeps assignment internal, suppresses repeated blockers
   await reply({kind:"assigned",speech:"Assigned again.",receipts:[{action:"spawned",thread_id:"build_worker",outcome:"done"}]});
   await idle(coordinatorId(),"Internal dispatch details.");
   assert.equal(replies().length,0,"assignment and idle fallback create no user-facing speech");
-  await reply({kind:"progress",speech:"Checking more things."});
+  await assert.rejects(reply({kind:"progress",speech:"Checking more things."}));
   await reply({kind:"blocked",speech:"The build needs access to the package registry."});
   await reply({kind:"blocked",speech:"The build needs access to the package registry."});
   assert.equal(replies().length,1);
@@ -706,4 +702,67 @@ test("saved voice instructions reach the actual call and coordinator without rep
   await rpc("setPrompt",{content:"Answer in English.",source:"user",note:null});
   await rpc("submitRequest",{envelope:envelope(conversationId,"preferences","pref3","Now check the build.")});
   assert.equal(JSON.parse(world.sends.at(-1)!.text.split("\n")[1]).user_preferences,"Answer in English.");
+});
+
+test("voice_ui requires the mapped coordinator and an active user request, and waits for the owner receipt", async t => {
+  const h = await enabledHost(); t.after(() => h.harness.lifecycle.dispose());
+  const { conversationId } = await h.claim("ui-call");
+  await h.rpc("submitRequest", { envelope: h.envelope(conversationId, "ui-call", "ui-request", "Open the App project") });
+  const execute = (request_id: string, threadId = h.coordinatorId(), action: Any = { kind: "open_project", projectId: "proj_app" }) => h.harness.behavior.callAgentTool("voice_ui", { request_id, action }, { threadId });
+  for (const request of ["bootstrap", "missing"]) {
+    assert.equal((await execute(request) as Any).isError, true);
+  }
+  assert.equal((await execute("ui-request", "thr_other") as Any).isError, true);
+  const failed = JSON.parse(await execute("ui-request", h.coordinatorId(), { kind: "open_thread", threadId: "does-not-exist" }) as string);
+  assert.equal(failed.status, "failed");
+  const waiting = execute("ui-request");
+  await settle();
+  const { commands } = await h.rpc("pendingUiCommands", { conversationId, callNonce: "ui-call" });
+  assert.equal(commands.length, 1);
+  assert.deepEqual(commands[0].action, { kind: "open_project", projectId: "proj_app" });
+  const claim = { conversationId, callNonce: "ui-call", commandId: commands[0].id };
+  assert.equal((await h.rpc("claimUiCommand", { ...claim, callNonce: "other" })).claimed, false);
+  assert.equal((await h.rpc("claimUiCommand", claim)).claimed, true);
+  assert.equal((await h.rpc("claimUiCommand", claim)).claimed, false);
+  const result = { status: "succeeded", detail: "Project opened." };
+  assert.equal((await h.rpc("reportUiCommandResult", { ...claim, result })).accepted, true);
+  assert.deepEqual(JSON.parse(await waiting as string), result);
+  assert.equal(h.replies().length, 0, "UI receipts do not create speech replies");
+  assert.equal(h.world.opened.length, 0, "server never broadcasts threads.open");
+  await h.idle(h.coordinatorId());
+  await h.idle(h.coordinatorId());
+  assert.equal((await execute("ui-request") as Any).isError, true, "settled request cannot navigate");
+});
+
+test("hangup cancels pending UI tools and rejects late results without ending accepted work", async t => {
+  const h = await enabledHost(); t.after(() => h.harness.lifecycle.dispose());
+  const { conversationId } = await h.claim("ui-hangup");
+  await h.rpc("submitRequest", { envelope: h.envelope(conversationId, "ui-hangup", "ui-request", "Show Voice") });
+  const waiting = h.harness.behavior.callAgentTool("voice_ui", { request_id: "ui-request", action: { kind: "show_voice" } }, { threadId: h.coordinatorId() });
+  await settle();
+  const { commands } = await h.rpc("pendingUiCommands", { conversationId, callNonce: "ui-hangup" });
+  assert.equal(commands.length, 1);
+  const identity = { conversationId, callNonce: "ui-hangup", commandId: commands[0].id };
+  await h.rpc("forceStop", { nonce: "ui-hangup" });
+  assert.equal(JSON.parse(await waiting as string).status, "cancelled");
+  assert.equal((await h.rpc("claimUiCommand", identity)).claimed, false);
+  assert.equal((await h.rpc("reportUiCommandResult", { ...identity, result: { status: "succeeded", detail: "Late" } })).accepted, false);
+  assert.equal(h.world.stops.length, 0, "hangup does not stop accepted coordinator work");
+});
+
+test("request settlement immediately revokes started UI work before its timeout", async t => {
+  const h = await enabledHost(); t.after(() => h.harness.lifecycle.dispose());
+  const { conversationId } = await h.claim("ui-settled");
+  await h.rpc("submitRequest", { envelope: h.envelope(conversationId, "ui-settled", "ui-request", "Prepare a draft") });
+  const waiting = h.harness.behavior.callAgentTool("voice_ui", { request_id: "ui-request", action: { kind: "prepare_draft", target: { kind: "new" }, text: "Draft" } }, { threadId: h.coordinatorId() });
+  await settle();
+  const { commands } = await h.rpc("pendingUiCommands", { conversationId, callNonce: "ui-settled" });
+  const identity = { conversationId, callNonce: "ui-settled", commandId: commands[0].id };
+  assert.equal((await h.rpc("claimUiCommand", identity)).claimed, true);
+  await h.harness.behavior.callAgentTool("voice_reply", { request_id: "ui-request", kind: "silent" }, { threadId: h.coordinatorId() });
+  assert.equal(JSON.parse(await waiting as string).status, "unknown");
+  const revocation = h.harness.inspection.realtimeSignals.find(signal => signal.channel === "voice-ui-cancelled");
+  assert.deepEqual(revocation?.payload, identity);
+  const recovered = await h.rpc("pendingUiCommands", { conversationId, callNonce: "ui-settled" });
+  assert.deepEqual(recovered.revokedCommandIds, [commands[0].id]);
 });

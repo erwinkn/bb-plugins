@@ -64,7 +64,7 @@ export const actionReceiptSchema = z
   .strict();
 export type ActionReceipt = z.infer<typeof actionReceiptSchema>;
 
-export const REPLY_KINDS = ["progress", "assigned", "blocked", "final", "clarification", "silent"] as const;
+export const REPLY_KINDS = [ "assigned", "blocked", "final", "clarification", "silent"] as const;
 export type ReplyKind = (typeof REPLY_KINDS)[number];
 
 /** Parameters of the coordinator-only `voice_reply` tool. */
@@ -88,12 +88,7 @@ export const voiceReplyParamsSchema = z
       })
       .strict()
       .optional(),
-    present: z
-      .object({
-        focus_thread_id: z.string().max(128).optional(),
-      })
-      .strict()
-      .optional(),
+
   })
   .strict();
 export type VoiceReplyParams = z.infer<typeof voiceReplyParamsSchema>;
@@ -128,7 +123,7 @@ export const publishedReplySchema = z
     requestId: z.string().nullable(),
     batchId: z.string().nullable(),
     questionId: z.string().nullable(),
-    kind: z.enum([...REPLY_KINDS, "update", "failure"]),
+    kind: z.enum([...REPLY_KINDS, "progress", "update", "failure"]),
     source: z.enum(REPLY_SOURCES),
     speech: z.string(),
     detail: z.string().nullable(),
@@ -136,7 +131,6 @@ export const publishedReplySchema = z
     receipts: z.array(actionReceiptSchema),
     /** Call the reply is addressed to; null when no call is active. */
     targetCallNonce: z.string().nullable(),
-    focusThreadId: z.string().nullable(),
     createdAt: z.number(),
   })
   .strict();

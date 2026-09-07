@@ -1,213 +1,57 @@
-# Coordinator implementation decisions
+# Voice workspace decision audit
 
-7 September 2026. Scope: the initial coordinator implementation and its draft PR.
-The user authorized a draft PR and local activation for manual voice testing.
-The decisions confirmed in Grill remain in coordinator-plan.md.
+7 September 2026. Scope: the complete Voice reliability change in draft PR 15.
+The user authorized implementation, the draft PR, and local reload for testing.
+This audit describes the current design; it supersedes the earlier embedded
+work-thread workspace and optional coordinator design.
 
-This records implementation choices where the plan left room for judgment.
+## Core decisions
 
-| Decision | Alternative | Confidence | Failure case |
-| --- | --- | --- | --- |
-| Use a trusted agent prompt to interpret conditional authority and select watched threads. | Intercept every native action in BB core. | Medium | The coordinator can still misread intent or omit a watch entry. Live model tests remain necessary. |
-| Resolve spoken answers in the plugin and cancel the corresponding native interaction row. | Verify and use the existing SDK response methods. | Medium | BB history says cancelled even though the plugin delivered an answer. The plugin stores submission and delivery separately. |
-| Keep unknown delivery unknown when history lookup fails or returns no marker. Retry checks again without resending. | Retry after a timeout or missing marker. | High | A request that never arrived can remain blocked until the user inspects the coordinator. This avoids an automatic duplicate action. |
-| Retain an unreachable coordinator's identity, and block a second create after an unconfirmed create. | Replace an unreachable thread immediately. | High | Recovery may need a new logical conversation after the user checks the old one. |
-| Wait up to four seconds for transcription, then reject incomplete input at the server. | Execute the voice model's interpretation or wait without a limit. | Medium | Slow transcription asks the user to repeat a valid request. This needs measurement in real calls. |
-| Allow a digest after fifteen seconds when a resumed call has no user request. | Wait for an opening request without a time limit. | Medium | A user who joined only to listen receives a digest; a user preparing to speak may find it early. Active speech still blocks delivery. |
-| Use the personal project's default connected machine, then the first connected machine, unless a machine is selected. | Require a machine choice before the first call. | Medium | With several machines, the default may be different from the one the user expects. The settings allow an explicit choice. |
-| Default the coordinator to Codex and resolve its catalog default model. Store the resolved choice per conversation. | Pick a fixed model or inherit project defaults. | Medium | A catalog default may be slower than the target. Existing conversations retain their coordinator; a new model setting applies to a new coordinator. |
-| Keep coordinator mode off by default in source; enable it only in the user's local configuration for this test. | Enable it for every installation. | High | Other users must enable the option before they receive the new behavior. |
-| Store versioned conversation, request, reply, question, watch, and update rows in the plugin database. | Keep state only in model history or KV. | High | Schema changes require append-only migrations; retained history grows over time. |
-| Bound context and lookups: 200 client transcript items, 20 transcript items per handoff, 8 recent replies, 20 timeline segments and 100 coordinator candidates for reconciliation. | Send or scan all history on each request. | Medium | Old evidence may be outside these windows. An absent receipt cannot authorize a resend. |
-| Preserve failures and blockers when coalescing updates, and limit a batch to two threads. | Keep every status event or always prefer the newest event. | Medium | An old failure may be spoken after recovery unless later evidence resolves it. |
-| Serialize coordinator creation and request dispatch with per-conversation in-process locks, plus durable receipts. | Add distributed locks and a native idempotency API. | Medium | Process loss can leave pending state that needs reconciliation; this does not guarantee exactly-once native actions. |
-| Fall back to bounded final assistant text when no structured reply exists. | Remain silent and show a failure only. | Medium | A model that omits the reply tool may produce a less useful spoken summary. The fallback is not parsed as executable work. |
-| Keep composer text and mobile drawer controls on the realtime model. | Route every presentation change through the coordinator. | High | A mistaken presentation request can change the local view or draft text, but cannot send that draft. |
-| Use a one-hour native question timeout and preserve unresolved questions on cancellation. | Leave questions pending indefinitely. | Medium | A long absence requires the question to be presented again. |
-| Log and retain state after background delivery or cleanup errors where possible. | Fail the entire voice call for every auxiliary error. | Medium | A lost delivery report can cause an update to be presented again; logs and persisted state support diagnosis. |
-| Test with fake SDK/realtime hosts and a disposable native thread before manual calls. | Require a full live agent and physical mobile test before a draft. | Medium | Prompt quality, real audio interruption, drawer focus, and the 3–5 second target are not established by the local suite. |
+| Decision | Alternative considered | Confidence and limit |
+| --- | --- | --- |
+| Use one mandatory coordinator for each logical conversation, which can span several calls. | A fresh coordinator for each connection, or one shared across all conversations. | High. Reconnect preserves context; New conversation starts a separate history. Provider settings apply when its coordinator is created. |
+| Keep the realtime model limited to delegation, silence, and ending the call. | Give it direct BB mutation or composer tools. | High. The server rejects other tools. The coordinator still interprets intent with a model; this does not make every action deterministic. |
+| Let the native BB workspace own thread pages, projects, splits, composers, and file previews. | Embed and maintain a second work-thread workspace in Voice. | High. The global call owner survives page changes. BB controls split fallback and pane limits. |
+| Use a separate structured `voice_ui` tool and wait for its receipt before speaking the result. | Put navigation hints in `voice_reply` or parse speech into UI actions. | High. Speech never causes navigation. Background batches cannot issue UI commands. |
+| Execute UI commands only in the client that owns the physical call. | Use a server navigation broadcast to every BB window. | High within the trusted frontend. BB plugin RPC does not expose an authenticated client identity; the nonce is a routing identifier, not a secret credential. |
+| Record each command before publication, claim it before effects, and never replay a started command. | Retry effects after a timeout. | High. An uncertain outcome remains unknown. A lost receipt can prevent a valid action from being reported as complete; it cannot authorize a duplicate draft edit. |
+| Revoke pending UI work on request completion, cancellation, hangup, or connection loss. | Let pending composer waits finish after their request ends. | High for the tested lifecycle. Reconnect reconciles cancellations before enabling new effects. A completed synchronous SDK call cannot be undone. |
+| Prepare drafts only in an exact thread or new-thread composer, with append as the default. | Use whichever composer happens to have focus. | High. Queued-message editors and side chats are excluded. A draft action never submits text. |
+| Observe native context after navigation and report uncertainty where the SDK gives no completion result. | Treat every void SDK call as successful rendering. | Medium. BB has no complete request-scoped result API. Preview acceptance does not prove that file content rendered. |
+| Resolve spoken names and context with BB tools. | Require IDs, links, or manual search. | High for the available tools. Ambiguous names require a spoken question; inaccessible targets still fail under BB permissions. |
+| Keep one contextual acknowledgment, then work quietly and speak useful results or material blockers. | Speak acknowledgment, assignment, progress, and completion for every request. | High for bridge scheduling. Live models can still produce unwanted wording, so actual voice tests remain necessary. |
+| Queue routine follow-ups and group spoken work overviews under parent threads. | Steer every active thread or list every child separately. | Medium. Coordinator tool choices remain model-driven. Explicit interruption requests can steer. |
+| Preserve the original transcript items in compact request context. | Summarize spoken instructions before dispatch. | High. This reduces repeated wrapper text without discarding material wording. |
+| Coalesce watched-thread updates and hold digests until speech, tools, response generation, and playback are idle. | Inject every event as soon as it arrives. | High for deterministic scheduling. BB can still deliver native messages to a coordinator outside this plugin's inbox. |
+| Preserve append-only migrations and historical event readers while deleting obsolete runtime paths. | Rewrite old rows or retain old execution modes. | High. Existing sessions stay readable; old configuration fields do not restore direct tools. |
 
-Verdict: I stand behind this as a draft for controlled user testing. I do not
-claim that the live voice workflow is fully verified. The remaining exceptions
-are live model interpretation, physical audio behavior, latency, and the SDK
-interaction workaround. No merge or general release is part of this change.
+## Recovery and retained behavior
 
-## Dedicated Voice area follow-up
+Requests are recorded before native delivery. An uncertain send is reconciled
+against BB history before any retry; absence of evidence is not permission to
+resend. An uncertain coordinator create does not spawn a second coordinator.
+Questions retain separate submission and delivery state across hangup. Accepted
+work can finish after hangup, with results queued for the next call.
 
-The user requested this revision in the same branch and PR on 7 September.
+Conversation rendering groups speech fragments at the recorded pause boundary
+or assistant playback. Raw events remain unchanged. Old playback without IDs
+stays unknown rather than being inferred from matching text. Saved user
+preferences remain separate from the required execution contract.
 
-| Decision | Alternative | Confidence | Failure case |
-| --- | --- | --- | --- |
-| Put optional Threads content in the Voice page, with Conversation returning to the preserved history view. | Register fixed side-panel tabs on both clients. | High | Fixed tabs open automatically on the first desktop visit. The in-page choice avoids that unsolicited inspection. |
-| Preserve the existing view preference storage key and apply it to both clients. | Rename the key and migrate it. | High | The old internal name says mobile, although the UI now explains the shared behavior. |
-| Keep the conversation component mounted while inspection is shown. | Unmount and reload its history each time. | High | Hidden listeners need to avoid handling Escape or stealing focus; the Escape handler is disabled while hidden. |
-| Remove the work-thread panel entry and reject legacy native navigation RPCs. | Keep them as alternate entry points. | High | A stale frontend reports that it needs an update; it cannot navigate a voice request into another work thread. |
-| Open Voice through the app-wide binding when a new call starts. | Leave new calls on whichever work thread was open. | Medium | Actual mobile navigation and microphone continuity still need a physical call test. Call ownership stays in the existing app-wide singleton. |
-| Keep native permission decisions in BB's UI until the existing SDK response methods are verified and wired to explicit spoken answers. | Infer approval from speech and bypass BB's interaction API. | High | Some permission requests still need the user to look at the app, inside Voice's optional thread view. |
+## Validation and release limits
 
-Verdict: suitable for the existing draft and local user test. Physical desktop
-and mobile microphone continuity remains unverified. No new branch, PR, merge,
-or session-data reset is part of this revision.
+Focused tests cover request delivery, replies, questions, quiet update batches,
+UI claims, duplicate signals, cancellation, disconnect, reconnect, and draft
+scope. Frontend tests cover native navigation bindings and the session views.
+Full-suite, build, browser, and installed-bundle results are reported with the
+change rather than frozen here as counts that become stale.
 
-## Unified sessions and speech follow-up
+Physical desktop and mobile calls are still needed to measure microphone and
+playback continuity, acoustic interruptions, latency, keyboard interaction, and
+spoken model compliance. Browser route tests cannot establish those properties.
+Desired BB improvements for UI completion receipts and native-message admission
+are recorded in the repository README.
 
-The user approved implementation and reload of the session and speech proposals.
-These are the remaining implementation choices for that iteration.
-
-| Decision | Alternative | Confidence | Failure case |
-| --- | --- | --- | --- |
-| Keep native VAD settings; add response IDs, monotonic timing, and matching playback handling. | Tune silence thresholds without a new trace. | Medium | A false VAD turn may still interrupt speech. The next physical test must establish its cause. |
-| Give the bridge the acknowledgment after the original tool response settles, unless that response already spoke. | Let both models decide when to acknowledge. | High for bridge behavior; medium for live model compliance | A realtime model may ignore the silent-delegation instruction and speak more than requested in its initial response. The bridge does not add another acknowledgment. |
-| Keep request progress in diagnostics and accept one final reply per request. Preserve clarification and digest delivery. | Speak useful interim progress on a timer. | Medium | Long tasks are quiet until a question or final answer arrives. A changed answer needs a new request rather than a second final for the old request. |
-| Use titles and runtime status in a 30-item overview from the 200 most recent threads and the existing 30-minute window. | Read many thread transcripts for every overview. | Medium | Old blocked work outside the window may be absent; titles can be stale. The tool states its scope and does not certify completion. |
-| Group calls using recorded conversation IDs, request receipts, and a new call relation. Adopt standalone legacy calls only when Continue is selected. | Rewrite old event records or assign a coordinator while browsing. | High | An old call with no recorded association remains separate until explicitly continued. |
-| Retain unknown playback for old assistant transcript rows. Do not merge by matching words. | Infer delivery from adjacent reply text. | High | An older transcript cannot prove which audio reached the speaker. Diagnostics retain the requested reply text. |
-| Use 40-session pages and read-only aggregation over retained history. | Add a separate materialized session index immediately. | Medium | Large histories cost more to list; no records are dropped. |
-| Embed the coordinator thread in its secondary session tab; work-thread inspection remains within Voice. | Navigate to the hidden thread's main page. | High | Native embedded interaction rendering still needs a physical device test. |
-
-Validation covers deterministic backend, realtime-event, transcript projection,
-and rendered React flows. It does not measure the next physical call's latency
-or prove that acoustic interruptions are resolved. I stand behind this as a
-draft for the requested testing, with those limits stated.
-
-
-## Final integration for PR 15
-
-The user asked to put all remaining work in PR 15 and reload after reviewing
-the request-coverage audit. The current revision supersedes the earlier opt-in
-and fixed-acknowledgment choices. The following choices complete that scope.
-
-| Decision | Alternative | Confidence | Failure or limit |
-| --- | --- | --- | --- |
-| Keep acoustic VAD at 700 ms; group transcript messages at a five-second pause or assistant playback. | Delay every audio reply for five seconds. | Medium | A false VAD trigger can still interrupt audio. This change fixes conversation rendering, not microphone acoustics. |
-| Use audio boundaries when available and event timestamps for older calls. | Leave old fragments separate. | Medium | Missing historical timing can split or join a legacy message imperfectly. Raw records remain available. |
-| Put saved preferences in new realtime calls and changed coordinator request context, with the required voice contract retained. | Let saved text replace the complete tool policy. | Medium | Legacy custom prompts may mention obsolete tools. They cannot restore direct mutation tools. Preferences can still affect model wording. |
-| Keep existing coordinator execution settings until a new logical session. | Restart or reconfigure running work on every settings save. | Medium | Changing reasoning effort or fast service will not affect a continued session. The settings UI states this. |
-| Compare returned speech transcripts with intended text and hold mismatches without automatic replay. | Assume the intended answer was spoken or retry it immediately. | Medium | No returned transcript means no content comparison. Physical playback still needs testing. |
-| Enforce queue defaults through coordinator instructions and explicit handoff urgency. | Intercept every native BB command. | Medium | Native worker command selection is model-driven. Deterministic tests prove bridge routing, not every future command the coordinator may choose. |
-| Leave native message admission to BB. Coalesce plugin updates and reject unscoped or completed-request replies. | Reject native messages or leave them in a plugin-held queue. | Medium | Native messages can still cause extra coordinator turns. SDK 0.4.47 has no quiet consume-and-coalesce decision. A desired upstream change is recorded in README. |
-| Keep assignment receipts silent and show only useful blockers and changed results. | Always announce assignment. | High | This implements the user's later one-assistant requirement, which supersedes the earlier assignment announcement. |
-| Preserve original transcript items and separate model interpretation in compact JSON. | Summarize user instructions with another model. | High | Long requests still cost context; no material wording is discarded to reduce size. |
-| Import the settings worker's patch without altering its checkout, then test it with mandatory coordinator mode. | Publish its separate settings branch. | High | The original worker retains its uncommitted copy and must not publish a second PR for the same changes. |
-| Correct the child test's TestContext type and legacy duplicate-row expectation; retain bridge-only kind coverage. | Keep a test that demands two copies of the same legacy exchange. | High | Legacy playback attribution remains unknown when ids are missing. |
-| Keep provider/model selection tied to the automatically selected personal host and validate before saving and spawning. | Retain a user-facing coordinator machine selector. | High | A disconnected default host can lead to another connected host. Unavailable models fail without a direct-mutation fallback. |
-| Deliver a final result only after its coordinator turn settles, including results after silent assignment. | Settle the result with the earlier assignment turn. | High | Native idle events remain the boundary; a long-running coordinator turn delays speech. |
-| Preserve the current worktree and stage only Voice Mode and its upstream notes. | Copy the other checkout wholesale. | High | Unrelated plugin changes stay out of PR 15. |
-
-Validation: all 168 tests and typecheck passed after integration. The recorded seven-fragment problem case
-projects as one message with all 862 characters retained. No raw voice data is
-included in this PR. The plugin build passed before reload.
-
-I stand behind these commits as a draft for the user's physical voice testing.
-I do not claim that acoustic interruption or native-message context growth is
-fully solved. Those limits require a real call or the documented BB capability,
-not another passing unit test. Commit, PR update, and reload are explicitly
-authorized by the user's latest request; no merge is authorized.
-
-Settings wording follow-up: renamed Fast and corrected the thread-inspection
-copy for both clients. No behavior changed. Announcements was traced to the
-legacy notification path and left unchanged while answering the user's question;
-it does not control coordinator watched updates. Confidence is high from the
-current callers. Twenty affected UI tests, typecheck, and build passed.
-
-
-## Always retain opened threads
-
-The user requested one behavior with no setting. Opening a thread now adds it
-to the Voice switcher or selects its existing view. Removed replacement code,
-configuration fields, and the tool for changing that preference.
-
-- Kept explicit close and clear controls. Alternative: remove those controls.
-  Confidence: high. The request concerns opening threads; closing a view must
-  remain possible and does not stop its work.
-- Ignore obsolete saved view preferences without a data migration. Alternative:
-  rewrite stored configuration on reload. Confidence: high. Old values cannot
-  affect opening; unrelated settings and session history remain intact.
-- Keep the existing window-local lifetime. Alternative: persist views across
-  refreshes and plugin reloads. Confidence: high for this scope. Reload still
-  clears open views, as documented in the README.
-- Updated existing workspace, server, and UI callers and tests. The checks cover
-  retaining views, reopening without duplicates, batches, explicit closing, and
-  failed opens. Physical audio behavior is outside this change.
-
-I stand behind this change. Existing device-test limits for the broader branch
-still apply. The user's standing PR and reload authorization covers publication.
-
-
-## Remove the legacy Announcements control
-
-Removed the Announcements section from Behavior settings as requested.
-The legacy server field remains for compatibility with stored configuration;
-it does not control the mandatory coordinator's watched-thread updates.
-Alternative: remove the legacy notification transport and migrate its stored
-field too. Confidence: high. This UI cleanup does not change update scheduling
-or session data. Existing settings tests, typecheck, and build cover the change.
-I stand behind this change under the user's standing PR and reload authorization.
-
-
-## Parent-first work overviews
-
-The user requested child work grouped under parent threads as the default spoken
-overview. Updated built-in voice preferences, coordinator policy, and the
-overview tool instructions. Added parentThreadId to the live-thread snapshot.
-
-- Use BB parent IDs, resolving missing parents only when needed. Alternative:
-  infer workstreams from titles. Confidence: high. The bounded snapshot may omit
-  a parent, so the instructions require lookup rather than guessing.
-- Keep child details for useful status, blockers, or explicit detail requests.
-  Alternative: never mention children. Confidence: high. This preserves material
-  information while keeping the usual overview focused on parent work.
-- Preserve saved user instructions and session history. Alternative: rewrite
-  saved prompts. Confidence: high. The coordinator policy applies the default
-  format even with older saved preferences; explicit user requests take priority.
-- Updated the existing bounded overview test to verify parent IDs. All 27
-  coordinator tests pass, including the 4096-character instruction limit.
-  Spoken compliance still requires a live call.
-
-I stand behind this change under the user's standing PR and reload authorization.
-
-
-## Compact session header
-
-The user requested a left arrow and a current-view picker in one header row.
-Replaced the three view tabs with a native select showing the current view.
-Conversation remains the default; Coordinator and Diagnostics remain available.
-
-- Use a native select with a caret. Alternative: add a custom popover menu.
-  Confidence: high. Native controls support phone and keyboard interaction;
-  the open picker appearance depends on the browser and operating system.
-- Apply the compact header at all widths. Alternative: keep desktop tabs.
-  Confidence: high. The same three views stay available, with 44-pixel phone
-  touch targets and smaller desktop controls.
-- Keep the back button's existing focus and navigation behavior with an
-  accessible All sessions label. Alternative: replace it with a route link.
-  Confidence: high. Neither view changes nor back navigation end the call.
-- Use existing session tests for selection, live refresh, legacy coordinator
-  access, and returning to Conversation. Browser validation uses a separate
-  session with local build asset overrides, leaving the active call untouched.
-  All three views and back navigation passed at 320, 390, and 1024 pixels,
-  with the header on one row and no header overflow.
-
-I stand behind this change under the user's standing PR authorization.
-
-
-## Open other threads by voice
-
-The user reported an incorrect claim that Voice could only open the launch
-thread. Inspection found no such restriction in the opening code; the exact
-reported speech was not found in the stored transcript. Its cause is unconfirmed.
-
-- Clarified both model instructions: resolve spoken names and context with BB
-  tools, across projects, and open with voice_reply.present.focus_thread_id.
-  Alternative: add manual search or paste controls. Confidence: high. The user
-  explicitly wants voice control. Ambiguous targets get a spoken question.
-- Route BB capability questions through the coordinator instead of allowing the
-  realtime model to guess. Alternative: keep direct capability explanations.
-  Confidence: high. This may take longer but gives the model access to BB tools.
-- Kept the existing composer shortcut and access behavior. This request changes
-  voice control, not thread permissions or the available call entry points.
-- Added a coordinator-path test for opening a thread in another project while
-  keeping the call live and avoiding native navigation. All 43 focused tests,
-  typecheck, and build pass. Live spoken compliance still needs user testing.
-
-I stand behind this change under the user's standing PR and reload authorization.
+I support this design for the user's requested draft and local test. No merge
+or general release is authorized. The user's existing publication and reload
+instructions cover this revision; no additional approval gate is required.

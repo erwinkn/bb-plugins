@@ -2,21 +2,13 @@
 //
 // The host renders a single declarative field (the secret OpenAI API key) and
 // then these custom sections below it. Everything the user tunes day-to-day —
-// which model and voice to use, whether Aide announces thread events, the
-// microphone, and the keyboard shortcuts — lives here as curated sections
+// which model and voice to use, the prompt, the coordinator, the microphone,
+// and the keyboard shortcuts — lives here as curated sections
 // instead of a flat auto-form.
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import {
   DEFAULT_MODEL,
@@ -52,8 +44,6 @@ type CredentialPreference = "auto" | "apiKey" | "subscription";
 interface VoiceConfig {
   model: RealtimeModel;
   voice: Voice;
-  notifications: boolean;
-  pluginCommands: string;
   credentialPreference: CredentialPreference;
   shortcuts: Shortcuts;
 }
@@ -302,221 +292,19 @@ export function ModelsSettings() {
 }
 
 // ---------------------------------------------------------------------------
-// Behavior: the prompt (how Aide acts) and which plugins it may use.
+// Behavior: the prompt (how Aide acts).
 // ---------------------------------------------------------------------------
 
 export function BehaviorSettings() {
-  const { config, update } = useVoiceConfig();
-  const loading = config === null;
-  const pluginCommands = (config?.pluginCommands ?? "all").trim();
-
-  const exposure: "all" | "none" | "custom" =
-    pluginCommands.toLowerCase() === "all" || pluginCommands === ""
-      ? "all"
-      : pluginCommands.toLowerCase() === "none"
-        ? "none"
-        : "custom";
-  // "custom" with an empty selection reads back as "none", so a local flag
-  // keeps the picker open while the user has chosen nothing yet.
-  const [customMode, setCustomMode] = useState(false);
-  const showCustom = customMode || exposure === "custom";
-
   return (
     <div className="space-y-5">
       <PromptEditor />
-
-      <Group label="Plugins" hint="Aide always has its built-in tools for driving bb by voice; plugins let it also run your other installed plugins.">
-        <select
-          value={showCustom ? "custom" : exposure}
-          disabled={loading}
-          onChange={(event) => {
-            const next = event.target.value;
-            if (next === "all") {
-              setCustomMode(false);
-              void update({ pluginCommands: "all" });
-            } else if (next === "none") {
-              setCustomMode(false);
-              void update({ pluginCommands: "none" });
-            } else {
-              // Entering custom: start from a clean slate unless a real list
-              // was already saved, then let the picker turn plugins on.
-              setCustomMode(true);
-              if (exposure !== "custom") void update({ pluginCommands: "none" });
-            }
-          }}
-          className={selectClass}
-        >
-          <option value="all">Built-in tools + all plugins</option>
-          <option value="none">Built-in tools only</option>
-          <option value="custom">Built-in tools + chosen plugins…</option>
-        </select>
-        {showCustom ? (
-          <PluginPicker
-            value={pluginCommands}
-            disabled={loading}
-            onChange={(csv) => void update({ pluginCommands: csv || "none" })}
-          />
-        ) : null}
-        <BuiltInToolsLink />
-      </Group>
     </div>
   );
 }
 
 const linkClass =
   "text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline";
-
-/** A small link that opens a read-only list of Aide's built-in tools. */
-function BuiltInToolsLink() {
-  const rpc = useRpc<typeof rpcContract>();
-  const [open, setOpen] = useState(false);
-  const [tools, setTools] = useState<{ name: string; description: string }[] | null>(null);
-
-  useEffect(() => {
-    if (!open || tools) return;
-    rpc.call("getTools", null).then(
-      (result) => setTools(result.tools.filter((tool) => tool.name !== "run_plugin_command")),
-      () => setTools([]),
-    );
-  }, [open, tools, rpc]);
-
-  return (
-    <>
-      <button type="button" className={linkClass} onClick={() => setOpen(true)}>
-        View built-in tools
-      </button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Built-in tools</DialogTitle>
-          </DialogHeader>
-          <p className="text-xs text-muted-foreground">
-            These are always available — Aide uses them to navigate bb, start and steer threads, read
-            output, and show diffs by voice.
-          </p>
-          <div className="max-h-80 divide-y divide-border/50 overflow-auto rounded-md border border-border/70">
-            {tools === null ? (
-              <p className="px-3 py-3 text-sm text-muted-foreground">Loading…</p>
-            ) : (
-              tools.map((tool) => (
-                <div key={tool.name} className="px-3 py-2">
-                  <code className="text-xs font-medium text-foreground">{tool.name}</code>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{tool.description}</p>
-                </div>
-              ))
-            )}
-          </div>
-          <DialogFooter>
-            <Button type="button" onClick={() => setOpen(false)}>
-              Done
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-interface PluginInfo {
-  id: string;
-  name: string;
-  summary: string;
-  iconUrl: string | null;
-}
-
-/** A modal checklist of installed plugins; the selection is stored as a csv. */
-function PluginPicker({
-  value,
-  onChange,
-  disabled,
-}: {
-  value: string;
-  onChange: (csv: string) => void;
-  disabled?: boolean;
-}) {
-  const rpc = useRpc<typeof rpcContract>();
-  const [open, setOpen] = useState(false);
-  const [plugins, setPlugins] = useState<PluginInfo[] | null>(null);
-
-  useEffect(() => {
-    if (!open || plugins) return;
-    rpc.call("listPlugins", null).then((result) => setPlugins(result.plugins), () => setPlugins([]));
-  }, [open, plugins, rpc]);
-
-  const selected = new Set(
-    value
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter((entry) => entry && entry !== "all" && entry !== "none"),
-  );
-
-  function toggle(id: string, on: boolean) {
-    const next = new Set(selected);
-    if (on) next.add(id);
-    else next.delete(id);
-    onChange(Array.from(next).join(","));
-  }
-
-  const summary =
-    selected.size === 0
-      ? "No plugins chosen yet."
-      : Array.from(selected)
-          .map((id) => plugins?.find((plugin) => plugin.id === id)?.name ?? id)
-          .join(", ");
-
-  return (
-    <div className="space-y-1.5 pt-1">
-      <div className="flex items-center gap-2">
-        <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => setOpen(true)}>
-          Choose plugins
-        </Button>
-        <span className="text-xs text-muted-foreground">{selected.size} selected</span>
-      </div>
-      <p className="truncate text-xs text-muted-foreground">{summary}</p>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Plugins Aide can use</DialogTitle>
-          </DialogHeader>
-          <div className="max-h-80 space-y-0.5 overflow-auto">
-            {plugins === null ? (
-              <p className="px-2 py-3 text-sm text-muted-foreground">Loading…</p>
-            ) : plugins.length === 0 ? (
-              <p className="px-2 py-3 text-sm text-muted-foreground">
-                No other installed plugins expose a command.
-              </p>
-            ) : (
-              plugins.map((plugin) => (
-                <label
-                  key={plugin.id}
-                  className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-state-hover"
-                >
-                  <Checkbox
-                    checked={selected.has(plugin.id)}
-                    onCheckedChange={(checked) => toggle(plugin.id, checked === true)}
-                    className="mt-0.5"
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-sm text-foreground">{plugin.name}</span>
-                    {plugin.summary ? (
-                      <span className="block truncate text-xs text-muted-foreground">{plugin.summary}</span>
-                    ) : null}
-                  </span>
-                </label>
-              ))
-            )}
-          </div>
-          <DialogFooter>
-            <Button type="button" onClick={() => setOpen(false)}>
-              Done
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Prompt editor — edit and save your own prompt, or reset to the default.
