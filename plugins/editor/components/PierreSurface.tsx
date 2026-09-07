@@ -441,9 +441,10 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           data-testid="revert-hunk"
           title="Revert this hunk"
           aria-label={`Revert the hunk at line ${hovered.lineNumber}`}
-          style={{ top: hovered.top }}
+          // As tall as one row, so it sits on the block's first line.
+          style={{ top: hovered.top, height: lineHeight ?? 20 }}
           className={cn(
-            "absolute right-4 z-10 flex h-5 cursor-pointer items-center gap-1 rounded-md border border-border bg-background pr-1.5 pl-1",
+            "absolute right-4 z-10 flex cursor-pointer items-center gap-1 rounded-md border border-border bg-background pr-1.5 pl-1",
             "text-[11px] leading-none text-muted-foreground shadow-sm hover:bg-state-hover hover:text-foreground",
             "focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none animate-in fade-in-0 duration-100",
           )}
@@ -466,13 +467,14 @@ export default function PierreSurface(props: PierreSurfaceProps) {
 /**
  * The block of changed rows under the pointer, from the event's composed
  * path into Pierre's shadow root. Pierre renders each row as one element with
- * `data-line` and `data-line-type`, and the rows of one column are siblings,
- * in both the unified and the split layout. A context row or the gap
- * between hunks gives null.
+ * `data-line-type`: content rows carry `data-line`, and the line-number
+ * gutter rows carry `data-column-number`. The rows of one column are
+ * siblings, in both the unified and the split layout. A context row or the
+ * gap between hunks gives null.
  */
 function hoveredBlockAt(path: EventTarget[], surface: HTMLElement): HoveredBlock | null {
   const row = path.find(
-    (node): node is HTMLElement => node instanceof HTMLElement && node.dataset.line !== undefined && node.dataset.lineType !== undefined,
+    (node): node is HTMLElement => node instanceof HTMLElement && node.dataset.lineType !== undefined && lineOf(node) !== undefined,
   );
   if (row === undefined || !isChangedRow(row)) return null;
   let first = row;
@@ -483,13 +485,17 @@ function hoveredBlockAt(path: EventTarget[], surface: HTMLElement): HoveredBlock
   while (last.nextElementSibling instanceof HTMLElement && isChangedRow(last.nextElementSibling)) {
     last = last.nextElementSibling;
   }
-  const lineNumber = Number(first.dataset.line);
+  const lineNumber = Number(lineOf(first));
   if (!Number.isInteger(lineNumber) || lineNumber < 1) return null;
   const origin = surface.getBoundingClientRect().top;
   const top = first.getBoundingClientRect().top - origin;
   const bottom = last.getBoundingClientRect().bottom - origin;
   const side = first.dataset.lineType === "change-deletion" ? "deletions" : "additions";
   return { key: `${side}:${lineNumber}:${Math.round(top)}`, top, bottom, lineNumber, side };
+}
+
+function lineOf(element: HTMLElement): string | undefined {
+  return element.dataset.line ?? element.dataset.columnNumber;
 }
 
 function isChangedRow(element: HTMLElement): boolean {

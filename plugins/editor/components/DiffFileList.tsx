@@ -151,10 +151,10 @@ function Row({
 function ChangeMark({ entry, unavailable, label }: { entry: DiffEntry; unavailable: boolean; label: string }) {
   if (unavailable) return <span className="shrink-0 text-[11px] text-subtle-foreground">no comparison</span>;
   if (entry.changeKind === "added" || entry.origin === "untracked") {
-    return <span className="shrink-0 font-mono text-[11px] text-success-foreground" role="img" aria-label={label} title={label}>+</span>;
+    return <span className="shrink-0 font-mono text-xs font-medium text-success-foreground" role="img" aria-label={label} title={label}>+</span>;
   }
   if (entry.changeKind === "deleted") {
-    return <span className="shrink-0 font-mono text-[11px] text-destructive" role="img" aria-label={label} title={label}>&minus;</span>;
+    return <span className="shrink-0 font-mono text-xs font-medium text-destructive" role="img" aria-label={label} title={label}>&minus;</span>;
   }
   if (entry.changeKind !== "modified" || entry.origin !== "tracked") {
     return <span className="shrink-0 text-[11px] text-subtle-foreground">{label}</span>;
