@@ -363,7 +363,7 @@ every hunk before passing them to Pierre's `loadDiffFiles`, so a side that does
 not belong to the patch cannot become expanded context. Text that is not a
 single-file patch, a render error, or the setting off render `Original`.
 Six tests cover the parse, the side check with CRLF and missing final
-newline, the added-file case and the row estimate. Typecheck, 164 tests and
+newline, the added-file case and the row estimate. Typecheck, 158 tests and
 the build pass.
 
 Installed checks at `a9c3ad1`, desktop browser:
