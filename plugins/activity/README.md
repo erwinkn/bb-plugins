@@ -49,11 +49,11 @@ Deeper descendants appear at the second level in family order, with their actual
 parent still shown in the info card. Hidden descendants still contribute to the
 family's status. In Status view, a family appears in its highest-priority
 category using the group order above. Each row keeps its own status.
-All status markers align in one column, including child and grandchild markers.
+All status markers sit at the right end of the title line, in one column for
+root, child, and grandchild rows.
 Every row has the same full-width hover, selection, and click area. Nesting
 indents only the arrow and thread information, not the row background or status icon.
-Status markers do not change the title indentation. Rows never show a third
-status line below the project and branch. Child rows
+Rows never show status text below the title. Child rows
 use the same status markers as parent rows, with no extra status text: a green
 spinner for Working, a blue dot for Unread, an amber alert for Needs Attention,
 a violet dashed circle for Draft, and no marker for Done.
@@ -85,13 +85,22 @@ whole-sidebar scroll option, so compact mode applies a small CSS adapter to
 BB's `data-sidebar` regions. It applies only while this list is mounted and
 does not change host inline styles. Check this host layout after BB upgrades.
 
-Rows show the title first, then muted project and branch text. The age for the
-selected date appears on the right and refreshes each minute. The provider and full branch
-appear in an instant info card to the right on hover or keyboard focus.
+Rows have three lines. The first line shows the title with the status marker
+at its right end. The second line shows muted project and branch text. The
+third line shows the age for the selected date, which refreshes each minute,
+and the pull request for the thread's branch when BB reports one. The pull
+request shows a state-colored icon and its number: green for open, amber for
+an open pull request that needs you, violet for merged, red for closed, and
+muted for a draft. Text that does not fit fades out at the right edge of each
+line instead of showing an ellipsis. The provider, the full branch, and the
+pull request title appear in an instant info card to the right on hover or
+keyboard focus. The pull request lookup uses BB's per-row sidebar hook, so BB
+owns its polling and staleness rules.
 The card uses a 14 px title and 12 px details, with visible labels and values
 aligned in two columns. The branch and parent stay fully readable. Labels,
 provider, and dates use BB's subtle text color; status and values use the normal
-foreground. Only the status has an icon. Missing fields are omitted.
+foreground. Only the status and the pull request have icons. Missing fields
+are omitted.
 It uses BB's reported machine name, not a guessed local/cloud label. There is
 no environment management action. Long text wraps, and the card adjusts at
 viewport edges. Escape, scrolling, or opening thread actions dismisses it.

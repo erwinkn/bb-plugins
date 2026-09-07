@@ -17,7 +17,7 @@ import {
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
 import { DisplayMenu } from "./components/menus";
-import { ThreadRow } from "./components/thread-row";
+import { ThreadRow, fadeClass } from "./components/thread-row";
 import { ThreadChildren } from "./components/thread-children";
 import { ThreadRoots } from "./components/thread-roots";
 import { DraftObserver } from "./components/draft-observer";
@@ -200,20 +200,24 @@ function ThreadsList(props: PluginThreadListProps) {
       <button
         type="button"
         onClick={() => openNew(project.id)}
-        className="relative flex w-full items-center rounded-md py-2 pl-8 pr-2 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex w-full flex-col rounded-md px-2 py-2 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
       >
-        <span
-          role="img"
-          aria-label="Draft"
-          className="absolute left-2 top-2.5 flex size-4 items-center justify-center"
-        >
-          <StatusIcon status="draft" />
-        </span>
-        <span className="min-w-0">
-          <span className="block truncate">New thread draft</span>
-          <span className="block truncate text-[11px] text-muted-foreground">
-            {project.name}
+        <span className="flex min-w-0 items-center gap-2 self-stretch">
+          <span className={`min-w-0 flex-1 leading-5 ${fadeClass}`}>
+            New thread draft
           </span>
+          <span
+            role="img"
+            aria-label="Draft"
+            className="flex size-4 shrink-0 items-center justify-center"
+          >
+            <StatusIcon status="draft" />
+          </span>
+        </span>
+        <span
+          className={`mt-0.5 block self-stretch text-xs leading-4 text-[var(--subtle-foreground)] ${fadeClass}`}
+        >
+          {project.name}
         </span>
       </button>
     </li>

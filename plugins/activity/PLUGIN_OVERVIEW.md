@@ -7,6 +7,7 @@
 - `lib/mobile-sidebar-scroll.ts`: scoped mobile whole-sidebar scroll styles.
 - `components/draft-observer.tsx`: public composer-state observation.
 - `components/thread-row.tsx`: native thread navigation and actions.
+- `components/pull-request.tsx`: pull request icon and summary text.
 - `components/thread-children.tsx`: child previews, expansion, and two-level nesting.
 - `components/menus.tsx`: grouping, date sorting, and status visibility controls.
 - `server.ts`: archive list and restore RPCs through BB, with change signals.

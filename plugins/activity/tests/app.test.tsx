@@ -422,15 +422,20 @@ describe("activity sidebar", () => {
       );
       rows.forEach((row, depth) => {
         expect(row.style.paddingLeft).toBe(
-          ["2rem", "3.25rem", "4.75rem"][depth],
+          ["0.5rem", "1.75rem", "3.25rem"][depth],
         );
         expect(row.parentElement?.className).toBe(
           rows[0].parentElement?.className,
         );
         if (label !== "Done") {
           const marker = within(row).getByRole("img", { name: label });
-          expect(marker.classList.contains("left-2")).toBe(true);
+          // The marker ends the title line; nesting never moves it.
+          expect(marker.classList.contains("absolute")).toBe(false);
           expect(marker.style.left).toBe("");
+          expect(marker.parentElement?.firstElementChild?.textContent).toBe(
+            "Test thread",
+          );
+          expect(marker.parentElement?.lastElementChild).toBe(marker);
         }
       });
       for (const list of Array.from(
@@ -570,7 +575,7 @@ describe("activity sidebar", () => {
         sidebarThreads: { projects: [], threads: [] },
       });
       const draft = slot.getByRole("button", {
-        name: "Draft New thread draft No project",
+        name: "New thread draft Draft No project",
       });
       expect(slot.getAllByText("New thread draft")).toHaveLength(1);
       expect(slot.queryByText("No matching threads.")).toBeNull();
@@ -608,7 +613,7 @@ describe("activity sidebar", () => {
       expect(loaded.queryByText("No project")).toBeNull();
       expect(
         loaded.getByRole("button", {
-          name: "Draft New thread draft Recovered",
+          name: "New thread draft Draft Recovered",
         }),
       ).toBeTruthy();
     },
@@ -1346,7 +1351,7 @@ describe("activity sidebar", () => {
     expect(slot.getByText("New thread draft")).toBeTruthy();
     expect(
       within(
-        slot.getByRole("button", { name: "Draft New thread draft One" }),
+        slot.getByRole("button", { name: "New thread draft Draft One" }),
       ).getByRole("img", { name: "Draft" }),
     ).toBeTruthy();
   });
@@ -1382,24 +1387,24 @@ describe("activity sidebar", () => {
     expect(parent.querySelector("[data-child-arrow]")).toBeNull();
     expect(child.querySelector("[data-child-arrow]")).not.toBeNull();
     expect(within(child as HTMLElement).queryByRole("img")).toBeNull();
-    expect((parent as HTMLElement).style.paddingLeft).toBe("2rem");
-    expect((child as HTMLElement).style.paddingLeft).toBe("3.25rem");
+    expect((parent as HTMLElement).style.paddingLeft).toBe("0.5rem");
+    expect((child as HTMLElement).style.paddingLeft).toBe("1.75rem");
     expect(
       (child.querySelector("[data-child-arrow]") as SVGElement).style.left,
-    ).toBe("2rem");
+    ).toBe("0.5rem");
     expect(grandchild.querySelector("[data-child-arrow]")).not.toBeNull();
     expect(
       within(grandchild as HTMLElement).getByRole("img", { name: "Draft" }),
     ).toBeTruthy();
-    expect((grandchild as HTMLElement).style.paddingLeft).toBe("4.75rem");
+    expect((grandchild as HTMLElement).style.paddingLeft).toBe("3.25rem");
     expect(
       (grandchild.querySelector("[data-child-arrow]") as SVGElement).style.left,
-    ).toBe("3.5rem");
+    ).toBe("2rem");
     expect(
       within(grandchild as HTMLElement)
         .getByRole("img", { name: "Draft" })
-        .classList.contains("left-2"),
-    ).toBe(true);
+        .classList.contains("absolute"),
+    ).toBe(false);
     for (const list of slot.getAllByRole("list", { name: /Children of/ })) {
       expect(list.classList.contains("border-l")).toBe(false);
       expect(list.className).toBe("m-0 list-none p-0");
@@ -1594,6 +1599,77 @@ describe("activity sidebar", () => {
     }
     expect(card.textContent).not.toContain("Manage Environment");
     expect(slot.inspection.sidebarActionCalls).toEqual([]);
+  });
+  it("shows the age and pull request on a third line and in the info card", async () => {
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: [
+          thread({ id: "open", title: "Open", updatedAt: 100 }),
+          thread({ id: "merged", title: "Merged", updatedAt: 100 }),
+          thread({ id: "none", title: "None", updatedAt: 100 }),
+        ],
+      },
+      sidebarPullRequests: {
+        open: {
+          number: 2683,
+          title: "Reduce prod step overhead",
+          url: "https://github.com/example/capy/pull/2683",
+          state: "open",
+          attention: "checks_failed",
+        },
+        merged: {
+          number: 12,
+          title: "Ship it",
+          url: "https://github.com/example/capy/pull/12",
+          state: "merged",
+          attention: "merged",
+        },
+      },
+    });
+    const row = (id: string) =>
+      slot.container.querySelector(
+        `[data-sidebar-thread-id="${id}"]`,
+      ) as HTMLElement;
+    const lines = (id: string) =>
+      Array.from(row(id).children).filter((e) => e.tagName === "SPAN");
+    // Title, project and branch, then age and pull request.
+    expect(lines("open")).toHaveLength(3);
+    const third = lines("open")[2]!;
+    expect(third.querySelector("time")).not.toBeNull();
+    expect(third.textContent).toContain("#2683");
+    expect(
+      within(third as HTMLElement).getByRole("img", {
+        name: "Open pull request #2683, checks failed",
+      }),
+    ).toBeTruthy();
+    expect(row("open").textContent).not.toContain("Reduce prod step overhead");
+    expect(
+      within(lines("merged")[2] as HTMLElement).getByRole("img", {
+        name: "Merged pull request #12",
+      }),
+    ).toBeTruthy();
+    expect(lines("none")[2]!.querySelector("time")).not.toBeNull();
+    expect(row("none").querySelector("[data-thread-pull-request]")).toBeNull();
+    // A link cannot nest another link; the info card carries the title.
+    expect(row("open").querySelector("a")).toBeNull();
+    vi.useFakeTimers();
+    try {
+      touch(row("open"), "pointermove", "mouse");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    const card = document.querySelector('[data-thread-info="open"]')!;
+    expect(
+      Array.from(card.querySelectorAll("dt")).some((e) => e.textContent === "PR"),
+    ).toBe(true);
+    expect(card.textContent).toContain("#2683 Reduce prod step overhead");
+    expect(slot.getByRole("tooltip").textContent).toContain(
+      "Open pull request #2683, checks failed: Reduce prod step overhead",
+    );
   });
   it("shows child details on keyboard focus and closes them with Escape", () => {
     const slot = mount();

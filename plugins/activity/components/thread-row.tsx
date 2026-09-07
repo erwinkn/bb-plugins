@@ -4,6 +4,7 @@ import {
   useRpc,
   useBbNavigate,
   experimental_useSidebarThreadActions,
+  experimental_useSidebarThreadPullRequest,
   experimental_useSidebarThreadSplit,
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
@@ -17,9 +18,14 @@ import type { archiveContract } from "../lib/archive-contract";
 import { menuItemClass } from "./menus";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { relativeAge } from "../lib/time";
+import { PullRequestIcon } from "./pull-request";
 import { StatusIcon } from "./status-icon";
 import { ThreadInfo } from "./thread-info";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
+
+// Overflowing text fades out at the right edge instead of showing an ellipsis.
+export const fadeClass =
+  "overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,#000_calc(100%_-_1.25rem),transparent)]";
 
 export function ThreadRow({
   thread,
@@ -84,6 +90,7 @@ export function ThreadRow({
   const { splitProps, isAvailable } = experimental_useSidebarThreadSplit(
     thread.id,
   );
+  const { pullRequest } = experimental_useSidebarThreadPullRequest(thread.id);
   const title = threadTitle(thread);
   const branch = thread.environment?.branchName;
   const timestamp = sortBy === "created" ? thread.createdAt : thread.updatedAt;
@@ -161,6 +168,7 @@ export function ThreadRow({
             project={project}
             provider={provider}
             parent={parent}
+            pullRequest={pullRequest}
             disabled={menuOpen}
           >
             <Menu.Trigger asChild>
@@ -208,8 +216,10 @@ export function ThreadRow({
                   if (suppressClick.current && event.detail !== 0) return;
                   open(event.metaKey || event.ctrlKey);
                 }}
-                className="flex min-w-0 flex-1 select-none items-start rounded-md py-2 pr-10 text-left no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                style={{ paddingLeft: `${nested ? 1.75 + depth * 1.5 : 2}rem` }}
+                className="flex min-w-0 flex-1 select-none flex-col rounded-md py-2 pr-2 text-left no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                style={{
+                  paddingLeft: `${nested ? 1.75 + (depth - 1) * 1.5 : 0.5}rem`,
+                }}
               >
                 {nested && (
                   <svg
@@ -222,57 +232,73 @@ export function ThreadRow({
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     className="absolute top-3 size-3 text-[var(--subtle-foreground)]"
-                    style={{ left: `${0.5 + depth * 1.5}rem` }}
+                    style={{ left: `${0.5 + (depth - 1) * 1.5}rem` }}
                   >
                     <path d="M3 3v5a2 2 0 0 0 2 2h8m-3-3 3 3-3 3" />
                   </svg>
                 )}
-                {status !== "done" && (
+                <span className="flex min-w-0 items-center gap-2">
                   <span
-                    role="img"
-                    aria-label={STATUS_LABEL[status]}
-                    className="absolute left-2 top-2.5 flex size-4 items-center justify-center"
-                  >
-                    {status === "unread" ? (
-                      <span
-                        aria-hidden="true"
-                        className="size-1.5 rounded-full bg-sky-600 dark:bg-sky-400"
-                      />
-                    ) : (
-                      <StatusIcon status={status} />
-                    )}
-                  </span>
-                )}
-                <span className="min-w-0 flex-1">
-                  <span
-                    className={`block truncate text-sm leading-5 ${thread.isUnread || active ? "font-semibold" : "font-medium"}`}
+                    className={`min-w-0 flex-1 text-sm leading-5 ${fadeClass} ${thread.isUnread || active ? "font-semibold" : "font-medium"}`}
                   >
                     {title}
                   </span>
-                  <span className="mt-0.5 flex min-w-0 items-center gap-1 text-xs leading-4 text-[var(--subtle-foreground)]">
-                    {parent && !nested ? "↳ " : ""}
+                  {status !== "done" && (
                     <span
-                      className={
-                        branch ? "max-w-[55%] shrink-0 truncate" : "truncate"
-                      }
+                      role="img"
+                      aria-label={STATUS_LABEL[status]}
+                      className="flex size-4 shrink-0 items-center justify-center"
                     >
-                      {project}
+                      {status === "unread" ? (
+                        <span
+                          aria-hidden="true"
+                          className="size-1.5 rounded-full bg-sky-600 dark:bg-sky-400"
+                        />
+                      ) : (
+                        <StatusIcon status={status} />
+                      )}
                     </span>
-                    {branch && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="min-w-0 truncate">{branch}</span>
-                      </>
-                    )}
-                  </span>
+                  )}
                 </span>
-                <time
-                  dateTime={new Date(timestamp).toISOString()}
-                  aria-label={`${sortBy === "created" ? "Created" : "Updated"} ${new Date(timestamp).toLocaleString()}`}
-                  className="absolute right-2 top-2.5 text-xs tabular-nums text-[var(--subtle-foreground)] max-md:hidden"
+                <span
+                  className={`mt-0.5 flex min-w-0 items-center gap-1 text-xs leading-4 text-[var(--subtle-foreground)] ${fadeClass}`}
                 >
-                  {relativeAge(timestamp, now)}
-                </time>
+                  {parent && !nested ? "↳ " : ""}
+                  <span
+                    className={`shrink-0 ${branch ? `max-w-[55%] ${fadeClass}` : ""}`}
+                  >
+                    {project}
+                  </span>
+                  {branch && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="shrink-0">{branch}</span>
+                    </>
+                  )}
+                </span>
+                <span
+                  className={`mt-0.5 flex min-w-0 items-center gap-1 text-xs leading-4 text-[var(--subtle-foreground)] ${fadeClass}`}
+                >
+                  <time
+                    dateTime={new Date(timestamp).toISOString()}
+                    aria-label={`${sortBy === "created" ? "Created" : "Updated"} ${new Date(timestamp).toLocaleString()}`}
+                    className="shrink-0 tabular-nums"
+                  >
+                    {relativeAge(timestamp, now)}
+                  </time>
+                  {pullRequest && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span
+                        data-thread-pull-request=""
+                        className="flex shrink-0 items-center gap-1"
+                      >
+                        <PullRequestIcon pullRequest={pullRequest} />
+                        <span className="tabular-nums">#{pullRequest.number}</span>
+                      </span>
+                    </>
+                  )}
+                </span>
               </a>
             </Menu.Trigger>
           </ThreadInfo>
