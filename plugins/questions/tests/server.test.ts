@@ -51,6 +51,11 @@ async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHos
 }
 
 describe("Questions backend", () => {
+  it("passes a lowercase query to BB's fuzzy path search", async () => {
+    const h = await setup();
+    await h.rpc("questions_search_paths", { threadId: "t", query: "  Agents  " });
+    expect(h.harness.inspection.sdk.callsTo("environments.paths").at(-1)?.[0]).toMatchObject({ query: "agents", limit: "20" });
+  });
   it("disables retry for partial supersession even outside the recent list", async () => {
     const h = await setup();
     const [a, b, c] = (await h.ask([{ title: "A?" }, { title: "B?" }, { title: "C?" }])).questions;

@@ -470,7 +470,9 @@ export class QuestionsService {
     }
     const result = await this.deps.sdk.environments.paths({
       environmentId,
-      query: query.trim(),
+      // BB's matcher currently fails mixed-case queries such as Agents for
+      // AGENTS.md. Keep host fuzzy ranking, but use case-insensitive input.
+      query: query.trim().toLowerCase(),
       includeFiles: "true",
       includeDirectories: "true",
       limit: "20",

@@ -1,6 +1,7 @@
 // Small shared controls that follow the approved prototype's spacing and use
 // only host theme tokens. The question controls compose these.
 import type React from "react";
+import { useCallback, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -80,20 +81,58 @@ export function Radio({
   );
 }
 
-/** The prototype's `.ta`: bordered text area with the panel's text size. */
+// Keep editable text large enough for mobile focus without disabling zoom.
+export const INPUT_TEXT_CLASS = "text-[16px] sm:text-[13px] [@media(pointer:coarse)]:text-[16px]";
+
+/** Grow with content, including restored drafts and changes in panel width. */
 export function TextArea({
   className,
   ref,
   ...props
 }: React.TextareaHTMLAttributes<HTMLTextAreaElement> & { ref?: React.Ref<HTMLTextAreaElement> }) {
+  const elementRef = useRef<HTMLTextAreaElement>(null);
+  useImperativeHandle(ref, () => elementRef.current!, []);
+  const resize = useCallback(() => {
+    const element = elementRef.current;
+    if (!element || element.clientWidth === 0) return;
+    element.style.height = "auto";
+    const border = element.offsetHeight - element.clientHeight;
+    element.style.height = `${element.scrollHeight + border}px`;
+  }, []);
+  useLayoutEffect(resize, [resize, props.value, props.defaultValue, props.rows, className]);
+  useLayoutEffect(() => {
+    const element = elementRef.current;
+    if (!element) return;
+    let width = element.clientWidth;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      if (element.clientWidth !== width) {
+        width = element.clientWidth;
+        resize();
+      }
+    });
+    observer?.observe(element);
+    window.addEventListener("resize", resize);
+    let active = true;
+    void document.fonts?.ready.then(() => { if (active) resize(); });
+    return () => {
+      active = false;
+      observer?.disconnect();
+      window.removeEventListener("resize", resize);
+    };
+  }, [resize]);
   return (
     <textarea
-      ref={ref}
+      ref={elementRef}
       className={cn(
-        "block w-full min-h-11 resize-y rounded-md border border-border bg-background px-2 py-1.5 text-[13px] leading-[1.45] text-foreground placeholder:text-[var(--subtle-foreground)] focus:border-[var(--input)] focus:outline-none focus:ring-1 focus:ring-ring",
+        "box-border block w-full min-h-11 resize-none overflow-y-hidden rounded-md border border-border bg-background px-2 py-1.5 leading-[1.45] text-foreground placeholder:text-[var(--subtle-foreground)] focus:border-[var(--input)] focus:outline-none focus:ring-1 focus:ring-ring",
+        INPUT_TEXT_CLASS,
         className,
       )}
       {...props}
+      onInput={(event) => {
+        props.onInput?.(event);
+        resize();
+      }}
     />
   );
 }

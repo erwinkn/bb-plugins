@@ -168,6 +168,44 @@ describe("registrations", () => {
 });
 
 describe("Questions panel", () => {
+  it("sizes restored and edited text, reacts to width changes, and cleans up observers", async () => {
+    let width = 200;
+    const widthSpy = vi.spyOn(HTMLTextAreaElement.prototype, "clientWidth", "get").mockImplementation(() => width);
+    const clientSpy = vi.spyOn(HTMLTextAreaElement.prototype, "clientHeight", "get").mockReturnValue(40);
+    const offsetSpy = vi.spyOn(HTMLTextAreaElement.prototype, "offsetHeight", "get").mockReturnValue(42);
+    const scrollSpy = vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLTextAreaElement) {
+      return this.value.length > 30 ? (width < 150 ? 240 : 120) : 40;
+    });
+    let notifyResize!: () => void;
+    const disconnect = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { notifyResize = callback; }
+      observe() {}
+      disconnect = disconnect;
+    });
+    try {
+      const long = "Saved content that takes several lines in the text area.";
+      const server = backend({ rounds: [round("r1", 1, [question("q1")])], answers: [answer("q1", "r1", { ...emptyAnswer(), text: long }, 1)] });
+      const slot = mountPanel(server);
+      const input = await slot.findByLabelText("Your answer") as HTMLTextAreaElement;
+      expect(input.style.height).toBe("122px");
+      expect(input.className).toContain("text-[16px]");
+      expect(input.className).toContain("sm:text-[13px]");
+      expect(input.className).toContain("[@media(pointer:coarse)]:text-[16px]");
+      width = 100;
+      act(() => notifyResize());
+      expect(input.style.height).toBe("242px");
+      fireEvent.change(input, { target: { value: "short" } });
+      expect(input.style.height).toBe("42px");
+      fireEvent.change(input, { target: { value: long } });
+      expect(input.style.height).toBe("242px");
+      slot.lifecycle.unmount();
+      expect(disconnect).toHaveBeenCalled();
+    } finally {
+      widthSpy.mockRestore(); clientSpy.mockRestore(); offsetSpy.mockRestore(); scrollSpy.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
   it("does not claim to save while the first load is pending", async () => {
     const server = backend();
     let resolve!: (state: ThreadState) => void;

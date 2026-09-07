@@ -152,6 +152,22 @@ each remove/install cycle; a later plugin version may start storing data.
 
 ## Desired upstream changes
 
+### Case handling in workspace path search
+
+The Questions picker delegates fuzzy search to `bb.sdk.environments.paths`.
+On 2026-09-07, with SDK 0.4.47, query `Agents` returned no paths for this
+workspace, while `agents` returned `AGENTS.md` first. The public query accepts
+no case-sensitivity option. This may be intentional smart-case behavior, but
+it is unexpected in a general file picker.
+
+Add an explicit case-insensitive search option, or make that the file-picker
+default. Keep ranking and file discovery in BB. Questions currently lowercases
+the search query as a local workaround; it does not change returned paths.
+
+Status: reproduced through the installed Questions RPC. No issue filed yet.
+Suggested issue title: `Support case-insensitive fuzzy workspace path queries`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Rename saved plugin panel actions
 
 The public SDK has no API to migrate a saved thread panel tab to a new action

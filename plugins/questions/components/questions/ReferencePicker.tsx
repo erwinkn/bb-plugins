@@ -7,7 +7,7 @@ import { Icon, type IconName } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { type Reference, referenceLabel, referenceName } from "@/lib/model";
 import type { PathHit } from "@/hooks/useQuestions";
-import { IconButton } from "./primitives";
+import { IconButton, INPUT_TEXT_CLASS } from "./primitives";
 
 interface Candidate {
   reference: Reference;
@@ -213,7 +213,7 @@ export function ReferencePicker({
           aria-label="Search files"
           placeholder="Search files"
           autoComplete="off"
-          className="w-full min-w-0 rounded-md border-0 bg-transparent py-2 pl-[34px] pr-[34px] text-[13px] text-foreground placeholder:text-[var(--subtle-foreground)] focus:outline-none"
+          className={cn("w-full min-w-0 rounded-md border-0 bg-transparent py-2 pl-[34px] pr-[34px] text-foreground placeholder:text-[var(--subtle-foreground)] focus:outline-none", INPUT_TEXT_CLASS)}
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);

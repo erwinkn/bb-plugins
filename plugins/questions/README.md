@@ -53,6 +53,12 @@ waits for a query, and selected badges stay inside the control above results.
 The footer shows save status, including a failure or conflict when needed.
 It does not show a save indicator during the initial load.
 
+Text areas grow and shrink to fit their content, including restored drafts
+and changes in panel width. Editable fields use 16 px text on narrow screens
+and devices with a coarse pointer, and 13 px on larger fine-pointer screens.
+The plugin does not restrict page zoom. File search sends a lowercase query
+to BB's fuzzy matcher so mixed-case input can find uppercase filenames.
+
 | | Panel | Inline (in the message) |
 | --- | --- | --- |
 | Questions per round | no count cap (256 KiB of question JSON per round) | 5 |
