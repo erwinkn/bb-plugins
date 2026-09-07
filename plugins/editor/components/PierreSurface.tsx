@@ -119,6 +119,10 @@ interface SurfaceState {
   /** Bumped for every item replacement, so Pierre reconciles and re-caches. */
   version: number;
   epoch: number;
+  /** Set only by Pierre's onAttach, after the editable DOM exists. */
+  readyEditor: Editor | null;
+  pendingFocus: { target?: PierreFocusTarget } | null;
+  publish(status: PierreSurfaceStatus): void;
   /** Set by `setEditable`, cleared whenever the `readOnly` prop changes. */
   editableOverride: boolean | null;
 }
@@ -156,6 +160,9 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     let created: CodeView | null = null;
     const publish = (next: PierreSurfaceStatus) => {
       if (disposed) return;
+      const previous = statusRef.current;
+      if (previous.kind === next.kind && (next.kind !== "error" || (previous.kind === "error" && previous.message === next.message))) return;
+      statusRef.current = next;
       setStatus(next);
       latest.current.onStatusChange?.(next);
     };
@@ -177,11 +184,16 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           docKey: documentKey(props),
           version,
           epoch: props.epoch,
+          readyEditor: null,
+          pendingFocus: null,
+          publish,
           editableOverride: null,
         };
         view.setup(host);
         view.setItems([buildItem(runtime, props, version, null)]);
-        publish({ kind: "ready" });
+        // setItems schedules rendering. It does not mean that the file, its
+        // highlighter, or the editable DOM exists yet. The callbacks below
+        // report readiness after Pierre actually renders or attaches.
       })
       .catch((error: unknown) => {
         // The panel draws the failure. Reporting it as a value keeps a missing
@@ -227,6 +239,9 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       state.version = ++cacheRevision;
       state.epoch = props.epoch;
       state.editableOverride = null;
+      state.readyEditor = null;
+      state.pendingFocus = null;
+      state.publish({ kind: "loading" });
       // setItems removes the old record, which ends its edit session and
       // releases its editor and undo history.
       state.view.setItems([buildItem(state.runtime, latest.current, state.version, null)]);
@@ -271,8 +286,12 @@ export default function PierreSurface(props: PierreSurfaceProps) {
         state.view.updateItem(buildItem(state.runtime, latest.current, state.version, editable));
       },
       focus: (target) => {
-        const editor = editorOf(stateRef.current);
-        if (editor === null) return false;
+        const state = stateRef.current;
+        const editor = editorOf(state);
+        if (editor === null) {
+          if (state !== null) state.pendingFocus = { target };
+          return false;
+        }
         editor.focus(target as EditorFocusOptions | undefined);
         return true;
       },
@@ -368,12 +387,36 @@ function buildOptions(
     stickyHeaders: props.stickyHeader ?? false,
     // One item fills the pane, so none of Pierre's list spacing applies.
     layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
+    onPostRender: (node, _instance, phase, context) => {
+      const state = stateRef.current;
+      if (state === null || phase === "unmount" || context.item.id !== state.docKey) return;
+      // Pierre has no render-error callback. Its default error renderer puts
+      // the message in this node (verified against the pinned 1.4.1 source).
+      // Surface the same error so the panel's loading layer cannot hide it.
+      const message = node.shadowRoot?.querySelector("[data-error-message]")?.textContent;
+      if (message) {
+        state.publish({ kind: "error", message, error: new Error(message) });
+        return;
+      }
+      // Editable items render before CodeView attaches their editor. Their
+      // onAttach callback below is the point at which focus can succeed.
+      if (context.item.edit !== true) state.publish({ kind: "ready" });
+    },
     // Sessions retain text across mounts. Undo history belongs to this editor
     // instance; retaining it under a changing epoch can restore stale text.
     createEditor: (editorType, options) =>
       new runtime.Editor(editorType, {
         ...options,
         keymap: RESERVED_KEYMAP,
+        onAttach: (editor) => {
+          const state = stateRef.current;
+          if (state === null || state.view.getEditor(state.docKey) !== editor) return;
+          state.readyEditor = editor;
+          const focus = state.pendingFocus;
+          state.pendingFocus = null;
+          state.publish({ kind: "ready" });
+          if (focus !== null) editor.focus(focus.target as EditorFocusOptions | undefined);
+        },
         onFocus: () => latest.current.onFocus?.(),
         onBlur: () => latest.current.onBlur?.(),
       }),
@@ -441,7 +484,8 @@ function buildItem(
 
 function editorOf(state: SurfaceState | null): Editor | null {
   if (state === null) return null;
-  return (state.view.getEditor(state.docKey) as Editor | undefined) ?? null;
+  const editor = (state.view.getEditor(state.docKey) as Editor | undefined) ?? null;
+  return editor === state.readyEditor ? editor : null;
 }
 
 function run(state: SurfaceState | null, action: (editor: Editor) => void): boolean {

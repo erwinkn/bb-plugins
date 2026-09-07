@@ -170,11 +170,10 @@ export function EditorPane({
   useEffect(() => () => forgetEditor(paneId), [paneId]);
 
   // Focus follows a deliberate open, once the surface can take it.
-  const focused = useRef(focusNonce);
+  const focused = useRef(0);
   useEffect(() => {
     if (focusNonce === focused.current || surfaceStatus.kind !== "ready") return;
-    focused.current = focusNonce;
-    surfaceRef.current?.focus();
+    if (surfaceRef.current?.focus()) focused.current = focusNonce;
   }, [focusNonce, surfaceStatus.kind, path]);
 
   const lineCount = useMemo(() => (state?.content ?? "").split("\n").length, [state?.content]);
