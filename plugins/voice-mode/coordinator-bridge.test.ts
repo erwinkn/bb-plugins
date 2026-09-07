@@ -110,7 +110,7 @@ test("a handoff waits for the settled transcript and carries the user's words, n
   delegate(dc, "resp_1", "call_1", { request: "archive the old speech thread", interpretation: "archive thread", urgency: "new" });
   await settle();
   assert.equal(dc.toolOutputs().length, 1, "the tool call is acknowledged at once");
-  assert.match(dc.toolOutputs()[0].item.output, /Handoff r_/);
+  assert.match(dc.toolOutputs()[0].item.output, /Request r_/);
   assert.equal(submits().length, 0, "nothing is sent before the transcript settles");
   dc.emit("conversation.item.input_audio_transcription.completed", { item_id: "item_1", transcript: "I think we can archive it. Nothing remains, right?" });
   await settle();
@@ -127,7 +127,7 @@ test("a handoff waits for the settled transcript and carries the user's words, n
   tick(1);
 });
 
-test("a handoff without a transcript dispatches after the bounded wait, marked unavailable", async (t) => {
+test("a handoff without a transcript is rejected after the bounded wait", async (t) => {
   const { dc, submits, logs, tick } = await coordinatorFixture(t);
   speak(dc, "item_1");
   delegate(dc, "resp_1", "call_1", { request: "stop the CI thread" });
@@ -137,10 +137,8 @@ test("a handoff without a transcript dispatches after the bounded wait, marked u
   assert.equal(submits().length, 0);
   tick(1);
   await settle();
-  assert.equal(submits().length, 1);
-  assert.equal(submits()[0].transcriptAvailable, false);
-  assert.equal(submits()[0].originalText, "");
-  assert.equal(submits()[0].interpretation, "stop the CI thread");
+  assert.equal(submits().length, 0);
+  assert.ok(logs.some(log => log.kind === "handoff.rejected"));
   assert.ok(logs.some((log) => log.kind === "handoff.transcriptTimeout"));
 });
 
@@ -434,4 +432,112 @@ test("realtime mutation names cannot bypass the coordinator", async t => {
   assert.equal(calls.some(call => call.method === "runTool" || call.method === "claimUiCommand"), false);
   assert.equal(dc.toolOutputs().length, 4);
   assert.ok(dc.toolOutputs().every(event => event.item.output.includes("Unknown realtime tool")));
+});
+
+
+test("empty transcription cancels a guessed answer and asks once for the missed sentence", async t => {
+  const {dc, submits, logs, tick} = await coordinatorFixture(t);
+  speak(dc, "missing");
+  dc.emit("response.created", {response:{id:"guess"}});
+  dc.emit("output_audio_buffer.started", {response_id:"guess"});
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"missing", transcript:"  "});
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"missing", transcript:""});
+  dc.emit("response.function_call_arguments.done", {response_id:"guess", name:"delegate_to_coordinator", call_id:"bad", arguments:JSON.stringify({request:"We are working on project Alpha."})});
+  dc.emit("response.done", {response:{id:"guess",status:"cancelled"}});
+  await settle(); tick(2500); await settle();
+  assert.equal(submits().length, 0);
+  assert.ok(dc.sent.some(e => e.type === "response.cancel" && e.response_id === "guess"));
+  assert.ok(dc.sent.some(e => e.type === "output_audio_buffer.clear"));
+  assert.equal(logs.filter(e => e.kind === "transcription.result" && e.payload.outcome === "empty").length, 1);
+  assert.equal(dc.bridgeResponses().length, 1);
+  assert.match(dc.bridgeResponses()[0].response.instructions, /I missed that last sentence/);
+  assert.ok(!logs.some(e => e.kind === "reply.speaking" && e.payload.replyId.startsWith("local_ack_")));
+});
+
+test("empty completion before generation blocks the later guessed tool response", async t => {
+  const {dc, submits, tick} = await coordinatorFixture(t);
+  speak(dc, "empty_first");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"empty_first", transcript:""});
+  delegate(dc, "late_guess", "bad_call", {request:"Archive Alpha"});
+  dc.emit("response.done", {response:{id:"late_guess",status:"cancelled"}});
+  await settle(); tick(2500); await settle();
+  assert.equal(submits().length, 0);
+  assert.ok(dc.sent.some(e => e.type === "response.cancel" && e.response_id === "late_guess"));
+  assert.equal(dc.bridgeResponses().length, 1);
+});
+
+test("a late failed transcript stays with its old turn and does not cancel a new valid request", async t => {
+  const {dc, submits, logs} = await coordinatorFixture(t);
+  speak(dc, "old");
+  speak(dc, "new");
+  dc.emit("conversation.item.input_audio_transcription.failed", {item_id:"old", error:{code:"bad_audio",message:"No speech decoded"}});
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"new", transcript:"Check my active threads."});
+  delegate(dc, "new_response", "new_call", {request:"Check threads"});
+  await settle();
+  assert.equal(submits().length, 1);
+  assert.equal(submits()[0].originalText, "Check my active threads.");
+  assert.equal(submits()[0].transcriptAvailable, true);
+  assert.equal(dc.sent.filter(e => e.type === "response.cancel").length, 0);
+  assert.equal(logs.find(e => e.kind === "transcription.result" && e.payload.outcome === "failed")?.payload.error.code, "bad_audio");
+});
+
+test("a failed transcription before commit is retained and a fresh request can recover", async t => {
+  const {dc, submits, logs} = await coordinatorFixture(t);
+  dc.emit("input_audio_buffer.speech_started");
+  dc.emit("input_audio_buffer.speech_stopped");
+  dc.emit("conversation.item.input_audio_transcription.failed", {item_id:"failed_first",error:{message:"Empty audio"}});
+  dc.emit("input_audio_buffer.committed", {item_id:"failed_first"});
+  dc.emit("response.created", {response:{id:"failed_before_commit_response"}});
+  assert.ok(dc.sent.some(e => e.type === "response.cancel" && e.response_id === "failed_before_commit_response"));
+  dc.emit("response.done", {response:{id:"failed_before_commit_response",status:"cancelled"}});
+  speak(dc, "retry");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"retry",transcript:"Open my active thread."});
+  delegate(dc, "retry_response", "retry_call", {request:"Open thread"});
+  await settle();
+  assert.equal(submits().length, 1);
+  assert.equal(submits()[0].originalText, "Open my active thread.");
+  assert.equal(logs.filter(e => e.kind === "transcription.result" && e.payload.outcome === "failed").length, 1);
+});
+
+
+test("an empty answer leaves a pending question open and produces no request or acknowledgment", async t => {
+  const {agent, dc, reply, submits, logs, tick} = await coordinatorFixture(t);
+  agent.ingestCoordinatorSignal("voice-reply", reply({replyId:"question",kind:"clarification",questionId:"q1",speech:"Which thread?"}));
+  speak(dc, "answer");
+  delegate(dc, "answer_response", "answer_tool", {request:"Alpha",answers_question_id:"q1"});
+  await settle();
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"answer",transcript:""});
+  dc.emit("response.done", {response:{id:"answer_response",status:"cancelled"}});
+  await settle(); tick(2500); await settle();
+  assert.equal(submits().length, 0);
+  assert.ok(logs.some(e => e.kind === "handoff.rejected"));
+  assert.ok(!logs.some(e => e.kind === "reply.speaking" && e.payload.replyId.startsWith("local_ack_")));
+  // The rejected spoken answer never uses the server's question-resolution route.
+  assert.equal((agent as any).bridge.snapshot().openQuestion.id, "q1");
+});
+
+test("a transcript arriving after timeout is recorded but never auto-dispatched", async t => {
+  const {dc, submits, logs, tick} = await coordinatorFixture(t);
+  speak(dc, "late");
+  delegate(dc, "late_response", "late_tool", {request:"Archive this thread"});
+  await settle(); tick(TRANSCRIPT_WAIT_MS); await settle();
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"late",transcript:"Archive this thread"});
+  dc.emit("response.done", {response:{id:"late_response",status:"cancelled"}});
+  await settle(); tick(2500); await settle();
+  assert.equal(submits().length, 0);
+  assert.equal(logs.filter(e => e.kind === "reply.speaking" && e.payload.replyId.startsWith("local_input_")).length, 1);
+  assert.ok(logs.some(e => e.kind === "transcription.result" && e.payload.outcome === "complete"));
+});
+
+test("an empty fragment prevents dispatch of a partially transcribed utterance", async t => {
+  const {dc, submits, logs} = await coordinatorFixture(t);
+  speak(dc, "part1");
+  dc.emit("input_audio_buffer.committed", {item_id:"part2"});
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"part1",transcript:"Archive"});
+  delegate(dc, "partial", "partial_tool", {request:"Archive Alpha"});
+  await settle();
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"part2",transcript:""});
+  await settle();
+  assert.equal(submits().length, 0);
+  assert.ok(logs.some(e => e.kind === "handoff.rejected"));
 });

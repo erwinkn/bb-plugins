@@ -87,7 +87,7 @@ function groupUserMessages(messages: ConversationMessage[], events: readonly Ses
     if (event.kind === "speech.lifecycle" && str(p.responseId)) playbackIds.add(key(call, String(p.responseId)));
     if (event.kind === "speech.lifecycle" && p.state === "started") speechStarts.set(call, [...(speechStarts.get(call) ?? []), event.ts]);
     const id = str(p.itemId);
-    if (id && event.kind === "user") itemByEvent.set(event.id, key(call, id));
+    if (id && (event.kind === "user" || event.kind === "transcription.result")) itemByEvent.set(event.id, key(call, id));
     if (!id || event.kind !== "realtime.event") continue;
     const itemKey = key(call, id), boundary = boundaries.get(itemKey) ?? {};
     if (p.eventType === "input_audio_buffer.speech_started") {
@@ -119,7 +119,7 @@ function groupUserMessages(messages: ConversationMessage[], events: readonly Ses
       ? current.boundary.audioStart - previous.boundary.audioEnd : current.start - (previous?.end ?? current.start);
     const previousStart = previous?.start;
     const answered = previousStart !== undefined && (speechStarts.get(call) ?? []).some(ts => ts >= previousStart && ts <= current.start);
-    if (previous && previous.message.callId === call && gap >= 0 && gap < USER_MESSAGE_PAUSE_MS && !answered) {
+    if (previous && previous.message.kind === "speech" && current.message.kind === "speech" && previous.message.callId === call && gap >= 0 && gap < USER_MESSAGE_PAUSE_MS && !answered) {
       const group = grouped.at(-1)!;
       group.text += ` ${current.message.text}`;
       group.eventIds.push(...current.message.eventIds);
@@ -190,6 +190,9 @@ export function projectConversation(events: readonly SessionEvent[]): Conversati
     return d;
   };
 
+  const transcribedItems = new Set(sorted.filter(event => event.kind === "user" && str(parse(event.payload).text)?.trim())
+    .map(event => JSON.stringify([event.callId ?? null, parse(event.payload).itemId])));
+  const missingItems = new Set<string>();
   for (const event of sorted) {
     const p = parse(event.payload);
     const callId = event.callId ?? null;
@@ -198,6 +201,15 @@ export function projectConversation(events: readonly SessionEvent[]): Conversati
         const text = str(p.text);
         if (!text?.trim()) break;
         messages.push({ id: `user:${event.id}`, who: "you", text, ts: event.ts, callId, delivery: null, source: "realtime", kind: "speech", eventIds: [event.id] });
+        break;
+      }
+      case "transcription.result": {
+        if (!["empty", "failed", "timeout"].includes(String(p.outcome)) || !str(p.itemId)) break;
+        const key = JSON.stringify([callId, p.itemId]);
+        if (transcribedItems.has(key) || missingItems.has(key)) break;
+        missingItems.add(key);
+        messages.push({id: `missing:${key}`, who: "you", text: "Speech detected, but no transcript was available.", ts: event.ts,
+          callId, delivery: null, source: "bridge", kind: "failure", eventIds: [event.id]});
         break;
       }
       case "notice": {

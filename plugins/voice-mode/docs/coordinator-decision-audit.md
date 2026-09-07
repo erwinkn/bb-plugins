@@ -55,3 +55,26 @@ are recorded in the repository README.
 I support this design for the user's requested draft and local test. No merge
 or general release is authorized. The user's existing publication and reload
 instructions cover this revision; no additional approval gate is required.
+
+
+## Empty transcription recovery — 7 September 2026
+
+The latest call produced two committed speech items with no usable transcript.
+The bridge marked them available; the server rejected the resulting empty
+request. No work was delivered for that request.
+
+| Decision | Alternative | Confidence and possible failure |
+| --- | --- | --- |
+| Keep the transcription model and VAD settings for this patch. | Switch models or change microphone thresholds. | Medium. The log has no raw audio to establish why transcription was empty. Recognition can still fail; a physical call is needed. |
+| Cancel only the affected realtime response once its transcript is known to be unavailable. | Wait for transcription before every spoken response. | Medium. This keeps existing latency, but speech heard before a late failure cannot be taken back. Coordinator replies and newer user turns are excluded. |
+| Reject missing input locally and give one fixed recovery question for that failure. | Send an invalid envelope and rely on the server's error reply. | High. This avoids duplicate recovery messages. The server's independent validation remains. The four-second wait is unchanged. |
+| Require a new spoken request after recovery, even if the old transcript arrives later. | Automatically restart rejected work on a late result. | High. A user must repeat a sentence that later becomes available. Late words remain in the transcript. |
+| Validate every fragment of the current utterance; retain earlier failed items as missing context. | Let an earlier failed turn block all future requests. | Medium. A later instruction that depends on missing earlier words still needs clarification by the coordinator. |
+| Show one missing-transcript marker, separated from actual user words; replace it if text arrives later. | Omit failed speech from the conversation. | High. Historical calls without the new result event cannot gain this marker from evidence that was never saved. No stored events are rewritten. |
+| Log bounded provider error fields, result length, item identity, turn, and time since commit. | Record raw microphone audio. | High. These fields improve diagnosis but cannot establish microphone signal quality. |
+| Use deterministic event tests for cancellation, retry, ordering, partial input, and pending questions. | Treat a build as evidence of live audio quality. | High for the tested state transitions. Physical playback and recognition remain unverified. |
+
+I stand behind this recovery change for the user's draft PR and local test.
+It fixes the confirmed availability and recovery defects. It does not establish
+that the underlying transcription service will recognize the next recording.
+The user's existing PR and reload authorization covers this update.

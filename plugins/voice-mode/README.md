@@ -63,6 +63,13 @@ activity. The realtime model handles conversation and speech; the coordinator
 resolves intent and works through BB's native tools. There is no direct realtime
 mutation path or fallback mode.
 
+Empty or failed transcripts cannot start work. Voice cancels the affected
+realtime response and asks once for the missed sentence. Requests wait up to
+four seconds for transcription; a late transcript is retained but does not
+restart rejected work. The conversation marks speech with no usable transcript,
+and Diagnostics records per-item results, timing, and provider error details.
+The plugin does not record raw microphone audio.
+
 The coordinator requests UI actions through `voice_ui`, separately from
 `voice_reply`. The server records each command and binds it to the request and
 physical call. Only the client running that call applies it. Other BB windows

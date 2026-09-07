@@ -148,3 +148,18 @@ test("assistant playback separates short user turns but internal work and unplay
   ];
   assert.deepEqual(projectConversation(input).filter(row=>row.who === "you").map(row=>row.text),["Check the build. And the tests.","One correction."]);
 });
+
+
+test("missing speech is visible once, separate from actual words, and replaced by a late transcript", () => {
+  const events = [event(1,"user",{itemId:"u",text:"Hello"}),
+    event(2,"transcription.result",{itemId:"empty",outcome:"empty"}),
+    event(3,"transcription.result",{itemId:"empty",outcome:"failed"})];
+  const rows = projectConversation(events);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].text, "Hello");
+  assert.equal(rows[1].kind, "failure");
+  assert.match(rows[1].text, /no transcript/);
+  const recovered = projectConversation([...events,event(4,"user",{itemId:"empty",text:"Check my threads"})]);
+  assert.ok(recovered.every(row => row.kind !== "failure"));
+  assert.match(recovered.map(row => row.text).join(" "), /Check my threads/);
+});

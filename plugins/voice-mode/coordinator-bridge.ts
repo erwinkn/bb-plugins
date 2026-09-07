@@ -6,7 +6,7 @@
 import { publishedReplySchema, type PublishedReply, type UserRequestEnvelope } from "./coordinator/envelopes.ts";
 import { QUIET_INTERVAL_MS, refuseBackgroundSpeech, refuseDirectSpeech, type VoiceIdleFacts } from "./coordinator/scheduler.ts";
 
-/** How long a handoff waits for its input transcript before dispatching without it. */
+/** How long a handoff waits for its input transcript before asking the user to repeat it. */
 export const TRANSCRIPT_WAIT_MS = 4000;
 
 export interface BridgeHost {
@@ -22,6 +22,7 @@ export interface BridgeHost {
   /** The bridge is about to send response.create; the host marks generation active. */
   speaking(): void;
   changed(): void;
+  inputUnavailable(turn: number): void;
 }
 
 interface UserItem {
@@ -79,6 +80,7 @@ export class CoordinatorBridge {
   private openQuestion: { id: string; text: string } | null = null;
   private liveAt: number;
   private disposed = false;
+  private unavailableTurns = new Set<number>();
   private acknowledgedTurns = new Set<number>();
   private acknowledgments = new Map<number, {requestId:string;text:string}>();
 
@@ -104,36 +106,59 @@ export class CoordinatorBridge {
     if (this.items.length > 200) { const drop = this.items.length - 200; this.items.splice(0, drop); this.cursor = Math.max(0, this.cursor - drop); }
   }
 
-  onTranscript(itemId: string, text: string) {
-    let item = this.items.find((entry) => entry.itemId === itemId);
-    if (!item) {
-      // Transcription can land before the commit event on some clients.
-      item = { itemId, text: null, failed: false, turn: this.userTurnOf(), committedAt: this.host.now(), speechEndedAt: this.host.now() };
-      this.items.push(item);
-    }
-    item.text = text;
+  hasUserItem(itemId: string): boolean { return this.items.some(item => item.itemId === itemId); }
+
+  transcriptTurn(itemId: string): number {
+    return this.items.find(item => item.itemId === itemId)?.turn ?? this.userTurnOf();
+  }
+
+  inputUnavailable(): boolean { return this.unavailableTurns.has(this.userTurnOf()); }
+
+  onTranscript(itemId: string, text: string, error?: Record<string, unknown>) {
+    if (!itemId) return;
+    this.onUserItemCommitted(itemId);
+    const item = this.items.find(entry => entry.itemId === itemId)!;
+    const normalized = text.trim();
+    // Repeated provider events must not speak another repair or erase valid words.
+    if (item.text === normalized || (item.text && !normalized)) return;
+    item.text = normalized;
+    item.failed = !normalized;
     this.transcriptRevision += 1;
+    this.host.log("transcription.result", { itemId, userTurn: item.turn,
+      outcome: normalized ? "complete" : error ? "failed" : "empty",
+      characters: normalized.length, sinceCommitMs: this.host.now() - item.committedAt,
+      ...(error ? { error } : {}) });
+    if (item.failed) this.recoverInput(item.turn);
     this.tryDispatch();
   }
 
-  onTranscriptFailed(itemId: string) {
-    const item = this.items.find((entry) => entry.itemId === itemId);
-    if (item) { item.failed = true; item.text = item.text ?? ""; }
-    this.transcriptRevision += 1;
-    this.tryDispatch();
+  onTranscriptFailed(itemId: string, error?: Record<string, unknown>) {
+    this.onTranscript(itemId, "", error ?? {});
+  }
+
+  private recoverInput(turn: number) {
+    if (this.unavailableTurns.has(turn)) return;
+    this.unavailableTurns.add(turn);
+    if (turn !== this.userTurnOf()) return;
+    this.acknowledgments.delete(turn);
+    this.replyQueue = this.replyQueue.filter(reply => !reply.replyId.startsWith("local_ack_"));
+    this.host.inputUnavailable(turn);
+    this.addContext("The last spoken sentence has no usable transcript. Do not infer it from audio or earlier context. Wait silently while the bridge asks the user to repeat that sentence. No work was accepted from it.");
+    this.enqueueLocalReply("I missed that last sentence. Could you say it again?", "failure", `local_input_${turn}`);
   }
 
   /** The user started speaking: unsent speculative handoffs are held, not sent. */
   onSpeechStarted() {
     if (this.pending && this.pending.status === "waiting-transcript") this.supersedePending("user continued speaking");
     if (this.active) this.finishSpeech("interrupted");
-    this.replyQueue = this.replyQueue.filter(reply => !reply.replyId.startsWith("local_ack_"));
+    this.replyQueue = this.replyQueue.filter(reply => !reply.replyId.startsWith("local_ack_") && !reply.replyId.startsWith("local_input_"));
     this.acknowledgments.clear();
   }
 
   // ---- realtime tools ----
 
   delegate(callId: string, args: Record<string, unknown>): string {
+    if (this.inputUnavailable()) return "The last sentence could not be transcribed. No request was accepted. Wait silently; the bridge asks the user to repeat it.";
     const request = typeof args.request === "string" ? args.request.trim() : "";
     const urgency = args.urgency === "steer" || args.urgency === "after_current" ? args.urgency : "new";
     const answersQuestionId = typeof args.answers_question_id === "string" && args.answers_question_id ? args.answers_question_id : null;
@@ -168,7 +193,7 @@ export class CoordinatorBridge {
       }, TRANSCRIPT_WAIT_MS);
       (handoff.timer as { unref?: () => void }).unref?.();
     }
-    return `Handoff ${requestId} recorded; the coordinator will reply. Wait silently; the bridge handles acknowledgment and the final answer.`;
+    return `Request ${requestId} recorded for transcript validation. Wait silently; the bridge handles acknowledgment, recovery, and the final answer.`;
   }
 
   /** Called after the original tool response settles, never as a model tool follow-up. */
@@ -193,7 +218,7 @@ export class CoordinatorBridge {
   speechIdentity(responseId: string | null) {
     if (!responseId || this.active?.responseId !== responseId) return null;
     return { replyId: this.active.reply.replyId, requestId: this.active.reply.requestId,
-      source: this.active.reply.replyId.startsWith("local_ack_") ? "acknowledgment" : "coordinator" };
+      source: this.active.reply.replyId.startsWith("local_ack_") ? "acknowledgment" : this.active.reply.source === "bridge" ? "bridge" : "coordinator" };
   }
 
   remainSilent(): string {
@@ -219,7 +244,7 @@ export class CoordinatorBridge {
     if (!handoff || handoff.status !== "waiting-transcript") return false;
     const bound = handoff.boundItemIds.map((id) => this.items.find((item) => item.itemId === id)).filter((item): item is UserItem => !!item);
     if (bound.some((item) => item.text === null && !item.failed)) return false;
-    void this.dispatch(handoff, !bound.some((item) => item.failed));
+    void this.dispatch(handoff, true);
     return true;
   }
 
@@ -235,6 +260,21 @@ export class CoordinatorBridge {
     const lastTurn = boundItems.at(-1)?.turn;
     const utterance = boundItems.filter((item) => item.turn === lastTurn);
     const originalText = utterance.map((item) => item.text ?? "").filter(Boolean).join(" ").trim();
+    if (!transcriptAvailable || !utterance.length || utterance.some(item => !item.text?.trim() || item.failed) || this.inputUnavailable()) {
+      handoff.status = "failed";
+      this.pending = null;
+      // Retire rejected input so the next complete request is independent.
+      const lastIndex = this.items.findIndex(item => item.itemId === handoff.boundItemIds.at(-1));
+      if (lastIndex >= 0) this.cursor = lastIndex + 1;
+      for (const item of utterance.filter(item => item.text === null)) {
+        this.host.log("transcription.result", { itemId: item.itemId, userTurn: item.turn, outcome: "timeout", characters: 0, sinceCommitMs: this.host.now() - item.committedAt });
+      }
+      this.host.log("handoff.rejected", { requestId: handoff.requestId, reason: "transcript-unavailable", transcriptWaitMs: this.host.now() - handoff.createdAt });
+      this.recoverInput(lastTurn ?? this.userTurnOf());
+      this.host.changed();
+      this.drain();
+      return;
+    }
     const envelope: UserRequestEnvelope = {
       v: 1,
       conversationId: this.conversationId,
@@ -243,7 +283,7 @@ export class CoordinatorBridge {
       requestId: handoff.requestId,
       utteranceItemIds: utterance.map((item) => item.itemId),
       transcriptRevision: this.transcriptRevision,
-      transcriptAvailable: transcriptAvailable && utterance.length > 0 && utterance.every((item) => item.text !== null && !item.failed),
+      transcriptAvailable: transcriptAvailable && utterance.length > 0 && utterance.every((item) => !!item.text?.trim() && !item.failed),
       originalText: originalText.slice(0, 8000),
       transcriptDelta: boundItems.slice(-20).map((item) => ({ itemId: item.itemId, text: item.failed ? null : item.text })),
       interpretation: handoff.interpretation ?? (originalText ? null : handoff.request || null),
@@ -316,9 +356,9 @@ export class CoordinatorBridge {
     }
   }
 
-  private enqueueLocalReply(speech: string, kind: "failure") {
+  private enqueueLocalReply(speech: string, kind: "failure", replyId = `local_${globalThis.crypto.randomUUID()}`) {
     const reply: PublishedReply = {
-      v: 1, replyId: `local_${this.host.now()}`, conversationId: this.conversationId, seq: Number.MAX_SAFE_INTEGER, requestId: null, batchId: null, questionId: null,
+      v: 1, replyId, conversationId: this.conversationId, seq: Number.MAX_SAFE_INTEGER, requestId: null, batchId: null, questionId: null,
       kind, source: "bridge", speech, detail: null, threadIds: [], receipts: [], targetCallNonce: this.host.nonce(), createdAt: this.host.now(),
     };
     this.replyQueue.push(reply);
