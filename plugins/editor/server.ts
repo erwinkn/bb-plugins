@@ -391,15 +391,13 @@ export default async function plugin(bb: BbPluginApi) {
 
   watchHost.experimental_onSignal("changed", ({ hostId, payload }) => {
     const entry = watches.get(hostId, payload.rootPath);
+    bb.log.debug(`file watch signal from ${hostId} for ${payload.rootPath}: ${payload.kind} ${payload.paths.map((change) => change.path).join(" ")}`);
     if (entry === undefined) return;
     if (payload.kind === "rescan") {
       publishChange({ root: entry.key, kind: "rescan", changes: [] });
       return;
     }
-    const changes = payload.paths
-      .filter((change) => change.path.startsWith(payload.rootPath))
-      .map((change) => ({ path: relativeTo(payload.rootPath, change.path), type: change.type }));
-    if (changes.length > 0) publishChange({ root: entry.key, kind: "changed", changes });
+    if (payload.paths.length > 0) publishChange({ root: entry.key, kind: "changed", changes: payload.paths });
   });
   // The worker took its watches with it. Say so, so open files reload, and
   // start the watches again on the next chance.

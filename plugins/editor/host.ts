@@ -4,6 +4,8 @@
  * changes goes back to the server as a signal; the server tells the open
  * editors, which re-read the files they show.
  */
+import { realpathSync } from "node:fs";
+import path from "node:path";
 import { experimental_defineHostEntry, type ExperimentalHostWatchSubscription } from "@get-bb/plugin-sdk";
 import { MAX_CHANGED_PATHS, watchContract, watchSignals } from "./lib/watch-contract.js";
 
@@ -11,6 +13,14 @@ import { MAX_CHANGED_PATHS, watchContract, watchSignals } from "./lib/watch-cont
 const IGNORED = [".git", "node_modules", ".bb"];
 
 const watches = new Map<string, ExperimentalHostWatchSubscription>();
+
+function realPath(rootPath: string): string {
+  try {
+    return realpathSync.native(rootPath);
+  } catch {
+    return rootPath;
+  }
+}
 
 export default experimental_defineHostEntry({
   contract: watchContract,
@@ -29,11 +39,18 @@ export default experimental_defineHostEntry({
       for (const rootPath of wanted) {
         if (watches.has(rootPath)) continue;
         try {
-          const subscription = await context.experimental_watch({ rootPath, ignoredPaths: IGNORED }, async (event) => {
+          // The watcher reports real paths, so a root reached through a
+          // symbolic link (macOS's /tmp, for one) is resolved first and every
+          // change is made relative to it.
+          const realRoot = realPath(rootPath);
+          const subscription = await context.experimental_watch({ rootPath: realRoot, ignoredPaths: IGNORED }, async (event) => {
             // The watch may already be gone; a late batch from it says nothing.
             if (watches.get(rootPath) !== subscription) return;
             if (event.kind === "changed") {
-              const paths = event.changes.map((change) => ({ path: change.path, type: change.type }));
+              const paths = event.changes.flatMap((change) => {
+                const relative = path.relative(realRoot, path.resolve(realRoot, change.path));
+                return relative === "" || relative.startsWith("..") || path.isAbsolute(relative) ? [] : [{ path: relative, type: change.type }];
+              });
               const kind = paths.length > MAX_CHANGED_PATHS ? "rescan" : "changed";
               await context.experimental_emitSignal("changed", { rootPath, kind, paths: kind === "changed" ? paths : [] });
               return;

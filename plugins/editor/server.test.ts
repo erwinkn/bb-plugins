@@ -616,7 +616,7 @@ test("watch registers the workspace root on its host, relays changes with sequen
 
   await harness.behavior.experimental_emitHostSignal("host_remote", "changed", {
     rootPath: "/workspace", kind: "changed",
-    paths: [{ path: "/workspace/src/a.ts", type: "update" }, { path: "/elsewhere/b.ts", type: "create" }],
+    paths: [{ path: "src/a.ts", type: "update" }],
   });
   await harness.behavior.experimental_emitHostSignal("host_remote", "changed", { rootPath: "/workspace", kind: "rescan", paths: [] });
   await harness.behavior.experimental_emitHostSignal("host_remote", "changed", { rootPath: "/unknown", kind: "rescan", paths: [] });

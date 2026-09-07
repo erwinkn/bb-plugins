@@ -44,7 +44,7 @@ test("changes, overflow, lost events and watcher failures reach the server as si
   t.after(() => harness.experimental_dispose());
   await harness.experimental_call("syncWatches", { roots: ["/w"] });
   const listener = watcher.active.get("/w")!;
-  await listener({ kind: "changed", changes: [{ path: "/w/a.ts", type: "update" }, { path: "/w/b.ts", type: "create" }] });
+  await listener({ kind: "changed", changes: [{ path: "/w/a.ts", type: "update" }, { path: "/w/b.ts", type: "create" }, { path: "/elsewhere/c.ts", type: "delete" }, { path: "/w", type: "update" }] });
   await listener({ kind: "changed", changes: Array.from({ length: MAX_CHANGED_PATHS + 1 }, (_, i) => ({ path: `/w/${i}`, type: "update" as const })) });
   await listener({ kind: "rescan-required" });
   await listener({ kind: "watch-error", message: "overflow" });
@@ -52,7 +52,7 @@ test("changes, overflow, lost events and watcher failures reach the server as si
     ["changed", 2], ["rescan", 0], ["rescan", 0], ["rescan", 0],
   ]);
   assert.deepEqual(harness.experimental_getSignals()[0]!.payload.paths, [
-    { path: "/w/a.ts", type: "update" }, { path: "/w/b.ts", type: "create" },
+    { path: "a.ts", type: "update" }, { path: "b.ts", type: "create" },
   ]);
   // The failed watch was dropped, so the next sync starts it again.
   assert.equal(watcher.active.has("/w"), false);

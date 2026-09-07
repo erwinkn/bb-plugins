@@ -30,7 +30,7 @@ export const watchSignals = {
       rootPath: z.string(),
       /** `rescan` means the watcher lost events, or too many arrived at once. */
       kind: z.enum(["changed", "rescan"]),
-      /** Host-absolute paths, empty for a rescan. */
+      /** Root-relative paths in the host's separator, empty for a rescan. */
       paths: z.array(z.object({ path: z.string(), type: z.enum(["create", "update", "delete"]) })).max(MAX_CHANGED_PATHS),
     }).strict(),
   },
