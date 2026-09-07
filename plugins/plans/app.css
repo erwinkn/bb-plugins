@@ -1,0 +1,43 @@
+/* Plans plugin styles. Tailwind utilities cover layout; this file holds what
+   utilities cannot express: comment anchors painted through the CSS Custom
+   Highlight API, and small document adjustments. Colors come from host
+   tokens so every BB palette stays intact. */
+
+::highlight(plans-comment) {
+  background-color: color-mix(in oklab, var(--warning) 28%, transparent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--warning) 70%, transparent);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+::highlight(plans-comment-active) {
+  background-color: color-mix(in oklab, var(--warning) 50%, transparent);
+  text-decoration: underline;
+  text-decoration-color: var(--warning);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+/* A selection in the plan reads as "about to comment", not as generic text. */
+.plans-document ::selection {
+  background-color: color-mix(in oklab, var(--primary) 22%, transparent);
+}
+
+/* Keep the review's own scroll regions from bouncing the whole page on iOS. */
+.plans-review {
+  overscroll-behavior: contain;
+}
+
+::highlight(plans-redline) {
+  background-color: color-mix(in oklab, var(--destructive) 15%, transparent);
+  text-decoration: line-through;
+  text-decoration-color: var(--destructive);
+  text-decoration-thickness: 2px;
+}
+
+::highlight(plans-looks-good) {
+  background-color: color-mix(in oklab, var(--success) 25%, transparent);
+  text-decoration: underline;
+  text-decoration-color: var(--success);
+}

@@ -2,6 +2,10 @@
 
 A private GitHub collection of BB plugins.
 
+`erwin-plans` provides plan review with a per-thread
+review panel, comments, revision history, and feedback to the original agent. See
+[Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
+
 `erwin-activity` adds a status-first thread list: Needs Attention, Unread,
 Working, Draft, and Done. It also supports project grouping. See
 [Threads](plugins/activity/README.md) for local installation and draft limits.

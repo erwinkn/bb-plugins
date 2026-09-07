@@ -1,0 +1,86 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./bb-tokens.css";
+@source "../components";
+@source "../app.tsx";
+@source "./main.tsx";
+@source "./sdk-app-shim.tsx";
+@import "../app.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Map BB tokens onto Tailwind utility names the plugin uses (bg-background, …). */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-state-hover: var(--state-hover);
+  --color-state-active: var(--state-active);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-warning: var(--warning);
+  --color-warning-text: var(--warning-text);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.375rem;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Stand-in for the host Markdown typography (preview only). */
+.preview-markdown { font-size: 0.9375rem; line-height: 1.6; }
+.preview-markdown > :first-child { margin-top: 0; }
+.preview-markdown h1 { font-size: 1.5rem; font-weight: 600; margin: 1.5rem 0 0.75rem; line-height: 1.25; }
+.preview-markdown h2 { font-size: 1.125rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+.preview-markdown h3 { font-size: 1rem; font-weight: 600; margin: 1.25rem 0 0.5rem; }
+.preview-markdown p, .preview-markdown ul, .preview-markdown ol { margin: 0.5rem 0 0.75rem; }
+.preview-markdown ul, .preview-markdown ol { padding-left: 1.5rem; }
+.preview-markdown ul { list-style: disc; }
+.preview-markdown ol { list-style: decimal; }
+.preview-markdown li { margin: 0.25rem 0; }
+.preview-markdown code { font-family: var(--font-mono); font-size: 0.85em; background: var(--muted); border-radius: 4px; padding: 0.1em 0.35em; }
+.preview-markdown pre { background: var(--muted); border-radius: 6px; padding: 0.75rem; overflow: auto; }
+.preview-markdown pre code { background: none; padding: 0; }
+.preview-markdown blockquote { border-left: 3px solid var(--border); padding-left: 0.75rem; color: var(--muted-foreground); margin: 0.5rem 0; }
+.preview-markdown strong { font-weight: 600; }
