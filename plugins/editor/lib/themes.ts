@@ -84,24 +84,6 @@ export function codeThemeLabel(id: string): string {
   return CODE_THEME_CHOICES.find((choice) => choice.id === id)?.label ?? "Follow BB";
 }
 
-export function themePair(id: string): ThemePair | undefined {
-  return BY_ID.get(id);
-}
-
-/** BB's app-theme id for a pair contributed by this plugin. */
-export function bbThemeId(pluginId: string, pairId: string): string {
-  return `plugin:${pluginId}:${pairId}`;
-}
-
-/** The pair id behind a BB theme id, or `default`; null for a theme that is not ours. */
-export function pairIdFromBbTheme(pluginId: string, themeId: string): string | null {
-  if (themeId === BB_DEFAULT) return BB_DEFAULT;
-  const prefix = `plugin:${pluginId}:`;
-  if (!themeId.startsWith(prefix)) return null;
-  const id = themeId.slice(prefix.length);
-  return BY_ID.has(id) ? id : null;
-}
-
 /** The theme name a pair uses in `mode`; BB's default pair for `default`. */
 export function themeNameFor(pairId: string, mode: ThemeType): string | null {
   if (pairId === FOLLOW_BB) return FOLLOW_BB;
@@ -110,7 +92,3 @@ export function themeNameFor(pairId: string, mode: ThemeType): string | null {
   return pair === undefined ? null : pair[mode];
 }
 
-/** The `bb.themes` manifest entries for the pairs, kept in sync by a test. */
-export function manifestThemes(css: string): { id: string; name: string; css: string; codeTheme: { dark: string; light: string } }[] {
-  return THEME_PAIRS.map((pair) => ({ id: pair.id, name: pair.label, css, codeTheme: { dark: pair.dark, light: pair.light } }));
-}

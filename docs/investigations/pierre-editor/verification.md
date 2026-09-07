@@ -316,3 +316,28 @@ Installed checks in the fixture thread (`/tmp/bb-pierre-qa-0907`):
 Typecheck, `--noUnusedLocals --noUnusedParameters`, both builds and all 143
 tests pass. Physical phones, IME composition and remote-host latency were not
 tested from this session; they need a device.
+
+## File watch, icons and cleanup (2026-09-07, later)
+
+The plugin now declares a `bb.host` module. `syncWatches` keeps one native
+watch per requested root; batches come back as a `changed` signal with
+root-relative paths, and the server publishes them as `files-changed` with a
+sequence number, so a page with two panels acts once. Host entry tests use
+the SDK's host harness with a fake watcher; server tests use the fake plugin
+host's host-RPC stub and signal drivers; the registry has its own tests.
+
+Installed checks in the acceptance thread, tab visible:
+
+- Writing to `sample.ts` from a shell updated the open editor after 0.3 s.
+- Creating `watch-new.txt` added its tree row within 1.2 s; deleting it
+  removed the row. The Changes count went from 34 to 35 and back.
+- The first attempt found no update: the daemon's watcher reports real paths,
+  and the fixture lives under macOS's symlinked `/tmp`. The host now resolves
+  the real root and sends root-relative paths.
+
+File icons come from `@pierre/trees`; a test keeps the copied palette equal
+to the package stylesheet. The copied BB menu kit was trimmed to the parts the
+scope menu uses: the icon registry, unused menu variants, the coarse-pointer
+constants and the media-query helpers are gone, and the app bundle shrank
+from 623 KB to 515 KB. Monaco-era language fields and dead theme helpers were
+removed with their tests. Typecheck, all tests and the three builds pass.

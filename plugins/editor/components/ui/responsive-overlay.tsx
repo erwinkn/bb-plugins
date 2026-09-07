@@ -185,7 +185,7 @@ interface ResponsiveDrawerShellProps {
   children: React.ReactNode;
 }
 
-export function useResponsiveDrawerRealization({
+function useResponsiveDrawerRealization({
   open,
   enabled = true,
 }: {
@@ -429,7 +429,7 @@ interface UsePersistentOverlayFocusArgs {
   requestClose: () => void;
 }
 
-export function usePersistentOverlayFocus({
+function usePersistentOverlayFocus({
   onAfterCloseAutoFocus,
   onBeforeCloseAutoFocus,
   open,
@@ -504,7 +504,7 @@ type PersistentDrawerDrag = {
   height: number;
 };
 
-export function PersistentResponsiveDrawerShell({
+function PersistentResponsiveDrawerShell({
   open,
   onOpenChange,
   onAfterCloseAutoFocus,

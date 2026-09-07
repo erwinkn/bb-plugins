@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { BB_DEFAULT, CODE_THEME_CHOICES, codeThemeId, codeThemeLabel, FOLLOW_BB, bbThemeId, manifestThemes, pairIdFromBbTheme, THEME_PAIRS, themeNameFor, themePair } from "./themes";
+import { BB_DEFAULT, CODE_THEME_CHOICES, codeThemeId, codeThemeLabel, FOLLOW_BB, THEME_PAIRS, themeNameFor } from "./themes";
 
 const modules = path.join(import.meta.dirname, "..", "node_modules");
 
@@ -30,16 +30,10 @@ test("every theme a pair names is one the code view can resolve", () => {
 
 test("package.json contributes exactly the pairs as BB themes", () => {
   const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { bb: { themes: unknown } };
-  assert.deepEqual(manifest.bb.themes, manifestThemes("./themes/default.css"));
-});
-
-test("BB theme ids round-trip and foreign themes map to null", () => {
-  assert.equal(bbThemeId("erwin-editor", "github"), "plugin:erwin-editor:github");
-  assert.equal(pairIdFromBbTheme("erwin-editor", "plugin:erwin-editor:github"), "github");
-  assert.equal(pairIdFromBbTheme("erwin-editor", BB_DEFAULT), BB_DEFAULT);
-  assert.equal(pairIdFromBbTheme("erwin-editor", "nord"), null);
-  assert.equal(pairIdFromBbTheme("erwin-editor", "plugin:erwin-editor:nope"), null);
-  assert.equal(pairIdFromBbTheme("erwin-editor", "plugin:other:github"), null);
+  assert.deepEqual(
+    manifest.bb.themes,
+    THEME_PAIRS.map((pair) => ({ id: pair.id, name: pair.label, css: "./themes/default.css", codeTheme: { dark: pair.dark, light: pair.light } })),
+  );
 });
 
 test("themeNameFor picks the mode's theme and BB's default pair", () => {
@@ -47,9 +41,8 @@ test("themeNameFor picks the mode's theme and BB's default pair", () => {
   assert.equal(themeNameFor("github", "light"), "github-light");
   assert.equal(themeNameFor(BB_DEFAULT, "dark"), "pierre-dark");
   assert.equal(themeNameFor("nope", "dark"), null);
-  assert.equal(themePair("github")?.label, "GitHub");
   assert.equal(themeNameFor(FOLLOW_BB, "dark"), "bb");
-  assert.ok(!manifestThemes("").some((entry) => entry.id === "conductor" || entry.id === FOLLOW_BB));
+  assert.ok(!THEME_PAIRS.some((pair) => pair.id === "conductor" || pair.id === FOLLOW_BB));
 });
 
 test("settings labels and picker ids round-trip through the same catalog", () => {

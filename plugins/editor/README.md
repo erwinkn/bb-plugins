@@ -26,15 +26,9 @@ Catppuccin, and Tokyo Night. Each uses its light or dark variant to match BB's
 mode. A theme without a variant uses Pierre for that mode. Plugin theme
 selection does not change BB's global theme.
 
-Conductor's default `conductor-dark` and `conductor-light` themes are custom
-palettes defined in its app bundle. This plugin uses bundled predefined themes
-instead; no Conductor palette is included.
-
-The editor uses Pierre's text editing and Shiki syntax highlighting. It does
-not provide Monaco's completions, diagnostics, hover information, symbol
-navigation, rename, formatting, code folding, sticky scroll, minimap, or
-language services. Commands and
-settings that depended on those features have been removed.
+The editor uses Pierre's text editing and Shiki syntax highlighting. It has
+no language services: no completions, diagnostics, hover information, symbol
+navigation, rename, formatting, code folding, sticky scroll, or minimap.
 
 ## Changes
 
@@ -136,10 +130,16 @@ version is restored when the file opens. A draft from an older version is kept
 for an explicit restore or discard decision. The UI reports when browser
 storage cannot retain a draft. Drafts do not sync between devices.
 
-Clean open files check for external changes on focus and at intervals while
-BB is visible. Files with unsaved edits keep those edits and report the changed
-base. BB does not yet expose tab-close negotiation to plugins, so durable
-drafts provide recovery when a tab or window closes.
+Open files follow changes made outside the editor. The plugin's host module
+keeps a native watch on each workspace root an open panel uses, and every
+batch of changes reaches the page as one realtime message: the open files it
+names are re-read, the file tree reloads when a file appears or disappears,
+and the change list refreshes. A clean file takes the new text; a file with
+unsaved edits keeps them and reports the changed base. A poll on focus and
+every 30 seconds remains as a backstop, and runs every 5 seconds for a root
+the host cannot watch. A lost connection or a restarted host worker triggers
+a full re-read. BB does not yet expose tab-close negotiation to plugins, so
+durable drafts provide recovery when a tab or window closes.
 
 ## Settings
 

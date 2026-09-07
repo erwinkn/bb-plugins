@@ -20,7 +20,6 @@ import {
   targetKey,
   unavailableReason,
   viewPrefsFrom,
-  withBranch,
   DEFAULT_VIEW_PREFS,
   SPLIT_MIN_WIDTH_PX,
 } from "./diff-view-state";
@@ -93,8 +92,6 @@ test("the wording names the branch a comparison uses, or says there is none", ()
   assert.equal(comparisonBranch({ type: "uncommitted" }, "main"), null);
   assert.equal(needsBranch({ type: "branch_committed" }, null), true);
   assert.equal(needsBranch({ type: "uncommitted" }, null), false);
-  assert.deepEqual(withBranch({ type: "all" }, " dev "), { type: "all", mergeBaseBranch: "dev" });
-  assert.deepEqual(withBranch({ type: "uncommitted" }, "dev"), { type: "uncommitted" });
   assert.equal(sameTarget({ type: "all" }, { type: "all", mergeBaseBranch: "" }), true);
   assert.equal(sameTarget({ type: "all" }, { type: "all", mergeBaseBranch: "dev" }), false);
 });

@@ -121,12 +121,6 @@ export function needsBranch(target: DiffTarget, baseBranch: string | null): bool
   return comparisonBranch(target, baseBranch) === null;
 }
 
-/** A target with the branch written into it, so it survives a reload. */
-export function withBranch(target: DiffTarget, branch: string): DiffTarget {
-  if (target.type !== "all" && target.type !== "branch_committed") return target;
-  return { type: target.type, mergeBaseBranch: branch.trim() };
-}
-
 export interface ChangeSummary {
   files: number;
   additions: number;
