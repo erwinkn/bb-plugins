@@ -181,6 +181,11 @@ const MAX_IDLE_SESSIONS = 24;
  * as one that does not. A project without an environment can have a checkout on
  * more than one host, so that key keeps the host.
  */
+/** The part of a session key that names the source, for grouping sessions by it. */
+export function sourceKeyFor(source: FileSessionSource): string {
+  return sessionKeyFor(source, "");
+}
+
 export function sessionKeyFor(source: FileSessionSource, path: string): string {
   const file = normalizePath(path);
   const host = source.experimental_hostId ?? "";
@@ -935,11 +940,32 @@ export function subscribeDirtyPaths(
  * less often. A change on a file with unsaved work is never applied; it only
  * sets `staleBase`, and the save hash check still reports the conflict.
  *
- * This is a poll. A host file watch is a separate, larger piece of work.
+ * This is a poll. A source with a live host watch (see `lib/file-watch.ts`)
+ * is polled only slowly, as a backstop for a missed signal.
  */
 const REFRESH_INTERVAL_MS = 5_000;
 const LARGE_FILE_CHARS = 512 * 1024;
 const SLOW_REFRESH_INTERVAL_MS = 30_000;
+
+const watchedSources = new Set<string>();
+
+/** Tell the poll that a source's files arrive by signal, or no longer do. */
+export function setSourceWatched(source: FileSessionSource, watched: boolean): void {
+  const key = sourceKeyFor(source);
+  if (watched) watchedSources.add(key);
+  else watchedSources.delete(key);
+}
+
+/** Re-read the named files of a source now, if they are open. */
+export function refreshFiles(source: FileSessionSource, paths: readonly string[]): void {
+  for (const path of paths) {
+    const named = sessionKeyFor(source, path);
+    const session = sessions.get(aliases.get(named) ?? named);
+    if (session === undefined || session.viewCount === 0 || session.getSnapshot().load.kind !== "ready") continue;
+    refreshedAt.set(session.key, Date.now());
+    void session.refresh().catch(() => undefined);
+  }
+}
 
 const refreshedAt = new Map<string, number>();
 let watchTimer: ReturnType<typeof setInterval> | null = null;
@@ -957,7 +983,8 @@ export function refreshOpenFiles(options: { force?: boolean } = {}): void {
     if (session.viewCount === 0) continue;
     const snapshot = session.getSnapshot();
     if (snapshot.load.kind !== "ready") continue;
-    const interval = snapshot.savedContent.length > LARGE_FILE_CHARS ? SLOW_REFRESH_INTERVAL_MS : REFRESH_INTERVAL_MS;
+    const slow = snapshot.savedContent.length > LARGE_FILE_CHARS || watchedSources.has(sourceKeyFor(session.source));
+    const interval = slow ? SLOW_REFRESH_INTERVAL_MS : REFRESH_INTERVAL_MS;
     if (options.force !== true && now - (refreshedAt.get(session.key) ?? 0) < interval) continue;
     refreshedAt.set(session.key, now);
     void session.refresh().then(

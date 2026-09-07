@@ -22,6 +22,7 @@ import { ResizeHandle } from "./ResizeHandle";
 import { ThemePicker } from "./ThemePicker";
 import { themeNameFor } from "@/lib/themes";
 import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
+import { useFileWatch } from "@/lib/file-watch";
 
 export type Surface = "opener" | "panel";
 
@@ -179,6 +180,19 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     },
     [rpc, source],
   );
+
+  // A file that appeared or went away changes the tree; an edit does not.
+  // The open files themselves are re-read by the watch hook.
+  const treeReload = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useFileWatch(source, (event) => {
+    if (!treeRequested.current) return;
+    if (event.kind === "changed" && event.changes.every((change) => change.type === "update")) return;
+    if (treeReload.current !== null) clearTimeout(treeReload.current);
+    treeReload.current = setTimeout(() => {
+      treeReload.current = null;
+      void loadTree();
+    }, 300);
+  });
 
   const needTree = treeOpen || quickOpen;
   useEffect(() => {

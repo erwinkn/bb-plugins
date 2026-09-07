@@ -44,7 +44,7 @@ test("workspace without a thread or project asks for a project", async (t) => {
 });
 
 test("contract exposes the methods the frontend calls", () => {
-  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffCommits", "diffList", "diffRead", "diffRevert", "previewBase", "read", "remove", "rename", "setSetting", "theme", "tree", "workspace", "write"]);
+  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffCommits", "diffList", "diffRead", "diffRevert", "previewBase", "read", "remove", "rename", "setSetting", "theme", "tree", "unwatch", "watch", "workspace", "write"]);
 });
 
 test("settings and the picker share predefined themes without changing BB's global theme", async (t) => {
@@ -587,4 +587,66 @@ test("deleting a new file requires confirmation and never removes recursively", 
   assert.deepEqual(harness.inspection.sdk.callsTo("files.remove")[0]?.[0], {
     path: "/workspace/a.ts", rootPath: "/workspace", hostId: "host_remote", recursive: false,
   });
+});
+
+test("watch registers the workspace root on its host, relays changes with sequence numbers, and stops when unwatched", async (t) => {
+  const hostCalls: { method: string; input: unknown; hostId: string }[] = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "erwin-editor",
+    sdk: { environments: { get: async () => environment } },
+    experimental_callHostRpc: async (call) => {
+      hostCalls.push(call);
+      const roots = (call.input as { roots: string[] }).roots;
+      return { watching: roots.filter((root) => root !== "/broken"), failed: roots.filter((root) => root === "/broken").map((rootPath) => ({ rootPath, message: "no watcher" })) };
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace", threadId: null, environmentId: environment.id, projectId: environment.projectId };
+  const first = rpcContract.watch.output.parse(await harness.behavior.callRpc("watch", { source, clientId: "page-1" }));
+  assert.equal(typeof first.root, "string");
+  assert.ok(first.ttlMs > 0);
+  assert.deepEqual(hostCalls, [{ method: "syncWatches", input: { roots: ["/workspace"] }, hostId: "host_remote" }]);
+
+  // A second page on the same root shares the watch; no new host call.
+  const second = rpcContract.watch.output.parse(await harness.behavior.callRpc("watch", { source, clientId: "page-2" }));
+  assert.equal(second.root, first.root);
+  assert.equal(hostCalls.length, 2);
+  assert.deepEqual(hostCalls[1]!.input, { roots: ["/workspace"] });
+
+  await harness.behavior.experimental_emitHostSignal("host_remote", "changed", {
+    rootPath: "/workspace", kind: "changed",
+    paths: [{ path: "/workspace/src/a.ts", type: "update" }, { path: "/elsewhere/b.ts", type: "create" }],
+  });
+  await harness.behavior.experimental_emitHostSignal("host_remote", "changed", { rootPath: "/workspace", kind: "rescan", paths: [] });
+  await harness.behavior.experimental_emitHostSignal("host_remote", "changed", { rootPath: "/unknown", kind: "rescan", paths: [] });
+  assert.deepEqual(harness.inspection.realtimeSignals.map((signal) => [signal.channel, signal.payload]), [
+    ["files-changed", { root: first.root, kind: "changed", changes: [{ path: "src/a.ts", type: "update" }], seq: 1 }],
+    ["files-changed", { root: first.root, kind: "rescan", changes: [], seq: 2 }],
+  ]);
+
+  // The worker died: open files reload, and the watch is asked for again.
+  await harness.behavior.experimental_emitHostWorkerExit("host_remote");
+  assert.equal(harness.inspection.realtimeSignals.at(-1)?.payload && (harness.inspection.realtimeSignals.at(-1)!.payload as { kind: string }).kind, "rescan");
+  assert.deepEqual(hostCalls.at(-1)?.input, { roots: ["/workspace"] });
+
+  await harness.behavior.callRpc("unwatch", { source, clientId: "page-1" });
+  assert.deepEqual(hostCalls.at(-1)?.input, { roots: ["/workspace"] }, "one page left: the watch stays");
+  const callsBefore = hostCalls.length;
+  await harness.behavior.callRpc("unwatch", { source, clientId: "page-2" });
+  assert.deepEqual(hostCalls.at(-1)?.input, { roots: [] });
+  assert.equal(hostCalls.length, callsBefore + 1);
+});
+
+test("watch reports no root when the host cannot watch, and keeps the registration for a later host", async (t) => {
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "erwin-editor",
+    sdk: { environments: { get: async () => environment } },
+    experimental_callHostRpc: async () => { throw new Error("host offline"); },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace", threadId: null, environmentId: environment.id, projectId: environment.projectId };
+  const result = rpcContract.watch.output.parse(await harness.behavior.callRpc("watch", { source, clientId: "page-1" }));
+  assert.equal(result.root, null);
 });

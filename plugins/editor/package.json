@@ -13,6 +13,7 @@
       "icon": "Code"
     },
     "server": "./server.ts",
+    "host": "./host.ts",
     "app": "./app.tsx",
     "skills": [],
     "themes": [
@@ -382,6 +383,6 @@
     "build": "bb plugin build",
     "build:pierre": "node scripts/stage-assets.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test lib/*.test.ts server.test.ts"
+    "test": "tsx --test lib/*.test.ts server.test.ts host.test.ts"
   }
 }

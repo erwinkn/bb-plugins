@@ -40,6 +40,7 @@ import { EditableDiffPane } from "./EditableDiffPane";
 import { ScopeBar, type ScopePrompt } from "./DiffToolbar";
 import { ResizeHandle } from "./ResizeHandle";
 import { FolderIcon } from "./icons";
+import { useFileWatch } from "@/lib/file-watch";
 
 
 /** Stands in until the first list arrives; no session belongs to it. */
@@ -192,7 +193,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
     setListNonce((nonce) => nonce + 1);
     setRefreshNonce((nonce) => nonce + 1);
   }, []);
-  const refreshListAfterSave = useCallback(() => {
+  const refreshListKeepingSelection = useCallback(() => {
     savedSelection.current = { key, path: selected };
     setListNonce((nonce) => nonce + 1);
   }, [key, selected]);
@@ -216,6 +217,17 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
   // Unsaved work lives in the shared sessions, so the marks cover files that
   // the Files tab has open too, not only the file this pane shows.
   const dirtyPaths = useDirtyPaths(list.source ?? NO_SOURCE);
+
+  // Any change on disk can move a file into or out of the comparison, or
+  // change its counts, so the list follows; the selection stays.
+  const listReload = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useFileWatch(list.source, () => {
+    if (listReload.current !== null) clearTimeout(listReload.current);
+    listReload.current = setTimeout(() => {
+      listReload.current = null;
+      refreshListKeepingSelection();
+    }, 500);
+  });
 
   const entry = findEntry(list.files, selected);
   const summary = list.error === null ? summarize(list.files) : null;
@@ -308,7 +320,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
         onToggleList={() => setViewPref("listOpen", !view.listOpen)}
         onOpenFile={openFile}
         onOpenPath={openPath}
-        onSaved={refreshListAfterSave}
+        onSaved={refreshListKeepingSelection}
       />
     )
   ) : null;

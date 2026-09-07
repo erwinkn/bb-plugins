@@ -8,6 +8,8 @@ import { z } from "zod";
 import { listLocalTree } from "./lib/local-tree.js";
 import { CODE_THEME_CHOICES, codeThemeId, codeThemeLabel } from "./lib/themes.js";
 import { diffEntrySchema, diffTargetSchema, hasConflictMarkers, isWorkingTreeTarget, type DiffTarget } from "./lib/diff-contract.js";
+import { FILES_CHANGED_CHANNEL, watchContract, watchSignals, type FilesChangedSignal } from "./lib/watch-contract.js";
+import { WatchRegistry, WATCH_TTL_MS } from "./lib/watch-registry.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
 const MAX_TREE_ENTRIES = 10_000;
@@ -80,6 +82,20 @@ export const rpcContract = defineRpcContract({
       }),
       z.object({ kind: z.literal("unsupported"), reason: z.string() }),
     ]),
+  },
+  /**
+   * Ask for change notices for a source's root. The answer names the root
+   * the `files-changed` signal will carry, or null when the root's host
+   * cannot watch it; polling then remains the only path. A client renews
+   * before the registration expires and unwatches when it leaves.
+   */
+  watch: {
+    input: z.object({ source: sourceSchema, clientId: z.string().min(1).max(64) }).strict(),
+    output: z.object({ root: z.string().nullable(), ttlMs: z.number() }).strict(),
+  },
+  unwatch: {
+    input: z.object({ source: sourceSchema, clientId: z.string().min(1).max(64) }).strict(),
+    output: z.null(),
   },
   /**
    * A temporary URL base that serves the files under the root of `path`, for
@@ -340,6 +356,75 @@ export default async function plugin(bb: BbPluginApi) {
 
   let primaryHostId: string | null | undefined;
 
+  // File watching. The host module keeps a native watch per workspace root;
+  // the registry here remembers which clients asked for which root, and every
+  // batch of changes goes out as one realtime signal that names the root.
+  const watchHost = bb.hosts.experimental_client({ contract: watchContract, experimental_signals: watchSignals });
+  const watches = new WatchRegistry();
+  const syncingHosts = new Map<string, Promise<void>>();
+
+  /** Make one host's watches match the registry, coalescing concurrent asks. */
+  function syncHost(hostId: string): Promise<void> {
+    const pending = syncingHosts.get(hostId);
+    if (pending !== undefined) return pending;
+    const run = (async () => {
+      const roots = watches.rootsOn(hostId);
+      const result = await watchHost.call("syncWatches", { roots }, { hostId });
+      watches.markWatching(hostId, result.watching);
+      for (const failure of result.failed) bb.log.warn(`file watch failed for ${failure.rootPath}: ${failure.message}`);
+    })().finally(() => syncingHosts.delete(hostId));
+    syncingHosts.set(hostId, run);
+    return run;
+  }
+
+  /** Drops registrations nobody renewed and lets their hosts stop watching. */
+  async function pruneWatches(): Promise<void> {
+    for (const hostId of watches.prune(Date.now())) await syncHost(hostId).catch(() => undefined);
+  }
+
+  // Every open page gets every signal, and a page may hold two subscribers;
+  // the sequence number lets each page act on a signal once.
+  let changeSequence = 0;
+  function publishChange(signal: Omit<FilesChangedSignal, "seq">): void {
+    bb.realtime.publish(FILES_CHANGED_CHANNEL, { ...signal, seq: ++changeSequence } satisfies FilesChangedSignal);
+  }
+
+  watchHost.experimental_onSignal("changed", ({ hostId, payload }) => {
+    const entry = watches.get(hostId, payload.rootPath);
+    if (entry === undefined) return;
+    if (payload.kind === "rescan") {
+      publishChange({ root: entry.key, kind: "rescan", changes: [] });
+      return;
+    }
+    const changes = payload.paths
+      .filter((change) => change.path.startsWith(payload.rootPath))
+      .map((change) => ({ path: relativeTo(payload.rootPath, change.path), type: change.type }));
+    if (changes.length > 0) publishChange({ root: entry.key, kind: "changed", changes });
+  });
+  // The worker took its watches with it. Say so, so open files reload, and
+  // start the watches again on the next chance.
+  watchHost.experimental_onWorkerExit(({ hostId }) => {
+    for (const entry of watches.entriesOn(hostId)) publishChange({ root: entry.key, kind: "rescan", changes: [] });
+    watches.markWatching(hostId, []);
+    void syncHost(hostId).catch((error: unknown) => bb.log.warn(`file watch restart failed: ${error instanceof Error ? error.message : String(error)}`));
+  });
+  bb.background.service("watch-reaper", {
+    async start(signal) {
+      const timer = setInterval(() => void pruneWatches(), WATCH_TTL_MS / 2);
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      clearInterval(timer);
+      watches.clear();
+    },
+  });
+
+  /** The host that holds a resolved target's files, or null when none can watch it. */
+  async function hostOf(target: { rootPath: string; hostId?: string }): Promise<string | null> {
+    if (target.hostId !== undefined) return target.hostId;
+    // A path with no host is on this machine, which is BB's primary host.
+    primaryHostId ??= (await bb.sdk.system.config()).primaryHostId;
+    return primaryHostId;
+  }
+
   /**
    * Whether `target` is a directory on the machine this plugin runs on: its
    * host is BB's primary host (or none, for thread storage) and the path
@@ -584,6 +669,28 @@ export default async function plugin(bb: BbPluginApi) {
 
     diffRead: readDiff,
     assets: () => assets(),
+
+    async watch({ source, clientId }) {
+      const target = await resolveTarget(source, ".");
+      const hostId = await hostOf(target);
+      if (hostId === null) return { root: null, ttlMs: WATCH_TTL_MS };
+      const entry = watches.register(hostId, target.rootPath, clientId, Date.now() + WATCH_TTL_MS);
+      try {
+        await syncHost(hostId);
+      } catch (error) {
+        // A host that is offline or too old to watch: polling carries on.
+        bb.log.info(`file watch unavailable on ${hostId}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return { root: entry.watching ? entry.key : null, ttlMs: WATCH_TTL_MS };
+    },
+
+    async unwatch({ source, clientId }) {
+      const target = await resolveTarget(source, ".");
+      const hostId = await hostOf(target);
+      if (hostId === null) return null;
+      if (watches.unregister(hostId, target.rootPath, clientId)) await syncHost(hostId).catch(() => undefined);
+      return null;
+    },
 
     async previewBase({ path: filePath, source }) {
       const target = await resolveTarget(source, filePath);
