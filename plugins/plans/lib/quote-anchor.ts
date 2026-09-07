@@ -119,14 +119,70 @@ export type QuoteMatch =
   | { kind: "missing" }
   | { kind: "ambiguous"; count: number };
 
-export function matchQuote(indexText: string, quote: string): QuoteMatch {
+/**
+ * Normalized text around a selection, stored with the comment so a quote that
+ * appears more than once can still be pinned to the place the reviewer chose.
+ */
+export interface QuoteContext {
+  prefix?: string;
+  suffix?: string;
+}
+
+export const CONTEXT_LENGTH = 48;
+
+function occurrences(haystack: string, needle: string): number[] {
+  const found: number[] = [];
+  let from = 0;
+  while (from <= haystack.length) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) break;
+    found.push(at);
+    from = at + 1;
+  }
+  return found;
+}
+
+/** Characters of `expected` that line up with `actual`, read outward from the quote. */
+function agreement(expected: string, actual: string, fromEnd: boolean): number {
+  let count = 0;
+  while (count < expected.length && count < actual.length) {
+    const a = fromEnd ? expected[expected.length - 1 - count] : expected[count];
+    const b = fromEnd ? actual[actual.length - 1 - count] : actual[count];
+    if (a !== b) break;
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * Finds the quote in the index text. One occurrence is a match. Several are
+ * ambiguous unless the stored context picks out exactly one: the occurrence
+ * whose neighbours agree most with `prefix` and `suffix` wins, and a tie stays
+ * ambiguous rather than guessing.
+ */
+export function matchQuote(indexText: string, quote: string, context: QuoteContext = {}): QuoteMatch {
   const needle = normalizeQuote(quote);
   if (needle.length === 0) return { kind: "missing" };
-  const count = countOccurrences(indexText, needle);
-  if (count === 0) return { kind: "missing" };
-  if (count > 1) return { kind: "ambiguous", count };
-  const start = indexText.indexOf(needle);
-  return { kind: "unique", start, end: start + needle.length };
+  const found = occurrences(indexText, needle);
+  if (found.length === 0) return { kind: "missing" };
+  if (found.length === 1) return { kind: "unique", start: found[0]!, end: found[0]! + needle.length };
+  const prefix = context.prefix ?? "";
+  const suffix = context.suffix ?? "";
+  if (prefix.length === 0 && suffix.length === 0) return { kind: "ambiguous", count: found.length };
+  let best: { start: number; score: number } | null = null;
+  let tied = false;
+  for (const start of found) {
+    const end = start + needle.length;
+    const score =
+      agreement(prefix, indexText.slice(Math.max(0, start - prefix.length), start), true) +
+      agreement(suffix, indexText.slice(end, end + suffix.length), false);
+    if (best === null || score > best.score) {
+      best = { start, score };
+      tied = false;
+    } else if (score === best.score) tied = true;
+  }
+  if (best === null || tied || best.score === 0) return { kind: "ambiguous", count: found.length };
+  return { kind: "unique", start: best.start, end: best.start + needle.length };
 }
 
 export function sameMatch(a: QuoteMatch | undefined, b: QuoteMatch): boolean {
@@ -210,11 +266,25 @@ function positionAfter(index: TextIndex, node: Node): number | null {
  * boundaries cannot be mapped.
  */
 export function quoteForRange(index: TextIndex, range: Range): string {
-  const start = indexPositionFor(index, range.startContainer, range.startOffset);
-  const end = indexPositionFor(index, range.endContainer, range.endOffset);
+  return selectionForRange(index, range).quote;
+}
+
+/** The quote plus the text on either side, for re-anchoring repeated passages. */
+export function selectionForRange(index: TextIndex, range: Range): { quote: string } & QuoteContext {
+  let start = indexPositionFor(index, range.startContainer, range.startOffset);
+  let end = indexPositionFor(index, range.endContainer, range.endOffset);
   if (start !== null && end !== null && end > start) {
-    const quote = normalizeQuote(index.text.slice(start, end));
-    if (quote.length > 0) return quote;
+    // The index text is already normalized; only edge spaces need trimming,
+    // and the context must hug the trimmed quote or it will not line up.
+    while (start < end && index.text[start] === " ") start += 1;
+    while (end > start && index.text[end - 1] === " ") end -= 1;
+    if (end > start) {
+      return {
+        quote: index.text.slice(start, end),
+        prefix: index.text.slice(Math.max(0, start - CONTEXT_LENGTH), start),
+        suffix: index.text.slice(end, end + CONTEXT_LENGTH),
+      };
+    }
   }
-  return normalizeQuote(range.toString());
+  return { quote: normalizeQuote(range.toString()) };
 }

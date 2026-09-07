@@ -365,11 +365,15 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
         .map((p) => ({ ...p, versions: p.versions.slice(-1), comments: [] }));
     },
     addComment: (input: z.input<typeof addCommentSchema>) => {
-      const { id, versionId, quote, body, kind } = addCommentSchema.parse(input);
+      const { id, versionId, quote, body, kind, prefix, suffix } = addCommentSchema.parse(input);
       const plan = editable(id);
       if (!plan.versions.some((v) => v.id === versionId)) throw new Error("Version not found.");
       if (plan.status === "approved") throw new Error("Submit a new version before adding comments.");
-      plan.comments.push({ id: randomUUID(), versionId, quote, body, ...(kind ? { kind } : {}), resolved: false, createdAt: Date.now(), sentAt: null });
+      plan.comments.push({
+        id: randomUUID(), versionId, quote, body, ...(kind ? { kind } : {}),
+        ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}),
+        resolved: false, createdAt: Date.now(), sentAt: null,
+      });
       return save(plan);
     },
     resolveComment: ({ id, commentId, resolved }: { id: string; commentId: string; resolved: boolean }) => {

@@ -215,6 +215,19 @@ describe("quotes across block boundaries", () => {
     expect(paintedQuotes()).toEqual(["PlanRun the tests."]);
   });
 
+  it("pins a repeated passage to the place it was selected, and stays unpainted without context", () => {
+    const markdown = "Leave a comment, a redline, and a Looks good.\n\nStrike through redline quotes.\n\nRedline and Looks good read as badges.";
+    const bare = comment({ quote: "redline", kind: "redline" });
+    const pinned = comment({ id: "pinned", quote: "redline", kind: "redline", prefix: "Strike through ", suffix: " quotes." });
+    const { lastAnchors } = renderDocument({ markdown, comments: [bare, pinned] });
+
+    expect(lastAnchors()[bare.id]).toEqual({ kind: "ambiguous", count: 2 });
+    const match = lastAnchors().pinned;
+    expect(match?.kind).toBe("unique");
+    expect(match?.kind === "unique" && markdown.replace(/\n+/g, " ").slice(match.start - 15, match.end)).toBe("Strike through redline");
+    expect(paintedQuotes("plans-redline")).toEqual(["redline"]);
+  });
+
   it("does not anchor a word that only exists by gluing two blocks together", () => {
     const glued = comment({ quote: "theme" });
     const { lastAnchors } = renderDocument({
@@ -245,7 +258,7 @@ describe("quotes across block boundaries", () => {
     await selectText(content(), "Then run", "npm test");
     fireEvent.pointerDown(commentButton());
 
-    expect(onQuote).toHaveBeenCalledWith("Then run: npm test");
+    expect(onQuote).toHaveBeenCalledWith("Then run: npm test", expect.any(Object));
   });
 });
 
@@ -427,7 +440,7 @@ describe("commenting without a mouse", () => {
     await selectText(content(), "existing data");
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "c" });
 
-    expect(onQuote).toHaveBeenCalledWith("existing data");
+    expect(onQuote).toHaveBeenCalledWith("existing data", { prefix: "Keep the ", suffix: "." });
   });
 
   it("offers a focusable Comment button that commits on Enter", async () => {
@@ -439,7 +452,7 @@ describe("commenting without a mouse", () => {
     expect(document.activeElement).toBe(button);
     fireEvent.keyDown(button, { key: "Enter" });
 
-    expect(onQuote).toHaveBeenCalledWith("existing data");
+    expect(onQuote).toHaveBeenCalledWith("existing data", { prefix: "Keep the ", suffix: "." });
   });
 
   it("ignores the shortcut while the reviewer types in a text field", async () => {
@@ -465,7 +478,7 @@ describe("commenting without a mouse", () => {
     // iOS collapses the selection on touchend; no click ever reaches the bar.
     await clearSelection();
 
-    expect(onQuote).toHaveBeenCalledWith("existing data");
+    expect(onQuote).toHaveBeenCalledWith("existing data", { prefix: "Keep the ", suffix: "." });
   });
 });
 
@@ -492,7 +505,7 @@ describe("selection annotation actions", () => {
     const { content, onQuote } = renderDocument({ markdown: "Keep the existing data.", onAnnotate });
     await selectText(content(), "existing data");
     fireEvent.pointerDown(screen.getByRole("button", { name: kind === "redline" ? /^Redline/ : /^Looks good/ }));
-    expect(onAnnotate).toHaveBeenCalledWith("existing data", kind);
+    expect(onAnnotate).toHaveBeenCalledWith("existing data", kind, { prefix: "Keep the ", suffix: "." });
     expect(onQuote).not.toHaveBeenCalled();
   });
 });
@@ -513,7 +526,7 @@ it.each([["d", "redline"], ["g", "looksGood"]] as const)("supports the %s select
   const { content } = renderDocument({ markdown: "Keep the existing data.", onAnnotate });
   await selectText(content(), "existing data");
   fireEvent.keyDown(document.body, { key });
-  expect(onAnnotate).toHaveBeenCalledWith("existing data", kind);
+  expect(onAnnotate).toHaveBeenCalledWith("existing data", kind, { prefix: "Keep the ", suffix: "." });
 });
 
 it("hides shortcut labels on the touch menu", async () => {

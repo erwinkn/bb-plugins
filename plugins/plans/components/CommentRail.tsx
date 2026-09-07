@@ -5,10 +5,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { PlanComment } from "../contract";
 import { formatRelativeTime } from "../lib/time";
-import type { QuoteMatch } from "../lib/quote-anchor";
+import type { QuoteContext, QuoteMatch } from "../lib/quote-anchor";
 import type { AnchorMap } from "./PlanDocument";
 
-export interface PendingComment {
+export interface PendingComment extends QuoteContext {
   quote: string;
   body: string;
 }

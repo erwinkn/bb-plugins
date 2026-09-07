@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { indexTextNodes, MAX_QUOTE_LENGTH, quoteForRange } from "../lib/quote-anchor";
+import { indexTextNodes, MAX_QUOTE_LENGTH, selectionForRange, type QuoteContext } from "../lib/quote-anchor";
 
-export interface SelectionQuote {
+export interface SelectionQuote extends QuoteContext {
   quote: string;
   /** Set when the selection exceeds the comment limit; it cannot be committed. */
   tooLong: boolean;
@@ -57,7 +57,7 @@ export function useSelectionQuote(
         setCurrent(null);
         return;
       }
-      const quote = quoteForRange(indexTextNodes(content), range);
+      const { quote, prefix, suffix } = selectionForRange(indexTextNodes(content), range);
       if (quote.length < MIN_QUOTE_LENGTH) {
         setCurrent(null);
         return;
@@ -66,6 +66,8 @@ export function useSelectionQuote(
       const origin = scroller.getBoundingClientRect();
       const next: SelectionQuote = {
         quote,
+        prefix,
+        suffix,
         tooLong: quote.length > MAX_QUOTE_LENGTH,
         rect: {
           top: bounds.top - origin.top + scroller.scrollTop,

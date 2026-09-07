@@ -29,6 +29,7 @@ import {
   matchQuote,
   rangeForMatch,
   sameMatch,
+  type QuoteContext,
   type QuoteMatch,
 } from "../lib/quote-anchor";
 
@@ -43,6 +44,8 @@ interface PlanDocumentProps {
   canComment: boolean;
   /** Quote being composed; its match is reported so the composer can warn. */
   pendingQuote: string | null;
+  /** Where the pending quote was selected, for a passage that repeats. */
+  pendingContext?: QuoteContext;
   onPendingMatch: (match: QuoteMatch | null) => void;
   /**
    * Composer for the pending quote. It floats beside the passage when the
@@ -50,8 +53,8 @@ interface PlanDocumentProps {
    */
   composer?: ReactNode;
   /** The user asked to comment on the current selection. */
-  onQuote: (quote: string) => void;
-  onAnnotate?: (quote: string, kind: "redline" | "looksGood") => Promise<void>;
+  onQuote: (quote: string, context: QuoteContext) => void;
+  onAnnotate?: (quote: string, kind: "redline" | "looksGood", context: QuoteContext) => Promise<void>;
   onActivateComment: (commentId: string | null) => void;
   /** Where each comment's quote was found; lets cards explain missing anchors. */
   onAnchorsChange: (anchors: AnchorMap) => void;
@@ -81,6 +84,7 @@ export function PlanDocument({
   activeCommentId,
   canComment,
   pendingQuote,
+  pendingContext,
   onPendingMatch,
   composer,
   onQuote,
@@ -108,7 +112,7 @@ export function PlanDocument({
     const anchors: AnchorMap = {};
     const ranges = new Map<string, Range>();
     for (const comment of comments) {
-      const match = matchQuote(index.text, comment.quote);
+      const match = matchQuote(index.text, comment.quote, comment);
       anchors[comment.id] = match;
       if (match.kind === "unique") {
         const range = rangeForMatch(index, match.start, match.end);
@@ -118,7 +122,7 @@ export function PlanDocument({
     rangesRef.current = ranges;
     // The selection clears once the composer opens; keep the passage painted
     // so the author still sees what the comment is about.
-    const pendingMatch = pendingQuote === null ? null : matchQuote(index.text, pendingQuote);
+    const pendingMatch = pendingQuote === null ? null : matchQuote(index.text, pendingQuote, pendingContext);
     pendingRangeRef.current =
       pendingMatch?.kind === "unique" ? rangeForMatch(index, pendingMatch.start, pendingMatch.end) : null;
     forceRepaint((n) => n + 1);
@@ -133,7 +137,7 @@ export function PlanDocument({
       anchorsRef.current = anchors;
       onAnchorsChange(anchors);
     }
-  }, [comments, onAnchorsChange, onPendingMatch, pendingQuote]);
+  }, [comments, onAnchorsChange, onPendingMatch, pendingQuote, pendingContext?.prefix, pendingContext?.suffix]);
 
   useLayoutEffect(() => {
     anchor();
@@ -220,8 +224,9 @@ export function PlanDocument({
   const commitQuote = (kind?: "redline" | "looksGood") => {
     const recent = takeRecent();
     if (recent === null) return;
-    if (kind && onAnnotate) void onAnnotate(recent.quote, kind);
-    else onQuote(recent.quote);
+    const context = { prefix: recent.prefix, suffix: recent.suffix };
+    if (kind && onAnnotate) void onAnnotate(recent.quote, kind, context);
+    else onQuote(recent.quote, context);
     clearDocumentSelection(contentRef.current);
   };
   const commitProps = (kind?: "redline" | "looksGood") => ({

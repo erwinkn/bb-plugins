@@ -170,6 +170,8 @@ export function PlanReview({
           versionId: version.id,
           quote: pending.quote,
           body: pending.body,
+          prefix: pending.prefix,
+          suffix: pending.suffix,
         }),
       );
       updateDraft({ pendingComment: null });
@@ -360,6 +362,7 @@ export function PlanReview({
               activeCommentId={activeCommentId}
               canComment={canEdit}
               pendingQuote={pending?.quote ?? null}
+              pendingContext={pending ?? undefined}
               onPendingMatch={setPendingMatch}
               composer={
                 !isMobile && pending ? (
@@ -372,13 +375,13 @@ export function PlanReview({
                   />
                 ) : undefined
               }
-              onAnnotate={async (quote, kind) => {
+              onAnnotate={async (quote, kind, context) => {
                 try {
-                  await runMutation(() => api.call("addComment", { id: plan.id, versionId: version.id, quote, kind, body: "" }));
+                  await runMutation(() => api.call("addComment", { id: plan.id, versionId: version.id, quote, kind, body: "", ...context }));
                 } catch (error) { toast.error(describeError(error)); }
               }}
-              onQuote={(quote) => {
-                setPending({ quote, body: pending?.quote === quote ? pending.body : "" });
+              onQuote={(quote, context) => {
+                setPending({ quote, ...context, body: pending?.quote === quote ? pending.body : "" });
                 setActiveCommentId(null);
               }}
               onActivateComment={(id) => {

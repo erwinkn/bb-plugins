@@ -8,7 +8,7 @@
 
 export interface ReviewDraft {
   note: string;
-  pendingComment: { quote: string; body: string } | null;
+  pendingComment: { quote: string; body: string; prefix?: string; suffix?: string } | null;
 }
 
 export const EMPTY_DRAFT: ReviewDraft = { note: "", pendingComment: null };
@@ -36,15 +36,17 @@ function parseDraft(raw: string): ReviewDraft {
   if (typeof parsed !== "object" || parsed === null) return EMPTY_DRAFT;
   const record = parsed as Record<string, unknown>;
   const note = typeof record.note === "string" ? record.note : "";
-  const pending = record.pendingComment;
+  const pending = record.pendingComment as Record<string, unknown> | null | undefined;
   const pendingComment =
     typeof pending === "object" &&
     pending !== null &&
-    typeof (pending as Record<string, unknown>).quote === "string" &&
-    typeof (pending as Record<string, unknown>).body === "string"
+    typeof pending.quote === "string" &&
+    typeof pending.body === "string"
       ? {
-          quote: (pending as { quote: string }).quote,
-          body: (pending as { body: string }).body,
+          quote: pending.quote,
+          body: pending.body,
+          ...(typeof pending.prefix === "string" ? { prefix: pending.prefix } : {}),
+          ...(typeof pending.suffix === "string" ? { suffix: pending.suffix } : {}),
         }
       : null;
   return { note, pendingComment };
