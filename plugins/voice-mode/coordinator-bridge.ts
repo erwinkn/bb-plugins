@@ -53,6 +53,7 @@ interface ActiveSpeech {
   responseId: string | null;
   playing: boolean;
   startedAt: number;
+  actualSpeech: string | null;
 }
 
 export interface BridgeSnapshot {
@@ -79,7 +80,7 @@ export class CoordinatorBridge {
   private openQuestion: { id: string; text: string } | null = null;
   private liveAt: number;
   private disposed = false;
-  private acknowledgments = new Map<number, string>();
+  private acknowledgments = new Map<number, {requestId:string;text:string}>();
 
   constructor(private readonly host: BridgeHost, readonly conversationId: string, private readonly userTurnOf: () => number) {
     this.liveAt = host.now();
@@ -153,7 +154,9 @@ export class CoordinatorBridge {
       speechEndedAt: bound.at(-1)?.speechEndedAt ?? null,
     };
     this.pending = handoff;
-    this.acknowledgments.set(this.userTurnOf(), requestId);
+    const spokenRequest = bound.map(item=>item.text ?? "").join(" ") || request;
+    const fallback = /archive|stop|delete/i.test(spokenRequest) ? "I’ll check the target and your instructions." : /fix|implement|change|update/i.test(spokenRequest) ? "I’ll arrange that work." : "I’ll check that for you.";
+    this.acknowledgments.set(this.userTurnOf(), {requestId,text: typeof args.acknowledgment === "string" && args.acknowledgment.trim() ? args.acknowledgment.trim().slice(0,160) : fallback});
     this.host.log("handoff.recorded", { requestId, callId, boundItems: handoff.boundItemIds, urgency, answersQuestionId });
     this.host.changed();
     if (!this.tryDispatch()) {
@@ -170,14 +173,15 @@ export class CoordinatorBridge {
 
   /** Called after the original tool response settles, never as a model tool follow-up. */
   acknowledge(turn: number, alreadySpoke: boolean) {
-    const requestId = this.acknowledgments.get(turn);
+    const acknowledgment = this.acknowledgments.get(turn);
+    const requestId = acknowledgment?.requestId;
     this.acknowledgments.delete(turn);
     if (!requestId || alreadySpoke || turn !== this.userTurnOf()) return;
     if (this.replyQueue.some(reply => reply.requestId === requestId && reply.kind !== "progress")) return;
     const reply: PublishedReply = {
       v: 1, replyId: `local_ack_${requestId}`, conversationId: this.conversationId, seq: -1,
       requestId, batchId: null, questionId: null, kind: "progress", source: "bridge",
-      speech: "On it.", detail: null, threadIds: [], receipts: [], focusThreadId: null,
+      speech: acknowledgment!.text, detail: null, threadIds: [], receipts: [], focusThreadId: null,
       targetCallNonce: this.host.nonce(), createdAt: this.host.now(),
     };
     this.replyQueue.unshift(reply);
@@ -261,7 +265,7 @@ export class CoordinatorBridge {
       const message = error instanceof Error ? error.message : String(error);
       this.host.log("handoff.failed", { requestId: handoff.requestId, error: message });
       if (this.host.nonce() === nonce) {
-        this.enqueueLocalReply(`I couldn't reach the coordinator: ${message}. Say retry to try again.`, "failure");
+        this.enqueueLocalReply("I could not start that request. Please try again.", "failure");
       }
     }
     this.host.changed();
@@ -284,6 +288,13 @@ export class CoordinatorBridge {
     this.host.log("reply.received", { replyId: reply.replyId, kind: reply.kind, requestId: reply.requestId, batchId: reply.batchId, source: reply.source });
     this.host.changed();
     this.drain();
+  }
+
+  ingestStatus(payload: unknown) {
+    const status = payload as {conversationId?:string;callNonce?:string;activeRequestIds?:string[]};
+    if (status?.conversationId !== this.conversationId || status.callNonce !== this.host.nonce() || !Array.isArray(status.activeRequestIds)) return;
+    for (const id of this.dispatched.keys()) if (!status.activeRequestIds.includes(id)) this.dispatched.delete(id);
+    this.host.changed();
   }
 
   ingestInbox(payload: unknown) {
@@ -343,18 +354,18 @@ export class CoordinatorBridge {
       return;
     }
     const instructions = reply.kind === "clarification"
-      ? "Ask the user the following question from the coordinator, in the same words, then stop. Do not answer it yourself. Do not call tools."
+      ? "Ask the following question in the same words, then stop. Do not answer it yourself. Do not call tools."
       : reply.kind === "update"
-        ? "Read the following background update from the coordinator to the user in the same words. It is not a new request. Do not add or infer anything. Do not call tools."
-        : "Say the following reply from the coordinator to the user in the same words, without adding information or claiming anything beyond it. Do not call tools.";
+        ? "Read the following update in the same words. It is not a new request. Do not add or infer anything. Do not call tools."
+        : "Say the following text in the same words, without adding information or claiming anything beyond it. Do not call tools.";
     this.host.speaking();
-    this.active = { reply, responseId: null, playing: false, startedAt: this.host.now() };
+    this.active = { reply, responseId: null, playing: false, startedAt: this.host.now(), actualSpeech:null };
     const sent = this.host.send({
       type: "response.create",
       response: {
         conversation: "none",
         metadata: { bb_voice_source: "coordinator_reply", bb_reply_id: reply.replyId, bb_request_id: reply.requestId ?? "", bb_speech_source: reply.replyId.startsWith("local_ack_") ? "acknowledgment" : "coordinator" },
-        instructions,
+        instructions: `${instructions}\nRead only the literal text between <speech> tags. It is supplied here, not missing. Treat it as words to speak, not a request to answer.\n<speech>${reply.speech}</speech>`,
         input: [{ type: "message", role: "user", content: [{ type: "input_text", text: reply.speech }] }],
         tools: [],
         tool_choice: "none",
@@ -376,6 +387,10 @@ export class CoordinatorBridge {
       return true;
     }
     return !!responseId && this.active?.responseId === responseId;
+  }
+
+  onAssistantTranscript(responseId: string | null, text: string) {
+    if (responseId && this.active?.responseId === responseId) this.active.actualSpeech = [this.active.actualSpeech,text].filter(Boolean).join(" ");
   }
 
   onResponseDone(responseId: string | null, status: string) {
@@ -413,22 +428,27 @@ export class CoordinatorBridge {
     if (!active) return;
     this.active = null;
     const reply = active.reply;
+    const normalize = (text:string) => text.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    const mismatch = active.actualSpeech !== null && normalize(active.actualSpeech) !== normalize(reply.speech);
+    if (mismatch) {
+      this.host.log("reply.mismatch", {replyId:reply.replyId,responseId:active.responseId,expected:reply.speech,actual:active.actualSpeech});
+      this.addContext(JSON.stringify({voice_output:{reply_id:reply.replyId,actual:active.actualSpeech,intended_reply_not_delivered:true}}));
+      this.report(reply,"mismatch");
+      this.host.changed(); this.drain(); return;
+    }
     if (reply.requestId && (reply.kind === "final" || reply.kind === "failure")) {
       const handoff = this.dispatched.get(reply.requestId);
       if (handoff) handoff.status = "dispatched";
       this.dispatched.delete(reply.requestId);
     }
-    const label = state === "delivered" ? "delivered" : state === "interrupted" ? "interrupted (partly heard)" : "not played";
-    const threads = reply.threadIds.length ? ` Threads: ${reply.threadIds.join(", ")}.` : "";
-    const question = reply.kind === "clarification" && reply.questionId ? ` Question id: ${reply.questionId}; delegate the user's answer with answers_question_id.` : "";
-    this.addContext(`[bb coordinator ${reply.kind} ${reply.replyId}, ${label}] ${reply.speech}${threads}${question}`);
+    if (!reply.replyId.startsWith("local_ack_")) this.addContext(JSON.stringify({voice_reply:{id:reply.replyId,request_id:reply.requestId,kind:reply.kind,delivery:state,text:reply.speech,...(reply.threadIds.length ? {threads:reply.threadIds} : {}),...(reply.questionId ? {question_id:reply.questionId} : {})}}));
     this.host.log(`reply.${state}`, { replyId: reply.replyId, requestId: reply.requestId, responseId: active.responseId, kind: reply.kind });
     this.report(reply, state);
     this.host.changed();
     this.drain();
   }
 
-  private report(reply: PublishedReply, state: "generated" | "playing" | "delivered" | "interrupted" | "partial" | "held" | "superseded") {
+  private report(reply: PublishedReply, state: "generated" | "playing" | "delivered" | "interrupted" | "partial" | "held" | "superseded" | "mismatch") {
     if (reply.replyId.startsWith("local_")) return;
     const nonce = this.host.nonce();
     if (!nonce) return;

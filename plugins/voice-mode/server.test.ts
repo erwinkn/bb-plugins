@@ -50,10 +50,8 @@ test("thread metadata is resolved once per ID and the saved preference applies i
     assert.equal(result.preference, "reuse");
     assert.deepEqual(result.views.map((view: any) => view.id), ["thread:a", "thread:b"]);
     assert.equal(harness.inspection.sdk.callsTo("threads.get").length, 2);
-    const saved = await harness.behavior.callRpc("runTool", {
-      name: "set_view_behavior", args: { behavior: "new" }, threadId: null, projectId: null,
-    }) as any;
-    assert.equal(saved.status, "success");
+    const saved = await harness.behavior.callRpc("setConfig", {mobileViewBehavior:"new"}) as any;
+    assert.equal(saved.mobileViewBehavior, "new");
     result = await harness.behavior.callRpc("resolveThreadViews", { threadIds: ["a"] }) as any;
     assert.equal(result.preference, "new");
     assert.ok(harness.inspection.realtimeSignals.some(signal => signal.channel === "config-changed"));
@@ -70,7 +68,7 @@ test("server tool failures carry explicit status and do not create a separate se
     await assert.rejects(harness.behavior.callRpc("resolveThreadViews", { threadIds: ["deleted"] }), /deleted/);
     const result = await harness.behavior.callRpc("runTool", { name: "read_thread", args: { thread_id: "deleted" }, threadId: null, projectId: null }) as any;
     assert.equal(result.status, "error");
-    assert.match(result.output, /deleted/);
+    assert.match(result.output, /not available/);
     assert.equal(harness.inspection.logEntries.some(log => log.message.includes("voice tool")), false);
     const unknown = await harness.behavior.callRpc("runTool", { name: "not-a-tool", args: {}, threadId: null, projectId: null }) as any;
     assert.equal(unknown.status, "error");
@@ -112,7 +110,7 @@ test("stale server focus requests cannot navigate a work thread", async () => {
       name: "focus_thread", args: { thread_id: "target" }, threadId: "source", projectId: "project",
     }) as any;
     assert.equal(result.status, "error");
-    assert.match(result.output, /inside Voice/);
+    assert.match(result.output, /not available/);
     assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 0);
   } finally { await harness.lifecycle.dispose(); }
 });
@@ -132,7 +130,7 @@ test("concurrent settings patches preserve both changes", async () => {
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("agent prompt proposals do not change active instructions until the user saves", async () => {
+test("legacy voice tools cannot propose prompt changes; explicit settings edits still save", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
   try {
     await plugin(bb);
@@ -140,18 +138,12 @@ test("agent prompt proposals do not change active instructions until the user sa
     const suggest = (instructions: string) => harness.behavior.callRpc("runTool", {
       name: "update_instructions", args: { instructions, reason: "User asked for short replies" }, threadId: null, projectId: null,
     });
-    await suggest("Keep replies short.");
+    const rejected = await suggest("Keep replies short.") as any;
+    assert.equal(rejected.status,"error","legacy voice tools cannot change or propose settings");
     const pending = await harness.behavior.callRpc("getPrompt", null) as any;
-    assert.equal(pending.content, before.content);
-    assert.equal(pending.versions.length, before.versions.length);
-    assert.equal(pending.proposal.content, "Keep replies short.");
-    await suggest("Ask before starting work.");
-    await harness.behavior.callRpc("setPrompt", { content: pending.proposal.content, source: "user", note: "reviewed", proposalId: pending.proposal.id });
-    const after = await harness.behavior.callRpc("getPrompt", null) as any;
-    assert.equal(after.content, "Keep replies short.");
-    assert.equal(after.proposal.content, "Ask before starting work.", "a newer suggestion survives saving an older one");
-    await harness.behavior.callRpc("setPrompt", { content: after.proposal.content, source: "user", note: "reviewed", proposalId: after.proposal.id });
-    assert.equal((await harness.behavior.callRpc("getPrompt", null) as any).proposal, null);
+    assert.equal(pending.content,before.content);assert.equal(pending.proposal,null);
+    await harness.behavior.callRpc("setPrompt",{content:"Keep replies short.",source:"user",note:"edited in settings"});
+    assert.equal((await harness.behavior.callRpc("getPrompt",null) as any).content,"Keep replies short.");
   } finally { await harness.lifecycle.dispose(); }
 });
 

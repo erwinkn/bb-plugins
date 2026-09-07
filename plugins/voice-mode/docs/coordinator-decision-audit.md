@@ -69,3 +69,37 @@ Validation covers deterministic backend, realtime-event, transcript projection,
 and rendered React flows. It does not measure the next physical call's latency
 or prove that acoustic interruptions are resolved. I stand behind this as a
 draft for the requested testing, with those limits stated.
+
+
+## Final integration for PR 15
+
+The user asked to put all remaining work in PR 15 and reload after reviewing
+the request-coverage audit. The current revision supersedes the earlier opt-in
+and fixed-acknowledgment choices. The following choices complete that scope.
+
+| Decision | Alternative | Confidence | Failure or limit |
+| --- | --- | --- | --- |
+| Keep acoustic VAD at 700 ms; group transcript messages at a five-second pause or assistant playback. | Delay every audio reply for five seconds. | Medium | A false VAD trigger can still interrupt audio. This change fixes conversation rendering, not microphone acoustics. |
+| Use audio boundaries when available and event timestamps for older calls. | Leave old fragments separate. | Medium | Missing historical timing can split or join a legacy message imperfectly. Raw records remain available. |
+| Put saved preferences in new realtime calls and changed coordinator request context, with the required voice contract retained. | Let saved text replace the complete tool policy. | Medium | Legacy custom prompts may mention obsolete tools. They cannot restore direct mutation tools. Preferences can still affect model wording. |
+| Keep existing coordinator execution settings until a new logical session. | Restart or reconfigure running work on every settings save. | Medium | Changing reasoning effort or fast service will not affect a continued session. The settings UI states this. |
+| Compare returned speech transcripts with intended text and hold mismatches without automatic replay. | Assume the intended answer was spoken or retry it immediately. | Medium | No returned transcript means no content comparison. Physical playback still needs testing. |
+| Enforce queue defaults through coordinator instructions and explicit handoff urgency. | Intercept every native BB command. | Medium | Native worker command selection is model-driven. Deterministic tests prove bridge routing, not every future command the coordinator may choose. |
+| Leave native message admission to BB. Coalesce plugin updates and reject unscoped or completed-request replies. | Reject native messages or leave them in a plugin-held queue. | Medium | Native messages can still cause extra coordinator turns. SDK 0.4.47 has no quiet consume-and-coalesce decision. A desired upstream change is recorded in README. |
+| Keep assignment receipts silent and show only useful blockers and changed results. | Always announce assignment. | High | This implements the user's later one-assistant requirement, which supersedes the earlier assignment announcement. |
+| Preserve original transcript items and separate model interpretation in compact JSON. | Summarize user instructions with another model. | High | Long requests still cost context; no material wording is discarded to reduce size. |
+| Import the settings worker's patch without altering its checkout, then test it with mandatory coordinator mode. | Publish its separate settings branch. | High | The original worker retains its uncommitted copy and must not publish a second PR for the same changes. |
+| Correct the child test's TestContext type and legacy duplicate-row expectation; retain bridge-only kind coverage. | Keep a test that demands two copies of the same legacy exchange. | High | Legacy playback attribution remains unknown when ids are missing. |
+| Keep provider/model selection tied to the automatically selected personal host and validate before saving and spawning. | Retain a user-facing coordinator machine selector. | High | A disconnected default host can lead to another connected host. Unavailable models fail without a direct-mutation fallback. |
+| Deliver a final result only after its coordinator turn settles, including results after silent assignment. | Settle the result with the earlier assignment turn. | High | Native idle events remain the boundary; a long-running coordinator turn delays speech. |
+| Preserve the current worktree and stage only Voice Mode and its upstream notes. | Copy the other checkout wholesale. | High | Unrelated plugin changes stay out of PR 15. |
+
+Validation: all 168 tests and typecheck passed after integration. The recorded seven-fragment problem case
+projects as one message with all 862 characters retained. No raw voice data is
+included in this PR. The plugin build passed before reload.
+
+I stand behind these commits as a draft for the user's physical voice testing.
+I do not claim that acoustic interruption or native-message context growth is
+fully solved. Those limits require a real call or the documented BB capability,
+not another passing unit test. Commit, PR update, and reload are explicitly
+authorized by the user's latest request; no merge is authorized.

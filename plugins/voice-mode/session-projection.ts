@@ -73,6 +73,65 @@ interface AssistantDraft {
   open: boolean;
 }
 
+/** A transcript boundary, independent of the provider's short audio VAD. */
+export const USER_MESSAGE_PAUSE_MS = 5000;
+
+function groupUserMessages(messages: ConversationMessage[], events: readonly SessionEvent[]): ConversationMessage[] {
+  const key = (call: string | null, id: string) => JSON.stringify([call, id]);
+  const boundaries = new Map<string, { start?: number; end?: number; audioStart?: number; audioEnd?: number }>();
+  const itemByEvent = new Map<number, string>();
+  const speechStarts = new Map<string | null, number[]>();
+  const playbackIds = new Set<string>();
+  for (const event of events) {
+    const p = parse(event.payload), call = event.callId ?? null;
+    if (event.kind === "speech.lifecycle" && str(p.responseId)) playbackIds.add(key(call, String(p.responseId)));
+    if (event.kind === "speech.lifecycle" && p.state === "started") speechStarts.set(call, [...(speechStarts.get(call) ?? []), event.ts]);
+    const id = str(p.itemId);
+    if (id && event.kind === "user") itemByEvent.set(event.id, key(call, id));
+    if (!id || event.kind !== "realtime.event") continue;
+    const itemKey = key(call, id), boundary = boundaries.get(itemKey) ?? {};
+    if (p.eventType === "input_audio_buffer.speech_started") {
+      boundary.start = event.ts;
+      if (typeof p.audioStartMs === "number") boundary.audioStart = p.audioStartMs;
+    } else if (p.eventType === "input_audio_buffer.speech_stopped") {
+      boundary.end = event.ts;
+      if (typeof p.audioEndMs === "number") boundary.audioEnd = p.audioEndMs;
+    }
+    boundaries.set(itemKey, boundary);
+  }
+  // Older recordings lack playback events. Their assistant transcript is a
+  // conservative boundary; it never supplies invented playback evidence.
+  for (const event of events) {
+    if (event.kind !== "assistant" && event.kind !== "notice") continue;
+    const p = parse(event.payload), call = event.callId ?? null;
+    if (!str(p.text) || (str(p.responseId) && playbackIds.has(key(call, String(p.responseId))))) continue;
+    speechStarts.set(call, [...(speechStarts.get(call) ?? []), event.ts]);
+  }
+  const users = messages.filter(message => message.who === "you").map(message => {
+    const boundary = boundaries.get(itemByEvent.get(message.eventIds[0]) ?? "");
+    return { message, start: boundary?.start ?? message.ts, end: boundary?.end ?? message.ts, boundary };
+  }).sort((a,b) => a.start - b.start || a.message.eventIds[0] - b.message.eventIds[0]);
+  const grouped: ConversationMessage[] = [];
+  let previous: typeof users[number] | undefined;
+  for (const current of users) {
+    const call = current.message.callId;
+    const gap = previous?.boundary?.audioEnd !== undefined && current.boundary?.audioStart !== undefined
+      ? current.boundary.audioStart - previous.boundary.audioEnd : current.start - (previous?.end ?? current.start);
+    const previousStart = previous?.start;
+    const answered = previousStart !== undefined && (speechStarts.get(call) ?? []).some(ts => ts >= previousStart && ts <= current.start);
+    if (previous && previous.message.callId === call && gap >= 0 && gap < USER_MESSAGE_PAUSE_MS && !answered) {
+      const group = grouped.at(-1)!;
+      group.text += ` ${current.message.text}`;
+      group.eventIds.push(...current.message.eventIds);
+    } else {
+      grouped.push({ ...current.message, ts: current.start, eventIds: [...current.message.eventIds] });
+    }
+    previous = current;
+  }
+  return [...messages.filter(message => message.who !== "you"), ...grouped]
+    .sort((a,b) => a.ts - b.ts || a.eventIds[0] - b.eventIds[0]);
+}
+
 /**
  * Build the conversation. Events may arrive out of order (late transcript
  * after a lifecycle settle); everything is correlated by identity and then
@@ -137,7 +196,7 @@ export function projectConversation(events: readonly SessionEvent[]): Conversati
     switch (event.kind) {
       case "user": {
         const text = str(p.text);
-        if (!text) break;
+        if (!text?.trim()) break;
         messages.push({ id: `user:${event.id}`, who: "you", text, ts: event.ts, callId, delivery: null, source: "realtime", kind: "speech", eventIds: [event.id] });
         break;
       }
@@ -226,9 +285,9 @@ export function projectConversation(events: readonly SessionEvent[]): Conversati
     if (d.parts.size === 0 && legacyCalls.has(message.callId)) message.text = "";
   }
   const seen = new Set<string>();
-  return messages
+  return groupUserMessages(messages
     .filter((message) => message.text.length > 0 && !seen.has(message.id) && seen.add(message.id))
-    .sort((a, b) => a.ts - b.ts || (a.eventIds[0] ?? 0) - (b.eventIds[0] ?? 0));
+    .sort((a, b) => a.ts - b.ts || (a.eventIds[0] ?? 0) - (b.eventIds[0] ?? 0)), sorted);
 }
 
 /** Kinds that the Conversation view never shows; everything is in Diagnostics. */

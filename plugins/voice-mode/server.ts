@@ -1,3 +1,4 @@
+import { coordinatorHost, coordinatorOptions } from "./coordinator/settings.ts";
 import { VoiceSessions, voiceSessionSchema } from "./voice-sessions.ts";
 // bb-plugin-voice-mode — Aide: a realtime voice operator for bb.
 //
@@ -25,7 +26,7 @@ import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts 
 import { userRequestEnvelopeSchema, voiceAskParamsSchema, voiceReplyParamsSchema, publishedReplySchema } from "./coordinator/envelopes.ts";
 import { COORDINATOR_MIGRATIONS, CoordinatorStore } from "./coordinator/store.ts";
 import { CoordinatorManager, DEFAULT_COORDINATOR_CONFIG, type CoordinatorConfig } from "./coordinator/manager.ts";
-import { COORDINATOR_INSTRUCTIONS, COORDINATOR_VOICE_PROMPT, VOICE_ASK_TOOL_INSTRUCTIONS, VOICE_REPLY_TOOL_INSTRUCTIONS } from "./coordinator/prompts.ts";
+import { COORDINATOR_INSTRUCTIONS, DEFAULT_VOICE_PREFERENCES, realtimeInstructions, VOICE_ASK_TOOL_INSTRUCTIONS, VOICE_REPLY_TOOL_INSTRUCTIONS } from "./coordinator/prompts.ts";
 
 /**
  * Rebindable keyboard shortcuts (see shortcuts.ts): each value is a
@@ -41,11 +42,10 @@ const shortcutsSchema = z
 
 const coordinatorConfigSchema = z
   .object({
-    enabled: z.boolean(),
     providerId: z.string().min(1).max(64),
     model: z.string().max(128).nullable(),
     reasoningLevel: z.string().max(32).nullable(),
-    hostId: z.string().max(128).nullable(),
+    serviceTier: z.enum(["default", "fast"]),
   })
   .strict();
 
@@ -125,7 +125,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({ batch: z.object({ id: z.string(), count: z.number(), remaining: z.number() }).strict().nullable(), reason: z.string().nullable() }).strict(),
   },
   reportReplyDelivery: {
-    input: z.object({ replyId: z.string().min(1), nonce: z.string().min(1), state: z.enum(["generated", "playing", "delivered", "interrupted", "partial", "held", "superseded"]) }).strict(),
+    input: z.object({ replyId: z.string().min(1), nonce: z.string().min(1), state: z.enum(["generated", "playing", "delivered", "interrupted", "partial", "held", "superseded", "mismatch"]) }).strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
   /** Replies addressed to this call that were never reported delivered (reconnect). */
@@ -156,12 +156,11 @@ export const rpcContract = defineRpcContract({
   },
   /** Providers and models the coordinator setting may use, from the provider catalog. */
   listCoordinatorProviders: {
-    input: z.object({ hostId: z.string().nullable().optional() }).strict().nullable(),
+    input: z.null(),
     output: z
       .object({
-        hosts: z.array(z.object({ id: z.string(), name: z.string(), connected: z.boolean() }).strict()),
-        providers: z.array(z.object({ id: z.string(), displayName: z.string(), available: z.boolean() }).strict()),
-        models: z.array(z.object({ providerId: z.string(), id: z.string(), model: z.string(), displayName: z.string(), isDefault: z.boolean() }).strict()),
+        providers: z.array(z.object({ id: z.string(), displayName: z.string(), available: z.boolean(), serviceTiers: z.array(z.object({id:z.string(),label:z.string()}).strict()) }).strict()),
+        models: z.array(z.object({ providerId: z.string(), id: z.string(), model: z.string(), displayName: z.string(), isDefault: z.boolean(), reasoningLevels:z.array(z.object({id:z.string(),label:z.string()}).strict()), defaultReasoningLevel:z.string().nullable() }).strict()),
       })
       .strict(),
   },
@@ -585,8 +584,9 @@ export function coordinatorToolSchemas(mobile = false) {
         type: "object",
         properties: {
           request: { type: "string", description: "The user's own words, verbatim." },
+          acknowledgment: {type:"string",description:"One brief, context-specific starting acknowledgment. Vary naturally; do not claim assignment or completion."},
           interpretation: { type: "string", description: "Your short reading of what they want (optional)." },
-          urgency: { type: "string", enum: ["new", "steer", "after_current"], description: "new: a fresh request; steer: changes or corrects work already delegated; after_current: explicitly after the current work." },
+          urgency: { type: "string", enum: ["new", "steer", "after_current"], description: "new: a fresh request, queued if busy; after_current: follow-ups, features, or comments that can wait; steer: only a needed interruption, such as an explicit interrupt, wrong target, constraint violation, or harm from continuing." },
           answers_question_id: { type: "string", description: "Set when these words answer the coordinator's open question (its id from the [bb coordinator question …] entry)." },
         },
         required: ["request"],
@@ -757,11 +757,10 @@ export default async function plugin(bb: BbPluginApi) {
   function normalizeCoordinator(value: unknown): CoordinatorConfig {
     const v = (value && typeof value === "object" ? value : {}) as Partial<Record<keyof CoordinatorConfig, unknown>>;
     return {
-      enabled: typeof v.enabled === "boolean" ? v.enabled : DEFAULT_COORDINATOR_CONFIG.enabled,
       providerId: typeof v.providerId === "string" && v.providerId.trim() ? v.providerId.trim() : DEFAULT_COORDINATOR_CONFIG.providerId,
       model: typeof v.model === "string" && v.model.trim() ? v.model.trim() : null,
       reasoningLevel: typeof v.reasoningLevel === "string" && v.reasoningLevel.trim() ? v.reasoningLevel.trim() : null,
-      hostId: typeof v.hostId === "string" && v.hostId.trim() ? v.hostId.trim() : null,
+      serviceTier: v.serviceTier === "fast" ? "fast" : "default",
     };
   }
   async function readConfig(): Promise<VoiceConfig> {
@@ -791,6 +790,12 @@ export default async function plugin(bb: BbPluginApi) {
         ...patch,
         coordinator: patch.coordinator ? normalizeCoordinator({ ...current.coordinator, ...patch.coordinator }) : current.coordinator,
       };
+      if (patch.coordinator) {
+        const proposed = next.coordinator;
+        const {selected,serviceTiers} = await coordinatorOptions(bb, proposed.providerId, proposed.model);
+        if (proposed.reasoningLevel && !(selected.supportedReasoningEfforts ?? []).some(option=>option.reasoningEffort === proposed.reasoningLevel)) throw new Error("This model does not support the selected reasoning effort.");
+        if (proposed.serviceTier === "fast" && !serviceTiers.some(option=>option.id === "fast")) throw new Error("This provider does not support fast service.");
+      }
       await bb.storage.kv.set(CONFIG_KEY, next);
       return next;
     });
@@ -868,7 +873,7 @@ export default async function plugin(bb: BbPluginApi) {
       detail: notificationDetail(detail),
     });
   }
-  // ---- hidden coordinator (feature-flagged by `coordinator.enabled`) ----
+  // ---- required hidden coordinator ----
   // The bridge's server half: durable conversation state, request dispatch
   // with receipts, the coordinator-only reply/question tools, the background
   // update inbox, and hangup drain. See docs/coordinator-plan.md.
@@ -878,9 +883,9 @@ export default async function plugin(bb: BbPluginApi) {
     bb,
     store: coordinatorStore,
     config: async () => (await readConfig()).coordinator,
+    preferences: () => activePrompt(),
   });
   bb.onDispose(() => coordinator.dispose());
-  const coordinatorEnabled = async () => (await readConfig()).coordinator.enabled;
 
   bb.agents.registerTool({
     name: "voice_overview",
@@ -1108,7 +1113,8 @@ export default async function plugin(bb: BbPluginApi) {
     const row = db.prepare("SELECT content FROM prompt_versions ORDER BY id DESC LIMIT 1").get() as
       | { content: string }
       | undefined;
-    return row?.content ?? DEFAULT_PROMPT;
+    // Keep historical versions, but do not restore obsolete direct-tool instructions.
+    return !row || row.content === DEFAULT_PROMPT ? DEFAULT_VOICE_PREFERENCES : row.content;
   }
 
   function savePromptVersion(content: string, source: "user" | "agent", note: string | null) {
@@ -1500,22 +1506,16 @@ export default async function plugin(bb: BbPluginApi) {
       db.prepare("UPDATE voice_call_control SET sequence = sequence + 1, nonce = ? WHERE slot = 1").run(nonce);
       const { sequence } = currentCall();
       bb.realtime.publish("voice-call", { nonce, sequence });
-      const enabled = await coordinatorEnabled();
       const started = await coordinator.startCall({ nonce, sequence, view: { threadId, projectId }, newConversation: selectedId ? false : newConversation, conversationId: selectedId });
       voiceSessions.link(nonce, started.conversationId);
-      return { sequence, conversationId: enabled ? started.conversationId : null, voiceSessionId: started.conversationId, resumed: started.resumed, queuedUpdates: started.queuedUpdates };
+      return { sequence, conversationId: started.conversationId, voiceSessionId: started.conversationId, resumed: started.resumed, queuedUpdates: started.queuedUpdates };
     },
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       const key = await apiKey();
-      const { model, voice, coordinator: coordinatorConfig } = await readConfig();
-      const pluginCommands = coordinatorConfig.enabled ? [] : await exposedPluginCommands();
-      const pluginSection =
-        pluginCommands.length === 0
-          ? ""
-          : `\n\nInstalled bb plugins contribute extra commands you can run with run_plugin_command:\n${pluginCommands.map((c) => `- ${c.id}: bb ${c.name} — ${c.summary}`).join("\n")}\nWhen unsure of a plugin's subcommands, run it with argv ["--help"] first. Summarize command output aloud in a sentence or two; never read raw JSON or long output verbatim.`;
+      const { model, voice } = await readConfig();
       const contextLine = `Current context: threadId=${threadId ?? "none"}, projectId=${projectId ?? "none"}${onNewThreadScreen ? " — the user is on the New thread screen (no thread exists yet; they're composing the prompt for one)" : ""}. Call get_context for fresh context — the user navigates while talking.`;
-      if (coordinatorConfig.enabled) {
+      {
         // Warm the coordinator while audio connects; never block the SDP exchange on it.
         const conversationId = coordinatorStore.currentConversationId();
         if (conversationId) void coordinator.ensureCoordinator(conversationId).catch((error) => bb.log.warn(`coordinator warmup failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -1523,9 +1523,7 @@ export default async function plugin(bb: BbPluginApi) {
       const session = {
         type: "realtime",
         model,
-        instructions: coordinatorConfig.enabled
-          ? `${COORDINATOR_VOICE_PROMPT}\n\n${threadViewInstructions(mobile)}\n\n${contextLine}`
-          : `${activePrompt()}${pluginSection}\n\n${threadViewInstructions(mobile)}\n\n${contextLine}`,
+        instructions: `${realtimeInstructions(activePrompt())}\n\n${threadViewInstructions(mobile)}\n\n${contextLine}`,
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -1542,7 +1540,7 @@ export default async function plugin(bb: BbPluginApi) {
           },
           output: { voice },
         },
-        tools: coordinatorConfig.enabled ? coordinatorToolSchemas(mobile) : toolSchemas(pluginCommands, mobile),
+        tools: coordinatorToolSchemas(mobile),
       };
       const form = new FormData();
       form.set("sdp", sdp);
@@ -1578,7 +1576,7 @@ export default async function plugin(bb: BbPluginApi) {
         .prepare("SELECT id, ts, source, note, content FROM prompt_versions ORDER BY id DESC LIMIT 50")
         .all() as { id: number; ts: number; source: string; note: string | null; content: string }[];
       const proposal = db.prepare("SELECT id, content, reason FROM prompt_proposals WHERE slot = 1").get() as { id: string; content: string; reason: string } | undefined;
-      return { content: activePrompt(), defaultContent: DEFAULT_PROMPT, versions, proposal: proposal ?? null };
+      return { content: activePrompt(), defaultContent: DEFAULT_VOICE_PREFERENCES, versions, proposal: proposal ?? null };
     },
     async setPrompt({ content, source, note, proposalId }) {
       savePromptVersion(content, source, note);
@@ -1813,7 +1811,6 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     async submitRequest({ envelope }) {
-      if (!(await coordinatorEnabled())) throw new Error("The voice coordinator is disabled in Voice Mode settings.");
       return coordinator.submitRequest(envelope);
     },
     async retryRequest({ requestId }) {
@@ -1833,7 +1830,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async getCoordinatorStatus(input) {
       const status = coordinator.status(input?.conversationId ?? null);
-      return { ...status, enabled: await coordinatorEnabled() };
+      return { ...status, enabled: true };
     },
     async answerQuestion({ questionId, value }) {
       return coordinator.answerQuestion(questionId, value, "ui");
@@ -1849,28 +1846,26 @@ export default async function plugin(bb: BbPluginApi) {
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       throw new Error("Thread inspection is handled inside Voice on the calling device. Update the frontend; the call is unchanged.");
     },
-    async listCoordinatorProviders(input) {
-      const hosts = await bb.sdk.hosts.list();
-      const hostId = input?.hostId ?? hosts.find((host) => host.status === "connected")?.id ?? null;
-      const routing = hostId ? { hostId } : {};
-      const providers = await bb.sdk.providers.list(routing).catch(() => []);
-      const models: { providerId: string; id: string; model: string; displayName: string; isDefault: boolean }[] = [];
-      for (const provider of providers.filter((candidate) => candidate.available)) {
-        try {
-          const catalog = await bb.sdk.providers.models({ providerId: provider.id, ...routing });
-          for (const model of catalog.models) models.push({ providerId: provider.id, id: model.id, model: model.model, displayName: model.displayName, isDefault: model.isDefault });
-        } catch { /* provider without a catalog stays selectable by default model */ }
-      }
+    async listCoordinatorProviders() {
+      const {host} = await coordinatorHost(bb);
+      const providers = await bb.sdk.providers.list({hostId:host.id});
+      const catalogs = await Promise.all(providers.map(async provider => ({
+        provider, catalog: provider.available ? await bb.sdk.providers.models({providerId:provider.id,hostId:host.id}) : null,
+      })));
       return {
-        hosts: hosts.map((host) => ({ id: host.id, name: host.name, connected: host.status === "connected" })),
-        providers: providers.map((provider) => ({ id: provider.id, displayName: provider.displayName ?? provider.id, available: provider.available })),
-        models,
+        providers: catalogs.map(({provider,catalog}) => ({id:provider.id,displayName:provider.displayName ?? provider.id,available:provider.available,
+          serviceTiers:(catalog?.providers?.find(item=>item.id === provider.id)?.serviceTiers ?? []).map(tier=>({id:tier.id,label:tier.label}))})),
+        models: catalogs.flatMap(({provider,catalog}) => (catalog?.models ?? []).filter(model=>!model.routeProviderId || model.routeProviderId === provider.id).map(model=>({
+          providerId:provider.id,id:model.id,model:model.model,displayName:model.displayName,isDefault:model.isDefault,
+          reasoningLevels:(model.supportedReasoningEfforts ?? []).map(effort=>({id:effort.reasoningEffort,label:effort.reasoningEffort})),
+          defaultReasoningLevel:model.defaultReasoningEffort ?? null,
+        }))),
       };
     },
     async runTool({ name, args, threadId, projectId, onNewThreadScreen }) {
       try {
-        if ((await coordinatorEnabled()) && !COORDINATOR_MODE_SERVER_TOOLS.has(name)) {
-          throw new Error(`Tool ${name} is not available while the voice coordinator is enabled. Delegate to the coordinator instead.`);
+        if (!COORDINATOR_MODE_SERVER_TOOLS.has(name)) {
+          throw new Error(`Tool ${name} is not available in voice calls. Use delegate_to_coordinator.`);
         }
         const output = await runTool(name, args, { threadId, projectId, onNewThreadScreen });
         return { output, status: "success" as const };

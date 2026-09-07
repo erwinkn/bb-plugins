@@ -128,6 +128,8 @@ export const COORDINATOR_MIGRATIONS: string[] = [
 
 export const conversationStateSchema = z
   .object({
+    lastRequestContext: z.string().nullable().default(null),
+    threadStates: z.record(z.string(),z.string()).default({}),
     topic: z.string().max(200).nullable().default(null),
     discussedThreadId: z.string().max(128).nullable().default(null),
     viewedThreadId: z.string().max(128).nullable().default(null),
@@ -510,10 +512,10 @@ export class CoordinatorStore {
     };
   }
 
-  /** Persist an update unless an identical undelivered one is already queued. */
+  /** Persist a native event once, including after its update was delivered. */
   enqueueUpdate(input: { conversationId: string; threadId: string; title: string; kind: string; fingerprint: string; detail: string | null }): UpdateRow | null {
     const duplicate = this.db
-      .prepare("SELECT id FROM voice_updates WHERE conversation_id = ? AND fingerprint = ? AND status IN ('queued', 'reserved')")
+      .prepare("SELECT id FROM voice_updates WHERE conversation_id = ? AND fingerprint = ? ")
       .get(input.conversationId, input.fingerprint) as { id: string } | undefined;
     if (duplicate) return null;
     const id = newId("upd");

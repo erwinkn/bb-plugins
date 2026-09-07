@@ -544,8 +544,7 @@ function PluginPicker({
 }
 
 // ---------------------------------------------------------------------------
-// Prompt editor — used inside Behavior. View / preview the prompt, edit and
-// save your own, or reset to the default.
+// Prompt editor — edit and save your own prompt, or reset to the default.
 // ---------------------------------------------------------------------------
 
 export function PromptEditor() {
@@ -554,12 +553,18 @@ export function PromptEditor() {
   const [defaultContent, setDefaultContent] = useState("");
   const [proposal, setProposal] = useState<{ id: string; content: string; reason: string } | null>(null);
   const [reviewedProposalId, setReviewedProposalId] = useState<string | undefined>();
-  const [mode, setMode] = useState<"view" | "preview" | "edit">("view");
+  const draftRef = useRef<string | null>(null);
+  const activeRef = useRef("");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
 
   const refetch = useCallback(() => {
     rpc.call("getPrompt", null).then((result) => {
+      if (draftRef.current === null || draftRef.current === activeRef.current) {
+        draftRef.current = result.content;
+        setDraft(result.content);
+      }
+      activeRef.current = result.content;
       setActive(result.content);
       setDefaultContent(result.defaultContent);
       setProposal(result.proposal);
@@ -570,13 +575,16 @@ export function PromptEditor() {
 
   const isCustom = active.trim() !== defaultContent.trim();
 
-  async function save(content: string, note: string) {
+  async function save(content: string, note: string, proposalId?: string) {
     if (content.trim().length === 0) return;
     setBusy(true);
     try {
-      await rpc.call("setPrompt", { content, source: "user", note, proposalId: reviewedProposalId });
+      await rpc.call("setPrompt", { content, source: "user", note, ...(proposalId ? { proposalId } : {}) });
       setReviewedProposalId(undefined);
-      setMode("view");
+      activeRef.current = content;
+      setActive(content);
+      draftRef.current = content;
+      setDraft(content);
       toast.success("Prompt saved");
     } catch (cause) {
       toast.error(`Could not save prompt: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -592,92 +600,65 @@ export function PromptEditor() {
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm font-medium text-foreground">Prompt</span>
-        {mode === "edit" ? null : (
-          <span className="flex shrink-0 items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setMode((prev) => (prev === "preview" ? "view" : "preview"))}
-            >
-              {mode === "preview" ? "Hide" : "Preview"}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setReviewedProposalId(undefined);
-                setDraft(active);
-                setMode("edit");
-              }}
-            >
-              Edit
-            </Button>
-          </span>
-        )}
       </div>
 
-      {proposal && mode !== "edit" ? (
+      <p className="text-xs text-muted-foreground">Voice instructions apply to the next call and the next work request. Existing work keeps its current instructions.</p>
+      {proposal && reviewedProposalId !== proposal.id ? (
         <div className="space-y-2 rounded-md border border-border p-3">
           <p className="text-sm">Aide suggested a prompt change. It is not active.</p>
           <p className="text-xs text-muted-foreground">{proposal.reason}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => {
+          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => {
+            draftRef.current = proposal.content;
             setDraft(proposal.content);
             setReviewedProposalId(proposal.id);
-            setMode("edit");
           }}>Review suggestion</Button>
         </div>
       ) : null}
-      {mode === "edit" ? (
-        <div className="space-y-2">
-          <textarea
-            value={draft}
-            aria-label="Voice instructions"
-            autoFocus
-            spellCheck={false}
-            rows={16}
-            onChange={(event) => setDraft(event.target.value)}
-            className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-xs leading-relaxed text-foreground"
-          />
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              disabled={busy || !changed || draft.trim().length === 0}
-              onClick={() => void save(draft, "edited in settings")}
-            >
-              Save
-            </Button>
-            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setMode("view")}>
-              Cancel
-            </Button>
-          </div>
+      <div className="space-y-2">
+        <textarea
+          value={draft}
+          aria-label="Voice instructions"
+          disabled={busy || draftRef.current === null}
+          spellCheck={false}
+          rows={16}
+          onChange={(event) => {
+            draftRef.current = event.target.value;
+            setDraft(event.target.value);
+          }}
+          className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-xs leading-relaxed text-foreground"
+        />
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy || !changed || draft.trim().length === 0}
+            onClick={() => void save(draft, "edited in settings", reviewedProposalId)}
+          >
+            Save
+          </Button>
+          <Button type="button" variant="outline" size="sm" disabled={busy || !changed} onClick={() => {
+            draftRef.current = active;
+            setDraft(active);
+            setReviewedProposalId(undefined);
+          }}>
+            Cancel
+          </Button>
         </div>
-      ) : (
-        <>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>{stateText}</span>
-            {isCustom ? (
-              <button type="button" className={linkClass} disabled={busy} onClick={() => void save(defaultContent, "reset to built-in default")}>
-                Reset to default
-              </button>
-            ) : null}
-          </div>
-          {mode === "preview" ? (
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-3 font-mono text-xs leading-relaxed text-foreground">
-              {active}
-            </pre>
-          ) : null}
-        </>
-      )}
+      </div>
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span>{stateText}</span>
+        {isCustom ? (
+          <button type="button" className={linkClass} disabled={busy} onClick={() => void save(defaultContent, "reset to built-in default")}>
+            Reset to default
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Audio: microphone picker + a live level meter to test it, and a read-only
-// view of the system-default speaker (output is never routed in-app).
+// Audio: microphone picker and a live level meter to test it.
 // ---------------------------------------------------------------------------
 
 /** Live RMS of the selected mic, 0..1, while `active`. Cleans up fully on stop. */
@@ -799,19 +780,10 @@ export function AudioSettings() {
   }, [refresh]);
 
   const inputs = devices.filter((device) => device.kind === "audioinput" && device.deviceId);
-  const outputs = devices.filter((device) => device.kind === "audiooutput" && device.deviceId);
   const labelsHidden = inputs.length > 0 && inputs.every((device) => !device.label);
   const savedMicMissing =
     !!preferences.inputDeviceId &&
     !inputs.some((device) => device.deviceId === preferences.inputDeviceId);
-
-  // Best-effort system-default output: the entry whose id is "default", else
-  // the first output. Its label reads e.g. "Default - MacBook Pro Speakers".
-  const defaultOutput =
-    outputs.find((device) => device.deviceId === "default") ?? outputs[0] ?? null;
-  const speakerName = defaultOutput?.label
-    ? defaultOutput.label.replace(/^Default\s*-\s*/i, "")
-    : null;
 
   async function allowAccess() {
     try {
@@ -893,15 +865,6 @@ export function AudioSettings() {
           <p className="text-xs text-muted-foreground">This mic isn't connected, so Aide falls back to your default.</p>
         ) : null}
         {deviceError ? <p className="text-xs text-destructive">{deviceError}</p> : null}
-      </Group>
-
-      <Group label="Speaker">
-        <div className="cursor-not-allowed rounded-md border border-border bg-muted/40 px-2 py-1.5 text-sm text-muted-foreground">
-          {labelsHidden || !speakerName ? "System default" : speakerName}
-        </div>
-        <p className="text-xs italic text-muted-foreground">
-          Switching speakers in the app isn't supported yet — change your output in your system sound settings.
-        </p>
       </Group>
     </div>
   );

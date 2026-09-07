@@ -187,7 +187,7 @@ test("replies are spoken under their gate, tracked to what was heard, and added 
   dc.emit("output_audio_buffer.stopped", { response_id: "resp_q" });
   await settle();
   assert.deepEqual(deliveries().map((entry) => entry.state), ["playing", "delivered"]);
-  assert.match(dc.contextItems().at(-1) ?? "", /clarification reply_q, delivered.*Question id: q_1/);
+  assert.equal(JSON.parse(dc.contextItems().at(-1)!).voice_reply.question_id,"q_1");
   assert.equal(agent.getBridgeSnapshot()?.openQuestion?.id, "q_1");
   // A reply for another call never speaks here.
   agent.ingestCoordinatorSignal("voice-reply", reply({ replyId: "reply_old", targetCallNonce: "old-call", speech: "Stale." }));
@@ -203,7 +203,7 @@ test("replies are spoken under their gate, tracked to what was heard, and added 
   dc.emit("output_audio_buffer.cleared", { response_id: "resp_f" });
   await settle();
   assert.equal(deliveries().at(-1)?.state, "interrupted");
-  assert.match(dc.contextItems().at(-1) ?? "", /final reply_f, interrupted \(partly heard\)\] Archived the speech thread\. Threads: thr_speech/);
+  assert.deepEqual(JSON.parse(dc.contextItems().at(-1)!).voice_reply.threads,["thr_speech"]);
   agent.ingestCoordinatorSignal("voice-reply", reply({ replyId: "reply_f", kind: "final", requestId: "r_1", speech: "Archived the speech thread." }));
   dc.emit("input_audio_buffer.speech_stopped", { item_id: "u2" });
   tick(5000);
@@ -243,7 +243,7 @@ test("background digests need the full idle gate, and interrupting one preserves
   dc.emit("output_audio_buffer.cleared", { response_id: "resp_u" });
   await settle();
   assert.equal(deliveries().at(-1)?.state, "interrupted", "the server re-queues the batch's updates");
-  assert.match(dc.contextItems().at(-1) ?? "", /update reply_u, interrupted/);
+  assert.equal(JSON.parse(dc.contextItems().at(-1)!).voice_reply.delivery,"interrupted");
 });
 
 test("hangup cancels a handoff still waiting for its transcript but lets a settled one reach the server", async (t) => {
@@ -322,17 +322,17 @@ test("delegation emits one bridge acknowledgment with no model tool follow-up, t
   speak(dc,"ack_input");
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"ack_input",transcript:"Check the current threads."});
   const before = dc.responses().length;
-  delegate(dc,"ack_tool","ack_call",{request:"Check the current threads."});
+  delegate(dc,"ack_tool","ack_call",{request:"Check the current threads.",acknowledgment:"I’ll check what is active."});
   await settle();
   assert.equal(dc.responses().length,before,"tool output cannot ask the model for another acknowledgment");
   dc.emit("response.done",{response:{id:"ack_tool",status:"completed",output:[{type:"function_call"}]}});
   await settle(); tick(1);
   const ack = dc.bridgeResponses().at(-1)!;
   assert.match(ack.response.metadata.bb_reply_id,/^local_ack_/);
-  assert.equal(ack.response.input[0].content[0].text,"On it.");
+  assert.equal(ack.response.input[0].content[0].text,"I’ll check what is active.");
   dc.emit("response.created",{response:{id:"ack_audio",metadata:ack.response.metadata}});
   dc.emit("output_audio_buffer.started",{response_id:"ack_audio"});
-  dc.emit("response.output_audio_transcript.done",{response_id:"ack_audio",item_id:"ack_output",transcript:"On it."});
+  dc.emit("response.output_audio_transcript.done",{response_id:"ack_audio",item_id:"ack_output",transcript:"I’ll check what is active."});
   dc.emit("response.done",{response:{id:"ack_audio",status:"completed",output:[{type:"message"}]}});
   const requestId = submits()[0].requestId;
   agent.ingestCoordinatorSignal("voice-reply",reply({requestId,replyId:"answer"}));
@@ -386,4 +386,34 @@ test("interruption before response.created cancels the late bridge response inst
   assert.ok(dc.sent.some(event=>event.type === "response.cancel" && event.response_id === "late_audio"));
   assert.equal(deliveries().filter(row=>row.replyId === "before_audio" && row.state === "playing").length,0);
   assert.equal(deliveries().at(-1)?.state,"interrupted");
+});
+
+test("a mismatched spoken answer is never recorded as the intended answer or replayed", async(t)=>{
+  const {agent,dc,reply,deliveries,logs,tick}=await coordinatorFixture(t);
+  agent.ingestCoordinatorSignal("voice-reply",reply({replyId:"mismatch",speech:"The checks pass."}));tick(1);
+  const expected=dc.bridgeResponses()[0];
+  assert.match(expected.response.instructions,/<speech>The checks pass.<\/speech>/);
+  dc.emit("response.created",{response:{id:"mismatch_audio",metadata:expected.response.metadata}});
+  dc.emit("output_audio_buffer.started",{response_id:"mismatch_audio"});
+  dc.emit("response.output_audio_transcript.done",{response_id:"mismatch_audio",transcript:"I don’t have the coordinator’s reply text to repeat."});
+  dc.emit("response.done",{response:{id:"mismatch_audio",status:"completed"}});
+  dc.emit("output_audio_buffer.stopped",{response_id:"mismatch_audio"});
+  await settle();
+  assert.equal(deliveries().at(-1)?.state,"mismatch");
+  assert.equal(deliveries().some(row=>row.state === "delivered"),false);
+  assert.equal(JSON.parse(dc.contextItems().at(-1)!).voice_output.intended_reply_not_delivered,true);
+  assert.ok(logs.some(row=>row.kind === "reply.mismatch"));
+  tick(5000);assert.equal(dc.bridgeResponses().length,1);
+});
+
+test("a late tool from an interrupted response cannot dispatch while the user continues", async(t)=>{
+  const {dc,submits}=await coordinatorFixture(t);
+  speak(dc,"old_input");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"old_input",transcript:"Change the setting"});
+  dc.emit("response.created",{response:{id:"old_response"}});
+  dc.emit("input_audio_buffer.speech_started",{item_id:"continuation"});
+  dc.emit("response.function_call_arguments.done",{response_id:"old_response",name:"delegate_to_coordinator",call_id:"late",arguments:"{}"});
+  await settle();
+  assert.equal(submits().length,0);
+  assert.match(dc.toolOutputs().at(-1)?.item.output,/Held/);
 });

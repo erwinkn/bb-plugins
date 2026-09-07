@@ -1,9 +1,13 @@
 # Voice conversation coordinator
 
-Status: implemented as an opt-in setting (Settings → Coordinator) on
+Status: implemented on
 7 September 2026 against BB 0.42.1 and Plugin SDK 0.4.47. The README's
 "Coordinator mode" section records what is verified and what still needs a
-physical call. This document remains the design reference.
+physical call. This document remains the design reference. The current local revision makes
+the coordinator mandatory, keeps assignment silent, compacts request context,
+and adds supported reasoning and fast-service settings. The integrated settings
+editor feeds new calls and coordinator requests. User transcript fragments group
+until assistant speech or a five-second pause; raw history and VAD are unchanged.
 
 
 ## Dedicated Voice area revision
@@ -204,7 +208,8 @@ before sending executable work. If the user resumes the same unfinished thought,
 hold the pending handoff and include the correction. Measure this added wait.
 
 Use one persistent coordinator conversation. Send a new request when idle;
-steer when the user changes ongoing coordinator work; use a queue for explicit
+steer only when an interruption is needed; use a queue for routine follow-ups,
+new feature requests, comments, and explicit
 "after this" requests. Pass the user's own wording and scope to destination
 threads. Never upgrade "is this needed?" into "remove it".
 

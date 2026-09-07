@@ -271,88 +271,61 @@ export function CoordinatorCard({ conversationId, legacy = false }: { conversati
   );
 }
 
-interface CoordinatorConfig {
-  enabled: boolean;
-  providerId: string;
-  model: string | null;
-  reasoningLevel: string | null;
-  hostId: string | null;
-}
-
+type CoordinatorConfig = import("./coordinator/manager.ts").CoordinatorConfig;
+type Catalog = {providers:{id:string;displayName:string;available:boolean;serviceTiers:{id:string;label:string}[]}[];models:{providerId:string;id:string;model:string;displayName:string;isDefault:boolean;reasoningLevels:{id:string;label:string}[];defaultReasoningLevel:string|null}[]};
 const selectClass = "block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
 
-/** Settings: opt-in switch plus the dedicated coordinator machine, provider, and model. */
 export function CoordinatorSettings() {
   const rpc = useRpc<typeof rpcContract>();
-  const [config, setConfig] = useState<CoordinatorConfig | null>(null);
-  const [catalog, setCatalog] = useState<{ hosts: { id: string; name: string; connected: boolean }[]; providers: { id: string; displayName: string; available: boolean }[]; models: { providerId: string; id: string; model: string; displayName: string; isDefault: boolean }[] } | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const refetch = useCallback(() => {
-    rpc.call("getConfig", null).then((next) => setConfig(next.coordinator), () => undefined);
-  }, [rpc]);
-  useEffect(refetch, [refetch]);
-  useRealtime("config-changed", refetch);
-  useEffect(() => {
-    if (!config) return;
-    let cancelled = false;
-    rpc.call("listCoordinatorProviders", { hostId: config.hostId }).then(
-      (next) => { if (!cancelled) { setCatalog(next); setCatalogError(null); } },
-      (cause) => { if (!cancelled) setCatalogError(cause instanceof Error ? cause.message : String(cause)); },
-    );
-    return () => { cancelled = true; };
-  }, [rpc, config?.hostId]);
-  const update = async (patch: Partial<CoordinatorConfig>) => {
-    setConfig((prev) => (prev ? { ...prev, ...patch } : prev));
-    try {
-      const next = await rpc.call("setConfig", { coordinator: patch });
-      setConfig(next.coordinator);
-    } catch (cause) {
-      refetch();
-      toast.error(`Could not save: ${cause instanceof Error ? cause.message : String(cause)}`);
-    }
+  const [config,setConfig] = useState<CoordinatorConfig|null>(null);
+  const [catalog,setCatalog] = useState<Catalog|null>(null);
+  const [error,setError] = useState<string|null>(null);
+  const [busy,setBusy] = useState(false);
+  const revision = useRef(0);
+  const refresh = useCallback(() => {
+    const request = ++revision.current;
+    Promise.all([rpc.call("getConfig",null),rpc.call("listCoordinatorProviders",null)]).then(([value,options]) => {
+      if (request !== revision.current) return;
+      setConfig(value.coordinator);setCatalog(options);setError(null);
+    },cause=>{if(request === revision.current)setError(String(cause));});
+  },[rpc]);
+  useEffect(()=>{refresh();return()=>{revision.current++;};},[refresh]);
+  useRealtime("config-changed",refresh);
+  const update = async(patch:Partial<CoordinatorConfig>)=>{
+    setBusy(true);
+    try {const value=await rpc.call("setConfig",{coordinator:patch});setConfig(value.coordinator);setError(null);}
+    catch(cause){setError(cause instanceof Error ? cause.message : String(cause));}
+    finally{setBusy(false);}
   };
-  const loading = config === null;
-  const providers = catalog?.providers ?? [];
-  const models = (catalog?.models ?? []).filter((model) => model.providerId === config?.providerId);
-  return (
-    <div className="space-y-5">
-      <div className="space-y-2">
-        <label className="flex items-center justify-between gap-3">
-          <span>
-            <span className="block text-sm font-medium text-foreground">Use the hidden coordinator</span>
-            <span className="mt-0.5 block text-xs text-muted-foreground">
-              A hidden BB thread interprets requests and acts through BB's own tools. The voice session keeps no direct way to change threads. Applies to the next call.
-            </span>
-          </span>
-          <input type="checkbox" checked={config?.enabled ?? false} disabled={loading} onChange={(event) => void update({ enabled: event.target.checked })} className="size-4 shrink-0 accent-primary" />
-        </label>
-      </div>
-      <div className="space-y-2 border-t border-border/50 pt-4">
-        <span className="block text-sm font-medium text-foreground">Coordinator machine</span>
-        <select className={selectClass} disabled={loading} value={config?.hostId ?? ""} onChange={(event) => void update({ hostId: event.target.value || null })}>
-          <option value="">Automatic (personal project's default machine)</option>
-          {(catalog?.hosts ?? []).map((host) => (
-            <option key={host.id} value={host.id}>{host.name}{host.connected ? "" : " (offline)"}</option>
-          ))}
-        </select>
-      </div>
-      <div className="space-y-2 border-t border-border/50 pt-4">
-        <span className="block text-sm font-medium text-foreground">Coordinator provider and model</span>
-        <span className="block text-xs text-muted-foreground">Independent of every project's defaults. The initial supported choice is Codex with its default model; the coordinator does not change while you move between projects.</span>
-        {catalogError ? <p role="alert" className="text-xs text-destructive">Could not load the provider catalog: {catalogError}</p> : null}
-        <select className={selectClass} disabled={loading || !catalog} value={config?.providerId ?? "codex"} onChange={(event) => void update({ providerId: event.target.value, model: null })}>
-          {providers.length === 0 && config ? <option value={config.providerId}>{config.providerId}</option> : null}
-          {providers.map((provider) => (
-            <option key={provider.id} value={provider.id} disabled={!provider.available}>{provider.displayName}{provider.available ? "" : " (unavailable)"}</option>
-          ))}
-        </select>
-        <select className={selectClass} disabled={loading || !catalog} value={config?.model ?? ""} onChange={(event) => void update({ model: event.target.value || null })}>
-          <option value="">Provider default model</option>
-          {models.map((model) => (
-            <option key={model.id} value={model.model}>{model.displayName}{model.isDefault ? " (default)" : ""}</option>
-          ))}
-        </select>
-      </div>
-    </div>
-  );
+  const models=catalog?.models.filter(model=>model.providerId === config?.providerId) ?? [];
+  const model=config?.model ? models.find(model=>model.model === config.model || model.id === config.model) : models.find(model=>model.isDefault) ?? models[0];
+  const provider=catalog?.providers.find(provider=>provider.id === config?.providerId);
+  const disabled=!config || !catalog || busy;
+  return <div className="space-y-4">
+    <p className="text-xs text-muted-foreground">Every voice session uses a coordinator. These choices apply to new sessions; existing sessions keep their coordinator.</p>
+    {error ? <div role="alert" className="text-sm text-destructive">{error}<Button variant="outline" onClick={refresh}>Retry coordinator settings</Button></div> : null}
+    <label className="block space-y-1 text-sm">Coordinator provider
+      <select aria-label="Coordinator provider" className={selectClass} disabled={disabled} value={config?.providerId ?? ""} onChange={event=>void update({providerId:event.target.value,model:null,reasoningLevel:null,serviceTier:"default"})}>
+        {!provider && config ? <option value={config.providerId}>{config.providerId} (unavailable)</option> : null}
+        {catalog?.providers.map(provider=><option key={provider.id} value={provider.id} disabled={!provider.available}>{provider.displayName}{provider.available ? "" : " (unavailable)"}</option>)}
+      </select>
+    </label>
+    <label className="block space-y-1 text-sm">Coordinator model
+      <select aria-label="Coordinator model" className={selectClass} disabled={disabled} value={config?.model ?? ""} onChange={event=>void update({model:event.target.value || null,reasoningLevel:null})}>
+        <option value="">Provider default model</option>
+        {config?.model && !model ? <option value={config.model}>{config.model} (unavailable)</option> : null}
+        {models.map(model=><option key={model.id} value={model.model}>{model.displayName}</option>)}
+      </select>
+    </label>
+    {model && model.reasoningLevels.length>0 ? <label className="block space-y-1 text-sm">Reasoning effort
+      <select aria-label="Coordinator reasoning effort" className={selectClass} disabled={disabled} value={config?.reasoningLevel ?? ""} onChange={event=>void update({reasoningLevel:event.target.value || null})}>
+        <option value="">Model default{model.defaultReasoningLevel ? ` (${model.defaultReasoningLevel})` : ""}</option>
+        {config?.reasoningLevel && !model.reasoningLevels.some(level=>level.id === config.reasoningLevel) ? <option value={config.reasoningLevel}>{config.reasoningLevel} (unsupported)</option> : null}
+        {model.reasoningLevels.map(level=><option key={level.id} value={level.id}>{level.label}</option>)}
+      </select>
+    </label> : null}
+    {provider?.serviceTiers.some(tier=>tier.id === "fast") ? <label className="flex items-center gap-2 text-sm">
+      <input type="checkbox" aria-label="Coordinator fast service" disabled={disabled} checked={config?.serviceTier === "fast"} onChange={event=>void update({serviceTier:event.target.checked ? "fast" : "default"})}/>Fast service
+    </label> : null}
+  </div>;
 }

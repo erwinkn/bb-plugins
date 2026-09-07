@@ -570,7 +570,7 @@ const SESSION_TABS: { id: SessionTab; label: string }[] = [
 ];
 
 function KindChip({ kind }: { kind: ConversationMessage["kind"] }) {
-  const label = kind === "question" ? "Question" : kind === "update" ? "Update" : kind === "failure" ? "Problem" : kind === "acknowledgment" ? "Acknowledgment" : kind === "progress" ? "Progress" : null;
+  const label = kind === "question" ? "Question" : kind === "update" ? "Update" : kind === "failure" ? "Problem" : kind === "progress" ? "Progress" : null;
   if (!label) return null;
   return <span className={cn("rounded-full border px-1.5 py-px text-[10px] font-medium", kind === "failure" ? "border-destructive/40 text-destructive" : "border-border text-muted-foreground")}>{label}</span>;
 }

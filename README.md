@@ -183,6 +183,24 @@ Status: recorded here; no upstream issue filed.
 Suggested issue title: `Plugin interactions: expose the pending requestInput row id`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Quiet handling of plugin-owned background messages
+
+Voice Mode coalesces watched-thread events in its own inbox. Native messages
+sent to its hidden thread still pass through BB dispatch. SDK 0.4.47 exposes
+`message.dispatch` with proceed, wait, and reject decisions. Waiting creates a
+queued row; rejection shows its message to the user. The SDK explicitly has
+no handled-by-plugin decision and no message amendment.
+
+A scoped consume-and-coalesce option for plugin-owned background messages
+would let Voice retain material results without a new agent turn, a pending
+queue row, or a visible rejection. It must preserve direct user messages and
+explicit Send-now actions. This is a proposed BB capability; Voice does not
+currently intercept native messages.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Allow quiet coalescing of plugin-owned background messages`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this

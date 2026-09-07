@@ -1,3 +1,4 @@
+import { coordinatorOptions } from "./settings.ts";
 // The voice bridge's server half: owns the hidden coordinator thread's
 // lifecycle, request dispatch with receipts, structured replies, questions,
 // the background-update inbox, and hangup drain. Deterministic guarantees here
@@ -19,19 +20,17 @@ import { refuseBatch, selectBatch, type BatchRefusal } from "./scheduler.ts";
 import type { ConversationRow, CoordinatorStore, QuestionRow, ReplyRow, RequestReceipt, RequestRow, StoredReply } from "./store.ts";
 
 export interface CoordinatorConfig {
-  enabled: boolean;
   providerId: string;
   model: string | null;
   reasoningLevel: string | null;
-  hostId: string | null;
+  serviceTier: "default" | "fast";
 }
 
 export const DEFAULT_COORDINATOR_CONFIG: CoordinatorConfig = {
-  enabled: false,
   providerId: "codex",
   model: null,
   reasoningLevel: null,
-  hostId: null,
+  serviceTier: "default",
 };
 
 export class CoordinatorUnavailableError extends Error {
@@ -42,6 +41,7 @@ export class CoordinatorUnavailableError extends Error {
 }
 
 interface ManagerDeps {
+  preferences?: () => string;
   bb: BbPluginApi;
   store: CoordinatorStore;
   config: () => Promise<CoordinatorConfig>;
@@ -99,6 +99,7 @@ export class CoordinatorManager {
   private readonly store: CoordinatorStore;
   private readonly readConfig: () => Promise<CoordinatorConfig>;
   private readonly now: () => number;
+  private readonly preferences: () => string;
   private readonly locks = new KeyedLock();
   private readonly questionWaiters = new Map<string, QuestionWaiter>();
   /** Native interaction ids seen for the coordinator that are not ours. */
@@ -110,6 +111,7 @@ export class CoordinatorManager {
     this.store = deps.store;
     this.readConfig = deps.config;
     this.now = deps.now ?? Date.now;
+    this.preferences = deps.preferences ?? (() => "");
   }
 
   dispose() {
@@ -244,37 +246,14 @@ export class CoordinatorManager {
 
   /** Resolve the personal project, machine, provider, and model for a new coordinator. */
   private async resolveTarget(config: CoordinatorConfig): Promise<{ projectId: string; hostId: string; hostName: string; providerId: string; model: string }> {
-    const projects = await this.bb.sdk.projects.list({ includePersonal: true });
-    const personal = projects.find((project) => project.kind === "personal");
-    if (!personal) throw new CoordinatorUnavailableError("BB has no personal project to host the voice coordinator.");
-    const hosts = await this.bb.sdk.hosts.list();
-    const connected = hosts.filter((host) => host.status === "connected");
-    let host = config.hostId ? hosts.find((candidate) => candidate.id === config.hostId) : undefined;
-    if (config.hostId && !host) throw new CoordinatorUnavailableError("The machine chosen for the voice coordinator is not registered. Pick another in Voice Mode settings.");
-    if (host && host.status !== "connected") throw new CoordinatorUnavailableError(`The machine ${host.name} is not connected, so the voice coordinator cannot start there.`);
-    if (!host) {
-      const defaultSource = personal.sources.find((source) => source.isDefault) ?? personal.sources[0];
-      host = (defaultSource ? connected.find((candidate) => candidate.id === defaultSource.hostId) : undefined) ?? connected[0];
+    const {personal, host, selected, serviceTiers} = await coordinatorOptions(this.bb, config.providerId, config.model);
+    if (config.reasoningLevel && !(selected.supportedReasoningEfforts ?? []).some(option => option.reasoningEffort === config.reasoningLevel)) {
+      throw new CoordinatorUnavailableError(`Reasoning effort ${config.reasoningLevel} is not supported by ${selected.displayName}. Update the coordinator settings.`);
     }
-    if (!host) throw new CoordinatorUnavailableError("No connected machine can run the voice coordinator.");
-    const providers = await this.bb.sdk.providers.list({ hostId: host.id });
-    const provider = providers.find((candidate) => candidate.id === config.providerId);
-    if (!provider || !provider.available) {
-      throw new CoordinatorUnavailableError(`The coordinator provider "${config.providerId}" is not available on ${host.name}. Choose another in Voice Mode settings.`);
+    if (config.serviceTier === "fast" && !serviceTiers.some(option => option.id === "fast")) {
+      throw new CoordinatorUnavailableError("Fast service is not supported by this coordinator provider.");
     }
-    const catalog = await this.bb.sdk.providers.models({ providerId: config.providerId, hostId: host.id });
-    const models = catalog.models.filter((model) => !model.routeProviderId || model.routeProviderId === config.providerId);
-    let model: string | null = null;
-    if (config.model) {
-      const match = models.find((candidate) => candidate.id === config.model || candidate.model === config.model);
-      if (!match) throw new CoordinatorUnavailableError(`The coordinator model "${config.model}" is not in the ${provider.displayName ?? config.providerId} catalog on ${host.name}. Choose another in Voice Mode settings.`);
-      model = match.model;
-    } else {
-      const fallback = models.find((candidate) => candidate.isDefault) ?? models[0];
-      if (!fallback) throw new CoordinatorUnavailableError(`No model is available for the coordinator provider "${config.providerId}"${catalog.modelLoadError ? ` (${catalog.modelLoadError.code})` : ""}.`);
-      model = fallback.model;
-    }
-    return { projectId: personal.id, hostId: host.id, hostName: host.name, providerId: config.providerId, model };
+    return {projectId:personal.id,hostId:host.id,hostName:host.name,providerId:config.providerId,model:selected.model};
   }
 
   /**
@@ -323,7 +302,8 @@ export class CoordinatorManager {
           title: coordinatorTitle(conversationId),
           providerId: target.providerId,
           model: target.model,
-          ...(config.reasoningLevel ? { reasoningLevel: config.reasoningLevel as "low" | "medium" | "high" | "xhigh" | "max" } : {}),
+          ...(config.reasoningLevel ? { reasoningLevel: config.reasoningLevel as "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | "ultracode" } : {}),
+          serviceTier: config.serviceTier,
           prompt: coordinatorBootstrapPrompt(conversationId),
         });
       } catch (error) {
@@ -426,12 +406,16 @@ export class CoordinatorManager {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const failed = this.store.updateRequest(request.id, { status: "failed", error: message });
-        this.recordFailureReply(conversation, request.id, `The coordinator is unavailable: ${message} Say "retry" to try again, or open the thread directly.`);
+        this.recordFailureReply(conversation, request.id, `I could not start that work. Please try again.`);
         return failed;
       }
       conversation = this.store.getConversation(conversation.id)!;
       const question = request.envelope.answersQuestionId ? this.store.getQuestion(request.envelope.answersQuestionId) : null;
+      const preferences = this.preferences();
+      const context = JSON.stringify({preferences,view:request.envelope.view,latestAnnouncement:conversation.state.latestAnnouncement,discussedThreadId:conversation.state.discussedThreadId,topic:conversation.state.topic});
       const text = formatRequestMessage(request.envelope, {
+        omitContext:context === conversation.state.lastRequestContext,
+        preferences,
         questionText: question?.question ?? null,
         latestAnnouncement: conversation.state.latestAnnouncement,
         discussedThreadId: conversation.state.discussedThreadId,
@@ -450,7 +434,7 @@ export class CoordinatorManager {
           this.store.updateQuestion(question.id, { status: "delivered", answer: request.envelope.originalText, submittedVia: "voice", submittedAt: question.submittedAt ?? this.now(), deliveredAt: this.now() });
         }
         const accepted = this.store.updateRequest(request.id, { status: "accepted", receipt, dispatchedAt: this.now(), error: null });
-        this.store.updateConversation(conversation.id, {});
+        this.store.updateConversation(conversation.id, {state:{lastRequestContext:context}});
         this.publishStatus(conversation.id);
         return accepted;
       } catch (error) {
@@ -518,19 +502,32 @@ export class CoordinatorManager {
       return { content: [{ type: "text", text: "voice_reply is only available to the Voice Mode coordinator thread." }], isError: true };
     }
     const bootstrap = params.request_id === "bootstrap";
-    const openRequests = this.store.listRequests(conversation.id, ["accepted", "dispatch_unknown"]);
     let requestId: string | null = null;
     if (!bootstrap && params.request_id) {
       const match = this.store.getRequest(params.request_id);
       if (match && match.conversationId === conversation.id) requestId = match.id;
+      else return "Unknown request: do not attach late output to another request.";
     }
     let batchId: string | null = null;
     if (params.batch_id) {
       const batch = this.store.getBatch(params.batch_id);
-      if (batch && batch.conversationId === conversation.id) batchId = batch.id;
+      if (batch && batch.conversationId === conversation.id && batch.status === "sent") batchId = batch.id;
+      else return "This batch is no longer waiting for a reply; keep late output internal.";
     }
-    if (!requestId && !batchId && !bootstrap && openRequests.length > 0) requestId = openRequests[0].id;
     const request = requestId ? this.store.getRequest(requestId) : null;
+    if (!bootstrap && !requestId && !batchId) return "No active request or batch: keep this intermediate text internal.";
+    const debugRequested = /debug|diagnos|troubleshoot|coordinator.*(?:log|status|work)/i.test(request?.envelope.originalText ?? "");
+    const routingNoise = /\b(?:delegat\w*|dispatch\w*|rout(?:e|ed|ing)|assign\w*)\b.*\b(?:thread|coordinator|agent)\b|\bcoordinator[’']?s?\b/i.test(`${params.speech}\n${params.detail ?? ""}`);
+    const internal = params.kind === "silent" || (!batchId && (params.kind === "assigned" || params.kind === "progress"));
+    if (!debugRequested && routingNoise && !internal) {
+      return {content:[{type:"text",text:"Keep routing and coordinator details internal. Record assignment receipts with kind assigned; otherwise rewrite only the material result or blocker in the assistant’s own voice."}],isError:true};
+    }
+    if (batchId && params.kind === "assigned") return "Assignment is internal. Use silent for this batch, or report a material result.";
+    const previousReplies = requestId ? this.store.listReplies(conversation.id,{requestId}) : [];
+    if (request?.status === "settled" && !conversation.state.activeTasks.some(task=>task.requestId === request.id)) return "This request has ended; do not open another reply turn.";
+    if (params.kind === "assigned" && previousReplies.some(reply=>reply.kind === "assigned")) return "Assignment already reported.";
+    if (params.kind === "blocked" && previousReplies.some(reply=>reply.kind === "blocked" && reply.body.speech === params.speech)) return "This blocker was already reported.";
+    if (params.kind === "assigned" && !(params.receipts ?? []).some(receipt=>receipt.thread_id && (receipt.outcome === "done" || receipt.outcome === "pending"))) return "Assignment requires an actual thread receipt.";
     if (requestId && params.kind === "final" && this.store.listReplies(conversation.id, { requestId }).some(r => r.kind === "final")) return "A final reply is already recorded for this request.";
 
     // State and watch changes are data about the conversation, not new instructions.
@@ -542,12 +539,14 @@ export class CoordinatorManager {
     for (const id of params.state?.watch_add ?? []) this.store.watch(conversation.id, id, "requested");
     for (const id of threadIds) if (!this.store.isWatched(conversation.id, id)) this.store.watch(conversation.id, id, "discussed");
     for (const id of params.state?.watch_remove ?? []) this.store.unwatch(conversation.id, id);
-    const pendingReceipts = (params.receipts ?? []).filter((receipt) => receipt.outcome === "pending");
+    const pendingReceipts = (params.receipts ?? []).filter((receipt) => receipt.outcome === "pending" || (params.kind === "assigned" && receipt.outcome === "done"));
     if (request && pendingReceipts.length > 0) {
       const tasks = conversation.state.activeTasks.filter((task) => task.requestId !== request.id);
+      for (const receipt of pendingReceipts) if (receipt.thread_id) statePatch.threadStates = {...conversation.state.threadStates,...(statePatch.threadStates as object ?? {}),[receipt.thread_id]:""};
       tasks.push({ requestId: request.id, summary: truncateSpeech(request.envelope.originalText || request.envelope.interpretation || "request", 300), threadIds: uniqueIds(pendingReceipts.map((receipt) => receipt.thread_id ?? "")) });
       statePatch.activeTasks = tasks.slice(-50);
     }
+    if (request && params.kind === "final") statePatch.activeTasks = conversation.state.activeTasks.filter(task=>task.requestId !== request.id);
     this.store.updateConversation(conversation.id, { state: statePatch });
 
     const body: StoredReply = {
@@ -557,10 +556,10 @@ export class CoordinatorManager {
       receipts: params.receipts ?? [],
       focusThreadId: requestId && !batchId ? params.present?.focus_thread_id ?? null : null,
     };
-    if (params.kind === "progress" && !batchId) {
-      const progress = this.store.recordReply({ conversationId: conversation.id, requestId, batchId, questionId: null, kind: "progress", source: "tool", body, ready: true, delivery: "silent", targetCallNonce: conversation.currentCallNonce });
+    if ((params.kind === "progress" || params.kind === "assigned") && !batchId) {
+      const progress = this.store.recordReply({ conversationId: conversation.id, requestId, batchId, questionId: null, kind: params.kind, source: "tool", body, ready: true, delivery: "silent", targetCallNonce: conversation.currentCallNonce });
       this.publishStatus(conversation.id);
-      return `Recorded progress ${progress.id} in diagnostics only. The voice layer already acknowledges requests. Send one final answer when done.`;
+      return `Recorded ${params.kind} ${progress.id} internally. Work quietly; report only a material blocker or changed results.`;
     }
     if (bootstrap || params.kind === "silent") {
       const silent = this.store.recordReply({ conversationId: conversation.id, requestId, batchId, questionId: null, kind: "silent", source: "tool", body, ready: true, delivery: "silent", targetCallNonce: conversation.currentCallNonce });
@@ -594,7 +593,7 @@ export class CoordinatorManager {
       targetCallNonce: addressedCall,
     });
     if (batchId) this.store.setBatchStatus(batchId, "answered");
-    if (!addressedCall) this.deferReplyToInbox(conversation, reply);
+    if (!addressedCall && ready) this.deferReplyToInbox(conversation, reply);
     else if (ready) this.publishReply(reply);
     if (request && kind === "final") {
       // Settlement happens on the coordinator's idle event, when the work behind
@@ -675,7 +674,7 @@ export class CoordinatorManager {
   }
 
   /** The bridge reports what the user actually heard. */
-  reportDelivery(replyId: string, state: "generated" | "playing" | "delivered" | "interrupted" | "partial" | "held" | "superseded", callNonce: string): void {
+  reportDelivery(replyId: string, state: "generated" | "playing" | "delivered" | "interrupted" | "partial" | "held" | "superseded" | "mismatch", callNonce: string): void {
     const reply = this.store.getReply(replyId);
     if (!reply) return;
     if (reply.targetCallNonce && reply.targetCallNonce !== callNonce) {
@@ -686,7 +685,7 @@ export class CoordinatorManager {
     const conversation = this.store.getConversation(reply.conversationId);
     if (!conversation) return;
     const heard = state === "delivered" || state === "partial" || state === "interrupted";
-    if (heard && (reply.kind === "update" || reply.kind === "final" || reply.kind === "progress") && reply.body.speech) {
+    if (heard && (reply.kind === "update" || reply.kind === "final" || reply.kind === "assigned" || reply.kind === "blocked") && reply.body.speech) {
       const statePatch: Record<string, unknown> = { latestAnnouncement: { replyId: reply.id, threadIds: reply.body.threadIds, text: reply.body.speech, delivery: state } };
       if (reply.kind !== "update" && reply.requestId && conversation.currentCallNonce === callNonce) statePatch.openingAnswered = true;
       this.store.updateConversation(conversation.id, { state: statePatch });
@@ -705,6 +704,11 @@ export class CoordinatorManager {
     if (!conversation) return;
     const rows = this.store.listUpdates(conversation, ["reserved", "delivered", "queued"], 500).filter((row) => row.batchId === batchId);
     this.store.setUpdatesStatus(rows.map((row) => row.id), status, batchId);
+    if (status === "delivered" && conversation) {
+      const completed = new Set(rows.filter(row=>row.kind === "idle").map(row=>row.threadId));
+      const current = this.store.getConversation(conversation);
+      if (current) this.store.updateConversation(conversation,{state:{activeTasks:current.state.activeTasks.map(task=>({...task,threadIds:task.threadIds.filter(id=>!completed.has(id))})).filter(task=>task.threadIds.length>0)}});
+    }
   }
 
   // ---- questions (voice_ask tool) ----
@@ -901,15 +905,23 @@ export class CoordinatorManager {
       const queuedRequests = accepted.filter((request) => request.receipt?.delivery === "queued");
       const keep = Math.max(0, Math.min(thread.queuedMessageCount, queuedRequests.length));
       const stillQueued = new Set(keep === 0 ? [] : queuedRequests.slice(-keep).map((request) => request.id));
+      // An assignment may have settled the initiating turn. A later worker
+      // result still waits for THIS coordinator turn to settle before speaking.
+      for (const reply of this.store.listReplies(conversation.id, { ready: false })) {
+        if (reply.kind !== "final" || (reply.requestId && stillQueued.has(reply.requestId))) continue;
+        const ready = this.store.updateReply(reply.id, { ready: true });
+        if (ready.targetCallNonce && ready.delivery === "pending") this.publishReply(ready);
+        else if (ready.delivery === "deferred") this.deferReplyToInbox(conversation, ready);
+      }
       for (const request of accepted) {
         if (stillQueued.has(request.id)) continue;
         const replies = this.store.listReplies(conversation.id, { requestId: request.id }).filter((reply) => reply.createdAt >= (request.dispatchedAt ?? 0) && reply.source !== "bridge");
-        const finals = replies.filter((reply) => reply.kind === "final" && !reply.ready);
-        for (const reply of finals) {
-          const ready = this.store.updateReply(reply.id, { ready: true });
-          if (ready.targetCallNonce && ready.delivery === "pending") this.publishReply(ready);
-        }
         if (!replies.some(reply => reply.kind !== "progress")) this.fallbackReply(conversation, request, lastAssistantText);
+        if (request.callNonce === conversation.currentCallNonce && replies.some(reply => reply.kind === "assigned")) {
+          // Assignment is intentionally silent. Its later result must still be
+          // eligible for a digest, under the full client speech/playback gate.
+          this.store.updateConversation(conversation.id, { state: { openingAnswered: true } });
+        }
         this.settleRequest(request.id, null);
       }
       for (const batch of this.store.listBatches(conversation.id, ["sent"])) {
@@ -930,7 +942,7 @@ export class CoordinatorManager {
 
   /** Bounded fallback when a turn ended without any structured reply. */
   private fallbackReply(conversation: ConversationRow, request: RequestRow, lastAssistantText: string | null) {
-    const text = lastAssistantText ? truncateSpeech(lastAssistantText, 400) : "The coordinator finished without a spoken reply. Check the coordinator thread for details.";
+    const text = "I did not receive a result for that request.";
     const current = this.store.getConversation(conversation.id) ?? conversation;
     const addressed = current.currentCallNonce && request.callNonce === current.currentCallNonce ? current.currentCallNonce : null;
     const reply = this.store.recordReply({
@@ -958,8 +970,7 @@ export class CoordinatorManager {
       this.store.setBatchStatus(batch.id, "failed");
       this.markBatchUpdates(batch.id, "queued");
     }
-    const detail = error ? ` ${truncateSpeech(error, 160)}` : "";
-    this.recordFailureReply(conversation, open[0]?.id ?? null, `The coordinator failed.${detail}${rateLimitHint ? ` ${rateLimitHint}` : ""} Say "retry" to try again, or open the coordinator thread.`);
+    if (open.length > 0) this.recordFailureReply(conversation, open[0].id, `I could not finish that request. Please try again.`);
     await this.releaseIfSettled(conversation.id);
   }
 
@@ -977,7 +988,7 @@ export class CoordinatorManager {
       questionId: null,
       kind: "clarification",
       source: "bridge",
-      body: { speech: `The coordinator needs your decision in the app: ${truncateSpeech(interaction.payload.title, 160)}`, detail: `Interaction ${interaction.id} (${interaction.payload.kind}) on the coordinator thread. Answer it in the Voice page or open the coordinator.`, threadIds: [threadId], receipts: [], focusThreadId: null },
+      body: { speech: `I need your decision in the app: ${truncateSpeech(interaction.payload.title, 160)}`, detail: `Interaction ${interaction.id} (${interaction.payload.kind}) on the coordinator thread. Answer it in the Voice page or open the coordinator.`, threadIds: [threadId], receipts: [], focusThreadId: null },
       ready: true,
       delivery: conversation.currentCallNonce ? "pending" : "deferred",
       targetCallNonce: conversation.currentCallNonce,
@@ -994,6 +1005,9 @@ export class CoordinatorManager {
     for (const conversationId of this.store.watchersOf(input.threadId)) {
       const conversation = this.store.getConversation(conversationId);
       if (!conversation) continue;
+      const signature = JSON.stringify([input.kind,input.detail?.trim() ?? ""]);
+      if (conversation.state.threadStates[input.threadId] === signature) continue;
+      const threadStates = {...conversation.state.threadStates,[input.threadId]:signature};
       const row = this.store.enqueueUpdate({
         conversationId,
         threadId: input.threadId,
@@ -1003,6 +1017,7 @@ export class CoordinatorManager {
         detail: input.detail ? truncateSpeech(input.detail, 600) : null,
       });
       if (!row) continue;
+      this.store.updateConversation(conversationId,{state:{threadStates:Object.fromEntries(Object.entries(threadStates).slice(-200))}});
       if (conversation.currentCallNonce) {
         this.bb.realtime.publish(INBOX_CHANNEL, { conversationId, callNonce: conversation.currentCallNonce, queued: this.store.listUpdates(conversationId, ["queued"]).length });
       }
@@ -1071,7 +1086,7 @@ export class CoordinatorManager {
     const currentId = this.store.currentConversationId();
     const conversations = this.store.listConversations(10).map((row) => ({ id: row.id, createdAt: row.createdAt, updatedAt: row.updatedAt, status: row.status, coordinatorThreadId: row.coordinatorThreadId, current: row.id === currentId }));
     if (!conversation) {
-      return { enabled: false, conversation: null, requests: [], questions: [], pendingInteractions: [], watch: [], queuedUpdates: 0, recentReplies: [], conversations };
+      return { enabled: true, conversation: null, requests: [], questions: [], pendingInteractions: [], watch: [], queuedUpdates: 0, recentReplies: [], conversations };
     }
     return {
       enabled: true,
@@ -1107,7 +1122,9 @@ export class CoordinatorManager {
 
   private publishStatus(conversationId: string) {
     if (this.disposed) return;
-    this.bb.realtime.publish(STATUS_CHANNEL, { conversationId });
+    const conversation = this.store.getConversation(conversationId);
+    this.bb.realtime.publish(STATUS_CHANNEL, { conversationId, callNonce:conversation?.currentCallNonce ?? null,
+      activeRequestIds:[...new Set([...this.store.listRequests(conversationId,["recorded","dispatching","accepted","dispatch_unknown"]).map(request=>request.id),...(conversation?.state.activeTasks ?? []).map(task=>task.requestId)])] });
   }
 }
 

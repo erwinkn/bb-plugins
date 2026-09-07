@@ -47,7 +47,7 @@ function fakeWorld(options: { providerAvailable?: boolean; spawnFails?: "before"
     hosts: { list: async () => [{ id: "host_a", name: "Mac", status: "connected" }, { id: "host_b", name: "Studio", status: "disconnected" }] },
     providers: {
       list: async () => [{ id: "codex", displayName: "Codex", available: options.providerAvailable ?? true }, { id: "claude-code", displayName: "Claude Code", available: true }],
-      models: async ({ providerId }: Any) => ({ modelLoadError: null, models: providerId === "codex" ? [{ id: "gpt-a", model: "gpt-a", displayName: "A", isDefault: false }, { id: "gpt-b", model: "gpt-b", displayName: "B", isDefault: true }] : [{ id: "opus", model: "opus", displayName: "Opus", isDefault: true }] }),
+      models: async ({ providerId }: Any) => ({ modelLoadError: null, providers:[{id:providerId,serviceTiers:providerId === "codex" ? [{id:"default",label:"Default"},{id:"fast",label:"Fast"}] : []}], models: providerId === "codex" ? [{ id: "gpt-a", model: "gpt-a", displayName: "A", isDefault: false }, { id: "gpt-b", model: "gpt-b", displayName: "B", isDefault: true,defaultReasoningEffort:"high",supportedReasoningEfforts:[{reasoningEffort:"high",description:"High"},{reasoningEffort:"xhigh",description:"Extra high"}] }] : [{ id: "opus", model: "opus", displayName: "Opus", isDefault: true }] }),
     },
     threads: {
       spawn,
@@ -117,12 +117,12 @@ test("envelope validation rejects unknown fields and formats original words befo
   assert.equal(userRequestEnvelopeSchema.safeParse({ ...base, extra: 1 }).success, false);
   assert.equal(userRequestEnvelopeSchema.safeParse({ ...base, v: 2 }).success, false);
   const message = formatRequestMessage(base, { latestAnnouncement: { threadIds: ["thr_x"], text: "Speech thread finished.", delivery: "interrupted" } });
-  assert.ok(message.indexOf("User said:") < message.indexOf("Voice model's reading"));
+  assert.ok(message.indexOf("\"user\"") < message.indexOf("model_interpretation"));
   assert.match(message, /"I think we can archive it\. Nothing remains, right\?"/);
-  assert.match(message, /not the user's words/);
-  assert.match(message, /Latest announcement to the user \(interrupted\)/);
+  assert.equal(JSON.parse(message.split("\n")[1]).model_interpretation,"archive the thread");
+  assert.equal(JSON.parse(message.split("\n")[1]).heard.delivery,"interrupted");
   const partial = formatRequestMessage({ ...base, transcriptAvailable: false, originalText: "" }, {});
-  assert.match(partial, /transcript unavailable/);
+  assert.match(partial, /Incomplete transcript/);
   assert.match(partial, /ask before any destructive/);
 });
 
@@ -152,6 +152,9 @@ test("a hidden coordinator starts once in the personal environment with plugin a
   const fresh = await harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "thr_unknown", title: `${COORDINATOR_TITLE_PREFIX}conv_x` }, origin: { kind: null, pluginId: "voice-mode" } }));
   assert.deepEqual(fresh.tools.map((tool) => tool.name).sort(), ["voice_ask", "voice_overview", "voice_reply"]);
   assert.match(fresh.instructions ?? "", /Never turn a question/);
+  assert.ok((fresh.instructions ?? "").length <= 4096, "host instructions must retain the complete policy");
+  assert.match(fresh.instructions ?? "", /bb thread tell --mode queue explicitly/);
+  assert.match(fresh.instructions ?? "", /--mode steer only when an interruption is needed/);
   const worker = await harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "thr_worker", title: "Fix CI" }, origin: { kind: null, pluginId: null } }));
   assert.deepEqual(worker.tools, []);
   const status = await rpc("getCoordinatorStatus", null);
@@ -179,14 +182,14 @@ test("an unavailable coordinator provider is a recoverable failure and never fal
   const { conversationId } = await claim("call-1");
   const result = await rpc("submitRequest", { envelope: envelope(conversationId, "call-1", "r_1", "archive the old speech thread") });
   assert.equal(result.status, "failed");
-  assert.match(result.error, /not available on Mac/);
+  assert.match(result.error, /unavailable on Mac/);
   assert.equal(world.spawns, 0);
   const failure = replies().find((reply) => reply.kind === "failure");
-  assert.match(failure.speech, /coordinator is unavailable/);
+  assert.match(failure.speech, /could not start that work/);
   assert.equal(failure.targetCallNonce, "call-1");
   const direct = await rpc("runTool", { name: "archive_thread", args: { thread_id: "thr_old" }, threadId: null, projectId: null });
   assert.equal(direct.status, "error");
-  assert.match(direct.output, /Delegate to the coordinator/);
+  assert.match(direct.output, /Use delegate_to_coordinator/);
   assert.equal(COORDINATOR_MODE_SERVER_TOOLS.has("send_to_thread"), false);
 });
 
@@ -353,7 +356,7 @@ test("questions stay alive until answered, map spoken answers only to the open q
   assert.match(reasked[0].speech, /Merge now\?/);
   const late = await rpc("submitRequest", { envelope: envelope(resumed.conversationId, "call-2", "r_4", "yes, merge", { answersQuestionId: status.questions[0].id }) });
   assert.equal(late.status, "accepted");
-  assert.match(world.sends.at(-1)!.text, /This answers your question/);
+  assert.match(world.sends.at(-1)!.text, /"answer_to"/);
   status = await rpc("getCoordinatorStatus", null);
   assert.equal(status.questions.length, 0);
 
@@ -570,4 +573,136 @@ test("the overview tool is coordinator-only and returns a bounded fresh snapshot
   assert.equal(result.threads.length,30); assert.equal(result.truncated,true);
   assert.ok(Math.abs(Date.now()-result.asOf)<1000);
   assert.equal(harness.inspection.sdk.callsTo("threads.timeline").length,before);
+});
+
+test("coordinator is mandatory and catalog-validated execution choices reach a new coordinator", async(t)=>{
+  const {harness,rpc,claim,envelope,world,coordinatorId}=await enabledHost();t.after(()=>harness.lifecycle.dispose());
+  const initial=await rpc("getConfig",null);
+  assert.equal("enabled" in initial.coordinator,false);assert.equal("hostId" in initial.coordinator,false);
+  await assert.rejects(rpc("setConfig",{coordinator:{enabled:false}}));
+  await assert.rejects(rpc("setConfig",{coordinator:{hostId:"host_b"}}));
+  const catalog=await rpc("listCoordinatorProviders",null);
+  assert.equal(catalog.providers.find((p:Any)=>p.id === "codex").serviceTiers[1].id,"fast");
+  assert.deepEqual(catalog.models.find((m:Any)=>m.model === "gpt-b").reasoningLevels.map((r:Any)=>r.id),["high","xhigh"]);
+  await rpc("setConfig",{coordinator:{providerId:"codex",model:"gpt-b",reasoningLevel:"xhigh",serviceTier:"fast"}});
+  await assert.rejects(rpc("setConfig",{coordinator:{reasoningLevel:"low"}}),/does not support/);
+  await assert.rejects(rpc("setConfig",{coordinator:{providerId:"claude-code",model:"opus",reasoningLevel:null,serviceTier:"fast"}}),/does not support fast/);
+  const {conversationId}=await claim("configured");
+  await rpc("submitRequest",{envelope:envelope(conversationId,"configured","configured_request","Check the build.")});
+  const spawn=world.threads.get(coordinatorId()).spawnArgs;
+  assert.equal(spawn.reasoningLevel,"xhigh");assert.equal(spawn.serviceTier,"fast");
+  assert.equal(spawn.environment.hostId,"host_a");
+});
+
+test("one assistant flow keeps assignment internal, suppresses repeated blockers and reports changed results once",async(t)=>{
+  const {harness,rpc,claim,envelope,coordinatorId,idle,replies,world}=await enabledHost();t.after(()=>harness.lifecycle.dispose());
+  const {conversationId}=await claim("flow");
+  await rpc("submitRequest",{envelope:envelope(conversationId,"flow","flow_request","Fix the build and verify it.")});
+  await idle(coordinatorId(),null);
+  const reply=(params:Any)=>harness.behavior.callAgentTool("voice_reply",{request_id:"flow_request",...params},{threadId:coordinatorId()});
+  await reply({kind:"assigned",speech:"Assigned internally.",receipts:[{action:"spawned",thread_id:"build_worker",outcome:"done"}]});
+  await reply({kind:"assigned",speech:"Assigned again.",receipts:[{action:"spawned",thread_id:"build_worker",outcome:"done"}]});
+  await idle(coordinatorId(),"Internal dispatch details.");
+  assert.equal(replies().length,0,"assignment and idle fallback create no user-facing speech");
+  await reply({kind:"progress",speech:"Checking more things."});
+  await reply({kind:"blocked",speech:"The build needs access to the package registry."});
+  await reply({kind:"blocked",speech:"The build needs access to the package registry."});
+  assert.equal(replies().length,1);
+  const noise=await reply({kind:"final",speech:"I delegated this to the coordinator thread."}) as Any;
+  assert.equal(noise.isError,true);
+  await reply({kind:"final",speech:"The build is fixed, and the checks pass.",receipts:[{action:"verify",thread_id:"build_worker",outcome:"done"}]});
+  await idle(coordinatorId(),"Internal follow-up.");
+  assert.equal(replies().filter((r:Any)=>r.kind === "final").length,1);
+  await reply({kind:"final",speech:"Unrelated late result."});
+  await idle(coordinatorId(),"Unrelated late output.");
+  assert.equal(replies().length,2);
+  assert.equal(world.sends.length,1,"reply bookkeeping never opens another coordinator turn");
+});
+
+test("compact requests preserve every input item once and unchanged context is omitted",async(t)=>{
+  const {harness,rpc,claim,envelope,world}=await enabledHost();t.after(()=>harness.lifecycle.dispose());
+  const {conversationId}=await claim("compact");
+  const first=envelope(conversationId,"compact","compact_1","Only if the checks pass.",{utteranceItemIds:["last"],transcriptDelta:[{itemId:"first",text:"Fix the build, preserve the existing changes, and do not publish."},{itemId:"last",text:"Only if the checks pass."}],interpretation:"Fix build conditionally"});
+  await rpc("submitRequest",{envelope:first});
+  const data=JSON.parse(world.sends[0].text.split("\n")[1]);
+  assert.deepEqual(data.user.items.map((item:Any)=>item.text),first.transcriptDelta.map(item=>item.text));
+  assert.equal(data.user.text,undefined,"last item is not repeated");
+  await rpc("submitRequest",{envelope:envelope(conversationId,"compact","compact_2","Also check the tests.")});
+  assert.equal(JSON.parse(world.sends[1].text.split("\n")[1]).context,"unchanged");
+});
+
+test("silent assignment allows completion digests; repeated and late events never open extra reply turns", async (t) => {
+  const { harness, rpc, claim, envelope, coordinatorId, idle, replies, world } = await enabledHost();
+  t.after(() => harness.lifecycle.dispose());
+  const { conversationId } = await claim("quiet");
+  await rpc("submitRequest", { envelope: envelope(conversationId, "quiet", "quiet_request", "Fix the build and test it.") });
+  await idle(coordinatorId(), null);
+  await harness.behavior.callAgentTool("voice_reply", { request_id: "quiet_request", kind: "assigned", speech: "", receipts: [{ action: "send", thread_id: "worker", outcome: "pending" }] }, { threadId: coordinatorId() });
+  await idle(coordinatorId(), null);
+  const event = (updatedAt: number) => harness.behavior.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "worker", title: "Build", updatedAt }), lastAssistantText: "Build fixed. Tests pass." });
+  await event(1);
+  await event(2);
+  assert.equal((await rpc("getCoordinatorStatus", null)).queuedUpdates, 1);
+  const reserved = await rpc("reserveUpdateBatch", { conversationId, nonce: "quiet", msSinceCallLive: 20000 });
+  assert.ok(reserved.batch, "silent assignment must not block its later completion report");
+  const sendCount = world.sends.length;
+  const report = { batch_id: reserved.batch.id, kind: "final", speech: "The build is fixed, and the tests pass." };
+  await harness.behavior.callAgentTool("voice_reply", report, { threadId: coordinatorId() });
+  await harness.behavior.callAgentTool("voice_reply", report, { threadId: coordinatorId() });
+  const update = replies().find((reply: Any) => reply.kind === "update");
+  assert.equal(replies().length, 1);
+  await rpc("reportReplyDelivery", { replyId: update.replyId, nonce: "quiet", state: "delivered" });
+  await idle(coordinatorId(), null);
+  await event(3);
+  assert.equal((await rpc("getCoordinatorStatus", null)).queuedUpdates, 0);
+  assert.equal((await rpc("reserveUpdateBatch", { conversationId, nonce: "quiet", msSinceCallLive: 20000 })).reason, "empty");
+  await harness.behavior.callAgentTool("voice_reply", { request_id: "quiet_request", kind: "final", speech: "Late result from the same work." }, { threadId: coordinatorId() });
+  await rpc("submitRequest", { envelope: envelope(conversationId, "quiet", "new_request", "What is the next task?") });
+  await harness.behavior.callAgentTool("voice_reply", { request_id: "missing_old_request", kind: "final", speech: "An old result." }, { threadId: coordinatorId() });
+  await harness.behavior.callAgentTool("voice_reply", { kind: "final", speech: "Unscoped old output." }, { threadId: coordinatorId() });
+  assert.equal(replies().length, 1);
+  assert.equal(world.sends.length, sendCount + 1, "only the new user request sends another message");
+});
+
+
+test("routine handoffs queue behind active work and only interrupting requests steer", async (t) => {
+  const { harness, rpc, claim, envelope, world } = await enabledHost();
+  t.after(() => harness.lifecycle.dispose());
+  const { conversationId } = await claim("queue-policy");
+  const requests = [
+    { id: "feature", text: "Also add settings search.", urgency: "new" as const, mode: "queue-if-active" },
+    { id: "followup", text: "After that, check mobile layout.", urgency: "after_current" as const, mode: "queue-if-active" },
+    { id: "comment", text: "One comment: explain the shortcut.", urgency: "after_current" as const, mode: "queue-if-active" },
+    { id: "interrupt", text: "Stop that change now; that is the wrong thread.", urgency: "steer" as const, mode: "steer-if-active" },
+  ];
+  for (const request of requests) {
+    await rpc("submitRequest", { envelope: envelope(conversationId, "queue-policy", request.id, request.text, { urgency: request.urgency }) });
+    assert.equal(world.sends.at(-1)?.mode, request.mode);
+    assert.ok(world.sends.at(-1)?.text.includes(request.text), "routing retains the original request");
+  }
+});
+
+test("saved voice instructions reach the actual call and coordinator without repeated context", async (t) => {
+  const { harness, rpc, claim, envelope, world } = await enabledHost();
+  t.after(() => harness.lifecycle.dispose());
+  await harness.behavior.setSettings({openaiApiKey:"test-key"});
+  let sentSession: Any;
+  t.mock.method(globalThis,"fetch",async (_url: unknown, options: RequestInit) => {
+    sentSession = JSON.parse(String((options.body as FormData).get("session")));
+    return new Response("test-answer", {status:200});
+  });
+  const preferences = "Answer in French. Use short sentences.";
+  await rpc("setPrompt",{content:preferences,source:"user",note:null});
+  const {conversationId} = await claim("preferences");
+  await rpc("createCall",{nonce:"preferences",sdp:"test-offer",threadId:null,projectId:null});
+  assert.ok(sentSession.instructions.includes(preferences));
+  assert.ok(sentSession.instructions.includes("delegate_to_coordinator"));
+  assert.ok(!sentSession.tools.some((tool:Any)=>tool.name === "archive_thread"));
+  await rpc("submitRequest",{envelope:envelope(conversationId,"preferences","pref1","Check CI.")});
+  assert.equal(JSON.parse(world.sends.at(-1)!.text.split("\n")[1]).user_preferences,preferences);
+  await rpc("submitRequest",{envelope:envelope(conversationId,"preferences","pref2","Then check docs.")});
+  assert.equal(JSON.parse(world.sends.at(-1)!.text.split("\n")[1]).user_preferences,undefined);
+  await rpc("setPrompt",{content:"Answer in English.",source:"user",note:null});
+  await rpc("submitRequest",{envelope:envelope(conversationId,"preferences","pref3","Now check the build.")});
+  assert.equal(JSON.parse(world.sends.at(-1)!.text.split("\n")[1]).user_preferences,"Answer in English.");
 });

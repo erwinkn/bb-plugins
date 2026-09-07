@@ -105,10 +105,12 @@ flow. This dedicated Voice area supersedes their entry-point navigation rules.
 
 ## Coordinator mode
 
-Coordinator mode is off by default. Turn it on under Settings → Plugins →
-Voice Mode → **Coordinator**. It applies to the next call.
+Every new call uses the coordinator. Settings → Plugins → Voice Mode →
+**Coordinator** selects its provider, model, supported reasoning effort, and
+fast service when the provider offers it. These choices apply to new logical
+sessions. Existing sessions keep their coordinator and saved history.
 
-With it on, the realtime voice model no longer changes BB itself. It listens,
+The realtime voice model cannot change BB itself. It listens,
 hands each request to a hidden BB thread (the coordinator) with the user's
 original words, and speaks the coordinator's replies. The coordinator acts
 through BB's own tools (the `bb` CLI) and reports back through a
@@ -118,10 +120,18 @@ approval. Clear requests run without a second confirmation; a conditional
 request such as "we can archive it, nothing remains, right?" runs once the
 coordinator has verified the condition.
 
+The coordinator sends follow-ups, new feature requests, and comments with
+`bb thread tell --mode queue`. Idle threads can start immediately; active threads
+finish their current turn first. Steering is reserved for needed interruptions,
+such as a wrong target, a constraint violation, or an explicit request to
+interrupt. An ordinary correction does not by itself require steering. This
+work-thread policy is part of the coordinator instructions; BB executes its
+native commands. The bridge also queues routine requests to the coordinator.
+
 What the plugin guarantees in this mode:
 
 - The voice session has no tool that sends, starts, stops, archives, or renames
-  threads, and the server refuses those tools while the mode is on. There is
+  threads, and the server refuses those tools. There is
   no fallback to the direct path on errors.
 - A request is accepted only when a completed input transcript has been bound
   to it and recorded durably. Speech that starts before a handoff was sent
@@ -159,9 +169,9 @@ What the plugin guarantees in this mode:
   separate coordinator, and the old one finishes its work without speaking
   into the new call.
 
-The coordinator runs in a personal-project environment on the selected
-machine with its own provider and model, independent of every project's
-defaults. The initial supported choice is Codex with its default model. An
+The coordinator runs in a personal-project environment on an automatically
+chosen connected machine, with its own provider and model. The personal
+project's default machine is preferred. There is no machine selector. An
 unavailable provider or model is reported as a recoverable failure. Normal
 permissions apply; the plugin never forces full permissions.
 
@@ -179,13 +189,38 @@ retry, questions, pending approvals, watched threads, and queued updates.
 Voice and preserves the call. The composer pill shows "Working…" while a
 request is with the coordinator.
 
-For delegated requests, the bridge speaks one short acknowledgment after the
-tool response settles, unless that response already spoke. It does not ask the
-realtime model to speak again after the tool result. Coordinator progress for
-individual requests is retained for debugging but is silent. One final reply
-per request is accepted. Questions and background digests keep their separate
-delivery rules. Model compliance with the instruction to delegate silently
-still needs live testing.
+The Prompt field always opens for editing. Saved instructions apply to new
+voice calls and the next coordinator request. Unchanged preferences are omitted
+from later requests. Existing prompt history is retained. The required tool and
+reply contract stays in place. The nonfunctional Speaker selector is removed;
+audio output follows system sound settings.
+
+The conversation joins user speech fragments until assistant playback starts or
+a pause reaches five seconds. It uses recorded audio boundaries when available,
+then event times for older calls. Delayed transcripts keep their spoken order.
+Raw events remain unchanged. This grouping does not delay audio responses or
+change the provider's 700 ms VAD setting.
+
+The user hears one assistant. The bridge gives one short, context-specific
+acknowledgment after the tool response settles, unless that response already
+spoke. It does not prompt another response after the tool result. Assignment
+receipts and routine progress stay internal. Only a useful blocker, changed
+result, or watched-work recap reaches the conversation. Routing details belong
+in the debug tab unless the user asks for them. Repeated blockers, completed
+batch replies, and replies to ended requests are suppressed.
+
+Requests use compact structured context. Original transcript items are kept
+once, in order; model interpretation is separate. Unchanged context is not
+repeated. Identical background states are coalesced across event ids and
+completed batches. Native BB messages still follow BB dispatch rules; this
+revision does not intercept them. Their replies cannot attach to another voice
+request or repeat a completed batch. SDK 0.4.47 has a `message.dispatch` hook
+with wait and reject decisions, but no quiet consume-and-coalesce decision.
+
+The bridge supplies the literal reply text in its speech instructions and
+checks the returned transcript. A mismatch is logged separately and never
+recorded as delivery of the intended words or replayed automatically. Live
+model compliance and device playback still need physical call testing.
 
 The coordinator can use `voice_overview` to get one fresh snapshot of up to 30
 active or recent threads, drawn from the 200 most recent threads and the
@@ -289,7 +324,7 @@ More detail: [architecture](docs/handsfree-voice-architecture.md)
 and [docs/voice-scenarios.md](docs/voice-scenarios.md).
 
 The [Voice conversation coordinator](docs/coordinator-plan.md) is implemented
-as an opt-in path (Settings → Plugins → Voice Mode → **Coordinator**). See
+as the required path for new calls. See
 [Coordinator mode](#coordinator-mode) above.
 
 Tool-call flow: model → data channel → `app.tsx` → plugin RPC `runTool` →

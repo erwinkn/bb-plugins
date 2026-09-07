@@ -398,11 +398,12 @@ export class VoiceAgent {
   }
 
   /** Coordinator replies, inbox notices, and questions published by the server. */
-  ingestCoordinatorSignal(channel: "voice-reply" | "voice-inbox" | "voice-question", payload: unknown) {
+  ingestCoordinatorSignal(channel: "voice-reply" | "voice-inbox" | "voice-question" | "voice-coordinator", payload: unknown) {
     const bridge = this.bridge;
     if (!bridge || !this.session) return;
     if (channel === "voice-reply") bridge.ingestReply(payload);
     else if (channel === "voice-inbox") bridge.ingestInbox(payload);
+    else if (channel === "voice-coordinator") bridge.ingestStatus(payload);
     this.refreshBridgeSnapshot();
     // Anything the gate refuses now is retried at the quiet boundary.
     this.scheduleNoticeDrain();
@@ -751,7 +752,7 @@ export class VoiceAgent {
     if (kind === "session.started") next = null;
     else if (kind === "user" || kind === "assistant" || kind === "notice") next = { kind, name: "", text: String(payload.text ?? "") };
     else if (kind === "reply.speaking") next = { kind: "notice", name: "", text: String(payload.text ?? "") };
-    else if (kind === "tool.call") next = { kind, name: String(payload.name ?? ""), text: "" };
+    else if (kind === "tool.call") next = { kind: "notice", name: "", text: "Working…" };
     else return; // diagnostics / tool.result don't move the ticker
     this.lastActivity = next;
     this.emitChange();
@@ -1112,6 +1113,11 @@ export class VoiceAgent {
       if (!bindings) {
         throw new Error("No bb surface is bound right now.");
       } else if (this.bridge && name === "delegate_to_coordinator") {
+        const origin = typeof event.response_id === "string" ? this.responseIdentity.get(event.response_id) : null;
+        if (!origin || origin.userTurn !== this.userTurn || this.userSpeaking || this.interruptedResponses.has(String(event.response_id))) {
+          requestResponseAfter = false;
+          throw new Error("Held: the user continued speaking. Wait for their complete current request.");
+        }
         output = this.bridge.delegate(callId, args);
         requestResponseAfter = false;
         this.delegatedTurn = this.userTurn;
@@ -1429,7 +1435,7 @@ export class VoiceAgent {
               return;
             }
             this.logDiag("audio.play.failed", { name });
-            toast.error("Aide: can't play audio — check the speaker in Voice Mode settings");
+            toast.error("Aide: can't play audio. Check your system sound settings.");
           },
         );
       };
@@ -1502,7 +1508,7 @@ export class VoiceAgent {
         const eventResponseId = typeof event.response_id === "string" ? event.response_id : typeof responseData?.id === "string" ? responseData.id : null;
         if (/^(input_audio_buffer\.|output_audio_buffer\.|response\.(created|done))/.test(type) || type === "conversation.item.input_audio_transcription.failed") {
           this.log("realtime.event", { eventType: type, responseId: eventResponseId, itemId: event.item_id ?? null,
-            userTurn: this.userTurn, monotonicMs: performance.now(), status: responseData?.status ?? null,
+            userTurn: this.userTurn, monotonicMs: performance.now(), audioStartMs: event.audio_start_ms ?? null, audioEndMs: event.audio_end_ms ?? null, status: responseData?.status ?? null,
             statusDetails: responseData?.status_details ?? null, activeResponseId: this.activeResponseId, playbackResponseId: this.playbackResponseId });
         }
         if (type === "response.created") {
@@ -1609,6 +1615,7 @@ export class VoiceAgent {
           if (text) {
             const identity = eventResponseId ? this.responseIdentity.get(eventResponseId) : undefined;
             if (identity?.source === "realtime") this.spokenTurns.add(identity.userTurn);
+            bridge?.onAssistantTranscript(eventResponseId,text);
             this.log("assistant", {text,responseId:eventResponseId,itemId:event.item_id ?? null,userTurn:this.userTurn,...identity});
           }
         } else if (type === "response.done") {

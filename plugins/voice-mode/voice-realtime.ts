@@ -18,6 +18,7 @@ export function VoiceController() {
   useRealtime("voice-presence-query", () => voiceAgent.answerPresenceQuery());
   useRealtime("voice-reply", (payload) => voiceAgent.ingestCoordinatorSignal("voice-reply", payload));
   useRealtime("voice-inbox", (payload) => voiceAgent.ingestCoordinatorSignal("voice-inbox", payload));
+  useRealtime("voice-coordinator", (payload) => voiceAgent.ingestCoordinatorSignal("voice-coordinator", payload));
   useRealtime("voice-question", (payload) => voiceAgent.ingestCoordinatorSignal("voice-question", payload));
   useRealtime("aide-thread-event", (payload) => {
     const event = payload as { kind?: unknown; threadId?: unknown; title?: unknown; detail?: unknown } | null;
