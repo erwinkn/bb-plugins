@@ -248,6 +248,27 @@ Problems found while building these plugins whose fix belongs outside this
 repository. Each entry records the evidence so it can be filed or re-verified
 later. Remove an entry when the upstream fix ships.
 
+### Mobile dictation is unavailable with attachments or active runs
+
+- **Where:** BB 0.42.1 core composer, in the mobile compact layout.
+- **Symptom:** dictation is unavailable when the current draft has text or an
+  attachment, including an image. While a thread is running, the compact
+  submit slot shows **Stop run** or **Steer current run** instead.
+- **Cause:** the compact composer renders the microphone only when the draft
+  has no text or attachments. A running thread also gives that submit slot to
+  its run control. The recorder itself has no text, attachment, or running-turn
+  guard.
+- **Reproduction:** at a 390x844 viewport, a running thread rendered the
+  compact composer without a microphone. The microphone appeared after the
+  composer expanded. Clicking it reached microphone permission handling in
+  the headless browser, which produced the expected permission error.
+- **Fix:** keep dictation as an independent action in the compact composer.
+  Dictation should insert the transcript into the current draft. It should not
+  steer or submit unless the user selects that action.
+- **Status:** not filed yet. Suggested issue title: `Mobile: keep dictation
+  available with attachments and active runs`. File the request in [BB
+  issues](https://github.com/get-bb/bb/issues).
+
 ### bb SDK answers `fs/write_text_file` with `result: null`
 
 - **Where:** `@get-bb/plugin-sdk` 0.4.47, `provider-bridge-acp`,
