@@ -96,8 +96,11 @@ export function EditorPane({
   const previewable = hasPreview(path);
   const [, rerender] = useState(0);
   const editing = !previewable || (editingByPath.get(path) ?? false);
+  /** Set by a switch to the editor: the caret goes there once it exists. */
+  const focusEditor = useRef(false);
   const setEditing = (next: boolean) => {
     editingByPath.set(path, next);
+    focusEditor.current = next;
     rerender((n) => n + 1);
   };
 
@@ -184,9 +187,15 @@ export function EditorPane({
   // Focus follows a deliberate open, once the surface can take it.
   const focused = useRef(0);
   useEffect(() => {
-    if (focusNonce === focused.current || surfaceStatus.kind !== "ready") return;
+    if (surfaceStatus.kind !== "ready" || !editing) return;
+    if (focusEditor.current) {
+      focusEditor.current = false;
+      if (surfaceRef.current?.focus()) focused.current = focusNonce;
+      return;
+    }
+    if (focusNonce === focused.current) return;
     if (surfaceRef.current?.focus()) focused.current = focusNonce;
-  }, [focusNonce, surfaceStatus.kind, path]);
+  }, [focusNonce, surfaceStatus.kind, path, editing]);
 
   const lineCount = useMemo(() => (state?.content ?? "").split("\n").length, [state?.content]);
   const unsupported = state?.load.kind === "unsupported";
