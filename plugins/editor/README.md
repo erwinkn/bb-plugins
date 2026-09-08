@@ -117,6 +117,27 @@ and follow the repository's draft-PR and branch-install procedure for changes.
 server builds `dist/pierre` on first use when it is missing or stale (hence
 esbuild is a runtime dependency).
 
+### Checking the UI from a driven browser
+
+Pierre's `CodeView` and `FileDiff` render from `requestAnimationFrame`. A tab
+that reports `document.visibilityState === "hidden"` (a background tab, an
+occluded window, most automation sessions) never fires it, so a surface sits at
+`data-pierre-status="loading"` with an empty host for as long as the tab stays
+hidden, however long you poll. It is not a plugin fault and it does not
+reproduce for a person looking at the page.
+
+Before reading `data-pierre-status`, the rendered rows, or the "Loading the
+comparison…" overlay, force a frame: take a screenshot, bring the tab to the
+front, or confirm with
+
+```js
+new Promise((r) => requestAnimationFrame(() => r(document.visibilityState)))
+```
+
+that the promise resolves. A check that reports "stuck loading" without doing
+this is reporting the browser, not the plugin. This cost an hour of bisecting
+once.
+
 ## Layout
 
 - `app.tsx` registers the file opener, Files, Changes, palette actions and the
