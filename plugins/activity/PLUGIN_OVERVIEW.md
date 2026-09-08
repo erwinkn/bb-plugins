@@ -11,9 +11,15 @@
 - `components/pull-request.tsx`: pull request icon and summary text.
 - `components/thread-children.tsx`: child previews, expansion, and two-level nesting.
 - `components/menus.tsx`: grouping, date sorting, and status visibility controls.
-- `components/manage-view.tsx`: the Manage view: spaces (select, rename,
-  reorder, delete) and projects (membership, rename, folder, reorder, remove,
-  add) with drag handles on desktop.
+- `components/modal.tsx`: the dialog shell (Radix Dialog; centered on desktop,
+  full-screen sheet on phones; first field focused).
+- `components/space-dialog.tsx`: create (name + project checklist), rename,
+  and delete dialogs for one space.
+- `components/manage-dialog.tsx`: two-pane Manage dialog: spaces (pick,
+  rename, reorder, delete) and the picked space's projects (membership,
+  rename, folder, reorder, remove, add) with drag handles on desktop.
+- `components/project-dialogs.tsx`: Add project and Remove project dialogs.
+- `components/project-forms.tsx`: in-place rename and change-folder forms.
 - `components/path-field.tsx`: folder path input with host directory completion
   and the native folder dialog.
 - `components/inline-form.tsx`: shared inline form (focus, Escape, errors).
@@ -21,7 +27,6 @@
   group headers.
 - `components/scope-menu.tsx`: the heading menu that selects All projects or a
   space and opens the space form or the Manage view.
-- `components/space-form.tsx`: inline create, rename, and delete form.
 - `components/new-thread-button.tsx`: scope-aware New thread button.
 - `server.ts`: archive list and restore RPCs through BB, with change signals.
 - `lib/archive-contract.ts`: validated archive RPC contract.

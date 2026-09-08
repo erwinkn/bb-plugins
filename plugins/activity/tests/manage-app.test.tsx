@@ -187,11 +187,7 @@ async function mountManage(
       hidden: true,
     }),
   );
-  await waitFor(() =>
-    expect(
-      slot.getByRole("heading", { name: "Spaces and projects" }),
-    ).toBeTruthy(),
-  );
+  await slot.findByRole("dialog", { name: "Spaces and projects" });
   await waitFor(() =>
     expect(slot.inspection.rpcCalls.map((c) => c.method)).toContain(
       "listProjects",
@@ -231,26 +227,31 @@ afterEach(async () => {
 });
 
 describe("manage view", () => {
-  it("lists spaces with counts and projects with folders, and selects a space", async () => {
+  it("opens as a dialog that lists spaces with counts and projects with folders, and edits one space at a time", async () => {
     const slot = await mountManage();
-    expect(spaceRows(slot)).toEqual(["All projects", "Only One1", "Both2"]);
+    const dialog = slot.getByRole("dialog", { name: "Spaces and projects" });
+    expect(dialog.textContent).toContain(
+      "Pick a space, then check the projects that belong to it.",
+    );
+    expect(spaceRows(slot)).toEqual(["Only One1", "Both2"]);
     expect(projectRows(slot)).toEqual(["One", "Two", "Three", "Personal"]);
     expect(slot.getByText("/code/one")).toBeTruthy();
     // One host: no host badges.
     expect(slot.queryByText("MacBook")).toBeNull();
-    expect(slot.queryAllByRole("checkbox")).toHaveLength(0);
+    // The first space is edited by default; the scope is untouched.
     expect(
       slot
-        .getByRole("button", { name: "All projects" })
+        .getByRole("button", { name: /^Only One/ })
         .getAttribute("aria-current"),
     ).toBe("true");
-
-    fireEvent.click(slot.getByRole("button", { name: /^Both/ }));
+    expect(slot.getByText("Projects in Only One")).toBeTruthy();
     expect(
       parseState(window.localStorage.getItem("bb-plugin-erwin-activity:v1"))
         .spaceId,
-    ).toBe("both");
-    expect(slot.getByText("Checked projects belong to Both.")).toBeTruthy();
+    ).toBeNull();
+
+    fireEvent.click(slot.getByRole("button", { name: /^Both/ }));
+    expect(slot.getByText("Projects in Both")).toBeTruthy();
     const boxes = slot.getAllByRole("checkbox") as HTMLInputElement[];
     expect(
       boxes.map((box) => [box.getAttribute("aria-label"), box.checked]),
@@ -261,17 +262,23 @@ describe("manage view", () => {
       ["Include Personal in Both", false],
     ]);
 
-    fireEvent.click(slot.getByRole("button", { name: "Back to threads" }));
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
     expect(
       slot
         .getByRole("button", { name: /^Threads: / })
         .getAttribute("aria-label"),
-    ).toBe("Threads: Both");
+    ).toBe("Threads: All projects");
   });
 
-  it("renames, reorders, and deletes spaces from the row menu", async () => {
+  it("starts on the selected space and renames, reorders, and deletes spaces through nested dialogs", async () => {
+    updateState((state) => ({ ...state, spaceId: "both" }));
     const rpc = server();
     const slot = await mountManage(rpc);
+    expect(
+      slot.getByRole("button", { name: /^Both/ }).getAttribute("aria-current"),
+    ).toBe("true");
+
     await openRowMenu(slot, "Space actions: Only One");
     expect(item(slot, "Move up").getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(item(slot, "Move down"));
@@ -280,58 +287,74 @@ describe("manage view", () => {
       spaces: [both, one],
     });
     await waitFor(() =>
-      expect(spaceRows(slot)).toEqual(["All projects", "Both2", "Only One1"]),
+      expect(spaceRows(slot)).toEqual(["Both2", "Only One1"]),
     );
 
     await openRowMenu(slot, "Space actions: Both");
     fireEvent.click(item(slot, "Rename…"));
-    const input = (await slot.findByRole("textbox", {
+    const rename = await slot.findByRole("dialog", { name: "Rename space" });
+    const input = within(rename).getByRole("textbox", {
       name: "Space name",
-    })) as HTMLInputElement;
+    }) as HTMLInputElement;
     expect(input.value).toBe("Both");
     fireEvent.change(input, { target: { value: "Pair" } });
-    fireEvent.submit(slot.getByRole("form", { name: "Rename space" }));
+    fireEvent.click(within(rename).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(2));
     expect(rpc.saveSpaces.mock.calls[1][0]).toMatchObject({
       spaces: [{ ...both, name: "Pair" }, one],
     });
-
-    updateState((state) => ({ ...state, spaceId: "one" }));
-    await openRowMenu(slot, "Space actions: Only One");
-    fireEvent.click(item(slot, "Delete…"));
-    const confirm = await slot.findByRole("form", { name: "Delete space" });
-    expect(confirm.textContent).toContain("Delete space “Only One”?");
-    fireEvent.click(slot.getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(3));
-    expect(rpc.saveSpaces.mock.calls[2][0]).toMatchObject({
-      spaces: [{ ...both, name: "Pair" }],
-    });
-    // Deleting the selected space falls back to All projects.
     await waitFor(() =>
-      expect(
-        parseState(window.localStorage.getItem("bb-plugin-erwin-activity:v1"))
-          .spaceId,
-      ).toBeNull(),
+      expect(slot.queryByRole("dialog", { name: "Rename space" })).toBeNull(),
     );
+    expect(slot.getByText("Projects in Pair")).toBeTruthy();
+
+    await openRowMenu(slot, "Space actions: Pair");
+    fireEvent.click(item(slot, "Delete…"));
+    const confirm = await slot.findByRole("dialog", { name: "Delete space" });
+    expect(confirm.textContent).toContain("Delete space “Pair”?");
+    fireEvent.click(within(confirm).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(3));
+    expect(rpc.saveSpaces.mock.calls[2][0]).toMatchObject({ spaces: [one] });
+    // Editing falls back to the remaining space; the Manage dialog stays open.
+    await waitFor(() =>
+      expect(slot.getByText("Projects in Only One")).toBeTruthy(),
+    );
+    expect(
+      slot.getByRole("dialog", { name: "Spaces and projects" }),
+    ).toBeTruthy();
   });
 
-  it("creates a space seeded with the active project", async () => {
+  it("creates a space from Manage with its projects and switches to it", async () => {
     const rpc = server();
     const slot = await mountManage(rpc);
     fireEvent.click(slot.getByRole("button", { name: "+ New space…" }));
-    const form = await slot.findByRole("form", { name: "New space" });
-    expect(form.textContent).toContain("Starts with One.");
-    fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
-      target: { value: "Fresh" },
-    });
-    fireEvent.click(slot.getByRole("button", { name: "Create" }));
+    const dialog = await slot.findByRole("dialog", { name: "New space" });
+    // Nothing pre-checked here; the heading's New space… seeds the open thread's project.
+    const boxes = within(dialog).getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes.every((box) => !box.checked)).toBe(true);
+    fireEvent.change(
+      within(dialog).getByRole("textbox", { name: "Space name" }),
+      {
+        target: { value: "Fresh" },
+      },
+    );
+    fireEvent.click(boxes[2]!);
+    expect(dialog.textContent).toContain("1 of 4 selected.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create" }));
     await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
     expect(rpc.saveSpaces.mock.calls[0][0]).toMatchObject({
-      spaces: [one, both, { name: "Fresh", projectIds: ["project-1"] }],
+      spaces: [one, both, { name: "Fresh", projectIds: ["project-3"] }],
     });
     await waitFor(() =>
-      expect(slot.getByText("Checked projects belong to Fresh.")).toBeTruthy(),
+      expect(slot.getByText("Projects in Fresh")).toBeTruthy(),
     );
+    expect(
+      (
+        slot.getByRole("checkbox", {
+          name: "Include Three in Fresh",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
   });
 
   it("renames, moves, and re-folders a project through BB, and toggles spaces from its menu", async () => {
@@ -436,18 +459,18 @@ describe("manage view", () => {
     ]);
   });
 
-  it("removes a project only after its name is typed, and drops it from spaces", async () => {
+  it("removes a project through a confirmation dialog gated on its name, and drops it from spaces", async () => {
     const rpc = server();
     const slot = await mountManage(rpc);
     await openRowMenu(slot, "Project actions: One");
     fireEvent.click(item(slot, "Remove…"));
-    const form = await slot.findByRole("form", { name: "Remove project" });
-    expect(form.textContent).toContain("its 2 active threads");
-    const remove = slot.getByRole("button", {
+    const dialog = await slot.findByRole("dialog", { name: "Remove project" });
+    expect(dialog.textContent).toContain("its 2 active threads");
+    const remove = within(dialog).getByRole("button", {
       name: "Remove",
     }) as HTMLButtonElement;
     expect(remove.disabled).toBe(true);
-    const confirm = slot.getByRole("textbox", {
+    const confirm = within(dialog).getByRole("textbox", {
       name: "Type the project name to confirm",
     });
     fireEvent.change(confirm, { target: { value: "one" } });
@@ -468,31 +491,35 @@ describe("manage view", () => {
       ],
     });
     await waitFor(() =>
+      expect(slot.queryByRole("dialog", { name: "Remove project" })).toBeNull(),
+    );
+    await waitFor(() =>
       expect(projectRows(slot)).toEqual(["Two", "Three", "Personal"]),
     );
   });
 
-  it("adds a project from a typed or picked folder and joins the selected space", async () => {
-    updateState((state) => ({ ...state, spaceId: "one" }));
+  it("adds a project from a typed or picked folder and joins the edited space", async () => {
     const rpc = server();
     const slot = await mountManage(rpc);
     fireEvent.click(slot.getByRole("button", { name: "+ Add project…" }));
-    const form = await slot.findByRole("form", { name: "Add project" });
-    expect(form.textContent).toContain("The project joins Only One.");
+    const dialog = await slot.findByRole("dialog", { name: "Add project" });
+    expect(dialog.textContent).toContain("The project joins Only One.");
     // One host: no host selector.
-    expect(slot.queryByRole("combobox", { name: "Host" })).toBeNull();
-    const add = slot.getByRole("button", { name: "Add" }) as HTMLButtonElement;
+    expect(within(dialog).queryByRole("combobox", { name: "Host" })).toBeNull();
+    const add = within(dialog).getByRole("button", {
+      name: "Add",
+    }) as HTMLButtonElement;
     expect(add.disabled).toBe(true);
 
-    fireEvent.click(slot.getByRole("button", { name: "Browse…" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Browse…" }));
     await waitFor(() =>
       expect(rpc.pickFolder).toHaveBeenCalledWith({ hostId: "host-1" }),
     );
-    const path = (await slot.findByRole("combobox", {
+    const path = within(dialog).getByRole("combobox", {
       name: "Folder path",
-    })) as HTMLInputElement;
+    }) as HTMLInputElement;
     await waitFor(() => expect(path.value).toBe("/picked/gamma"));
-    const name = slot.getByRole("textbox", {
+    const name = within(dialog).getByRole("textbox", {
       name: "Project name",
     }) as HTMLInputElement;
     expect(name.value).toBe("gamma");
@@ -502,7 +529,7 @@ describe("manage view", () => {
     fireEvent.change(path, { target: { value: "/picked/epsilon" } });
     expect(name.value).toBe("Delta!");
     expect(add.disabled).toBe(false);
-    fireEvent.submit(form);
+    fireEvent.click(add);
     await waitFor(() =>
       expect(rpc.createProject).toHaveBeenCalledWith({
         name: "Delta!",
@@ -514,6 +541,9 @@ describe("manage view", () => {
     expect(rpc.saveSpaces.mock.calls[0][0]).toMatchObject({
       spaces: [{ ...one, projectIds: ["project-1", "project-new"] }, both],
     });
+    await waitFor(() =>
+      expect(slot.queryByRole("dialog", { name: "Add project" })).toBeNull(),
+    );
     await waitFor(() => expect(projectRows(slot)).toContain("Delta!"));
   });
 
@@ -602,21 +632,19 @@ describe("manage view", () => {
     fireEvent.contextMenu(header);
     await tick();
     fireEvent.click(item(slot, "Remove…"));
-    const form = await slot.findByRole("form", { name: "Remove project" });
-    expect(form.textContent).toContain("its 2 active threads");
+    const remove = await slot.findByRole("dialog", { name: "Remove project" });
+    expect(remove.textContent).toContain("its 2 active threads");
     fireEvent.keyDown(
-      slot.getByRole("textbox", { name: "Type the project name to confirm" }),
+      within(remove).getByRole("textbox", {
+        name: "Type the project name to confirm",
+      }),
       { key: "Escape" },
     );
-    expect(slot.queryByRole("form")).toBeNull();
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
 
     fireEvent.contextMenu(header);
     await tick();
     fireEvent.click(item(slot, "Manage spaces and projects…"));
-    await waitFor(() =>
-      expect(
-        slot.getByRole("heading", { name: "Spaces and projects" }),
-      ).toBeTruthy(),
-    );
+    await slot.findByRole("dialog", { name: "Spaces and projects" });
   });
 });

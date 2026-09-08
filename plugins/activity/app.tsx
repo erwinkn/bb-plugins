@@ -15,14 +15,12 @@ import { useArchives } from "./lib/use-archives";
 import { useSpaces } from "./lib/use-spaces";
 import { inScope, newSpaceId, resolveScope } from "./lib/spaces";
 import { DisplayMenu } from "./components/menus";
-import {
-  ManageView,
-  ProjectRemoveForm,
-  ProjectRenameForm,
-} from "./components/manage-view";
+import { ManageDialog } from "./components/manage-dialog";
 import { ProjectHeaderMenu } from "./components/project-header-menu";
-import { ScopeMenu, type SpaceEdit } from "./components/scope-menu";
-import { SpaceForm } from "./components/space-form";
+import { RemoveProjectDialog } from "./components/project-dialogs";
+import { ProjectRenameForm } from "./components/project-forms";
+import { ScopeMenu } from "./components/scope-menu";
+import { SpaceDialog } from "./components/space-dialog";
 import { NewThreadButton } from "./components/new-thread-button";
 import { ThreadRow, fadeClass } from "./components/thread-row";
 import { ThreadChildren } from "./components/thread-children";
@@ -105,12 +103,19 @@ function ThreadsList(props: PluginThreadListProps) {
   const spaces = useSpaces();
   const scope = resolveScope(spaces.catalog, state.spaceId);
   const scopeKey = scope.kind === "all" ? "all" : `space:${scope.space.id}`;
-  const [edit, setEdit] = useState<SpaceEdit | null>(null);
-  const [view, setView] = useState<"threads" | "manage">("threads");
-  const [projectEdit, setProjectEdit] = useState<{
-    kind: "rename" | "remove";
-    id: string;
-  } | null>(null);
+  // Space edits and management open dialogs over the sidebar.
+  const [dialog, setDialog] = useState<
+    | { kind: "create" | "rename" | "delete" }
+    | { kind: "manage"; spaceId: string | null }
+    | { kind: "remove-project"; id: string }
+    | null
+  >(null);
+  const [renamingProject, setRenamingProject] = useState<string | null>(null);
+  const openManage = () =>
+    setDialog({
+      kind: "manage",
+      spaceId: scope.kind === "space" ? scope.space.id : null,
+    });
   const projectRpc = useRpc<typeof projectContract>();
   const archives = useArchives(threads, state.showArchives);
   const archived = state.showArchives
@@ -223,26 +228,26 @@ function ThreadsList(props: PluginThreadListProps) {
     updateState((current) => ({ ...current, spaceId: null }));
   const selectSpace = (spaceId: string) =>
     updateState((current) => ({ ...current, spaceId }));
-  // A new space starts with the current thread's project; the rest is chosen
-  // in Manage.
-  const activeProject =
-    projects.find((project) => project.id === props.activeProjectId) ?? null;
-  const seedProjectIds = activeProject ? [activeProject.id] : [];
-  const seedHint = activeProject
-    ? `Starts with ${activeProject.name}. Add projects in Manage.`
-    : "Choose its projects in Manage after creating it.";
-  const submitEdit = async (name: string) => {
+  // A new space starts with the current thread's project checked.
+  const seedProjectIds = props.activeProjectId ? [props.activeProjectId] : [];
+  const submitSpace = async (
+    kind: "create" | "rename" | "delete",
+    input: { name: string; projectIds: string[] },
+  ) => {
     const list = spaces.catalog.spaces;
-    if (edit === "create") {
+    if (kind === "create") {
       const id = newSpaceId();
-      await spaces.save([...list, { id, name, projectIds: seedProjectIds }]);
+      await spaces.save([
+        ...list,
+        { id, name: input.name, projectIds: input.projectIds },
+      ]);
       selectSpace(id);
     } else if (scope.kind === "space") {
       const { space } = scope;
-      if (edit === "rename") {
+      if (kind === "rename") {
         await spaces.save(
           list.map((entry) =>
-            entry.id === space.id ? { ...entry, name } : entry,
+            entry.id === space.id ? { ...entry, name: input.name } : entry,
           ),
         );
       } else {
@@ -250,6 +255,17 @@ function ThreadsList(props: PluginThreadListProps) {
         selectAll();
       }
     }
+  };
+  const removeProject = async (projectId: string) => {
+    await projectRpc.call("deleteProject", { projectId });
+    const list = spaces.catalog.spaces;
+    if (list.some((space) => space.projectIds.includes(projectId)))
+      await spaces.save(
+        list.map((space) => ({
+          ...space,
+          projectIds: space.projectIds.filter((id) => id !== projectId),
+        })),
+      );
   };
   const activeThread = threads.find(
     (thread) => thread.id === props.activeThreadId,
@@ -366,24 +382,53 @@ function ThreadsList(props: PluginThreadListProps) {
       {content}
     </div>
   );
-  if (view === "manage")
-    return shell(
-      <ManageView
-        spaces={spaces}
-        scope={scope}
-        sidebarProjects={projects}
-        threadCounts={threadCounts}
-        activeProjectId={props.activeProjectId || null}
-        compact={props.isCompactViewport}
-        onSelectAll={selectAll}
-        onSelectSpace={selectSpace}
-        onNewThread={openNew}
-        onBack={() => setView("threads")}
-        report={report}
-      />,
-    );
+  const removingProject =
+    dialog?.kind === "remove-project"
+      ? projects.find((project) => project.id === dialog.id)
+      : undefined;
+  const dialogs = (
+    <>
+      {dialog &&
+        (dialog.kind === "create" ||
+          dialog.kind === "rename" ||
+          dialog.kind === "delete") && (
+          <SpaceDialog
+            key={dialog.kind}
+            kind={dialog.kind}
+            space={scope.kind === "space" ? scope.space : undefined}
+            projects={projects}
+            initialProjectIds={seedProjectIds}
+            compact={props.isCompactViewport}
+            onSubmit={(input) => submitSpace(dialog.kind, input)}
+            onClose={() => setDialog(null)}
+          />
+        )}
+      {dialog?.kind === "manage" && (
+        <ManageDialog
+          spaces={spaces}
+          initialSpaceId={dialog.spaceId}
+          sidebarProjects={projects}
+          threadCounts={threadCounts}
+          compact={props.isCompactViewport}
+          onNewThread={openNew}
+          onClose={() => setDialog(null)}
+          report={report}
+        />
+      )}
+      {removingProject && (
+        <RemoveProjectDialog
+          projectName={removingProject.name}
+          threadCount={threadCounts.get(removingProject.id) ?? 0}
+          compact={props.isCompactViewport}
+          onSubmit={() => removeProject(removingProject.id)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+    </>
+  );
   return shell(
     <>
+      {dialogs}
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
           <ScopeMenu
@@ -391,8 +436,8 @@ function ThreadsList(props: PluginThreadListProps) {
             catalog={spaces.catalog}
             onSelectAll={selectAll}
             onSelectSpace={selectSpace}
-            onEdit={setEdit}
-            onManage={() => setView("manage")}
+            onEdit={(kind) => setDialog({ kind })}
+            onManage={openManage}
           />
           <DisplayMenu />
           <NewThreadButton
@@ -402,16 +447,6 @@ function ThreadsList(props: PluginThreadListProps) {
             onOpen={openNew}
           />
         </div>
-        {edit && (
-          <SpaceForm
-            key={edit}
-            edit={edit}
-            spaceName={scope.kind === "space" ? scope.space.name : undefined}
-            hint={edit === "create" ? seedHint : undefined}
-            onSubmit={submitEdit}
-            onClose={() => setEdit(null)}
-          />
-        )}
         {spaceMissing && (
           <p role="status" className="mt-2 px-2 text-xs text-muted-foreground">
             This space no longer exists. Showing all projects.
@@ -539,8 +574,6 @@ function ThreadsList(props: PluginThreadListProps) {
                           ),
                         )
                         .catch(report);
-                    const editing =
-                      projectEdit?.id === project.id ? projectEdit : null;
                     return rows.length ||
                       drafts.length ||
                       projectArchives.length ? (
@@ -561,10 +594,12 @@ function ThreadsList(props: PluginThreadListProps) {
                               onAction={(action) => {
                                 if (action === "new-thread")
                                   openNew(project.id);
-                                else if (action === "manage") setView("manage");
+                                else if (action === "manage") openManage();
+                                else if (action === "rename")
+                                  setRenamingProject(project.id);
                                 else
-                                  setProjectEdit({
-                                    kind: action,
+                                  setDialog({
+                                    kind: "remove-project",
                                     id: project.id,
                                   });
                               }}
@@ -574,50 +609,16 @@ function ThreadsList(props: PluginThreadListProps) {
                           )
                         }
                         belowHeader={
-                          editing?.kind === "rename" ? (
+                          renamingProject === project.id ? (
                             <ProjectRenameForm
-                              project={{
-                                id: project.id,
-                                name: project.name,
-                                isPersonal: project.isPersonal,
-                                source: null,
-                              }}
+                              project={project}
                               onSubmit={async (name) => {
                                 await projectRpc.call("renameProject", {
                                   projectId: project.id,
                                   name,
                                 });
                               }}
-                              onClose={() => setProjectEdit(null)}
-                            />
-                          ) : editing?.kind === "remove" ? (
-                            <ProjectRemoveForm
-                              project={{
-                                id: project.id,
-                                name: project.name,
-                                isPersonal: project.isPersonal,
-                                source: null,
-                              }}
-                              threadCount={threadCounts.get(project.id) ?? 0}
-                              onSubmit={async () => {
-                                await projectRpc.call("deleteProject", {
-                                  projectId: project.id,
-                                });
-                                if (
-                                  spaces.catalog.spaces.some((space) =>
-                                    space.projectIds.includes(project.id),
-                                  )
-                                )
-                                  await spaces.save(
-                                    spaces.catalog.spaces.map((space) => ({
-                                      ...space,
-                                      projectIds: space.projectIds.filter(
-                                        (id) => id !== project.id,
-                                      ),
-                                    })),
-                                  );
-                              }}
-                              onClose={() => setProjectEdit(null)}
+                              onClose={() => setRenamingProject(null)}
                             />
                           ) : null
                         }
@@ -653,7 +654,7 @@ function ThreadsList(props: PluginThreadListProps) {
                       <button
                         type="button"
                         className="underline"
-                        onClick={() => setView("manage")}
+                        onClick={openManage}
                       >
                         Choose projects
                       </button>

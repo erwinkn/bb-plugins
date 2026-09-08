@@ -148,45 +148,47 @@ native behavior. No bulk read or delete actions are added.
 A space is a named selection of projects. The Threads heading is the scope
 selector: it reads **All projects** or a space name. Its menu lists All
 projects, each saved space, **New space…**, and **Manage spaces and
-projects…**.
+projects…**. Every edit opens a dialog over the sidebar; on phones the dialogs
+are full-screen sheets.
 
-- **New space…** asks for a name and selects the new space. The space starts
-  with the open thread's project when there is one, otherwise empty; the form
-  says which. An empty space shows a **Choose projects** link into Manage.
-  **Rename space…** and **Delete space…** use the same inline form under the
-  heading. Enter saves; Escape cancels. Deleting a space never touches
-  projects or threads. Names are trimmed, limited to 60 characters, and unique
-  ignoring case.
-- **Manage spaces and projects** replaces the thread list until **‹ Threads**.
-  The Spaces section lists All projects and every space with its project
-  count; clicking one selects it as the scope. Each space row has a menu with
-  Rename, Move up, Move down, and Delete. The Projects section lists BB's
-  projects with their folder (and a host badge when more than one host is
-  connected). With a space selected, a checkbox on each row toggles membership
-  for every client. A member project BB no longer lists appears as
-  *Unavailable project* so it can be removed.
+- **New space…** opens a dialog with a name field and a checklist of every BB
+  project, with the open thread's project pre-checked. Create saves the space
+  and selects it. **Rename space…** and **Delete space…** open small dialogs
+  for the selected space. Deleting a space never touches projects or threads.
+  Names are trimmed, limited to 60 characters, and unique ignoring case. An
+  empty space shows a **Choose projects** link into Manage.
+- **Manage spaces and projects…** opens a two-pane dialog (stacked on phones).
+  The Spaces pane lists every space with its project count; pick one to edit
+  it. It opens on the selected space, otherwise the first. Picking a space here
+  does not change the Threads scope. Each space row has a menu with Rename,
+  Move up, Move down, and Delete, and **+ New space…** opens the same dialog
+  as the heading (nothing pre-checked). The Projects pane lists BB's projects
+  with their folder (and a host badge when more than one host is connected)
+  and a checkbox per project for the space being edited. A member project BB
+  no longer lists appears as *Unavailable project* so it can be removed.
 - Each project row has a menu: **New thread**, **Spaces ›** (a checklist of
-  every space), **Rename…**, **Change folder…**, **Move up**, **Move down**,
-  and **Remove…**. The personal project only offers New thread and Spaces.
-  Renaming, moving, changing the folder, and removing go through BB's own
-  project API, so BB's new-thread panel and every client see the same list.
-  **Remove…** deletes the project from BB with all of its threads; the form
-  says how many active threads that is and requires typing the project name.
-  The project is also dropped from every space. Files on disk are untouched.
-- **+ Add project…** takes a folder path with directory completion (type
-  `/Users/me/Co` and pick from the list; Tab or Enter accepts the highlighted
-  folder) or **Browse…** for the native folder dialog, and a project name that
-  defaults to the folder name. With more than one host, a host selector comes
-  first. When a space is selected the new project joins it. Browse… opens the
-  dialog on the machine that hosts the project; plugin frontends do not know
-  which host the client runs on, so on a remote host use the path field.
+  every space), **Rename…** and **Change folder…** (edit in place under the
+  row), **Move up**, **Move down**, and **Remove…**. The personal project only
+  offers New thread and Spaces. Renaming, moving, changing the folder, and
+  removing go through BB's own project API, so BB's new-thread panel and every
+  client see the same list. **Remove…** opens a confirmation dialog that says
+  how many active threads the project has and requires typing its name; BB
+  then deletes the project with all of its threads, and the plugin drops it
+  from every space. Files on disk are untouched.
+- **+ Add project…** opens a dialog with a folder path field with directory
+  completion (type `/Users/me/Co` and pick from the list; Tab or Enter accepts
+  the highlighted folder) or **Browse…** for the native folder dialog, and a
+  project name that defaults to the folder name. With more than one host, a
+  host selector comes first. The new project joins the space being edited.
+  Browse… opens the dialog on the machine that hosts the project; plugin
+  frontends do not know which host the client runs on, so on a remote host use
+  the path field.
 - On desktop, the grip at the left of a space or project row drags it to a
   new position; Move up and Move down do the same from the menu and are the
   only way on phones.
 - In the by-project grouping, right-click or long-press a project header for
-  **New thread**, **Spaces ›**, **Rename…**, **Manage spaces and projects…**,
-  and **Remove…**. Rename and Remove open the same inline forms under the
-  header.
+  **New thread**, **Spaces ›**, **Rename…** (in place under the header),
+  **Manage spaces and projects…**, and **Remove…** (the confirmation dialog).
 - Space definitions are shared by every client of one BB server and stored in
   the plugin's key-value store as one document with a revision. A save that
   races another client's save fails with an error, and the form keeps your

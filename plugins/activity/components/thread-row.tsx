@@ -152,231 +152,254 @@ export function ThreadRow({
               onChange={(event) => setDraftTitle(event.target.value)}
               className="w-full min-w-0 rounded-md border border-border bg-background px-2 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             />
-            <button type="submit" disabled={saving || !draftTitle.trim()} className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+            <button
+              type="submit"
+              disabled={saving || !draftTitle.trim()}
+              className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            >
               {saving ? "Saving…" : "Save"}
             </button>
-            <button type="button" disabled={saving} onClick={closeEditor} className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={closeEditor}
+              className="rounded-md px-3 py-2 text-sm hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            >
               Cancel
             </button>
-            {renameError && <p role="alert" className="w-full text-sm text-destructive">{renameError}</p>}
+            {renameError && (
+              <p role="alert" className="w-full text-sm text-destructive">
+                {renameError}
+              </p>
+            )}
           </form>
-        ) : <Menu.Root
-          onOpenChange={(open) => {
-            setMenuOpen(open);
-            if (open) suppressClick.current = true;
-          }}
-        >
-          <ThreadInfo
-            thread={thread}
-            status={status}
-            project={project}
-            provider={provider}
-            parent={parent}
-            pullRequest={pullRequest}
-            disabled={menuOpen}
+        ) : (
+          <Menu.Root
+            onOpenChange={(open) => {
+              setMenuOpen(open);
+              if (open) suppressClick.current = true;
+            }}
           >
-            <Menu.Trigger asChild>
-              <a
-                ref={rowRef}
-                {...(!thread.isArchived ? splitProps : {})}
-                {...longPress}
-                href={`/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(thread.id)}`}
-                data-sidebar-thread-shortcut-target=""
-                data-sidebar-thread-id={thread.id}
-                aria-current={active ? "page" : undefined}
-                aria-haspopup="menu"
-                onPointerDown={(event) => {
-                  suppressClick.current = false;
-                  longPress.onPointerDown(event);
-                  // Touch belongs to scrolling/long press, not drag-to-split.
-                  if (
-                    !thread.isArchived &&
-                    event.pointerType !== "touch" &&
-                    event.button === 0
-                  ) {
-                    splitProps.onPointerDown?.(event);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  suppressClick.current = false;
-                  if (
-                    event.key === "ContextMenu" ||
-                    (event.shiftKey && event.key === "F10")
-                  ) {
+            <ThreadInfo
+              thread={thread}
+              status={status}
+              project={project}
+              provider={provider}
+              parent={parent}
+              pullRequest={pullRequest}
+              disabled={menuOpen}
+            >
+              <Menu.Trigger asChild>
+                <a
+                  ref={rowRef}
+                  {...(!thread.isArchived ? splitProps : {})}
+                  {...longPress}
+                  href={`/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(thread.id)}`}
+                  data-sidebar-thread-shortcut-target=""
+                  data-sidebar-thread-id={thread.id}
+                  aria-current={active ? "page" : undefined}
+                  aria-haspopup="menu"
+                  onPointerDown={(event) => {
+                    suppressClick.current = false;
+                    longPress.onPointerDown(event);
+                    // Touch belongs to scrolling/long press, not drag-to-split.
+                    if (
+                      !thread.isArchived &&
+                      event.pointerType !== "touch" &&
+                      event.button === 0
+                    ) {
+                      splitProps.onPointerDown?.(event);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    suppressClick.current = false;
+                    if (
+                      event.key === "ContextMenu" ||
+                      (event.shiftKey && event.key === "F10")
+                    ) {
+                      event.preventDefault();
+                      const bounds =
+                        event.currentTarget.getBoundingClientRect();
+                      event.currentTarget.dispatchEvent(
+                        new MouseEvent("contextmenu", {
+                          bubbles: true,
+                          cancelable: true,
+                          clientX: bounds.left + 16,
+                          clientY: bounds.bottom,
+                        }),
+                      );
+                    }
+                  }}
+                  onClick={(event) => {
                     event.preventDefault();
-                    const bounds = event.currentTarget.getBoundingClientRect();
-                    event.currentTarget.dispatchEvent(
-                      new MouseEvent("contextmenu", {
-                        bubbles: true,
-                        cancelable: true,
-                        clientX: bounds.left + 16,
-                        clientY: bounds.bottom,
-                      }),
-                    );
-                  }
-                }}
-                onClick={(event) => {
-                  event.preventDefault();
-                  if (suppressClick.current && event.detail !== 0) return;
-                  open(event.metaKey || event.ctrlKey);
-                }}
-                className="flex min-w-0 flex-1 select-none flex-col rounded-md py-2 pr-2 text-left no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                style={{
-                  paddingLeft: `${nested ? 1.75 + (depth - 1) * 1.5 : 0.5}rem`,
-                }}
-              >
-                {nested && (
-                  <svg
-                    data-child-arrow=""
-                    aria-hidden="true"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="absolute top-3 size-3 text-[var(--subtle-foreground)]"
-                    style={{ left: `${0.5 + (depth - 1) * 1.5}rem` }}
-                  >
-                    <path d="M3 3v5a2 2 0 0 0 2 2h8m-3-3 3 3-3 3" />
-                  </svg>
-                )}
-                <span className="flex min-w-0 items-center gap-2">
-                  <span
-                    className={`min-w-0 flex-1 text-sm leading-5 ${fadeClass} ${thread.isUnread || active ? "font-semibold" : "font-medium"}`}
-                  >
-                    {title}
-                  </span>
-                  {(thread.isArchived || status !== "done") && (
-                    <span
-                      role="img"
-                      aria-label={thread.isArchived ? "Archived" : STATUS_LABEL[status]}
-                      className="flex size-4 shrink-0 items-center justify-center"
+                    if (suppressClick.current && event.detail !== 0) return;
+                    open(event.metaKey || event.ctrlKey);
+                  }}
+                  className="flex min-w-0 flex-1 select-none flex-col rounded-md py-2 pr-2 text-left no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  style={{
+                    paddingLeft: `${nested ? 1.75 + (depth - 1) * 1.5 : 0.5}rem`,
+                  }}
+                >
+                  {nested && (
+                    <svg
+                      data-child-arrow=""
+                      aria-hidden="true"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="absolute top-3 size-3 text-[var(--subtle-foreground)]"
+                      style={{ left: `${0.5 + (depth - 1) * 1.5}rem` }}
                     >
-                      {thread.isArchived ? <ArchiveIcon /> : status === "unread" ? (
-                        <span
-                          aria-hidden="true"
-                          className="size-1.5 rounded-full bg-sky-600 dark:bg-sky-400"
-                        />
-                      ) : (
-                        <StatusIcon status={status} />
-                      )}
-                    </span>
+                      <path d="M3 3v5a2 2 0 0 0 2 2h8m-3-3 3 3-3 3" />
+                    </svg>
                   )}
-                </span>
-                <span className="mt-0.5 flex min-w-0 items-center gap-2 text-xs leading-4 text-[var(--subtle-foreground)]">
-                  <span
-                    className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
-                  >
-                    {thread.parentThreadId && !nested ? "↳ " : ""}
-                    {pullRequest && (
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span
+                      className={`min-w-0 flex-1 text-sm leading-5 ${fadeClass} ${thread.isUnread || active ? "font-semibold" : "font-medium"}`}
+                    >
+                      {title}
+                    </span>
+                    {(thread.isArchived || status !== "done") && (
                       <span
-                        data-thread-pull-request=""
-                        className="flex shrink-0 items-center gap-1"
+                        role="img"
+                        aria-label={
+                          thread.isArchived ? "Archived" : STATUS_LABEL[status]
+                        }
+                        className="flex size-4 shrink-0 items-center justify-center"
                       >
-                        <PullRequestIcon pullRequest={pullRequest} />
-                        <span className="tabular-nums">
-                          #{pullRequest.number}
-                        </span>
+                        {thread.isArchived ? (
+                          <ArchiveIcon />
+                        ) : status === "unread" ? (
+                          <span
+                            aria-hidden="true"
+                            className="size-1.5 rounded-full bg-sky-600 dark:bg-sky-400"
+                          />
+                        ) : (
+                          <StatusIcon status={status} />
+                        )}
                       </span>
                     )}
-                    {showProject && (
-                      <>
-                        {pullRequest && <span aria-hidden="true">·</span>}
-                        <span className="shrink-0">{project}</span>
-                      </>
-                    )}
-                    {branch && (
-                      <>
-                        {(pullRequest || showProject) && (
-                          <span aria-hidden="true">·</span>
-                        )}
-                        <span className="shrink-0">{branch}</span>
-                      </>
-                    )}
                   </span>
-                  <time
-                    dateTime={new Date(timestamp).toISOString()}
-                    aria-label={`${sortBy === "created" ? "Created" : "Updated"} ${new Date(timestamp).toLocaleString()}`}
-                    className="shrink-0 tabular-nums"
+                  <span className="mt-0.5 flex min-w-0 items-center gap-2 text-xs leading-4 text-[var(--subtle-foreground)]">
+                    <span
+                      className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
+                    >
+                      {thread.parentThreadId && !nested ? "↳ " : ""}
+                      {pullRequest && (
+                        <span
+                          data-thread-pull-request=""
+                          className="flex shrink-0 items-center gap-1"
+                        >
+                          <PullRequestIcon pullRequest={pullRequest} />
+                          <span className="tabular-nums">
+                            #{pullRequest.number}
+                          </span>
+                        </span>
+                      )}
+                      {showProject && (
+                        <>
+                          {pullRequest && <span aria-hidden="true">·</span>}
+                          <span className="shrink-0">{project}</span>
+                        </>
+                      )}
+                      {branch && (
+                        <>
+                          {(pullRequest || showProject) && (
+                            <span aria-hidden="true">·</span>
+                          )}
+                          <span className="shrink-0">{branch}</span>
+                        </>
+                      )}
+                    </span>
+                    <time
+                      dateTime={new Date(timestamp).toISOString()}
+                      aria-label={`${sortBy === "created" ? "Created" : "Updated"} ${new Date(timestamp).toLocaleString()}`}
+                      className="shrink-0 tabular-nums"
+                    >
+                      {relativeAge(timestamp, now)}
+                    </time>
+                  </span>
+                </a>
+              </Menu.Trigger>
+            </ThreadInfo>
+            <Menu.Portal>
+              <Menu.Content
+                {...scope}
+                onCloseAutoFocus={(event) => {
+                  if (menuOpenedEditor.current) {
+                    menuOpenedEditor.current = false;
+                    event.preventDefault();
+                    // The editor may already be closed when Radix restores focus.
+                    (renameInputRef.current ?? rowRef.current)?.focus();
+                  }
+                }}
+                aria-label={`Actions for ${title}`}
+                className="z-50 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+              >
+                {isAvailable && !thread.isArchived && (
+                  <Menu.Item
+                    className={menuItemClass}
+                    onSelect={() => open(true)}
                   >
-                    {relativeAge(timestamp, now)}
-                  </time>
-                </span>
-              </a>
-            </Menu.Trigger>
-          </ThreadInfo>
-          <Menu.Portal>
-            <Menu.Content
-              {...scope}
-              onCloseAutoFocus={(event) => {
-                if (menuOpenedEditor.current) {
-                  menuOpenedEditor.current = false;
-                  event.preventDefault();
-                  // The editor may already be closed when Radix restores focus.
-                  (renameInputRef.current ?? rowRef.current)?.focus();
-                }
-              }}
-              aria-label={`Actions for ${title}`}
-              className="z-50 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
-            >
-              {isAvailable && !thread.isArchived && (
+                    Open in split
+                  </Menu.Item>
+                )}
+                {!thread.isArchived && (
+                  <>
+                    <Menu.Item
+                      className={menuItemClass}
+                      onSelect={() => {
+                        menuOpenedEditor.current = true;
+                        setDraftTitle(title);
+                        setRenameError(null);
+                        setEditing(true);
+                      }}
+                    >
+                      Rename
+                    </Menu.Item>
+                    <Menu.Item
+                      className={menuItemClass}
+                      onSelect={() => {
+                        void actions
+                          .setRead(thread.id, thread.isUnread)
+                          .catch(onError);
+                      }}
+                    >
+                      Mark as {thread.isUnread ? "read" : "unread"}
+                    </Menu.Item>
+                    <Menu.Item
+                      className={menuItemClass}
+                      onSelect={() => {
+                        void actions
+                          .setPinned(thread.id, !thread.isPinned)
+                          .catch(onError);
+                      }}
+                    >
+                      {thread.isPinned ? "Unpin" : "Pin"}
+                    </Menu.Item>
+                    <Menu.Separator className="my-1 h-px bg-border" />
+                  </>
+                )}
                 <Menu.Item
                   className={menuItemClass}
-                  onSelect={() => open(true)}
+                  onSelect={() => {
+                    void rpc
+                      .call(
+                        thread.isArchived ? "restoreThread" : "archiveTree",
+                        { threadId: thread.id },
+                      )
+                      .catch(onError);
+                  }}
                 >
-                  Open in split
+                  {thread.isArchived ? "Restore" : "Archive"}
                 </Menu.Item>
-              )}
-              {!thread.isArchived && (
-                <>
-                  <Menu.Item
-                    className={menuItemClass}
-                    onSelect={() => {
-                      menuOpenedEditor.current = true;
-                      setDraftTitle(title);
-                      setRenameError(null);
-                      setEditing(true);
-                    }}
-                  >
-                    Rename
-                  </Menu.Item>
-                  <Menu.Item
-                    className={menuItemClass}
-                    onSelect={() => {
-                      void actions
-                        .setRead(thread.id, thread.isUnread)
-                        .catch(onError);
-                    }}
-                  >
-                    Mark as {thread.isUnread ? "read" : "unread"}
-                  </Menu.Item>
-                  <Menu.Item
-                    className={menuItemClass}
-                    onSelect={() => {
-                      void actions
-                        .setPinned(thread.id, !thread.isPinned)
-                        .catch(onError);
-                    }}
-                  >
-                    {thread.isPinned ? "Unpin" : "Pin"}
-                  </Menu.Item>
-                  <Menu.Separator className="my-1 h-px bg-border" />
-                </>
-              )}
-              <Menu.Item
-                className={menuItemClass}
-                onSelect={() => {
-                  void rpc
-                    .call(thread.isArchived ? "restoreThread" : "archiveTree", { threadId: thread.id })
-                    .catch(onError);
-                }}
-              >
-                {thread.isArchived ? "Restore" : "Archive"}
-              </Menu.Item>
-            </Menu.Content>
-          </Menu.Portal>
-        </Menu.Root>}
+              </Menu.Content>
+            </Menu.Portal>
+          </Menu.Root>
+        )}
       </div>
       {children}
     </li>

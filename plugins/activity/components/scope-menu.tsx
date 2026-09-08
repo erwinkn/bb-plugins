@@ -39,12 +39,16 @@ export function ScopeMenu({
   onManage: () => void;
 }) {
   const label = scopeLabel(scope);
-  // An edit action opens a form that needs focus. Radix would otherwise move
+  // Edit and Manage open dialogs that take focus. Radix would otherwise move
   // focus back to the trigger after the menu closes.
   const editing = useRef(false);
   const edit = (kind: SpaceEdit) => {
     editing.current = true;
     onEdit(kind);
+  };
+  const manage = () => {
+    editing.current = true;
+    onManage();
   };
   const radioValue = scope.kind === "space" ? scope.space.id : "all";
   return (
@@ -108,7 +112,7 @@ export function ScopeMenu({
           </>
         )}
         <Menu.Separator className="my-1 h-px bg-border" />
-        <Menu.Item className={menuItemClass} onSelect={onManage}>
+        <Menu.Item className={menuItemClass} onSelect={manage}>
           Manage spaces and projects…
         </Menu.Item>
       </MenuContent>

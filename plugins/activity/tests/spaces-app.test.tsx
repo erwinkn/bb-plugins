@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { parseState, updateState } from "../lib/client-state";
 import type { Space, SpaceCatalog } from "../lib/space-schema";
@@ -178,11 +184,7 @@ async function openManage(slot: ReturnType<typeof renderSlot>) {
       hidden: true,
     }),
   );
-  await waitFor(() =>
-    expect(
-      slot.getByRole("heading", { name: "Spaces and projects" }),
-    ).toBeTruthy(),
-  );
+  await slot.findByRole("dialog", { name: "Spaces and projects" });
   await tick();
 }
 const rowMenu = async (slot: ReturnType<typeof renderSlot>, label: string) => {
@@ -274,10 +276,11 @@ describe("spaces", () => {
       slot.getByRole("menuitem", { name: "New space…", hidden: true }),
     );
     await tick();
-    const form = slot.getByRole("form", { name: "New space" });
-    expect(form.textContent).toContain(
-      "Starts with Two. Add projects in Manage.",
-    );
+    // The dialog pre-checks the open thread's project.
+    const dialog = slot.getByRole("dialog", { name: "New space" });
+    const boxes = within(dialog).getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes.map((box) => box.checked)).toEqual([false, true, false]);
+    expect(dialog.textContent).toContain("1 of 3 selected.");
     fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
       target: { value: "Fresh" },
     });
@@ -311,7 +314,7 @@ describe("spaces", () => {
     await tick();
     const form = slot.getByRole("form", { name: "New space" });
     expect(form.textContent).toContain(
-      "Choose its projects in Manage after creating it.",
+      "An empty space shows no threads until projects are added.",
     );
     fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
       target: { value: "Blank" },
@@ -330,7 +333,7 @@ describe("spaces", () => {
     expect(slot.container.textContent).toContain("No projects in this space.");
     // The empty state leads to Manage, where a checkbox adds a project.
     fireEvent.click(slot.getByRole("button", { name: "Choose projects" }));
-    await tick();
+    await slot.findByRole("dialog", { name: "Spaces and projects" });
     fireEvent.click(
       slot.getByRole("checkbox", { name: "Include One in Blank" }),
     );
@@ -359,7 +362,8 @@ describe("spaces", () => {
       expectedRevision: 1,
       spaces: [{ ...one, projectIds: ["project-1", "project-2"] }, both],
     });
-    fireEvent.click(slot.getByRole("button", { name: "Back to threads" }));
+    fireEvent.click(slot.getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(rows(slot)).toHaveLength(4));
     expect(scopeButton(slot).getAttribute("aria-label")).toBe(
       "Threads: Only One",
@@ -402,6 +406,7 @@ describe("spaces", () => {
       expectedRevision: 3,
       spaces: [both],
     });
+    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
     expect(
       parseState(localStorage.getItem("bb-plugin-erwin-activity:v1")).spaceId,
     ).toBeNull();

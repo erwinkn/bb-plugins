@@ -41,21 +41,35 @@ export function ThreadInfo({
 }) {
   const [open, setOpen] = useState(false);
   const rpc = useRpc<typeof archiveContract>();
-  const [fetchedParent, setFetchedParent] = useState<{ id: string; title: string } | null>(null);
+  const [fetchedParent, setFetchedParent] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
   const parentId = thread.parentThreadId;
   useEffect(() => {
     if (!open || disabled || parent || !parentId) return;
     let cancelled = false;
     setFetchedParent(null);
     void rpc.call("parentTitle", { threadId: parentId }).then(
-      (title) => { if (!cancelled) setFetchedParent({ id: parentId, title }); },
-      () => { if (!cancelled) setFetchedParent({ id: parentId, title: "Unavailable" }); },
+      (title) => {
+        if (!cancelled) setFetchedParent({ id: parentId, title });
+      },
+      () => {
+        if (!cancelled)
+          setFetchedParent({ id: parentId, title: "Unavailable" });
+      },
     );
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [rpc, open, disabled, parent, parentId]);
-  const parentLabel = parent ?? (parentId
-    ? fetchedParent?.id === parentId ? fetchedParent.title : "Loading…"
-    : undefined);
+  const parentLabel =
+    parent ??
+    (parentId
+      ? fetchedParent?.id === parentId
+        ? fetchedParent.title
+        : "Loading…"
+      : undefined);
   const scope = usePortalScopeProps();
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -158,7 +172,9 @@ export function ThreadInfo({
                       className="mt-0.5"
                     />
                     <span className="min-w-0">
-                      <span className="tabular-nums">#{pullRequest.number}</span>{" "}
+                      <span className="tabular-nums">
+                        #{pullRequest.number}
+                      </span>{" "}
                       {pullRequest.title}
                     </span>
                   </span>

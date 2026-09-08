@@ -49,12 +49,14 @@ export function PathField({
   rpc,
   hostId,
   value,
+  autoFocus = false,
   onChange,
   onError,
 }: {
   rpc: PluginRpcClient<typeof projectContract>;
   hostId: string;
   value: string;
+  autoFocus?: boolean;
   onChange: (path: string) => void;
   onError: (message: string) => void;
 }) {
@@ -98,6 +100,7 @@ export function PathField({
         aria-expanded={suggestions.length > 0}
         aria-controls={listId}
         aria-autocomplete="list"
+        autoFocus={autoFocus}
         value={value}
         spellCheck={false}
         onChange={(event) => {
