@@ -170,25 +170,6 @@ function server(start: SpaceCatalog = initial, projectsStart = inventory) {
     pickFolder,
   };
 }
-async function openManage(slot: ReturnType<typeof renderSlot>) {
-  await openScope(slot);
-  fireEvent.click(
-    slot.getByRole("menuitem", {
-      name: "Manage spaces…",
-      hidden: true,
-    }),
-  );
-  await slot.findByRole("dialog", { name: "Spaces and projects" });
-  await tick();
-}
-const rowMenu = async (slot: ReturnType<typeof renderSlot>, label: string) => {
-  fireEvent.keyDown(slot.getByRole("button", { name: label }), {
-    key: "Enter",
-  });
-  await tick();
-};
-const pickItem = (slot: ReturnType<typeof renderSlot>, name: string) =>
-  fireEvent.click(slot.getByRole("menuitem", { name, hidden: true }));
 const mounted: ReturnType<typeof renderSlot>[] = [];
 type Rpc = NonNullable<Parameters<typeof renderSlot>[2]>["rpc"];
 const mount = (rpc: Rpc = server(), overrides: Partial<typeof props> = {}) => {

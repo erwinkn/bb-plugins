@@ -50,12 +50,12 @@ export function registerProjects(bb: BbPluginApi) {
     createProject: async ({ name, hostId, path }) =>
       toManaged(
         await projects.create({
-          name: name.trim(),
+          name,
           source: { type: "local_path", hostId, path },
         }),
       ),
     renameProject: async ({ projectId, name }) =>
-      toManaged(await projects.update({ projectId, name: name.trim() })),
+      toManaged(await projects.update({ projectId, name })),
     deleteProject: async ({ projectId }) => {
       await projects.delete({ projectId });
       return { ok: true as const };

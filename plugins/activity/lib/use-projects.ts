@@ -13,7 +13,7 @@ export interface ProjectsState {
   apply: (inventory: ProjectInventory) => void;
 }
 
-// Folders and hosts are not in the sidebar data, so the Manage view fetches
+// Folders and hosts are not in the sidebar data, so the Spaces page fetches
 // them. `signature` changes whenever BB's own project list does, which keeps
 // the inventory current after edits from any client.
 export function useProjects(signature: string): ProjectsState {

@@ -15,7 +15,7 @@ import { STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
 import { useSpaces } from "./lib/use-spaces";
-import { inScope, newSpaceId, resolveScope } from "./lib/spaces";
+import { inScope, resolveScope } from "./lib/spaces";
 import { DisplayMenu } from "./components/menus";
 import { ProjectHeaderMenu } from "./components/project-header-menu";
 import {
@@ -350,7 +350,17 @@ function ThreadsList(props: PluginThreadListProps) {
       thread.projectId,
       (threadCounts.get(thread.projectId) ?? 0) + 1,
     );
-  const shell = (content: ReactNode) => (
+  const toggleSpace = (spaceId: string, projectId: string) =>
+    spaces
+      .save(
+        spaces.catalog.spaces.map((space) =>
+          space.id === spaceId
+            ? { ...space, projectIds: toggleValue(space.projectIds, projectId) }
+            : space,
+        ),
+      )
+      .catch(report);
+  return (
     <div
       data-activity-sidebar=""
       data-mobile-scroll={props.isCompactViewport ? "" : undefined}
@@ -361,11 +371,6 @@ function ThreadsList(props: PluginThreadListProps) {
           {MOBILE_SIDEBAR_SCROLL_CSS}
         </style>
       )}
-      {content}
-    </div>
-  );
-  return shell(
-    <>
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
           <ScopeMenu
@@ -494,22 +499,6 @@ function ThreadsList(props: PluginThreadListProps) {
                     const projectArchives = archived.filter(
                       ({ thread }) => thread.projectId === project.id,
                     );
-                    const toggleSpace = (spaceId: string) =>
-                      spaces
-                        .save(
-                          spaces.catalog.spaces.map((space) =>
-                            space.id === spaceId
-                              ? {
-                                  ...space,
-                                  projectIds: toggleValue(
-                                    space.projectIds,
-                                    project.id,
-                                  ),
-                                }
-                              : space,
-                          ),
-                        )
-                        .catch(report);
                     return rows.length ||
                       drafts.length ||
                       projectArchives.length ? (
@@ -526,7 +515,9 @@ function ThreadsList(props: PluginThreadListProps) {
                               projectName={project.name}
                               isPersonal={project.isPersonal}
                               spaces={spaces.catalog.spaces}
-                              onToggleSpace={toggleSpace}
+                              onToggleSpace={(spaceId) =>
+                                toggleSpace(spaceId, project.id)
+                              }
                               onAction={(action) => {
                                 if (action === "new-thread")
                                   openNew(project.id);
@@ -611,7 +602,7 @@ function ThreadsList(props: PluginThreadListProps) {
           </>
         )}
       </div>
-    </>,
+    </div>
   );
 }
 

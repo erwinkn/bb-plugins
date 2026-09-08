@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { useState, type DragEvent, type ReactNode } from "react";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { projectLabel, type ManagedProject } from "../lib/project-schema";
+import { projectLabel } from "../lib/project-schema";
 import type { Space } from "../lib/space-schema";
 import { moveItem } from "../lib/spaces";
 import type { ProjectsState } from "../lib/use-projects";
@@ -15,9 +15,9 @@ import {
 
 type RowEdit = { kind: "rename" | "folder" | "remove"; id: string };
 
-export const rowClass =
+const rowClass =
   "group flex items-center gap-1 rounded px-1 py-1 text-sm hover:bg-accent/60";
-export const addButtonClass =
+const addButtonClass =
   "mt-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Lists at least this long get a filter field. */
@@ -112,20 +112,20 @@ export function useDragOrder(
       : {
           draggable: true,
           title: "Drag to reorder",
-          onDragStart: (event: React.DragEvent) => {
+          onDragStart: (event: DragEvent) => {
             event.dataTransfer.effectAllowed = "move";
             event.dataTransfer.setData("text/plain", id);
             setDrag(id);
           },
           onDragEnd: end,
-          onDragOver: (event: React.DragEvent) => {
+          onDragOver: (event: DragEvent) => {
             if (!drag) return;
             event.preventDefault();
             setOver(id);
           },
           onDragLeave: () =>
             setOver((current) => (current === id ? null : current)),
-          onDrop: (event: React.DragEvent) => {
+          onDrop: (event: DragEvent) => {
             event.preventDefault();
             if (drag && drag !== id) onDrop(drag, id);
             end();

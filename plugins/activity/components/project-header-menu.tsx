@@ -29,8 +29,8 @@ export function ProjectHeaderMenu({
   const scope = usePortalScopeProps();
   const [open, setOpen] = useState(false);
   const longPress = useLongPressMenu(open);
-  // Rename opens a form under the header, Remove and Manage open dialogs;
-  // keep focus there instead of letting Radix return it to the header.
+  // Rename and Remove open a form under the header and Manage leaves for the
+  // Spaces page; keep focus there instead of letting Radix return it here.
   const editing = useRef(false);
   const act = (action: ProjectHeaderAction) => {
     editing.current = action !== "new-thread";

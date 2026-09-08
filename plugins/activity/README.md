@@ -261,7 +261,7 @@ development. To remove it, run `bb plugin remove erwin-activity`.
 
 Tests cover status precedence, date sorting in both views, navigation, storage validation,
 draft text and attachments, fallback UI, a disconnected realtime connection, space
-filtering and editing, the Manage view, project management through BB's API,
+filtering and editing, the Spaces page, project management through BB's API,
 the space catalog RPC, and the spaces CLI.
 They use the SDK's frontend harness. The live BB view still needs visual checks
 after SDK upgrades because the sidebar API is experimental.

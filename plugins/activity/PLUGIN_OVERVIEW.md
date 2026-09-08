@@ -28,7 +28,7 @@
 - `components/project-header-menu.tsx`: right-click/long-press menu on project
   group headers.
 - `components/scope-menu.tsx`: the heading menu that selects All projects or a
-  space and opens the space form or the Manage view.
+  space and opens the Spaces page.
 - `components/new-thread-button.tsx`: scope-aware New thread button.
 - `server.ts`: archive list and restore RPCs through BB, with change signals.
 - `lib/archive-contract.ts`: validated archive RPC contract.
@@ -36,7 +36,7 @@
 - `lib/project-schema.ts`, `lib/project-contract.ts`, `lib/projects-rpc.ts`,
   `lib/use-projects.ts`: project inventory (folders, hosts) and management RPC
   over `bb.sdk.projects` and `bb.sdk.hosts`; the frontend hook fetches it for
-  the Manage view.
+  the Spaces page.
 - `lib/space-schema.ts`: space catalog schema shared by server and frontend.
 - `lib/space-contract.ts`: space RPC contract (server; frontend imports its type).
 - `lib/spaces.ts`: catalog normalization and scope resolution shared by both sides.

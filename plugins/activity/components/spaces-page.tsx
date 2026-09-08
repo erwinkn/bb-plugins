@@ -30,7 +30,7 @@ import {
 /** URL segment of the page: `/plugins/<pluginId>/spaces`. */
 export const SPACES_PANEL_PATH = "spaces";
 /** Sub-paths inside the page. */
-export const NEW_SPACE_SUBPATH = "new";
+const NEW_SPACE_SUBPATH = "new";
 export const ALL_PROJECTS_SUBPATH = "projects";
 
 type Route =
@@ -114,7 +114,7 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
       go("", true);
   });
 
-  const save = (next: Space[]) => spaces.save(next);
+  const { save } = spaces;
   const update = (id: string, change: (space: Space) => Space) =>
     save(catalog.map((space) => (space.id === id ? change(space) : space)));
   const toggleMember = (spaceId: string, projectId: string) =>
@@ -222,7 +222,7 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
     </button>
   );
 
-  let content: React.ReactNode = null;
+  let content: ReactNode = null;
   if (detail.kind === "new")
     content = (
       <section aria-labelledby="new-space-heading">
@@ -347,13 +347,13 @@ function SpaceDetail({
   index: number;
   count: number;
   compact: boolean;
-  back: React.ReactNode;
+  back: ReactNode;
   initialEdit: SpaceEdit | null;
   onEditShown: () => void;
   onRename: (name: string) => Promise<unknown>;
   onMove: (delta: number) => void;
   onDelete: () => Promise<void>;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   const [edit, setEdit] = useState<SpaceEdit | null>(initialEdit);
   const [name, setName] = useState(space.name);

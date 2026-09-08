@@ -11,13 +11,10 @@ const query = () =>
     : null;
 
 export function useCompact(): boolean {
-  const [compact, setCompact] = useState(() =>
-    typeof window === "undefined"
-      ? false
-      : window.matchMedia(COMPACT_QUERY).matches,
-  );
+  const [compact, setCompact] = useState(() => query()?.matches ?? false);
   useEffect(() => {
-    const media = window.matchMedia(COMPACT_QUERY);
+    const media = query();
+    if (!media) return;
     const update = () => setCompact(media.matches);
     update();
     media.addEventListener("change", update);
