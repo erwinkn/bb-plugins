@@ -30,6 +30,10 @@
     {
       "name": "questions",
       "source": "./plugins/questions"
+    },
+    {
+      "name": "erwin-plugin-nav",
+      "source": "./plugins/plugin-nav"
     }
   ]
 }
