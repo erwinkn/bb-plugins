@@ -5,6 +5,7 @@
  * tab without looking different.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { splitPath } from "@/lib/file-tree";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import { cn } from "@/lib/utils";
@@ -25,7 +26,6 @@ import { ContextMenu, menuAt, type MenuItem, type MenuState } from "./ContextMen
 import type { SetPref } from "./EditorPane";
 import { SaveDot, ToolbarButton, type SaveIndicator } from "./Toolbar";
 import {
-  BranchGlyph,
   CommitGlyph,
   CompareGlyph,
   FileAddGlyph,
@@ -177,7 +177,7 @@ export function ScopeBar({
       onSelect: () => setExpanded((value) => !value),
     } satisfies MenuItem] : []),
     { type: "separator" },
-    { label: "Find commit…", icon: <BranchGlyph />, onSelect: () => chooseScope("commit") },
+    { label: "Find commit…", icon: <CommitGlyph />, onSelect: () => chooseScope("commit") },
   ];
 
   const viewItems: MenuItem[] = [
@@ -397,8 +397,7 @@ export function FileBar({
 
 /** The file name, with the name it had before a rename. */
 function FilePath({ path, previousPath }: { path: string; previousPath: string | null }) {
-  const name = path.split("/").at(-1) ?? path;
-  const directory = path.slice(0, path.length - name.length).replace(/\/$/, "");
+  const { directory, name } = splitPath(path);
   const title = previousPath === null ? path : `${previousPath} → ${path}`;
   return (
     <span title={title} className="flex min-w-0 items-baseline gap-1 font-mono text-xs leading-5">

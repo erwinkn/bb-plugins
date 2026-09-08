@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
 import type { FileDiff, FileDiffMetadata, FileDiffOptions } from "@pierre/diffs";
 import { loadPierre, type PierreRuntime } from "@/lib/pierre-loader";
-import { applyPierreTheme, PIERRE_HOST_CSS, synchronizePierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
+import {
+  applyPierreTheme, CACHE_NAMESPACE, describeError, nextCacheRevision, PIERRE_HOST_CSS, pierreCssVariables,
+  synchronizePierreTheme, type PierreThemeInput,
+} from "@/lib/pierre-theme";
 import { fileDiffFromPatch, loadedSides, patchRowEstimate, type DiffSide } from "@/lib/bb-diff";
 import { cn } from "@/lib/utils";
 
@@ -38,9 +40,6 @@ interface BlockState {
   optionsKey: string;
   publish(status: PierreDiffBlockStatus): void;
 }
-
-const CACHE_NAMESPACE = globalThis.crypto.randomUUID();
-let revision = 0;
 
 /**
  * One read-only diff that takes the height of its rows, for a page that
@@ -78,13 +77,13 @@ export function PierreDiffBlock(props: PierreDiffBlockProps) {
       .then(async (runtime) => {
         await synchronizePierreTheme(runtime, latest.current.theme);
         if (disposed || hostRef.current === null) return;
-        const view = new runtime.FileDiff(buildOptions(runtime, latest, stateRef), runtime.workerPool ?? undefined);
+        const view = new runtime.FileDiff(buildOptions(runtime, latest, null), runtime.workerPool ?? undefined);
         created = view;
         stateRef.current = { runtime, view, docKey: "", fileDiff: null, optionsKey: "", publish };
         sync(stateRef.current, hostRef.current, latest);
       })
       .catch((error: unknown) => {
-        publish({ kind: "error", message: describe(error) });
+        publish({ kind: "error", message: describeError(error) });
       });
     return () => {
       disposed = true;
@@ -94,7 +93,6 @@ export function PierreDiffBlock(props: PierreDiffBlockProps) {
   }, [baseUrl]);
 
   const docKey = documentKey(props);
-  const optionsKey = [props.theme.id, props.theme.type, props.view, props.wrap, props.lineNumbers].join("|");
   useEffect(() => {
     const state = stateRef.current;
     const host = hostRef.current;
@@ -107,10 +105,10 @@ export function PierreDiffBlock(props: PierreDiffBlockProps) {
       })
       .catch((error: unknown) => {
         if (cancelled || stateRef.current !== state) return;
-        state.publish({ kind: "error", message: describe(error) });
+        state.publish({ kind: "error", message: describeError(error) });
       });
     return () => { cancelled = true; };
-  }, [docKey, optionsKey]);
+  }, [docKey, optionsKeyOf(props)]);
 
   // Until Pierre draws, the block holds the rows' height so the page does not jump.
   const placeholderHeight = status.kind === "ready" ? undefined : patchRowEstimate(patch) * lineHeight;
@@ -121,7 +119,7 @@ export function PierreDiffBlock(props: PierreDiffBlockProps) {
       data-pierre-status={status.kind}
       className={cn("min-w-0 w-full", className)}
       style={{
-        ...cssVariables({ fontSize, lineHeight, fontFamily }),
+        ...pierreCssVariables({ fontSize, lineHeight, fontFamily }),
         minHeight: placeholderHeight,
       }}
     />
@@ -131,12 +129,12 @@ export function PierreDiffBlock(props: PierreDiffBlockProps) {
 /** Applies the current props: new options, then the current patch. */
 function sync(state: BlockState, host: HTMLElement, latest: { current: PierreDiffBlockProps }): void {
   const props = latest.current;
-  const optionsKey = [props.theme.id, props.theme.type, props.view, props.wrap, props.lineNumbers].join("|");
+  const optionsKey = optionsKeyOf(props);
   const docKey = documentKey(props);
   let force = false;
   if (state.docKey !== docKey) {
     state.docKey = docKey;
-    state.fileDiff = fileDiffFromPatch(state.runtime.parsePatchFiles, props.patch, `${CACHE_NAMESPACE}\0${++revision}`);
+    state.fileDiff = fileDiffFromPatch(state.runtime.parsePatchFiles, props.patch, `${CACHE_NAMESPACE}\0${nextCacheRevision()}`);
     state.publish({ kind: "loading" });
   }
   if (state.optionsKey !== optionsKey) {
@@ -148,7 +146,7 @@ function sync(state: BlockState, host: HTMLElement, latest: { current: PierreDif
     return;
   }
   // The sides go with the patch, so the options follow every document change.
-  state.view.setOptions(buildOptions(state.runtime, latest, { current: state }));
+  state.view.setOptions(buildOptions(state.runtime, latest, state));
   state.view.onThemeChange();
   state.view.render({ fileDiff: state.fileDiff, containerWrapper: host, forceRender: force });
 }
@@ -156,11 +154,10 @@ function sync(state: BlockState, host: HTMLElement, latest: { current: PierreDif
 function buildOptions(
   runtime: PierreRuntime,
   latest: { current: PierreDiffBlockProps },
-  stateRef: { current: BlockState | null },
+  state: BlockState | null,
 ): FileDiffOptions<undefined, undefined> {
   const props = latest.current;
-  const fileDiff = stateRef.current?.fileDiff ?? null;
-  const loaded = fileDiff === null ? null : loadedSides(fileDiff, props.sides);
+  const loaded = state?.fileDiff == null ? null : loadedSides(state.fileDiff, props.sides);
   return {
     theme: applyPierreTheme(runtime, props.theme),
     themeType: props.theme.type,
@@ -175,7 +172,6 @@ function buildOptions(
     lineHoverHighlight: "number",
     loadDiffFiles: loaded === null ? undefined : () => Promise.resolve(loaded),
     onPostRender: (node, _instance, phase) => {
-      const state = stateRef.current;
       if (state === null || phase === "unmount") return;
       const message = node.shadowRoot?.querySelector("[data-error-message]")?.textContent;
       if (message) {
@@ -192,15 +188,6 @@ function documentKey(props: PierreDiffBlockProps): string {
   return `${props.patch}\0${sides}`;
 }
 
-function cssVariables(values: { fontSize: number; lineHeight: number; fontFamily?: string }): CSSProperties {
-  const next: Record<string, string> = {
-    "--diffs-font-size": `${values.fontSize}px`,
-    "--diffs-line-height": `${values.lineHeight}px`,
-  };
-  if (values.fontFamily !== undefined) next["--diffs-font-family"] = values.fontFamily;
-  return next as CSSProperties;
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function optionsKeyOf(props: PierreDiffBlockProps): string {
+  return [props.theme.id, props.theme.type, props.view, props.wrap, props.lineNumbers].join("|");
 }

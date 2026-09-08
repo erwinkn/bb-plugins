@@ -29,7 +29,7 @@ export function BbDiffRenderer(props: PluginDiffRendererProps) {
     <PierreDiffBlock
       baseUrl={assets.baseUrl}
       patch={props.patch}
-      sides={full === null ? null : { old: { path: full.old.path, content: full.old.content }, new: { path: full.new.path, content: full.new.content } }}
+      sides={full}
       view={props.view}
       wrap={props.overflow === "wrap"}
       lineNumbers={props.showLineNumbers}

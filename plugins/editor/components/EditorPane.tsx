@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ComponentType, Ref } from "react";
-import { useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
-import type { rpcContract } from "../server";
+import type { PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import { AUTO_SAVE_DELAY_MS, lineHeightFor, monoFontFamily, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
+import { useAssets } from "@/lib/use-assets";
 import { useFileSession } from "@/lib/use-file-session";
 import type { FileSessionSnapshot } from "@/lib/file-session";
+import { splitPath } from "@/lib/file-tree";
 import { usePierreTheme } from "@/lib/pierre-theme";
 import { cn } from "@/lib/utils";
 import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } from "./PierreSurface";
@@ -14,13 +15,13 @@ import type { MenuItem } from "./ContextMenu";
 import { GoToLine } from "./GoToLine";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { workspaceRoot } from "@/lib/markdown-preview";
-import { Toolbar, type SaveIndicator } from "./Toolbar";
+import { indicatorFor, Toolbar } from "./Toolbar";
 
 /** Files that open as a rendered preview, with the editor one switch away. */
 const PREVIEW_EXTENSIONS = new Set(["md", "markdown"]);
 
 export function hasPreview(path: string): boolean {
-  const name = path.split("/").at(-1) ?? path;
+  const { name } = splitPath(path);
   const dot = name.lastIndexOf(".");
   return dot > 0 && PREVIEW_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
@@ -90,17 +91,16 @@ export function EditorPane({
   focusNonce = 0,
   ref,
 }: EditorPaneProps) {
-  const rpc = useRpc<typeof rpcContract>();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const surfaceRef = useRef<PierreSurfaceHandle | null>(null);
-  const [assets, setAssets] = useState<{ baseUrl: string } | { error: string } | null>(null);
+  const assets = useAssets();
   const [surfaceStatus, setSurfaceStatus] = useState<PierreSurfaceStatus>({ kind: "loading" });
   const [goToLineOpen, setGoToLineOpen] = useState(false);
   // A Markdown file opens as its rendered preview. The editor is one switch
   // away and the choice is remembered for the file while the page lives.
   const previewable = hasPreview(path);
-  const [, rerender] = useState(0);
-  const editing = !previewable || (editingByPath.get(path) ?? false);
+  const [editingFor, setEditingFor] = useState<{ path: string; editing: boolean } | null>(null);
+  const editing = !previewable || (editingFor?.path === path ? editingFor.editing : editingByPath.get(path) ?? false);
   /** Set by a switch to the editor: the caret goes there once it exists. */
   const focusEditor = useRef(false);
   /** A command such as Find that asked for the editor while the preview was up. */
@@ -109,7 +109,7 @@ export function EditorPane({
     editingByPath.set(path, next);
     focusEditor.current = next;
     if (!next) afterEditorReady.current = null;
-    rerender((n) => n + 1);
+    setEditingFor({ path, editing: next });
   };
   // The surface unmounts with the preview, so its last status must not
   // outlive it: a stale error would otherwise sit in the notice row.
@@ -122,21 +122,6 @@ export function EditorPane({
   const { save, overwrite, reload, setContent, claimEditor, isEditor } = file;
 
   const theme = usePierreTheme(themePreview);
-
-  useEffect(() => {
-    let cancelled = false;
-    void rpc
-      .call("assets", null)
-      .then((result) => {
-        if (!cancelled) setAssets({ baseUrl: result.baseUrl });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setAssets({ error: error instanceof Error ? error.message : "Could not reach the editor assets" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rpc]);
 
   // Auto save. The timer restarts on every keystroke, so it fires once the
   // user stops. Only a plain dirty file is saved: a conflict or a failed save
@@ -246,12 +231,12 @@ export function EditorPane({
     { type: "toggle", label: "Auto save", checked: prefs.autoSave !== "off", onToggle: (next) => onSetPref("autoSave", next ? "afterDelay" : "off") },
   ];
 
-  const loading = state === null || state.load.kind === "loading" || (assets === null && !unsupported && editing);
+  const loading = state === null || state.load.kind === "loading" || (assets.kind === "loading" && !unsupported && editing);
   return (
     <div ref={rootRef} className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <Toolbar
         path={path}
-        indicator={indicatorFor(state, surfaceStatus)}
+        indicator={indicatorFor(state, state?.load.kind === "error" || surfaceStatus.kind === "error")}
         canGoBack={history.canBack}
         canGoForward={history.canForward}
         onBack={history.back}
@@ -265,7 +250,7 @@ export function EditorPane({
       />
       <Notices
         state={state}
-        assetsError={assets !== null && "error" in assets ? assets.error : null}
+        assetsError={assets.kind === "error" ? assets.message : null}
         surfaceStatus={surfaceStatus}
         isEditor={isEditor}
         onTakeOver={claimEditor}
@@ -290,7 +275,7 @@ export function EditorPane({
             content={state.content}
             onOpenPath={onOpenPath}
           />
-        ) : assets !== null && "baseUrl" in assets && state !== null && state.load.kind === "ready" ? (
+        ) : assets.kind === "ready" && state !== null && state.load.kind === "ready" ? (
           <PierreSurface
             ref={surfaceRef}
             baseUrl={assets.baseUrl}
@@ -344,21 +329,6 @@ function runOnSurface(ref: { current: PierreSurfaceHandle | null }, run: (handle
   run(handle);
 }
 
-function indicatorFor(state: FileSessionSnapshot | null, surface: PierreSurfaceStatus): SaveIndicator {
-  if (state === null) return "clean";
-  if (state.load.kind === "error" || surface.kind === "error") return "error";
-  switch (state.save.kind) {
-    case "saving":
-      return "saving";
-    case "dirty":
-      return "dirty";
-    case "error":
-    case "conflict":
-      return "error";
-    default:
-      return "clean";
-  }
-}
 
 function Notices({
   state,

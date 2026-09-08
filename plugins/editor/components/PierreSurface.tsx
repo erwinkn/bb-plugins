@@ -1,9 +1,12 @@
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
-import type { CSSProperties, Ref } from "react";
+import type { Ref } from "react";
 import type { CodeView, CodeViewItem, CodeViewOptions } from "@pierre/diffs";
-import type { Editor, EditorFocusOptions, EditorKeymap, EditorViewState } from "@pierre/diffs/edit";
+import type { Editor, EditorKeymap } from "@pierre/diffs/edit";
 import { loadPierre, type PierreRuntime } from "@/lib/pierre-loader";
-import { applyPierreTheme, PIERRE_HOST_CSS, synchronizePierreTheme, type PierreThemeInput } from "@/lib/pierre-theme";
+import {
+  applyPierreTheme, CACHE_NAMESPACE, describeError, nextCacheRevision, PIERRE_HOST_CSS, pierreCssVariables,
+  synchronizePierreTheme, type PierreThemeInput,
+} from "@/lib/pierre-theme";
 import { cn } from "@/lib/utils";
 import { revertHunkEdit } from "@/lib/revert-hunk";
 import { createPierreItem } from "@/lib/pierre-item";
@@ -38,9 +41,6 @@ export type PierreSurfaceStatus =
   | { kind: "ready" }
   | { kind: "error"; message: string; error: unknown };
 
-/** The editor's restorable selections and scroll position. */
-export type PierreViewState = EditorViewState;
-
 export interface PierreSurfaceProps {
   /** The asset base from the server's `assets` RPC. Treated as opaque. */
   baseUrl: string;
@@ -70,15 +70,11 @@ export interface PierreSurfaceProps {
   diffStyle?: "split" | "unified";
   wrap?: boolean;
   lineNumbers?: boolean;
-  fileHeader?: boolean;
   expandUnchanged?: boolean;
-  stickyHeader?: boolean;
   fontSize?: number;
   lineHeight?: number;
   fontFamily?: string;
-  tabSize?: number;
   theme: PierreThemeInput;
-  autoFocus?: PierreFocusTarget;
   /** Every document change. Never feed this text back into `content`. */
   onChange?: (text: string, viewId: string) => void;
   /** The save shortcut was pressed inside the surface. */
@@ -87,21 +83,12 @@ export interface PierreSurfaceProps {
   onBlur?: () => void;
   onStatusChange?: (status: PierreSurfaceStatus) => void;
   className?: string;
-  style?: CSSProperties;
   ref?: Ref<PierreSurfaceHandle>;
 }
 
 export interface PierreSurfaceHandle {
   status(): PierreSurfaceStatus;
-  /**
-   * The live document text. A read-only surface has no editor, so it reports
-   * the `content` prop instead. null only before the runtime loads.
-   */
-  getText(): string | null;
-  /** Turns editing on or off until the `readOnly` prop next changes. */
-  setEditable(editable: boolean): void;
   focus(target?: PierreFocusTarget): boolean;
-  blur(): void;
   revertHunk(): boolean;
   undo(): boolean;
   redo(): boolean;
@@ -111,9 +98,6 @@ export interface PierreSurfaceHandle {
   openSearchReplace(): boolean;
   findNext(previous?: boolean): boolean;
   goToLine(lineNumber: number, character?: number): boolean;
-  getViewState(): PierreViewState | null;
-  setViewState(state: PierreViewState): void;
-  scrollToLine(lineNumber: number, align?: "start" | "center" | "end" | "nearest"): void;
 }
 
 /**
@@ -123,9 +107,6 @@ export interface PierreSurfaceHandle {
  * the defaults, so the user's own Cmd+F still opens the same panel and these
  * reserved chords are what `openSearch` dispatches.
  */
-const CACHE_NAMESPACE = globalThis.crypto.randomUUID();
-let cacheRevision = 0;
-
 const RESERVED_KEYMAP: EditorKeymap = [
   { bindings: { "cmdOrCtrl+F9": "openSearchPanel", "cmdOrCtrl+F10": "openSearchReplacePanel" } },
 ];
@@ -139,12 +120,11 @@ interface SurfaceState {
   /** Bumped for every item replacement, so Pierre reconciles and re-caches. */
   version: number;
   epoch: number;
+  readOnly: boolean;
   /** Set only by Pierre's onAttach, after the editable DOM exists. */
   readyEditor: Editor | null;
   pendingFocus: { target?: PierreFocusTarget } | null;
   publish(status: PierreSurfaceStatus): void;
-  /** Set by `setEditable`, cleared whenever the `readOnly` prop changes. */
-  editableOverride: boolean | null;
 }
 
 /**
@@ -164,7 +144,7 @@ interface SurfaceState {
  * undo step of one file can ever reach another.
  */
 export default function PierreSurface(props: PierreSurfaceProps) {
-  const { baseUrl, className, style, fontSize, lineHeight, fontFamily, tabSize, ref } = props;
+  const { baseUrl, className, fontSize, lineHeight, fontFamily, ref } = props;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<PierreSurfaceStatus>({ kind: "loading" });
   const [fileComparison, setFileComparison] = useState(false);
@@ -202,8 +182,8 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           runtime.workerPool ?? undefined,
         );
         created = view;
-        const version = ++cacheRevision;
-        const item = buildItem(runtime, props, version, null);
+        const version = nextCacheRevision();
+        const item = buildItem(runtime, props, version);
         setFileComparison(props.oldContent !== undefined && item.type === "file");
         stateRef.current = {
           runtime,
@@ -212,10 +192,10 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           itemType: item.type,
           version,
           epoch: props.epoch,
+          readOnly: props.readOnly === true,
           readyEditor: null,
           pendingFocus: null,
           publish,
-          editableOverride: null,
         };
         view.setup(host);
         view.setItems([item]);
@@ -226,7 +206,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       .catch((error: unknown) => {
         // The panel draws the failure. Reporting it as a value keeps a missing
         // asset route from tearing down the surrounding tree.
-        publish({ kind: "error", message: describe(error), error });
+        publish({ kind: "error", message: describeError(error), error });
       });
     return () => {
       disposed = true;
@@ -244,11 +224,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     props.diffStyle,
     props.wrap,
     props.lineNumbers,
-    props.fileHeader,
     props.expandUnchanged,
-    props.stickyHeader,
-    props.allowRevertHunk,
-    props.readOnly,
   ].join("|");
   useEffect(() => {
     const state = stateRef.current;
@@ -262,7 +238,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       if (state.readyEditor !== null && statusRef.current.kind === "error") state.publish({ kind: "ready" });
     }).catch((error: unknown) => {
       if (cancelled || stateRef.current !== state) return;
-      state.publish({ kind: "error", message: describe(error), error });
+      state.publish({ kind: "error", message: describeError(error), error });
     });
     return () => { cancelled = true; };
   }, [optionsKey, status.kind]);
@@ -270,64 +246,42 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   // The document itself: a different file replaces the item, and everything
   // else updates it in place.
   const docKey = documentKey(props);
+  const readOnly = props.readOnly === true;
   useEffect(() => {
     setHovered(null);
     const state = stateRef.current;
     if (state === null) return;
     if (state.docKey !== docKey) {
       state.docKey = docKey;
-      state.version = ++cacheRevision;
+      state.version = nextCacheRevision();
       state.epoch = props.epoch;
-      state.editableOverride = null;
+      state.readOnly = readOnly;
       state.readyEditor = null;
       state.pendingFocus = null;
       state.publish({ kind: "loading" });
       // setItems removes the old record, which ends its edit session and
       // releases its editor and undo history.
-      const item = buildItem(state.runtime, latest.current, state.version, null);
+      const item = buildItem(state.runtime, latest.current, state.version);
       state.itemType = item.type;
       setFileComparison(props.oldContent !== undefined && item.type === "file");
       state.view.setItems([item]);
       return;
     }
+    // Only another author's change or a change of editability re-seeds. A
+    // render during typing, and this view's own echo, change nothing.
     const sameEpoch = props.epoch === state.epoch;
-    // Only another author's change re-seeds. A render during typing, and this
-    // view's own echo, change nothing.
-    if (sameEpoch && props.readOnly === undefined) return;
-    if (!sameEpoch) {
-      state.epoch = props.epoch;
-      if (props.epochAuthor === props.viewId) return;
-    }
-    state.version = ++cacheRevision;
-    state.view.updateItem(buildItem(state.runtime, latest.current, state.version, state.editableOverride, state.itemType));
-  }, [docKey, props.epoch, props.epochAuthor, props.readOnly, props.viewId, status.kind]);
-
-  // A changed readOnly prop takes back any imperative override.
-  useEffect(() => {
-    if (stateRef.current !== null) stateRef.current.editableOverride = null;
-  }, [props.readOnly]);
-
-  useEffect(() => {
-    if (status.kind !== "ready" || props.autoFocus === undefined) return;
-    editorOf(stateRef.current)?.focus(props.autoFocus as EditorFocusOptions);
-  }, [status.kind, props.autoFocus]);
+    const sameMode = readOnly === state.readOnly;
+    state.epoch = props.epoch;
+    state.readOnly = readOnly;
+    if (sameMode && (sameEpoch || props.epochAuthor === props.viewId)) return;
+    state.version = nextCacheRevision();
+    state.view.updateItem(buildItem(state.runtime, latest.current, state.version, state.itemType));
+  }, [docKey, props.epoch, props.epochAuthor, readOnly, props.viewId]);
 
   useImperativeHandle(
     ref,
     (): PierreSurfaceHandle => ({
       status: () => statusRef.current,
-      getText: () => {
-        const editor = editorOf(stateRef.current);
-        if (editor !== null) return editor.getText();
-        return stateRef.current === null ? null : latest.current.content;
-      },
-      setEditable: (editable) => {
-        const state = stateRef.current;
-        if (state === null) return;
-        state.editableOverride = editable;
-        state.version = ++cacheRevision;
-        state.view.updateItem(buildItem(state.runtime, latest.current, state.version, editable, state.itemType));
-      },
       focus: (target) => {
         const state = stateRef.current;
         const editor = editorOf(state);
@@ -335,10 +289,9 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           if (state !== null) state.pendingFocus = { target };
           return false;
         }
-        editor.focus(target as EditorFocusOptions | undefined);
+        editor.focus(target);
         return true;
       },
-      blur: () => editorOf(stateRef.current)?.blur(),
       revertHunk: () => {
         const editor = editorOf(stateRef.current);
         const selection = editor?.getViewState().selections?.[0];
@@ -354,11 +307,6 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       findNext: (previous = false) => sendCommandKey(stateRef.current, "g", previous),
       goToLine: (lineNumber, character = 0) =>
         run(stateRef.current, (editor) => editor.focus({ lineNumber, character })),
-      getViewState: () => editorOf(stateRef.current)?.getViewState() ?? null,
-      setViewState: (state) => editorOf(stateRef.current)?.setViewState(state),
-      scrollToLine: (lineNumber, align = "center") => {
-        stateRef.current?.view.scrollTo({ type: "line", id: itemIdOf(latest.current), lineNumber, align });
-      },
     }),
     [],
   );
@@ -394,7 +342,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     <div
       ref={surfaceRef}
       className={cn("relative flex h-full w-full min-h-0 flex-col", className)}
-      style={cssVariables(style, { fontSize, lineHeight, fontFamily, tabSize })}
+      style={pierreCssVariables({ fontSize, lineHeight, fontFamily })}
       data-pierre-status={status.kind}
       onPointerMove={trackPointer}
       onPointerLeave={() => setHovered(null)}
@@ -487,33 +435,12 @@ function isChangedRow(element: HTMLElement): boolean {
 }
 
 /**
- * The identity of the document on screen. A change here means a different file,
- * which must get its own editor, its own undo history, and its own draft.
+ * The identity of the document on screen, also the CodeView item id. A change
+ * here means a different file, which must get its own editor, undo history
+ * and draft.
  */
 function documentKey(props: PierreSurfaceProps): string {
   return [props.viewId, props.name, props.oldContent === undefined ? "file" : "diff"].join("\0");
-}
-
-/** The CodeView item id. It is the document identity, so a file switch swaps items. */
-function itemIdOf(props: PierreSurfaceProps): string {
-  return documentKey(props);
-}
-
-/**
- * The Pierre custom properties for the requested typography. They are set on
- * the host because custom properties cross the shadow boundary, and Pierre's
- * own stylesheet lives inside `<diffs-container>`.
- */
-function cssVariables(
-  style: CSSProperties | undefined,
-  values: { fontSize?: number; lineHeight?: number; fontFamily?: string; tabSize?: number },
-): CSSProperties {
-  const next: Record<string, string | number> = { ...(style as Record<string, string | number> | undefined) };
-  if (values.fontSize !== undefined) next["--diffs-font-size"] = `${values.fontSize}px`;
-  if (values.lineHeight !== undefined) next["--diffs-line-height"] = `${values.lineHeight}px`;
-  if (values.fontFamily !== undefined) next["--diffs-font-family"] = values.fontFamily;
-  if (values.tabSize !== undefined) next["--diffs-tab-size"] = String(values.tabSize);
-  return next as CSSProperties;
 }
 
 /**
@@ -535,7 +462,7 @@ function buildOptions(
     diffStyle: props.diffStyle ?? "split",
     overflow: props.wrap === true ? "wrap" : "scroll",
     disableLineNumbers: props.lineNumbers === false,
-    disableFileHeader: props.fileHeader !== true,
+    disableFileHeader: true,
     unsafeCSS: PIERRE_HOST_CSS,
     hunkSeparators: "line-info-basic",
     // The hunk revert control is BB's own overlay (see `hoveredBlockAt`), so
@@ -544,7 +471,6 @@ function buildOptions(
     expansionLineCount: 20,
     lineHoverHighlight: "number",
     expandUnchanged: props.expandUnchanged ?? false,
-    stickyHeaders: props.stickyHeader ?? false,
     // One item fills the pane, so none of Pierre's list spacing applies.
     layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
     onPostRender: (node, _instance, phase, context) => {
@@ -575,7 +501,7 @@ function buildOptions(
           const focus = state.pendingFocus;
           state.pendingFocus = null;
           state.publish({ kind: "ready" });
-          if (focus !== null) editor.focus(focus.target as EditorFocusOptions | undefined);
+          if (focus !== null) editor.focus(focus.target);
         },
         onFocus: () => latest.current.onFocus?.(),
         onBlur: () => latest.current.onBlur?.(),
@@ -583,14 +509,14 @@ function buildOptions(
     onItemEditChange: (event, item) => {
       // An item that is no longer on screen can still finish reporting. Its
       // text belongs to the file it came from, not to the one open now.
-      if (item.id !== itemIdOf(latest.current)) return;
+      if (item.id !== documentKey(latest.current)) return;
       latest.current.onChange?.(event.file.contents, latest.current.viewId);
     },
     onItemEditComplete: (event, item) => {
       // Pierre freezes the event and caches highlighting by cacheKey, so the
       // accepted value needs its own key or the old tokens come back.
       const state = stateRef.current;
-      const version = ++cacheRevision;
+      const version = nextCacheRevision();
       if (state !== null) state.version = version;
       if ("fileDiff" in event) {
         event.fileDiff.cacheKey = `${CACHE_NAMESPACE}\0${item.id}\0diff\0${version}`;
@@ -611,10 +537,9 @@ function buildItem(
   runtime: PierreRuntime,
   props: PierreSurfaceProps,
   version: number,
-  editableOverride: boolean | null,
   renderType?: "file" | "diff",
 ): CodeViewItem<undefined> {
-  const id = itemIdOf(props);
+  const id = documentKey(props);
   return createPierreItem({
     id,
     name: props.name,
@@ -623,7 +548,7 @@ function buildItem(
     oldContent: props.oldContent,
     cachePrefix: `${CACHE_NAMESPACE}\0${id}`,
     version,
-    editable: editableOverride ?? props.readOnly !== true,
+    editable: props.readOnly !== true,
     renderType,
   }, runtime.parseDiffFromFile);
 }
@@ -677,10 +602,6 @@ function deepestActiveElement(): Element | null {
   let element = document.activeElement;
   while (element?.shadowRoot?.activeElement != null) element = element.shadowRoot.activeElement;
   return element;
-}
-
-function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Apply through Pierre's edit API to keep the cursor and the undo timeline. */

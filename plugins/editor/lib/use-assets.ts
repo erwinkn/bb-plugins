@@ -9,13 +9,14 @@ let shared: Promise<string> | null = null;
 /**
  * Where the Pierre bundle is served from, asked once per page. The routes
  * never expire (see the server), so every caller can share one answer; a
- * failed ask is dropped so the next mount tries again.
+ * failed ask is dropped so the next mount, or a bumped `attempt`, tries again.
  */
-export function useAssets(): AssetsState {
+export function useAssets(attempt = 0): AssetsState {
   const rpc = useRpc<typeof rpcContract>();
   const [state, setState] = useState<AssetsState>({ kind: "loading" });
   useEffect(() => {
     let cancelled = false;
+    setState({ kind: "loading" });
     shared ??= rpc.call("assets", null).then((result) => result.baseUrl).catch((error: unknown) => {
       shared = null;
       throw error;
@@ -30,6 +31,6 @@ export function useAssets(): AssetsState {
     return () => {
       cancelled = true;
     };
-  }, [rpc]);
+  }, [rpc, attempt]);
   return state;
 }

@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import type { FileSessionSnapshot } from "@/lib/file-session";
 import { ContextMenu, menuAt, type MenuItem, type MenuState } from "./ContextMenu";
 import { ArrowLeftIcon, ArrowRightIcon, EditGlyph, FileIcon, MoreIcon, SearchIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
 
@@ -95,6 +96,23 @@ function FilePath({ path }: { path: string }) {
       </bdi>
     </button>
   );
+}
+
+/** The save dot for a session; `failed` covers the read or the surface. */
+export function indicatorFor(state: FileSessionSnapshot | null, failed: boolean): SaveIndicator {
+  if (failed) return "error";
+  if (state === null) return "clean";
+  switch (state.save.kind) {
+    case "saving":
+      return "saving";
+    case "dirty":
+      return "dirty";
+    case "error":
+    case "conflict":
+      return "error";
+    default:
+      return "clean";
+  }
 }
 
 export function SaveDot({ indicator }: { indicator: SaveIndicator }) {

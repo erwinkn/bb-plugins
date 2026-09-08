@@ -8,7 +8,8 @@ import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import { DiffFileActions } from "./DiffFileActions";
 import type { DiffEntry, DiffTarget } from "@/lib/diff-contract";
-import { changeLabel, unavailableReason } from "@/lib/diff-view-state";
+import { changeLabel, targetKey, unavailableReason } from "@/lib/diff-view-state";
+import { splitPath } from "@/lib/file-tree";
 import { FileIcon, RefreshGlyph } from "./icons";
 
 export interface DiffFileListProps {
@@ -71,7 +72,7 @@ export function DiffFileList({
         ) : null}
         <ul role="list" className="flex flex-col">
           {files.map((entry) => (
-            <li key={`${JSON.stringify(target)}:${entry.path}`}>
+            <li key={`${targetKey(target)}:${entry.path}`}>
               <DiffFileActions entry={entry} target={target} threadId={threadId} onChanged={onChanged}>
                 <Row
                   entry={entry}
@@ -103,8 +104,7 @@ function Row({
   rowRef?: React.Ref<HTMLButtonElement>;
   onSelect: () => void;
 }) {
-  const name = entry.path.split("/").at(-1) ?? entry.path;
-  const directory = entry.path.slice(0, entry.path.length - name.length).replace(/\/$/, "");
+  const { directory, name } = splitPath(entry.path);
   const unavailable = unavailableReason(entry);
   const label = changeLabel(entry);
   const title =

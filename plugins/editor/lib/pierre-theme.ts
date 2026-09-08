@@ -1,4 +1,5 @@
 import { experimental_useCodeTheme, useSettings, type PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
+import type { CSSProperties } from "react";
 import type { ThemeRegistration } from "@pierre/diffs";
 import type { PierreRuntime } from "./pierre-loader.js";
 import { codeThemeId, FOLLOW_BB, themeNameFor } from "./themes.js";
@@ -116,6 +117,28 @@ export const PIERRE_HOST_CSS = `
     --diffs-selection-number-fg: var(--foreground);
   }
 `;
+
+/** One namespace per page load for Pierre's highlight cache keys; the revision makes each item build distinct. */
+export const CACHE_NAMESPACE = globalThis.crypto.randomUUID();
+let cacheRevision = 0;
+export const nextCacheRevision = (): number => ++cacheRevision;
+
+/**
+ * Pierre's custom properties for the requested typography. They go on the host
+ * because custom properties cross the shadow boundary, and Pierre's stylesheet
+ * lives inside `<diffs-container>`.
+ */
+export function pierreCssVariables(values: { fontSize?: number; lineHeight?: number; fontFamily?: string }): CSSProperties {
+  const next: Record<string, string> = {};
+  if (values.fontSize !== undefined) next["--diffs-font-size"] = `${values.fontSize}px`;
+  if (values.lineHeight !== undefined) next["--diffs-line-height"] = `${values.lineHeight}px`;
+  if (values.fontFamily !== undefined) next["--diffs-font-family"] = values.fontFamily;
+  return next as CSSProperties;
+}
+
+export function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 const registered = new Set<string>();
 

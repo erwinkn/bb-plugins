@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { toast } from "sonner";
 import { experimental_useCodeTheme, useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
-import type { FlatEntry } from "@/lib/file-tree";
+import { splitPath, type FlatEntry } from "@/lib/file-tree";
+import { useElementWidth } from "@/lib/use-element-width";
 import type { EditorPrefs } from "@/lib/editor-options";
 import {
   clampTreeWidth,
@@ -77,7 +78,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   pendingRef.current = pendingOpen;
   const [treeOpen, setTreeOpen] = useState(() => readTreeOpen(surface));
   const [treeWidth, setTreeWidth] = useState(readTreeWidth);
-  const [width, setWidth] = useState(0);
+  const width = useElementWidth(rootRef);
   const [tree, setTree] = useState<TreeState>(EMPTY_TREE);
   const [quickOpen, setQuickOpen] = useState(false);
   const [themePicker, setThemePicker] = useState<{ current: string | null } | null>(null);
@@ -120,16 +121,6 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   useEffect(() => {
     if (surface === "panel") storeLastFile(workspaceKey, activePath);
   }, [activePath, surface, workspaceKey]);
-
-  useLayoutEffect(() => {
-    const element = rootRef.current;
-    if (element === null) return;
-    const measure = () => setWidth(element.clientWidth);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
 
   const compact = width > 0 && width < COMPACT_BREAKPOINT_PX;
   const effectiveTreeWidth = compact ? width : clampTreeWidth(treeWidth, width || Number.POSITIVE_INFINITY);
@@ -401,7 +392,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {pendingOpen !== null ? (
           <NoticeRow tone="warning">
-            Open {pendingOpen.path.split("/").at(-1)} and discard your unsaved changes?
+            Open {splitPath(pendingOpen.path).name} and discard your unsaved changes?
             <NoticeAction
               onClick={() => {
                 const next = pendingOpen;

@@ -9,9 +9,9 @@ import { toast } from "sonner";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { DiffEntry, DiffTarget } from "@/lib/diff-contract";
-import { AUTO_SAVE_DELAY_MS, type EditorPrefs } from "@/lib/editor-options";
+import { AUTO_SAVE_DELAY_MS, lineHeightFor, monoFontFamily, type EditorPrefs } from "@/lib/editor-options";
 import { changeLabel, diffSessionSync, targetKey, unavailableReason, type DiffLayout } from "@/lib/diff-view-state";
-import type { FileSessionSource, FileSessionSnapshot } from "@/lib/file-session";
+import { NO_SOURCE, type FileSessionSnapshot, type FileSessionSource } from "@/lib/file-session";
 import { useFileSession } from "@/lib/use-file-session";
 import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } from "./PierreSurface";
 import { usePierreTheme } from "@/lib/pierre-theme";
@@ -19,7 +19,7 @@ import { hasPreview, NoticeAction, NoticeRow, type SetPref } from "./EditorPane"
 import { MarkdownPreview } from "./MarkdownPreview";
 import { workspaceRoot } from "@/lib/markdown-preview";
 import { FileBar } from "./DiffToolbar";
-import type { SaveIndicator } from "./Toolbar";
+import { indicatorFor } from "./Toolbar";
 import type { MenuItem } from "./ContextMenu";
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
 import { cn } from "@/lib/utils";
@@ -48,7 +48,6 @@ type ReadState =
   | { kind: "error"; message: string };
 
 /** Stands in while no file is readable; the session hook then holds nothing. */
-const NO_SOURCE: FileSessionSource = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
 
 export interface EditableDiffPaneProps {
   threadId: string;
@@ -97,7 +96,7 @@ export function EditableDiffPane({
 }: EditableDiffPaneProps) {
   const rpc = useRpc<typeof rpcContract>();
   const theme = usePierreTheme();
-  const paneId = useId();
+  const paneId = useId().replace(/[^a-zA-Z0-9]/g, "");
   const rootRef = useRef<HTMLDivElement | null>(null);
   const surfaceRef = useRef<PierreSurfaceHandle | null>(null);
   const [read, setRead] = useState<ReadState>({ kind: "loading" });
@@ -213,7 +212,7 @@ export function EditableDiffPane({
   dirtyRef.current = dirty;
   const conflicted = state?.save.kind === "conflict";
   const readOnly = !editable || !isEditor;
-  const indicator = indicatorFor(read, state);
+  const indicator = indicatorFor(state, read.kind === "error");
 
   /** A read refuses while the user is typing; say so instead of doing nothing. */
   const reloadFile = file.reload;
@@ -224,8 +223,9 @@ export function EditableDiffPane({
   }, [reloadFile]);
 
   // The command palette acts on the pane that had focus last. The Changes tab
-  // registers the same way the Files tab does, so Save, Find and Go to line
-  // reach the comparison the user is in.
+  // registers the same way the Files tab does, so Save, Find, Undo and the
+  // word-wrap toggle reach the comparison the user is in; quick open and Go to
+  // line belong to the Files tab.
   const active = useRef<ActiveEditor>({
     id: paneId,
     element: null,
@@ -343,10 +343,10 @@ export function EditableDiffPane({
             diffStyle={layout}
             wrap={prefs.wordWrap}
             lineNumbers={prefs.lineNumbers}
-            fileHeader={false}
             expandUnchanged={expandUnchanged}
             fontSize={prefs.fontSize}
-            lineHeight={Math.round(prefs.fontSize * 1.5)}
+            lineHeight={lineHeightFor(prefs.fontSize)}
+            fontFamily={monoFontFamily()}
             theme={theme}
             onChange={(text) => file.setContent(text)}
             onSave={save}
@@ -512,20 +512,4 @@ function Notices({
     );
   }
   return <>{rows}</>;
-}
-
-function indicatorFor(read: ReadState, state: FileSessionSnapshot | null): SaveIndicator {
-  if (read.kind === "error") return "error";
-  if (state === null) return "clean";
-  switch (state.save.kind) {
-    case "saving":
-      return "saving";
-    case "dirty":
-      return "dirty";
-    case "error":
-    case "conflict":
-      return "error";
-    default:
-      return "clean";
-  }
 }

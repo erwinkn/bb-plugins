@@ -3,13 +3,15 @@
  * comparison. It is the same shape as the Files tab — a list beside a pane,
  * which take turns in a narrow panel — so the two tabs feel like one editor.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { FileSource } from "../server";
 import type { DiffEntry, DiffTarget } from "@/lib/diff-contract";
 import type { EditorPrefs } from "@/lib/editor-options";
-import type { FileSessionSource } from "@/lib/file-session";
+import { NO_SOURCE } from "@/lib/file-session";
+import { useElementWidth } from "@/lib/use-element-width";
+import { useAssets } from "@/lib/use-assets";
 import { useDirtyPaths } from "@/lib/use-file-session";
 import { clampTreeWidth } from "@/lib/layout-storage";
 import {
@@ -44,7 +46,6 @@ import { useFileWatch } from "@/lib/file-watch";
 
 
 /** Stands in until the first list arrives; no session belongs to it. */
-const NO_SOURCE: FileSessionSource = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
 
 interface ListState {
   files: readonly DiffEntry[];
@@ -91,9 +92,9 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
   const [list, setList] = useState<ListState>(EMPTY_LIST);
   const [listNonce, setListNonce] = useState(0);
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const [assets, setAssets] = useState<{ baseUrl: string } | { error: string } | null>(null);
   const [assetsNonce, setAssetsNonce] = useState(0);
-  const [width, setWidth] = useState(0);
+  const assets = useAssets(assetsNonce);
+  const width = useElementWidth(rootRef);
 
   const key = targetKey(target);
   const compact = isCompact(width);
@@ -110,32 +111,8 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
     if (initial.path !== null) setSelected(initial.path);
   }, [initial]);
 
-  useEffect(() => {
-    let cancelled = false;
-    setAssets(null);
-    void rpc
-      .call("assets", null)
-      .then((result) => {
-        if (!cancelled) setAssets({ baseUrl: result.baseUrl });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setAssets({ error: error instanceof Error ? error.message : "Could not reach the editor assets" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rpc, assetsNonce]);
-
-  useLayoutEffect(() => {
-    const element = rootRef.current;
-    if (element === null) return;
-    const measure = () => setWidth(element.clientWidth);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-
+  // `key` stands for `target` in these dependency lists: the target is a new
+  // object on every render, its key is not.
   useEffect(() => storeLastTarget(threadId, target), [threadId, key]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => storeLastPath(threadId, target, selected), [threadId, key, selected]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => storeViewPrefs(view), [view]);
@@ -175,7 +152,6 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
         if (mine !== generation.current) return;
         setList({ ...EMPTY_LIST, isLoading: false, error: error instanceof Error ? error.message : "This comparison could not be listed" });
       });
-    // `key` stands for `target`, which is a new object on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rpc, threadId, key, listNonce]);
 
@@ -301,7 +277,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
         onSetPref={onSetPref}
         layout={layout}
         expandUnchanged={view.expandUnchanged}
-        baseUrl={assets !== null && "baseUrl" in assets ? assets.baseUrl : null}
+        baseUrl={assets.kind === "ready" ? assets.baseUrl : null}
         refreshNonce={refreshNonce}
         navigation={{
           canPrevious: neighbourPath(list.files, selected, -1) !== null,
@@ -343,9 +319,9 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
         prompt={prompt}
         onPrompt={setPrompt}
       />
-      {assets !== null && "error" in assets ? (
+      {assets.kind === "error" ? (
         <NoticeRow tone="error">
-          The comparison viewer could not be loaded: {assets.error}
+          The comparison viewer could not be loaded: {assets.message}
           <NoticeAction onClick={() => setAssetsNonce((nonce) => nonce + 1)}>Try again</NoticeAction>
         </NoticeRow>
       ) : null}

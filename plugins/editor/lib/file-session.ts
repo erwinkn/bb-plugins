@@ -18,6 +18,8 @@
 import type { FileSource } from "../server";
 
 export type FileSessionSource = FileSource;
+/** A source for a view that has no file yet; nothing resolves against it. */
+export const NO_SOURCE: FileSessionSource = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
 
 export interface ReadText {
   kind: "text";
