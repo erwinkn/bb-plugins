@@ -41,12 +41,14 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
     });
   };
 
+  // The text keeps a real minimum width, so on a phone the actions wrap onto
+  // their own row instead of squeezing the copy to one word per line.
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-background px-4 py-3">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border bg-background px-4 py-3">
       <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-warning/15 text-warning">
         <Icon name="ListTodo" className="size-4" aria-hidden />
       </span>
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-[1_1_14rem]">
         <p className="truncate text-sm font-medium text-foreground">
           {payload ? `${payload.title} · v${payload.versionNumber}` : interaction.title}
         </p>
@@ -54,7 +56,7 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
           The agent is waiting for your review. Comment, send feedback, or approve in Review plan.
         </p>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-2">
         <Button
           type="button"
           variant="ghost"
