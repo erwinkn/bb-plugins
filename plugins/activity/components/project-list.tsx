@@ -4,6 +4,7 @@ import type { ManagedProject } from "../lib/project-schema";
 import type { Space } from "../lib/space-schema";
 import { moveItem } from "../lib/spaces";
 import type { ProjectsState } from "../lib/use-projects";
+import { formInputClass } from "./inline-form";
 import { MenuContent, menuItemClass } from "./menus";
 import {
   AddProjectForm,
@@ -17,7 +18,59 @@ type RowEdit = { kind: "rename" | "folder" | "remove"; id: string };
 export const rowClass =
   "group flex items-center gap-1 rounded px-1 py-1 text-sm hover:bg-accent/60";
 export const addButtonClass =
-  "mt-1 w-full rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
+  "mt-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
+
+/** Lists at least this long get a filter field. */
+export const FILTER_THRESHOLD = 6;
+
+export function AddButton({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" onClick={onClick} className={addButtonClass}>
+      <span aria-hidden="true" className="w-3 text-center">
+        +
+      </span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+export function matchesFilter(
+  filter: string,
+  ...fields: (string | null | undefined)[]
+): boolean {
+  const needle = filter.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return fields.some((field) => field?.toLocaleLowerCase().includes(needle));
+}
+
+export function FilterField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <input
+      type="search"
+      aria-label={label}
+      placeholder={label}
+      value={value}
+      autoComplete="off"
+      spellCheck={false}
+      onChange={(event) => onChange(event.target.value)}
+      className={`${formInputClass} mb-2`}
+    />
+  );
+}
 
 export function RowMenu({
   label,
@@ -124,7 +177,12 @@ export function ProjectList({
 }) {
   const [rowEdit, setRowEdit] = useState<RowEdit | null>(null);
   const [adding, setAdding] = useState(false);
+  const [filter, setFilter] = useState("");
+  const filtering = filter.trim().length > 0;
   const rows = projects.inventory?.projects ?? [];
+  const shown = rows.filter((project) =>
+    matchesFilter(filter, project.name, project.source?.path),
+  );
   const hosts = projects.inventory?.hosts ?? [];
   const hostNames = new Map(hosts.map((host) => [host.id, host.name]));
   const orderable = rows.filter((project) => !project.isPersonal);
@@ -148,8 +206,9 @@ export function ProjectList({
       report(cause);
     }
   };
+  // Reordering only makes sense against the full list.
   const drag = useDragOrder(
-    !compact,
+    !compact && !filtering,
     (fromId, toId) =>
       void moveProject(
         orderable.findIndex((project) => project.id === fromId),
@@ -170,8 +229,20 @@ export function ProjectList({
       {!projects.inventory && !projects.error && (
         <p className="px-1 py-1 text-xs text-muted-foreground">Loading…</p>
       )}
+      {rows.length >= FILTER_THRESHOLD && (
+        <FilterField
+          label="Filter projects"
+          value={filter}
+          onChange={setFilter}
+        />
+      )}
+      {filtering && shown.length === 0 && (
+        <p className="px-1 py-1 text-xs text-muted-foreground">
+          No projects match “{filter.trim()}”.
+        </p>
+      )}
       <ul aria-label="Projects" className="m-0 list-none p-0">
-        {rows.map((project) => {
+        {shown.map((project) => {
           const index = orderable.findIndex((entry) => entry.id === project.id);
           const member = space?.projectIds.includes(project.id) ?? false;
           const edit = rowEdit?.id === project.id ? rowEdit : null;
@@ -237,14 +308,16 @@ export function ProjectList({
                   </Menu.Item>
                   <Menu.Item
                     className={menuItemClass}
-                    disabled={index <= 0}
+                    disabled={filtering || index <= 0}
                     onSelect={() => void moveProject(index, index - 1)}
                   >
                     Move up
                   </Menu.Item>
                   <Menu.Item
                     className={menuItemClass}
-                    disabled={index < 0 || index === orderable.length - 1}
+                    disabled={
+                      filtering || index < 0 || index === orderable.length - 1
+                    }
                     onSelect={() => void moveProject(index, index + 1)}
                   >
                     Move down
@@ -312,6 +385,7 @@ export function ProjectList({
           );
         })}
         {space &&
+          !filtering &&
           unavailable.map((id) => (
             <li key={id} className={rowClass}>
               {spacer}
@@ -351,13 +425,7 @@ export function ProjectList({
           onClose={() => setAdding(false)}
         />
       ) : (
-        <button
-          type="button"
-          onClick={() => setAdding(true)}
-          className={addButtonClass}
-        >
-          + Add project…
-        </button>
+        <AddButton label="Add project…" onClick={() => setAdding(true)} />
       )}
       {spaces.length === 0 && !space && (
         <p className="mt-2 px-1 text-xs text-muted-foreground">

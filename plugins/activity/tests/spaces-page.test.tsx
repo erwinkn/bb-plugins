@@ -194,13 +194,7 @@ async function mountPage(
 const spaceRows = (slot: ReturnType<typeof renderSlot>) =>
   within(slot.getByRole("navigation", { name: "Spaces" }))
     .getAllByRole("listitem")
-    .map((item) =>
-      item.textContent
-        ?.replace("⋮⋮", "")
-        .replace("…", "")
-        .replace("›", "")
-        .trim(),
-    );
+    .map((item) => item.textContent?.replace("⋮⋮", "").replace("›", "").trim());
 const projectRows = (slot: ReturnType<typeof renderSlot>) =>
   Array.from(
     slot
@@ -283,7 +277,11 @@ describe("spaces page", () => {
       expect(spaceRows(slot)).toEqual(["Only One1", "Both3"]),
     );
 
-    await openRowMenu(slot, "Move space: Only One");
+    // The list row's context menu reorders.
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-space-row="Only One"]')!,
+    );
+    await tick();
     expect(item(slot, "Move up").getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(item(slot, "Move down"));
     await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(2));
@@ -330,6 +328,69 @@ describe("spaces page", () => {
         options: { subPath: "", replace: true },
       }),
     );
+  });
+
+  it("opens a space's rename form from the list's context menu", async () => {
+    const slot = await mountPage("one");
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-space-row="Both"]')!,
+    );
+    await tick();
+    fireEvent.click(item(slot, "Rename…"));
+    expect(lastNavigation(slot)).toMatchObject({
+      options: { subPath: "both" },
+    });
+    // The page re-renders at the new route with the form already open.
+    const Page = app.navPanels[0]!.component;
+    slot.lifecycle.rerender(<Page subPath="both" />);
+    const input = (await slot.findByRole("textbox", {
+      name: "Space name",
+    })) as HTMLInputElement;
+    expect(input.value).toBe("Both");
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(slot.queryByRole("form")).toBeNull();
+  });
+
+  it("filters long project lists by name or folder", async () => {
+    const many: ProjectInventory = {
+      projects: [
+        ...inventory.projects,
+        managed("project-4", "Four", "/srv/four"),
+        managed("project-5", "Five", "/srv/five"),
+      ],
+      hosts: inventory.hosts,
+    };
+    const slot = await mountPage("one", server(many));
+    const filter = slot.getByRole("searchbox", { name: "Filter projects" });
+    fireEvent.change(filter, { target: { value: "srv" } });
+    expect(projectRows(slot)).toEqual(["Four", "Five"]);
+    // Reordering is off while filtering.
+    await openRowMenu(slot, "Project actions: Four");
+    expect(item(slot, "Move up").getAttribute("aria-disabled")).toBe("true");
+    fireEvent.keyDown(slot.getByRole("menu", { hidden: true }), {
+      key: "Escape",
+    });
+    fireEvent.change(filter, { target: { value: "zzz" } });
+    expect(projectRows(slot)).toEqual([]);
+    expect(slot.getByText("No projects match “zzz”.")).toBeTruthy();
+    fireEvent.change(filter, { target: { value: "" } });
+    expect(projectRows(slot)).toHaveLength(6);
+    slot.lifecycle.unmount();
+
+    // The New space checklist filters too, without a field for short lists.
+    const short = await mountPage("new");
+    expect(short.queryByRole("searchbox")).toBeNull();
+    short.lifecycle.unmount();
+    const long = await mountPage("new", server(many));
+    fireEvent.change(long.getByRole("searchbox", { name: "Filter projects" }), {
+      target: { value: "fi" },
+    });
+    expect(
+      within(long.getByRole("form", { name: "New space" }))
+        .getAllByRole("checkbox")
+        .map((box) => box.parentElement?.textContent),
+    ).toEqual(["Five"]);
   });
 
   it("redirects an unknown space to the list", async () => {
@@ -504,7 +565,7 @@ describe("spaces page", () => {
   it("adds a project from a typed or picked folder and joins the routed space", async () => {
     const rpc = server();
     const slot = await mountPage("one", rpc);
-    fireEvent.click(slot.getByRole("button", { name: "+ Add project…" }));
+    fireEvent.click(slot.getByRole("button", { name: "Add project…" }));
     const form = slot.getByRole("form", { name: "Add project" });
     expect(form.textContent).toContain("The project joins Only One.");
     expect(within(form).queryByRole("combobox", { name: "Host" })).toBeNull();
@@ -563,7 +624,7 @@ describe("spaces page", () => {
     const slot = await mountPage("projects", server(multi));
     expect(slot.getAllByText("MacBook")).toHaveLength(2);
     expect(slot.getByText("Server")).toBeTruthy();
-    fireEvent.click(slot.getByRole("button", { name: "+ Add project…" }));
+    fireEvent.click(slot.getByRole("button", { name: "Add project…" }));
     const host = slot.getByRole("combobox", {
       name: "Host",
     }) as HTMLSelectElement;
@@ -602,9 +663,7 @@ describe("spaces page", () => {
     expect(index.queryByRole("heading", { name: "Only One" })).toBeNull();
     // No drag handles or row menus in the list; edits live on the detail.
     expect(index.container.querySelector("[draggable]")).toBeNull();
-    expect(
-      index.queryByRole("button", { name: "Move space: Only One" }),
-    ).toBeNull();
+    expect(index.queryByRole("button", { name: /actions/i })).toBeNull();
     index.lifecycle.unmount();
 
     const detail = await mountPage("both");

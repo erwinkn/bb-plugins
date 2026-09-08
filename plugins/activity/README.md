@@ -168,11 +168,14 @@ link so it works like any other BB page.
   menu with **Rename…** and **Delete…** (inline forms; on phones also Move up
   and Move down). Deleting a space never touches projects or threads and
   returns to the list. A member project BB no longer lists appears as
-  *Unavailable project* so it can be removed. On desktop, the grip at the left
-  of a space row drags it to a new position, and the row's `…` menu has Move
-  up and Move down.
+  *Unavailable project* so it can be removed. Right-click or long-press a
+  space in the list for Rename…, Move up, Move down, and Delete…; on desktop
+  the grip at the left of a space row also drags it to a new position.
 - **All projects** at the bottom of the list shows every BB project without
   membership checkboxes; use it to manage projects before any space exists.
+- Project lists with six or more entries get a **Filter projects** field that
+  matches names and folders, in both the New space checklist and a space's
+  page. Reordering is off while a filter is active.
 - Each project row shows its folder (and a host badge when more than one host
   is connected) and has a `…` menu: **Rename…**, **Change folder…**, **Move
   up**, **Move down**, and **Remove…**, each an inline form under the row. The

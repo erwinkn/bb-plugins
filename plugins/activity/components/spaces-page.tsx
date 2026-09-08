@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as Menu from "@radix-ui/react-dropdown-menu";
+import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
   experimental_useSidebarThreads,
   useBbNavigate,
@@ -8,16 +9,20 @@ import {
 import { toggleValue } from "../lib/client-state";
 import { SPACE_NAME_MAX, type Space } from "../lib/space-schema";
 import { moveItem, newSpaceId } from "../lib/spaces";
+import { usePortalScopeProps } from "../lib/portal-scope";
 import { useCompact } from "../lib/use-compact";
+import { useLongPressMenu } from "../lib/use-long-press-menu";
 import { useProjects } from "../lib/use-projects";
 import { useSpaces } from "../lib/use-spaces";
 import { InlineForm, NameField } from "./inline-form";
 import { menuItemClass } from "./menus";
 import {
-  addButtonClass,
+  AddButton,
+  FILTER_THRESHOLD,
+  FilterField,
   Grip,
+  matchesFilter,
   ProjectList,
-  rowClass,
   RowMenu,
   useDragOrder,
 } from "./project-list";
@@ -44,6 +49,16 @@ function parseRoute(subPath: string): Route {
 
 const headingClass = "text-sm font-semibold";
 const subtleClass = "text-xs text-muted-foreground";
+// Every row in the spaces list shares this box so names and counts line up.
+const navRowClass =
+  "relative flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring";
+const chevron = (
+  <span aria-hidden="true" className="text-muted-foreground">
+    ›
+  </span>
+);
+
+type SpaceEdit = "rename" | "delete";
 
 // The Spaces page: a list of spaces beside the selected space's projects.
 // Phones show one column at a time and use the route for back navigation.
@@ -62,6 +77,11 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
   const go = (path: string, replace = false) =>
     navigate.toPluginPanel(SPACES_PANEL_PATH, { subPath: path, replace });
   const [notice, setNotice] = useState<string | null>(null);
+  // Rename/Delete chosen from the list open that space with its form shown.
+  const [pendingEdit, setPendingEdit] = useState<{
+    id: string;
+    kind: SpaceEdit;
+  } | null>(null);
   const report = (cause: unknown) =>
     setNotice(cause instanceof Error ? cause.message : String(cause));
 
@@ -127,12 +147,12 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
       aria-label="Spaces"
       className={compact ? "p-3" : "w-64 shrink-0 border-r border-border p-3"}
     >
-      <h2 className={`${headingClass} mb-2 px-1`}>Spaces</h2>
+      <h2 className={`${headingClass} mb-2 px-2`}>Spaces</h2>
       {spaces.status === "loading" && catalog.length === 0 && (
-        <p className={`${subtleClass} px-1`}>Loading…</p>
+        <p className={`${subtleClass} px-2`}>Loading…</p>
       )}
       {spaces.status !== "loading" && catalog.length === 0 && (
-        <p className={`${subtleClass} px-1 py-1`}>
+        <p className={`${subtleClass} px-2 py-1`}>
           No spaces yet. A space is a named set of projects that scopes the
           Threads sidebar.
         </p>
@@ -143,71 +163,55 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
           return (
             <li
               key={space.id}
-              className={`${rowClass} ${drag.dropClass(space.id)} ${current ? "bg-accent" : ""}`}
+              className={`group relative rounded ${drag.dropClass(space.id)} ${current ? "bg-accent" : ""}`}
               {...drag.props(space.id)}
             >
               {drag.grip && (
-                <Grip id={space.id} onStart={drag.start} onEnd={drag.end} />
+                <span className="absolute -left-3.5 top-1/2 -translate-y-1/2">
+                  <Grip id={space.id} onStart={drag.start} onEnd={drag.end} />
+                </span>
               )}
-              <button
-                type="button"
-                aria-current={current ? "page" : undefined}
-                onClick={() => go(space.id)}
-                className={`flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring ${current ? "font-medium" : ""}`}
+              <SpaceRowMenu
+                spaceName={space.name}
+                canMoveUp={index > 0}
+                canMoveDown={index < catalog.length - 1}
+                onAction={(action) => {
+                  if (action === "up") moveSpace(index, index - 1);
+                  else if (action === "down") moveSpace(index, index + 1);
+                  else {
+                    setPendingEdit({ id: space.id, kind: action });
+                    go(space.id);
+                  }
+                }}
               >
-                <span className="min-w-0 flex-1 truncate">{space.name}</span>
-                <span className={subtleClass}>{space.projectIds.length}</span>
-                {compact && (
-                  <span aria-hidden="true" className="text-muted-foreground">
-                    ›
-                  </span>
-                )}
-              </button>
-              {!compact && (
-                <RowMenu label={`Move space: ${space.name}`}>
-                  <Menu.Item
-                    className={menuItemClass}
-                    disabled={index === 0}
-                    onSelect={() => moveSpace(index, index - 1)}
-                  >
-                    Move up
-                  </Menu.Item>
-                  <Menu.Item
-                    className={menuItemClass}
-                    disabled={index === catalog.length - 1}
-                    onSelect={() => moveSpace(index, index + 1)}
-                  >
-                    Move down
-                  </Menu.Item>
-                </RowMenu>
-              )}
+                <button
+                  type="button"
+                  aria-current={current ? "page" : undefined}
+                  onClick={() => go(space.id)}
+                  className={`${navRowClass} ${current ? "font-medium" : ""}`}
+                >
+                  <span className="min-w-0 flex-1 truncate">{space.name}</span>
+                  <span className={subtleClass}>{space.projectIds.length}</span>
+                  {compact && chevron}
+                </button>
+              </SpaceRowMenu>
             </li>
           );
         })}
       </ul>
-      <button
-        type="button"
-        onClick={() => go(NEW_SPACE_SUBPATH)}
-        className={addButtonClass}
-      >
-        + New space…
-      </button>
+      <AddButton label="New space…" onClick={() => go(NEW_SPACE_SUBPATH)} />
       <div className="mt-3 border-t border-border pt-2">
         <button
           type="button"
           aria-current={detail.kind === "projects" ? "page" : undefined}
           onClick={() => go(ALL_PROJECTS_SUBPATH)}
-          className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring ${detail.kind === "projects" ? "bg-accent font-medium" : ""}`}
+          className={`${navRowClass} ${detail.kind === "projects" ? "bg-accent font-medium" : ""}`}
         >
           <span className="flex-1">All projects</span>
           <span className={subtleClass}>
             {projects.inventory?.projects.length ?? sidebar.projects.length}
           </span>
-          {compact && (
-            <span aria-hidden="true" className="text-muted-foreground">
-              ›
-            </span>
-          )}
+          {compact && chevron}
         </button>
       </div>
     </nav>
@@ -279,6 +283,8 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
         count={catalog.length}
         compact={compact}
         back={back}
+        initialEdit={pendingEdit?.id === selected.id ? pendingEdit.kind : null}
+        onEditShown={() => setPendingEdit(null)}
         onRename={(name) =>
           update(selected.id, (space) => ({ ...space, name }))
         }
@@ -338,6 +344,8 @@ function SpaceDetail({
   count,
   compact,
   back,
+  initialEdit,
+  onEditShown,
   onRename,
   onMove,
   onDelete,
@@ -348,13 +356,21 @@ function SpaceDetail({
   count: number;
   compact: boolean;
   back: React.ReactNode;
+  initialEdit: SpaceEdit | null;
+  onEditShown: () => void;
   onRename: (name: string) => Promise<unknown>;
   onMove: (delta: number) => void;
   onDelete: () => Promise<void>;
   children: React.ReactNode;
 }) {
-  const [edit, setEdit] = useState<"rename" | "delete" | null>(null);
+  const [edit, setEdit] = useState<SpaceEdit | null>(initialEdit);
   const [name, setName] = useState(space.name);
+  useEffect(() => {
+    if (!initialEdit) return;
+    setName(space.name);
+    setEdit(initialEdit);
+    onEditShown();
+  }, [initialEdit, onEditShown, space.name]);
   const trimmed = name.trim();
   return (
     <section aria-labelledby={`space-${space.id}-heading`}>
@@ -451,6 +467,10 @@ function NewSpaceForm({
 }) {
   const [name, setName] = useState("");
   const [projectIds, setProjectIds] = useState<string[]>([]);
+  const [filter, setFilter] = useState("");
+  const shown = projects.filter((project) =>
+    matchesFilter(filter, project.name),
+  );
   // The caller navigates to the new space; only a cancel goes back.
   const created = useRef(false);
   const trimmed = name.trim();
@@ -480,13 +500,22 @@ function NewSpaceForm({
       />
       <fieldset className="w-full">
         <legend className={`${subtleClass} mb-1`}>Projects</legend>
+        {projects.length >= FILTER_THRESHOLD && (
+          <FilterField
+            label="Filter projects"
+            value={filter}
+            onChange={setFilter}
+          />
+        )}
         {projects.length === 0 ? (
           <p className={subtleClass}>
             No projects yet. Add them under All projects.
           </p>
+        ) : shown.length === 0 ? (
+          <p className={subtleClass}>No projects match “{filter.trim()}”.</p>
         ) : (
           <ul className="m-0 max-h-72 list-none overflow-y-auto rounded-md border border-border p-1">
-            {projects.map((project) => (
+            {shown.map((project) => (
               <li key={project.id}>
                 <label className="flex cursor-default items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent">
                   <input
@@ -507,5 +536,80 @@ function NewSpaceForm({
         )}
       </fieldset>
     </InlineForm>
+  );
+}
+
+// Right-click or long-press a space in the list for its actions.
+function SpaceRowMenu({
+  spaceName,
+  canMoveUp,
+  canMoveDown,
+  onAction,
+  children,
+}: {
+  spaceName: string;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onAction: (action: SpaceEdit | "up" | "down") => void;
+  children: ReactNode;
+}) {
+  const scope = usePortalScopeProps();
+  const [open, setOpen] = useState(false);
+  const longPress = useLongPressMenu(open);
+  // Rename and Delete open a form that takes focus; keep it there instead of
+  // letting Radix return focus to the row.
+  const editing = useRef(false);
+  const act = (action: SpaceEdit | "up" | "down") => {
+    editing.current = action === "rename" || action === "delete";
+    onAction(action);
+  };
+  return (
+    <ContextMenu.Root onOpenChange={setOpen}>
+      <ContextMenu.Trigger asChild>
+        <div {...longPress} data-space-row={spaceName}>
+          {children}
+        </div>
+      </ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content
+          {...scope}
+          aria-label={`Actions for space ${spaceName}`}
+          onCloseAutoFocus={(event) => {
+            if (!editing.current) return;
+            editing.current = false;
+            event.preventDefault();
+          }}
+          className="z-50 min-w-40 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+        >
+          <ContextMenu.Item
+            className={menuItemClass}
+            onSelect={() => act("rename")}
+          >
+            Rename…
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            className={menuItemClass}
+            disabled={!canMoveUp}
+            onSelect={() => act("up")}
+          >
+            Move up
+          </ContextMenu.Item>
+          <ContextMenu.Item
+            className={menuItemClass}
+            disabled={!canMoveDown}
+            onSelect={() => act("down")}
+          >
+            Move down
+          </ContextMenu.Item>
+          <ContextMenu.Separator className="my-1 h-px bg-border" />
+          <ContextMenu.Item
+            className={`${menuItemClass} text-destructive`}
+            onSelect={() => act("delete")}
+          >
+            Delete…
+          </ContextMenu.Item>
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
   );
 }
