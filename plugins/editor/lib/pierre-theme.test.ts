@@ -1,0 +1,187 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { PluginCodeThemeData } from "@get-bb/plugin-sdk/app";
+import {
+  applyPierreTheme,
+  pierreThemeName,
+  resetPierreThemesForTests,
+  synchronizePierreTheme,
+  resolvePierreTheme,
+  toPierreTheme,
+  type PierreThemeInput,
+} from "./pierre-theme.js";
+import type { PierreRuntime } from "./pierre-loader.js";
+
+function theme(overrides: Partial<PluginCodeThemeData> = {}): PluginCodeThemeData {
+  return {
+    name: "BB Dark",
+    type: "dark",
+    fg: "#d4d4d4",
+    bg: "#1e1e1e",
+    colors: { "editor.background": "#1e1e1e" },
+    tokenColors: [{ scope: "comment", settings: { foreground: "#6a9955", fontStyle: "italic" } }],
+    ...overrides,
+  };
+}
+
+/**
+ * Pierre rejects a resolved theme whose `name` differs from the name it asked
+ * for, so the registration has to carry the registered name, not BB's.
+ */
+test("toPierreTheme carries the registered name, not the BB name", () => {
+  const converted = toPierreTheme("bb-dark-x", theme()) as { name: string; type: string };
+  assert.equal(converted.name, "bb-dark-x");
+  assert.equal(converted.type, "dark");
+});
+
+test("toPierreTheme normalizes token scopes to arrays and copies the colors", () => {
+  const converted = toPierreTheme("bb-dark-x", theme()) as unknown as {
+    colors: Record<string, string>;
+    settings: { scope?: string[]; settings: { foreground?: string } }[];
+  };
+  assert.deepEqual(converted.settings[0].scope, ["comment"]);
+  assert.equal(converted.settings[0].settings.foreground, "#6a9955");
+  assert.equal(converted.colors["editor.background"], "#1e1e1e");
+});
+
+/**
+ * BB's Material and similar themes write `"storage.type, storage.modifier"`
+ * as one string. Wrapped whole in an array, the TextMate parser reads it as a
+ * single parent-child selector, so `const` and every other keyword in such a
+ * rule painted with the default color.
+ */
+test("toPierreTheme splits comma-separated scope selectors", () => {
+  const source = theme({
+    tokenColors: [
+      { scope: "storage.type, storage.modifier,storage.control ", settings: { foreground: "#c792ea" } },
+      { scope: ["keyword.control", "meta.a, meta.b"], settings: { fontStyle: "italic" } },
+    ],
+  });
+  const converted = toPierreTheme("bb-dark-x", source) as unknown as { settings: { scope?: string[] }[] };
+  assert.deepEqual(converted.settings[0].scope, ["storage.type", "storage.modifier", "storage.control"]);
+  assert.deepEqual(converted.settings[1].scope, ["keyword.control", "meta.a", "meta.b"]);
+});
+
+test("toPierreTheme keeps a rule that applies to every scope", () => {
+  const source = theme({ tokenColors: [{ settings: { foreground: "#ffffff" } }] });
+  const converted = toPierreTheme("bb-dark-x", source) as unknown as {
+    settings: { scope?: string[] }[];
+  };
+  assert.equal(converted.settings.length, 1);
+  assert.equal(converted.settings[0].scope, undefined);
+});
+
+test("toPierreTheme does not alias the BB document", () => {
+  const source = theme();
+  const converted = toPierreTheme("bb-dark-x", source) as unknown as {
+    colors: Record<string, string>;
+  };
+  converted.colors["editor.background"] = "#000000";
+  assert.equal(source.colors["editor.background"], "#1e1e1e");
+});
+
+/**
+ * Pierre resolves a theme name once and caches the result, so a document that
+ * changes under an unchanged name would keep painting the old colors.
+ */
+test("pierreThemeName changes when any painted value changes", () => {
+  const base = pierreThemeName(theme());
+  assert.equal(base, pierreThemeName(theme()), "the same document keeps its name");
+  assert.notEqual(base, pierreThemeName(theme({ fg: "#ffffff" })));
+  assert.notEqual(base, pierreThemeName(theme({ colors: { "editor.background": "#101010" } })));
+  assert.notEqual(
+    base,
+    pierreThemeName(theme({ tokenColors: [{ scope: "comment", settings: { foreground: "#000000" } }] })),
+  );
+  assert.notEqual(base, pierreThemeName(theme({ type: "light" })));
+});
+
+test("pierreThemeName is safe to use as a theme name", () => {
+  const name = pierreThemeName(theme({ name: "One Dark Pro / soft" }));
+  assert.match(name, /^[a-zA-Z0-9_-]+$/);
+});
+
+function fakeRuntime(): { runtime: PierreRuntime; registered: string[] } {
+  const registered: string[] = [];
+  const runtime = {
+    registerCustomTheme: (name: string) => {
+      registered.push(name);
+    },
+  } as unknown as PierreRuntime;
+  return { runtime, registered };
+}
+
+function input(data: PluginCodeThemeData | null): PierreThemeInput {
+  return data === null
+    ? { id: "pierre-dark", type: "dark", data: null, fallback: "pierre-dark" }
+    : { id: pierreThemeName(data), type: data.type, data, fallback: "pierre-dark" };
+}
+
+test("applyPierreTheme registers a document once and returns its name", () => {
+  resetPierreThemesForTests();
+  const { runtime, registered } = fakeRuntime();
+  const first = applyPierreTheme(runtime, input(theme()));
+  const second = applyPierreTheme(runtime, input(theme()));
+  assert.equal(first, second);
+  assert.deepEqual(registered, [first], "a second registration would make Pierre log an error");
+});
+
+test("applyPierreTheme registers again after the colors change", () => {
+  resetPierreThemesForTests();
+  const { runtime, registered } = fakeRuntime();
+  applyPierreTheme(runtime, input(theme()));
+  applyPierreTheme(runtime, input(theme({ fg: "#ffffff" })));
+  assert.equal(registered.length, 2);
+  assert.notEqual(registered[0], registered[1]);
+});
+
+test("applyPierreTheme falls back to a bundled theme while BB is still resolving", () => {
+  resetPierreThemesForTests();
+  const { runtime, registered } = fakeRuntime();
+  assert.equal(applyPierreTheme(runtime, input(null)), "pierre-dark");
+  assert.deepEqual(registered, []);
+});
+
+test("theme preview updates the worker pool and restores the BB theme without document operations", async () => {
+  resetPierreThemesForTests();
+  const { runtime, registered } = fakeRuntime();
+  const changes: string[] = [];
+  runtime.workerPool = {
+    setRenderOptions: async ({ theme }: { theme: string }) => { changes.push(theme); },
+  } as unknown as PierreRuntime["workerPool"];
+  const bbTheme = input(theme());
+  const preview: PierreThemeInput = { id: "tokyo-night", type: "dark", fallback: "tokyo-night", data: null };
+  await synchronizePierreTheme(runtime, bbTheme);
+  await synchronizePierreTheme(runtime, preview);
+  await synchronizePierreTheme(runtime, bbTheme);
+  assert.deepEqual(changes, [bbTheme.id, "tokyo-night", bbTheme.id]);
+  assert.deepEqual(registered, [bbTheme.id]);
+});
+
+test("theme synchronization also supports main-thread rendering and exposes load errors", async () => {
+  const { runtime } = fakeRuntime();
+  runtime.workerPool = null;
+  assert.equal(await synchronizePierreTheme(runtime, input(null)), "pierre-dark");
+  runtime.workerPool = { setRenderOptions: async () => { throw new Error("theme failed to load"); } } as unknown as PierreRuntime["workerPool"];
+  await assert.rejects(() => synchronizePierreTheme(runtime, input(null)), /theme failed to load/);
+});
+
+test("Files and Changes resolve the same predefined selection in each mode", () => {
+  const bb = theme();
+  const original = JSON.stringify(bb);
+  const local = resolvePierreTheme({ mode: "dark", theme: bb, selection: "github" });
+  assert.equal(local.id, "github-dark");
+  assert.equal(local.data, null);
+  assert.equal(resolvePierreTheme({ mode: "light", theme: bb, selection: "github" }).id, "github-light");
+  const follow = resolvePierreTheme({ mode: "dark", theme: bb, selection: "github", preview: "bb" });
+  assert.equal(follow.data, bb);
+  const preview = resolvePierreTheme({ mode: "dark", theme: bb, selection: "github", preview: "tokyo-night" });
+  assert.equal(preview.id, "tokyo-night");
+  assert.equal(preview.data, null);
+  const restored = resolvePierreTheme({ mode: "dark", theme: bb, selection: "github", preview: null });
+  assert.deepEqual(restored, local);
+  assert.equal(resolvePierreTheme({ mode: "dark", theme: bb, selection: "bb" }).data, bb);
+  assert.equal(resolvePierreTheme({ mode: "dark", theme: bb, selection: "conductor" }).data, bb);
+  assert.equal(resolvePierreTheme({ mode: "light", theme: null, selection: "bb" }).fallback, "pierre-light");
+  assert.equal(JSON.stringify(bb), original);
+});

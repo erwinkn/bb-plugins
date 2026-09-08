@@ -67,7 +67,9 @@ own project in Project view. Parent names appear in the hover info card.
 If a parent's title is absent from the sidebar data, opening the info card
 fetches only that thread's title, without loading the archive list. A failed
 lookup shows Unavailable and retries when the card is reopened.
-If project details are missing, its threads remain in a No project group.
+If project details are missing, its threads remain in an Unknown project
+group. BB's personal project, which holds threads outside any project, is
+shown as **No project** everywhere in the plugin.
 Each missing project keeps its own group until BB supplies its name.
 
 The display menu switches between Status and Project grouping and shows or hides
@@ -76,8 +78,8 @@ Status groups keep the order above. Project groups sort by
 name. Pins, roots, and siblings follow the selected date sort.
 Children in each family stay below their parent. A child's timestamp or pin does not
 move its parent. New-thread drafts have no thread timestamp and appear after dated
-threads in their group. Groups can collapse. There is no thread search field or
-project selector. Old saved project filters are ignored.
+threads in their group. Groups can collapse. There is no thread search field.
+Old saved project filters from before spaces are ignored.
 Preferences stay on this client. Sorting and grouping do not change thread state.
 If browser storage rejects a write, this tab keeps its unsaved preferences and
 draft flags in memory. It retries on the next local update, even if the value
@@ -143,6 +145,86 @@ This is not atomic: children created or moved during the operation can escape
 the collected tree. BB's other archive buttons and keyboard shortcut keep their
 native behavior. No bulk read or delete actions are added.
 
+## Spaces and project management
+
+A space is a named selection of projects. The Threads heading is the scope
+selector: it reads **All projects** or a space name. Its menu lists All
+projects, each saved space, and **Manage spaces…**, which goes to the
+plugin's **Spaces** page. The page also has its own row in BB's sidebar
+navigation (route
+`/plugins/erwin-activity/spaces`). There are no dialogs; every edit is a form
+on the page, and on phones the page shows one column at a time with a back
+link so it works like any other BB page.
+
+- The Spaces page lists every space with its project count beside the
+  selected space's projects. On desktop the list stays visible and the first
+  space opens by default; on phones the list is the first screen and each row
+  opens the space. **Manage spaces…** opens the current space when
+  one is selected, the list otherwise, and All projects when no space exists
+  yet. Selecting a space on the page does not change the Threads scope.
+- **New space…** on the page opens a form
+  with a name and a checklist of every BB project. Create saves the space and
+  opens it. Names are trimmed, limited to 60 characters, and unique ignoring
+  case. An empty space shows a **Choose projects** link into its page.
+- A space's page shows a checkbox per project for membership, and a heading
+  menu with **Rename…** and **Delete…** (inline forms; on phones also Move up
+  and Move down). Deleting a space never touches projects or threads and
+  returns to the list. A member project BB no longer lists appears as
+  *Unavailable project* so it can be removed. Right-click or long-press a
+  space in the list for Rename…, Move up, Move down, and Delete…; on desktop
+  a space row can also be dragged onto another row to take its place.
+- **All projects** at the bottom of the list shows every BB project without
+  membership checkboxes; use it to manage projects before any space exists.
+- Project lists with six or more entries get a **Filter projects** field that
+  matches names and folders, in both the New space checklist and a space's
+  page. Reordering is off while a filter is active.
+- Each project row shows its folder (and a host badge when more than one host
+  is connected) and has a `…` menu: **Rename…**, **Change folder…**, **Move
+  up**, **Move down**, and **Remove…**, each an inline form under the row. The
+  personal project has no menu. These go through BB's own project API, so BB's
+  new-thread panel and every client see the same list. **Remove…** says how
+  many active threads the project has and requires typing its name; BB then
+  deletes the project with all of its threads, and the plugin drops it from
+  every space. Files on disk are untouched. On desktop a project row can be
+  dragged onto another row to take its place.
+- **+ Add project…** opens a form with a folder path field with directory
+  completion (type `/Users/me/Co` and pick from the list; Tab or Enter accepts
+  the highlighted folder) or **Browse…** for the native folder dialog, and a
+  project name that defaults to the folder name. With more than one host, a
+  host selector comes first. On a space's page the new project joins that
+  space. Browse… opens the dialog on the machine that hosts the project; plugin
+  frontends do not know which host the client runs on, so on a remote host use
+  the path field.
+- In the by-project grouping, right-click or long-press a project header for
+  **New thread**, **Spaces ›**, **Rename…** and **Remove…** (inline forms under
+  the header), and **Manage spaces…**.
+- Space definitions are shared by every client of one BB server and stored in
+  the plugin's key-value store as one document with a revision. A save that
+  races another client's save fails with an error, and the form keeps your
+  input; the catalog reloads so you can retry. Each client keeps its own
+  selection in local storage, together with a cached copy of the catalog for
+  the next load. Grouping, sorting, and status filters are shared across spaces.
+- Scope applies before pins, families, archives, and drafts. A pinned thread
+  outside the scope is hidden. A child outside the scope is hidden and does not
+  affect its family's status. An in-scope child of an out-of-scope parent is a
+  root, with its parent still named in the info card. Archiving a family still
+  archives every active descendant, including those outside the scope.
+- If the open thread is outside the scope, a notice offers **Show all
+  projects**; the thread stays open and the scope does not change. If the
+  selected space was deleted elsewhere, the list shows All projects with a
+  notice. A brand-new client with a selected space shows *Loading spaces…*
+  until the catalog arrives; if it cannot load, the list shows All projects
+  with a Retry action.
+- **New thread** uses the active project when it is in scope, otherwise the
+  space's only project, otherwise a menu of member projects. In All projects
+  it keeps BB's behavior.
+- Projects created outside Manage (BB's own panel, the CLI) are not added to
+  any space automatically. SDK 0.4.47 has no project-creation event that
+  identifies the originating client.
+- `bb activity spaces-export` prints the catalog. `bb activity spaces-import
+  '<json>'` replaces it and bumps the revision. Use them for backups and for
+  moving definitions between BB servers.
+
 ## Draft limits
 
 SDK 0.4.47 does not expose saved composer drafts in its thread list. An invisible
@@ -178,7 +260,9 @@ it automatically. The selection is per client. Use `bb plugin dev` for live
 development. To remove it, run `bb plugin remove erwin-activity`.
 
 Tests cover status precedence, date sorting in both views, navigation, storage validation,
-draft text and attachments, fallback UI, and a disconnected realtime connection.
+draft text and attachments, fallback UI, a disconnected realtime connection, space
+filtering and editing, the Spaces page, project management through BB's API,
+the space catalog RPC, and the spaces CLI.
 They use the SDK's frontend harness. The live BB view still needs visual checks
 after SDK upgrades because the sidebar API is experimental.
 

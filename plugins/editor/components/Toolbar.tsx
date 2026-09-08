@@ -1,8 +1,9 @@
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import type { FileSessionSnapshot } from "@/lib/file-session";
 import { ContextMenu, menuAt, type MenuItem, type MenuState } from "./ContextMenu";
-import { ArrowLeftIcon, ArrowRightIcon, FileIcon, MoreIcon, SearchIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
+import { ArrowLeftIcon, ArrowRightIcon, EditGlyph, FileIcon, MoreIcon, SearchIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
 
 export type SaveIndicator = "clean" | "dirty" | "saving" | "error";
 
@@ -18,13 +19,16 @@ export interface ToolbarProps {
   treeOpen: boolean;
   treeSide: "left" | "right";
   onToggleTree: () => void;
+  /** For a file with a rendered preview: whether the editor is showing, and the switch. */
+  editing?: { active: boolean; onToggle: () => void };
 }
 
 /**
- * The row above the editor: history, the file, and on the right the menu,
- * find, and the single file-tree toggle (the tree header has none).
+ * The row above the editor: history, the file, and on the right the edit
+ * switch for previewed files, the menu, find, and the single file-tree
+ * toggle (the tree header has none).
  */
-export function Toolbar({ path, indicator, canGoBack, canGoForward, onBack, onForward, onFind, menuItems, treeOpen, treeSide, onToggleTree }: ToolbarProps) {
+export function Toolbar({ path, indicator, canGoBack, canGoForward, onBack, onForward, onFind, menuItems, treeOpen, treeSide, onToggleTree, editing }: ToolbarProps) {
   const [menu, setMenu] = useState<MenuState | null>(null);
   const TreeGlyph = treeSide === "right" ? SidebarRightGlyph : SidebarLeftGlyph;
   return (
@@ -40,6 +44,11 @@ export function Toolbar({ path, indicator, canGoBack, canGoForward, onBack, onFo
         <FilePath path={path} />
         <SaveDot indicator={indicator} />
       </div>
+      {editing === undefined ? null : (
+        <ToolbarButton label={editing.active ? "Show the preview" : "Edit the source"} onClick={editing.onToggle} pressed={editing.active}>
+          <EditGlyph />
+        </ToolbarButton>
+      )}
       <ToolbarButton label="More actions" onClick={(event) => setMenu(menuAt(event.currentTarget, menuItems))} pressed={menu !== null}>
         <MoreIcon />
       </ToolbarButton>
@@ -89,7 +98,24 @@ function FilePath({ path }: { path: string }) {
   );
 }
 
-function SaveDot({ indicator }: { indicator: SaveIndicator }) {
+/** The save dot for a session; `failed` covers the read or the surface. */
+export function indicatorFor(state: FileSessionSnapshot | null, failed: boolean): SaveIndicator {
+  if (failed) return "error";
+  if (state === null) return "clean";
+  switch (state.save.kind) {
+    case "saving":
+      return "saving";
+    case "dirty":
+      return "dirty";
+    case "error":
+    case "conflict":
+      return "error";
+    default:
+      return "clean";
+  }
+}
+
+export function SaveDot({ indicator }: { indicator: SaveIndicator }) {
   if (indicator === "clean") return null;
   const label =
     indicator === "saving" ? "Saving…" : indicator === "error" ? "Could not open or save this file" : "Unsaved changes (⌘S to save)";

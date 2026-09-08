@@ -62,6 +62,12 @@ function sortRecursively(node: TreeNode): void {
   for (const child of node.children) sortRecursively(child);
 }
 
+/** The last segment of a path and what precedes it, without the slash. */
+export function splitPath(path: string): { directory: string; name: string } {
+  const name = path.split("/").at(-1) ?? path;
+  return { directory: path.slice(0, path.length - name.length).replace(/\/$/, ""), name };
+}
+
 export function ancestorsOf(path: string): string[] {
   const segments = normalize(path).split("/");
   segments.pop();

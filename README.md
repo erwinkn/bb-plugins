@@ -2,13 +2,18 @@
 
 A private GitHub collection of BB plugins.
 
+`plans` provides plan review with a per-thread
+review panel, comments, revision history, and feedback to the original agent. See
+[Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
+
 `erwin-activity` adds a status-first thread list: Needs Attention, Unread,
-Working, Draft, and Done. It also supports project grouping. See
+Working, Draft, and Done. It also supports project grouping and spaces, named
+project selections shared by every client. See
 [Threads](plugins/activity/README.md) for local installation and draft limits.
 
-`erwin-editor` adds a Monaco file editor: a Files panel with a file tree,
-BB-matched syntax colors, a code theme picker, and TypeScript, JSON, CSS,
-and HTML language services. See [Editor](plugins/editor/README.md).
+`erwin-editor` adds a Pierre file editor: a Files panel with a file tree,
+BB-matched syntax colors, a code theme picker, and an editable Changes tab.
+Both tabs share file buffers and safe saves. See [Editor](plugins/editor/README.md).
 
 `erwin-devin` adds **Devin** as a provider, with a native icon, sign-in
 help, executable setting, account usage, and live ACP model catalog. It preserves the provider
@@ -135,19 +140,40 @@ ID and browser storage; never clear client preferences. Check the resulting
 source and enabled state. Record the previous source so installation failure
 can be rolled back. Do not apply this exception to a plugin with data.
 
-For example, after confirming that `erwin-activity` has no server-side data:
+An existing `path:` installation can move to another path with
+`bb plugin install path:<directory> --yes` while retaining its plugin ID and
+server-side state. For a branch preview of a plugin with settings, use a stable
+Git clone checked out at the pushed feature branch, build there, and move only
+that plugin to the clone. Do not use a temporary worktree. Record the clone's
+branch and full commit hash beside `bb plugin source`, since BB reports a path
+source without a resolved Git commit. Update that clone explicitly for each
+preview; `bb plugin update` does not fetch path installations. After merge,
+return it to `main` and rebuild, or move it back to its recorded normal path.
+A managed Git source switch still needs the upstream API described below.
+
+For example, after confirming that a plugin has no server-side data:
 
 ```sh
-bb plugin source erwin-activity --json
-bb plugin remove erwin-activity
-bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin erwin-activity --yes
-bb plugin source erwin-activity --json
+bb plugin source erwin-devin --json
+bb plugin remove erwin-devin
+bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin erwin-devin --yes
+bb plugin source erwin-devin --json
 ```
 
-After a new push, use `bb plugin update erwin-activity --yes`. After the user
+After a new push, use `bb plugin update <id> --yes`. After the user
 merges, repeat the verified source-switch procedure with `@main`, then check
 the resolved commit and the plugin behavior. Recheck the data stores before
 each remove/install cycle; a later plugin version may start storing data.
+
+`erwin-activity` stores its space catalog in `bb.storage.kv` (table
+`plugin_kv` in `bb.db`), so the exception above no longer applies to it once
+a space exists. Before changing its source, run `bb activity spaces-export`
+and keep the JSON; after the new source is running, compare it with a fresh
+export and restore it with `bb activity spaces-import '<json>'` if needed.
+Observed on BB 0.42.1: `bb plugin remove` left `plugin_kv` rows and
+`~/.bb/plugins/<id>/data.db` of removed plugins in place, matching its
+documented scope (settings, secrets, schedules). Treat that as a courtesy, not
+a guarantee; the export is the safety net.
 
 
 ## Desired upstream changes
@@ -180,6 +206,46 @@ keyboard shortcuts. The Threads plugin currently collects the descendant tree
 and archives deepest first through public SDK calls. A server-owned operation
 should handle concurrent child creation and reparenting consistently, preserve
 BB's lifecycle cleanup, and report partial failures.
+
+### Editable plugin diff renderers and Git targets
+
+Allow a plugin to edit a live working file inside BB's native diff viewer.
+`experimental_diffRenderer` (BB 0.42.1) passes only patch text, path, display
+options, optional complete sides and `Original`: no environment or host
+identity, revision target, file hash, or save/refresh actions, so a
+replacement can only render. Extend the contract with source and revision
+identity and optional live-file read/save/refresh; keep historical and
+patch-only callers read-only and `Original` as the fallback. Two smaller gaps:
+`commandPaletteAction` has no shortcut field, so ⌘D cannot be pointed at a
+plugin's Changes tab, and the diff panel's frame (scope picker, file list) has
+no replacement slot.
+
+Add explicit staged and unstaged diff targets and index-content reads. The
+current targets are `uncommitted`, `branch_committed`, `all` and `commit`;
+`uncommitted` combines index and unstaged changes, and `diffPatch` only reads
+patches. Any stage, unstage or revert API should check disk/index generations
+and report a stale patch as a conflict.
+
+Expose raw porcelain status or an `unmerged` flag on
+`environments.status().workspace.workingTree.files`. SDK 0.4.47 folds `AA`
+(both added) into `A`, so a markerless both-added conflict looks like a normal
+addition; the editor blocks `U` conflicts and conflict markers but cannot
+detect this case.
+
+Pierre 1.4.1 exposes search, replace and find-again only through editor key
+commands; the plugin uses a reserved key binding for toolbar search. A public
+command method would remove that DOM dependency.
+
+For editor lifecycle support, add plugin tab dirty state, close negotiation,
+retitle and line-location delivery to file openers. File removal needs an
+expected-hash precondition, and revision reads need file mode metadata so a
+restored file can keep its executable bit.
+
+Status: recorded locally on 2026-09-07; no upstream issue filed.
+Suggested issue titles: `Pass semantic edit context to plugin diff renderers`,
+`Expose staged and unstaged Git targets with guarded patch actions`, and
+`Add dirty state and lifecycle controls for plugin editor tabs`.
+File separate requests in [BB issues](https://github.com/get-bb/bb/issues).
 
 ### Share individual threads with guests
 
@@ -299,6 +365,21 @@ Status: no upstream issue filed. Suggested issue title:
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 
+### Project groups as a native sidebar scope
+
+The Threads plugin's spaces filter only its own list. BB's composer project
+picker, notifications, search, and the native sidebar do not know about them,
+and the plugin cannot add a new project to the selected space because the SDK
+has no project-creation event that identifies the originating client. A native
+project-group concept, or at least a client-aware `project.created` event and
+a way for a thread-list plugin to scope BB's new-thread project picker, would
+let the feature cover the whole product.
+
+Status: no upstream issue filed. Suggested issue title:
+`Native project groups (spaces) for sidebar and composer scoping`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
+
 ### Usage popup: compact header and visible provider tabs
 
 The original popup belongs to BB's built-in `provider-usage` plugin. This
@@ -412,6 +493,62 @@ Status: recorded here; no upstream issue filed.
 Suggested issue title: `Add Stop and send to voice dictation`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Long-running plugin tool calls: heartbeat Cursor and abort orphaned calls
+
+The Plans plugin blocks `plans_submit` on `bb.ui.requestInput` so a review
+works like a native user question. With Codex the call held for 95 s and 63 s
+and returned the decision in-turn. With the Cursor ACP provider the call failed
+after 60 s with `MCP error -32001: Request timed out`, while the plugin's
+`execute` kept running: its `signal` was not aborted, so the interaction stayed
+pending and the wait counted as attended. BB fixed the same client timeout for
+opencode with progress heartbeats in
+[PR #1945](https://github.com/get-bb/bb/pull/1945).
+
+Requested behavior:
+
+- Send MCP progress heartbeats to Cursor's client while a plugin tool call is
+  pending, as for opencode.
+- Abort the tool call's `signal` when the provider abandons the request
+  (timeout, turn end), so plugins can release held interactions.
+- Expose a provider capability such as `supportsLongRunningToolCalls` in
+  `PluginAgentConfigurationContext`, so plugins can withhold blocking tools
+  without a provider id list. The plugin currently keeps a
+  `nonBlockingProviders` setting defaulting to `acp-cursor`. On those
+  providers it holds the review prompt server-side without blocking and
+  delivers the decision as a thread message, because a finished background
+  shell command does not wake an idle Cursor agent; only a message does.
+
+Also observed: a thread spawned right after `bb plugin update` still resolved
+the previous global-skills snapshot (`/Users/erwin/.bb/runtime/global-skills/
+<old hash>/skills/plan-review/SKILL.md`), so the agent read the stale skill.
+
+Verified on 2026-09-07. No upstream issue filed. Suggested issue title:
+`Plugin tool calls: heartbeat Cursor's MCP client and abort orphaned calls`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
+### Mobile panel shell: scope `select-none` to the drag handle
+
+On phones BB renders the secondary panel inside
+`div.fixed.inset-y-0.right-0 … touch-pan-y select-none`. Every plugin panel
+inherits `-webkit-user-select: none` from it. In WebKit (iOS Safari and the
+mobile app) that blocks two things inside a plugin: long-press text selection,
+and painting of CSS Custom Highlight API ranges, which WebKit treats like
+selection and skips under `user-select: none`. Chromium paints them regardless,
+so desktop hid the problem. The Plans plugin now sets `select-text` on its
+document; a plugin that renders selectable content should not have to know
+about the shell's rule.
+
+Requested behavior: keep `select-none` on the drag handle and header chrome
+only, or add `select-text` to the panel content slot.
+
+Reproduced on 2026-09-08 in Playwright WebKit 26.6 with the iPhone 15 profile
+against BB 0.42.1: `plugins/plans/scripts/mobile-probe.mjs` reports the
+blocking ancestor and `--engine-only` shows the same `Highlight` painting
+outside a `select-none` subtree and not inside it. No upstream issue filed.
+Suggested issue title: `Mobile panel shell applies select-none to plugin
+content, blocking selection and CSS highlights in WebKit`. File the request in
+[BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this
@@ -462,3 +599,49 @@ later. Remove an entry when the upstream fix ships.
   to the ACP project.
 - **Status:** not filed yet. Direct confirmation against a real Devin turn is
   still open; the reproduction used the SDK bridge with a scripted ACP peer.
+
+### `bb plugin dev` does not rebuild on source changes
+
+- **Where:** `bb plugin dev .` in `plugins/plans`, bb 0.42.1, plugin installed
+  from a worktree path (`source: path:...`). Plugin declares a frontend
+  (`app.tsx`, `app.css`) and a server bundle.
+- **Symptom:** the command prints `Watching <path> for plugin "plans"
+  (frontend rebuild + reload on change)` and stays running, but editing or
+  touching `app.tsx` / `app.css` produces no further output, `dist/` keeps its
+  old mtime, and BB keeps serving the previous bundle. Observed twice: once
+  when started from a subshell that was reaped, once under `nohup` where the
+  process stayed alive (confirmed with `pgrep`) for over a minute.
+- **Workaround:** `npm run build` (`bb plugin build`) followed by
+  `bb plugin reload plans`. Both work immediately.
+- **Status:** not filed yet; not yet reproduced in isolation. Open questions
+  for the repro: whether the watcher follows the path under `~/.bb/worktrees`
+  (symlink or FSEvents scope), whether it only reacts to files listed in the
+  manifest, and whether it needs the plugin's `package.json` scripts. Suggested
+  issue title: `bb plugin dev: watcher starts but never rebuilds or reloads`.
+
+### Plugin interactions never emit `interaction.pending`
+
+- **Where:** bb 0.42.1, `server/dist/start-server.js`. `registerProviderInteraction`
+  (provider-origin approvals and questions) calls
+  `emitPluginInteractionPending` after creating the row. `requestPluginInteraction`,
+  the path behind `bb.ui.requestInput`, appends the timeline event and notifies
+  `interactions-changed` but never emits the event.
+- **Symptom:** the built-in `push-notifications` plugin subscribes to
+  `bb.events.on("interaction.pending")`, so no desktop, web, or mobile
+  "Waiting for your input" notification is sent for plugin-origin interactions.
+  Verified with the Plans plugin's review prompt (`pint_qb9gre97qw`, pending for
+  two minutes, no notification), and by reading the built-in `ask-user-question`
+  plugin, which uses the same `bb.ui.requestInput` call
+  (`ask-user-question/dist/server.js:14098`) and is therefore affected too.
+  The sidebar indicator is unaffected: `hasPendingInteraction` is computed from
+  the table, and `/api/v1/sidebar-bootstrap` returned `true` with the
+  "Needs Attention" icon shown while the prompt was pending.
+- **Related:** `latestAttentionAt` only advances on active→idle and →error
+  transitions (`statusTransitionNeedsAttention`), so a pending plugin
+  interaction does not mark the thread unread either.
+- **Fix:** call `emitPluginInteractionPending(thread, interaction)` in
+  `requestPluginInteraction` after the row is created, and consider bumping
+  `latestAttentionAt` when a pending interaction is created on an idle thread.
+- **Status:** not filed yet. Suggested issue title: `Plugin interactions
+  (bb.ui.requestInput) do not trigger push notifications`. File in
+  [BB issues](https://github.com/get-bb/bb/issues).

@@ -1,37 +1,33 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import type { ComponentType } from "react";
-import { experimental_useCodeTheme, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
-import type * as MonacoNs from "monaco-editor";
-import type { rpcContract } from "../server";
-import { languageForPath } from "@/lib/languages";
-import {
-  loadEditor,
-  overflowWidgetsNode,
-  setOverflowWidgetsTheme,
-  setTypeScriptDiagnostics,
-  type EditorRuntime,
-} from "@/lib/monaco-loader";
-import { AUTO_SAVE_DELAY_MS, baseEditorOptions, prefEditorOptions, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
-import { copyText, forgetEditor, markEditorActive } from "@/lib/editor-commands";
-import { resolveBbTokens } from "@/lib/bb-tokens";
-import { FOLLOW_BB } from "@/lib/themes";
+import type { ComponentType, Ref } from "react";
+import type { PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
+import { AUTO_SAVE_DELAY_MS, lineHeightFor, monoFontFamily, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
+import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
+import { useAssets } from "@/lib/use-assets";
+import { useFileSession } from "@/lib/use-file-session";
+import type { FileSessionSnapshot } from "@/lib/file-session";
+import { splitPath } from "@/lib/file-tree";
+import { usePierreTheme } from "@/lib/pierre-theme";
 import { cn } from "@/lib/utils";
+import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } from "./PierreSurface";
 import type { MenuItem } from "./ContextMenu";
-import { Toolbar, type SaveIndicator } from "./Toolbar";
+import { GoToLine } from "./GoToLine";
+import { MarkdownPreview } from "./MarkdownPreview";
+import { workspaceRoot } from "@/lib/markdown-preview";
+import { indicatorFor, Toolbar } from "./Toolbar";
 
-export type SaveState =
-  | { kind: "clean" }
-  | { kind: "dirty" }
-  | { kind: "saving" }
-  | { kind: "error"; message: string }
-  | { kind: "conflict" };
+/** Files that open as a rendered preview, with the editor one switch away. */
+const PREVIEW_EXTENSIONS = new Set(["md", "markdown"]);
 
-type Status =
-  | { kind: "loading" }
-  | { kind: "ready" }
-  | { kind: "unsupported"; reason: string }
-  | { kind: "error"; message: string };
+export function hasPreview(path: string): boolean {
+  const { name } = splitPath(path);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && PREVIEW_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
+/** Which previewed files the user switched to the editor, for this page. */
+const editingByPath = new Map<string, boolean>();
 
 export interface EditorPaneHandle {
   isDirty(): boolean;
@@ -39,7 +35,7 @@ export interface EditorPaneHandle {
   focus(): void;
 }
 
-export type PrefToggle = "wordWrap" | "minimap" | "lineNumbers" | "formatOnSave";
+export type PrefToggle = "wordWrap" | "lineNumbers";
 /** A preference write from the editor chrome: key and the value it takes. */
 export type PrefWrite = [PrefToggle, boolean] | ["autoSave", "off" | "afterDelay"];
 export type SetPref = (...write: PrefWrite) => void;
@@ -54,430 +50,359 @@ export interface EditorPaneProps {
   onToggleTree: () => void;
   onQuickOpen: (() => void) | null;
   onOpenInTab: (() => void) | null;
+  /** Opens another workspace file in this pane, for links in a Markdown preview. */
+  onOpenPath: ((path: string) => void) | null;
   history: { canBack: boolean; canForward: boolean; back: () => void; forward: () => void };
   onSetPref: SetPref;
-  /** A theme name being previewed by the picker; null follows BB's code theme. */
+  /** A Pierre theme name being previewed by the picker; null follows BB. */
   themePreview: string | null;
   onPickTheme: () => void;
   /** BB's preview for this file; rendered when the file is not editable text. */
   Original?: ComponentType;
   /** Changes when the user opened the file deliberately; the editor takes focus. */
   focusNonce?: number;
+  ref?: Ref<EditorPaneHandle>;
 }
 
-interface OpenFile {
-  path: string;
-  absolutePath: string;
-  relativePath: string;
-  model: MonacoNs.editor.ITextModel;
-  sha256: string | null;
-  savedVersionId: number;
-}
-
-export const EditorPane = forwardRef<EditorPaneHandle, EditorPaneProps>(function EditorPane(
-  { paneId, source, path, prefs, treeOpen, treeSide, onToggleTree, onQuickOpen, onOpenInTab, history, onSetPref, themePreview, onPickTheme, Original, focusNonce = 0 },
+/**
+ * One file, open for editing.
+ *
+ * The buffer, the save queue and the draft live in the shared file session
+ * (`lib/file-session.ts`), not in this component, so the same file opened in
+ * the Changes tab is the same buffer with the same unsaved work. This
+ * component owns the chrome: the toolbar, the banners and the editor surface.
+ */
+export function EditorPane({
+  paneId,
+  source,
+  path,
+  prefs,
+  treeOpen,
+  treeSide,
+  onToggleTree,
+  onQuickOpen,
+  onOpenInTab,
+  onOpenPath,
+  history,
+  onSetPref,
+  themePreview,
+  onPickTheme,
+  Original,
+  focusNonce = 0,
   ref,
-) {
-  const rpc = useRpc<typeof rpcContract>();
-  const codeTheme = experimental_useCodeTheme();
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const runtimeRef = useRef<EditorRuntime | null>(null);
-  const editorRef = useRef<MonacoNs.editor.IStandaloneCodeEditor | null>(null);
-  const fileRef = useRef<OpenFile | null>(null);
-  const viewStates = useRef(new Map<string, MonacoNs.editor.ICodeEditorViewState>());
-  const saveStateRef = useRef<SaveState>({ kind: "clean" });
-  const [saveState, setSaveStateValue] = useState<SaveState>({ kind: "clean" });
-  const [status, setStatus] = useState<Status>({ kind: "loading" });
-  // The editor exists; file opens depend on this, not on `status`, so one
-  // file that fails to open does not stop the next from loading.
-  const [booted, setBooted] = useState(false);
-  const autosaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+}: EditorPaneProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const surfaceRef = useRef<PierreSurfaceHandle | null>(null);
+  const assets = useAssets();
+  const [surfaceStatus, setSurfaceStatus] = useState<PierreSurfaceStatus>({ kind: "loading" });
+  const [goToLineOpen, setGoToLineOpen] = useState(false);
+  // A Markdown file opens as its rendered preview. The editor is one switch
+  // away and the choice is remembered for the file while the page lives.
+  const previewable = hasPreview(path);
+  const [editingFor, setEditingFor] = useState<{ path: string; editing: boolean } | null>(null);
+  const editing = !previewable || (editingFor?.path === path ? editingFor.editing : editingByPath.get(path) ?? false);
+  /** Set by a switch to the editor: the caret goes there once it exists. */
+  const focusEditor = useRef(false);
+  /** A command such as Find that asked for the editor while the preview was up. */
+  const afterEditorReady = useRef<((handle: PierreSurfaceHandle) => void) | null>(null);
+  const setEditing = (next: boolean) => {
+    editingByPath.set(path, next);
+    focusEditor.current = next;
+    if (!next) afterEditorReady.current = null;
+    setEditingFor({ path, editing: next });
+  };
+  // The surface unmounts with the preview, so its last status must not
+  // outlive it: a stale error would otherwise sit in the notice row.
+  useEffect(() => {
+    if (!editing) setSurfaceStatus({ kind: "loading" });
+  }, [editing]);
 
-  // The theme to show: the picker's preview, else BB's own code theme.
-  const themeChoice = themePreview ?? FOLLOW_BB;
-  const latest = useRef({ prefs, onToggleTree, onQuickOpen, codeTheme, themeChoice, focusNonce });
-  latest.current = { prefs, onToggleTree, onQuickOpen, codeTheme, themeChoice, focusNonce };
-  const focusedNonce = useRef(focusNonce);
+  const file = useFileSession({ source, path });
+  const state = file.state;
+  const { save, overwrite, reload, setContent, claimEditor, isEditor } = file;
 
-  const setSaveState = useCallback((next: SaveState) => {
-    saveStateRef.current = next;
-    setSaveStateValue(next);
-  }, []);
+  const theme = usePierreTheme(themePreview);
 
-  const scheduleAutosave = useCallback(() => {
-    if (autosaveTimer.current !== null) clearTimeout(autosaveTimer.current);
-    autosaveTimer.current = setTimeout(() => void saveRef.current(), AUTO_SAVE_DELAY_MS);
-  }, []);
-
-  const writeNow = useCallback(
-    async (file: OpenFile, expectedSha256: string | null): Promise<boolean> => {
-      if (latest.current.prefs.formatOnSave) {
-        // No-op for languages without a formatter; the TS/JSON/CSS/HTML workers provide one.
-        await editorRef.current?.getAction("editor.action.formatDocument")?.run();
-        if (fileRef.current !== file) return false;
-      }
-      const versionId = file.model.getAlternativeVersionId();
-      setSaveState({ kind: "saving" });
-      try {
-        const result = await rpc.call("write", {
-          path: file.path,
-          source,
-          content: file.model.getValue(),
-          expectedSha256,
-        });
-        if (fileRef.current !== file) return false;
-        if (result.outcome === "conflict") {
-          setSaveState({ kind: "conflict" });
-          return false;
-        }
-        file.sha256 = result.sha256;
-        file.savedVersionId = versionId;
-        // Edits typed during the save are still unsaved; auto save must pick them up.
-        const stillDirty = file.model.getAlternativeVersionId() !== versionId;
-        setSaveState(stillDirty ? { kind: "dirty" } : { kind: "clean" });
-        if (stillDirty && latest.current.prefs.autoSave === "afterDelay") scheduleAutosave();
-        return true;
-      } catch (error) {
-        if (fileRef.current === file) {
-          setSaveState({ kind: "error", message: error instanceof Error ? error.message : "Save failed" });
-        }
-        return false;
-      }
-    },
-    [rpc, scheduleAutosave, setSaveState, source],
-  );
-
-  // One save at a time: a save requested during another waits for it, then
-  // runs against the model as it is by then (or reports clean and stops).
-  const inFlightSave = useRef<Promise<boolean> | null>(null);
-  const write = useCallback(
-    async (expectedSha256: string | null): Promise<boolean> => {
-      while (inFlightSave.current !== null) await inFlightSave.current;
-      const file = fileRef.current;
-      if (file === null) return false;
-      if (saveStateRef.current.kind === "clean" && file.model.getAlternativeVersionId() === file.savedVersionId) return true;
-      const run = writeNow(file, expectedSha256 === null ? null : file.sha256);
-      inFlightSave.current = run;
-      try {
-        return await run;
-      } finally {
-        if (inFlightSave.current === run) inFlightSave.current = null;
-      }
-    },
-    [writeNow],
-  );
-
-  const save = useCallback(() => write(fileRef.current?.sha256 ?? null), [write]);
-  const overwrite = useCallback(() => write(null), [write]);
-  const saveRef = useRef(save);
-  saveRef.current = save;
-
-  const reloadFromDisk = useCallback(async () => {
-    const file = fileRef.current;
-    if (file === null) return;
-    // Edits typed while the read is in flight are newer than what it returns.
-    const versionId = file.model.getAlternativeVersionId();
-    try {
-      const result = await rpc.call("read", { path: file.path, source });
-      if (fileRef.current !== file || result.kind !== "text") return;
-      if (file.model.getAlternativeVersionId() !== versionId) {
-        toast.message("The file changed while reloading; reload again to replace it");
-        return;
-      }
-      file.model.setValue(result.content);
-      file.sha256 = result.sha256;
-      file.savedVersionId = file.model.getAlternativeVersionId();
-      setSaveState({ kind: "clean" });
-    } catch (error) {
-      if (fileRef.current !== file) return;
-      setSaveState({ kind: "error", message: error instanceof Error ? error.message : "Reload failed" });
-    }
-  }, [rpc, setSaveState, source]);
+  // Auto save. The timer restarts on every keystroke, so it fires once the
+  // user stops. Only a plain dirty file is saved: a conflict or a failed save
+  // waits for the user, and a save in flight settles itself.
+  useEffect(() => {
+    if (prefs.autoSave !== "afterDelay" || state?.save.kind !== "dirty") return;
+    const timer = setTimeout(() => void save(), AUTO_SAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [prefs.autoSave, save, state?.save.kind, state?.content]);
 
   useImperativeHandle(
     ref,
     () => ({
-      // A save in flight still counts: its outcome (conflict, error) is unknown.
-      isDirty: () => saveStateRef.current.kind !== "clean",
+      // A save in flight still counts: its outcome is not known yet.
+      isDirty: () => file.session?.getSnapshot().dirty ?? false,
       save,
-      focus: () => editorRef.current?.focus(),
+      focus: () => void surfaceRef.current?.focus(),
     }),
-    [save],
+    [file.session, save],
   );
 
-  // Create the editor once per pane; models come and go with `path`.
-  useEffect(() => {
-    let disposed = false;
-    const container = containerRef.current;
-    if (container === null) return;
-    void (async () => {
-      try {
-        const { baseUrl } = await rpc.call("assets");
-        const runtime = await loadEditor(baseUrl);
-        if (disposed) return;
-        runtimeRef.current = runtime;
-        const { monaco } = runtime;
-        const { name: themeName, type: themeType } = await resolveTheme(runtime, latest.current.codeTheme, latest.current.themeChoice, container);
-        if (disposed) return;
-        setOverflowWidgetsTheme(themeType === "light" ? "vs" : "vs-dark");
-        const editor = monaco.editor.create(container, {
-          ...baseEditorOptions(latest.current.prefs, overflowWidgetsNode()),
-          theme: themeName,
-          model: null,
-        });
-        editorRef.current = editor;
-        setTypeScriptDiagnostics(monaco, latest.current.prefs.typescriptDiagnostics);
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => void saveRef.current());
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, () => latest.current.onQuickOpen?.());
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyB, () => latest.current.onToggleTree());
-        editor.onDidChangeModelContent(() => {
-          const file = fileRef.current;
-          if (file === null) return;
-          const dirty = file.model.getAlternativeVersionId() !== file.savedVersionId;
-          const current = saveStateRef.current.kind;
-          if (current === "saving" || current === "conflict") return;
-          if (dirty && current !== "dirty" && current !== "error") setSaveState({ kind: "dirty" });
-          if (!dirty && current === "dirty") setSaveState({ kind: "clean" });
-          if (latest.current.prefs.autoSave === "afterDelay" && dirty) scheduleAutosave();
-        });
-        editor.onDidBlurEditorWidget(() => {
-          if (latest.current.prefs.autoSave === "onBlur" && saveStateRef.current.kind === "dirty") void saveRef.current();
-        });
-        editor.onDidFocusEditorWidget(() => {
-          const file = fileRef.current;
-          if (file === null) return;
-          markEditorActive({
-            editor,
-            absolutePath: file.absolutePath,
-            relativePath: file.relativePath,
-            save: () => void saveRef.current(),
-            quickOpen: latest.current.onQuickOpen,
-            toggleTree: latest.current.onToggleTree,
-          });
-        });
-        setStatus({ kind: "ready" });
-        setBooted(true);
-      } catch (error) {
-        if (disposed) return;
-        setStatus({ kind: "error", message: error instanceof Error ? error.message : "Could not start the editor" });
-      }
-    })();
-    return () => {
-      disposed = true;
-      if (autosaveTimer.current !== null) clearTimeout(autosaveTimer.current);
-      const editor = editorRef.current;
-      if (editor !== null) forgetEditor(editor);
-      fileRef.current?.model.dispose();
-      fileRef.current = null;
-      editor?.dispose();
-      editorRef.current = null;
-      setBooted(false);
-    };
-  }, [rpc, setSaveState]);
-
-  // Open `path` in the editor whenever it, or the editor, changes.
-  useEffect(() => {
-    if (!booted) return;
-    const runtime = runtimeRef.current;
-    const editor = editorRef.current;
-    if (runtime === null || editor === null) return;
-    // An earlier file's failure must not be read as this file's while it loads.
-    setStatus((current) => (current.kind === "error" ? { kind: "ready" } : current));
-    // The previous file leaves before the read starts, so nothing typed or
-    // saved while the new one loads can reach it.
-    const previous = fileRef.current;
-    if (previous !== null) {
-      const viewState = editor.saveViewState();
-      if (viewState !== null) viewStates.current.set(previous.path, viewState);
-      fileRef.current = null;
-      editor.setModel(null);
-      previous.model.dispose();
-      forgetEditor(editor);
-      setSaveState({ kind: "clean" });
-    }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const result = await rpc.call("read", { path, source });
-        if (cancelled) return;
-        if (result.kind === "unsupported") {
-          setSaveState({ kind: "clean" });
-          setStatus({ kind: "unsupported", reason: result.reason });
-          return;
-        }
-        const { monaco, shiki } = runtime;
-        const language = languageForPath(path);
-        const uri = monaco.Uri.from({ scheme: "bb-editor", authority: paneId, path: toUriPath(result.absolutePath) });
-        monaco.editor.getModel(uri)?.dispose();
-        const model = monaco.editor.createModel(result.content, language.id, uri);
-        const file: OpenFile = {
-          path,
-          absolutePath: result.absolutePath,
-          relativePath: result.relativePath,
-          model,
-          sha256: result.sha256,
-          savedVersionId: model.getAlternativeVersionId(),
-        };
-        fileRef.current = file;
-        editor.setModel(model);
-        const viewState = viewStates.current.get(path);
-        if (viewState !== undefined) editor.restoreViewState(viewState);
-        setSaveState({ kind: "clean" });
-        setStatus({ kind: "ready" });
-        if (latest.current.focusNonce !== focusedNonce.current) {
-          focusedNonce.current = latest.current.focusNonce;
-          editor.focus();
-        }
-        markEditorActive({
-          editor,
-          absolutePath: file.absolutePath,
-          relativePath: file.relativePath,
-          save: () => void saveRef.current(),
-          quickOpen: latest.current.onQuickOpen,
-          toggleTree: latest.current.onToggleTree,
-        });
-        void shiki.ensureLanguage(language).catch((error: unknown) => {
-          console.warn(`[erwin-editor] grammar for ${language.id} did not load`, error);
-        });
-      } catch (error) {
-        if (cancelled) return;
-        setStatus({ kind: "error", message: error instanceof Error ? error.message : "Could not open this file" });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [booted, paneId, path, rpc, setSaveState, source]);
-
-  // Follow the chosen theme: BB's own (with light/dark switches and palette
-  // changes), a bundled one, or the picker's preview.
-  useEffect(() => {
-    const runtime = runtimeRef.current;
-    if (runtime === null || status.kind === "loading") return;
-    let cancelled = false;
-    void (async () => {
-      const { name, type } = await resolveTheme(runtime, codeTheme, themeChoice, containerRef.current);
-      if (cancelled) return;
-      runtime.monaco.editor.setTheme(name);
-      setOverflowWidgetsTheme(type === "light" ? "vs" : "vs-dark");
-    })().catch((error: unknown) => {
-      console.warn("[erwin-editor] could not apply the code theme", error);
+  const reloadFile = useCallback(() => {
+    void reload().then((outcome) => {
+      if (!outcome.ok && outcome.reason === "changed-while-reading") toast.message(outcome.message);
     });
-    return () => {
-      cancelled = true;
-    };
-    // The hook may hand back the previous document while a switch is in
-    // flight, so the name and mode are dependencies of their own.
-  }, [codeTheme, codeTheme.name, codeTheme.mode, codeTheme.theme, themeChoice, status.kind]);
+  }, [reload]);
 
+  // The command palette acts on the pane that had focus last. The registered
+  // object is stable and its fields are refreshed, so a command run later
+  // still sees the file that is open now.
+  const active = useRef<ActiveEditor>({
+    id: paneId,
+    element: null,
+    handle: null,
+    absolutePath: path,
+    relativePath: path,
+    save: () => {},
+    quickOpen: null,
+    toggleTree: null,
+    goToLine: null,
+    toggleWordWrap: null,
+  }).current;
   useEffect(() => {
-    editorRef.current?.updateOptions(prefEditorOptions(prefs));
-    const runtime = runtimeRef.current;
-    if (runtime !== null) setTypeScriptDiagnostics(runtime.monaco, prefs.typescriptDiagnostics);
-  }, [prefs, status.kind]);
+    active.element = rootRef.current;
+    active.handle = surfaceRef.current;
+    active.absolutePath = state?.absolutePath || path;
+    active.relativePath = state?.relativePath || path;
+    active.save = () => void save();
+    active.quickOpen = onQuickOpen;
+    active.toggleTree = onToggleTree;
+    active.goToLine = () => withEditor(() => setGoToLineOpen(true));
+    active.withEditor = !editing && state?.load.kind === "ready" ? withEditor : null;
+    active.toggleWordWrap = () => onSetPref("wordWrap", !prefs.wordWrap);
+  });
+  useEffect(() => () => forgetEditor(paneId), [paneId]);
 
-  const dirty = saveState.kind === "dirty" || saveState.kind === "error";
+  // Focus follows a deliberate open, once the surface can take it.
+  const focused = useRef(0);
+  useEffect(() => {
+    if (surfaceStatus.kind !== "ready" || !editing) return;
+    const handle = surfaceRef.current;
+    if (focusEditor.current) {
+      focusEditor.current = false;
+      if (handle?.focus()) focused.current = focusNonce;
+    } else if (focusNonce !== focused.current && handle?.focus()) {
+      focused.current = focusNonce;
+    }
+    const pending = afterEditorReady.current;
+    afterEditorReady.current = null;
+    if (pending !== null && handle !== null) pending(handle);
+  }, [focusNonce, surfaceStatus.kind, path, editing]);
+
+  // A queued command belongs to this file only.
+  useEffect(() => () => { afterEditorReady.current = null; }, [path]);
+
+  const lineCount = useMemo(() => (state?.content ?? "").split("\n").length, [state?.content]);
+  const unsupported = state?.load.kind === "unsupported";
+  const readOnly = !isEditor || unsupported || state?.draft.kind === "stale";
+
+  // Find, replace and go-to-line need the editor, so they leave the preview
+  // and run once it is ready.
+  const withEditor = (run: (handle: PierreSurfaceHandle) => void) => {
+    if (editing && surfaceRef.current?.status().kind === "ready") {
+      runOnSurface(surfaceRef, run);
+      return;
+    }
+    afterEditorReady.current = run;
+    setEditing(true);
+  };
+
   const menuItems: MenuItem[] = [
-    { label: "Save file", shortcut: "⌘S", disabled: !dirty, onSelect: () => void save() },
-    { label: "Discard changes", disabled: !dirty, onSelect: () => void reloadFromDisk() },
-    { label: "Reload from disk", disabled: dirty, onSelect: () => void reloadFromDisk() },
+    { label: "Save file", shortcut: "⌘S", disabled: !(state?.dirty ?? false), onSelect: () => void save() },
+    { label: "Discard changes", disabled: !(state?.hasEdits ?? false), onSelect: reloadFile },
+    { label: "Reload from disk", disabled: state?.hasEdits ?? true, onSelect: reloadFile },
     { type: "separator" },
-    ...(onOpenInTab === null ? [] : [{ label: "Open in new tab", onSelect: onOpenInTab }]),
-    { label: "Copy relative path", onSelect: () => void copyText(fileRef.current?.relativePath ?? path, "Relative path copied") },
-    { label: "Copy absolute path", onSelect: () => void copyText(fileRef.current?.absolutePath ?? path, "Absolute path copied") },
+    ...(previewable
+      ? [{ type: "toggle", label: "Edit the source", checked: editing, onToggle: setEditing } satisfies MenuItem, { type: "separator" } satisfies MenuItem]
+      : []),
+    { label: "Find…", shortcut: "⌘F", onSelect: () => withEditor((handle) => handle.openSearch()) },
+    { label: "Find and replace…", onSelect: () => withEditor((handle) => handle.openSearchReplace()) },
+    { label: "Go to line…", onSelect: () => withEditor(() => setGoToLineOpen(true)) },
+    { type: "separator" },
+    ...(onOpenInTab === null ? [] : [{ label: "Open in new tab", onSelect: onOpenInTab } as MenuItem]),
+    { label: "Copy relative path", onSelect: () => void copyText(state?.relativePath ?? path, "Relative path copied") },
+    { label: "Copy absolute path", onSelect: () => void copyText(state?.absolutePath ?? path, "Absolute path copied") },
     { type: "separator" },
     { label: "Theme…", onSelect: onPickTheme },
     { type: "separator" },
     { type: "toggle", label: "Line numbers", checked: prefs.lineNumbers, onToggle: (next) => onSetPref("lineNumbers", next) },
     { type: "toggle", label: "Word wrap", checked: prefs.wordWrap, onToggle: (next) => onSetPref("wordWrap", next) },
-    { type: "toggle", label: "Minimap", checked: prefs.minimap, onToggle: (next) => onSetPref("minimap", next) },
     { type: "toggle", label: "Auto save", checked: prefs.autoSave !== "off", onToggle: (next) => onSetPref("autoSave", next ? "afterDelay" : "off") },
-    { type: "toggle", label: "Format on save", checked: prefs.formatOnSave, onToggle: (next) => onSetPref("formatOnSave", next) },
   ];
 
-  const unsupported = status.kind === "unsupported";
+  const loading = state === null || state.load.kind === "loading" || (assets.kind === "loading" && !unsupported && editing);
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+    <div ref={rootRef} onFocusCapture={() => markEditorActive(active)} onPointerDownCapture={() => markEditorActive(active)} className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <Toolbar
         path={path}
-        indicator={indicatorFor(saveState, status)}
+        indicator={indicatorFor(state, state?.load.kind === "error" || surfaceStatus.kind === "error")}
         canGoBack={history.canBack}
         canGoForward={history.canForward}
         onBack={history.back}
         onForward={history.forward}
-        onFind={() => {
-          editorRef.current?.focus();
-          void editorRef.current?.getAction("actions.find")?.run();
-        }}
+        onFind={() => withEditor((handle) => handle.openSearch())}
         menuItems={menuItems}
         treeOpen={treeOpen}
         treeSide={treeSide}
         onToggleTree={onToggleTree}
+        editing={previewable && !unsupported ? { active: editing, onToggle: () => setEditing(!editing) } : undefined}
       />
-      <Notice status={status} saveState={saveState} onOverwrite={() => void overwrite()} onReload={() => void reloadFromDisk()} />
+      <Notices
+        state={state}
+        assetsError={assets.kind === "error" ? assets.message : null}
+        surfaceStatus={surfaceStatus}
+        isEditor={isEditor}
+        onTakeOver={claimEditor}
+        onOverwrite={() => void overwrite()}
+        onDiscard={reloadFile}
+        onRestoreDraft={file.restoreDraft}
+        onDiscardDraft={file.discardDraft}
+      />
       <div className="relative min-h-0 flex-1">
-        <div ref={containerRef} className={cn("absolute inset-0", unsupported && "invisible")} />
         {unsupported ? (
           <div className="absolute inset-0 overflow-auto bg-background">
-            {Original ? (
-              <Original />
-            ) : (
-              <p className="p-4 text-sm text-muted-foreground">{status.reason}</p>
-            )}
+            {Original ? <Original /> : <p className="p-4 text-sm text-muted-foreground">{state.load.reason}</p>}
           </div>
+        ) : !editing && state !== null && state.load.kind === "ready" ? (
+          // The preview follows the shared buffer, so unsaved edits from the
+          // Changes tab or an earlier draft show here too.
+          <MarkdownPreview
+            source={source}
+            path={path}
+            relativePath={state.relativePath || path}
+            rootPath={workspaceRoot(state.absolutePath, state.relativePath)}
+            content={state.content}
+            onOpenPath={onOpenPath}
+          />
+        ) : assets.kind === "ready" && state !== null && state.load.kind === "ready" ? (
+          <PierreSurface
+            ref={surfaceRef}
+            baseUrl={assets.baseUrl}
+            viewId={file.viewId}
+            name={state.relativePath || path}
+            content={state.content}
+            epoch={state.epoch}
+            epochAuthor={state.epochAuthor}
+            readOnly={readOnly}
+            wrap={prefs.wordWrap}
+            lineNumbers={prefs.lineNumbers}
+            fontSize={prefs.fontSize}
+            lineHeight={lineHeightFor(prefs.fontSize)}
+            fontFamily={monoFontFamily()}
+            theme={theme}
+            onChange={setContent}
+            onSave={() => void save()}
+            onFocus={() => {
+              claimEditor();
+              markEditorActive(active);
+            }}
+            onBlur={() => {
+              if (prefs.autoSave === "onBlur" && (file.session?.getSnapshot().save.kind ?? "clean") === "dirty") void save();
+            }}
+            onStatusChange={setSurfaceStatus}
+            className="absolute inset-0"
+          />
         ) : null}
-        {status.kind === "loading" ? (
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
-            Loading editor…
-          </div>
+        {loading ? (
+          <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">Loading editor…</div>
+        ) : null}
+        {goToLineOpen ? (
+          <GoToLine
+            lineCount={lineCount}
+            onGo={(line, character) => {
+              surfaceRef.current?.goToLine(line, character);
+              surfaceRef.current?.focus({ lineNumber: line, character });
+            }}
+            onClose={() => setGoToLineOpen(false)}
+          />
         ) : null}
       </div>
     </div>
   );
-});
-
-function toUriPath(absolutePath: string): string {
-  const normalized = absolutePath.replace(/\\/g, "/");
-  return normalized.startsWith("/") ? normalized : `/${normalized}`;
 }
 
-function indicatorFor(saveState: SaveState, status: Status): SaveIndicator {
-  if (status.kind === "error") return "error";
-  switch (saveState.kind) {
-    case "saving":
-      return "saving";
-    case "dirty":
-      return "dirty";
-    case "error":
-    case "conflict":
-      return "error";
-    default:
-      return "clean";
-  }
+function runOnSurface(ref: { current: PierreSurfaceHandle | null }, run: (handle: PierreSurfaceHandle) => void): void {
+  const handle = ref.current;
+  if (handle === null || handle.status().kind !== "ready") return;
+  handle.focus();
+  run(handle);
 }
 
-function Notice({
-  status,
-  saveState,
+
+function Notices({
+  state,
+  assetsError,
+  surfaceStatus,
+  isEditor,
+  onTakeOver,
   onOverwrite,
-  onReload,
+  onDiscard,
+  onRestoreDraft,
+  onDiscardDraft,
 }: {
-  status: Status;
-  saveState: SaveState;
+  state: FileSessionSnapshot | null;
+  assetsError: string | null;
+  surfaceStatus: PierreSurfaceStatus;
+  isEditor: boolean;
+  onTakeOver: () => void;
   onOverwrite: () => void;
-  onReload: () => void;
+  onDiscard: () => void;
+  onRestoreDraft: () => void;
+  onDiscardDraft: () => void;
 }) {
-  if (status.kind === "error") return <NoticeRow tone="error">{status.message}</NoticeRow>;
-  if (saveState.kind === "conflict") {
+  if (assetsError !== null) return <NoticeRow tone="error">{assetsError}</NoticeRow>;
+  if (surfaceStatus.kind === "error") return <NoticeRow tone="error">{surfaceStatus.message}</NoticeRow>;
+  if (state === null) return null;
+  if (state.load.kind === "error") return <NoticeRow tone="error">{state.load.message}</NoticeRow>;
+  if (state.save.kind === "conflict") {
     return (
       <NoticeRow tone="error">
         This file changed on disk since you opened it.
-        <NoticeAction onClick={onReload}>Reload</NoticeAction>
+        <NoticeAction onClick={onDiscard}>Reload</NoticeAction>
         <NoticeAction onClick={onOverwrite}>Overwrite</NoticeAction>
       </NoticeRow>
     );
   }
-  if (saveState.kind === "error") return <NoticeRow tone="error">{saveState.message}</NoticeRow>;
+  if (state.save.kind === "error") return <NoticeRow tone="error">{state.save.message}</NoticeRow>;
+  if (state.draft.kind === "stale") {
+    return (
+      <NoticeRow tone="warning">
+        This file has an earlier draft. Restore or discard it before editing.
+        <NoticeAction onClick={onRestoreDraft}>Restore them</NoticeAction>
+        <NoticeAction onClick={onDiscardDraft}>Discard them</NoticeAction>
+      </NoticeRow>
+    );
+  }
+  if (state.staleBase) {
+    return (
+      <NoticeRow tone="warning">
+        This file changed on disk while you were editing it. Saving will report a conflict.
+        <NoticeAction onClick={onDiscard}>Take the file from disk</NoticeAction>
+      </NoticeRow>
+    );
+  }
+  if (state.draft.kind === "restored") {
+    return (
+      <NoticeRow tone="warning">
+        Unsaved changes from an earlier session were restored.
+        <NoticeAction onClick={onDiscardDraft}>Discard them</NoticeAction>
+      </NoticeRow>
+    );
+  }
+  if (state.draft.kind === "unstored") return <NoticeRow tone="warning">{state.draft.reason}</NoticeRow>;
+  if (!isEditor) {
+    return (
+      <NoticeRow tone="warning">
+        This file is being edited in another view.
+        <NoticeAction onClick={onTakeOver}>Edit here</NoticeAction>
+      </NoticeRow>
+    );
+  }
   return null;
 }
 
@@ -505,30 +430,4 @@ export function NoticeAction({ children, onClick }: { children: React.ReactNode;
       {children}
     </button>
   );
-}
-
-/**
- * Registers and returns the Monaco theme for `choice`: `bb` (or an unknown
- * or unloadable id) paints with BB's document; otherwise the bundled theme.
- * Without any document, Monaco's built-in themes stand in.
- */
-async function resolveTheme(
-  runtime: EditorRuntime,
-  bb: ReturnType<typeof experimental_useCodeTheme>,
-  choice: string,
-  host: HTMLElement | null,
-): Promise<{ name: string; type: "dark" | "light" }> {
-  let document = bb.theme;
-  if (choice !== FOLLOW_BB) {
-    const bundled = await runtime.loadTheme(choice).catch((error: unknown) => {
-      console.warn(`[erwin-editor] theme "${choice}" did not load`, error);
-      return null;
-    });
-    if (bundled !== null) document = bundled;
-  }
-  if (document === null) {
-    return bb.mode === "dark" ? { name: "vs-dark", type: "dark" } : { name: "vs", type: "light" };
-  }
-  const name = await runtime.shiki.applyTheme(document, host === null ? null : resolveBbTokens(host));
-  return { name, type: document.type };
 }

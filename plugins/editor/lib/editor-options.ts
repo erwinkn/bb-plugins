@@ -1,8 +1,4 @@
-import type * as MonacoNs from "monaco-editor";
-import type { TypeScriptDiagnostics } from "./monaco-loader.js";
-
 export type AutoSave = "off" | "onBlur" | "afterDelay";
-
 
 export type TreeSide = "left" | "right";
 
@@ -10,22 +6,19 @@ export interface EditorPrefs {
   fontSize: number;
   wordWrap: boolean;
   lineNumbers: boolean;
-  minimap: boolean;
   autoSave: AutoSave;
-  formatOnSave: boolean;
-  typescriptDiagnostics: TypeScriptDiagnostics;
   fileTreeSide: TreeSide;
+  /** Draw BB's own diffs (timeline, diff panel) with this plugin's viewer. */
+  bbDiffs: boolean;
 }
 
-export const DEFAULT_PREFS: EditorPrefs = {
-  fontSize: 13,
+const DEFAULT_PREFS: EditorPrefs = {
+  fontSize: 12,
   wordWrap: false,
   lineNumbers: true,
-  minimap: false,
   autoSave: "off",
-  formatOnSave: false,
-  typescriptDiagnostics: "syntax",
   fileTreeSide: "right",
+  bbDiffs: true,
 };
 
 export const AUTO_SAVE_DELAY_MS = 1000;
@@ -34,80 +27,24 @@ export const AUTO_SAVE_DELAY_MS = 1000;
 export function prefsFrom(values: Record<string, unknown> | null | undefined): EditorPrefs {
   const fontSize = Number(values?.fontSize);
   const autoSave = values?.autoSave;
-  const diagnostics = values?.typescriptDiagnostics;
-  const bool = (key: keyof EditorPrefs & ("wordWrap" | "lineNumbers" | "minimap" | "formatOnSave")) =>
+  const bool = (key: "wordWrap" | "lineNumbers" | "bbDiffs") =>
     typeof values?.[key] === "boolean" ? (values[key] as boolean) : DEFAULT_PREFS[key];
   return {
     fontSize: Number.isFinite(fontSize) && fontSize >= 9 && fontSize <= 24 ? Math.round(fontSize) : DEFAULT_PREFS.fontSize,
     wordWrap: bool("wordWrap"),
     lineNumbers: bool("lineNumbers"),
-    minimap: bool("minimap"),
     autoSave: autoSave === "onBlur" || autoSave === "afterDelay" ? autoSave : "off",
-    formatOnSave: bool("formatOnSave"),
-    typescriptDiagnostics: diagnostics === "off" || diagnostics === "semantic" ? diagnostics : "syntax",
     fileTreeSide: values?.fileTreeSide === "left" ? "left" : "right",
+    bbDiffs: bool("bbDiffs"),
   };
 }
 
-export function monoFontFamily(): string | undefined {
+export function monoFontFamily(): string {
   const value = getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim();
-  return value === "" ? undefined : value;
+  return `"BB Editor Geist Mono", ${value || "monospace"}`;
 }
 
-/** Options that depend on preferences; applied with `updateOptions` too. */
-export function prefEditorOptions(prefs: EditorPrefs): MonacoNs.editor.IEditorOptions {
-  return {
-    fontSize: prefs.fontSize,
-    lineHeight: Math.round(prefs.fontSize * 1.4),
-    wordWrap: prefs.wordWrap ? "on" : "off",
-    lineNumbers: prefs.lineNumbers ? "on" : "off",
-    lineDecorationsWidth: prefs.lineNumbers ? 8 : 12,
-    minimap: { enabled: prefs.minimap, renderCharacters: false, maxColumn: 80, showSlider: "mouseover" },
-  };
-}
-
-export function baseEditorOptions(
-  prefs: EditorPrefs,
-  overflowWidgetsDomNode: HTMLElement,
-): MonacoNs.editor.IStandaloneEditorConstructionOptions {
-  return {
-    ...prefEditorOptions(prefs),
-    automaticLayout: true,
-    fontFamily: monoFontFamily(),
-    fontLigatures: true,
-    lineNumbersMinChars: 3,
-    glyphMargin: false,
-    folding: true,
-    foldingHighlight: false,
-    showFoldingControls: "mouseover",
-    scrollBeyondLastLine: false,
-    smoothScrolling: true,
-    cursorBlinking: "smooth",
-    cursorSmoothCaretAnimation: "on",
-    cursorSurroundingLines: 3,
-    // Like BB's own preview: no current-line band, no bracket colors, and no
-    // indentation or bracket-pair guides; the active line number is the cue.
-    renderLineHighlight: "gutter",
-    renderWhitespace: "selection",
-    stickyScroll: { enabled: true, maxLineCount: 3 },
-    bracketPairColorization: { enabled: false },
-    guides: { bracketPairs: false, bracketPairsHorizontal: false, indentation: false, highlightActiveIndentation: false },
-    matchBrackets: "near",
-    padding: { top: 8, bottom: 8 },
-    scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10, useShadows: false },
-    overviewRulerBorder: false,
-    overviewRulerLanes: 0,
-    hideCursorInOverviewRuler: true,
-    unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: true },
-    quickSuggestions: { other: true, comments: false, strings: false },
-    inlayHints: { enabled: "offUnlessPressed" },
-    linkedEditing: true,
-    occurrencesHighlight: "singleFile",
-    multiCursorModifier: "alt",
-    copyWithSyntaxHighlighting: false,
-    dropIntoEditor: { enabled: false },
-    fixedOverflowWidgets: true,
-    overflowWidgetsDomNode,
-    "semanticHighlighting.enabled": false,
-  };
+/** The row height that keeps code readable at `fontSize`. */
+export function lineHeightFor(fontSize: number): number {
+  return Math.round(fontSize * 1.5);
 }

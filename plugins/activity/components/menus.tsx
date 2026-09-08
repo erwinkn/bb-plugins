@@ -8,15 +8,26 @@ import { ArchiveIcon } from "./archive-icon";
 
 export const menuItemClass =
   "flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
-export function MenuContent({ children }: { children: ReactNode }) {
+export function MenuContent({
+  children,
+  align = "end",
+  className = "",
+  onCloseAutoFocus,
+}: {
+  children: ReactNode;
+  align?: "start" | "end";
+  className?: string;
+  onCloseAutoFocus?: (event: Event) => void;
+}) {
   const scope = usePortalScopeProps();
   return (
     <Menu.Portal>
       <Menu.Content
         {...scope}
-        align="end"
+        align={align}
         sideOffset={5}
-        className="z-50 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+        onCloseAutoFocus={onCloseAutoFocus}
+        className={`z-50 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg ${className}`}
       >
         {children}
       </Menu.Content>
