@@ -4,8 +4,6 @@ import type { SpaceCatalog } from "../lib/space-schema";
 import { scopeLabel, type Scope } from "../lib/spaces";
 import { MenuContent, menuItemClass } from "./menus";
 
-export type SpaceEdit = "create" | "rename" | "delete";
-
 const chevron = (
   <svg
     aria-hidden="true"
@@ -22,33 +20,29 @@ const chevron = (
 );
 
 // The Threads heading is the scope selector: All projects or a saved space.
-// Membership and project management live in the Manage view.
+// Creating, editing, and project management live on the Spaces page.
 export function ScopeMenu({
   scope,
   catalog,
   onSelectAll,
   onSelectSpace,
-  onEdit,
+  onNew,
   onManage,
 }: {
   scope: Scope;
   catalog: SpaceCatalog;
   onSelectAll: () => void;
   onSelectSpace: (id: string) => void;
-  onEdit: (edit: SpaceEdit) => void;
+  onNew: () => void;
   onManage: () => void;
 }) {
   const label = scopeLabel(scope);
-  // Edit and Manage open dialogs that take focus. Radix would otherwise move
-  // focus back to the trigger after the menu closes.
-  const editing = useRef(false);
-  const edit = (kind: SpaceEdit) => {
-    editing.current = true;
-    onEdit(kind);
-  };
-  const manage = () => {
-    editing.current = true;
-    onManage();
+  // New and Manage leave the sidebar for the Spaces page; Radix would
+  // otherwise move focus back to the trigger after the menu closes.
+  const leaving = useRef(false);
+  const leave = (action: () => void) => () => {
+    leaving.current = true;
+    action();
   };
   const radioValue = scope.kind === "space" ? scope.space.id : "all";
   return (
@@ -65,8 +59,8 @@ export function ScopeMenu({
         align="start"
         className="max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto"
         onCloseAutoFocus={(event) => {
-          if (!editing.current) return;
-          editing.current = false;
+          if (!leaving.current) return;
+          leaving.current = false;
           event.preventDefault();
         }}
       >
@@ -92,27 +86,10 @@ export function ScopeMenu({
           ))}
         </Menu.RadioGroup>
         <Menu.Separator className="my-1 h-px bg-border" />
-        <Menu.Item className={menuItemClass} onSelect={() => edit("create")}>
+        <Menu.Item className={menuItemClass} onSelect={leave(onNew)}>
           New space…
         </Menu.Item>
-        {scope.kind === "space" && (
-          <>
-            <Menu.Item
-              className={menuItemClass}
-              onSelect={() => edit("rename")}
-            >
-              Rename space…
-            </Menu.Item>
-            <Menu.Item
-              className={menuItemClass}
-              onSelect={() => edit("delete")}
-            >
-              Delete space…
-            </Menu.Item>
-          </>
-        )}
-        <Menu.Separator className="my-1 h-px bg-border" />
-        <Menu.Item className={menuItemClass} onSelect={manage}>
+        <Menu.Item className={menuItemClass} onSelect={leave(onManage)}>
           Manage spaces and projects…
         </Menu.Item>
       </MenuContent>

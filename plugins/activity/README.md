@@ -148,47 +148,51 @@ native behavior. No bulk read or delete actions are added.
 A space is a named selection of projects. The Threads heading is the scope
 selector: it reads **All projects** or a space name. Its menu lists All
 projects, each saved space, **New space…**, and **Manage spaces and
-projects…**. Every edit opens a dialog over the sidebar; on phones the dialogs
-are full-screen sheets.
+projects…**. Both of the last two go to the plugin's **Spaces** page, which
+also has its own row in BB's sidebar navigation (route
+`/plugins/erwin-activity/spaces`). There are no dialogs; every edit is a form
+on the page, and on phones the page shows one column at a time with a back
+link so it works like any other BB page.
 
-- **New space…** opens a dialog with a name field and a checklist of every BB
-  project, with the open thread's project pre-checked. Create saves the space
-  and selects it. **Rename space…** and **Delete space…** open small dialogs
-  for the selected space. Deleting a space never touches projects or threads.
-  Names are trimmed, limited to 60 characters, and unique ignoring case. An
-  empty space shows a **Choose projects** link into Manage.
-- **Manage spaces and projects…** opens a two-pane dialog (stacked on phones).
-  The Spaces pane lists every space with its project count; pick one to edit
-  it. It opens on the selected space, otherwise the first. Picking a space here
-  does not change the Threads scope. Each space row has a menu with Rename,
-  Move up, Move down, and Delete, and **+ New space…** opens the same dialog
-  as the heading (nothing pre-checked). The Projects pane lists BB's projects
-  with their folder (and a host badge when more than one host is connected)
-  and a checkbox per project for the space being edited. A member project BB
-  no longer lists appears as *Unavailable project* so it can be removed.
-- Each project row has a menu: **New thread**, **Spaces ›** (a checklist of
-  every space), **Rename…** and **Change folder…** (edit in place under the
-  row), **Move up**, **Move down**, and **Remove…**. The personal project only
-  offers New thread and Spaces. Renaming, moving, changing the folder, and
-  removing go through BB's own project API, so BB's new-thread panel and every
-  client see the same list. **Remove…** opens a confirmation dialog that says
-  how many active threads the project has and requires typing its name; BB
-  then deletes the project with all of its threads, and the plugin drops it
-  from every space. Files on disk are untouched.
-- **+ Add project…** opens a dialog with a folder path field with directory
+- The Spaces page lists every space with its project count beside the
+  selected space's projects. On desktop the list stays visible and the first
+  space opens by default; on phones the list is the first screen and each row
+  opens the space. **Manage spaces and projects…** opens the current space when
+  one is selected, the list otherwise, and All projects when no space exists
+  yet. Selecting a space on the page does not change the Threads scope.
+- **New space…** (heading menu or `+ New space…` on the page) opens a form
+  with a name and a checklist of every BB project. Create saves the space and
+  opens it. Names are trimmed, limited to 60 characters, and unique ignoring
+  case. An empty space shows a **Choose projects** link into its page.
+- A space's page shows a checkbox per project for membership, and a heading
+  menu with **Rename…** and **Delete…** (inline forms; on phones also Move up
+  and Move down). Deleting a space never touches projects or threads and
+  returns to the list. A member project BB no longer lists appears as
+  *Unavailable project* so it can be removed. On desktop, the grip at the left
+  of a space row drags it to a new position, and the row's `…` menu has Move
+  up and Move down.
+- **All projects** at the bottom of the list shows every BB project without
+  membership checkboxes; use it to manage projects before any space exists.
+- Each project row shows its folder (and a host badge when more than one host
+  is connected) and has a `…` menu: **Rename…**, **Change folder…**, **Move
+  up**, **Move down**, and **Remove…**, each an inline form under the row. The
+  personal project has no menu. These go through BB's own project API, so BB's
+  new-thread panel and every client see the same list. **Remove…** says how
+  many active threads the project has and requires typing its name; BB then
+  deletes the project with all of its threads, and the plugin drops it from
+  every space. Files on disk are untouched. On desktop the grip drags a project
+  row to a new position.
+- **+ Add project…** opens a form with a folder path field with directory
   completion (type `/Users/me/Co` and pick from the list; Tab or Enter accepts
   the highlighted folder) or **Browse…** for the native folder dialog, and a
   project name that defaults to the folder name. With more than one host, a
-  host selector comes first. The new project joins the space being edited.
-  Browse… opens the dialog on the machine that hosts the project; plugin
+  host selector comes first. On a space's page the new project joins that
+  space. Browse… opens the dialog on the machine that hosts the project; plugin
   frontends do not know which host the client runs on, so on a remote host use
   the path field.
-- On desktop, the grip at the left of a space or project row drags it to a
-  new position; Move up and Move down do the same from the menu and are the
-  only way on phones.
 - In the by-project grouping, right-click or long-press a project header for
-  **New thread**, **Spaces ›**, **Rename…** (in place under the header),
-  **Manage spaces and projects…**, and **Remove…** (the confirmation dialog).
+  **New thread**, **Spaces ›**, **Rename…** and **Remove…** (inline forms under
+  the header), and **Manage spaces and projects…**.
 - Space definitions are shared by every client of one BB server and stored in
   the plugin's key-value store as one document with a revision. A save that
   races another client's save fails with an error, and the form keeps your

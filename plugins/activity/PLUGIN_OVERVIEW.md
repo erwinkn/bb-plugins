@@ -11,15 +11,17 @@
 - `components/pull-request.tsx`: pull request icon and summary text.
 - `components/thread-children.tsx`: child previews, expansion, and two-level nesting.
 - `components/menus.tsx`: grouping, date sorting, and status visibility controls.
-- `components/modal.tsx`: the dialog shell (Radix Dialog; centered on desktop,
-  full-screen sheet on phones; first field focused).
-- `components/space-dialog.tsx`: create (name + project checklist), rename,
-  and delete dialogs for one space.
-- `components/manage-dialog.tsx`: two-pane Manage dialog: spaces (pick,
-  rename, reorder, delete) and the picked space's projects (membership,
-  rename, folder, reorder, remove, add) with drag handles on desktop.
-- `components/project-dialogs.tsx`: Add project and Remove project dialogs.
-- `components/project-forms.tsx`: in-place rename and change-folder forms.
+- `components/spaces-page.tsx`: the Spaces `navPanel` page (route
+  `/plugins/<id>/spaces`, sub-paths `new`, `projects`, `<spaceId>`): the
+  spaces list, the New space form, a space's heading actions, and the All
+  projects view; one column at a time on phones.
+- `components/project-list.tsx`: every BB project with optional membership
+  checkboxes, row menus, inline edit forms, drag handles on desktop, and the
+  Add project form.
+- `components/project-forms.tsx`: inline rename, change-folder, remove, and
+  add-project forms.
+- `lib/use-compact.ts`: viewport breakpoint for the page (slot props carry it
+  for the sidebar).
 - `components/path-field.tsx`: folder path input with host directory completion
   and the native folder dialog.
 - `components/inline-form.tsx`: shared inline form (focus, Escape, errors).

@@ -4,6 +4,7 @@ import {
   experimental_useSidebarThreads,
   experimental_useSidebarThreadActions,
   experimental_useProviders,
+  useBbNavigate,
   useRealtimeConnectionState,
   useRpc,
   type PluginThreadListProps,
@@ -15,12 +16,18 @@ import { useArchives } from "./lib/use-archives";
 import { useSpaces } from "./lib/use-spaces";
 import { inScope, newSpaceId, resolveScope } from "./lib/spaces";
 import { DisplayMenu } from "./components/menus";
-import { ManageDialog } from "./components/manage-dialog";
 import { ProjectHeaderMenu } from "./components/project-header-menu";
-import { RemoveProjectDialog } from "./components/project-dialogs";
-import { ProjectRenameForm } from "./components/project-forms";
+import {
+  ProjectRemoveForm,
+  ProjectRenameForm,
+} from "./components/project-forms";
 import { ScopeMenu } from "./components/scope-menu";
-import { SpaceDialog } from "./components/space-dialog";
+import {
+  ALL_PROJECTS_SUBPATH,
+  NEW_SPACE_SUBPATH,
+  SPACES_PANEL_PATH,
+  SpacesPage,
+} from "./components/spaces-page";
 import { NewThreadButton } from "./components/new-thread-button";
 import { ThreadRow, fadeClass } from "./components/thread-row";
 import { ThreadChildren } from "./components/thread-children";
@@ -103,19 +110,22 @@ function ThreadsList(props: PluginThreadListProps) {
   const spaces = useSpaces();
   const scope = resolveScope(spaces.catalog, state.spaceId);
   const scopeKey = scope.kind === "all" ? "all" : `space:${scope.space.id}`;
-  // Space edits and management open dialogs over the sidebar.
-  const [dialog, setDialog] = useState<
-    | { kind: "create" | "rename" | "delete" }
-    | { kind: "manage"; spaceId: string | null }
-    | { kind: "remove-project"; id: string }
-    | null
-  >(null);
-  const [renamingProject, setRenamingProject] = useState<string | null>(null);
+  // Space and project management lives on the Spaces page.
+  const navigate = useBbNavigate();
+  const openSpacesPage = (subPath: string) =>
+    navigate.toPluginPanel(SPACES_PANEL_PATH, { subPath });
   const openManage = () =>
-    setDialog({
-      kind: "manage",
-      spaceId: scope.kind === "space" ? scope.space.id : null,
-    });
+    openSpacesPage(
+      scope.kind === "space"
+        ? scope.space.id
+        : spaces.catalog.spaces.length
+          ? ""
+          : ALL_PROJECTS_SUBPATH,
+    );
+  const [projectEdit, setProjectEdit] = useState<{
+    kind: "rename" | "remove";
+    id: string;
+  } | null>(null);
   const projectRpc = useRpc<typeof projectContract>();
   const archives = useArchives(threads, state.showArchives);
   const archived = state.showArchives
@@ -228,34 +238,6 @@ function ThreadsList(props: PluginThreadListProps) {
     updateState((current) => ({ ...current, spaceId: null }));
   const selectSpace = (spaceId: string) =>
     updateState((current) => ({ ...current, spaceId }));
-  // A new space starts with the current thread's project checked.
-  const seedProjectIds = props.activeProjectId ? [props.activeProjectId] : [];
-  const submitSpace = async (
-    kind: "create" | "rename" | "delete",
-    input: { name: string; projectIds: string[] },
-  ) => {
-    const list = spaces.catalog.spaces;
-    if (kind === "create") {
-      const id = newSpaceId();
-      await spaces.save([
-        ...list,
-        { id, name: input.name, projectIds: input.projectIds },
-      ]);
-      selectSpace(id);
-    } else if (scope.kind === "space") {
-      const { space } = scope;
-      if (kind === "rename") {
-        await spaces.save(
-          list.map((entry) =>
-            entry.id === space.id ? { ...entry, name: input.name } : entry,
-          ),
-        );
-      } else {
-        await spaces.save(list.filter((entry) => entry.id !== space.id));
-        selectAll();
-      }
-    }
-  };
   const removeProject = async (projectId: string) => {
     await projectRpc.call("deleteProject", { projectId });
     const list = spaces.catalog.spaces;
@@ -382,53 +364,8 @@ function ThreadsList(props: PluginThreadListProps) {
       {content}
     </div>
   );
-  const removingProject =
-    dialog?.kind === "remove-project"
-      ? projects.find((project) => project.id === dialog.id)
-      : undefined;
-  const dialogs = (
-    <>
-      {dialog &&
-        (dialog.kind === "create" ||
-          dialog.kind === "rename" ||
-          dialog.kind === "delete") && (
-          <SpaceDialog
-            key={dialog.kind}
-            kind={dialog.kind}
-            space={scope.kind === "space" ? scope.space : undefined}
-            projects={projects}
-            initialProjectIds={seedProjectIds}
-            compact={props.isCompactViewport}
-            onSubmit={(input) => submitSpace(dialog.kind, input)}
-            onClose={() => setDialog(null)}
-          />
-        )}
-      {dialog?.kind === "manage" && (
-        <ManageDialog
-          spaces={spaces}
-          initialSpaceId={dialog.spaceId}
-          sidebarProjects={projects}
-          threadCounts={threadCounts}
-          compact={props.isCompactViewport}
-          onNewThread={openNew}
-          onClose={() => setDialog(null)}
-          report={report}
-        />
-      )}
-      {removingProject && (
-        <RemoveProjectDialog
-          projectName={removingProject.name}
-          threadCount={threadCounts.get(removingProject.id) ?? 0}
-          compact={props.isCompactViewport}
-          onSubmit={() => removeProject(removingProject.id)}
-          onClose={() => setDialog(null)}
-        />
-      )}
-    </>
-  );
   return shell(
     <>
-      {dialogs}
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
           <ScopeMenu
@@ -436,7 +373,7 @@ function ThreadsList(props: PluginThreadListProps) {
             catalog={spaces.catalog}
             onSelectAll={selectAll}
             onSelectSpace={selectSpace}
-            onEdit={(kind) => setDialog({ kind })}
+            onNew={() => openSpacesPage(NEW_SPACE_SUBPATH)}
             onManage={openManage}
           />
           <DisplayMenu />
@@ -595,11 +532,9 @@ function ThreadsList(props: PluginThreadListProps) {
                                 if (action === "new-thread")
                                   openNew(project.id);
                                 else if (action === "manage") openManage();
-                                else if (action === "rename")
-                                  setRenamingProject(project.id);
                                 else
-                                  setDialog({
-                                    kind: "remove-project",
+                                  setProjectEdit({
+                                    kind: action,
                                     id: project.id,
                                   });
                               }}
@@ -609,7 +544,8 @@ function ThreadsList(props: PluginThreadListProps) {
                           )
                         }
                         belowHeader={
-                          renamingProject === project.id ? (
+                          projectEdit?.id !==
+                          project.id ? null : projectEdit.kind === "rename" ? (
                             <ProjectRenameForm
                               project={project}
                               onSubmit={async (name) => {
@@ -618,9 +554,16 @@ function ThreadsList(props: PluginThreadListProps) {
                                   name,
                                 });
                               }}
-                              onClose={() => setRenamingProject(null)}
+                              onClose={() => setProjectEdit(null)}
                             />
-                          ) : null
+                          ) : (
+                            <ProjectRemoveForm
+                              project={project}
+                              threadCount={threadCounts.get(project.id) ?? 0}
+                              onSubmit={() => removeProject(project.id)}
+                              onClose={() => setProjectEdit(null)}
+                            />
+                          )
                         }
                       >
                         <ThreadRoots
@@ -674,6 +617,13 @@ function ThreadsList(props: PluginThreadListProps) {
 }
 
 export default definePluginApp((app) => {
+  app.slots.navPanel({
+    id: "spaces",
+    title: "Spaces",
+    icon: "Layers",
+    path: SPACES_PANEL_PATH,
+    component: SpacesPage,
+  });
   app.slots.experimental_threadList({
     id: "activity",
     title: "Threads",

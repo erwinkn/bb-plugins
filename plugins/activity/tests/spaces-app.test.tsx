@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  act,
-  cleanup,
-  fireEvent,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { parseState, updateState } from "../lib/client-state";
 import type { Space, SpaceCatalog } from "../lib/space-schema";
@@ -267,7 +261,7 @@ describe("spaces", () => {
     expect(rows(slot)).toHaveLength(4);
   });
 
-  it("creates a space from All projects seeded with the current thread's project", async () => {
+  it("sends New space and Manage to the Spaces page", async () => {
     const rpc = server();
     const slot = mount(rpc);
     await tick();
@@ -275,55 +269,52 @@ describe("spaces", () => {
     fireEvent.click(
       slot.getByRole("menuitem", { name: "New space…", hidden: true }),
     );
-    await tick();
-    // The dialog pre-checks the open thread's project.
-    const dialog = slot.getByRole("dialog", { name: "New space" });
-    const boxes = within(dialog).getAllByRole("checkbox") as HTMLInputElement[];
-    expect(boxes.map((box) => box.checked)).toEqual([false, true, false]);
-    expect(dialog.textContent).toContain("1 of 3 selected.");
-    fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
-      target: { value: "Fresh" },
-    });
-    fireEvent.click(slot.getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
-    expect(rpc.saveSpaces.mock.calls[0][0]).toMatchObject({
-      spaces: [one, both, { name: "Fresh", projectIds: ["project-2"] }],
-    });
-    await waitFor(() =>
-      expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-        "Threads: Fresh",
-      ),
-    );
-    expect(rows(slot)).toEqual(["p2-child-of-p1", "p2-root"]);
-  });
-
-  it("creates an empty space without a current thread and explains the next step", async () => {
-    const rpc = server();
-    const slot = mount(rpc, { activeThreadId: "", activeProjectId: "" });
-    await tick();
+    expect(slot.inspection.navigateCalls).toEqual([
+      { method: "toPluginPanel", path: "spaces", options: { subPath: "new" } },
+    ]);
+    // Manage opens the list when All projects is selected...
     await openScope(slot);
-    // Also available while a space is selected.
+    fireEvent.click(
+      slot.getByRole("menuitem", {
+        name: "Manage spaces and projects…",
+        hidden: true,
+      }),
+    );
+    expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "spaces",
+      options: { subPath: "" },
+    });
+    // ...and the selected space otherwise. The menu has no edit items.
+    await openScope(slot);
     fireEvent.click(
       slot.getByRole("menuitemradio", { name: "Both", hidden: true }),
     );
     await tick();
     await openScope(slot);
+    expect(
+      slot.queryByRole("menuitem", { name: "Rename space…", hidden: true }),
+    ).toBeNull();
     fireEvent.click(
-      slot.getByRole("menuitem", { name: "New space…", hidden: true }),
+      slot.getByRole("menuitem", {
+        name: "Manage spaces and projects…",
+        hidden: true,
+      }),
     );
-    await tick();
-    const form = slot.getByRole("form", { name: "New space" });
-    expect(form.textContent).toContain(
-      "An empty space shows no threads until projects are added.",
-    );
-    fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
-      target: { value: "Blank" },
+    expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "spaces",
+      options: { subPath: "both" },
     });
-    fireEvent.submit(form);
-    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
-    expect(rpc.saveSpaces.mock.calls[0][0]).toMatchObject({
-      spaces: [one, both, { name: "Blank", projectIds: [] }],
+  });
+
+  it("links an empty space to its page and Manage to All projects when there are no spaces", async () => {
+    const rpc = server({
+      revision: 1,
+      spaces: [{ id: "blank", name: "Blank", projectIds: [] }],
     });
+    updateState((state) => ({ ...state, spaceId: "blank" }));
+    const slot = mount(rpc, { activeThreadId: "", activeProjectId: "" });
     await waitFor(() =>
       expect(scopeButton(slot).getAttribute("aria-label")).toBe(
         "Threads: Blank",
@@ -331,124 +322,31 @@ describe("spaces", () => {
     );
     expect(rows(slot)).toEqual([]);
     expect(slot.container.textContent).toContain("No projects in this space.");
-    // The empty state leads to Manage, where a checkbox adds a project.
     fireEvent.click(slot.getByRole("button", { name: "Choose projects" }));
-    await slot.findByRole("dialog", { name: "Spaces and projects" });
-    fireEvent.click(
-      slot.getByRole("checkbox", { name: "Include One in Blank" }),
-    );
-    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(2));
-    expect(rpc.saveSpaces.mock.calls[1][0]).toMatchObject({
-      spaces: [one, both, { name: "Blank", projectIds: ["project-1"] }],
+    expect(slot.inspection.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "spaces",
+      options: { subPath: "blank" },
     });
-  });
+    slot.lifecycle.unmount();
 
-  it("edits the selected space's membership, renames it, and deletes it", async () => {
-    updateState((state) => ({ ...state, spaceId: "one" }));
-    const rpc = server();
-    const slot = mount(rpc);
-    await waitFor(() =>
-      expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-        "Threads: Only One",
-      ),
-    );
-
-    await openManage(slot);
-    fireEvent.click(
-      slot.getByRole("checkbox", { name: "Include Two in Only One" }),
-    );
-    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
-    expect(rpc.saveSpaces.mock.calls[0][0]).toEqual({
-      expectedRevision: 1,
-      spaces: [{ ...one, projectIds: ["project-1", "project-2"] }, both],
+    const none = mount(server({ revision: 1, spaces: [] }), {
+      activeThreadId: "",
+      activeProjectId: "",
     });
-    fireEvent.click(slot.getByRole("button", { name: "Close" }));
-    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
-    await waitFor(() => expect(rows(slot)).toHaveLength(4));
-    expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-      "Threads: Only One",
-    );
-
-    await openScope(slot);
-    fireEvent.click(
-      slot.getByRole("menuitem", { name: "Rename space…", hidden: true }),
-    );
     await tick();
-    const input = slot.getByRole("textbox", {
-      name: "Space name",
-    }) as HTMLInputElement;
-    expect(input.value).toBe("Only One");
-    fireEvent.change(input, { target: { value: "Renamed" } });
-    fireEvent.submit(slot.getByRole("form", { name: "Rename space" }));
-    await waitFor(() =>
-      expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-        "Threads: Renamed",
-      ),
-    );
-    expect(rpc.saveSpaces.mock.calls[1][0]).toMatchObject({
-      expectedRevision: 2,
-    });
-
-    await openScope(slot);
+    await openScope(none);
     fireEvent.click(
-      slot.getByRole("menuitem", { name: "Delete space…", hidden: true }),
+      none.getByRole("menuitem", {
+        name: "Manage spaces and projects…",
+        hidden: true,
+      }),
     );
-    await tick();
-    const confirm = slot.getByRole("form", { name: "Delete space" });
-    expect(confirm.textContent).toContain("Delete space “Renamed”?");
-    fireEvent.click(slot.getByRole("button", { name: "Delete" }));
-    await waitFor(() =>
-      expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-        "Threads: All projects",
-      ),
-    );
-    expect(rpc.saveSpaces.mock.calls[2][0]).toEqual({
-      expectedRevision: 3,
-      spaces: [both],
+    expect(none.inspection.navigateCalls.at(-1)).toEqual({
+      method: "toPluginPanel",
+      path: "spaces",
+      options: { subPath: "projects" },
     });
-    await waitFor(() => expect(slot.queryByRole("dialog")).toBeNull());
-    expect(
-      parseState(localStorage.getItem("bb-plugin-erwin-activity:v1")).spaceId,
-    ).toBeNull();
-  });
-
-  it("cancels edits with Escape and shows a save error in the form", async () => {
-    updateState((state) => ({ ...state, spaceId: "one" }));
-    const rpc = server();
-    rpc.saveSpaces.mockRejectedValueOnce(
-      new Error('A space named "Both" already exists.'),
-    );
-    const slot = mount(rpc);
-    await waitFor(() =>
-      expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-        "Threads: Only One",
-      ),
-    );
-    await openScope(slot);
-    fireEvent.click(
-      slot.getByRole("menuitem", { name: "Rename space…", hidden: true }),
-    );
-    await tick();
-    fireEvent.change(slot.getByRole("textbox", { name: "Space name" }), {
-      target: { value: "Both" },
-    });
-    fireEvent.submit(slot.getByRole("form", { name: "Rename space" }));
-    await waitFor(() =>
-      expect(slot.getByRole("alert").textContent).toBe(
-        'A space named "Both" already exists.',
-      ),
-    );
-    // A failed save reloads the catalog in case another client changed it.
-    expect(
-      slot.inspection.rpcCalls.filter((c) => c.method === "getSpaces").length,
-    ).toBeGreaterThanOrEqual(2);
-    fireEvent.keyDown(slot.getByRole("textbox", { name: "Space name" }), {
-      key: "Escape",
-    });
-    expect(slot.queryByRole("form")).toBeNull();
-    expect(scopeButton(slot).getAttribute("aria-label")).toBe(
-      "Threads: Only One",
-    );
   });
 
   it("applies realtime catalog updates and reports a deleted space", async () => {
