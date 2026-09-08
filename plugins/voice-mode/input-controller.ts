@@ -65,6 +65,7 @@ export class InputController {
   private energyAt = -Infinity;
   private energySince: number | null = null;
   private supportedUntil = -Infinity;
+  private supportedSince = Infinity;
   private detectedView: InputView | null = null;
   private waiters = new Set<{
     version: number;
@@ -107,7 +108,10 @@ export class InputController {
         this.detectedView = { ...this.host.view() };
       }
       this.energyAt = now;
-      if (now - this.energySince >= 120) this.supportedUntil = now + 2000;
+      if (now - this.energySince >= 120) {
+        this.supportedUntil = now + 2000;
+        this.supportedSince = this.energySince;
+      }
     } else if (now - this.energyAt >= 250) this.energySince = null;
     for (const item of this.items.values())
       if (item.state === "open" && !item.confirmed) this.confirm(item);
@@ -167,7 +171,8 @@ export class InputController {
     if (
       item.confirmed ||
       !hasSpokenWords(item.text) ||
-      this.host.now() > this.supportedUntil
+      this.host.now() > this.supportedUntil ||
+      item.endedAt < this.supportedSince
     )
       return;
     const now = this.host.now();

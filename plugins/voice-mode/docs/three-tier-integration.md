@@ -64,7 +64,7 @@ feature blobs were checked. Commit `a115099` combined that code with the earlier
 local reliability changes. Temporary recovery payloads and the applier workflow
 were removed; regular CI typechecks, tests, and compiles both entries.
 
-All 283 tests, typechecking, and both plugin builds pass.
+All 284 tests, typechecking, and both plugin builds pass.
 The new event tests cover noise, short words, missing finals, correction timing,
 multiple actions, duplicate effects, connection loss, configuration confirmation,
 and interrupted narration. A copy of the installed database upgraded without

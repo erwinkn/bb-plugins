@@ -229,3 +229,14 @@ test("new microphone activity holds an effect while the next words are still in 
   f.input.delta("b", "Only inspect it");
   assert.equal(await work, null);
 });
+
+test("later speech cannot lend microphone evidence to an old unconfirmed noise item", () => {
+  const f = fixture();
+  f.input.delta("noise", "Thank you.");
+  f.advance(4000);
+  f.words("real", "Open Build");
+  f.input.completed("real", "Open Build.");
+  assert.equal(f.interruptions.length, 1);
+  assert.equal(f.interruptions[0].id, "real");
+  assert.equal(f.input.snapshot()!.text, "Open Build.");
+});
