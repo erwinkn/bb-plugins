@@ -4,12 +4,12 @@ import plugin from "./server";
 import type { Plan } from "./contract";
 
 const disposers: Array<() => Promise<void>> = [];
-async function setup(send = vi.fn(async (_args: unknown) => ({ ok: true }))) {
+async function setup(send = vi.fn(async (_args: unknown) => ({ ok: true })), options: Parameters<typeof plugin>[1] = {}) {
   const host = createFakePluginHost({ pluginId: "erwin-plans", sdk: {
     threads: { get: async () => makeThreadResponse({ id: "thread-1", projectId: "project-1" }), send },
     projects: { get: async () => ({ id: "project-1", name: "Test project" }) },
   } });
-  await plugin(host.bb);
+  await plugin(host.bb, options);
   disposers.push(() => host.harness.lifecycle.dispose());
   const rpc = async (method: string, input: unknown) => host.harness.behavior.callRpc(method, input) as Promise<Plan>;
   const plan = await rpc("create", { title: "A plan", markdown: "# A plan\n\nKeep the existing data.", threadId: "thread-1" });
@@ -217,6 +217,29 @@ describe("Plans review workflow", () => {
     expect(text).toContain("Which data?");
     expect(text).not.toContain("bb plans wait");
     expect(text).not.toContain("Keep the data");
+  });
+
+  it("retries a held prompt the thread could not show yet", async () => {
+    const { harness, bb } = await setup(undefined, { holdRetryMs: 20 });
+    const original = bb.ui.requestInput.bind(bb.ui);
+    const spy = vi.spyOn(bb.ui, "requestInput")
+      .mockRejectedValueOnce(new Error("Thread thread-1 is already awaiting user interaction"))
+      .mockImplementation(original);
+    await harness.behavior.setSettings({ nonBlockingProviders: "acp-cursor, test-provider" });
+    await harness.behavior.callAgentTool("plans_submit", { title: "Second", markdown: "# Second\n\nKeep the existing data." }, { threadId: "thread-1" });
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title: "Review plan: Second" });
+  });
+
+  it("deleting a plan releases its held prompt", async () => {
+    const { harness, rpc } = await setup();
+    await harness.behavior.setSettings({ nonBlockingProviders: "acp-cursor, test-provider" });
+    const result = JSON.parse(String(await harness.behavior.callAgentTool("plans_submit", { title: "Doomed", markdown: "# Doomed\n\nKeep the existing data." }, { threadId: "thread-1" }))) as { planId: string };
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    await rpc("remove", { id: result.planId });
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+    await expect(rpc("get", { id: result.planId })).rejects.toThrow(/not found/i);
   });
 
   it("returns dismissed when the user skips the review prompt", async () => {

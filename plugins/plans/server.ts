@@ -65,6 +65,8 @@ const TOOL_WAIT_MS = 24 * 60 * 60 * 1000;
 export interface PluginOptions {
   /** Test hook: shorten the BB interaction lifetime per request. */
   interactionChunkMs?: number;
+  /** Test hook: shorten the retry delay of a detached hold. */
+  holdRetryMs?: number;
 }
 
 export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
@@ -82,7 +84,7 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
     const thread = await bb.sdk.threads.get({ threadId });
     return listed.includes(thread.providerId);
   };
-  const service = createPlanService(bb, { interactionChunkMs: options.interactionChunkMs });
+  const service = createPlanService(bb, { interactionChunkMs: options.interactionChunkMs, holdRetryMs: options.holdRetryMs });
   const { delivery, wait, hold: _hold, version, ...rpcHandlers } = service;
   bb.rpc.register(plansContract, rpcHandlers);
   bb.agents.registerTool({

@@ -221,3 +221,9 @@ layout, a Diagnostics dialog with Copy in the plan menu, and
 `scripts/mobile-probe.mjs` for the WebKit report. Tests cover the class, the
 footer alignment, the report contents, and the dialog. Suite: 75 tests.
 Real-device confirmation is the user's phone check after `bb plugin update`.
+
+Bugbot on 6947134 raised two hold findings, fixed next: a detached hold now
+retries a prompt the thread cannot show yet (another interaction pending)
+instead of giving up, and `remove` releases the plan's hold before deleting so
+no prompt points at a missing plan and the wait poll cannot reject unhandled.
+Both tests fail against the previous service code. Suite: 77 tests.

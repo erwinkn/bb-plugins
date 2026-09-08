@@ -32,12 +32,15 @@ export interface WaitInput {
 export interface PlanServiceOptions {
   /** Interaction lifetime per request; BB caps it at one hour. Tests shorten it. */
   interactionChunkMs?: number;
+  /** Delay before a detached hold retries a prompt the thread could not show. */
+  holdRetryMs?: number;
 }
 
 /** The frontend `pendingInteraction` slot that renders the review prompt. */
 export const REVIEW_INTERACTION_RENDERER = "plan-review";
 
 const WAIT_POLL_MS = 5_000;
+const HOLD_RETRY_MS = 15_000;
 /** How long past its timeout a wait row still counts as attended. */
 const WAIT_GRACE_MS = 15_000;
 const INTERACTION_MAX_MS = 60 * 60 * 1000;
@@ -323,12 +326,21 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
   const release = async (planId: string) => {
     await holds.get(planId)?.();
   };
+  const sleep = (ms: number, signal: AbortSignal) =>
+    new Promise<void>((resolve) => {
+      if (signal.aborted) return resolve();
+      const timer = setTimeout(() => { signal.removeEventListener("abort", done); resolve(); }, ms);
+      const done = () => { clearTimeout(timer); resolve(); };
+      signal.addEventListener("abort", done, { once: true });
+    });
   /**
    * The detached hold, for providers whose tool calls cannot stay open
    * (Cursor): the same prompt, with no agent attached, so the decision goes
    * out as the thread message that starts the agent's next turn. Ends with
-   * the decision, a newer version, the user skipping the prompt, or a plugin
-   * reload (the prompt is not re-established afterwards).
+   * the decision, a newer version, the user skipping the prompt, deletion of
+   * the plan, or a plugin reload (the prompt is not re-established afterwards).
+   * A prompt the thread cannot show yet (another interaction is pending) is
+   * retried, since no agent is left to notice the failure.
    */
   const hold = ({ id, versionId }: { id: string; versionId?: string }): void => {
     const { plan, version, settled } = locate(id, versionId);
@@ -340,9 +352,26 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     const run = (async () => {
       await previous?.();
       while (!stop.signal.aborted) {
-        const outcome = await promptChunk(plan, version, threadId, { timeoutMs: chunkMs(), signal: stop.signal, attend: false });
+        let outcome: PromptOutcome;
+        try {
+          outcome = await promptChunk(plan, version, threadId, { timeoutMs: chunkMs(), signal: stop.signal, attend: false });
+        } catch (error) {
+          // The plan was deleted or the hold was released mid-chunk; nothing to prompt for.
+          if (!stop.signal.aborted) bb.log.warn(`Review hold for plan ${plan.id} ended: ${error instanceof Error ? error.message : String(error)}`);
+          return;
+        }
         if (outcome.kind === "timeout") continue;
-        if (outcome.kind === "unavailable") bb.log.warn(`Review prompt unavailable for plan ${plan.id}: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`);
+        if (outcome.kind === "unavailable") {
+          bb.log.warn(`Review prompt unavailable for plan ${plan.id}, retrying: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`);
+          await sleep(options.holdRetryMs ?? HOLD_RETRY_MS, stop.signal);
+          if (stop.signal.aborted) return;
+          try {
+            if (locate(plan.id, version.id).settled) return;
+          } catch {
+            return;
+          }
+          continue;
+        }
         return;
       }
     })().finally(() => {
@@ -454,8 +483,10 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       plan.comments = plan.comments.filter((item) => item.id !== commentId);
       return save(plan);
     },
-    remove: ({ id }: { id: string }) => {
+    remove: async ({ id }: { id: string }) => {
       editable(id);
+      // Drop the review prompt before the plan it points at disappears.
+      await release(id);
       db.transaction(() => {
         db.prepare("DELETE FROM plans WHERE id = ?").run(id);
         db.prepare("DELETE FROM deliveries WHERE plan_id = ?").run(id);
