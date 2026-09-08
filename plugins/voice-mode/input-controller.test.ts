@@ -240,3 +240,14 @@ test("later speech cannot lend microphone evidence to an old unconfirmed noise i
   assert.equal(f.interruptions[0].id, "real");
   assert.equal(f.input.snapshot()!.text, "Open Build.");
 });
+
+test("raw activity does not become speech or erase a final snapshot, but still holds consequential effects",async()=>{
+  const f=fixture();f.words("request","Ask Build to inspect logs");f.input.completed("request","Ask Build to inspect logs.");f.advance(2000);
+  f.input.sample(.04);f.advance(150);f.input.sample(.04);
+  assert.equal(f.input.audioActive,true);assert.equal(f.input.speaking,false);assert.equal(f.input.unresolved,false);
+  assert.equal(f.input.snapshot()!.text,"Ask Build to inspect logs.");
+  assert.ok(await f.input.waitFor(f.input.version,false));
+  let accepted=false;const work=f.input.waitFor(f.input.version,true).then(value=>{accepted=!!value;});
+  f.advance(1999);await Promise.resolve();assert.equal(accepted,false);
+  f.advance(1);await work;assert.equal(accepted,true);
+});

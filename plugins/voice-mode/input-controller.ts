@@ -76,8 +76,18 @@ export class InputController {
   get version() {
     return this.current?.version ?? 0;
   }
-  get speaking() {
+  /** Raw meter activity helps endpoint timing, but does not establish speech. */
+  get audioActive() {
     return this.energySince !== null && this.host.now() - this.energyAt < 150;
+  }
+  get speaking() {
+    return (
+      this.audioActive &&
+      !!this.current?.items.some(
+        (item) =>
+          item.confirmed && item.state !== "final" && item.state !== "failed",
+      )
+    );
   }
   get unresolved() {
     return (
@@ -339,7 +349,7 @@ export class InputController {
       if (
         item.state === "open" &&
         item.confirmed &&
-        !this.speaking &&
+        !this.audioActive &&
         now - Math.max(this.energyAt, item.endedAt) >= INPUT_QUIET_MS
       ) {
         item.state = "committing";

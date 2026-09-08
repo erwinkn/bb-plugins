@@ -825,3 +825,31 @@ test("an unconfirmed input configuration times out without enabling the micropho
   const {agent,track,tick}=await coordinatorFixture(t,{configure:false});
   tick(15001);assert.equal(agent.getState(),"idle");assert.equal(track.enabled,false);
 });
+
+test("raw microphone activity cannot reject the pending navigation request",async t=>{
+  const {agent,dc,submits,logs}=await coordinatorFixture(t);
+  speak(dc,"navigation","Switch to the editor thread");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"navigation",transcript:"Switch to the editor thread."});
+  dc.emit("response.created",{response:{id:"navigate"}});
+  dc.emit("input_audio_buffer.speech_started",{item_id:"noise-without-words"});
+  dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"open-editor",arguments:JSON.stringify({request:"Switch to the editor thread.",action:{kind:"open_thread",threadId:"editor"}})});
+  await settle();
+  assert.equal(submits().length,1);
+  assert.equal(submits()[0].originalText,"Switch to the editor thread.");
+  assert.equal(logs.some(event=>event.kind==="tool.result" && event.payload.status==="error"),false);
+  assert.equal(dc.sent.some(event=>event.type==="response.cancel"),false);
+  assert.equal((agent as Any).userTurn,1);
+});
+
+test("noise after response creation was requested cannot cancel that response or start another turn",async t=>{
+  const {dc,submits}=await coordinatorFixture(t);
+  speak(dc,"request","Open Build");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"request",transcript:"Open Build."});
+  dc.emit("input_audio_buffer.speech_started",{item_id:"noise"});
+  dc.emit("response.created",{response:{id:"answer"}});
+  dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"open",arguments:JSON.stringify({request:"Open Build.",action:{kind:"open_thread",threadId:"build"}})});
+  await settle();
+  assert.equal(dc.sent.filter(e=>e.type==="response.cancel").length,0);
+  assert.equal(submits().length,1);
+  assert.deepEqual(submits()[0].utteranceItemIds,["request"]);
+});

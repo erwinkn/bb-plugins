@@ -1161,7 +1161,7 @@ export class VoiceAgent {
     } catch {
       /* keep {} */
     }
-    this.log("tool.call", { name, args, callId });
+    this.log("tool.call", { name, args, callId, responseId:event.response_id ?? null, userTurn:this.userTurn, responseUserTurn:this.responseIdentity.get(String(event.response_id))?.userTurn ?? null, confirmedSpeech:this.userSpeaking, audioActivity:this.input?.audioActive ?? false });
     this.lastTool = { name, at: Date.now() };
     let output: string;
     let status: "success" | "error" | undefined;
