@@ -36,6 +36,7 @@ interface PlanHeaderProps {
   onBack?: () => void;
   onRevise: () => void;
   onDelete: () => void;
+  onDiagnostics: () => void;
 }
 
 export function PlanHeader({
@@ -49,6 +50,7 @@ export function PlanHeader({
   onBack,
   onRevise,
   onDelete,
+  onDiagnostics,
 }: PlanHeaderProps) {
   const versions = sortedVersions(plan);
   const latest = latestVersion(plan);
@@ -151,6 +153,10 @@ export function PlanHeader({
             <DropdownMenuItem onSelect={() => void copyMarkdown()}>
               <Icon name="Copy" className="size-4" aria-hidden />
               Copy Markdown
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onDiagnostics}>
+              <Icon name="Info" className="size-4" aria-hidden />
+              Diagnostics
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={onDelete} className="text-destructive focus:text-destructive">

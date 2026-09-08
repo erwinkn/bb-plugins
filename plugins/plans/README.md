@@ -158,6 +158,22 @@ check version history, comments, stale approvals, duplicate requests, concurrent
 submissions, sample isolation, reload persistence, and uncertain delivery.
 They do not prove live provider delivery or the desktop and mobile layout.
 
+jsdom also cannot show engine behaviour. For the phone, run the WebKit probe
+against a live BB thread; it prints the same report as the panel's
+**Diagnostics** menu item (highlight API, resolved versus painted anchors, the
+nearest `user-select` value and the ancestor that set it) and saves a
+screenshot of the document:
+
+```sh
+npx playwright install webkit
+node scripts/mobile-probe.mjs /projects/<project>/threads/<thread>
+node scripts/mobile-probe.mjs --engine-only   # paint check without BB
+```
+
+The base URL comes from `BB_SERVER_URL` inside `bb` shells or `--base`. On a
+real phone, open the plan's `…` menu, choose Diagnostics, and paste the copied
+report into the thread.
+
 ## Annotation controls
 
 Select text to open a vertical menu: Comment (C), Redline (D), or Looks good (G).

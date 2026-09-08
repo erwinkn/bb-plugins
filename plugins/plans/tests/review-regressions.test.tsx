@@ -24,8 +24,11 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 
 // The component is imported after the mock so it sees the stub renderer.
 import { CommentComposer } from "../components/CommentRail";
+import { DiagnosticsDialog } from "../components/DiagnosticsDialog";
 import { PlanDocument, type AnchorMap } from "../components/PlanDocument";
+import { ReviewFooter } from "../components/ReviewFooter";
 import { useReviewDraft } from "../hooks/useReviewDraft";
+import { collectDiagnostics, formatDiagnostics } from "../lib/diagnostics";
 
 function renderBlocks(content: string) {
   return content.split(/\n\s*\n/).map((block, index) => {
@@ -599,4 +602,59 @@ it("hides shortcut labels on the touch menu", async () => {
   await selectText(content(), "existing data");
   expect(container.querySelectorAll("kbd")).toHaveLength(0);
   expect(screen.getByRole("button", { name: "Redline" })).toBeTruthy();
+});
+
+/* ---------- the host's mobile panel shell ---------- */
+
+describe("inside BB's select-none panel shell", () => {
+  // BB wraps the mobile secondary panel in `select-none`. WebKit then refuses
+  // both text selection and custom-highlight painting for the whole subtree,
+  // which is why the phone showed no highlights and no annotate bar.
+  it("opts the document back into text selection", () => {
+    const { content } = renderDocument({ markdown: "Keep the existing data." });
+    expect(content().classList.contains("select-text")).toBe(true);
+  });
+
+  it("keeps the decision buttons on the left in the stacked layout", () => {
+    const plan: Plan = {
+      id: "plan-1", title: "A plan", threadId: null, projectId: null, projectName: null, status: "review", sample: true,
+      createdAt: 1, updatedAt: 1, versions: [{ id: "v1", number: 1, markdown: "Keep the existing data.", createdAt: 1 }], comments: [],
+    };
+    render(
+      <ReviewFooter plan={plan} versionId="v1" note="" onNoteChange={vi.fn()} persistFailed={false} submitting={null} failure={null}
+        onSubmit={vi.fn()} onDismissFailure={vi.fn()} confirmOpen={false} onConfirmOpenChange={vi.fn()} onRevise={vi.fn()} />,
+    );
+    const row = screen.getByRole("button", { name: "Approve" }).parentElement!;
+    expect(row.className).toContain("justify-start");
+    expect(row.className).toContain("@3xl:justify-end");
+    expect(row.className).not.toMatch(/(^|\s)justify-end(\s|$)/);
+  });
+
+  it("reports a blocked selection and unpainted anchors in the diagnostics", () => {
+    const host = document.createElement("div");
+    host.style.userSelect = "none";
+    const doc = document.createElement("div");
+    doc.className = "plans-document";
+    host.append(doc);
+    document.body.append(host);
+    const anchors: AnchorMap = { a: { kind: "unique", start: 0, end: 4 }, b: { kind: "ambiguous", count: 2 }, c: { kind: "missing" } };
+    const report = collectDiagnostics(doc, anchors);
+    expect(report).toMatchObject({ highlightApi: true, anchored: 1, ambiguous: 1, missing: 1, painted: 0, userSelect: "none" });
+    const text = formatDiagnostics(report);
+    expect(text).toContain("Text selection: none (The host sets user-select: none here");
+    expect(text).toContain("Painted: 0 ranges (Fewer ranges painted than resolved.)");
+    host.remove();
+  });
+
+  it("opens a copyable diagnostics dialog", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<DiagnosticsDialog open onOpenChange={vi.fn()} root={null} anchors={{}} />);
+    expect(screen.getByRole("dialog", { name: "Diagnostics" })).toBeTruthy();
+    expect(screen.getByText("Highlight API")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    await act(async () => {});
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText.mock.calls[0]![0]).toMatch(/^Highlight API: available\nAnchors: 0 resolved/);
+  });
 });

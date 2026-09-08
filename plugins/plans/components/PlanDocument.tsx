@@ -179,8 +179,8 @@ export function PlanDocument({
     return () => observer.disconnect();
   }, []);
 
-  // Paint anchors. Resolved comments stay unpainted; the active or hovered
-  // comment gets the emphasized tier of its kind.
+  // Paint anchors; the active or hovered comment gets the emphasized tier of
+  // its kind.
   useEffect(() => {
     if (!supportsHighlights()) return;
     const entries: HighlightEntry[] = [];
@@ -352,7 +352,9 @@ export function PlanDocument({
     <div className={cn("relative flex min-h-0 flex-1 flex-col", className)}>
       <div
         ref={scrollRef}
-        className="plans-document relative min-h-0 flex-1 overflow-y-auto overscroll-contain"
+        // BB's mobile panel shell is select-none; WebKit then blocks both text
+        // selection and custom highlight painting in the subtree, so opt back in.
+        className="plans-document relative min-h-0 flex-1 select-text overflow-y-auto overscroll-contain"
       >
         <div
           ref={contentRef}

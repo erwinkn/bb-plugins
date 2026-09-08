@@ -25,6 +25,9 @@ const NAMES: Record<HighlightKind, { rest: string; emphasis: string }> = {
   looksGood: { rest: "plans-looks-good", emphasis: "plans-looks-good-active" },
 };
 
+/** Every registry name this plugin paints. */
+export const HIGHLIGHT_NAMES: ReadonlySet<string> = new Set(Object.values(NAMES).flatMap((names) => [names.rest, names.emphasis]));
+
 type HighlightLike = { add(range: AbstractRange): void; clear(): void; priority?: number };
 type HighlightRegistry = {
   set(name: string, highlight: HighlightLike): void;

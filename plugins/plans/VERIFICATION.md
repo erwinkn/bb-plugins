@@ -187,3 +187,37 @@ a mounted panel from a chosen plan to an empty thread and back. Diff comparison
 now normalizes trailing newlines before its equality check; tests cover both
 newline directions and a real line change. Full suite: 56 tests. These fixes
 close the two Bugbot findings from 67592f8; its security review had no findings.
+
+## Review fixes, `resolved` removal, and mobile shell (f278af6 and after)
+
+Bugbot's nine open threads were fixed in f278af6 and resolved with replies:
+unconditional viewport hooks; `bb plans review` rolls back its comments on a
+rejected submit; startup clears the `waits` table (a reload disposes every
+waiter, and the stale rows made `submitReview` skip the thread message; the
+new test is red without the fix); `promptChunk` fails fast on an aborted signal
+and closes the prompt when the local wait rejects; `bb plans submit` confines
+the file read with `rootPath`. Comment resolving was removed end to end. Suite:
+71 tests.
+
+Installed source switched from the worktree path to
+`git:…@bb/add-planning-plugin-to-bb-thr_iuuv5z8sw6`. BB refuses an in-place
+ref change, so this was `bb plugin remove` + `bb plugin install`; BB's `remove`
+deletes settings, secrets, schedules, and the managed source directory, not
+`~/.bb/plugins/erwin-plans/data.db`. The nine stored plans and the
+`nonBlockingProviders` setting survived. Resolved commit f278af6.
+
+Live Cursor path on that install: `plans_submit` returned `submitted` at once,
+a `plugin`-origin `pending_interactions` row for `erwin-plans` appeared on the
+thread, the thread showed Needs attention, and each decision arrived as a
+message that started the next turn (v7, v8, v9 of plan 7c470c5f).
+
+Mobile: both reported bugs (no text selection, no highlights) came from BB's
+mobile panel shell setting `select-none`; WebKit skips selection and custom
+highlight painting in that subtree. Reproduced in Playwright WebKit 26.6 with
+the iPhone 15 profile against the live BB page; setting `-webkit-user-select:
+text` on `.plans-document` made all three highlight kinds paint. Fix:
+`select-text` on the document, footer actions left-aligned in the stacked
+layout, a Diagnostics dialog with Copy in the plan menu, and
+`scripts/mobile-probe.mjs` for the WebKit report. Tests cover the class, the
+footer alignment, the report contents, and the dialog. Suite: 75 tests.
+Real-device confirmation is the user's phone check after `bb plugin update`.

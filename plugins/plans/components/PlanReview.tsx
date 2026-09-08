@@ -37,6 +37,7 @@ import {
 } from "../lib/plan-model";
 import { definedContext, type QuoteMatch } from "../lib/quote-anchor";
 import { CommentComposer, CommentRail, type CommentActions, type PendingComment } from "./CommentRail";
+import { DiagnosticsDialog } from "./DiagnosticsDialog";
 import { PlanChanges } from "./PlanChanges";
 import { PlanDocument, type AnchorMap } from "./PlanDocument";
 import { PlanHeader, type ReviewView } from "./PlanHeader";
@@ -83,6 +84,7 @@ export function PlanReview({
   const [anchors, setAnchors] = useState<AnchorMap>({});
   const [pendingMatch, setPendingMatch] = useState<QuoteMatch | null>(null);
   const [reviseOpen, setReviseOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState<ReviewAction | null>(null);
@@ -283,6 +285,7 @@ export function PlanReview({
         onBack={onBack}
         onRevise={() => setReviseOpen(true)}
         onDelete={() => setDeleteOpen(true)}
+        onDiagnostics={() => setDiagnosticsOpen(true)}
       />
       {!isLatest ? (
         <div className="flex items-center gap-2 border-b border-border bg-muted/60 px-4 py-1.5 text-xs text-muted-foreground">
@@ -475,6 +478,8 @@ export function PlanReview({
         onOpenChange={setReviseOpen}
         onSubmit={submitRevision}
       />
+
+      <DiagnosticsDialog open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen} root={rootRef.current} anchors={anchors} />
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>

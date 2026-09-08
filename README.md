@@ -393,6 +393,29 @@ Verified on 2026-09-07. No upstream issue filed. Suggested issue title:
 `Plugin tool calls: heartbeat Cursor's MCP client and abort orphaned calls`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Mobile panel shell: scope `select-none` to the drag handle
+
+On phones BB renders the secondary panel inside
+`div.fixed.inset-y-0.right-0 … touch-pan-y select-none`. Every plugin panel
+inherits `-webkit-user-select: none` from it. In WebKit (iOS Safari and the
+mobile app) that blocks two things inside a plugin: long-press text selection,
+and painting of CSS Custom Highlight API ranges, which WebKit treats like
+selection and skips under `user-select: none`. Chromium paints them regardless,
+so desktop hid the problem. The Plans plugin now sets `select-text` on its
+document; a plugin that renders selectable content should not have to know
+about the shell's rule.
+
+Requested behavior: keep `select-none` on the drag handle and header chrome
+only, or add `select-text` to the panel content slot.
+
+Reproduced on 2026-09-08 in Playwright WebKit 26.6 with the iPhone 15 profile
+against BB 0.42.1: `plugins/plans/scripts/mobile-probe.mjs` reports the
+blocking ancestor and `--engine-only` shows the same `Highlight` painting
+outside a `select-none` subtree and not inside it. No upstream issue filed.
+Suggested issue title: `Mobile panel shell applies select-none to plugin
+content, blocking selection and CSS highlights in WebKit`. File the request in
+[BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this

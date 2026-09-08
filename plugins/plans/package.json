@@ -58,6 +58,7 @@
     "cron-parser": "^5.5.0",
     "hono": "^4.11.9",
     "jsdom": "^26.1.0",
+    "playwright": "^1.63.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",

@@ -149,7 +149,7 @@ export function ReviewFooter({
               Draft not saved in this browser.
             </p>
           ) : null}
-          <div className="order-3 flex items-center justify-end gap-2 @3xl:order-2">
+          <div className="order-3 flex items-center justify-start gap-2 @3xl:order-2 @3xl:justify-end">
             <Button
               type="button"
               variant="outline"
