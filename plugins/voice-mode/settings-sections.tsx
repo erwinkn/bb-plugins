@@ -93,6 +93,8 @@ function voiceLabel(voice: Voice): string {
   return voice.charAt(0).toUpperCase() + voice.slice(1);
 }
 
+const linkClass = "text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline";
+
 const selectClass =
   "block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
 
