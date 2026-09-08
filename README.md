@@ -21,6 +21,9 @@ updates. See [Voice Mode](plugins/voice-mode/README.md).
 `erwin-provider-usage` supplies the compact usage popup. See [Provider usage
 compact](plugins/provider-usage/README.md) for installation and rollback.
 
+`erwin-plugin-nav` hides the ellipsis button on plugin sidebar rows, including
+Automations. See [Hide plugin nav menus](plugins/plugin-nav/README.md).
+
 ## Install
 
 Use BB 0.42.1 or later. The bb server needs Git, npm, and GitHub access to this
@@ -148,6 +151,26 @@ each remove/install cycle; a later plugin version may start storing data.
 
 
 ## Desired upstream changes
+
+### Hide the options button on plugin sidebar rows
+
+BB 0.42 always shows a hover ellipsis on plugin nav rows. The menu is only
+Hide from sidebar and Customize sidebar. Those actions stay available from
+right-click and More > Customize sidebar. There is no per-row or global
+visibility option.
+
+`erwin-plugin-nav` hides the button with a content script on
+`data-sidebar-navigation-item` / `.bb-sidebar-hover-actions`. Automations is
+special-cased by BB to `__bb__/automations` but still uses the plugin row.
+Thread rows and built-in New thread / Search / Extensions use different
+markup and stay unchanged.
+
+This belongs in BB's sidebar nav. A plugin CSS override will break if those
+selectors change.
+
+Status: implemented here. No upstream issue filed.
+Suggested issue title: `Allow hiding the plugin sidebar options button`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 ### Recursive thread archiving
 

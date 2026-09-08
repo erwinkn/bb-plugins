@@ -22,6 +22,10 @@
     {
       "name": "erwin-editor",
       "source": "./plugins/editor"
+    },
+    {
+      "name": "erwin-plugin-nav",
+      "source": "./plugins/plugin-nav"
     }
   ]
 }
