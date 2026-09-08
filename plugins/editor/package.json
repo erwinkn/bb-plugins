@@ -8,11 +8,12 @@
   },
   "bb": {
     "name": "Editor",
-    "description": "Monaco file editor with a Files panel, BB-matched syntax colors, and TypeScript, JSON, CSS, and HTML language services.",
+    "description": "Pierre file editor with a Files panel, an editable Changes diff tab, and BB-matched syntax colors.",
     "branding": {
       "icon": "Code"
     },
     "server": "./server.ts",
+    "host": "./host.ts",
     "app": "./app.tsx",
     "skills": [],
     "themes": [
@@ -352,12 +353,12 @@
     ]
   },
   "dependencies": {
+    "@fontsource-variable/geist-mono": "5.3.0",
     "@hugeicons/core-free-icons": "4.3.0",
     "@hugeicons/react": "1.1.10",
-    "@pierre/theme": "2.0.0",
-    "@shikijs/langs": "4.4.3",
+    "@pierre/diffs": "1.4.1",
+    "@pierre/trees": "1.0.0-beta.6",
     "esbuild": "0.28.2",
-    "monaco-editor": "0.56.0",
     "shiki": "4.4.3",
     "zod": "4.3.6"
   },
@@ -378,8 +379,8 @@
   "private": true,
   "scripts": {
     "build": "bb plugin build",
-    "build:monaco": "node scripts/stage-assets.mjs",
+    "build:pierre": "node scripts/stage-assets.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test lib/*.test.ts server.test.ts"
+    "test": "tsx --test lib/*.test.ts server.test.ts host.test.ts"
   }
 }

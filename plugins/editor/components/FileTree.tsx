@@ -3,6 +3,7 @@ import { ancestorsOf, buildTree, filterTree, type FlatEntry, type TreeNode } fro
 import { copyText } from "@/lib/editor-commands";
 import { cn } from "@/lib/utils";
 import { ContextMenu, type MenuState } from "./ContextMenu";
+import { useLongPress, type MenuPoint } from "@/lib/use-long-press";
 import { ChevronIcon, FileAddGlyph, FileIcon, FolderAddGlyph, FolderIcon, FolderOpenGlyph, RefreshGlyph } from "./icons";
 
 export type CreateKind = "file" | "directory";
@@ -127,13 +128,11 @@ export function FileTree({
   const absolutePathOf = (relative: string) =>
     root === "" ? relative : root.includes("\\") ? `${root}\\${relative.replace(/\//g, "\\")}` : `${root}/${relative}`;
 
-  const openMenu = (event: React.MouseEvent, node: TreeNode) => {
-    event.preventDefault();
+  const openMenu = (point: MenuPoint, anchor: HTMLElement | undefined, node: TreeNode) => {
     const parent = node.kind === "directory" ? node.path : node.path.slice(0, Math.max(node.path.lastIndexOf("/"), 0));
     setMenu({
-      x: event.clientX,
-      y: event.clientY,
-      anchor: event.currentTarget instanceof HTMLElement ? event.currentTarget : undefined,
+      ...point,
+      anchor,
       items: [
         ...(node.kind === "file" ? [{ label: "Open in new tab", onSelect: () => onOpenFile(node.path, { newTab: true }) }] : []),
         { label: "New file…", onSelect: () => startDraft(parent, "file") },
@@ -148,6 +147,25 @@ export function FileTree({
       ],
     });
   };
+
+  // Right click, long press, or keyboard on any row: the row under the point
+  // names the node, so one handler serves the whole tree.
+  const nodesByPath = useMemo(() => {
+    const map = new Map<string, TreeNode>();
+    const walk = (nodes: readonly TreeNode[]) => {
+      for (const node of nodes) {
+        map.set(node.path, node);
+        walk(node.children);
+      }
+    };
+    walk(tree);
+    return map;
+  }, [tree]);
+  const press = useLongPress<HTMLDivElement>((point) => {
+    const row = document.elementFromPoint(point.x, point.y)?.closest<HTMLElement>("[data-path]");
+    const node = row === null || row === undefined ? undefined : nodesByPath.get(row.dataset.path ?? "");
+    if (node !== undefined) openMenu(point, row ?? undefined, node);
+  });
 
   return (
     <div className="group/tree flex h-full min-h-0 flex-col bg-background" data-testid="file-tree">
@@ -189,7 +207,7 @@ export function FileTree({
           )}
         />
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2" role="tree">
+      <div className="min-h-0 flex-1 overflow-y-auto pb-2" role="tree" {...press}>
         {error !== null ? (
           <Message tone="error">{error}</Message>
         ) : isLoading && entries.length === 0 ? (
@@ -209,7 +227,6 @@ export function FileTree({
               expanded={effectiveExpanded}
               level={0}
               nodes={filtered.nodes}
-              onContextMenu={openMenu}
               onOpenFile={onOpenFile}
               onStartDraft={startDraft}
               onToggle={toggle}
@@ -338,7 +355,6 @@ interface RowsProps {
   expanded: ReadonlySet<string>;
   level: number;
   nodes: readonly TreeNode[];
-  onContextMenu: (event: React.MouseEvent, node: TreeNode) => void;
   onOpenFile: (path: string, options: { newTab: boolean }) => void;
   onStartDraft: (parent: string, kind: CreateKind) => void;
   onToggle: (path: string) => void;
@@ -350,7 +366,7 @@ interface RowsProps {
 }
 
 function Rows(props: RowsProps) {
-  const { activePath, activeRowRef, draft, rowEdit, expanded, level, nodes, onContextMenu, onOpenFile, onStartDraft, onToggle, onCancelDraft, onCreate, onEndRowEdit, onRename, onDelete } = props;
+  const { activePath, activeRowRef, draft, rowEdit, expanded, level, nodes, onOpenFile, onStartDraft, onToggle, onCancelDraft, onCreate, onEndRowEdit, onRename, onDelete } = props;
   return (
     <>
       {nodes.map((node) => {
@@ -379,7 +395,7 @@ function Rows(props: RowsProps) {
                   if (isDirectory) onToggle(node.path);
                   else onOpenFile(node.path, { newTab: event.metaKey || event.ctrlKey });
                 }}
-                onContextMenu={(event) => onContextMenu(event, node)}
+                data-path={node.path}
                 title={node.path}
                 aria-current={isActive ? "true" : undefined}
                 style={{ paddingLeft: 6 + level * INDENT_PER_LEVEL_PX }}

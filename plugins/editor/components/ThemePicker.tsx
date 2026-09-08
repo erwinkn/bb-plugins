@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BB_DEFAULT, THEME_PAIRS, type ThemeType } from "@/lib/themes";
+import { CODE_THEME_CHOICES, FOLLOW_BB, themeNameFor, type ThemeType } from "@/lib/themes";
 import { cn } from "@/lib/utils";
 import { CheckIcon, SearchIcon } from "./icons";
 
@@ -10,10 +10,8 @@ interface Choice {
 }
 
 /**
- * Picks BB's code theme from the pairs this plugin contributes. Moving
- * through the list previews the pair's theme for BB's current mode in the
- * editor; Enter or a click sets it on BB, so BB's previews and the diff view
- * follow; Esc puts BB's theme back.
+ * Previews predefined themes. A selection updates the shared Files/Changes
+ * setting; Escape restores the saved colors without changing the setting.
  */
 export function ThemePicker({
   mode,
@@ -23,7 +21,7 @@ export function ThemePicker({
   onClose,
 }: {
   mode: ThemeType;
-  /** The pair BB uses now (`default` for its stock theme); null while unknown or not one of ours. */
+  /** The selected plugin theme; null while loading. */
   current: string | null;
   onPreview: (pair: string | null) => void;
   onChoose: (pair: string) => void;
@@ -34,10 +32,10 @@ export function ThemePicker({
   const listRef = useRef<HTMLUListElement | null>(null);
 
   const choices = useMemo<Choice[]>(
-    () => [
-      { id: BB_DEFAULT, label: "BB default", detail: mode === "dark" ? "pierre-dark" : "pierre-light" },
-      ...THEME_PAIRS.map((pair) => ({ id: pair.id, label: pair.label, detail: pair[mode] })),
-    ],
+    () => CODE_THEME_CHOICES.map((choice) => ({
+      ...choice,
+      detail: choice.id === FOLLOW_BB ? "Current BB code theme" : themeNameFor(choice.id, mode),
+    })),
     [mode],
   );
   const matches = useMemo(() => {
@@ -118,7 +116,7 @@ export function ThemePicker({
                 choose(index);
               }
             }}
-            placeholder="Code theme for BB…"
+            placeholder="Code theme…"
             aria-label="Code theme"
             spellCheck={false}
             autoComplete="off"

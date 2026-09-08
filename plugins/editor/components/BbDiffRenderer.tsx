@@ -1,0 +1,52 @@
+import { useEffect, useState } from "react";
+import { useSettings, type PluginDiffRendererProps } from "@get-bb/plugin-sdk/app";
+import { lineHeightFor, monoFontFamily, prefsFrom } from "@/lib/editor-options";
+import { usePierreTheme } from "@/lib/pierre-theme";
+import { useAssets } from "@/lib/use-assets";
+import { patchRowEstimate } from "@/lib/bb-diff";
+import { PierreDiffBlock } from "./PierreDiffBlock";
+
+/**
+ * BB's diff renderer, replaced: every diff BB draws from a patch comes
+ * through here, and gets the same viewer as the Changes tab. The "Draw BB's
+ * diffs" setting hands the request back to BB, as does any failure to draw.
+ */
+export function BbDiffRenderer(props: PluginDiffRendererProps) {
+  const { Original } = props;
+  const { values } = useSettings();
+  const prefs = prefsFrom(values as Record<string, unknown> | null | undefined);
+  const theme = usePierreTheme();
+  const assets = useAssets();
+  const [failed, setFailed] = useState<string | null>(null);
+
+  const full = props.experimental_fullFileContents;
+  // Compare values: BB can recreate the sides object on an unrelated render.
+  useEffect(() => setFailed(null), [props.patch, full?.old.path, full?.old.content,
+    full?.new.path, full?.new.content, prefs.bbDiffs]);
+
+  if (!prefs.bbDiffs || failed !== null || assets.kind === "error") return <Original />;
+  const lineHeight = lineHeightFor(prefs.fontSize);
+  if (assets.kind === "loading") {
+    return <div aria-busy="true" style={{ minHeight: patchRowEstimate(props.patch) * lineHeight }} />;
+  }
+  return (
+    <PierreDiffBlock
+      baseUrl={assets.baseUrl}
+      patch={props.patch}
+      sides={full}
+      view={props.view}
+      wrap={props.overflow === "wrap"}
+      lineNumbers={props.showLineNumbers}
+      fontSize={prefs.fontSize}
+      lineHeight={lineHeight}
+      fontFamily={monoFontFamily()}
+      theme={theme}
+      onStatusChange={(status) => {
+        if (status.kind === "error") {
+          console.warn("[erwin-editor] falling back to BB's diff renderer:", status.message);
+          setFailed(status.message);
+        }
+      }}
+    />
+  );
+}

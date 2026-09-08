@@ -1,15 +1,27 @@
 import { toast } from "sonner";
-import type * as MonacoNs from "monaco-editor";
+import type { PierreSurfaceHandle } from "@/components/PierreSurface";
 
-type Editor = MonacoNs.editor.IStandaloneCodeEditor;
-
+/**
+ * The editor pane that had focus last, and the actions the command palette can
+ * run on it. The pane registers itself on focus and removes itself when it goes
+ * away, so a command never reaches a pane that is closed or off screen.
+ */
 export interface ActiveEditor {
-  editor: Editor;
+  /** This pane's id, and the key `forgetEditor` removes it by. */
+  id: string;
+  /** The pane's root element. A pane that is not on screen takes no command. */
+  element: HTMLElement | null;
+  /** Null until the editor surface is ready. */
+  handle: PierreSurfaceHandle | null;
+  /** Leave a preview and run after the editor is ready. */
+  withEditor?: ((run: (handle: PierreSurfaceHandle) => void) => void) | null;
   absolutePath: string;
   relativePath: string;
   save: () => void;
   quickOpen: (() => void) | null;
   toggleTree: (() => void) | null;
+  goToLine: (() => void) | null;
+  toggleWordWrap: (() => void) | null;
 }
 
 let lastFocused: ActiveEditor | null = null;
@@ -18,22 +30,18 @@ export function markEditorActive(active: ActiveEditor): void {
   lastFocused = active;
 }
 
-export function forgetEditor(editor: Editor): void {
-  if (lastFocused?.editor === editor) lastFocused = null;
+export function forgetEditor(id: string): void {
+  if (lastFocused?.id === id) lastFocused = null;
 }
 
 function targetEditor(): ActiveEditor | null {
-  const node = lastFocused?.editor.getDomNode();
-  if (!node || !node.isConnected || node.offsetParent === null) return null;
+  const element = lastFocused?.element;
+  if (!element || !element.isConnected || element.offsetParent === null) return null;
   return lastFocused;
 }
 
-function hasMultiLineSelection({ editor }: ActiveEditor): boolean {
-  return (
-    editor
-      .getSelections()
-      ?.some((selection) => !selection.isEmpty() && selection.startLineNumber !== selection.endLineNumber) ?? false
-  );
+function ready(active: ActiveEditor): PierreSurfaceHandle | null {
+  return active.handle?.status().kind === "ready" ? active.handle : null;
 }
 
 export interface EditorCommand {
@@ -43,19 +51,27 @@ export interface EditorCommand {
   run: (active: ActiveEditor) => void | Promise<void>;
 }
 
-function monacoAction(
+/** A command that needs the editor surface itself. */
+function surfaceCommand(
   id: string,
   title: string,
-  actionId: string,
-  precondition?: (active: ActiveEditor) => boolean,
+  run: (handle: PierreSurfaceHandle) => void,
+  precondition?: (handle: PierreSurfaceHandle) => boolean,
 ): EditorCommand {
   return {
     id,
     title,
-    precondition,
-    run: async ({ editor }) => {
-      editor.focus();
-      await editor.getAction(actionId)?.run();
+    precondition: (active) => {
+      const handle = ready(active);
+      return handle !== null ? (precondition?.(handle) ?? true) : !precondition && active.withEditor != null;
+    },
+    run: (active) => {
+      const handle = ready(active);
+      if (handle === null) {
+        if (!precondition) active.withEditor?.(run);
+        return;
+      }
+      run(handle);
     },
   };
 }
@@ -85,28 +101,46 @@ export const EDITOR_COMMANDS: readonly EditorCommand[] = [
     precondition: (active) => active.toggleTree !== null,
     run: (active) => active.toggleTree?.(),
   },
-  monacoAction("format", "Editor: format document", "editor.action.formatDocument"),
-  monacoAction("go-to-symbol", "Editor: go to symbol", "editor.action.quickOutline"),
-  monacoAction("go-to-line", "Editor: go to line", "editor.action.gotoLine"),
-  monacoAction("command-palette", "Editor: Monaco command palette", "editor.action.quickCommand"),
-  monacoAction("toggle-word-wrap", "Editor: toggle word wrap", "editor.action.toggleWordWrap"),
-  ...[1, 2, 3, 4, 5].map((level) =>
-    monacoAction(`fold-level-${level}`, `Editor: fold level ${level}`, `editor.foldLevel${level}`),
+  surfaceCommand("find", "Editor: find in file", (handle) => {
+    handle.focus();
+    handle.openSearch();
+  }),
+  surfaceCommand("find-replace", "Editor: find and replace in file", (handle) => {
+    handle.focus();
+    handle.openSearchReplace();
+  }),
+  surfaceCommand("find-next", "Editor: find next match", (handle) => handle.findNext()),
+  surfaceCommand("find-previous", "Editor: find previous match", (handle) => handle.findNext(true)),
+  {
+    id: "go-to-line",
+    title: "Editor: go to line",
+    precondition: (active) => active.goToLine !== null && (ready(active) !== null || active.withEditor != null),
+    run: (active) => active.goToLine?.(),
+  },
+  surfaceCommand(
+    "undo",
+    "Editor: undo",
+    (handle) => {
+      handle.focus();
+      handle.undo();
+    },
+    (handle) => handle.canUndo(),
   ),
-  monacoAction("fold-all", "Editor: fold all", "editor.foldAll"),
-  monacoAction("unfold-all", "Editor: unfold all", "editor.unfoldAll"),
-  monacoAction(
-    "sort-lines-ascending",
-    "Editor: sort selected lines ascending",
-    "editor.action.sortLinesAscending",
-    hasMultiLineSelection,
+  surfaceCommand(
+    "redo",
+    "Editor: redo",
+    (handle) => {
+      handle.focus();
+      handle.redo();
+    },
+    (handle) => handle.canRedo(),
   ),
-  monacoAction(
-    "sort-lines-descending",
-    "Editor: sort selected lines descending",
-    "editor.action.sortLinesDescending",
-    hasMultiLineSelection,
-  ),
+  {
+    id: "toggle-word-wrap",
+    title: "Editor: toggle word wrap",
+    precondition: (active) => active.toggleWordWrap !== null,
+    run: (active) => active.toggleWordWrap?.(),
+  },
   {
     id: "copy-path",
     title: "Editor: copy path of current file",

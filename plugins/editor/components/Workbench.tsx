@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { toast } from "sonner";
 import { experimental_useCodeTheme, useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
-import type { FlatEntry } from "@/lib/file-tree";
+import { splitPath, type FlatEntry } from "@/lib/file-tree";
+import { useElementWidth } from "@/lib/use-element-width";
 import type { EditorPrefs } from "@/lib/editor-options";
 import {
   clampTreeWidth,
@@ -18,9 +19,11 @@ import { cn } from "@/lib/utils";
 import { EditorPane, NoticeAction, NoticeRow, type EditorPaneHandle, type SetPref } from "./EditorPane";
 import { FileTree, type CreateKind } from "./FileTree";
 import { QuickOpen } from "./QuickOpen";
+import { ResizeHandle } from "./ResizeHandle";
 import { ThemePicker } from "./ThemePicker";
 import { themeNameFor } from "@/lib/themes";
 import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
+import { useFileWatch } from "@/lib/file-watch";
 
 export type Surface = "opener" | "panel";
 
@@ -55,7 +58,6 @@ interface PendingNavigation {
   historyIndex: number | null;
 }
 const COMPACT_BREAKPOINT_PX = 420;
-const KEYBOARD_RESIZE_STEP_PX = 24;
 const HISTORY_LIMIT = 50;
 
 export function Workbench({ surface, source, initialPath, workspaceKey, label, prefs, onSetPref, Original }: WorkbenchProps) {
@@ -76,7 +78,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   pendingRef.current = pendingOpen;
   const [treeOpen, setTreeOpen] = useState(() => readTreeOpen(surface));
   const [treeWidth, setTreeWidth] = useState(readTreeWidth);
-  const [width, setWidth] = useState(0);
+  const width = useElementWidth(rootRef);
   const [tree, setTree] = useState<TreeState>(EMPTY_TREE);
   const [quickOpen, setQuickOpen] = useState(false);
   const [themePicker, setThemePicker] = useState<{ current: string | null } | null>(null);
@@ -119,16 +121,6 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   useEffect(() => {
     if (surface === "panel") storeLastFile(workspaceKey, activePath);
   }, [activePath, surface, workspaceKey]);
-
-  useLayoutEffect(() => {
-    const element = rootRef.current;
-    if (element === null) return;
-    const measure = () => setWidth(element.clientWidth);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
 
   const compact = width > 0 && width < COMPACT_BREAKPOINT_PX;
   const effectiveTreeWidth = compact ? width : clampTreeWidth(treeWidth, width || Number.POSITIVE_INFINITY);
@@ -180,6 +172,19 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     [rpc, source],
   );
 
+  // A file that appeared or went away changes the tree; an edit does not.
+  // The open files themselves are re-read by the watch hook.
+  const treeReload = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useFileWatch(source, (event) => {
+    if (!treeRequested.current) return;
+    if (event.kind === "changed" && event.changes.every((change) => change.type === "update")) return;
+    if (treeReload.current !== null) clearTimeout(treeReload.current);
+    treeReload.current = setTimeout(() => {
+      treeReload.current = null;
+      void loadTree();
+    }, 300);
+  });
+
   const needTree = treeOpen || quickOpen;
   useEffect(() => {
     if (!needTree || treeRequested.current) return;
@@ -217,6 +222,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const guardedNavigate = useCallback(
     (pending: PendingNavigation) => {
       if (pending.path === activePath) {
+        if (compact) setTreeOpen(false);
         paneRef.current?.focus();
         return;
       }
@@ -328,26 +334,10 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     });
   }, [surface]);
 
-  // The handle's pointer listeners are bound when the drag starts, so they
-  // read the width through a ref rather than the render they closed over.
-  const treeWidthRef = useRef(treeWidth);
-  treeWidthRef.current = treeWidth;
-  const resizeStart = useRef(treeWidth);
   const treeOnRight = prefs.fileTreeSide === "right";
-  const resizeBy = (delta: number) => {
-    const next = clampTreeWidth(resizeStart.current + (treeOnRight ? -delta : delta), width);
-    treeWidthRef.current = next;
-    setTreeWidth(next);
-  };
-  const resizeEnd = () => {
-    resizeStart.current = treeWidthRef.current;
-    storeTreeWidth(treeWidthRef.current);
-  };
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
-    const inMonaco = (event.target as HTMLElement | null)?.closest(".monaco-editor") !== null;
-    if (inMonaco) return;
     const key = event.key.toLowerCase();
     if (key === "p" && !event.shiftKey) {
       event.preventDefault();
@@ -386,11 +376,11 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       {compact ? null : (
         <ResizeHandle
           side={treeOnRight ? "left" : "right"}
-          onResizeStart={() => {
-            resizeStart.current = treeWidth;
-          }}
-          onResize={resizeBy}
-          onResizeEnd={resizeEnd}
+          label="Resize the file tree"
+          width={treeWidth}
+          available={width}
+          onResize={setTreeWidth}
+          onResizeEnd={storeTreeWidth}
         />
       )}
     </div>
@@ -403,7 +393,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {pendingOpen !== null ? (
           <NoticeRow tone="warning">
-            Open {pendingOpen.path.split("/").at(-1)} and discard your unsaved changes?
+            Open {splitPath(pendingOpen.path).name} and discard your unsaved changes?
             <NoticeAction
               onClick={() => {
                 const next = pendingOpen;
@@ -442,6 +432,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           onToggleTree={toggleTree}
           onQuickOpen={() => setQuickOpen(true)}
           onOpenInTab={canOpenInTab ? () => void openInTab(activePath) : null}
+          onOpenPath={source.kind === "host" ? null : (path) => openFile(path, { newTab: false })}
           history={{ canBack: history.index > 0, canForward: history.index < history.paths.length - 1, back: goBack, forward: goForward }}
           onSetPref={onSetPref}
           themePreview={themePreview}
@@ -478,7 +469,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           current={themePicker.current}
           onPreview={(pair) => setThemePreview(pair === null ? null : themeNameFor(pair, bbTheme.mode))}
           onChoose={(pair) => {
-            // Keep the preview up until BB's theme arrives, so the switch does not flash.
+            // Keep the preview up until the shared setting arrives, so the switch does not flash.
             rpc
               .call("applyTheme", { pair })
               .then(() => setThemePreview(null))
@@ -538,74 +529,6 @@ function EmptyState({
           Go to file <kbd className="ml-1 text-muted-foreground">⌘P</kbd>
         </button>
       </div>
-    </div>
-  );
-}
-
-function ResizeHandle({
-  side,
-  onResizeStart,
-  onResize,
-  onResizeEnd,
-}: {
-  /** Edge of the tree column the handle sits on. */
-  side: "left" | "right";
-  onResizeStart: () => void;
-  onResize: (deltaX: number) => void;
-  onResizeEnd: () => void;
-}) {
-  const [dragging, setDragging] = useState(false);
-  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const target = event.currentTarget;
-    const pointerId = event.pointerId;
-    const startX = event.clientX;
-    setDragging(true);
-    onResizeStart();
-    target.setPointerCapture(pointerId);
-    const move = (moveEvent: PointerEvent) => {
-      if (moveEvent.pointerId === pointerId) onResize(moveEvent.clientX - startX);
-    };
-    const finish = (finishEvent: PointerEvent) => {
-      if (finishEvent.pointerId !== pointerId) return;
-      target.removeEventListener("pointermove", move);
-      target.removeEventListener("pointerup", finish);
-      target.removeEventListener("pointercancel", finish);
-      if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-      setDragging(false);
-      onResizeEnd();
-    };
-    target.addEventListener("pointermove", move);
-    target.addEventListener("pointerup", finish);
-    target.addEventListener("pointercancel", finish);
-  };
-  const grow = side === "right" ? 1 : -1;
-  return (
-    <div
-      role="separator"
-      aria-label="Resize the file tree"
-      aria-orientation="vertical"
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (event.key === "ArrowLeft") onResize(-KEYBOARD_RESIZE_STEP_PX * grow);
-        else if (event.key === "ArrowRight") onResize(KEYBOARD_RESIZE_STEP_PX * grow);
-        else return;
-        event.preventDefault();
-        onResizeEnd();
-      }}
-      className={cn(
-        "absolute top-0 z-10 h-full w-px bg-transparent transition-colors",
-        side === "right" ? "-right-px" : "-left-px",
-        "hover:bg-ring/50 focus-visible:bg-ring focus-visible:outline-none",
-        dragging && "bg-ring/60",
-      )}
-    >
-      <div
-        aria-hidden
-        onPointerDown={handlePointerDown}
-        className={cn("absolute top-0 h-full w-2.5 cursor-col-resize touch-none bg-transparent", side === "right" ? "-right-1" : "-left-1")}
-      />
     </div>
   );
 }
