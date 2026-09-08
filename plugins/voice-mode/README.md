@@ -304,3 +304,11 @@ See [the operator architecture](docs/live-operator.md) for contracts and limits.
 
 Current BB boundaries and desired upstream improvements are recorded in the
 [repository README](../../README.md#desired-upstream-changes).
+
+### Overview readiness and thread families
+
+A realtime response waits for all tool results from its preceding response before
+continuing. Summaries distinguish discovery metadata from checked results. By
+default, a thread means its parent workstream and child work together. Target
+lookup returns non-archived parents unless children or archives are explicitly
+requested. See [the evidence and acceptance checks](docs/overview-consistency.md).

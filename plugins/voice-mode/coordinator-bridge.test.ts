@@ -13,7 +13,7 @@ const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
  * records every client event, and an rpc spy that answers claimCall with a
  * conversation id and records handoffs, delivery reports, and reservations.
  */
-async function coordinatorFixture(t: TestContext, options: { submit?: (envelope: Any) => Promise<Any> | Any; reserve?: () => Any; sequence?: (input:Any)=>Any; coordinator?: boolean; settleInput?:boolean; configure?:boolean } = {}) {
+async function coordinatorFixture(t: TestContext, options: { submit?: (envelope: Any) => Promise<Any> | Any; reserve?: () => Any; sequence?: (input:Any)=>Any; coordinator?: boolean; settleInput?:boolean; configure?:boolean; read?: (threadId:string)=>Promise<Any> } = {}) {
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"] });
   const originals = ["navigator", "RTCPeerConnection", "Audio"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const channels: FakeDataChannel[] = [];
@@ -72,6 +72,7 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
       if (method === "resolveThreadViews") return { views: args.threadIds.map((threadId:string)=>({kind:"thread",id:`thread:${threadId}`,threadId,projectId:"proj_other",title:"Build thread"})) };
       if (method === "sequence") return options.sequence ? options.sequence(args) : {state:null};
       if (method === "pendingReplies") return { replies: [] };
+      if (method === "readVoiceThread" && options.read) return options.read(args.threadId);
       if (method === "runTool") return { output: "{}", status: "success" };
       return { ok: true };
     }) as never },
@@ -852,4 +853,65 @@ test("noise after response creation was requested cannot cancel that response or
   assert.equal(dc.sent.filter(e=>e.type==="response.cancel").length,0);
   assert.equal(submits().length,1);
   assert.deepEqual(submits()[0].utteranceItemIds,["request"]);
+});
+
+
+test("one answer waits for every tool result in the response", async t=>{
+  const pending=new Map<string,(value:Any)=>void>();
+  const {dc}=await coordinatorFixture(t,{read:id=>new Promise(resolve=>pending.set(id,resolve))});
+  speak(dc,"overview","Compare the recent workstreams.");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"overview",transcript:"Compare the recent workstreams."});
+  dc.emit("response.created",{response:{id:"reads"}});
+  const before=dc.responses().length;
+  for(const id of ["first","second","third"])dc.emit("response.function_call_arguments.done",{name:"read_thread",call_id:id,arguments:JSON.stringify({threadId:id})});
+  dc.emit("response.done",{response:{id:"reads",status:"completed",output:[{type:"function_call"},{type:"function_call"},{type:"function_call"}]}});
+  await settle();
+  pending.get("first")!({output:"First result"});await settle();
+  assert.equal(dc.responses().length,before,"one result must not start a partial answer");
+  pending.get("second")!({output:"Second result"});await settle();
+  assert.equal(dc.responses().length,before);
+  pending.get("third")!({output:"Third result"});await settle();
+  assert.equal(dc.toolOutputs().length,3);assert.equal(dc.responses().length,before+1);
+  dc.emit("response.created",{response:{id:"summary"}});
+  dc.emit("response.done",{response:{id:"summary",status:"completed",output:[{type:"message"}]}});
+  await settle();assert.equal(dc.responses().length,before+1,"late continuation flags must not cause a second summary");
+});
+
+test("a final handoff suppresses the continuation requested by an earlier read in the batch",async t=>{
+  const {dc}=await coordinatorFixture(t);
+  speak(dc,"batch","Check Build and send it my request.");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"batch",transcript:"Check Build and send it my request."});
+  dc.emit("response.created",{response:{id:"read-and-send"}});
+  const before=dc.responses().length;
+  dc.emit("response.function_call_arguments.done",{name:"read_thread",call_id:"read",arguments:JSON.stringify({threadId:"build"})});
+  dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"send",arguments:JSON.stringify({request:"Send my request to Build",action:{kind:"send_message",threadId:"build",purpose:"instruction"}})});
+  dc.emit("response.done",{response:{id:"read-and-send",status:"completed",output:[{type:"function_call"},{type:"function_call"}]}});
+  await settle();assert.equal(dc.toolOutputs().length,2);assert.equal(dc.responses().length,before);
+});
+
+test("interrupting a pending read cannot revive an answer to the old request",async t=>{
+  let finish!: (value:Any)=>void;
+  const {dc}=await coordinatorFixture(t,{read:()=>new Promise(resolve=>{finish=resolve;})});
+  speak(dc,"old","Compare these workstreams.");dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"old",transcript:"Compare these workstreams."});
+  dc.emit("response.created",{response:{id:"old-read"}});
+  dc.emit("response.function_call_arguments.done",{name:"read_thread",call_id:"old-tool",arguments:JSON.stringify({threadId:"build"})});
+  dc.emit("response.done",{response:{id:"old-read",status:"completed",output:[{type:"function_call"}]}});
+  await settle();const before=dc.responses().length;
+  speak(dc,"new","Wait, I have another question.");
+  finish({output:"Late old result"});await settle();
+  assert.equal(dc.responses().length,before);assert.match(dc.toolOutputs()[0].item.output,/earlier spoken turn/);
+});
+
+test("an old handoff finishing cannot erase a newer user's pending response",async t=>{
+  let finish!: (value:Any)=>void;
+  const {dc}=await coordinatorFixture(t,{submit:()=>new Promise(resolve=>{finish=resolve;})});
+  speak(dc,"old-send","Send Build this request.");dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"old-send",transcript:"Send Build this request."});
+  dc.emit("response.created",{response:{id:"old-action"}});
+  dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"old-action-tool",arguments:JSON.stringify({request:"Send Build this request",action:{kind:"send_message",threadId:"build",purpose:"instruction"}})});
+  dc.emit("response.done",{response:{id:"old-action",status:"completed",output:[{type:"function_call"}]}});
+  await settle();const before=dc.responses().length;
+  speak(dc,"new-question","What happens when I interrupt?");dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"new-question",transcript:"What happens when I interrupt?"});
+  await settle();assert.equal(dc.responses().length,before);
+  finish({status:"quick_running",receipt:null,error:null});await settle();
+  assert.equal(dc.responses().length,before+1,"the current user still needs an answer");
 });

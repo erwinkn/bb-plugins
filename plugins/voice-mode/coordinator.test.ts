@@ -1184,3 +1184,23 @@ test("coordinator speech uses thread names while retaining structured IDs",async
   await h.harness.behavior.callAgentTool("voice_reply",{...args,speech:"The editor thread is ready."},{threadId:h.coordinatorId()});
   assert.equal(h.replies()[0].speech,"The editor thread is ready.");assert.deepEqual(h.replies()[0].threadIds,["thr_j58nxpnz6q"]);
 });
+
+test("target discovery defaults to current parents and keeps explicit child and archive access",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());await h.claim("family-lookup");
+  const rows=[makeThreadResponse({id:"parent",title:"Workstream",updatedAt:100,createdAt:1}),
+    makeThreadResponse({id:"child",title:"Worker review",parentThreadId:"parent",updatedAt:300}),
+    makeThreadResponse({id:"archived",title:"Old work",archivedAt:10,updatedAt:500}),
+    makeThreadResponse({id:"hidden",visibility:"hidden",updatedAt:600})];
+  const listArgs:Any[]=[];
+  h.harness.sdk.stub("threads.list",async(args:Any)=>{listArgs.push(args);return rows;});
+  const main=await h.rpc("lookupVoiceTargets",{nonce:"family-lookup",query:""});
+  assert.deepEqual(main.threads.map((r:Any)=>r.id),["parent"]);
+  assert.equal(listArgs[0].hasParent,false);assert.equal(listArgs[0].archived,false);
+  const all=await h.rpc("lookupVoiceTargets",{nonce:"family-lookup",query:"",includeChildren:true,includeArchived:true});
+  assert.deepEqual(all.threads.map((r:Any)=>r.id),["archived","child","parent"]);
+  h.harness.sdk.stub("threads.search",async()=>({active:{total:4,results:rows.map(thread=>({thread,matches:[]}))},archived:{total:0,results:[]}}));
+  const searched=await h.rpc("lookupVoiceTargets",{nonce:"family-lookup",query:"work"});
+  assert.deepEqual(searched.threads.map((r:Any)=>r.id),["parent"]);
+  const child=await h.rpc("lookupVoiceTargets",{nonce:"family-lookup",query:"Worker review",includeChildren:true});
+  assert.deepEqual(child.threads.map((r:Any)=>r.id),["child","parent"]);
+});

@@ -1066,15 +1066,17 @@ export class VoiceAgent {
    * Ask the model to continue — at most one response.create in flight.
    * The realtime API rejects response.create while a response is being
    * generated (e.g. two tool calls in one response would send two), so an
-   * active response defers a single coalesced create until response.done.
+   * active response or unfinished tool batch defers one coalesced create until
+   * generation has ended and every tool result is in the conversation.
    */
   private requestResponse(dc: RTCDataChannel) {
     if (dc.readyState !== "open") return;
     if (!this.sessionReady) return;
-    if (this.responseActive || this.userSpeaking || !this.input?.snapshot()) {
+    if (this.responseActive || this.pendingToolCalls > 0 || this.userSpeaking || !this.input?.snapshot()) {
       this.responsePending = true;
       return;
     }
+    this.responsePending = false;
     this.activeResponseId = null;
     this.responseRequestVersion = this.userTurn;
     this.setResponseActive(true);
@@ -1186,7 +1188,7 @@ export class VoiceAgent {
         status = "success";
       } else if (name === "lookup_targets") {
         const origin = this.responseIdentity.get(String(event.response_id));
-        const result = await bindings.rpc.call("lookupVoiceTargets", {nonce:toolSessionId,query:typeof args.query === "string" ? args.query : ""});
+        const result = await bindings.rpc.call("lookupVoiceTargets", {nonce:toolSessionId,query:typeof args.query === "string" ? args.query : "",includeChildren:args.includeChildren === true,includeArchived:args.includeArchived === true});
         if (origin?.userTurn !== this.userTurn || this.interruptedResponses.has(String(event.response_id))) {
           requestResponseAfter = false;
           throw new Error("The lookup belongs to an earlier spoken turn.");
@@ -1201,7 +1203,10 @@ export class VoiceAgent {
         }
         output = await this.bridge.delegate(callId, args, name === "quick_action");
         requestResponseAfter = false;
-        if (origin.userTurn === this.userTurn && !this.interruptedResponses.has(String(event.response_id))) this.delegatedTurn = origin.userTurn;
+        if (origin.userTurn === this.userTurn && !this.interruptedResponses.has(String(event.response_id))) {
+          this.responsePending = false;
+          this.delegatedTurn = origin.userTurn;
+        }
         status = "success";
         label = "Request recorded";
         this.refreshBridgeSnapshot();
@@ -1214,6 +1219,7 @@ export class VoiceAgent {
         status = "success";
       } else if (name === "remain_silent") {
         output = this.bridge.remainSilent();
+        this.responsePending = false;
         this.delegatedTurn = this.userTurn;
         status = "success";
         requestResponseAfter = false;
@@ -1729,6 +1735,7 @@ export class VoiceAgent {
             .finally(() => {
               if (this.session !== session) return;
               this.pendingToolCalls -= 1;
+              if (this.pendingToolCalls === 0 && this.responsePending) this.requestResponse(dc);
               this.settleDelegatedTurn();
               this.markConversationChange();
               this.scheduleReplyDrain();
@@ -1772,7 +1779,6 @@ export class VoiceAgent {
             this.settleDelegatedTurn();
             if (this.endCallAfterResponse && !hasToolCalls && !this.assistantSpeaking) { this.stop(); return; }
             if (this.responsePending) {
-              this.responsePending = false;
               this.requestResponse(dc);
             }
             this.scheduleReplyDrain();
