@@ -233,7 +233,7 @@ describe("spaces page", () => {
         .getAttribute("aria-current"),
     ).toBe("page");
     expect(slot.getByRole("heading", { name: "Only One" })).toBeTruthy();
-    expect(projectRows(slot)).toEqual(["One", "Two", "Three", "Personal"]);
+    expect(projectRows(slot)).toEqual(["One", "Two", "Three", "No project"]);
     expect(slot.getByText("/code/one")).toBeTruthy();
     expect(slot.queryByText("MacBook")).toBeNull();
     const boxes = slot.getAllByRole("checkbox") as HTMLInputElement[];
@@ -243,7 +243,7 @@ describe("spaces page", () => {
       ["Include One in Only One", true],
       ["Include Two in Only One", false],
       ["Include Three in Only One", false],
-      ["Include Personal in Only One", false],
+      ["Include No project in Only One", false],
     ]);
     // Rows navigate within the page.
     fireEvent.click(slot.getByRole("button", { name: /^Both/ }));
@@ -416,7 +416,7 @@ describe("spaces page", () => {
       ).find(
         (li) => li.querySelector("[data-project-name]")?.textContent === name,
       )!;
-    expect(projectRow("Personal").getAttribute("draggable")).toBeNull();
+    expect(projectRow("No project").getAttribute("draggable")).toBeNull();
     fireEvent.dragStart(projectRow("Three"), { dataTransfer: transfer });
     fireEvent.dragOver(projectRow("One"), { dataTransfer: transfer });
     fireEvent.drop(projectRow("One"), { dataTransfer: transfer });
@@ -428,7 +428,7 @@ describe("spaces page", () => {
       }),
     );
     await waitFor(() =>
-      expect(projectRows(slot)).toEqual(["Three", "One", "Two", "Personal"]),
+      expect(projectRows(slot)).toEqual(["Three", "One", "Two", "No project"]),
     );
   });
 
@@ -512,7 +512,7 @@ describe("spaces page", () => {
       }),
     );
     await waitFor(() =>
-      expect(projectRows(slot)).toEqual(["One", "Deux", "Three", "Personal"]),
+      expect(projectRows(slot)).toEqual(["One", "Deux", "Three", "No project"]),
     );
 
     await openRowMenu(slot, "Project actions: Deux");
@@ -525,7 +525,7 @@ describe("spaces page", () => {
       }),
     );
     await waitFor(() =>
-      expect(projectRows(slot)).toEqual(["Deux", "One", "Three", "Personal"]),
+      expect(projectRows(slot)).toEqual(["Deux", "One", "Three", "No project"]),
     );
 
     await openRowMenu(slot, "Project actions: Three");
@@ -560,7 +560,7 @@ describe("spaces page", () => {
     await waitFor(() => expect(slot.getByText("/code/alpha")).toBeTruthy());
     // The personal project has no row menu.
     expect(
-      slot.queryByRole("button", { name: "Project actions: Personal" }),
+      slot.queryByRole("button", { name: "Project actions: No project" }),
     ).toBeNull();
   });
 
@@ -596,7 +596,7 @@ describe("spaces page", () => {
       ],
     });
     await waitFor(() =>
-      expect(projectRows(slot)).toEqual(["Two", "Three", "Personal"]),
+      expect(projectRows(slot)).toEqual(["Two", "Three", "No project"]),
     );
     expect(slot.queryByRole("form")).toBeNull();
   });

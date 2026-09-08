@@ -10,6 +10,7 @@ import { toggleValue } from "../lib/client-state";
 import { SPACE_NAME_MAX, type Space } from "../lib/space-schema";
 import { moveItem, newSpaceId } from "../lib/spaces";
 import { usePortalScopeProps } from "../lib/portal-scope";
+import { projectLabel } from "../lib/project-schema";
 import { useCompact } from "../lib/use-compact";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
 import { useProjects } from "../lib/use-projects";
@@ -230,12 +231,9 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
           New space
         </h2>
         <NewSpaceForm
-          projects={
-            projects.inventory?.projects.map(({ id, name }) => ({
-              id,
-              name,
-            })) ?? sidebar.projects.map(({ id, name }) => ({ id, name }))
-          }
+          projects={(projects.inventory?.projects ?? sidebar.projects).map(
+            (project) => ({ id: project.id, name: projectLabel(project) }),
+          )}
           onSubmit={async (name, projectIds) => {
             const id = newSpaceId();
             await save([...catalog, { id, name, projectIds }]);

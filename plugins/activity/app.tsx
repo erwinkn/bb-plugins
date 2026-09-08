@@ -10,6 +10,7 @@ import {
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import type { projectContract } from "./lib/project-contract";
+import { projectLabel } from "./lib/project-schema";
 import { STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
@@ -148,7 +149,7 @@ function ThreadsList(props: PluginThreadListProps) {
   const report = (cause: unknown) =>
     setError(cause instanceof Error ? cause.message : String(cause));
   const projectNames = new Map(
-    projects.map((project) => [project.id, project.name]),
+    projects.map((project) => [project.id, projectLabel(project)]),
   );
   const providerNames = new Map(
     providers.map((provider) => [provider.id, provider.displayName]),
@@ -187,7 +188,7 @@ function ThreadsList(props: PluginThreadListProps) {
         project.id,
         {
           id: project.id,
-          name: project.name,
+          name: projectLabel(project),
           isPersonal: project.isPersonal,
           known: true,
         },
@@ -197,7 +198,7 @@ function ThreadsList(props: PluginThreadListProps) {
     if (!displayProjects.has(thread.projectId)) {
       displayProjects.set(thread.projectId, {
         id: thread.projectId,
-        name: "No project",
+        name: "Unknown project",
         isPersonal: false,
         known: false,
       });
@@ -213,7 +214,7 @@ function ThreadsList(props: PluginThreadListProps) {
     ) {
       displayProjects.set(projectId, {
         id: projectId,
-        name: "No project",
+        name: "Unknown project",
         isPersonal: false,
         known: false,
       });
@@ -232,7 +233,7 @@ function ThreadsList(props: PluginThreadListProps) {
     props.onNavigate();
   };
   const scopeProjects = projects
-    .map((project) => ({ id: project.id, name: project.name }))
+    .map((project) => ({ id: project.id, name: projectLabel(project) }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const selectAll = () =>
     updateState((current) => ({ ...current, spaceId: null }));

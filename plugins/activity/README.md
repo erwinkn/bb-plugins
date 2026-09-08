@@ -67,7 +67,9 @@ own project in Project view. Parent names appear in the hover info card.
 If a parent's title is absent from the sidebar data, opening the info card
 fetches only that thread's title, without loading the archive list. A failed
 lookup shows Unavailable and retries when the card is reopened.
-If project details are missing, its threads remain in a No project group.
+If project details are missing, its threads remain in an Unknown project
+group. BB's personal project, which holds threads outside any project, is
+shown as **No project** everywhere in the plugin.
 Each missing project keeps its own group until BB supplies its name.
 
 The display menu switches between Status and Project grouping and shows or hides

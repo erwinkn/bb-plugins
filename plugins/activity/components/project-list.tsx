@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import type { ManagedProject } from "../lib/project-schema";
+import { projectLabel, type ManagedProject } from "../lib/project-schema";
 import type { Space } from "../lib/space-schema";
 import { moveItem } from "../lib/spaces";
 import type { ProjectsState } from "../lib/use-projects";
@@ -165,7 +165,7 @@ export function ProjectList({
   const filtering = filter.trim().length > 0;
   const rows = projects.inventory?.projects ?? [];
   const shown = rows.filter((project) =>
-    matchesFilter(filter, project.name, project.source?.path),
+    matchesFilter(filter, projectLabel(project), project.source?.path),
   );
   const hosts = projects.inventory?.hosts ?? [];
   const hostNames = new Map(hosts.map((host) => [host.id, host.name]));
@@ -238,7 +238,7 @@ export function ProjectList({
               {space && (
                 <input
                   type="checkbox"
-                  aria-label={`Include ${project.name} in ${space.name}`}
+                  aria-label={`Include ${projectLabel(project)} in ${space.name}`}
                   checked={member}
                   onChange={() => onToggleMember(space.id, project.id)}
                   className="size-3.5 shrink-0"
@@ -247,7 +247,7 @@ export function ProjectList({
               <div className="min-w-0 flex-1 px-1">
                 <div className="flex items-center gap-2">
                   <span data-project-name="" className="min-w-0 truncate">
-                    {project.name}
+                    {projectLabel(project)}
                   </span>
                   {hosts.length > 1 && project.source && (
                     <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground">

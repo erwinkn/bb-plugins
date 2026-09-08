@@ -678,13 +678,13 @@ describe("activity sidebar", () => {
         sidebarThreads: { projects: [], threads: [] },
       });
       const draft = slot.getByRole("button", {
-        name: "New thread draft Draft No project",
+        name: "New thread draft Draft Unknown project",
       });
       expect(slot.getAllByText("New thread draft")).toHaveLength(1);
       expect(slot.queryByText("No matching threads.")).toBeNull();
       expect(
         slot.getByRole("region", {
-          name: groupBy === "status" ? "Draft" : "No project",
+          name: groupBy === "status" ? "Draft" : "Unknown project",
         }),
       ).toBeTruthy();
       fireEvent.click(draft);
@@ -713,7 +713,7 @@ describe("activity sidebar", () => {
         },
       });
       expect(loaded.getAllByText("New thread draft")).toHaveLength(1);
-      expect(loaded.queryByText("No project")).toBeNull();
+      expect(loaded.queryByText("Unknown project")).toBeNull();
       expect(
         loaded.getByRole("button", {
           name: "New thread draft Draft Recovered",
@@ -743,7 +743,7 @@ describe("activity sidebar", () => {
         },
       },
     );
-    const unknown = slot.getAllByRole("region", { name: "No project" });
+    const unknown = slot.getAllByRole("region", { name: "Unknown project" });
     expect(unknown).toHaveLength(2);
     expect(
       unknown[0].querySelectorAll("[data-sidebar-thread-id]"),
@@ -757,7 +757,7 @@ describe("activity sidebar", () => {
     expect(selected.getAttribute("aria-current")).toBe("page");
     expect(selected.closest("[data-thread-children-depth]")).not.toBeNull();
     fireEvent.click(
-      within(unknown[0]).getByRole("button", { name: "No project" }),
+      within(unknown[0]).getByRole("button", { name: "Unknown project" }),
     );
     expect(
       unknown[0].querySelectorAll("[data-sidebar-thread-id]"),

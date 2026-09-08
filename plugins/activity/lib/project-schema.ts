@@ -32,6 +32,17 @@ export type ProjectHost = z.infer<typeof hostSchema>;
 export type ProjectInventory = z.infer<typeof projectInventorySchema>;
 export type DirectoryListing = z.infer<typeof directoryListingSchema>;
 
+/** BB's personal project holds threads outside any project. */
+export const NO_PROJECT_LABEL = "No project";
+
+/** The name shown for a project; the personal project reads "No project". */
+export function projectLabel(project: {
+  name: string;
+  isPersonal: boolean;
+}): string {
+  return project.isPersonal ? NO_PROJECT_LABEL : project.name;
+}
+
 /** Last path segment, used as the default name for a new project. */
 export function folderName(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, "");
