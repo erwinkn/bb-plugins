@@ -7,7 +7,8 @@ review panel, comments, revision history, and feedback to the original agent. Se
 [Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
 
 `erwin-activity` adds a status-first thread list: Needs Attention, Unread,
-Working, Draft, and Done. It also supports project grouping. See
+Working, Draft, and Done. It also supports project grouping and spaces, named
+project selections shared by every client. See
 [Threads](plugins/activity/README.md) for local installation and draft limits.
 
 `erwin-editor` adds a Pierre file editor: a Files panel with a file tree,
@@ -147,19 +148,29 @@ preview; `bb plugin update` does not fetch path installations. After merge,
 return it to `main` and rebuild, or move it back to its recorded normal path.
 A managed Git source switch still needs the upstream API described below.
 
-For example, after confirming that `erwin-activity` has no server-side data:
+For example, after confirming that a plugin has no server-side data:
 
 ```sh
-bb plugin source erwin-activity --json
-bb plugin remove erwin-activity
-bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin erwin-activity --yes
-bb plugin source erwin-activity --json
+bb plugin source erwin-devin --json
+bb plugin remove erwin-devin
+bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin erwin-devin --yes
+bb plugin source erwin-devin --json
 ```
 
-After a new push, use `bb plugin update erwin-activity --yes`. After the user
+After a new push, use `bb plugin update <id> --yes`. After the user
 merges, repeat the verified source-switch procedure with `@main`, then check
 the resolved commit and the plugin behavior. Recheck the data stores before
 each remove/install cycle; a later plugin version may start storing data.
+
+`erwin-activity` stores its space catalog in `bb.storage.kv` (table
+`plugin_kv` in `bb.db`), so the exception above no longer applies to it once
+a space exists. Before changing its source, run `bb activity spaces-export`
+and keep the JSON; after the new source is running, compare it with a fresh
+export and restore it with `bb activity spaces-import '<json>'` if needed.
+Observed on BB 0.42.1: `bb plugin remove` left `plugin_kv` rows and
+`~/.bb/plugins/<id>/data.db` of removed plugins in place, matching its
+documented scope (settings, secrets, schedules). Treat that as a courtesy, not
+a guarantee; the export is the safety net.
 
 
 ## Desired upstream changes
@@ -328,6 +339,21 @@ different ref. Removal deletes settings, secrets, and schedules.
 
 Status: no upstream issue filed. Suggested issue title:
 `Allow changing a plugin Git ref while preserving plugin data`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
+
+### Project groups as a native sidebar scope
+
+The Threads plugin's spaces filter only its own list. BB's composer project
+picker, notifications, search, and the native sidebar do not know about them,
+and the plugin cannot add a new project to the selected space because the SDK
+has no project-creation event that identifies the originating client. A native
+project-group concept, or at least a client-aware `project.created` event and
+a way for a thread-list plugin to scope BB's new-thread project picker, would
+let the feature cover the whole product.
+
+Status: no upstream issue filed. Suggested issue title:
+`Native project groups (spaces) for sidebar and composer scoping`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 
