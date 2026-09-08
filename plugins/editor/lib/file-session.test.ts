@@ -106,6 +106,83 @@ afterEach(() => {
   setDraftStore(memoryDraftStore());
 });
 
+test("a stale draft requires a choice before edits, saves, or file actions", async () => {
+  const drafts = memoryDraftStore();
+  const key = sessionKeyFor(WORKSPACE, "a.txt");
+  const original = { content: "earlier work", baseSha256: hash("old disk"), savedAt: 1 };
+  drafts.write(key, original);
+  const disk = new Disk("new disk");
+  const { session, detach } = open(disk, "a.txt", drafts);
+  await settle();
+  session.setContent("new typing", "view-1");
+  session.flushDraft();
+  assert.equal(session.getSnapshot().content, "new disk");
+  assert.equal(await session.save(), false);
+  assert.equal(await session.overwrite(), false);
+  await assert.rejects(session.mutateFile({ content: "new disk", sha256: hash("new disk") }, async () => {
+    assert.fail("a file action must wait for the draft choice");
+  }), /Restore or discard/);
+  detach();
+  resetFileSessions();
+  assert.deepEqual(drafts.read(key), original);
+  const reopened = open(disk, "a.txt", drafts).session;
+  await settle();
+  reopened.restoreDraft();
+  assert.equal(reopened.getSnapshot().content, "earlier work");
+  reopened.setContent("earlier work plus typing", "view-1");
+  reopened.flushDraft();
+  assert.equal(drafts.read(key)?.content, "earlier work plus typing");
+  reopened.discardDraft();
+  reopened.setContent("fresh work", "view-1");
+  assert.equal(reopened.getSnapshot().content, "fresh work");
+});
+
+for (const outcome of ["text", "error", "unsupported"] as const) {
+  test(`a seed wins over a pending read that returns ${outcome}`, async () => {
+    const disk = new Disk("old read");
+    disk.holdReads = true;
+    const { session } = open(disk);
+    const seed = { content: "comparison text", sha256: hash("comparison text"), absolutePath: "/workspace/a.txt", relativePath: "a.txt" };
+    session.seed(seed);
+    assert.equal(session.getSnapshot().load.kind, "ready");
+    if (outcome === "error") disk.readError = "offline";
+    if (outcome === "unsupported") disk.unsupported = "binary";
+    disk.releaseReads();
+    await settle();
+    assert.equal(session.getSnapshot().load.kind, "ready");
+    assert.equal(session.getSnapshot().content, seed.content);
+  });
+}
+
+for (const outcome of ["error", "unsupported"] as const) {
+  test(`a seed recovers an ${outcome} load and restores a matching draft`, async () => {
+    const disk = new Disk("disk");
+    if (outcome === "error") disk.readError = "offline";
+    else disk.unsupported = "binary";
+    const drafts = memoryDraftStore();
+    drafts.write(sessionKeyFor(WORKSPACE, "a.txt"), { content: "my draft", baseSha256: hash("disk"), savedAt: 1 });
+    const { session } = open(disk, "a.txt", drafts);
+    await settle();
+    assert.equal(session.getSnapshot().load.kind, outcome);
+    session.seed({ content: "disk", sha256: hash("disk"), absolutePath: "/workspace/a.txt", relativePath: "a.txt" });
+    assert.equal(session.getSnapshot().load.kind, "ready");
+    assert.equal(session.getSnapshot().content, "my draft");
+    assert.equal(session.getSnapshot().draft.kind, "restored");
+  });
+}
+
+test("an unchanged seed recovers a previously loaded file that became unsupported", async () => {
+  const disk = new Disk("disk");
+  const { session } = open(disk);
+  await settle();
+  disk.unsupported = "temporarily unavailable";
+  await session.reload();
+  assert.equal(session.getSnapshot().load.kind, "unsupported");
+  session.seed({ content: "disk", sha256: hash("disk"), absolutePath: "/workspace/a.txt", relativePath: "a.txt" });
+  assert.equal(session.getSnapshot().load.kind, "ready");
+  assert.equal(session.getSnapshot().content, "disk");
+});
+
 test("one file has one session key, whichever caller resolved the source", () => {
   const fromPanel: FileSessionSource = { ...WORKSPACE, threadId: "thr_1" };
   const fromOpener: FileSessionSource = { ...WORKSPACE, threadId: null };

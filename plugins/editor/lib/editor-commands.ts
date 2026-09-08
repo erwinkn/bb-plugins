@@ -13,6 +13,8 @@ export interface ActiveEditor {
   element: HTMLElement | null;
   /** Null until the editor surface is ready. */
   handle: PierreSurfaceHandle | null;
+  /** Leave a preview and run after the editor is ready. */
+  withEditor?: ((run: (handle: PierreSurfaceHandle) => void) => void) | null;
   absolutePath: string;
   relativePath: string;
   save: () => void;
@@ -61,11 +63,14 @@ function surfaceCommand(
     title,
     precondition: (active) => {
       const handle = ready(active);
-      return handle !== null && (precondition?.(handle) ?? true);
+      return handle !== null ? (precondition?.(handle) ?? true) : !precondition && active.withEditor != null;
     },
     run: (active) => {
       const handle = ready(active);
-      if (handle === null) return;
+      if (handle === null) {
+        if (!precondition) active.withEditor?.(run);
+        return;
+      }
       run(handle);
     },
   };
@@ -109,7 +114,7 @@ export const EDITOR_COMMANDS: readonly EditorCommand[] = [
   {
     id: "go-to-line",
     title: "Editor: go to line",
-    precondition: (active) => active.goToLine !== null && ready(active) !== null,
+    precondition: (active) => active.goToLine !== null && (ready(active) !== null || active.withEditor != null),
     run: (active) => active.goToLine?.(),
   },
   surfaceCommand(

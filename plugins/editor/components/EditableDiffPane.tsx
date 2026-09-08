@@ -211,7 +211,7 @@ export function EditableDiffPane({
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const conflicted = state?.save.kind === "conflict";
-  const readOnly = !editable || !isEditor;
+  const readOnly = !editable || !isEditor || state?.draft.kind === "stale";
   const indicator = indicatorFor(state, read.kind === "error");
 
   /** A read refuses while the user is typing; say so instead of doing nothing. */
@@ -467,7 +467,7 @@ function Notices({
   if (state?.draft.kind === "stale") {
     rows.push(
       <NoticeRow key="draft-stale" tone="warning">
-        The file changed on disk after your unsaved changes were kept.
+        This file has an earlier draft. Restore or discard it before editing.
         <NoticeAction onClick={onRestoreDraft}>Restore them</NoticeAction>
         <NoticeAction onClick={onDiscardDraft}>Discard them</NoticeAction>
       </NoticeRow>,

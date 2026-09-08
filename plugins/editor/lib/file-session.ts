@@ -360,7 +360,7 @@ class Session implements FileSession {
    * text when Pierre ends its session.
    */
   setContent(text: string, viewId: string): void {
-    if (this.disposed || text === this.snapshot.content) return;
+    if (this.disposed || text === this.snapshot.content || this.snapshot.draft.kind === "stale") return;
     if (this.snapshot.editorId !== null && this.snapshot.editorId !== viewId) return;
     this.version += 1;
     const hasEdits = text !== this.snapshot.savedContent;
@@ -374,7 +374,7 @@ class Session implements FileSession {
       // The editing view already holds this text; only other views re-seed.
       epoch: this.snapshot.epoch + 1,
       epochAuthor: viewId,
-      draft: this.snapshot.draft.kind === "stale" ? this.snapshot.draft : { kind: "none" },
+      draft: { kind: "none" },
     });
     if (hasEdits) this.persistDraftSoon();
     else this.clearDraft();
@@ -387,14 +387,13 @@ class Session implements FileSession {
       void this.ensureLoaded();
       return;
     }
-    if (this.snapshot.load.kind !== "ready") return;
     if (this.snapshot.dirty || this.snapshot.draft.kind !== "none") {
       // Never replace unsaved work. Report a moved base instead.
       if (seed.sha256 !== this.snapshot.sha256) this.patch({ staleBase: true });
       return;
     }
-    if (seed.sha256 === this.snapshot.sha256 && seed.content === this.snapshot.content) return;
-    this.installDisk({ kind: "text", ...seed }, { applyDraft: false });
+    if (this.snapshot.load.kind === "ready" && seed.sha256 === this.snapshot.sha256 && seed.content === this.snapshot.content) return;
+    this.installDisk({ kind: "text", ...seed }, { applyDraft: this.snapshot.load.kind !== "ready" });
   }
 
   private async ensureLoaded(): Promise<void> {
@@ -408,8 +407,8 @@ class Session implements FileSession {
     }
     this.loading = true;
     this.patch({ load: { kind: "loading" } });
+    const version = this.version;
     try {
-      const version = this.version;
       const result = await this.io.read({ path: this.path, source: this.source });
       if (this.disposed) return;
       // A seed or another read landed first; its text is the newer one.
@@ -420,7 +419,7 @@ class Session implements FileSession {
       }
       this.installDisk(result, { applyDraft: true });
     } catch (error) {
-      if (this.disposed) return;
+      if (this.disposed || this.version !== version) return;
       this.patch({ load: { kind: "error", message: messageOf(error, "Could not open this file") } });
     } finally {
       this.loading = false;
@@ -479,6 +478,7 @@ class Session implements FileSession {
       if (this.disposed || this.snapshot.content !== expected.content || this.snapshot.sha256 !== expected.sha256) {
         throw new Error("The file changed. Try the action again.");
       }
+      if (this.snapshot.draft.kind === "stale") throw new Error("Restore or discard the earlier draft before editing");
       if (this.snapshot.save.kind === "conflict" || this.snapshot.staleBase) throw new Error("Resolve the file conflict first");
       const version = this.version;
       const result = await action();
@@ -512,7 +512,7 @@ class Session implements FileSession {
 
   private write(force: boolean): Promise<boolean> {
     return this.enqueue(async () => {
-      if (this.disposed || this.snapshot.load.kind !== "ready") return false;
+      if (this.disposed || this.snapshot.load.kind !== "ready" || this.snapshot.draft.kind === "stale") return false;
       // A reported conflict waits for the user: reload, or an explicit
       // overwrite. Auto save must not settle it on its own.
       if (!force && (this.snapshot.save.kind === "conflict" || this.draftBaseSha256 !== this.snapshot.sha256)) {

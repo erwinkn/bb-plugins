@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSettings, type PluginDiffRendererProps } from "@get-bb/plugin-sdk/app";
 import { lineHeightFor, monoFontFamily, prefsFrom } from "@/lib/editor-options";
 import { usePierreTheme } from "@/lib/pierre-theme";
@@ -19,12 +19,16 @@ export function BbDiffRenderer(props: PluginDiffRendererProps) {
   const assets = useAssets();
   const [failed, setFailed] = useState<string | null>(null);
 
+  const full = props.experimental_fullFileContents;
+  // Compare values: BB can recreate the sides object on an unrelated render.
+  useEffect(() => setFailed(null), [props.patch, full?.old.path, full?.old.content,
+    full?.new.path, full?.new.content, prefs.bbDiffs]);
+
   if (!prefs.bbDiffs || failed !== null || assets.kind === "error") return <Original />;
   const lineHeight = lineHeightFor(prefs.fontSize);
   if (assets.kind === "loading") {
     return <div aria-busy="true" style={{ minHeight: patchRowEstimate(props.patch) * lineHeight }} />;
   }
-  const full = props.experimental_fullFileContents;
   return (
     <PierreDiffBlock
       baseUrl={assets.baseUrl}

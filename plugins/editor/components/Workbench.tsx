@@ -222,6 +222,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const guardedNavigate = useCallback(
     (pending: PendingNavigation) => {
       if (pending.path === activePath) {
+        if (compact) setTreeOpen(false);
         paneRef.current?.focus();
         return;
       }

@@ -78,19 +78,33 @@ function resolveRelative(directory: readonly string[], target: string): string[]
  */
 export function workspacePathFromHref(href: string, rootPath: string): string | null {
   if (!href.startsWith("file:")) return null;
+  let url: URL;
   let pathname: string;
   try {
-    pathname = decodeURIComponent(new URL(href).pathname);
+    url = new URL(href);
+    pathname = decodeURIComponent(url.pathname);
   } catch {
     return null;
   }
-  const root = rootPath.replace(/\/+$/, "");
+  const windows = /^[a-z]:[\\/]/i.test(rootPath) || rootPath.startsWith("\\\\") || rootPath.startsWith("//");
+  const root = (windows ? rootPath.replace(/\\/g, "/") : rootPath).replace(/\/+$/, "");
   if (root === "") return null;
-  return pathname.startsWith(`${root}/`) && pathname.length > root.length + 1 ? pathname.slice(root.length + 1) : null;
+  if (windows) {
+    pathname = url.hostname ? `//${url.hostname}${pathname}` : pathname.replace(/^\/(?=[a-z]:\/)/i, "");
+  } else if (url.hostname) {
+    return null;
+  }
+  const candidate = windows ? pathname.toLowerCase() : pathname;
+  const prefix = windows ? root.toLowerCase() : root;
+  return candidate.startsWith(`${prefix}/`) && pathname.length > root.length + 1 ? pathname.slice(root.length + 1) : null;
 }
 
 /** The workspace root a file was read from: its absolute path minus its root-relative one. */
 export function workspaceRoot(absolutePath: string, relativePath: string): string {
+  if (/^[a-z]:[\\/]/i.test(absolutePath) || absolutePath.startsWith("\\\\")) {
+    absolutePath = absolutePath.replace(/\\/g, "/");
+    relativePath = relativePath.replace(/\\/g, "/");
+  }
   if (relativePath === "" || !absolutePath.endsWith(relativePath)) return "";
   return absolutePath.slice(0, absolutePath.length - relativePath.length).replace(/[\\/]+$/, "");
 }

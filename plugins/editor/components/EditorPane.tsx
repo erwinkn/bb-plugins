@@ -172,7 +172,8 @@ export function EditorPane({
     active.save = () => void save();
     active.quickOpen = onQuickOpen;
     active.toggleTree = onToggleTree;
-    active.goToLine = () => setGoToLineOpen(true);
+    active.goToLine = () => withEditor(() => setGoToLineOpen(true));
+    active.withEditor = !editing && state?.load.kind === "ready" ? withEditor : null;
     active.toggleWordWrap = () => onSetPref("wordWrap", !prefs.wordWrap);
   });
   useEffect(() => () => forgetEditor(paneId), [paneId]);
@@ -193,14 +194,17 @@ export function EditorPane({
     if (pending !== null && handle !== null) pending(handle);
   }, [focusNonce, surfaceStatus.kind, path, editing]);
 
+  // A queued command belongs to this file only.
+  useEffect(() => () => { afterEditorReady.current = null; }, [path]);
+
   const lineCount = useMemo(() => (state?.content ?? "").split("\n").length, [state?.content]);
   const unsupported = state?.load.kind === "unsupported";
-  const readOnly = !isEditor || unsupported;
+  const readOnly = !isEditor || unsupported || state?.draft.kind === "stale";
 
   // Find, replace and go-to-line need the editor, so they leave the preview
   // and run once it is ready.
   const withEditor = (run: (handle: PierreSurfaceHandle) => void) => {
-    if (editing) {
+    if (editing && surfaceRef.current?.status().kind === "ready") {
       runOnSurface(surfaceRef, run);
       return;
     }
@@ -233,7 +237,7 @@ export function EditorPane({
 
   const loading = state === null || state.load.kind === "loading" || (assets.kind === "loading" && !unsupported && editing);
   return (
-    <div ref={rootRef} className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+    <div ref={rootRef} onFocusCapture={() => markEditorActive(active)} onPointerDownCapture={() => markEditorActive(active)} className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <Toolbar
         path={path}
         indicator={indicatorFor(state, state?.load.kind === "error" || surfaceStatus.kind === "error")}
@@ -368,7 +372,7 @@ function Notices({
   if (state.draft.kind === "stale") {
     return (
       <NoticeRow tone="warning">
-        Unsaved changes from an earlier session were made against another version of this file.
+        This file has an earlier draft. Restore or discard it before editing.
         <NoticeAction onClick={onRestoreDraft}>Restore them</NoticeAction>
         <NoticeAction onClick={onDiscardDraft}>Discard them</NoticeAction>
       </NoticeRow>

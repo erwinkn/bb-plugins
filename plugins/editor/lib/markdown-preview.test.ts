@@ -67,9 +67,22 @@ test("file links BB rendered under the root map back to workspace paths", () => 
 
 test("the workspace root is the absolute path without its root-relative tail", () => {
   assert.equal(workspaceRoot("/repo/docs/guide.md", "docs/guide.md"), "/repo");
-  assert.equal(workspaceRoot("C:\\repo\\docs\\guide.md", "docs\\guide.md"), "C:\\repo");
+  assert.equal(workspaceRoot("C:\\repo\\docs\\guide.md", "docs\\guide.md"), "C:/repo");
   assert.equal(workspaceRoot("/repo/docs/guide.md", ""), "");
   assert.equal(workspaceRoot("/elsewhere/guide.md", "docs/guide.md"), "");
+});
+
+test("Windows preview links handle drive letters, mixed separators, and UNC hosts", () => {
+  const root = workspaceRoot("C:\\repo\\docs\\intro.md", "docs/intro.md");
+  assert.equal(root, "C:/repo");
+  assert.equal(workspacePathFromHref("file:///C:/repo/docs/a%20b.md", root), "docs/a b.md");
+  assert.equal(workspacePathFromHref("file:///c:/REPO/docs/a.md", "C:\\repo\\"), "docs/a.md");
+  assert.equal(workspacePathFromHref("file://server/share/repo/a.md", "\\\\server\\share\\repo"), "a.md");
+  assert.equal(workspacePathFromHref("file://server/share/repo/a.md", workspaceRoot("\\\\server\\share\\repo\\b.md", "b.md")), "a.md");
+  for (const href of ["file:///D:/repo/a.md", "file:///C:/repository/a.md", "file:///C:/repo/../outside.md", "file://other/share/repo/a.md"]) {
+    assert.equal(workspacePathFromHref(href, root), null, href);
+  }
+  assert.equal(workspacePathFromHref("file://other/work/space/a.md", "/work/space"), null);
 });
 
 test("anchors match headings by GitHub-style slug", () => {
