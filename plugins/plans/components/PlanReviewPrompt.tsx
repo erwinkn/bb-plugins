@@ -24,7 +24,7 @@ function readPayload(payload: unknown): PromptPayload | null {
 
 /**
  * Replaces the composer while an agent waits on a plan review. The decision
- * itself happens in the Review plan panel; this only opens it or lets the
+ * itself happens in the Plans panel; this only opens it or lets the
  * user release the agent without deciding.
  */
 export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteractionProps) {

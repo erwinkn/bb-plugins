@@ -4,7 +4,7 @@ Review a Markdown plan beside its BB thread. Select text, add comments or redlin
 versions, and send feedback to the agent. Approve a specific version when it is
 ready for implementation.
 
-The plugin adds a **Review plan** panel to each thread.
+The plugin adds a **Plans** panel to each thread.
 Its workflow uses an explicit plan submission tool. It does not replace or
 enforce a provider's built-in plan mode.
 Use the submission tool in a normal thread. If a provider is waiting for its
@@ -30,7 +30,7 @@ or resume before new agent tools become available.
    user does: BB marks the thread as waiting for you, and the composer shows a
    **Review plan** prompt with **Open** and **Skip**. New tools
    become available when BB starts or resumes the provider session.
-2. Open **Review plan** from the prompt or the **Plan** header button. Select
+2. Open **Plans** from the prompt or the **Plan** header button. Select
    text to add a comment, or add a general review note. Draft text stays in this
    browser; saved comments stay in BB.
 3. Select **Send feedback**. The prompt clears and the blocked tool call returns

@@ -45,7 +45,7 @@ find it with `bb plans list` and run `bb plans wait` on it.
   requested changes. Revise (below).
 - `approved`: implement this version. `comments` holds Looks good annotations.
 - `dismissed`: the user closed the prompt without deciding. Ask how to proceed.
-  The plan stays open in Review plan; a later decision arrives as a message.
+  The plan stays open in the Plans panel; a later decision arrives as a message.
 - `pending`: the wait timed out. Resume with
   `bb plans wait PLAN_ID --version-id VERSION_ID`; nothing was lost.
 - `superseded`: a newer version exists. Wait on `latestVersionId` instead.

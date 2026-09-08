@@ -10,7 +10,7 @@ import { PlanReviewPrompt } from "./components/PlanReviewPrompt";
 export default definePluginApp((app) => {
   app.slots.threadPanelAction({
     id: REVIEW_ACTION_ID,
-    title: "Review plan",
+    title: "Plans",
     icon: "ListTodo",
     layout: "flush",
     component: ThreadPlanPanel,
