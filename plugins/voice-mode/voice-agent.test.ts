@@ -6,7 +6,7 @@ import { writeAudioDevicePreferences } from "./audio-devices.ts";
 /** A VoiceAgent bound to a spy rpc that records every relayed call. */
 function agentWithRpcSpy() {
   const calls: { method: string; args: unknown }[] = [];
-  const agent = new VoiceAgent();
+  const agent = new VoiceAgent(async () => () => {});
   agent.bind({
     rpc: {
       call: (async (method: string, args: unknown) => {
@@ -22,7 +22,7 @@ function agentWithRpcSpy() {
 }
 
 test("mirrors a call owned by another realm from voice-presence", () => {
-  const agent = new VoiceAgent();
+  const agent = new VoiceAgent(async () => () => {});
   assert.equal(agent.getState(), "idle");
 
   agent.ingestPresence({ nonce: "call-A", phase: "live", startedAt: 1000 });
@@ -40,7 +40,7 @@ test("mirrors a call owned by another realm from voice-presence", () => {
 });
 
 test("ignores malformed or nonce-less presence", () => {
-  const agent = new VoiceAgent();
+  const agent = new VoiceAgent(async () => () => {});
   agent.ingestPresence(null);
   agent.ingestPresence({ phase: "live" });
   agent.ingestPresence({ nonce: "x", phase: "bogus" });
@@ -50,7 +50,7 @@ test("ignores malformed or nonce-less presence", () => {
 test("a mirrored call expires once its heartbeats lapse (no ghost live)", () => {
   mock.timers.enable({ apis: ["Date", "setInterval"] });
   try {
-    const agent = new VoiceAgent();
+    const agent = new VoiceAgent(async () => () => {});
     agent.ingestPresence({ nonce: "call-A", phase: "live", startedAt: 0 });
     assert.equal(agent.getState(), "live");
 
@@ -123,7 +123,7 @@ test("reloads audio preferences saved by another browser window", () => {
   });
 
   try {
-    const agent = new VoiceAgent();
+    const agent = new VoiceAgent(async () => () => {});
     writeAudioDevicePreferences(storage, {
       inputDeviceId: "mic-from-window-a",
       inputLabel: "Window A Mic",
@@ -174,7 +174,7 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
     createDataChannel() { channels.push(this.dc); return this.dc; }
     async createOffer() { return { type: "offer", sdp: "offer" }; }
     async setLocalDescription(description: RTCSessionDescriptionInit) { this.localDescription = description; }
-    async setRemoteDescription() { this.dc.onopen?.(); }
+    async setRemoteDescription() { this.dc.onopen?.(); this.dc.onmessage?.({data:JSON.stringify({type:"session.updated",session:{audio:{input:{turn_detection:null,transcription:{model:"gpt-realtime-whisper"}}}}})}); }
   }
   class FakeAudio {
     autoplay = false;
@@ -190,7 +190,7 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
   } } });
   Object.defineProperty(globalThis, "RTCPeerConnection", { configurable: true, value: FakePeerConnection });
   Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
-  const agent = new VoiceAgent();
+  const agent = new VoiceAgent(async () => () => {});
   agent.bind({
     rpc: { call: (async (method: string) => method === "claimCall" ? { sequence: 1, conversationId: "conv_test" } : method === "createCall" ? { sdp: "answer" } : method === "runTool" ? runTool() : { ok: true }) as never },
     context: { threadId: null, projectId: null, onNewThreadScreen: false },
@@ -298,7 +298,7 @@ test("stopping during the SDP exchange closes the mic and cancels startup", asyn
     value: FakeAudio,
   });
 
-  const agent = new VoiceAgent();
+  const agent = new VoiceAgent(async () => () => {});
   agent.bind({
     rpc: {
       // Pause startup at the SDP exchange so the test can stop mid-flight.
@@ -369,7 +369,7 @@ for (const outcome of ["resolve", "reject"] as const) {
 }
 
 test("binding requests presence only after an RPC binding is installed", () => {
-  const agent = new VoiceAgent();
+  const agent = new VoiceAgent(async () => () => {});
   let requests = 0;
   const unbind = agent.bind({
     rpc: { call: (async (method: string) => { if (method === "requestPresence") requests++; return { ok: true }; }) as never },

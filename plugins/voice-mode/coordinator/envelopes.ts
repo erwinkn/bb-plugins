@@ -3,7 +3,7 @@
 // the plugin boundary; nothing here trusts the realtime model, the coordinator
 // model, or persisted rows blindly.
 import { z } from "zod";
-import { narratedSequenceSchema } from "../narrated-sequence.ts";
+import { narratedSequenceSchema, narrationContextSchema } from "../narrated-sequence.ts";
 import { quickActionSchema } from "../quick-actions.ts";
 
 export const ENVELOPE_VERSION = 1 as const;
@@ -21,7 +21,7 @@ export const transcriptItemSchema = z
   .object({
     itemId: z.string().min(1).max(128),
     /** Null when transcription failed or never completed for this item. */
-    text: z.string().max(4000).nullable(),
+    text: z.string().max(8000).nullable(),
   })
   .strict();
 
@@ -39,6 +39,8 @@ export const userRequestEnvelopeSchema = z
     callSequence: z.number().int().nonnegative(),
     requestId: z.string().min(1).max(64),
     /** Committed user audio items this request binds to, oldest first. */
+    narrating:narrationContextSchema.nullable().optional(),
+    utteranceId:z.string().max(128).optional(), utteranceVersion:z.number().int().nonnegative().optional(),
     utteranceItemIds: z.array(z.string().min(1).max(128)).max(20),
     transcriptRevision: z.number().int().nonnegative(),
     /** True when every bound item has a completed transcript. */
@@ -159,6 +161,7 @@ export function formatRequestMessage(envelope: UserRequestEnvelope, extras: {
   preferences?: string;
   questionText?: string | null;
   latestAnnouncement?: { threadIds: string[]; text: string; delivery: string } | null;
+  narrating?: {replyId:string;step:number;threadIds:string[];text:string;delivery:string}|null;
   discussedThreadId?: string | null;
   topic?: string | null;
 }): string {
@@ -175,6 +178,7 @@ export function formatRequestMessage(envelope: UserRequestEnvelope, extras: {
     ...(extras.omitContext ? {context:"unchanged"} : {view:envelope.view}),
     ...(!extras.omitContext && extras.topic ? {topic:extras.topic} : {}),
     ...(!extras.omitContext && extras.discussedThreadId ? {discussed_thread:extras.discussedThreadId} : {}),
+    ...((envelope.narrating ?? extras.narrating) ? {narrating:envelope.narrating ?? extras.narrating} : {}),
     ...(!extras.omitContext && extras.latestAnnouncement ? {heard:extras.latestAnnouncement} : {}),
   };
   return `[voice request ${envelope.requestId}]\n${JSON.stringify(data)}${envelope.transcriptAvailable ? "" : "\nIncomplete transcript: ask before any destructive action."}`;

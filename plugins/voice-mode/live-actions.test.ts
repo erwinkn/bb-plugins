@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { LiveActionExecutor, formatVoiceInstruction, type ActionContext } from "./live-action-executor.ts";
-import { LIVE_ACTION_MIGRATIONS, LiveActionStore } from "./live-action-store.ts";
+import { LIVE_ACTION_MIGRATIONS, UTTERANCE_EFFECT_MIGRATIONS, LiveActionStore } from "./live-action-store.ts";
 import { quickActionSchema, type QuickAction } from "./quick-actions.ts";
 import { defaultWorkerSettings, WORKER_PROFILE_KEY } from "./worker-profiles.ts";
 import type { UserRequestEnvelope } from "./coordinator/envelopes.ts";
@@ -11,7 +11,7 @@ import type { UserRequestEnvelope } from "./coordinator/envelopes.ts";
 type Any = any;
 const settle = () => new Promise<void>(resolve=>setImmediate(resolve));
 function fixture() {
-  const db=new Database(":memory:");for(const sql of LIVE_ACTION_MIGRATIONS)db.exec(sql);
+  const db=new Database(":memory:");for(const sql of [...LIVE_ACTION_MIGRATIONS,...UTTERANCE_EFFECT_MIGRATIONS])db.exec(sql);
   const world={ overrides:{} as Record<string,(args?:Any)=>Promise<Any>>, sends:[] as Any[],spawns:[] as Any[],stops:[] as string[],watched:[] as string[],ui:[] as Any[],
     threads:new Map<string,Any>([["build",makeThreadResponse({id:"build",projectId:"app",title:"Build Fix",status:"active",visibility:"visible"})]]),
     hosts:[{id:"mac",name:"Desktop",status:"connected"},{id:"studio",name:"Studio",status:"disconnected"}],
@@ -188,4 +188,23 @@ test("opening an archived thread is a read/navigation operation, not a new instr
   const h=fixture();t.after(h.close);h.world.threads.get("build").archivedAt=1;
   const result=await h.executor().execute(h.envelope(),{kind:"open_thread",threadId:"build",split:false},"live",h.context);
   assert.equal(result.status,"succeeded");assert.equal(h.world.ui.length,1);assert.equal(h.world.sends.length,0);
+});
+
+test("distinct operations share an utterance while duplicate effects survive new tool ids and reload",async t=>{
+  const h=fixture();t.after(h.close);
+  const envelope=(id:string)=>({...h.envelope(id),utteranceId:"utterance-1",utteranceVersion:1});
+  await h.executor().execute(envelope("send"),send(),"live",h.context);
+  const result=await h.executor().execute(envelope("group"),{kind:"group",actions:[{kind:"open_thread",threadId:"build"},send() as Any]},"live",h.context);
+  assert.equal(result.status,"succeeded");assert.equal(h.world.ui.length,1);assert.equal(h.world.sends.length,1);
+  await h.executor().execute({...envelope("new-turn"),utteranceId:"utterance-2",utteranceVersion:2},send(),"live",h.context);
+  assert.equal(h.world.sends.length,2,"a new spoken request can explicitly repeat the action");
+});
+
+test("uncertain effects cannot be repeated under another request in the same utterance",async t=>{
+  const h=fixture();t.after(h.close);let attempts=0;
+  h.world.overrides.send=async()=>{attempts++;throw Error("Connection lost after acceptance");};
+  const envelope=(id:string)=>({...h.envelope(id),utteranceId:"utterance-1",utteranceVersion:1});
+  assert.equal((await h.executor().execute(envelope("first"),send(),"live",h.context)).status,"unknown");
+  assert.equal((await h.executor().execute(envelope("second"),send(),"live",h.context)).status,"unknown");
+  assert.equal(attempts,1);
 });

@@ -50,3 +50,14 @@ test("non-speech annotations are not words, while short spoken commands remain v
   for (const text of ["[BLANK_AUDIO]", "(cough)", "[noise]", "[music]", "...", "um uh"]) assert.equal(hasSpokenWords(text),false,text);
   for (const text of ["Stop", "Wait", "Yes", "No", "I", "[noise] wait"]) assert.equal(hasSpokenWords(text),true,text);
 });
+
+test("manual input fragments stream and merge by utterance without provider VAD events",()=>{
+  const stream=new TranscriptBuffer();
+  const events=[event(1,"user",{itemId:"first",text:"Ask Build to inspect logs.",utteranceId:"one",startedAt:100,endedAt:500}),event(2,"speech.lifecycle",{responseId:"ack",state:"started"})];
+  stream.update("user","second","Do not",800,{utteranceId:"one",userTurn:2});
+  const draft=projectConversation(withLiveTranscript(events,stream.snapshot("call"))).filter(m=>m.who==="you");
+  assert.equal(draft.length,1);assert.equal(draft[0].text,"Ask Build to inspect logs. Do not");assert.equal(draft[0].partial,true);
+  events.push(event(10,"user",{itemId:"second",text:"Do not edit files.",utteranceId:"one",startedAt:800,endedAt:950}));
+  const final=projectConversation(withLiveTranscript(events,stream.snapshot("call"))).filter(m=>m.who==="you");
+  assert.equal(final.length,1);assert.equal(final[0].id,draft[0].id);assert.equal(final[0].text,"Ask Build to inspect logs. Do not edit files.");assert.equal(final[0].partial,false);
+});

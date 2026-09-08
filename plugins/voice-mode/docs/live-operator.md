@@ -105,7 +105,7 @@ capabilities. Those require upstream BB support to enforce stronger isolation.
 This implementation exposes managed worktree creation as part of thread spawn,
 not a nonexistent standalone API. Model accuracy, multilingual intent handling,
 microphone quality, phone backgrounding, and real interrupt latency still need
-physical voice testing. No merge or installed-plugin reload is part of this change.
+physical voice testing. The combined input and operator implementation is prepared for the user-authorized local reload.
 
 
 ## Reliability integration — 8 September 2026
@@ -121,9 +121,10 @@ The old voice_send tool is retired. Its historical receipt table remains readabl
 for recovery; it cannot initiate another send. Both published migration histories
 retain their original statement indexes and gain the missing tables on upgrade.
 
-Noise handling still needs the reviewed client utterance controller. The current
-input path uses server VAD with automatic response/cancellation flags disabled;
-WebRTC tests showed that those flags do not prevent raw VAD from clearing audio.
-The five-second visible message merge is not an action-acceptance window. Neither
-the input-controller replacement nor a new continuation delay is part of this
-integration. The input bridge still binds by its existing turn/cursor logic.
+The client input controller now replaces server VAD and the bridge transcript
+cursor. It streams words, interrupts only when words have microphone evidence,
+and freezes every final clause for each operation. Simple navigation can run
+once transcription is final. Consequential actions wait for the user-selected
+two-second correction window. Distinct operations can reuse an utterance;
+a durable utterance/action record prevents duplicate effects under new tool IDs.
+See [the combined design and validation](three-tier-integration.md).

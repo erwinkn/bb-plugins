@@ -2,7 +2,7 @@
 // through the plugin's append-only migration list (see server.ts), and every
 // JSON column is re-validated on read so a stale or hand-edited row cannot
 // crash the bridge.
-import { narratedSequenceSchema } from "../narrated-sequence.ts";
+import { narratedSequenceSchema, narrationContextSchema } from "../narrated-sequence.ts";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import {
@@ -154,6 +154,7 @@ export const conversationStateSchema = z
     unresolvedQuestionId: z.string().max(64).nullable().default(null),
     activeTasks: z.array(z.object({ requestId: z.string(), summary: z.string().max(300), threadIds: z.array(z.string()) })).max(50).default([]),
     authorizedScopes: z.array(z.string().max(400)).max(50).default([]),
+    narrating:narrationContextSchema.nullable().default(null),
     latestAnnouncement: z
       .object({ replyId: z.string(), threadIds: z.array(z.string()), text: z.string().max(1200), delivery: z.string() })
       .nullable()
@@ -425,6 +426,12 @@ export class CoordinatorStore {
   }
 
   priorQuickRequest(envelope: UserRequestEnvelope): RequestRow | null {
+    if(envelope.utteranceId) {
+      const row=this.db.prepare(`SELECT * FROM voice_requests WHERE conversation_id=? AND call_nonce=? AND id!=?
+        AND json_extract(envelope_json,'$.utteranceId')=? AND json_extract(envelope_json,'$.utteranceVersion')=?
+        AND json_extract(envelope_json,'$.quickAction')=json(?) ORDER BY seq DESC LIMIT 1`).get(envelope.conversationId,envelope.callNonce,envelope.requestId,envelope.utteranceId,envelope.utteranceVersion??envelope.transcriptRevision,JSON.stringify(envelope.quickAction)) as Record<string,unknown>|undefined;
+      return row ? this.rowToRequest(row) : null;
+    }
     const row = this.db.prepare(`SELECT * FROM voice_requests r WHERE r.conversation_id = ? AND r.call_nonce = ? AND r.id != ?
       AND json_type(r.envelope_json, '$.quickAction') IS NOT NULL
       AND EXISTS (SELECT 1 FROM json_each(r.envelope_json, '$.utteranceItemIds') old JOIN json_each(?) current ON old.value = current.value)

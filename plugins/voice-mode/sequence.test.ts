@@ -108,3 +108,20 @@ test("skipping a failed action also skips the speech that depends on it",async t
   assert.equal(f.actions.length,2);assert.ok(!f.speech.some(reply=>reply.speech.includes("editor work")));
   assert.ok(f.speech.some(reply=>reply.speech.includes("planning work")));
 });
+
+test("interrupted narration identifies the current thread without claiming its speech was delivered",async t=>{
+  const f=fixture(t);await f.player.recover(f.reply.id);await settle();
+  f.player.started(f.speech[0].replyId);await settle();
+  f.player.playback(f.speech[0].replyId,"delivered");await settle();
+  const heard=f.store.getConversation(f.conversation.id)!.state.latestAnnouncement;
+  const current=f.speech.at(-1)!;f.player.started(current.replyId);await settle();
+  assert.deepEqual(f.player.narrating()?.threadIds,["thread-a"]);
+  await f.player.pause("User asks about this thread");
+  assert.equal(f.player.narrating()?.delivery,"interrupted");
+  const state=f.store.getConversation(f.conversation.id)!.state;
+  assert.deepEqual(state.latestAnnouncement,heard);
+  assert.deepEqual(state.narrating?.threadIds,["thread-a"]);assert.equal(state.narrating?.delivery,"interrupted");
+  f.player.started(f.speech[0].replyId);await settle();
+  assert.deepEqual(f.player.narrating()?.threadIds,["thread-a"],"late starts cannot change the referenced thread");
+  await f.player.control("stop");assert.equal(f.player.narrating(),null);
+});

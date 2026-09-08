@@ -208,8 +208,7 @@ test("call configuration leaves interruption and response creation to validated 
   let config: any;
   t.mock.method(globalThis,"fetch", async (_url: unknown, init?: RequestInit) => {config=JSON.parse((init!.body as FormData).get("session") as string);return new Response("answer");});
   await harness.behavior.callRpc("createCall", {nonce:"config-call",sdp:"offer",threadId:null,projectId:null});
-  assert.equal(config.audio.input.turn_detection.interrupt_response,false);
-  assert.equal(config.audio.input.turn_detection.create_response,false);
+  assert.equal(config.audio.input.turn_detection,null);
   assert.deepEqual(config.audio.input.transcription,{model:"gpt-realtime-whisper",delay:"minimal"});
 });
 

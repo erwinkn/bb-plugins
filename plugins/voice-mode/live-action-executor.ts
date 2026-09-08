@@ -43,6 +43,7 @@ export function formatVoiceInstruction(envelope: UserRequestEnvelope, operation:
     ...((operation.kind === "send_message" || operation.kind === "start_thread") && operation.text ? {excerpt:operation.text} : {}),
     ...(envelope.interpretation ? {model_interpretation:envelope.interpretation} : {}),
     context:envelope.view,
+    ...(envelope.narrating ? {narrating:envelope.narrating} : {}),
     destination:operation.kind === "send_message" ? {thread_id:operation.threadId} : operation.kind === "start_thread" ? {project_id:operation.projectId,host_id:operation.hostId,role:operation.role} : null,
     provenance:{source:"voice-mode",actor,conversation_id:envelope.conversationId,request_id:envelope.requestId,step,call_nonce:envelope.callNonce,utterance_item_ids:envelope.utteranceItemIds},
   })}`;
@@ -78,7 +79,10 @@ export class LiveActionExecutor {
     }
     const deadline = Date.now() + QUICK_ACTION_TIMEOUT_MS;
     const results: ActionResult[] = [];
+    const occurrences=new Map<string,number>();
     for (const [step, operation] of operationsOf(action).entries()) {
+      const actionKey=JSON.stringify(operation),occurrence=occurrences.get(actionKey)??0;
+      occurrences.set(actionKey,occurrence+1);
       const existing = this.store.prepare(envelope.requestId,step,operation);
       if (existing.result) {
         results.push(existing.result);
@@ -92,6 +96,14 @@ export class LiveActionExecutor {
       if (!context.current() || context.signal.aborted) {
         const cancelled = result("cancelled","The remaining action was cancelled before execution.");
         this.store.finish(envelope.requestId,step,cancelled); results.push(cancelled); break;
+      }
+      const owner=this.store.claimUtteranceEffect(envelope,step,operation,occurrence);
+      if(owner) {
+        const prior=this.store.step(owner.requestId,owner.step)?.result;
+        const saved=prior ?? result("unknown","This action is already recorded without a confirmed result. I have not repeated it.");
+        this.store.finish(envelope.requestId,step,saved);results.push(saved);
+        if(saved.status!=="succeeded")break;
+        continue;
       }
       let prepared: Prepared | undefined;
       let committed = false;

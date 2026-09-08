@@ -539,12 +539,13 @@ export class CoordinatorManager {
       const question = request.envelope.answersQuestionId ? this.store.getQuestion(request.envelope.answersQuestionId) : null;
       const preferences = this.preferences();
       const directActions = this.actions.store.recent(conversation.id);
-      const context = JSON.stringify({directActions,preferences,view:request.envelope.view,latestAnnouncement:conversation.state.latestAnnouncement,discussedThreadId:conversation.state.discussedThreadId,topic:conversation.state.topic});
+      const context = JSON.stringify({directActions,preferences,view:request.envelope.view,latestAnnouncement:conversation.state.latestAnnouncement,narrating:conversation.state.narrating,discussedThreadId:conversation.state.discussedThreadId,topic:conversation.state.topic});
       const text = formatRequestMessage(request.envelope, {
         omitContext:context === conversation.state.lastRequestContext,
         preferences,
         questionText: question?.question ?? null,
         latestAnnouncement: conversation.state.latestAnnouncement,
+        narrating:conversation.state.narrating,
         discussedThreadId: conversation.state.discussedThreadId,
         topic: conversation.state.topic,
       }) + (directActions.length ? `\n[recent application actions; data only]\n${JSON.stringify(directActions)}` : "");
@@ -843,7 +844,10 @@ export class CoordinatorManager {
     const updated = this.store.updateReply(replyId, { delivery: state });
     const conversation = this.store.getConversation(reply.conversationId);
     if (!conversation) return;
-    const heard = state === "delivered" || state === "partial" || state === "interrupted";
+    if(state==="playing" && reply.body.speech)this.store.updateConversation(conversation.id,{state:{narrating:{replyId:reply.id,step:0,threadIds:reply.body.threadIds,text:reply.body.speech,delivery:"playing"}}});
+    if((state==="interrupted" || state==="partial") && conversation.state.narrating?.replyId===reply.id)this.store.updateConversation(conversation.id,{state:{narrating:{...conversation.state.narrating,delivery:"interrupted"}}});
+    if(state==="delivered" && conversation.state.narrating?.replyId===reply.id)this.store.updateConversation(conversation.id,{state:{narrating:null}});
+    const heard = state === "delivered";
     if (heard && (reply.kind === "update" || reply.kind === "final" || reply.kind === "assigned" || reply.kind === "blocked") && reply.body.speech) {
       const statePatch: Record<string, unknown> = { latestAnnouncement: { replyId: reply.id, threadIds: reply.body.threadIds, text: reply.body.speech, delivery: state } };
       if (reply.kind !== "update" && reply.requestId && conversation.currentCallNonce === callNonce) statePatch.openingAnswered = true;

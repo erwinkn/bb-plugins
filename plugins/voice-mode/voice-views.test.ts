@@ -10,7 +10,7 @@ const command = (extra: Partial<UiCommand> = {}): UiCommand => ({
 });
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
 function fixture(t: TestContext) {
-  const agent = new VoiceAgent();
+  const agent = new VoiceAgent(async () => () => {});
   const internal = agent as any;
   const calls: { method: string; args: any }[] = [];
   let pendingWait: Promise<void> | undefined;

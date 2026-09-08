@@ -1,3 +1,4 @@
+import type { UserRequestEnvelope } from "./coordinator/envelopes.ts";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { liveOperationSchema, type LiveOperation, type QuickAction } from "./quick-actions.ts";
@@ -7,6 +8,10 @@ export const LIVE_ACTION_MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS voice_action_groups (request_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, actor TEXT NOT NULL, actions_json TEXT NOT NULL, created_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS voice_action_steps (request_id TEXT NOT NULL, step INTEGER NOT NULL, action_json TEXT NOT NULL, status TEXT NOT NULL, result_json TEXT, updated_at INTEGER NOT NULL, PRIMARY KEY (request_id, step))`,
   `CREATE TABLE IF NOT EXISTS voice_workers (request_id TEXT NOT NULL, step INTEGER NOT NULL, conversation_id TEXT NOT NULL, thread_id TEXT UNIQUE, project_id TEXT NOT NULL, host_id TEXT NOT NULL, role TEXT NOT NULL, model TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL, report_json TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (request_id, step))`,
+];
+/** Appended after the reconciled historical migrations, never inside their prefix. */
+export const UTTERANCE_EFFECT_MIGRATIONS = [
+  `CREATE TABLE IF NOT EXISTS voice_utterance_effects (call_nonce TEXT NOT NULL, utterance_id TEXT NOT NULL, version INTEGER NOT NULL, action_key TEXT NOT NULL, occurrence INTEGER NOT NULL, request_id TEXT NOT NULL, step INTEGER NOT NULL, PRIMARY KEY (call_nonce, utterance_id, version, action_key, occurrence))`,
 ];
 export const stepResultSchema = z.object({
   status: z.enum(["succeeded", "failed", "unknown", "cancelled"]),
@@ -41,6 +46,14 @@ export class LiveActionStore {
   step(requestId: string, step: number): { action: LiveOperation; status: string; result: ActionResult | null } | null {
     const row = this.db.prepare("SELECT * FROM voice_action_steps WHERE request_id = ? AND step = ?").get(requestId, step) as {action_json:string;status:string;result_json:string|null}|undefined;
     return row ? {action:liveOperationSchema.parse(JSON.parse(row.action_json)),status:row.status,result:row.result_json ? stepResultSchema.parse(JSON.parse(row.result_json)) : null} : null;
+  }
+  claimUtteranceEffect(envelope:UserRequestEnvelope,step:number,action:LiveOperation,occurrence:number):{requestId:string;step:number}|null {
+    if(!envelope.utteranceId)return null;
+    const key=JSON.stringify(action);
+    const args=[envelope.callNonce,envelope.utteranceId,envelope.utteranceVersion??envelope.transcriptRevision,key,occurrence];
+    this.db.prepare("INSERT OR IGNORE INTO voice_utterance_effects VALUES (?, ?, ?, ?, ?, ?, ?)").run(...args,envelope.requestId,step);
+    const owner=this.db.prepare("SELECT request_id AS requestId,step FROM voice_utterance_effects WHERE call_nonce=? AND utterance_id=? AND version=? AND action_key=? AND occurrence=?").get(...args) as {requestId:string;step:number};
+    return owner.requestId===envelope.requestId && owner.step===step ? null : owner;
   }
   prepare(requestId: string, step: number, action: LiveOperation) {
     this.db.prepare("INSERT OR IGNORE INTO voice_action_steps VALUES (?, ?, ?, 'prepared', NULL, ?)").run(requestId, step, JSON.stringify(action), this.now());

@@ -1,5 +1,5 @@
 import { SequencePlayer, type SequenceControlResult } from "./sequence-player.ts";
-import { hasSpokenWords } from "./spoken-input.ts";
+import type { InputController } from "./input-controller.ts";
 import { sequenceControlSchema } from "./narrated-sequence.ts";
 // Frontend half of the voice bridge. Binds realtime tool calls to settled
 // user transcripts, dispatches validated requests, speaks coordinator replies
@@ -9,9 +9,6 @@ import { sequenceControlSchema } from "./narrated-sequence.ts";
 import { quickActionSchema, type QuickAction } from "./quick-actions.ts";
 import { publishedReplySchema, type PublishedReply, type UserRequestEnvelope } from "./coordinator/envelopes.ts";
 import { QUIET_INTERVAL_MS, refuseBackgroundSpeech, refuseDirectSpeech, type VoiceIdleFacts } from "./coordinator/scheduler.ts";
-
-/** How long a handoff waits for its input transcript before asking the user to repeat it. */
-export const TRANSCRIPT_WAIT_MS = 4000;
 
 export interface BridgeHost {
   nonce(): string | null;
@@ -26,20 +23,10 @@ export interface BridgeHost {
   /** The bridge is about to send response.create; the host marks generation active. */
   speaking(): void;
   changed(): void;
-  inputUnavailable(turn: number): void;
-  cancelResponse(responseId: string, reason: string): void;
+  input(): InputController;
+  interruptSpeech(reason: string): void;
   cancelQuickRequest(requestId: string): void;
   subscribeNavigation?(listener:()=>void):()=>void;
-}
-
-interface UserItem {
-  view: ReturnType<BridgeHost["view"]>;
-  itemId: string;
-  text: string | null;
-  failed: boolean;
-  turn: number;
-  committedAt: number;
-  speechEndedAt: number | null;
 }
 
 export interface PendingHandoff {
@@ -52,8 +39,7 @@ export interface PendingHandoff {
   boundItemIds: string[];
   quickAction?: QuickAction;
   createdAt: number;
-  status: "waiting-transcript" | "dispatching" | "dispatched" | "superseded" | "cancelled" | "failed";
-  timer: ReturnType<typeof setTimeout> | null;
+  status: "settling-input" | "dispatching" | "dispatched" | "superseded" | "cancelled" | "failed";
   speechEndedAt: number | null;
 }
 
@@ -75,10 +61,7 @@ export interface BridgeSnapshot {
 
 /** One voice call's view of the coordinator conversation. */
 export class CoordinatorBridge {
-  private items: UserItem[] = [];
-  private speechView: ReturnType<BridgeHost["view"]> | null = null;
-  private cursor = 0;
-  private transcriptRevision = 0;
+  private toolCalls = new Map<string, Promise<string>>();
   private pending: PendingHandoff | null = null;
   private dispatched = new Map<string, PendingHandoff>();
   private replyQueue: PublishedReply[] = [];
@@ -90,8 +73,6 @@ export class CoordinatorBridge {
   private openQuestion: { id: string; text: string } | null = null;
   private liveAt: number;
   private disposed = false;
-  private unavailableTurns = new Set<number>();
-  private inputRepairOffered = false;
   private acknowledgedTurns = new Set<number>();
   private acknowledgments = new Map<number, {requestId:string;text:string}>();
 
@@ -122,67 +103,9 @@ export class CoordinatorBridge {
     };
   }
 
-  // ---- user input tracking ----
-
-  onUserItemCommitted(itemId: string, turn = this.userTurnOf()) {
-    if (!itemId || this.items.some((item) => item.itemId === itemId)) return;
-    this.items.push({ itemId, view: { ...(this.speechView ?? this.host.view()) }, text: null, failed: false, turn, committedAt: this.host.now(), speechEndedAt: this.host.now() });
-    if (this.items.length > 200) { const drop = this.items.length - 200; this.items.splice(0, drop); this.cursor = Math.max(0, this.cursor - drop); }
+  offerInputRepair(message: string) {
+    this.enqueueLocalReply(message, "failure", `local_input_${this.userTurnOf()}`);
   }
-
-  hasUserItem(itemId: string): boolean { return this.items.some(item => item.itemId === itemId); }
-
-  transcriptTurn(itemId: string): number {
-    return this.items.find(item => item.itemId === itemId)?.turn ?? this.userTurnOf();
-  }
-
-  inputUnavailable(): boolean { return this.unavailableTurns.has(this.userTurnOf()); }
-
-  onTranscript(itemId: string, text: string, error?: Record<string, unknown>) {
-    if (!itemId) return;
-    this.onUserItemCommitted(itemId);
-    const item = this.items.find(entry => entry.itemId === itemId)!;
-    const normalized = hasSpokenWords(text) ? text.trim() : "";
-    // Repeated provider events must not speak another repair or erase valid words.
-    if (item.text === normalized || (item.text && !normalized)) return;
-    item.text = normalized;
-    item.failed = !normalized;
-    this.transcriptRevision += 1;
-    this.host.log("transcription.result", { itemId, userTurn: item.turn,
-      outcome: normalized ? "complete" : error ? "failed" : "empty",
-      characters: normalized.length, sinceCommitMs: this.host.now() - item.committedAt,
-      ...(error ? { error } : {}) });
-    if (item.failed) this.recoverInput(item.turn, !error);
-    else if (item.turn === this.userTurnOf() && !this.unavailableTurns.has(item.turn)) this.inputRepairOffered = false;
-    this.tryDispatch();
-  }
-
-  onTranscriptFailed(itemId: string, error?: Record<string, unknown>) {
-    this.onTranscript(itemId, "", error ?? {});
-  }
-
-  private recoverInput(turn: number, silent = false) {
-    if (this.unavailableTurns.has(turn)) return;
-    this.unavailableTurns.add(turn);
-    if (turn !== this.userTurnOf()) return;
-    this.acknowledgments.delete(turn);
-    this.replyQueue = this.replyQueue.filter(reply => !reply.replyId.startsWith("local_ack_"));
-    this.host.inputUnavailable(turn);
-    if (silent) {
-      this.host.log("transcription.ignored", {userTurn: turn, reason: "no spoken words"});
-      return;
-    }
-    if (this.inputRepairOffered) {
-      this.host.log("transcription.repairSuppressed", {userTurn: turn, reason: "waiting for usable input"});
-      return;
-    }
-    this.inputRepairOffered = true;
-    this.addContext("The last spoken sentence has no usable transcript. Do not infer it from audio or earlier context. Wait silently for the user to repeat it. The bridge manages the repeat prompt. No work was accepted from it.");
-    this.enqueueLocalReply("I missed that last sentence. Could you say it again?", "failure", `local_input_${turn}`);
-  }
-
-  /** Capture reference context without treating detected sound as an interruption. */
-  onInputDetected() { this.speechView = { ...this.host.view() }; }
 
   /** The user started speaking: unsent speculative handoffs are held, not sent. */
   onSpeechStarted() {
@@ -193,7 +116,6 @@ export class CoordinatorBridge {
       this.host.cancelQuickRequest(handoff.requestId);
       void this.host.rpc("cancelQuickRequest", {conversationId:this.conversationId,callNonce:this.host.nonce(),requestId:handoff.requestId}).catch(() => undefined);
     }
-    if (this.pending && this.pending.status === "waiting-transcript") this.supersedePending("user continued speaking");
     if (this.active) this.finishSpeech("interrupted");
     this.replyQueue = this.replyQueue.filter(reply => !reply.replyId.startsWith("local_ack_") && !reply.replyId.startsWith("local_input_"));
     this.acknowledgments.clear();
@@ -201,46 +123,62 @@ export class CoordinatorBridge {
 
   // ---- realtime tools ----
 
-  delegate(callId: string, args: Record<string, unknown>, quick = false): string {
-    const quickAction = quick ? quickActionSchema.parse(args.action) : undefined;
-    if (this.inputUnavailable()) return "The last sentence could not be transcribed. No request was accepted. Wait silently; the bridge asks the user to repeat it.";
-    const request = typeof args.request === "string" ? args.request.trim() : "";
-    const urgency = args.urgency === "steer" || args.urgency === "after_current" ? args.urgency : "new";
-    const answersQuestionId = typeof args.answers_question_id === "string" && args.answers_question_id ? args.answers_question_id : null;
-    if (this.pending) this.supersedePending("a newer delegation replaced it");
-    const bound = this.items.slice(this.cursor);
-    const requestId = `r_${(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}${Math.random()}`).replace(/-/g, "").slice(0, 16)}`;
-    this.sequence.expectPlan(requestId);
-    const handoff: PendingHandoff = {
-      requestId,
-      callId,
-      request,
-      interpretation: typeof args.interpretation === "string" && args.interpretation.trim() ? args.interpretation.trim() : null,
-      urgency,
-      answersQuestionId,
-      boundItemIds: bound.map((item) => item.itemId),
-      ...(quickAction ? {quickAction} : {}),
-      createdAt: this.host.now(),
-      status: "waiting-transcript",
-      timer: null,
-      speechEndedAt: bound.at(-1)?.speechEndedAt ?? null,
-    };
-    this.pending = handoff;
-    const spokenRequest = bound.map(item=>item.text ?? "").join(" ") || request;
-    const fallback = /archive|stop|delete/i.test(spokenRequest) ? "I’ll check the target and your instructions." : /fix|implement|change|update/i.test(spokenRequest) ? "I’ll arrange that work." : "I’ll check that for you.";
-    if (!quick) this.acknowledgments.set(this.userTurnOf(), {requestId,text: typeof args.acknowledgment === "string" && args.acknowledgment.trim() ? args.acknowledgment.trim().slice(0,160) : fallback});
-    this.host.log("handoff.recorded", { requestId, callId, boundItems: handoff.boundItemIds, urgency, answersQuestionId });
-    this.host.changed();
-    if (!this.tryDispatch()) {
-      handoff.timer = setTimeout(() => {
-        if (this.pending === handoff && handoff.status === "waiting-transcript") {
-          this.host.log("handoff.transcriptTimeout", { requestId, waitedMs: TRANSCRIPT_WAIT_MS });
-          void this.dispatch(handoff, false);
-        }
-      }, TRANSCRIPT_WAIT_MS);
-      (handoff.timer as { unref?: () => void }).unref?.();
+  delegate(callId: string, args: Record<string, unknown>, quick = false): Promise<string> {
+    const existing=this.toolCalls.get(callId);
+    if(existing)return existing;
+    const task=this.delegateInput(callId,args,quick);
+    this.toolCalls.set(callId,task);
+    if(this.toolCalls.size>300)this.toolCalls.delete(this.toolCalls.keys().next().value!);
+    return task;
+  }
+
+  private async delegateInput(callId:string,args:Record<string,unknown>,quick:boolean):Promise<string> {
+    const quickAction=quick ? quickActionSchema.parse(args.action) : undefined;
+    const navigation=(action:Record<string,unknown>)=>["open_thread","open_project","preview_file","show_voice"].includes(String(action.kind));
+    const effect=!quickAction || !(quickAction.kind==="group" ? quickAction.actions.every(action=>navigation(action)) : navigation(quickAction));
+    const version=this.userTurnOf();
+    const handoff:PendingHandoff={requestId:`r_${crypto.randomUUID().replace(/-/g, "").slice(0,16)}`,callId,
+      request:typeof args.request==="string" ? args.request : "",
+      interpretation:typeof args.interpretation==="string" ? args.interpretation : null,
+      urgency:args.urgency==="steer" ? "steer" : args.urgency==="after_current" ? "after_current" : "new",
+      answersQuestionId:typeof args.answers_question_id==="string" ? args.answers_question_id : null,
+      boundItemIds:[],...(quickAction ? {quickAction} : {}),createdAt:this.host.now(),status:"settling-input",speechEndedAt:null};
+    this.pending=handoff;this.host.changed();
+    const input=await this.host.input().waitFor(version,effect);
+    if(this.disposed || !input || version!==this.userTurnOf()) {
+      if(this.pending===handoff)this.pending=null;
+      handoff.status="superseded";this.host.changed();
+      return "No work was sent. The spoken request changed or has incomplete transcription; wait for the complete current request.";
     }
-    return `Request ${requestId} recorded for transcript validation. Wait silently; the bridge handles acknowledgment, recovery, and the final answer.`;
+    const nonce=this.host.nonce(),sequence=this.host.callSequence();
+    if(!nonce || sequence===null)return "The voice call has ended.";
+    handoff.boundItemIds=input.items.map(item=>item.itemId);handoff.status="dispatching";
+    handoff.speechEndedAt=input.finalAt;
+    const envelope:UserRequestEnvelope={v:1,conversationId:this.conversationId,callNonce:nonce,callSequence:sequence,
+      requestId:handoff.requestId,narrating:this.sequence.narrating(),utteranceId:input.id,utteranceVersion:input.version,
+      utteranceItemIds:handoff.boundItemIds,transcriptRevision:input.version,transcriptAvailable:true,
+      originalText:input.text,transcriptDelta:input.items.map(item=>({...item})),interpretation:handoff.interpretation,
+      urgency:handoff.urgency,answersQuestionId:handoff.answersQuestionId,view:input.view,...(quickAction ? {quickAction} : {})};
+    if(!quickAction) {
+      this.sequence.expectPlan(handoff.requestId);
+      this.acknowledgments.set(version,{requestId:handoff.requestId,text:typeof args.acknowledgment==="string" && args.acknowledgment.trim() ? args.acknowledgment.trim().slice(0,160) : "I’ll check that for you."});
+    }
+    this.host.log("handoff.recorded",{requestId:handoff.requestId,callId,boundItems:handoff.boundItemIds,utteranceId:input.id,utteranceVersion:input.version});
+    this.pending=null;this.dispatched.set(handoff.requestId,handoff);
+    try {
+      const receipt=await this.host.rpc<{status:string;receipt:{delivery:string}|null;error:string|null}>("submitRequest",{envelope});
+      if((handoff as PendingHandoff).status!=="cancelled")handoff.status=receipt.status==="failed"||receipt.status==="quick_cancelled" ? "failed" : "dispatched";
+      if(receipt.status==="accepted")delete handoff.quickAction;
+      if(receipt.status==="quick_cancelled")this.dispatched.delete(handoff.requestId);
+      this.host.log("handoff.dispatched",{requestId:handoff.requestId,status:receipt.status,delivery:receipt.receipt?.delivery??null,error:receipt.error,transcriptWaitMs:this.host.now()-handoff.createdAt,transcriptAvailable:true});
+      return `Request ${handoff.requestId} recorded. Wait silently; the bridge speaks the actual result.`;
+    } catch(error) {
+      handoff.status="failed";
+      this.host.log("handoff.error",{requestId:handoff.requestId,error:String(error)});
+      this.acknowledgments.delete(version);
+      this.enqueueLocalReply("I could not confirm the request result. I will not repeat it automatically.","failure",`local_unknown_${handoff.requestId}`);
+      return "The request result could not be confirmed. Do not resend it under a new ID.";
+    } finally {this.host.changed();this.drain();}
   }
 
   /** Called after the original tool response settles, never as a model tool follow-up. */
@@ -271,98 +209,6 @@ export class CoordinatorBridge {
   remainSilent(): string {
     this.host.log("handoff.silent", {});
     return "Staying silent.";
-  }
-
-  private supersedePending(reason: string) {
-    const handoff = this.pending;
-    if (!handoff) return;
-    if (handoff.timer) clearTimeout(handoff.timer);
-    handoff.timer = null;
-    handoff.status = "superseded";
-    this.pending = null;
-    this.host.log("handoff.superseded", { requestId: handoff.requestId, reason });
-    this.addContext(`[bb coordinator] Handoff ${handoff.requestId} was held and not sent because ${reason}. If the request still stands after the user's latest words, delegate again with the complete request.`);
-    this.host.changed();
-  }
-
-  /** Dispatch the pending handoff once every bound item has a settled transcript. */
-  private tryDispatch(): boolean {
-    const handoff = this.pending;
-    if (!handoff || handoff.status !== "waiting-transcript") return false;
-    const bound = handoff.boundItemIds.map((id) => this.items.find((item) => item.itemId === id)).filter((item): item is UserItem => !!item);
-    if (bound.some((item) => item.text === null && !item.failed)) return false;
-    void this.dispatch(handoff, true);
-    return true;
-  }
-
-  private async dispatch(handoff: PendingHandoff, transcriptAvailable: boolean) {
-    if (this.pending !== handoff || handoff.status !== "waiting-transcript") return;
-    if (handoff.timer) clearTimeout(handoff.timer);
-    handoff.timer = null;
-    const nonce = this.host.nonce();
-    const sequence = this.host.callSequence();
-    if (!nonce || sequence === null) { handoff.status = "cancelled"; this.pending = null; return; }
-    handoff.status = "dispatching";
-    const boundItems = handoff.boundItemIds.map((id) => this.items.find((item) => item.itemId === id)).filter((item): item is UserItem => !!item);
-    const lastTurn = boundItems.at(-1)?.turn;
-    const utterance = boundItems.filter((item) => item.turn === lastTurn);
-    const originalText = utterance.map((item) => item.text ?? "").filter(Boolean).join(" ").trim();
-    if (!transcriptAvailable || !utterance.length || utterance.some(item => !item.text?.trim() || item.failed) || this.inputUnavailable()) {
-      handoff.status = "failed";
-      this.pending = null;
-      // Retire rejected input so the next complete request is independent.
-      const lastIndex = this.items.findIndex(item => item.itemId === handoff.boundItemIds.at(-1));
-      if (lastIndex >= 0) this.cursor = lastIndex + 1;
-      for (const item of utterance.filter(item => item.text === null)) {
-        this.host.log("transcription.result", { itemId: item.itemId, userTurn: item.turn, outcome: "timeout", characters: 0, sinceCommitMs: this.host.now() - item.committedAt });
-      }
-      this.host.log("handoff.rejected", { requestId: handoff.requestId, reason: "transcript-unavailable", transcriptWaitMs: this.host.now() - handoff.createdAt });
-      this.recoverInput(lastTurn ?? this.userTurnOf());
-      this.host.changed();
-      this.drain();
-      return;
-    }
-    const envelope: UserRequestEnvelope = {
-      v: 1,
-      conversationId: this.conversationId,
-      callNonce: nonce,
-      callSequence: sequence,
-      requestId: handoff.requestId,
-      utteranceItemIds: utterance.map((item) => item.itemId),
-      transcriptRevision: this.transcriptRevision,
-      transcriptAvailable: transcriptAvailable && utterance.length > 0 && utterance.every((item) => !!item.text?.trim() && !item.failed),
-      originalText: originalText.slice(0, 8000),
-      transcriptDelta: boundItems.slice(-20).map((item) => ({ itemId: item.itemId, text: item.failed ? null : item.text })),
-      interpretation: handoff.interpretation ?? (originalText ? null : handoff.request || null),
-      urgency: handoff.urgency,
-      answersQuestionId: handoff.answersQuestionId,
-      view: utterance[0]?.view ?? this.host.view(),
-      ...(handoff.quickAction ? {quickAction:handoff.quickAction} : {}),
-    };
-    // Consumed items never bind to a later handoff; superseded ones stay.
-    const lastIndex = this.items.findIndex((item) => item.itemId === handoff.boundItemIds.at(-1));
-    if (lastIndex >= 0) this.cursor = lastIndex + 1;
-    this.pending = null;
-    this.dispatched.set(handoff.requestId, handoff);
-    const waitedMs = this.host.now() - handoff.createdAt;
-    try {
-      const receipt = await this.host.rpc<{ status: string; receipt: { delivery: string } | null; error: string | null }>("submitRequest", { envelope });
-      if ((handoff as PendingHandoff).status !== "cancelled") handoff.status = receipt.status === "failed" || receipt.status === "quick_cancelled" ? "failed" : "dispatched";
-      if (receipt.status === "accepted") delete handoff.quickAction;
-      if (receipt.status === "quick_cancelled") { this.dispatched.delete(handoff.requestId); this.acknowledgments.delete(this.userTurnOf()); }
-      this.host.log("handoff.dispatched", { requestId: handoff.requestId, status: receipt.status, delivery: receipt.receipt?.delivery ?? null, error: receipt.error, transcriptWaitMs: waitedMs, transcriptAvailable: envelope.transcriptAvailable });
-      if (envelope.answersQuestionId && receipt.status !== "failed" && this.openQuestion?.id === envelope.answersQuestionId) this.openQuestion = null;
-    } catch (error) {
-      handoff.status = "failed";
-      for (const [turn, acknowledgment] of this.acknowledgments) if (acknowledgment.requestId === handoff.requestId) this.acknowledgments.delete(turn);
-      const message = error instanceof Error ? error.message : String(error);
-      this.host.log("handoff.failed", { requestId: handoff.requestId, error: message });
-      if (this.host.nonce() === nonce) {
-        this.enqueueLocalReply(handoff.quickAction ? "I could not confirm that action. I will not repeat it automatically." : "I could not start that request. Please try again.", "failure");
-      }
-    }
-    this.host.changed();
-    this.drain();
   }
 
   // ---- replies ----
@@ -501,6 +347,7 @@ export class CoordinatorBridge {
     const active = this.active;
     if (!active || !responseId || active.responseId !== responseId) return;
     active.playing = true;
+    this.sequence.started(active.reply.replyId);
     const handoff = active.reply.requestId ? this.dispatched.get(active.reply.requestId) : null;
     this.host.log("reply.playing", {
       replyId: active.reply.replyId,
@@ -589,8 +436,7 @@ export class CoordinatorBridge {
   pauseSequence(reason:string,restoreView=false) {
     void this.sequence.pause(reason,restoreView);
     if(this.active?.reply.replyId.startsWith("sequence_speech:")) {
-      if(this.active.responseId)this.host.cancelResponse(this.active.responseId,"sequence-paused");
-      this.host.send({type:"output_audio_buffer.clear"});
+      this.host.interruptSpeech("sequence-paused");
       this.finishSpeech("interrupted");
     }
   }
@@ -598,8 +444,7 @@ export class CoordinatorBridge {
   async controlSequence(args:Record<string,unknown>):Promise<SequenceControlResult> {
     const operation=sequenceControlSchema.parse(args.operation);
     const turn=this.userTurnOf();
-    const items=this.items.filter(item=>item.turn===turn);
-    if (this.host.facts().userSpeaking || !items.length || items.some(item=>!item.text || item.failed)) return {status:"held",message:"Wait for the complete spoken instruction before controlling the sequence."};
+    if (this.host.facts().userSpeaking || !this.host.input().snapshot()) return {status:"held",message:"Wait for the complete spoken instruction before controlling the sequence."};
     return this.sequence.control(operation);
   }
 
@@ -609,8 +454,6 @@ export class CoordinatorBridge {
     this.disposed = true;
     const pending = this.pending;
     if (pending) {
-      if (pending.timer) clearTimeout(pending.timer);
-      pending.timer = null;
       pending.status = "cancelled";
       this.pending = null;
       this.host.log("handoff.cancelled", { requestId: pending.requestId, reason: `${reason} before transcript settled` });

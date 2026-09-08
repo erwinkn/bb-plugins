@@ -10,6 +10,8 @@ export const narratedSequenceSchema = z.object({
   title:z.string().trim().min(1).max(160),
   steps:z.array(sequenceStepSchema).min(2).max(40),
 }).strict().refine(plan => plan.steps.some(step => step.kind === "speech"), "A sequence needs speech");
+export const narrationContextSchema=z.object({replyId:z.string(),step:z.number().int().nonnegative(),threadIds:z.array(z.string()).max(40),text:z.string().max(1200),delivery:z.enum(["playing","interrupted"])}).strict();
+export type NarrationContext=z.infer<typeof narrationContextSchema>;
 export type NarratedSequence = z.infer<typeof narratedSequenceSchema>;
 export const sequenceControlSchema = z.enum(["pause", "resume", "skip", "back", "stop"]);
 export const sequenceStateSchema = z.object({
@@ -22,7 +24,7 @@ export const sequenceStateSchema = z.object({
 export type SequenceState = z.infer<typeof sequenceStateSchema>;
 export const sequenceInputSchema = z.object({
   conversationId:z.string().min(1), callNonce:z.string().min(1), replyId:z.string().optional(),
-  operation:z.enum(["sync", "next", "delivered", ...sequenceControlSchema.options]),
+  operation:z.enum(["sync", "next", "started", "delivered", ...sequenceControlSchema.options]),
   revision:z.number().int().nonnegative().optional(), index:z.number().int().nonnegative().optional(),
   reason:z.string().max(200).optional(), restoreView:z.boolean().optional(),
 }).strict();

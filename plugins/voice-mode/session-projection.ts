@@ -84,6 +84,7 @@ function groupUserMessages(messages: ConversationMessage[], events: readonly Ses
   const key = (call: string | null, id: string) => JSON.stringify([call, id]);
   const boundaries = new Map<string, { start?: number; end?: number; audioStart?: number; audioEnd?: number }>();
   const itemByEvent = new Map<number, string>();
+  const utterances = new Map<string,string>();
   const speechStarts = new Map<string | null, number[]>();
   const playbackIds = new Set<string>();
   for (const event of events) {
@@ -92,6 +93,14 @@ function groupUserMessages(messages: ConversationMessage[], events: readonly Ses
     if (event.kind === "speech.lifecycle" && p.state === "started") speechStarts.set(call, [...(speechStarts.get(call) ?? []), event.ts]);
     const id = str(p.itemId);
     if (id && (event.kind === "user" || event.kind === "transcription.result")) itemByEvent.set(event.id, key(call, id));
+    if(id && event.kind==="user") {
+      const itemKey=key(call,id),boundary=boundaries.get(itemKey)??{};
+      if(typeof p.startedAt==="number")boundary.start=p.startedAt;
+      else if(boundary.start===undefined)boundary.start=event.ts;
+      if(typeof p.endedAt==="number")boundary.end=p.endedAt;
+      if(typeof p.utteranceId==="string")utterances.set(itemKey,p.utteranceId);
+      boundaries.set(itemKey,boundary);
+    }
     if (!id || event.kind !== "realtime.event") continue;
     const itemKey = key(call, id), boundary = boundaries.get(itemKey) ?? {};
     if (p.eventType === "input_audio_buffer.speech_started") {
@@ -124,7 +133,8 @@ function groupUserMessages(messages: ConversationMessage[], events: readonly Ses
       ? current.boundary.audioStart - previous.boundary.audioEnd : current.start - (previous?.end ?? current.start);
     const previousStart = previous?.start;
     const answered = previousStart !== undefined && (speechStarts.get(call) ?? []).some(ts => ts >= previousStart && ts <= current.start);
-    if (previous && previous.message.kind === "speech" && current.message.kind === "speech" && previous.message.callId === call && gap >= 0 && gap < USER_MESSAGE_PAUSE_MS && !answered) {
+    const sameUtterance=previous && utterances.get(itemByEvent.get(previous.message.eventIds[0])??"") && utterances.get(itemByEvent.get(previous.message.eventIds[0])??"")===utterances.get(itemByEvent.get(current.message.eventIds[0])??"");
+    if (previous && previous.message.kind === "speech" && current.message.kind === "speech" && previous.message.callId === call && gap >= 0 && gap < USER_MESSAGE_PAUSE_MS && (!answered || sameUtterance)) {
       const group = grouped.at(-1)!;
       group.partial = current.message.partial;
       group.text += ` ${current.message.text}`;

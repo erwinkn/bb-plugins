@@ -84,8 +84,10 @@ Examples:
 | “Coordinate these three overlapping fixes.” | The fast coordinator checks briefly and delegates technical work. |
 | “Delete the old worktree.” | No direct live deletion tool; this requires the consequential-operation workflow. |
 
-A live request may contain one bounded group of up to four resolved actions.
-Each effect has a durable identity derived from its request and step position.
+Each live tool call may contain a group of up to four resolved actions.
+Distinct tool calls can use the same complete spoken request. Effects have
+durable request/step identities and an utterance/action identity, so another
+tool call cannot repeat the same effect under a new request ID.
 Replays return recorded receipts, never repeat effects or resume unexecuted
 remaining steps after a partial/unknown outcome. New speech cancels pending
 live actions, not previously accepted worker tasks. An SDK send already in
@@ -110,34 +112,38 @@ without another coordinator turn. Other thread output and mixed update batches
 still use the coordinator for a short digest. Worker reports are claims, not
 permission to start follow-on work.
 
-Empty or failed transcripts cannot start work. Empty detections, punctuation,
-and filler-only fragments stay quiet and out of the conversation. Short words
-such as “stop,” “wait,” “yes,” and “no” are preserved. The client waits for
-recognised words before cancelling playback or pending work, and for final
-transcription before a response or action. It requests manual interruption and
-response creation from the provider. However, live tests show that WebRTC can
-still clear playback at server VAD start despite those flags. Noise interruption
-is therefore an open transport issue; a proposed client utterance controller
-with server VAD disabled has not yet replaced this input path.
-Provider failures or missing transcript timeouts can ask once for the missed
-sentence; usable new input resets recovery.
-Rejected tool calls receive a terminal result without starting more work.
-Cancellation errors for responses already known to have finished stay in
-Diagnostics. Requests wait up to
-four seconds for transcription; a late transcript is retained but does not
-restart rejected work. The conversation marks transcription failures,
-and Diagnostics records per-item results, detected speech duration, microphone
-track state, interruption timing, and correlated provider error details.
-The plugin does not record raw microphone audio.
+Input uses WebRTC with server voice detection disabled. The client waits for
+recognised words supported by sustained microphone activity before it interrupts
+speech. Noise energy alone cannot interrupt. Empty detections, punctuation, and
+filler-only fragments stay quiet. Short words such as “stop,” “wait,” “yes,” and
+“no” remain valid. The microphone stays disabled until the provider confirms
+manual input control and the required transcription model.
+
+One input controller owns the transcript items, commits, and utterances. It
+commits after 800 ms without new words or microphone activity. Final transcripts
+allow a response and simple navigation. Sending work, creating workers, task
+stops, drafts, and coordinator requests wait for **two seconds after the last
+final transcript**. Speaking during this window cancels unsent work and adds
+the continuation to the complete request. An accepted send cannot be recalled.
+Microphone or connection loss invalidates unsent work across recovery.
+
+Every clause must have a final transcript before work can start. A final missing
+for four seconds causes one request to repeat the full instruction. Late text
+repairs the visible transcript but cannot restart work. Separate operations use
+the same complete utterance; they do not consume its words. History from older
+calls remains readable. The plugin stores no raw microphone audio.
 
 User transcription and assistant output text stream in the Conversation view.
-Provisional text grows in one bubble, and final text replaces it by identity.
-The current transcription model uses its minimal-delay mode so words can arrive
-before the utterance ends. Recognition adds a delay before interruption; a
-sound threshold alone is not proof of speech. Empty and labelled non-speech
-fragments cannot trigger client cancellation. The server VAD limitation above
-still applies to playback. Generated text is separate from playback, so an
-interrupted answer is not marked as fully heard.
+Final text replaces its draft by identity. Consecutive fragments can share a
+visible message across pauses shorter than five seconds; this display rule is
+separate from the two-second action window. Generated text is separate from
+playback. The current or interrupted narration identifies its own thread, while
+the last fully delivered answer remains separate context.
+
+The activity thresholds and word recognition delay still need physical testing
+with quiet speech, desk noise, speaker echo, and phone backgrounding. A real API
+probe with the actual input controller passed interruption, automatic commit,
+and full transcription. A separate three-minute silence probe also passed.
 
 Live drafts use bounded, coalesced snapshots shared across devices, not a new
 persistent event for every token. Reopening the page fetches the current draft;

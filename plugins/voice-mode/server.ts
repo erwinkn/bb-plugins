@@ -1,3 +1,4 @@
+import { UTTERANCE_EFFECT_MIGRATIONS } from "./live-action-store.ts";
 import { voiceFeatureMigrations } from "./migration-order.ts";
 import { loadWorkerCatalog, workerCatalogSchema } from "./provider-catalog.ts";
 import { readWorkerSettings, workerSettingsSchema, WORKER_PROFILE_KEY } from "./worker-profiles.ts";
@@ -519,7 +520,7 @@ export default async function plugin(bb: BbPluginApi) {
     ...UI_COMMAND_MIGRATIONS,
     ...QUICK_ACTION_MIGRATIONS,
   ];
-  bb.storage.migrate(db, [...commonMigrations, ...voiceFeatureMigrations(db, commonMigrations.length)]);
+  bb.storage.migrate(db, [...commonMigrations, ...voiceFeatureMigrations(db, commonMigrations.length), ...UTTERANCE_EFFECT_MIGRATIONS]);
 
   // Reject new event data at the quota; never silently delete saved transcripts.
   const EVENT_STORAGE_LIMIT = 128 * 1024 * 1024;
@@ -1227,16 +1228,8 @@ export default async function plugin(bb: BbPluginApi) {
           input: {
             noise_reduction: { type: "near_field" },
             transcription: { model: "gpt-realtime-whisper", delay: "minimal" },
-            // VAD proposes input boundaries. The client requires recognised
-            // words before interruption and a final transcript before response.
-            turn_detection: {
-              type: "server_vad",
-              interrupt_response: false,
-              create_response: false,
-              threshold: 0.75,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 700,
-            },
+            // The client owns input commits and word-qualified interruption.
+            turn_detection: null,
           },
           output: { voice },
         },

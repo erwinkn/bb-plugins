@@ -41,6 +41,8 @@ export class SequenceManager {
       const first=previous+1;
       if(first<state.index && !state.plan.steps.slice(first,state.index).some(step=>step.kind==="action" && step.action.kind==="prepare_draft")) state.index=first;
     }
+    const conversation=this.store.getConversation(state.conversationId);
+    if(conversation?.state.narrating?.replyId===state.replyId)this.store.updateConversation(state.conversationId,{state:{narrating:{...conversation.state.narrating,delivery:"interrupted"}}});
     state.phase="paused"; state.reason=reason; state.revision++;
     this.save(state); this.cancel(commandId);
     return state;
@@ -70,6 +72,7 @@ export class SequenceManager {
       for (const prior of this.rows(input.conversationId)) if (!["complete","cancelled"].includes(prior.phase)) {
         this.pause(prior,"A new sequence replaced this one."); prior.phase="cancelled"; this.save(prior);
       }
+      this.store.updateConversation(input.conversationId,{state:{narrating:null}});
       state=this.save({replyId:reply.id,conversationId:input.conversationId,callNonce:input.callNonce,plan:reply.body.sequence,index:0,revision:0,phase:"ready",reason:null,blocked:false,completedDrafts:[]});
     }
     if (!state) return {state:null};
@@ -82,10 +85,15 @@ export class SequenceManager {
     if (["complete","cancelled"].includes(state.phase)) return {state};
     if (input.operation==="pause" || input.operation==="stop") {
       state=this.pause(state,input.reason ?? "Paused by the user.",input.restoreView);
-      if (input.operation==="stop") { state.phase="cancelled"; this.save(state); this.store.updateReply(state.replyId,{delivery:"superseded"}); }
+      if (input.operation==="stop") { this.store.updateConversation(state.conversationId,{state:{narrating:null}}); state.phase="cancelled"; this.save(state); this.store.updateReply(state.replyId,{delivery:"superseded"}); }
       return {state};
     }
     if (input.revision!==state.revision || input.index!==state.index) return {state};
+    if(input.operation==="started") {
+      const step=state.plan.steps[state.index];
+      if(state.phase==="speech" && step?.kind==="speech")this.store.updateConversation(state.conversationId,{state:{narrating:{replyId:state.replyId,step:state.index,threadIds:sequenceThreadIds(state.plan,state.index),text:step.text,delivery:"playing"}}});
+      return {state};
+    }
     if (["resume","skip","back"].includes(input.operation)) {
       if (state.phase!=="paused") return {state};
       if ((input.operation==="resume" || input.operation==="back") && state.blocked) return {state};
@@ -100,13 +108,14 @@ export class SequenceManager {
         if (step?.kind==="action" && step.action.kind==="prepare_draft") { state.reason="A draft cannot be repeated. Say continue or skip."; return {state:this.save(state)}; }
         state.index=previous;
       }
+      if(input.operation!=="resume")this.store.updateConversation(state.conversationId,{state:{narrating:null}});
       state.phase="ready";state.reason=null;state.blocked=false;state.revision++;
     } else if (input.operation==="delivered") {
       if (state.phase!=="speech") return {state};
       const spoken=state.plan.steps[state.index];
       if(spoken.kind==="speech") {
         const threadIds=sequenceThreadIds(state.plan,state.index);
-        this.store.updateConversation(state.conversationId,{state:{openingAnswered:true,
+        this.store.updateConversation(state.conversationId,{state:{openingAnswered:true,narrating:null,
           ...(threadIds[0] ? {discussedThreadId:threadIds[0]} : {}),
           latestAnnouncement:{replyId:state.replyId,threadIds,text:spoken.text,delivery:"delivered"},
         }});
@@ -138,7 +147,7 @@ export class SequenceManager {
   private complete(state:SequenceState) {
     state.phase="complete";state.revision++;this.save(state);
     this.store.updateReply(state.replyId,{delivery:"delivered"});
-    this.store.updateConversation(state.conversationId,{state:{openingAnswered:true}});
+    this.store.updateConversation(state.conversationId,{state:{openingAnswered:true,narrating:null}});
     return state;
   }
 }

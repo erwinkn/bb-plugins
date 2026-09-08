@@ -6,7 +6,7 @@ export const transcriptItemSchema = z.object({
   payload: z.object({
     itemId: z.string().min(1).max(128), text: z.string().max(16000), partial: z.literal(true),
     responseId: z.string().nullable().optional(), requestId: z.string().nullable().optional(), replyId: z.string().nullable().optional(),
-    userTurn: z.number().optional(), source: z.string().max(32).optional(),
+    utteranceId:z.string().optional(), userTurn: z.number().optional(), source: z.string().max(32).optional(),
   }).strict(),
 }).strict();
 export const transcriptSnapshotSchema = z.object({
@@ -48,6 +48,11 @@ export class TranscriptBuffer {
     this.items.set(key, item); this.revision++;
     if (this.items.size > 32) this.items.delete(this.items.keys().next().value!);
     return item;
+  }
+  update(kind:TranscriptItem["kind"],itemId:string,text:string,ts:number,identity:Omit<TranscriptItem["payload"],"itemId"|"text"|"partial">={}) {
+    const key=`${kind}:${itemId}`;if(this.completed.has(key))return;
+    this.items.set(key,{key,ts,kind,payload:{...identity,itemId,text:text.slice(0,16000),partial:true}});this.revision++;
+    if(this.items.size>32)this.items.delete(this.items.keys().next().value!);
   }
   complete(kind: TranscriptItem["kind"], itemId: string) {
     this.completed.add(`${kind}:${itemId}`);

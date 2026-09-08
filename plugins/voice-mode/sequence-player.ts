@@ -1,5 +1,5 @@
 import type { PublishedReply } from "./coordinator/envelopes.ts";
-import { sequenceThreadIds, sequenceCommandId, sequenceStateSchema, type SequenceInput, type SequenceState } from "./narrated-sequence.ts";
+import { sequenceThreadIds, sequenceCommandId, sequenceStateSchema, type SequenceInput, type SequenceState, type NarrationContext } from "./narrated-sequence.ts";
 
 export type SequenceControlResult = {status:"accepted"|"paused"|"missing"|"failed"|"held";message:string};
 
@@ -20,6 +20,14 @@ export class SequencePlayer {
   private epoch=0;
   private suspended=false;
   private speechId:string|null=null;
+  private narration:NarrationContext|null=null;
+  narrating(){return this.narration ? {...this.narration,threadIds:[...this.narration.threadIds]} : null;}
+  started(replyId:string){
+    const state=this.state;if(replyId!==this.speechId || !state)return;
+    const step=state.plan.steps[state.index];if(step?.kind!=="speech")return;
+    this.narration={replyId:state.replyId,step:state.index,threadIds:sequenceThreadIds(state.plan,state.index),text:step.text,delivery:"playing"};
+    void this.host.rpc(this.input("started")).catch(error=>this.host.log("sequence.contextFailed",{error:String(error)}));
+  }
   private disposed=false;
   private queuedReply:{replyId:string;requestId?:string|null}|undefined;
   private expectedRequestId:string|undefined;
@@ -34,6 +42,7 @@ export class SequencePlayer {
     if (value===null) return;
     const parsed=sequenceStateSchema.safeParse(value);
     if (!parsed.success || parsed.data.conversationId!==this.conversationId || parsed.data.callNonce!==this.host.callNonce()) return;
+    if(this.narration && (this.narration.replyId!==parsed.data.replyId || this.narration.step!==parsed.data.index || ["complete","cancelled"].includes(parsed.data.phase)))this.narration=null;
     this.state=parsed.data;
     this.host.log("sequence.state",{replyId:this.state.replyId,index:this.state.index,revision:this.state.revision,phase:this.state.phase,reason:this.state.reason});
     if (this.state.phase==="paused" || this.state.phase==="complete" || this.state.phase==="cancelled") this.describe();
@@ -58,7 +67,7 @@ export class SequencePlayer {
     finally { if (epoch===this.epoch) this.busy=false;this.host.changed(); const queued=this.queuedReply;this.queuedReply=undefined;if(queued)void this.recover(queued.replyId,queued.requestId); }
   }
   async pause(reason:string,restoreView=false) {
-    this.suspended=true;
+    this.suspended=true;if(this.narration)this.narration.delivery="interrupted";
     const state=this.state;
     if (!state || !this.pending() || this.disposed) return;
     this.epoch++;this.busy=false;this.speechId=null;
@@ -112,6 +121,7 @@ export class SequencePlayer {
     }).catch(()=>this.pause("The step result could not be confirmed.")).finally(()=>{if(epoch===this.epoch)this.busy=false;this.host.changed();});
   }
   playback(replyId:string,state:"delivered"|"interrupted"|"superseded"|"mismatch") {
+    if(replyId===this.speechId && state==="delivered")this.narration=null;
     if (!replyId.startsWith("sequence_speech:")) return false;
     if (replyId!==this.speechId || this.disposed) return true;
     this.speechId=null;
