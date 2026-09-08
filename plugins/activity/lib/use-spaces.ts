@@ -109,9 +109,14 @@ export function useSpaces(): SpacesState {
           apply(next);
           return next;
         } catch (cause) {
-          // A conflict means another client saved first; pick up its version.
+          // A conflict means another client saved first; pick up its version
+          // before the next queued edit runs, so that one builds on it.
           // Other failures are cheap to reconcile the same way.
-          refresh();
+          try {
+            apply(await rpc.call("getSpaces", null));
+          } catch {
+            refresh();
+          }
           throw cause;
         }
       };

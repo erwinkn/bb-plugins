@@ -555,6 +555,90 @@ describe("spaces page", () => {
     expect(lastNavigation(slot)).toMatchObject({ options: { subPath: "" } });
   });
 
+  it("resolves a queued move against the order the earlier move produced", async () => {
+    const three: Space = { id: "three", name: "Third", projectIds: [] };
+    const base = server();
+    const gates: Array<() => void> = [];
+    const rpc = {
+      ...base,
+      getSpaces: async () => ({ revision: 1, spaces: [one, both, three] }),
+      saveSpaces: vi.fn(async (input: unknown) => {
+        await new Promise<void>((release) => gates.push(release));
+        return base.saveSpaces(input);
+      }),
+    };
+    const slot = await mountPage("one", rpc);
+    // Move "Only One" down, then "Both" down, before the first save lands.
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-space-row="Only One"]')!,
+    );
+    await tick();
+    fireEvent.click(item(slot, "Move down"));
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-space-row="Both"]')!,
+    );
+    await tick();
+    fireEvent.click(item(slot, "Move down"));
+    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
+    gates.shift()!();
+    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(2));
+    gates.shift()!();
+    // "Both" was first after the first move, so it moves to second.
+    await waitFor(() =>
+      expect(spaceRows(slot)).toEqual(["Only One1", "Both2", "Third0"]),
+    );
+    expect(rpc.saveSpaces.mock.calls[1][0]).toMatchObject({
+      expectedRevision: 2,
+      spaces: [one, both, three],
+    });
+  });
+
+  it("refetches after a conflict so the next queued edit builds on the server's catalog", async () => {
+    let elsewhere: SpaceCatalog = {
+      revision: 7,
+      spaces: [{ ...one, name: "Elsewhere" }, both],
+    };
+    const saveSpaces = vi.fn(async (input: unknown) => {
+      const { expectedRevision, spaces } = input as {
+        expectedRevision: number;
+        spaces: Space[];
+      };
+      if (expectedRevision !== elsewhere.revision)
+        throw new Error("Spaces changed on another client. Reload and retry.");
+      elsewhere = { revision: elsewhere.revision + 1, spaces };
+      return elsewhere;
+    });
+    let served = 0;
+    const rpc = {
+      ...server(),
+      getSpaces: async () => (served++ === 0 ? initial : elsewhere),
+      saveSpaces,
+    };
+    const slot = await mountPage("one", rpc);
+    fireEvent.click(
+      slot.getByRole("checkbox", { name: "Include Two in Only One" }),
+    );
+    fireEvent.click(
+      slot.getByRole("checkbox", { name: "Include Three in Only One" }),
+    );
+    await waitFor(() => expect(saveSpaces).toHaveBeenCalledTimes(2));
+    expect(saveSpaces.mock.calls[0][0]).toMatchObject({ expectedRevision: 1 });
+    // The first edit conflicted and is reported; the second carries on.
+    expect(saveSpaces.mock.calls[1][0]).toMatchObject({
+      expectedRevision: 7,
+      spaces: [
+        { ...one, name: "Elsewhere", projectIds: ["project-1", "project-3"] },
+        both,
+      ],
+    });
+    expect((await slot.findByRole("alert")).textContent).toContain(
+      "another client",
+    );
+    await waitFor(() =>
+      expect(slot.getByRole("heading", { name: "Elsewhere" })).toBeTruthy(),
+    );
+  });
+
   it("creates a space with its projects and moves to it", async () => {
     const rpc = server();
     const slot = await mountPage("new", rpc);

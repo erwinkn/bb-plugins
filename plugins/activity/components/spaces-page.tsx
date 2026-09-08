@@ -126,10 +126,21 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
       ...space,
       projectIds: toggleValue(space.projectIds, projectId),
     })).catch(report);
-  const moveSpace = (from: number, to: number) => {
-    if (to < 0 || to >= catalog.length) return;
-    save((list) => moveItem(list, from, to)).catch(report);
-  };
+  // Positions are resolved inside the updater: an earlier queued move may
+  // have changed them by the time this save runs.
+  const moveSpace = (
+    id: string,
+    target: { delta: number } | { toId: string },
+  ) =>
+    save((list) => {
+      const from = list.findIndex((space) => space.id === id);
+      const to =
+        "toId" in target
+          ? list.findIndex((space) => space.id === target.toId)
+          : from + target.delta;
+      if (from < 0 || to < 0 || to >= list.length || from === to) return list;
+      return moveItem(list, from, to);
+    }).catch(report);
   const dropFromSpaces = async (projectId: string) => {
     if (!catalog.some((space) => space.projectIds.includes(projectId))) return;
     await save((list) =>
@@ -140,10 +151,7 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
     );
   };
   const drag = useDragOrder(!compact, (fromId, toId) =>
-    moveSpace(
-      catalog.findIndex((space) => space.id === fromId),
-      catalog.findIndex((space) => space.id === toId),
-    ),
+    moveSpace(fromId, { toId }),
   );
 
   const list = (
@@ -183,8 +191,8 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
                 canMoveUp={index > 0}
                 canMoveDown={index < catalog.length - 1}
                 onAction={(action) => {
-                  if (action === "up") moveSpace(index, index - 1);
-                  else if (action === "down") moveSpace(index, index + 1);
+                  if (action === "up") moveSpace(space.id, { delta: -1 });
+                  else if (action === "down") moveSpace(space.id, { delta: 1 });
                   else {
                     setPendingEdit({ id: space.id, kind: action });
                     go(space.id);
@@ -301,10 +309,7 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
         onRename={(name) =>
           update(selected.id, (space) => ({ ...space, name }))
         }
-        onMove={(delta) => {
-          const index = catalog.findIndex((space) => space.id === selected.id);
-          moveSpace(index, index + delta);
-        }}
+        onMove={(delta) => moveSpace(selected.id, { delta })}
         onDelete={async () => {
           await save((list) =>
             list.filter((space) => space.id !== selected.id),
