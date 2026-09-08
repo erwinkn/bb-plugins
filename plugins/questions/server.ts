@@ -1,7 +1,7 @@
 // Questions plugin backend: a durable, thread-bound collection of agent
 // questions and user answers. Rounds are created by the agent tool or the
 // CLI, drafts and submissions live in the plugin's SQLite database, and
-// answers resolve BB's user input interaction, with messages for late submissions.
+// answers return to a waiting tool or arrive as a new thread message.
 import path from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -140,13 +140,25 @@ const askToolSchema = z.object({
 });
 
 export default async function plugin(bb: BbPluginApi) {
+  const settings = bb.settings.define({
+    nonBlockingProviders: {
+      type: "string",
+      label: "Providers whose tool calls cannot block",
+      description: "Comma-separated provider IDs with short tool timeouts. Questions keeps the BB prompt open, returns from the tool immediately, and sends answers as a message.",
+      default: "acp-cursor",
+    },
+  });
+  async function isNonBlocking(threadId: string): Promise<boolean> {
+    const listed = (await settings.get()).nonBlockingProviders.split(",").map((id) => id.trim()).filter(Boolean);
+    return listed.length > 0 && listed.includes((await bb.sdk.threads.get({ threadId })).providerId);
+  }
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = new QuestionsStore(db);
   const interactions = new QuestionInteractions(bb);
   const asking = new Set<string>();
   function claimAsk(threadId: string): () => void {
-    if (asking.has(threadId)) throw new QuestionsError("This thread already has a Questions request in progress.");
+    if (asking.has(threadId) || interactions.has(threadId)) throw new QuestionsError("This thread already has a Questions request in progress.");
     asking.add(threadId);
     return () => { asking.delete(threadId); };
   }
@@ -154,11 +166,33 @@ export default async function plugin(bb: BbPluginApi) {
     sdk: bb.sdk,
     log: bb.log,
     publish: (signal: ChangeSignal) => bb.realtime.publish(REALTIME_CHANNEL, signal),
-    deliverInteraction: (submission, confirmed) => interactions.deliver(submission, confirmed),
+    deliverToWaiter: (submission, commit) => interactions.deliverToWaiter(submission, commit),
   });
   const recovered = service.recoverStalePending();
   if (recovered > 0) bb.log.warn(`${recovered} submission(s) were pending at startup and are now uncertain`);
-  bb.events.on("thread.deleted", ({ thread }) => store.deleteThread(thread.id));
+  bb.events.on("thread.deleted", async ({ thread }) => {
+    await interactions.release(thread.id);
+    store.deleteThread(thread.id);
+  });
+
+  async function ask(threadId: string, projectId: string, input: unknown, signal?: AbortSignal) {
+    const detached = await isNonBlocking(threadId);
+    if (!detached) {
+      const pending = await bb.sdk.threads.interactions.list({ threadId });
+      if (pending.some((item) => item.status === "pending" || item.status === "resolving")) throw new QuestionsError("This thread already has a pending interaction. Finish it before asking another round.");
+    }
+    if (signal?.aborted) throw new QuestionsError("Questions request was cancelled.");
+    const result = service.ask(threadId, projectId, input);
+    if (detached) {
+      interactions.hold(result.round);
+      return { ...result, response: null };
+    }
+    return { ...result, response: await interactions.wait(result.round, signal) };
+  }
+  function heldResult(roundId: string): string {
+    return JSON.stringify({ status: "waiting", round: roundId,
+      instruction: "The Questions prompt stays open in BB. End your turn now and wait for the user. The submitted answers arrive as a new message. Do not poll or ask again. Drafts remain saved if the prompt closes." });
+  }
 
   bb.rpc.register(rpcContract, {
     questions_state: ({ threadId }) => service.state(threadId),
@@ -191,7 +225,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   const askInstructions = [
     "Use questions_ask when you need several answers from the user before you continue.",
-    "The call waits for the user. The plugin renews the one-hour BB interaction on timeout while the call remains active. Questions are required unless optional is true. The user submits a complete round, not partial answers.",
+    "The call waits for the user on providers that support long tool calls. On Cursor and other configured short-timeout providers, it returns status waiting immediately; end your turn and wait for the answers as a new message. Do not poll or ask again. The native BB prompt renews hourly until submission, cancellation, or plugin reload. Questions are required unless optional is true. The user submits a complete round, not partial answers.",
     "Read the returned answers and continue. Use questions_image for submitted images; image paths alone do not show their contents. On cancellation or failure, do not automatically ask again. Drafts remain saved; late submissions arrive as user messages. Call questions_read for complete submitted records and attachment paths.",
     'Prefer mode "panel". Use mode "inline" only for up to 5 quick questions that need no attachments, references, or citations.',
     "For the quick single question that BB already offers, keep using the built-in question tool if it is available.",
@@ -200,7 +234,7 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "questions_ask",
     description:
-      "Ask a round of questions and wait for the user through BB's native interaction. Required by default; optional questions may be skipped. Renews on hourly timeout until answered or cancelled.",
+      "Ask a complete round through BB's native prompt. Returns answers directly, or status waiting on short-timeout providers; then end the turn and answers arrive as a message. Required by default; optional questions may be skipped.",
     instructions: askInstructions,
     parameters: askToolSchema,
     presentation: {
@@ -211,10 +245,9 @@ export default async function plugin(bb: BbPluginApi) {
       let release: (() => void) | undefined;
       try {
         release = claimAsk(ctx.threadId);
-        const pending = await bb.sdk.threads.interactions.list({ threadId: ctx.threadId });
-        if (pending.some((item) => item.status === "pending" || item.status === "resolving")) throw new QuestionsError("This thread already has a pending interaction. Finish it before asking another round.");
-        const result = service.ask(ctx.threadId, ctx.projectId, params);
-        const response = await interactions.wait(result.round, ctx.signal);
+        const result = await ask(ctx.threadId, ctx.projectId, params, ctx.signal);
+        const { response } = result;
+        if (response === null) return heldResult(result.round.id);
         if ("outcome" in response) return {
           content: [{ type: "text", text: `Questions ended: ${response.outcome === "cancelled" ? response.reason : "invalid response"}. Round ${result.round.id} and its drafts are saved. Do not ask again automatically; wait for the user.` }], isError: true,
         };
@@ -414,10 +447,9 @@ export default async function plugin(bb: BbPluginApi) {
                 ],
               };
             }
-            const pending = await bb.sdk.threads.interactions.list({ threadId });
-            if (pending.some((item) => item.status === "pending" || item.status === "resolving")) throw new QuestionsError("This thread already has a pending interaction.");
-            const result = service.ask(threadId, projectId, input);
-            const response = await interactions.wait(result.round, ctx.signal);
+            const result = await ask(threadId, projectId, input, ctx.signal);
+            const { response } = result;
+            if (response === null) return { exitCode: 0, stdout: heldResult(result.round.id) };
             if ("outcome" in response) return { exitCode: 1, stderr: `Questions ended: ${response.outcome === "cancelled" ? response.reason : "invalid response"}. Round ${result.round.id} and its drafts are kept.` };
             return { exitCode: 0, stdout: service.read(threadId, result.round.id) };
           }
@@ -472,7 +504,8 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.onDispose(() => {
+  bb.onDispose(async () => {
+    await interactions.dispose();
     bb.log.info("disposed");
   });
 }

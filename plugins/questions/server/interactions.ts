@@ -3,86 +3,104 @@ import type { Round, Submission } from "../lib/model";
 
 export const INPUT_TIMEOUT_MS = 60 * 60 * 1000;
 export const INPUT_RENDERER = "round";
-type WaitingRound = { round: Round; submission?: Submission; confirmation?: Promise<void>; delivery?: Promise<boolean> };
+const HOLD_RETRY_MS = 15_000;
+type WaitingRound = {
+  round: Round;
+  attached: boolean;
+  stop: AbortController;
+  submission?: Submission;
+  done: Promise<PluginInteractionResult>;
+};
 
-/** One host-owned waiting interaction per thread. Drafts remain in SQLite. */
+/** The native prompt controls attention, not answer delivery. No holds survive reload. */
 export class QuestionInteractions {
   private active = new Map<string, WaitingRound>();
   constructor(private readonly bb: BbPluginApi) {}
 
+  has(threadId: string): boolean { return this.active.has(threadId); }
+
   async wait(round: Round, signal?: AbortSignal): Promise<Submission | PluginInteractionResult> {
-    if (this.active.has(round.threadId)) throw new Error("This thread already has a Questions interaction open.");
-    const entry: WaitingRound = { round };
-    try {
-      for (;;) {
-        this.active.set(round.threadId, entry);
-        const result = await this.bb.ui.requestInput({
-          threadId: round.threadId, rendererId: INPUT_RENDERER,
-          title: `Round ${round.number} — ${round.questions.length} question${round.questions.length === 1 ? "" : "s"}`,
-          payload: { roundId: round.id }, timeoutMs: INPUT_TIMEOUT_MS,
-        }, { signal });
-        if (result.outcome === "cancelled" && result.reason === "timeout" && !signal?.aborted) {
-          // A response may finish as the host expires the interaction. Do not
-          // create another waiter until that response has a known outcome.
-          const delivered = await entry.delivery?.catch(() => false);
-          if (delivered && entry.submission) return entry.submission;
-          if (signal?.aborted) return result;
-          continue;
-        }
-        if (result.outcome === "submitted") {
-          const value = result.value;
-          if (!entry.submission || typeof value !== "object" || value === null || Array.isArray(value)
-            || value.submissionId !== entry.submission.id) {
-            throw new Error("No validated round submission was received. Your drafts are kept.");
-          }
-          await entry.confirmation;
-          return entry.submission;
-        }
-        return result;
-      }
-    } finally {
+    const entry = this.start(round, true, signal);
+    const result = await entry.done;
+    return entry.submission ?? result;
+  }
+
+  /** Short-lived tool clients return now; the saved answers arrive as a message. */
+  hold(round: Round): void {
+    const entry = this.start(round, false);
+    void entry.done.catch((error: unknown) => this.bb.log.warn("Questions hold ended: " + String(error)));
+  }
+
+  private start(round: Round, attached: boolean, signal?: AbortSignal): WaitingRound {
+    if (this.has(round.threadId)) throw new Error("This thread already has a Questions interaction open.");
+    if (signal?.aborted) throw new Error("Questions request was cancelled.");
+    const stop = new AbortController();
+    const onAbort = () => stop.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const entry: WaitingRound = { round, attached, stop, done: Promise.resolve({ outcome: "cancelled", reason: "request-aborted" }) };
+    this.active.set(round.threadId, entry);
+    entry.done = this.prompt(entry).finally(() => {
+      signal?.removeEventListener("abort", onAbort);
       if (this.active.get(round.threadId) === entry) this.active.delete(round.threadId);
-    }
+    });
+    return entry;
   }
 
-  /** False means no waiting call for this round: late answers use a message. */
-  deliver(submission: Submission, confirmed: () => void): Promise<boolean> {
-    const entry = this.active.get(submission.threadId);
-    if (!entry || !submission.questionIds.every((id) => entry.round.questions.some((q) => q.id === id))) return Promise.resolve(false);
-    // Claim before the first asynchronous step, including interaction lookup.
-    const delivery = this.respond(entry, submission, confirmed);
-    entry.delivery = delivery;
-    return delivery;
-  }
-
-  private async respond(entry: WaitingRound, submission: Submission, confirmed: () => void): Promise<boolean> {
-    const pending = await this.bb.sdk.threads.interactions.list({ threadId: submission.threadId });
-    if (this.active.get(submission.threadId) !== entry) throw new Error("The interaction ended or renewed. Check the result before submitting again.");
-    const interaction = pending.find((item) => item.origin?.kind === "plugin"
-      && item.origin.pluginId === "questions" && item.origin.rendererId === INPUT_RENDERER
-      && item.payload.kind === "plugin" && typeof item.payload.data === "object"
-      && item.payload.data !== null && !Array.isArray(item.payload.data)
-      && item.payload.data.roundId === entry.round.id && item.status === "pending");
-    // A timeout can race submission. Do not turn a failed native response
-    // into an automatic message send, which could deliver the answer twice.
-    if (!interaction) throw new Error("The waiting interaction ended. Check the thread before retrying.");
-    entry.submission = submission;
-    let resolve!: () => void;
-    let reject!: (error: unknown) => void;
-    entry.confirmation = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
-    void entry.confirmation.catch(() => {}); // Cancellation may remove the waiter first.
+  private async prompt(entry: WaitingRound): Promise<PluginInteractionResult> {
+    const { round, stop } = entry;
     try {
-      const result = await this.bb.sdk.threads.interactions.respond({
-        threadId: submission.threadId, interactionId: interaction.id,
-        value: { submissionId: submission.id },
-      });
-      if (result.status !== "resolved") throw new Error("The interaction did not confirm submission.");
-      confirmed(); // Commit before the agent resumes and reads submitted answers.
-      resolve();
-      return true;
-    } catch (error) {
-      reject(error);
-      throw error;
+      while (!stop.signal.aborted) {
+        try {
+          const result = await this.bb.ui.requestInput({
+            threadId: round.threadId, rendererId: INPUT_RENDERER,
+            title: `Round ${round.number} — ${round.questions.length} question${round.questions.length === 1 ? "" : "s"}`,
+            payload: { roundId: round.id }, timeoutMs: INPUT_TIMEOUT_MS,
+          }, { signal: stop.signal });
+          if (result.outcome === "cancelled" && result.reason === "timeout") continue;
+          // A native response is only a dismissal. Only the validated submit RPC
+          // can commit answers and complete the waiting tool.
+          return result.outcome === "submitted" ? { outcome: "cancelled", reason: "user" } : result;
+        } catch (error) {
+          if (stop.signal.aborted) break;
+          if (entry.attached) throw error;
+          this.bb.log.warn("Questions prompt unavailable; retrying: " + String(error));
+          await new Promise<void>((resolve) => {
+            const done = () => { clearTimeout(timer); stop.signal.removeEventListener("abort", done); resolve(); };
+            const timer = setTimeout(done, HOLD_RETRY_MS);
+            stop.signal.addEventListener("abort", done, { once: true });
+          });
+        }
+      }
+      return { outcome: "cancelled", reason: "request-aborted" };
+    } finally {
+      entry.attached = false;
     }
+  }
+
+  /** Commit before resolving a waiting tool. Otherwise close the hold before message delivery. */
+  async deliverToWaiter(submission: Submission, commit: () => void): Promise<boolean> {
+    const entry = this.active.get(submission.threadId);
+    if (!entry || submission.questionIds.length !== entry.round.questions.length
+      || !entry.round.questions.every((q) => submission.questionIds.includes(q.id))) return false;
+    const attached = entry.attached && !entry.stop.signal.aborted;
+    if (attached) {
+      // There is no asynchronous boundary between selecting the receiver and
+      // committing its result. Expiry cannot split these two operations.
+      commit();
+      entry.submission = submission;
+    }
+    await this.release(submission.threadId);
+    return attached;
+  }
+
+  async release(threadId: string): Promise<void> {
+    const entry = this.active.get(threadId);
+    if (!entry) return;
+    entry.stop.abort();
+    await entry.done.catch(() => undefined);
+  }
+
+  async dispose(): Promise<void> {
+    await Promise.all([...this.active.keys()].map((threadId) => this.release(threadId)));
   }
 }

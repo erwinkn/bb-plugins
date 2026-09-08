@@ -4,6 +4,7 @@ import { createFakePluginHost, makeThreadResponse, experimental_scanPublicSdkOnl
 import plugin from "../server";
 import { MIGRATIONS, QuestionsStore } from "../server/store";
 import { QuestionsService } from "../server/service";
+import { QuestionInteractions } from "../server/interactions";
 import { emptyAnswer, threadStateSchema, type Answer, type Question, type Submission } from "../lib/model";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
@@ -39,10 +40,6 @@ async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHos
     ...item, status: "pending", origin: { kind: "plugin", pluginId: "questions", rendererId: item.rendererId },
     payload: { kind: "plugin", data: item.payload, title: item.title },
   })));
-  host.harness.sdk.stub("threads.interactions.respond", async ({ interactionId, value }: { interactionId: string; value: any }) => {
-    host.harness.submitInteraction(interactionId, value);
-    return { status: "resolved" };
-  });
   beforePlugin?.(host);
   await plugin(host.bb);
   const rpc = host.harness.behavior.callRpc;
@@ -59,42 +56,164 @@ async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHos
 }
 
 describe("Questions backend", () => {
-  it.each([true, false])("settles a response crossing hourly expiry before renewing, accepted=%s", async (accepted) => {
-    const h = await setup();
-    let finish!: () => void;
-    const gate = new Promise<void>((resolve) => { finish = resolve; });
-    const respond = vi.fn(async () => {
-      await gate;
-      if (!accepted) throw new Error("Response rejected after expiry");
-      return { status: "resolved" };
+  it.each(["panel", "inline"])("holds the native %s prompt for Cursor after the tool returns", async (mode) => {
+    const h = await setup(({ harness }) => {
+      harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, providerId: "acp-cursor", projectId: "proj_t" }));
     });
-    h.harness.sdk.stub("threads.interactions.respond", respond);
+    const controller = new AbortController();
+    const call = await h.harness.behavior.callAgentTool("questions_ask", { mode, questions: [{ title: "Cursor answer?" }] }, { threadId: "t", projectId: "proj_t", signal: controller.signal });
+    expect(JSON.parse(call as string)).toMatchObject({ status: "waiting", instruction: expect.stringContaining("End your turn") });
+    controller.abort(); // The returned tool no longer owns the prompt.
+    expect(h.harness.pendingInteractions).toHaveLength(1);
+    const q = (await h.state()).rounds[0]!.questions[0]!;
+    await h.save(q, { ...emptyAnswer(), text: "Cursor receives this" });
+    h.send.mockImplementationOnce(async () => {
+      expect(h.harness.pendingInteractions).toHaveLength(0);
+      return { ok: true, delivery: "sent" };
+    });
+    expect((await h.submit([q.id], `cursor-${mode}`)).submission.state).toBe("sent");
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(h.harness.inspection.sdk.callsTo("threads.send")[0]?.[0]).toMatchObject({ threadId: "t", mode: "queue-if-active", input: [{ type: "text", text: expect.stringContaining("Cursor receives this") }] });
+    await h.submit([q.id], `cursor-${mode}`);
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(h.harness.inspection.sdk.callsTo("threads.interactions.respond")).toHaveLength(0);
+  });
+
+  it("uses the configured delivery policy for tools and CLI calls", async () => {
+    const h = await setup();
+    const provider = (await h.bb.sdk.threads.get({ threadId: "t" })).providerId;
+    await h.harness.behavior.setSettings({ nonBlockingProviders: ` acp-cursor, ${provider} ` });
+    const result = await h.harness.behavior.runCli(["ask", "CLI held?"], { threadId: "t" });
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout!)).toMatchObject({ status: "waiting" });
+    expect(h.harness.pendingInteractions).toHaveLength(1);
+    const duplicate = await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Duplicate?" }] }, { threadId: "t", projectId: "proj_t" });
+    expect(duplicate).toMatchObject({ isError: true });
+    expect((await h.state()).rounds).toHaveLength(1);
+    h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
+    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(0));
+    await h.harness.behavior.setSettings({ nonBlockingProviders: "" });
+    const call = h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Wait again?" }] }, { threadId: "t", projectId: "proj_t" });
+    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
+    const q = (await h.state()).rounds[1]!.questions[0]!;
+    await h.save(q, { ...emptyAnswer(), text: "Direct result" });
+    await h.submit([q.id], "configured");
+    expect(JSON.parse(await call as string).answers[0].answer.text).toBe("Direct result");
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("renews a detached prompt hourly and stops after user dismissal", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
     vi.useFakeTimers();
     try {
-      const call = h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "At expiry?" }] }, { threadId: "t", projectId: "proj_t" });
-      await vi.advanceTimersByTimeAsync(0);
+      await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Much later?" }] }, { threadId: "t", projectId: "proj_t" });
+      const first = h.harness.pendingInteractions[0]!.id;
       const q = (await h.state()).rounds[0]!.questions[0]!;
-      await h.save(q, { ...emptyAnswer(), text: "Kept" });
-      const submission = h.submit([q.id]);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(respond).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(3_600_000);
+      await h.save(q, { ...emptyAnswer(), text: "Late answer" });
+      await vi.advanceTimersByTimeAsync(7_200_000);
+      expect(h.harness.pendingInteractions).toHaveLength(1);
+      expect(h.harness.pendingInteractions[0]!.id).not.toBe(first);
+      h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
+      await vi.advanceTimersByTimeAsync(7_200_000);
       expect(h.harness.pendingInteractions).toHaveLength(0);
-      finish();
-      await submission;
-      await vi.advanceTimersByTimeAsync(0);
-      if (accepted) {
-        expect(JSON.parse(await call as string).answers[0].answer.text).toBe("Kept");
-        expect(h.harness.pendingInteractions).toHaveLength(0);
-        expect((await h.state()).answers[0]!.submitted!.text).toBe("Kept");
-      } else {
-        expect(h.harness.pendingInteractions).toHaveLength(1);
-        expect((await h.state()).answers[0]!.submitted).toBeNull();
-        h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
-        await call;
-      }
       expect(h.send).not.toHaveBeenCalled();
-    } finally { finish(); vi.useRealTimers(); }
+      expect((await h.state()).answers[0]!.draft!.text).toBe("Late answer");
+      await h.submit([q.id], "late-held");
+      expect(h.send).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("retries an unavailable detached prompt and releases the retry before sending", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
+    const request = vi.spyOn(h.bb.ui, "requestInput").mockRejectedValueOnce(new Error("Another interaction is pending"));
+    vi.useFakeTimers();
+    try {
+      await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "After another prompt?" }] }, { threadId: "t", projectId: "proj_t" });
+      expect(h.harness.pendingInteractions).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(h.harness.pendingInteractions).toHaveLength(1);
+      request.mockRejectedValue(new Error("Renewal unavailable"));
+      await vi.advanceTimersByTimeAsync(3_600_000);
+      const attempts = request.mock.calls.length;
+      expect(h.harness.pendingInteractions).toHaveLength(0);
+      const q = (await h.state()).rounds[0]!.questions[0]!;
+      await h.save(q, { ...emptyAnswer(), text: "Submit while retrying" });
+      await h.submit([q.id], "retrying-prompt");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(request).toHaveBeenCalledTimes(attempts);
+      expect(h.send).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not restore a held prompt after reload; drafts and late message delivery survive", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
+    await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Reload?" }] }, { threadId: "t", projectId: "proj_t" });
+    const q = (await h.state()).rounds[0]!.questions[0]!;
+    await h.save(q, { ...emptyAnswer(), text: "Survives reload" });
+    const replacement = await h.harness.lifecycle.reload(plugin);
+    hosts.push(replacement);
+    expect(replacement.harness.pendingInteractions).toHaveLength(0);
+    const state = threadStateSchema.parse(await replacement.harness.behavior.callRpc("questions_state", { threadId: "t" }));
+    expect(state.answers[0]!.draft!.text).toBe("Survives reload");
+    await replacement.harness.behavior.callRpc("questions_submit", { threadId: "t", submissionId: uuid("after-reload"), items: [{ questionId: q.id, expectedVersion: 1 }] });
+    expect(h.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a detached prompt when its thread is deleted", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
+    await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Delete?" }] }, { threadId: "t", projectId: "proj_t" });
+    await h.harness.behavior.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: "t" }) });
+    expect(h.harness.pendingInteractions).toHaveLength(0);
+    expect((await h.state()).rounds).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("ignores raw native form values without a validated submission", async () => {
+    const h = await setup();
+    const call = h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Validate?" }] }, { threadId: "t", projectId: "proj_t" });
+    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
+    h.harness.submitInteraction(h.harness.pendingInteractions[0]!.id, { submissionId: "forged" });
+    expect(await call).toMatchObject({ isError: true });
+    expect((await h.state()).submissions).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("renews without yielding to a late submission when no delivery is in flight", async () => {
+    const h = await setup();
+    const round = await h.ask([{ title: "After expiry?" }]);
+    const q = round.questions[0]!;
+    const requestInput = h.bb.ui.requestInput;
+    let expire!: (result: Awaited<ReturnType<typeof requestInput>>) => void;
+    let requests = 0;
+    h.bb.ui.requestInput = (request, options) => ++requests === 1
+      ? new Promise((resolve) => { expire = resolve; })
+      : requestInput(request, options);
+    const coordinator = new QuestionInteractions(h.bb);
+    const call = coordinator.wait(round);
+    const submission: Submission = {
+      id: uuid("expiry-gap"), threadId: "t", state: "pending", questionIds: [q.id],
+      snapshot: { [q.id]: { ...emptyAnswer(), text: "Late answer" } },
+      error: null, createdAt: 1, settledAt: null,
+    };
+    expire({ outcome: "cancelled", reason: "timeout" });
+    const confirmed = vi.fn();
+    // This job runs immediately after the timeout continuation, before any
+    // continuation created by an unnecessary await of undefined.
+    const delivery = Promise.resolve().then(() => {
+      expect(requests).toBe(2);
+      expect(h.harness.pendingInteractions).toHaveLength(1);
+      return coordinator.deliverToWaiter(submission, confirmed);
+    });
+    expect(await delivery).toBe(true);
+    expect(await call).toBe(submission);
+    expect(confirmed).toHaveBeenCalledTimes(1);
+    expect(requests).toBe(2);
+    expect(h.harness.pendingInteractions).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
   });
   it("submits through the renewed native interaction without a fallback message", async () => {
     const h = await setup();
@@ -195,18 +314,23 @@ describe("Questions backend", () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it("never falls back to a message after an uncertain native response", async () => {
+  it("delivers saved answers without using the native response API", async () => {
     const h = await setup();
     const call = h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Submit?" }] }, { threadId: "t", projectId: "proj_t" });
     await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
     const q = (await h.state()).rounds[0]!.questions[0]!;
     await h.save(q, { ...emptyAnswer(), text: "Answer" });
-    h.harness.sdk.stub("threads.interactions.respond", async () => { throw new Error("Lost response"); });
-    expect((await h.submit([q.id])).submission.state).toBe("uncertain");
+    const result = call.then(async (text) => {
+      expect((await h.state()).answers[0]!.submitted!.text).toBe("Answer");
+      expect(h.harness.pendingInteractions).toHaveLength(0);
+      return JSON.parse(text as string);
+    });
+    expect((await h.submit([q.id])).submission.state).toBe("sent");
+    expect((await result).answers[0].answer.text).toBe("Answer");
+    expect(h.harness.inspection.sdk.callsTo("threads.interactions.respond")).toHaveLength(0);
+    // Only the ask preflight checks for an unrelated pending interaction.
+    expect(h.harness.inspection.sdk.callsTo("threads.interactions.list")).toHaveLength(1);
     expect(h.send).not.toHaveBeenCalled();
-    expect((await h.state()).answers[0]!.submitted).toBeNull();
-    h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
-    await call;
   });
   it("waits in a one-hour native interaction and returns a whole round without sending a message", async () => {
     const h = await setup();

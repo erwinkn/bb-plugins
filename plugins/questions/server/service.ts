@@ -116,7 +116,7 @@ export interface ServiceDeps {
   sdk: BbPluginApi["sdk"];
   log: BbPluginApi["log"];
   publish: (signal: ChangeSignal) => void;
-  deliverInteraction?: (submission: Submission, confirmed: () => void) => Promise<boolean>;
+  deliverToWaiter?: (submission: Submission, commit: () => void) => Promise<boolean>;
   now?: () => number;
   newId?: (prefix: string) => string;
 }
@@ -577,16 +577,16 @@ export class QuestionsService {
       ),
     ];
     try {
-      const native = await this.deps.deliverInteraction?.(submission, () => {
+      const waiting = await this.deps.deliverToWaiter?.(submission, () => {
         this.store.settleDelivered({ threadId: input.threadId, submission, state: "sent", settledAt: this.now() });
       });
-      const response = native ? { delivery: "sent" } : await this.deps.sdk.threads.send({
+      const response = waiting ? { delivery: "sent" } : await this.deps.sdk.threads.send({
         threadId: input.threadId,
         mode: "queue-if-active",
         input: parts,
       });
       const state = response.delivery === "queued" ? "queued" : "sent";
-      if (!native) this.store.settleDelivered({ threadId: input.threadId, submission, state, settledAt: this.now() });
+      if (!waiting) this.store.settleDelivered({ threadId: input.threadId, submission, state, settledAt: this.now() });
     } catch (error) {
       const classified = classifySendError(error);
       this.deps.log.warn(
