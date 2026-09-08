@@ -242,3 +242,10 @@ long-press becomes a system selection. Touch pointerdowns no longer gate the
 actions; mouse and pen drags keep the hide-until-release behaviour. The menu
 also gained Copy. Tests: a touch selection with no release shows the toolbar
 (fails without the fix), and Copy writes the quote to the clipboard.
+
+7b3693b: the touch variant was the desktop popover pinned to the bottom edge.
+It is now a full-width toolbar docked along the bottom of the document with
+icon-and-label buttons (Comment, Redline, Looks good, Copy). WebKit iPhone 15
+emulation against the live install showed the bar above the review footer
+with a programmatic selection; 80 tests pass.
+
