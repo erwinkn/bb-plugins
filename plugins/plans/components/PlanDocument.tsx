@@ -68,7 +68,8 @@ interface PlanDocumentProps {
   className?: string;
 }
 
-const FLOATING_OFFSET = 116;
+// Menu height (4 rows of 32px, gaps, separator, padding, border ≈ 149px) plus a gap.
+const FLOATING_OFFSET = 156;
 const FLOATING_EDGE = 90;
 const COMPOSER_WIDTH = 320;
 const COMPOSER_MARGIN = 8;
