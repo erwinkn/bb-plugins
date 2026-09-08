@@ -2,7 +2,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { listLocalTree } from "./lib/local-tree.js";
@@ -219,19 +219,6 @@ export function findPluginRoot(start: string): string {
   throw new Error(`could not locate the ${PACKAGE_NAME} package root from ${start}`);
 }
 
-function isBundleStale(pluginRoot: string, bundleDir: string): boolean {
-  const builtAtMs = statSync(path.join(bundleDir, "editor.js")).mtimeMs;
-  const entryDir = path.join(pluginRoot, "pierre-bundle");
-  if (!existsSync(entryDir)) return false;
-  const inputs = [
-    path.join(pluginRoot, "scripts", "stage-assets.mjs"),
-    path.join(pluginRoot, "package.json"),
-    path.join(pluginRoot, "package-lock.json"),
-    ...readdirSync(entryDir).map((name) => path.join(entryDir, name)),
-  ];
-  return inputs.some((input) => existsSync(input) && statSync(input).mtimeMs > builtAtMs);
-}
-
 /** Files under `dir`, as POSIX paths relative to it. */
 function listFilesRecursively(dir: string, prefix = ""): string[] {
   const out: string[] = [];
@@ -243,23 +230,13 @@ function listFilesRecursively(dir: string, prefix = ""): string[] {
   return out;
 }
 
-async function ensureBundleDir(log: (message: string) => void): Promise<string> {
-  const pluginRoot = findPluginRoot(path.dirname(fileURLToPath(import.meta.url)));
-  const bundleDir = path.join(pluginRoot, "dist", "pierre");
-  const built = existsSync(path.join(bundleDir, "editor.js"));
-  if (built && !isBundleStale(pluginRoot, bundleDir)) return bundleDir;
-  log(built ? "editor bundle is older than its sources; rebuilding it" : "editor bundle missing; building it");
-  const script = path.join(pluginRoot, "scripts", "stage-assets.mjs");
-  try {
-    await import(`${pathToFileURL(script).href}?t=${Date.now()}`);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `could not build the editor bundle (${reason}); run \`npm run build:pierre\` in ${pluginRoot}`,
-    );
-  }
-  if (!existsSync(path.join(bundleDir, "editor.js"))) {
-    throw new Error(`the editor bundle build produced no ${bundleDir}/editor.js`);
+/** The committed browser assets. Installation and first use never build them. */
+export function pierreAssetsDir(pluginRoot: string): string {
+  const bundleDir = path.join(pluginRoot, "assets", "pierre");
+  for (const entry of ["editor.js", "worker.js"]) {
+    if (!existsSync(path.join(bundleDir, entry))) {
+      throw new Error(`Missing prebuilt Pierre asset ${entry}; rebuild and commit assets/pierre with npm run build:pierre`);
+    }
   }
   return bundleDir;
 }
@@ -333,7 +310,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function registerAssetRoutes() {
-    const bundleDir = await ensureBundleDir((message) => bb.log.info(message));
+    const bundleDir = pierreAssetsDir(findPluginRoot(path.dirname(fileURLToPath(import.meta.url))));
     // Version the base path as well as chunks: browsers cache imported ESM
     // modules even when HTTP says no-cache. A plugin reload must load new code.
     const entries = await Promise.all(["editor.js", "worker.js"].map((name) => readFile(path.join(bundleDir, name))));

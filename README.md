@@ -380,6 +380,23 @@ Status: no upstream issue filed. Suggested issue title:
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 
+### Share Pierre's editing API with plugins
+
+Expose `@pierre/diffs/edit` through BB's shared frontend runtime, alongside
+`@pierre/diffs` and `@pierre/diffs/react`. The Editor plugin needs Pierre's
+editing API, which the current runtime mapping does not expose. Until that
+API is available, the plugin ships its own prebuilt Pierre assets in Git.
+
+Sharing the editing API, with a compatible worker/highlighter integration,
+would let the plugin use BB's Pierre copy. This would remove the separate
+asset bundle and avoid competing custom-element definitions and theme
+registries. Verify the editor and worker APIs together before removing the
+plugin's bundle.
+
+Status: no upstream issue filed. Suggested issue title:
+`Expose @pierre/diffs/edit to plugin frontends`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Usage popup: compact header and visible provider tabs
 
 The original popup belongs to BB's built-in `provider-usage` plugin. This

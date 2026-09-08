@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakePluginHost, experimental_scanPublicSdkOnly, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import plugin, { findPluginRoot, pathApiFor, rpcContract } from "./server";
+import plugin, { findPluginRoot, pathApiFor, pierreAssetsDir, rpcContract } from "./server";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 
@@ -19,6 +21,33 @@ test("findPluginRoot locates the package from the source directory and from dist
   assert.equal(findPluginRoot(here), path.resolve(here));
   assert.equal(findPluginRoot(path.join(here, "dist")), path.resolve(here));
   assert.throws(() => findPluginRoot("/"), /could not locate/);
+});
+
+test("missing shipped assets fail without running a build", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "editor-missing-assets-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.throws(() => pierreAssetsDir(root), /Missing prebuilt Pierre asset editor.js/);
+  const assets = path.join(root, "assets", "pierre");
+  mkdirSync(assets, { recursive: true });
+  writeFileSync(path.join(assets, "editor.js"), "export {};");
+  assert.throws(() => pierreAssetsDir(root), /Missing prebuilt Pierre asset worker.js/);
+  writeFileSync(path.join(assets, "worker.js"), "export {};");
+  assert.equal(pierreAssetsDir(root), assets);
+});
+
+test("the assets RPC serves the committed browser and worker files", async (t) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const assets = rpcContract.assets.output.parse(await harness.behavior.callRpc("assets", null));
+  const routeBase = assets.baseUrl.replace("/api/v1/plugins/erwin-editor/http", "");
+  for (const entry of ["editor.js", "worker.js"]) {
+    const response = await harness.behavior.fetchHttp("GET", `${routeBase}/${entry}`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /javascript/);
+    assert.equal(await response.text(), readFileSync(path.join(pierreAssetsDir(here), entry), "utf8"));
+  }
+  assert.deepEqual(await harness.behavior.callRpc("assets", null), assets);
 });
 
 test("the RPC contract validates source shapes strictly", async (t) => {
@@ -117,14 +146,16 @@ test("plugin uses only public SDK imports and declared packages", () => {
     ],
   });
   assert.deepEqual(scan.privateDependencies, []);
-  const dynamic = scan.violations.filter((violation) => violation.reason === "dynamic-specifier");
-  // The lazily served editor bundle and the on-demand asset build are the only
-  // computed import paths; anything else is a mistake.
+  // Generated third-party code is checked by the asset build. This scan
+  // checks the SDK boundary in the plugin's authored source.
+  const violations = scan.violations.filter((violation) => !violation.file.startsWith("assets/pierre/"));
+  const dynamic = violations.filter((violation) => violation.reason === "dynamic-specifier");
+  // Only the browser loader imports a computed asset URL.
   assert.deepEqual(
     dynamic.map((violation) => violation.file).sort(),
-    ["lib/pierre-loader.ts", "server.ts"],
+    ["lib/pierre-loader.ts"],
   );
-  assert.deepEqual(scan.violations.filter((violation) => violation.reason !== "dynamic-specifier"), []);
+  assert.deepEqual(violations.filter((violation) => violation.reason !== "dynamic-specifier"), []);
 });
 
 type Environment = Awaited<ReturnType<BbPluginApi["sdk"]["environments"]["get"]>>;
