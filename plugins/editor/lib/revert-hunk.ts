@@ -11,13 +11,15 @@ export function revertHunkEdit(runtime: HunkRuntime, name: string, old: string |
   current: string, lineNumber: number, side: "additions" | "deletions"): TextEdit | null {
   const diff = runtime.parseDiffFromFile(old === null ? null : { name, contents: old }, { name, contents: current });
   const index = diff.hunks.findIndex((hunk) => {
-    const start = side === "additions" ? hunk.additionStart : hunk.deletionStart;
-    const count = side === "additions" ? hunk.additionCount : hunk.deletionCount;
-    return lineNumber >= Math.max(1, start) && lineNumber < Math.max(1, start) + Math.max(1, count);
+    // A pure insertion or deletion has a zero count on one side; it still owns one row there.
+    const start = Math.max(1, side === "additions" ? hunk.additionStart : hunk.deletionStart);
+    const count = Math.max(1, side === "additions" ? hunk.additionCount : hunk.deletionCount);
+    return lineNumber >= start && lineNumber < start + count;
   });
   if (index < 0) return null;
   const next = runtime.diffAcceptRejectHunk(diff, index, "reject").additionLines.join("");
-  // Pierre positions ignore line-ending width and preserve the document's EOL.
+  // Edit positions count lines and characters, so both sides compare with one
+  // line ending; the inserted text gets the document's own back at the end.
   const before = current.replace(/\r\n|\r/g, "\n");
   const after = next.replace(/\r\n|\r/g, "\n");
   if (before === after) return null;
@@ -29,5 +31,6 @@ export function revertHunkEdit(runtime: HunkRuntime, name: string, old: string |
     const lines = before.slice(0, offset).split("\n");
     return { line: lines.length - 1, character: lines.at(-1)!.length };
   };
-  return { range: { start: position(start), end: position(end) }, newText: after.slice(start, nextEnd) };
+  const eol = current.includes("\r\n") ? "\r\n" : "\n";
+  return { range: { start: position(start), end: position(end) }, newText: after.slice(start, nextEnd).replace(/\n/g, eol) };
 }

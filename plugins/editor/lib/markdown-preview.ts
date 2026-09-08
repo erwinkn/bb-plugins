@@ -96,9 +96,9 @@ export function workspaceRoot(absolutePath: string, relativePath: string): strin
 }
 
 /**
- * The heading slug an anchor refers to, GitHub style: the heading text in
- * lower case, punctuation dropped, spaces as hyphens. BB's renderer gives
- * headings no ids, so the preview matches anchors by text.
+ * The heading slug an anchor refers to: the heading text in lower case,
+ * punctuation dropped, spaces as hyphens. BB's renderer gives headings no
+ * ids, so the preview matches anchors by text.
  */
 export function headingSlug(text: string): string {
   return text

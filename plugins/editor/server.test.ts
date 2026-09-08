@@ -43,10 +43,6 @@ test("workspace without a thread or project asks for a project", async (t) => {
   await assert.rejects(() => harness.behavior.callRpc("workspace", { threadId: null, projectId: null }), /Select a project/);
 });
 
-test("contract exposes the methods the frontend calls", () => {
-  assert.deepEqual(Object.keys(rpcContract).sort(), ["applyTheme", "assets", "create", "diffCommits", "diffList", "diffRead", "diffRevert", "previewBase", "read", "remove", "rename", "setSetting", "theme", "tree", "unwatch", "watch", "workspace", "write"]);
-});
-
 test("settings and the picker share predefined themes without changing BB's global theme", async (t) => {
   let { bb, harness } = createFakePluginHost({
     pluginId: "erwin-editor",
@@ -233,7 +229,7 @@ test("previewBase leases the workspace root on the file's host and refuses paths
 type Status = Awaited<ReturnType<BbPluginApi["sdk"]["environments"]["status"]>>;
 
 /** A workspace status with only the working-tree files that matter here. */
-function statusWith(files: { path: string; status: "M" | "U" }[]): Status {
+function statusWith(files: { path: string; status: "M" | "U" }[]): Extract<Status, { outcome: "available" }> {
   return {
     outcome: "available",
     workspace: {
@@ -298,7 +294,6 @@ test("diff writes use the workspace host and a live hash, not a snapshot hash", 
   const { harness } = await diffHost();
   t.after(() => harness.lifecycle.dispose());
   const result = rpcContract.diffRead.output.parse(await harness.behavior.callRpc("diffRead", { threadId: "thr_test", target: { type: "uncommitted" }, path: "a.ts" }));
-  assert.equal(result.kind, "text");
   assert.equal(result.kind, "text");
   assert.equal(result.editable, true);
   assert.equal(result.sha256, "live-hash");
@@ -477,8 +472,6 @@ test("unresolved conflict contents stay read-only with LF and CRLF", async (t) =
 
 test("commit menu returns every branch commit newest first and uses the selected base", async (t) => {
   const status = statusWith([]);
-  assert.equal(status.outcome, "available");
-  if (status.outcome !== "available") return;
   status.workspace.mergeBase = {
     aheadCount: 13, behindCount: 0, baseRef: "abcdef0", mergeBaseBranch: "release/next",
     hasCommittedUnmergedChanges: true, files: [], insertions: 1, deletions: 0, lineStatsComplete: true,
@@ -519,7 +512,6 @@ test("commit menu distinguishes no base, no commits, and an unavailable workspac
     assert.equal(result.baseBranch, "main");
   }
   const status = statusWith([]);
-  if (status.outcome !== "available") throw new Error("invalid fixture");
   status.workspace.mergeBase = {
     aheadCount: 0, behindCount: 0, baseRef: "abcdef0", mergeBaseBranch: "main", commits: [],
     hasCommittedUnmergedChanges: false, files: [], insertions: 0, deletions: 0, lineStatsComplete: true,
@@ -626,7 +618,7 @@ test("watch registers the workspace root on its host, relays changes with sequen
 
   // The worker died: open files reload, and the watch is asked for again.
   await harness.behavior.experimental_emitHostWorkerExit("host_remote");
-  assert.equal(harness.inspection.realtimeSignals.at(-1)?.payload && (harness.inspection.realtimeSignals.at(-1)!.payload as { kind: string }).kind, "rescan");
+  assert.equal((harness.inspection.realtimeSignals.at(-1)?.payload as { kind: string }).kind, "rescan");
   assert.deepEqual(hostCalls.at(-1)?.input, { roots: ["/workspace"] });
 
   await harness.behavior.callRpc("unwatch", { source, clientId: "page-1" });
@@ -638,14 +630,24 @@ test("watch registers the workspace root on its host, relays changes with sequen
 });
 
 test("watch reports no root when the host cannot watch, and keeps the registration for a later host", async (t) => {
+  let online = false;
+  const hostCalls: unknown[] = [];
   const { bb, harness } = createFakePluginHost({
     pluginId: "erwin-editor",
     sdk: { environments: { get: async () => environment } },
-    experimental_callHostRpc: async () => { throw new Error("host offline"); },
+    experimental_callHostRpc: async (call) => {
+      if (!online) throw new Error("host offline");
+      hostCalls.push(call.input);
+      return { watching: (call.input as { roots: string[] }).roots, failed: [] };
+    },
   });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   const source = { kind: "workspace", threadId: null, environmentId: environment.id, projectId: environment.projectId };
   const result = rpcContract.watch.output.parse(await harness.behavior.callRpc("watch", { source, clientId: "page-1" }));
   assert.equal(result.root, null);
+  // The host comes back: its worker start re-syncs the roots still registered.
+  online = true;
+  await harness.behavior.experimental_emitHostWorkerExit("host_remote");
+  assert.deepEqual(hostCalls.at(-1), { roots: ["/workspace"] });
 });

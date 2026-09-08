@@ -18,16 +18,18 @@ export interface WatchEntry {
   clients: Map<string, number>;
 }
 
+const idOf = (hostId: string, rootPath: string) => `${hostId}\0${rootPath}`;
+
 export class WatchRegistry {
   private readonly entries = new Map<string, WatchEntry>();
   private nextKey = 1;
 
   get(hostId: string, rootPath: string): WatchEntry | undefined {
-    return this.entries.get(`${hostId}\0${rootPath}`);
+    return this.entries.get(idOf(hostId, rootPath));
   }
 
   register(hostId: string, rootPath: string, clientId: string, expiresAt: number): WatchEntry {
-    const id = `${hostId}\0${rootPath}`;
+    const id = idOf(hostId, rootPath);
     let entry = this.entries.get(id);
     if (entry === undefined) {
       entry = { hostId, rootPath, key: `w${this.nextKey++}`, watching: false, clients: new Map() };
@@ -42,7 +44,7 @@ export class WatchRegistry {
     const entry = this.get(hostId, rootPath);
     if (entry === undefined || !entry.clients.delete(clientId)) return false;
     if (entry.clients.size > 0) return false;
-    this.entries.delete(`${hostId}\0${rootPath}`);
+    this.entries.delete(idOf(hostId, rootPath));
     return true;
   }
 

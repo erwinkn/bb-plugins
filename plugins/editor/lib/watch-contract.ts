@@ -36,8 +36,6 @@ export const watchSignals = {
   },
 } satisfies ExperimentalHostSignals;
 
-export type WatchSignals = typeof watchSignals;
-
 /** The realtime channel the server publishes change notices on. */
 export const FILES_CHANGED_CHANNEL = "files-changed";
 

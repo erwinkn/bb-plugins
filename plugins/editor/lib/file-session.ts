@@ -15,15 +15,9 @@
  *  - Text typed while a save or a read is in flight is newer than the result.
  *  - Ending an edit session is not a save. Only `save` and `overwrite` write.
  */
+import type { FileSource } from "../server";
 
-/** The subset of BB's file source that identifies a file. */
-export interface FileSessionSource {
-  kind: "workspace" | "host" | "thread-storage";
-  threadId: string | null;
-  environmentId: string | null;
-  projectId: string | null;
-  experimental_hostId?: string | undefined;
-}
+export type FileSessionSource = FileSource;
 
 export interface ReadText {
   kind: "text";
@@ -49,12 +43,7 @@ export interface FileSessionIo {
 }
 
 /** Content and hash a caller already read, used instead of a first read. */
-export interface SessionSeed {
-  content: string;
-  sha256: string;
-  absolutePath: string;
-  relativePath: string;
-}
+export type SessionSeed = Omit<ReadText, "kind">;
 
 export type LoadState =
   | { kind: "idle" }
@@ -137,10 +126,8 @@ export interface FileSession {
   save(): Promise<boolean>;
   /** Write without a hash check, after a reported conflict. */
   overwrite(): Promise<boolean>;
-  /** Read the file again. Refuses when the text changed while reading. */
+  /** Take the file from disk, dropping any edits. Refuses when the text changed while reading. */
   reload(): Promise<ReloadOutcome>;
-  /** Drop the edits and take the file from disk. */
-  discard(): Promise<ReloadOutcome>;
   /** Apply a draft that the load kept back. */
   restoreDraft(): void;
   /** Forget the draft, and the edits when they came from it. */
@@ -168,8 +155,13 @@ const DRAFT_PREFIX = "erwin-editor:draft:v1:";
 const DRAFT_DEBOUNCE_MS = 400;
 /** Bigger buffers are not kept for a later session; the store cannot hold them. */
 const MAX_DRAFT_CHARS = 1_000_000;
-/** Detached, clean sessions kept for their undo history and view state. */
+/** Detached, clean sessions kept so a file reopens without a read. */
 const MAX_IDLE_SESSIONS = 24;
+
+/** The part of a session key that names the source, for grouping sessions by it. */
+export function sourceKeyFor(source: FileSessionSource): string {
+  return sessionKeyFor(source, "");
+}
 
 /**
  * A file's identity.
@@ -181,11 +173,6 @@ const MAX_IDLE_SESSIONS = 24;
  * as one that does not. A project without an environment can have a checkout on
  * more than one host, so that key keeps the host.
  */
-/** The part of a session key that names the source, for grouping sessions by it. */
-export function sourceKeyFor(source: FileSessionSource): string {
-  return sessionKeyFor(source, "");
-}
-
 export function sessionKeyFor(source: FileSessionSource, path: string): string {
   const file = normalizePath(path);
   const host = source.experimental_hostId ?? "";
@@ -580,15 +567,6 @@ class Session implements FileSession {
    * user can ask again.
    */
   reload(): Promise<ReloadOutcome> {
-    return this.read();
-  }
-
-  /** The same operation under the name the discard action uses. */
-  discard(): Promise<ReloadOutcome> {
-    return this.read();
-  }
-
-  private read(): Promise<ReloadOutcome> {
     return this.enqueue(async () => {
       if (this.disposed) return { ok: false, reason: "error", message: "The file is closed" } as const;
       const version = this.version;
@@ -829,10 +807,7 @@ function onSessionChanged(session: Session): void {
   else stopExternalWatch();
 }
 
-/**
- * Keep a bounded number of detached, clean sessions so that going back to a
- * file keeps its undo history and view state. Sessions with unsaved work stay.
- */
+/** Keep a bounded number of detached, clean sessions; those with unsaved work stay. */
 function evictIdleSessions(): void {
   const idle = [...sessions.values()].filter((session) => session.viewCount === 0 && !session.getSnapshot().dirty);
   if (idle.length <= MAX_IDLE_SESSIONS) return;
@@ -852,8 +827,7 @@ export function acquireFileSession(options: {
   seed?: SessionSeed | null;
   drafts?: DraftStore;
 }): FileSession {
-  const named = sessionKeyFor(options.source, options.path);
-  const key = aliases.get(named) ?? named;
+  const key = canonicalKey(options.source, options.path);
   const existing = sessions.get(key);
   if (existing !== undefined) {
     existing.setIo(options.io);
@@ -875,8 +849,13 @@ export function acquireFileSession(options: {
 
 /** The session for a file, without creating one. */
 export function peekFileSession(source: FileSessionSource, path: string): FileSession | null {
+  return sessions.get(canonicalKey(source, path)) ?? null;
+}
+
+/** The key a file's session is stored under, following a rename alias. */
+function canonicalKey(source: FileSessionSource, path: string): string {
   const named = sessionKeyFor(source, path);
-  return sessions.get(aliases.get(named) ?? named) ?? null;
+  return aliases.get(named) ?? named;
 }
 
 /** Listen for any change in any session; for lists that mark unsaved files. */
@@ -887,7 +866,7 @@ function subscribeSessions(listener: () => void): () => void {
 
 /** The paths with unsaved work in one workspace, for a file list marker. */
 export function dirtyPaths(source: FileSessionSource): ReadonlySet<string> {
-  const prefix = sessionKeyFor(source, "");
+  const prefix = sourceKeyFor(source);
   const paths = new Set<string>();
   for (const session of sessions.values()) {
     if (!session.key.startsWith(prefix)) continue;
@@ -959,11 +938,10 @@ export function setSourceWatched(source: FileSessionSource, watched: boolean): v
 /** Re-read the named files of a source now, if they are open. */
 export function refreshFiles(source: FileSessionSource, paths: readonly string[]): void {
   for (const path of paths) {
-    const named = sessionKeyFor(source, path);
-    const session = sessions.get(aliases.get(named) ?? named);
+    const session = sessions.get(canonicalKey(source, path));
     if (session === undefined || session.viewCount === 0 || session.getSnapshot().load.kind !== "ready") continue;
     refreshedAt.set(session.key, Date.now());
-    void session.refresh().catch(() => undefined);
+    void session.refresh();
   }
 }
 
@@ -987,10 +965,7 @@ export function refreshOpenFiles(options: { force?: boolean } = {}): void {
     const interval = slow ? SLOW_REFRESH_INTERVAL_MS : REFRESH_INTERVAL_MS;
     if (options.force !== true && now - (refreshedAt.get(session.key) ?? 0) < interval) continue;
     refreshedAt.set(session.key, now);
-    void session.refresh().then(
-      () => refreshedAt.set(session.key, Date.now()),
-      () => refreshedAt.set(session.key, Date.now()),
-    );
+    void session.refresh().then(() => refreshedAt.set(session.key, Date.now()));
   }
 }
 

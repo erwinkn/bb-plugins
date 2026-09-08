@@ -13,22 +13,9 @@
 import { containerExisted } from "./container-owner.js";
 import { registerCustomTheme as registerPierreTheme } from "@pierre/diffs";
 
-export {
-  CodeView,
-  diffAcceptRejectHunk,
-  DIFFS_TAG_NAME,
-  disposeHighlighter,
-  FileDiff,
-  getFiletypeFromFileName,
-  getLineEndingType,
-  parseDiffFromFile,
-  parsePatchFiles,
-  preloadHighlighter,
-  registerCustomLanguage,
-  setLanguageOverride,
-} from "@pierre/diffs";
+export { CodeView, diffAcceptRejectHunk, FileDiff, parseDiffFromFile, parsePatchFiles } from "@pierre/diffs";
 export { Editor } from "@pierre/diffs/edit";
-export { getOrCreateWorkerPoolSingleton, terminateWorkerPoolSingleton } from "@pierre/diffs/worker";
+export { getOrCreateWorkerPoolSingleton } from "@pierre/diffs/worker";
 
 // BB can reload the app module while this lazy runtime stays in the browser's
 // module cache. Its theme registry must share that longer lifetime too. Theme

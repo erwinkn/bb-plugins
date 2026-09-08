@@ -47,7 +47,6 @@ export interface UseFileSession {
   save: () => Promise<boolean>;
   overwrite: () => Promise<boolean>;
   reload: () => Promise<ReloadOutcome>;
-  discard: () => Promise<ReloadOutcome>;
   refresh: () => Promise<boolean>;
   restoreDraft: () => void;
   discardDraft: () => void;
@@ -118,10 +117,6 @@ export function useFileSession(options: UseFileSessionOptions): UseFileSession {
     overwrite: useCallback(() => session?.overwrite() ?? Promise.resolve(false), [session]),
     reload: useCallback(
       () => session?.reload() ?? Promise.resolve<ReloadOutcome>({ ok: false, reason: "error", message: "No file" }),
-      [session],
-    ),
-    discard: useCallback(
-      () => session?.discard() ?? Promise.resolve<ReloadOutcome>({ ok: false, reason: "error", message: "No file" }),
       [session],
     ),
     refresh: useCallback(() => session?.refresh() ?? Promise.resolve(false), [session]),

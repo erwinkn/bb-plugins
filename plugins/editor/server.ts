@@ -2,7 +2,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { listLocalTree } from "./lib/local-tree.js";
@@ -13,6 +13,8 @@ import { WatchRegistry, WATCH_TTL_MS } from "./lib/watch-registry.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
 const MAX_TREE_ENTRIES = 10_000;
+const MAX_COMMITS = 10_000;
+const MAX_SUBJECT_CHARS = 500;
 /** Served bundle files by extension; anything else is refused. */
 const ASSET_CONTENT_TYPES: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
@@ -249,7 +251,7 @@ async function ensureBundleDir(log: (message: string) => void): Promise<string> 
   log(built ? "editor bundle is older than its sources; rebuilding it" : "editor bundle missing; building it");
   const script = path.join(pluginRoot, "scripts", "stage-assets.mjs");
   try {
-    await import(`${new URL(`file://${script}`).href}?t=${Date.now()}`);
+    await import(`${pathToFileURL(script).href}?t=${Date.now()}`);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -361,6 +363,11 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   let primaryHostId: string | null | undefined;
+  /** BB's primary host: where a path with no host of its own lives. */
+  async function primaryHost(): Promise<string | null> {
+    primaryHostId ??= (await bb.sdk.system.config()).primaryHostId;
+    return primaryHostId;
+  }
 
   // File watching. The host module keeps a native watch per workspace root;
   // the registry here remembers which clients asked for which root, and every
@@ -423,10 +430,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   /** The host that holds a resolved target's files, or null when none can watch it. */
   async function hostOf(target: { rootPath: string; hostId?: string }): Promise<string | null> {
-    if (target.hostId !== undefined) return target.hostId;
-    // A path with no host is on this machine, which is BB's primary host.
-    primaryHostId ??= (await bb.sdk.system.config()).primaryHostId;
-    return primaryHostId;
+    return target.hostId ?? primaryHost();
   }
 
   /**
@@ -435,10 +439,7 @@ export default async function plugin(bb: BbPluginApi) {
    * exists here. Anything else is read through BB's daemon.
    */
   async function isLocalWorkspace(target: { rootPath: string; hostId?: string }): Promise<boolean> {
-    if (target.hostId !== undefined) {
-      primaryHostId ??= (await bb.sdk.system.config()).primaryHostId;
-      if (target.hostId !== primaryHostId) return false;
-    }
+    if (target.hostId !== undefined && target.hostId !== (await primaryHost())) return false;
     try {
       return statSync(target.rootPath).isDirectory();
     } catch {
@@ -560,53 +561,53 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function readDiff({ threadId, target: requested, path: filePath }: { threadId: string; target: DiffTarget; path: string }) {
-      assertInsideWorkspace(filePath);
-      const { result, environment, source, target, message } = await listDiff(threadId, requested);
-      if (result.outcome !== "available" || message !== null) return { kind: "unsupported" as const, reason: message ?? "This comparison is unavailable" };
-      const entry = result.files.find((file) => file.path === filePath);
-      if (!entry) return { kind: "unsupported" as const, reason: "This file is no longer in the comparison. Refresh the file list." };
-      if (entry.binary) return { kind: "unsupported" as const, reason: "Binary file changed" };
-      if (entry.loadMode === "too_large") return { kind: "unsupported" as const, reason: "This file is too large to compare" };
-      if (entry.changeKind === "type_changed") return { kind: "unsupported" as const, reason: "The file type changed. Open the working file to inspect it." };
-      // `initialPatches` is only a bounded preview; both sides load whole below.
-      const query = target.type === "commit" ? { target: target.type, sha: target.sha }
-        : target.type === "uncommitted" ? { target: target.type }
-        : { target: target.type, mergeBaseRef: result.mergeBaseRef ?? "" };
-      const empty = { content: "", contentEncoding: "utf8" as const, sizeBytes: 0 };
-      const [oldFile, newFile] = await Promise.all([
-        entry.changeKind === "added" || entry.origin === "untracked" ? empty : bb.sdk.environments.diffFile({ environmentId: environment.id, ...query, side: "old", path: entry.previousPath ?? filePath }),
-        entry.changeKind === "deleted" ? empty : bb.sdk.environments.diffFile({ environmentId: environment.id, ...query, side: "new", path: filePath }),
-      ]);
-      if (oldFile.contentEncoding !== "utf8" || newFile.contentEncoding !== "utf8") return { kind: "unsupported" as const, reason: "This file is not text" };
-      if (Math.max(oldFile.sizeBytes, newFile.sizeBytes) > MAX_EDITABLE_BYTES) return { kind: "unsupported" as const, reason: "This file is too large to compare" };
-      const resolved = await resolveTarget(source, filePath);
-      let editable = isWorkingTreeTarget(target) && entry.changeKind !== "deleted";
-      let reason: string | null = editable ? null : entry.changeKind === "deleted" ? "Deleted files are read-only" : "This is a saved revision. Open the working file to edit it.";
-      let sha256: string | null = null;
-      if (editable) {
-        const [live, blocked] = await Promise.all([bb.sdk.files.read(resolved), conflictBlock(environment.id, filePath)]);
-        if (live.contentEncoding !== "utf8" || live.sizeBytes > MAX_EDITABLE_BYTES) return { kind: "unsupported" as const, reason: "The working file can no longer be edited as text" };
-        sha256 = live.sha256;
-        if (live.content !== newFile.content) {
-          editable = false;
-          reason = "The working file changed while loading. Refresh before editing.";
-        } else if (blocked !== null) {
-          editable = false;
-          reason = blocked;
-        } else if (hasConflictMarkers(live.content)) {
-          editable = false;
-          reason = "Resolve the merge conflict in the file editor before editing this diff.";
-        }
+    assertInsideWorkspace(filePath);
+    const { result, environment, source, target, message } = await listDiff(threadId, requested);
+    if (result.outcome !== "available" || message !== null) return { kind: "unsupported" as const, reason: message ?? "This comparison is unavailable" };
+    const entry = result.files.find((file) => file.path === filePath);
+    if (!entry) return { kind: "unsupported" as const, reason: "This file is no longer in the comparison. Refresh the file list." };
+    if (entry.binary) return { kind: "unsupported" as const, reason: "Binary file changed" };
+    if (entry.loadMode === "too_large") return { kind: "unsupported" as const, reason: "This file is too large to compare" };
+    if (entry.changeKind === "type_changed") return { kind: "unsupported" as const, reason: "The file type changed. Open the working file to inspect it." };
+    // `initialPatches` is only a bounded preview; both sides load whole below.
+    const query = target.type === "commit" ? { target: target.type, sha: target.sha }
+      : target.type === "uncommitted" ? { target: target.type }
+      : { target: target.type, mergeBaseRef: result.mergeBaseRef ?? "" };
+    const empty = { content: "", contentEncoding: "utf8" as const, sizeBytes: 0 };
+    const [oldFile, newFile] = await Promise.all([
+      entry.changeKind === "added" || entry.origin === "untracked" ? empty : bb.sdk.environments.diffFile({ environmentId: environment.id, ...query, side: "old", path: entry.previousPath ?? filePath }),
+      entry.changeKind === "deleted" ? empty : bb.sdk.environments.diffFile({ environmentId: environment.id, ...query, side: "new", path: filePath }),
+    ]);
+    if (oldFile.contentEncoding !== "utf8" || newFile.contentEncoding !== "utf8") return { kind: "unsupported" as const, reason: "This file is not text" };
+    if (Math.max(oldFile.sizeBytes, newFile.sizeBytes) > MAX_EDITABLE_BYTES) return { kind: "unsupported" as const, reason: "This file is too large to compare" };
+    const resolved = await resolveTarget(source, filePath);
+    let editable = isWorkingTreeTarget(target) && entry.changeKind !== "deleted";
+    let reason: string | null = editable ? null : entry.changeKind === "deleted" ? "Deleted files are read-only" : "This is a saved revision. Open the working file to edit it.";
+    let sha256: string | null = null;
+    if (editable) {
+      const [live, blocked] = await Promise.all([bb.sdk.files.read(resolved), conflictBlock(environment.id, filePath)]);
+      if (live.contentEncoding !== "utf8" || live.sizeBytes > MAX_EDITABLE_BYTES) return { kind: "unsupported" as const, reason: "The working file can no longer be edited as text" };
+      sha256 = live.sha256;
+      if (live.content !== newFile.content) {
+        editable = false;
+        reason = "The working file changed while loading. Refresh before editing.";
+      } else if (blocked !== null) {
+        editable = false;
+        reason = blocked;
+      } else if (hasConflictMarkers(live.content)) {
+        editable = false;
+        reason = "Resolve the merge conflict in the file editor before editing this diff.";
       }
-      return {
-        kind: "text" as const, source, path: filePath, previousPath: entry.previousPath,
-        oldContent: entry.changeKind === "added" || entry.origin === "untracked" ? null : oldFile.content,
-        newContent: entry.changeKind === "deleted" ? null : newFile.content,
-        baselineSha256: entry.changeKind === "added" || entry.origin === "untracked" ? null : createHash("sha256").update(oldFile.content).digest("hex"),
-        changeKind: entry.changeKind, origin: entry.origin, editable, reason, sha256,
-        absolutePath: resolved.path, relativePath: relativeTo(resolved.rootPath, resolved.path),
-      };
     }
+    return {
+      kind: "text" as const, source, path: filePath, previousPath: entry.previousPath,
+      oldContent: entry.changeKind === "added" || entry.origin === "untracked" ? null : oldFile.content,
+      newContent: entry.changeKind === "deleted" ? null : newFile.content,
+      baselineSha256: entry.changeKind === "added" || entry.origin === "untracked" ? null : createHash("sha256").update(oldFile.content).digest("hex"),
+      changeKind: entry.changeKind, origin: entry.origin, editable, reason, sha256,
+      absolutePath: resolved.path, relativePath: relativeTo(resolved.rootPath, resolved.path),
+    };
+  }
 
   bb.rpc.register(rpcContract, {
     async diffRevert(input) {
@@ -653,9 +654,9 @@ export default async function plugin(bb: BbPluginApi) {
       // The SDK returns Git traversal order, oldest first. Preserve that order
       // in reverse, rather than sorting by author dates that can be misleading.
       return {
-        commits: base.commits.slice(-MAX_TREE_ENTRIES).reverse().map(({ sha, subject }) => ({ sha, subject: subject.slice(0, 500) })),
+        commits: base.commits.slice(-MAX_COMMITS).reverse().map(({ sha, subject }) => ({ sha, subject: subject.slice(0, MAX_SUBJECT_CHARS) })),
         baseBranch: base.mergeBaseBranch,
-        message: base.commits.length > MAX_TREE_ENTRIES ? `Showing the latest ${MAX_TREE_ENTRIES} commits` : null,
+        message: base.commits.length > MAX_COMMITS ? `Showing the latest ${MAX_COMMITS} commits` : null,
       };
     },
     async diffList({ threadId, target }) {
@@ -675,6 +676,8 @@ export default async function plugin(bb: BbPluginApi) {
     assets: () => assets(),
 
     async watch({ source, clientId }) {
+      // A host file has no workspace root to watch; polling covers it.
+      if (source.kind === "host") return { root: null, ttlMs: WATCH_TTL_MS };
       const target = await resolveTarget(source, ".");
       const hostId = await hostOf(target);
       if (hostId === null) return { root: null, ttlMs: WATCH_TTL_MS };
@@ -689,6 +692,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
 
     async unwatch({ source, clientId }) {
+      if (source.kind === "host") return null;
       const target = await resolveTarget(source, ".");
       const hostId = await hostOf(target);
       if (hostId === null) return null;
@@ -846,7 +850,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  /** Whether a file or directory exists; a directory reads with an error too, so mkdir stays idempotent. */
+  /** Whether a path exists. The SDK has no stat, so a read is the probe; a directory fails with EISDIR. */
   async function exists(absolutePath: string, hostId: { hostId?: string }): Promise<boolean> {
     return bb.sdk.files
       .read({ path: absolutePath, ...hostId })

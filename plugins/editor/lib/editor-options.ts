@@ -39,7 +39,7 @@ export function prefsFrom(values: Record<string, unknown> | null | undefined): E
   };
 }
 
-export function monoFontFamily(): string | undefined {
+export function monoFontFamily(): string {
   const value = getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim();
   return `"BB Editor Geist Mono", ${value || "monospace"}`;
 }

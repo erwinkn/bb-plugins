@@ -225,7 +225,7 @@ test("reload after a conflict takes the file on disk and drops the edits", async
   session.setContent("mine\n", "view-1");
   disk.content = "theirs\n";
   await session.save();
-  const outcome = await session.discard();
+  const outcome = await session.reload();
   assert.deepEqual(outcome, { ok: true });
   const state = session.getSnapshot();
   assert.equal(state.content, "theirs\n");
@@ -303,6 +303,9 @@ test("a session with unsaved work outlives its views, and a clean one is dropped
   clean.detach();
   assert.equal(peekFileSession(WORKSPACE, "dirty.txt")?.getSnapshot().dirty, true);
   assert.deepEqual([...dirtyPaths(WORKSPACE)], ["dirty.txt"]);
+  for (let index = 0; index < 30; index++) open(disk, `filler-${index}.txt`).detach();
+  assert.equal(peekFileSession(WORKSPACE, "clean.txt"), null, "the oldest clean session is evicted");
+  assert.notEqual(peekFileSession(WORKSPACE, "dirty.txt"), null);
 });
 
 test("a draft survives the view and comes back when the file is unchanged", async () => {
@@ -551,7 +554,7 @@ test("discarding does not drop text typed while it read the file", async () => {
   await settle();
   session.setContent("edited\n", "view-1");
   disk.holdReads = true;
-  const discarding = session.discard();
+  const discarding = session.reload();
   await settle();
   session.setContent("typed after pressing discard\n", "view-1");
   disk.holdReads = false;
@@ -559,7 +562,7 @@ test("discarding does not drop text typed while it read the file", async () => {
   const outcome = await discarding;
   assert.equal(outcome.ok, false);
   assert.equal(session.getSnapshot().content, "typed after pressing discard\n");
-  assert.deepEqual(await session.discard(), { ok: true });
+  assert.deepEqual(await session.reload(), { ok: true });
   assert.equal(session.getSnapshot().content, "one\n");
 });
 

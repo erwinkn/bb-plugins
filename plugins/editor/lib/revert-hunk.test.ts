@@ -5,10 +5,9 @@ import { revertHunkEdit } from "./revert-hunk";
 const runtime = { parseDiffFromFile, diffAcceptRejectHunk };
 function reverted(old: string | null, current: string, line: number, side: "additions" | "deletions" = "additions") {
   const edit = revertHunkEdit(runtime, "test.txt", old, current, line, side);
-  if (!edit) return current.replace(/\r\n|\r/g, "\n");
-  const text = current.replace(/\r\n|\r/g, "\n");
-  const offset = (position: { line: number; character: number }) => text.split("\n").slice(0, position.line).reduce((n, value) => n + value.length + 1, 0) + position.character;
-  return text.slice(0, offset(edit.range.start)) + edit.newText + text.slice(offset(edit.range.end));
+  if (!edit) return current;
+  const offset = (position: { line: number; character: number }) => current.split("\n").slice(0, position.line).reduce((n, value) => n + value.length + 1, 0) + position.character;
+  return current.slice(0, offset(edit.range.start)) + edit.newText + current.slice(offset(edit.range.end));
 }
 for (const [name, old, current] of [
   ["replacement", "one\ntwo\n", "one\nthree\n"],
@@ -20,7 +19,7 @@ for (const [name, old, current] of [
   ["empty original", "", "added\n"],
   ["empty working file", "old\n", ""],
   ["Unicode", "🥖 café\n", "🥐 茶\n"],
-] as const) test(`revert hunk: ${name}`, () => assert.equal(reverted(old, current, 1), old.replace(/\r\n/g, "\n")));
+] as const) test(`revert hunk: ${name}`, () => assert.equal(reverted(old, current, 1), old));
 test("revert hunk: new file becomes empty without deleting the file", () => assert.equal(reverted(null, "new\n", 1), ""));
 test("revert one hunk keeps distant changes and trailing context", () => {
   const old = Array.from({ length: 80 }, (_, i) => `line ${i}\n`).join("");

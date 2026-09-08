@@ -5,8 +5,8 @@
  * enters from outside passes through a parser here.
  */
 import type { FileSessionSnapshot } from "./file-session.js";
-import type { DiffEntry, DiffTarget } from "./diff-contract.js";
-import { DEFAULT_TREE_WIDTH, MIN_TREE_WIDTH } from "./layout-storage.js";
+import { diffTargetSchema, refSchema, shaSchema, type DiffEntry, type DiffTarget } from "./diff-contract.js";
+import { DEFAULT_TREE_WIDTH, MIN_TREE_WIDTH, readStored, writeStored } from "./layout-storage.js";
 
 export type DiffScope = DiffTarget["type"];
 
@@ -15,17 +15,12 @@ export const SPLIT_MIN_WIDTH_PX = 560;
 /** Below this the list and the comparison take turns instead of sharing the row. */
 const COMPACT_BREAKPOINT_PX = 620;
 
-const COMMIT_PATTERN = /^[a-fA-F0-9]{7,40}$/;
-/** Matches the reference rule the server applies, so bad input never leaves the client. */
-const BAD_REF = /^-|[\0\r\n]/;
-
 export function isCommitHash(value: string): boolean {
-  return COMMIT_PATTERN.test(value.trim());
+  return shaSchema.safeParse(value).success;
 }
 
 export function isBranchRef(value: string): boolean {
-  const trimmed = value.trim();
-  return trimmed.length > 0 && trimmed.length <= 256 && !BAD_REF.test(trimmed);
+  return refSchema.safeParse(value).success;
 }
 
 export const DEFAULT_TARGET: DiffTarget = { type: "uncommitted" };
@@ -33,19 +28,11 @@ export const DEFAULT_TARGET: DiffTarget = { type: "uncommitted" };
 /** A `DiffTarget` from any value: panel parameters, stored text, a link. */
 export function parseTarget(value: unknown): DiffTarget | null {
   if (typeof value === "string") return parseTargetKey(value);
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const type = record.type;
-  if (type === "uncommitted") return { type: "uncommitted" };
-  if (type === "commit") {
-    const sha = typeof record.sha === "string" ? record.sha.trim() : "";
-    return isCommitHash(sha) ? { type: "commit", sha } : null;
-  }
-  if (type !== "all" && type !== "branch_committed") return null;
-  const branch = record.mergeBaseBranch;
-  if (branch === undefined || branch === null || branch === "") return { type };
-  if (typeof branch !== "string" || !isBranchRef(branch)) return null;
-  return { type, mergeBaseBranch: branch.trim() };
+  if (typeof value !== "object" || value === null) return null;
+  // An empty branch means "use the workspace's own base branch".
+  const { mergeBaseBranch, ...rest } = value as Record<string, unknown>;
+  const parsed = diffTargetSchema.safeParse(mergeBaseBranch == null || mergeBaseBranch === "" ? rest : { ...rest, mergeBaseBranch });
+  return parsed.success ? parsed.data : null;
 }
 
 /** The `{ target, path }` a panel action or a link can carry. */
@@ -72,11 +59,7 @@ export function parseTargetKey(key: string): DiffTarget | null {
   const separator = key.indexOf(":");
   const type = separator === -1 ? key : key.slice(0, separator);
   const rest = separator === -1 ? "" : key.slice(separator + 1);
-  if (type === "uncommitted") return { type: "uncommitted" };
-  if (type === "commit") return isCommitHash(rest) ? { type: "commit", sha: rest.trim() } : null;
-  if (type !== "all" && type !== "branch_committed") return null;
-  if (rest === "") return { type };
-  return isBranchRef(rest) ? { type, mergeBaseBranch: rest.trim() } : null;
+  return parseTarget(type === "commit" ? { type, sha: rest } : { type, mergeBaseBranch: rest });
 }
 
 export function sameTarget(a: DiffTarget, b: DiffTarget): boolean {
@@ -241,26 +224,9 @@ export function isCompact(width: number): boolean {
   return width > 0 && width < COMPACT_BREAKPOINT_PX;
 }
 
-const PREFIX = "bb-plugin-erwin-editor:diff:";
-
-function read(key: string): string | null {
-  try {
-    return window.localStorage.getItem(PREFIX + key);
-  } catch {
-    return null;
-  }
-}
-
-function write(key: string, value: string | null): void {
-  try {
-    if (value === null) window.localStorage.removeItem(PREFIX + key);
-    else window.localStorage.setItem(PREFIX + key, value);
-  } catch {}
-}
-
 /** Stored view preferences, with anything unreadable falling back to the default. */
 export function readViewPrefs(): DiffViewPrefs {
-  const raw = read("view");
+  const raw = readStored("diff:view");
   if (raw === null) return DEFAULT_VIEW_PREFS;
   let parsed: unknown;
   try {
@@ -286,26 +252,26 @@ export function viewPrefsFrom(value: unknown): DiffViewPrefs {
 }
 
 export function storeViewPrefs(prefs: DiffViewPrefs): void {
-  write("view", JSON.stringify(prefs));
+  writeStored("diff:view", JSON.stringify(prefs));
 }
 
 /** The comparison a workspace showed last, so the tab opens where it was. */
 export function readLastTarget(workspaceKey: string): DiffTarget | null {
-  const raw = read(`target:${workspaceKey}`);
+  const raw = readStored(`diff:target:${workspaceKey}`);
   return raw === null ? null : parseTargetKey(raw);
 }
 
 export function storeLastTarget(workspaceKey: string, target: DiffTarget): void {
-  write(`target:${workspaceKey}`, targetKey(target));
+  writeStored(`diff:target:${workspaceKey}`, targetKey(target));
 }
 
 /** The file a comparison showed last. Each comparison remembers its own. */
 export function readLastPath(workspaceKey: string, target: DiffTarget): string | null {
-  return read(`path:${workspaceKey}:${targetKey(target)}`);
+  return readStored(`diff:path:${workspaceKey}:${targetKey(target)}`);
 }
 
 export function storeLastPath(workspaceKey: string, target: DiffTarget, path: string | null): void {
-  write(`path:${workspaceKey}:${targetKey(target)}`, path);
+  writeStored(`diff:path:${workspaceKey}:${targetKey(target)}`, path);
 }
 
 /** A saved hash is an acknowledgement; an external read needs a new comparison. */

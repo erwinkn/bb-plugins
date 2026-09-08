@@ -1,15 +1,14 @@
 /**
  * The files this editor opens: one row per file type, with the Shiki grammar
  * Pierre highlights it with (BB's own highlighter uses the same grammars, so
- * colors match) and the extensions and file names it claims. Pierre picks the
- * grammar from the file name itself; this table exists so BB routes these
- * files to the plugin's opener, and so a test can prove every grammar ships.
+ * colors match) and the extensions it claims. Pierre picks the grammar from
+ * the file name itself; this table exists so BB routes these files to the
+ * plugin's opener, and so a test can prove every grammar ships.
  */
 export interface FileType {
   /** Shiki grammar id, or null for a file type shown as plain text. */
   grammar: string | null;
   extensions: readonly string[];
-  filenames?: readonly string[];
 }
 
 export const FILE_TYPES: readonly FileType[] = [
@@ -23,21 +22,19 @@ export const FILE_TYPES: readonly FileType[] = [
   { grammar: "vue", extensions: ["vue"] },
   { grammar: "svelte", extensions: ["svelte"] },
   { grammar: "astro", extensions: ["astro"] },
-  { grammar: "yaml", extensions: ["yaml", "yml"], filenames: [".clang-format"] },
-  { grammar: "toml", extensions: ["toml"], filenames: ["Cargo.lock", "Pipfile", "poetry.lock", "uv.lock"] },
-  { grammar: "ini", extensions: ["ini", "cfg", "conf", "properties", "editorconfig", "npmrc", "gitconfig"], filenames: [".editorconfig", ".npmrc", ".gitconfig", ".gitmodules", "setup.cfg"] },
-  { grammar: "dotenv", extensions: ["env"], filenames: [".env", ".env.local", ".env.development", ".env.production", ".env.test", ".env.example"] },
+  { grammar: "yaml", extensions: ["yaml", "yml"] },
+  { grammar: "toml", extensions: ["toml"] },
+  { grammar: "ini", extensions: ["ini", "cfg", "conf", "properties", "editorconfig", "npmrc", "gitconfig"] },
+  { grammar: "dotenv", extensions: ["env"] },
   { grammar: "xml", extensions: ["xml", "xsl", "xslt", "svg", "plist", "csproj", "xaml"] },
   { grammar: "csv", extensions: ["csv", "tsv"] },
   { grammar: "markdown", extensions: ["md", "markdown"] },
   { grammar: "mdx", extensions: ["mdx"] },
   { grammar: "rst", extensions: ["rst"] },
   { grammar: "latex", extensions: ["tex", "sty", "cls", "bib"] },
-  { grammar: null, extensions: ["txt", "text", "adoc", "lock", "gitignore", "dockerignore", "gitattributes", "npmignore", "prettierignore", "eslintignore"], filenames: [".gitignore", ".dockerignore", ".gitattributes", ".npmignore", ".prettierignore", ".eslintignore", "LICENSE", "LICENCE", "CODEOWNERS", "go.mod", "go.sum", "Procfile"] },
+  { grammar: null, extensions: ["txt", "text", "adoc", "lock", "gitignore", "dockerignore", "gitattributes", "npmignore", "prettierignore", "eslintignore"] },
   { grammar: "log", extensions: ["log"] },
   { grammar: "diff", extensions: ["diff", "patch"] },
-  { grammar: "git-commit", extensions: [], filenames: ["COMMIT_EDITMSG", "MERGE_MSG"] },
-  { grammar: "git-rebase", extensions: [], filenames: ["git-rebase-todo"] },
   { grammar: "c", extensions: ["c", "h"] },
   { grammar: "cpp", extensions: ["cc", "cpp", "cxx", "c++", "hpp", "hh", "hxx", "h++", "ino"] },
   { grammar: "objective-c", extensions: ["m", "mm"] },
@@ -50,10 +47,10 @@ export const FILE_TYPES: readonly FileType[] = [
   { grammar: "java", extensions: ["java"] },
   { grammar: "kotlin", extensions: ["kt", "kts"] },
   { grammar: "scala", extensions: ["scala", "sc"] },
-  { grammar: "groovy", extensions: ["groovy", "gradle"], filenames: ["Jenkinsfile"] },
+  { grammar: "groovy", extensions: ["groovy", "gradle"] },
   { grammar: "dart", extensions: ["dart"] },
-  { grammar: "python", extensions: ["py", "pyi", "pyw"], filenames: ["SConstruct", "SConscript"] },
-  { grammar: "ruby", extensions: ["rb", "rake", "gemspec", "ru"], filenames: ["Gemfile", "Rakefile", "Podfile", "Brewfile", "Vagrantfile", "Guardfile"] },
+  { grammar: "python", extensions: ["py", "pyi", "pyw"] },
+  { grammar: "ruby", extensions: ["rb", "rake", "gemspec", "ru"] },
   { grammar: "php", extensions: ["php", "phtml"] },
   { grammar: "perl", extensions: ["pl", "pm", "t"] },
   { grammar: "lua", extensions: ["lua"] },
@@ -67,15 +64,13 @@ export const FILE_TYPES: readonly FileType[] = [
   { grammar: "ocaml", extensions: ["ml", "mli"] },
   { grammar: "clojure", extensions: ["clj", "cljs", "cljc", "edn"] },
   { grammar: "nix", extensions: ["nix"] },
-  { grammar: "shellscript", extensions: ["sh", "bash", "zsh", "ksh"], filenames: [".bashrc", ".bash_profile", ".bash_aliases", ".zshrc", ".zshenv", ".zprofile", ".profile", "PKGBUILD"] },
+  { grammar: "shellscript", extensions: ["sh", "bash", "zsh", "ksh"] },
   { grammar: "fish", extensions: ["fish"] },
   { grammar: "powershell", extensions: ["ps1", "psm1", "psd1"] },
   { grammar: "bat", extensions: ["bat", "cmd"] },
-  { grammar: "make", extensions: ["mk", "mak"], filenames: ["Makefile", "makefile", "GNUmakefile"] },
-  { grammar: "cmake", extensions: ["cmake"], filenames: ["CMakeLists.txt"] },
-  { grammar: "docker", extensions: ["dockerfile"], filenames: ["Dockerfile", "Containerfile"] },
-  { grammar: "nginx", extensions: [], filenames: ["nginx.conf"] },
-  { grammar: "ssh-config", extensions: [], filenames: ["ssh_config", "sshd_config"] },
+  { grammar: "make", extensions: ["mk", "mak"] },
+  { grammar: "cmake", extensions: ["cmake"] },
+  { grammar: "docker", extensions: ["dockerfile"] },
   { grammar: "sql", extensions: ["sql", "ddl", "dml"] },
   { grammar: "graphql", extensions: ["graphql", "gql", "graphqls"] },
   { grammar: "prisma", extensions: ["prisma"] },

@@ -119,7 +119,7 @@ export function EditorPane({
 
   const file = useFileSession({ source, path });
   const state = file.state;
-  const { save, overwrite, reload, discard, setContent, claimEditor, isEditor } = file;
+  const { save, overwrite, reload, setContent, claimEditor, isEditor } = file;
 
   const theme = usePierreTheme(themePreview);
 
@@ -163,11 +163,6 @@ export function EditorPane({
       if (!outcome.ok && outcome.reason === "changed-while-reading") toast.message(outcome.message);
     });
   }, [reload]);
-  const discardEdits = useCallback(() => {
-    void discard().then((outcome) => {
-      if (!outcome.ok && outcome.reason === "changed-while-reading") toast.message(outcome.message);
-    });
-  }, [discard]);
 
   // The command palette acts on the pane that had focus last. The registered
   // object is stable and its fields are refreshed, so a command run later
@@ -230,7 +225,7 @@ export function EditorPane({
 
   const menuItems: MenuItem[] = [
     { label: "Save file", shortcut: "⌘S", disabled: !(state?.dirty ?? false), onSelect: () => void save() },
-    { label: "Discard changes", disabled: !(state?.hasEdits ?? false), onSelect: discardEdits },
+    { label: "Discard changes", disabled: !(state?.hasEdits ?? false), onSelect: reloadFile },
     { label: "Reload from disk", disabled: state?.hasEdits ?? true, onSelect: reloadFile },
     { type: "separator" },
     ...(previewable
@@ -275,7 +270,7 @@ export function EditorPane({
         isEditor={isEditor}
         onTakeOver={claimEditor}
         onOverwrite={() => void overwrite()}
-        onDiscard={discardEdits}
+        onDiscard={reloadFile}
         onRestoreDraft={file.restoreDraft}
         onDiscardDraft={file.discardDraft}
       />

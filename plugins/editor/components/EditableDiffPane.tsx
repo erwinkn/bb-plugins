@@ -216,16 +216,12 @@ export function EditableDiffPane({
   const indicator = indicatorFor(read, state);
 
   /** A read refuses while the user is typing; say so instead of doing nothing. */
-  const discardFile = file.discard;
   const reloadFile = file.reload;
-  const reload = useCallback(
-    (discardEdits: boolean) => {
-      void (discardEdits ? discardFile() : reloadFile()).then((outcome) => {
-        if (!outcome.ok) toast.message(outcome.message);
-      });
-    },
-    [discardFile, reloadFile],
-  );
+  const reload = useCallback(() => {
+    void reloadFile().then((outcome) => {
+      if (!outcome.ok) toast.message(outcome.message);
+    });
+  }, [reloadFile]);
 
   // The command palette acts on the pane that had focus last. The Changes tab
   // registers the same way the Files tab does, so Save, Find and Go to line
@@ -258,8 +254,8 @@ export function EditableDiffPane({
       if (!surfaceRef.current?.revertHunk()) toast.info("Place the cursor in a changed hunk first");
     } },
     { label: "Save file", shortcut: "⌘S", disabled: !dirty || conflicted, onSelect: save },
-    { label: "Discard changes", disabled: !dirty, onSelect: () => reload(true) },
-    { label: "Reload from disk", disabled: dirty || !editable, onSelect: () => reload(false) },
+    { label: "Discard changes", disabled: !dirty, onSelect: reload },
+    { label: "Reload from disk", disabled: dirty || !editable, onSelect: reload },
     { type: "separator" },
     ...(onOpenFile === null ? [] : [{ label: "Open in the Files tab", onSelect: onOpenFile } satisfies MenuItem]),
     { label: "Copy relative path", onSelect: () => void copyText(data?.relativePath ?? path, "Relative path copied") },
@@ -311,7 +307,7 @@ export function EditableDiffPane({
         isEditor={isEditor}
         onSave={save}
         onOverwrite={overwrite}
-        onReload={() => reload(false)}
+        onReload={reload}
         onRestoreDraft={file.restoreDraft}
         onDiscardDraft={file.discardDraft}
         onTakeOver={() => {

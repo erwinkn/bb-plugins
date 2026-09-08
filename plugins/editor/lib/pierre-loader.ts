@@ -1,6 +1,5 @@
 import type {
   CodeView as CodeViewClass,
-  DiffsThemeNames,
   FileContents,
   FileDiff as FileDiffClass,
   FileDiffMetadata,
@@ -27,12 +26,10 @@ export interface PierreBundle {
   ) => FileDiffMetadata;
   parsePatchFiles: (patch: string, cacheKeyPrefix?: string, throwOnError?: boolean) => ParsedPatch[];
   registerCustomTheme: (name: string, loader: () => Promise<ThemeRegistration>) => void;
-  getLineEndingType: (content: string) => "CRLF" | "CR" | "LF" | "none";
   getOrCreateWorkerPoolSingleton: (props: {
     poolOptions: { workerFactory: () => Worker; poolSize?: number };
     highlighterOptions: { preferredHighlighter?: "shiki-js" | "shiki-wasm" };
   }) => WorkerPoolManager;
-  terminateWorkerPoolSingleton: () => void;
   /** False when another copy of Pierre defined `<diffs-container>` first. */
   ownsContainerElement: boolean;
   version: string;
@@ -42,17 +39,7 @@ export interface PierreBundle {
 export interface PierreRuntime extends PierreBundle {
   /** The shared syntax worker pool, or null when workers are unavailable. */
   workerPool: WorkerPoolManager | null;
-  /** Why the worker pool is null. Highlighting still works on the main thread. */
-  workerError: Error | null;
 }
-
-/**
- * Which Shiki engine the highlighter uses. The JavaScript engine needs no
- * WebAssembly, so it starts faster and needs no `wasm-unsafe-eval`; the
- * Oniguruma engine matches VS Code's regex behavior exactly. Grammars that use
- * Oniguruma-only patterns can differ between the two, so this stays a choice.
- */
-export type PierreHighlighter = "shiki-js" | "shiki-wasm";
 
 /**
  * Workers tokenize whole files off the main thread. Two is enough for a panel
@@ -68,11 +55,8 @@ let bootPromise: Promise<PierreRuntime> | null = null;
  * the bundle once: the module holds a live custom element, a worker pool, and a
  * theme registry, so a second copy would fight the first over all three.
  */
-export function loadPierre(
-  baseUrl: string,
-  options: { highlighter?: PierreHighlighter } = {},
-): Promise<PierreRuntime> {
-  bootPromise ??= boot(baseUrl, options.highlighter ?? "shiki-js").catch((error: unknown) => {
+export function loadPierre(baseUrl: string): Promise<PierreRuntime> {
+  bootPromise ??= boot(baseUrl).catch((error: unknown) => {
     // A failed boot must not poison every later attempt: the asset routes may
     // simply not have been registered yet.
     bootPromise = null;
@@ -81,7 +65,7 @@ export function loadPierre(
   return bootPromise;
 }
 
-async function boot(baseUrl: string, highlighter: PierreHighlighter): Promise<PierreRuntime> {
+async function boot(baseUrl: string): Promise<PierreRuntime> {
   const bundle = (await import(/* @vite-ignore */ `${baseUrl}/editor.js`)) as Partial<PierreBundle>;
   const missing = (
     ["CodeView", "Editor", "parseDiffFromFile", "registerCustomTheme"] as const
@@ -105,7 +89,6 @@ async function boot(baseUrl: string, highlighter: PierreHighlighter): Promise<Pi
     );
   }
   let workerPool: WorkerPoolManager | null = null;
-  let workerError: Error | null = null;
   try {
     workerPool = runtime.getOrCreateWorkerPoolSingleton({
       poolOptions: {
@@ -116,16 +99,12 @@ async function boot(baseUrl: string, highlighter: PierreHighlighter): Promise<Pi
           }),
         poolSize: WORKER_POOL_SIZE,
       },
-      highlighterOptions: { preferredHighlighter: highlighter },
+      // The JavaScript engine needs no WebAssembly or `wasm-unsafe-eval`.
+      highlighterOptions: { preferredHighlighter: "shiki-js" },
     });
   } catch (error: unknown) {
-    // Highlighting falls back to the main thread, so this is a slow surface,
-    // not a broken one. The caller decides whether to show it.
-    workerError = error instanceof Error ? error : new Error(String(error));
+    // Highlighting falls back to the main thread: slower, not broken.
     console.warn("[erwin-editor] the syntax worker pool did not start", error);
   }
-  return { ...runtime, workerPool, workerError };
+  return { ...runtime, workerPool };
 }
-
-/** A Pierre theme name, which is also the key its resolved theme is cached under. */
-export type PierreThemeName = DiffsThemeNames;
