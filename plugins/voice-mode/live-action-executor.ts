@@ -145,16 +145,17 @@ export class LiveActionExecutor {
     return combineResults(results);
   }
 
-  private async target(threadId: string, requireActive = true) {
+  private async target(threadId: string, requireActive = true, conversationId?:string) {
     const thread = await this.bb.sdk.threads.get({threadId});
-    if (thread.visibility === "hidden" || this.hooks.isCoordinator(thread)) throw new Error("That target is not an accessible work thread.");
+    const ownWorker=conversationId && this.store.workerForThread(threadId)?.conversationId===conversationId;
+    if ((thread.visibility === "hidden" && !ownWorker) || this.hooks.isCoordinator(thread)) throw new Error("That target is not an accessible work thread.");
     if (thread.deletedAt || (requireActive && thread.archivedAt)) throw new Error("That thread is archived or deleted. Resolve an active target before sending work.");
     return thread;
   }
 
   private async prepare(envelope: UserRequestEnvelope, operation: LiveOperation, actor: "live"|"coordinator", step: number, context: ActionContext): Promise<Prepared> {
     if (operation.kind === "send_message") {
-      const thread = await this.target(operation.threadId);
+      const thread = await this.target(operation.threadId,true,envelope.conversationId);
       const title = label(thread.title ?? thread.titleFallback ?? "the requested thread",80);
       const text = formatVoiceInstruction(envelope,operation,actor,step);
       return {commit:async () => {
@@ -162,12 +163,13 @@ export class LiveActionExecutor {
         this.store.resumeWorker(thread.id);
         const sent = await this.bb.sdk.threads.send({threadId:thread.id,mode:"queue-if-active",input:[{type:"text",text,mentions:[]}]});
         const queued = sent.delivery === "queued";
-        const speech = `${queued ? "Queued for" : "Sent to"} ${title}: ${label(operation.text ?? envelope.originalText,180)}`;
+        const internal=this.store.workerForThread(thread.id)?.conversationId===envelope.conversationId;
+        const speech = internal ? `I’ve ${queued ? "queued" : "sent"} your update for ${title}.` : `${queued ? "Queued for" : "Sent to"} ${title}: ${label(operation.text ?? envelope.originalText,180)}`;
         return result("succeeded",speech,text,[thread.id],[{action:"send_message",thread_id:thread.id,outcome:queued ? "pending" : "done",note:queued ? `Queued: ${sent.queuedMessage.id}` : "Sent"}]);
       }};
     }
     if (operation.kind === "stop_thread") {
-      const thread = await this.target(operation.threadId);
+      const thread = await this.target(operation.threadId,true,envelope.conversationId);
       const title = label(thread.title ?? thread.titleFallback ?? "the requested thread",80);
       return {commit:async () => {
         this.hooks.watch(envelope.conversationId,thread.id);

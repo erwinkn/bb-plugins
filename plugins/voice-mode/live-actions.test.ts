@@ -208,3 +208,18 @@ test("uncertain effects cannot be repeated under another request in the same utt
   assert.equal((await h.executor().execute(envelope("second"),send(),"live",h.context)).status,"unknown");
   assert.equal(attempts,1);
 });
+
+test("hidden internal workers remain controllable only from their own voice conversation",async t=>{
+  const h=fixture();t.after(h.close);
+  await h.executor().execute(h.envelope("worker","Investigate missing transcripts."),start(),"live",h.context);
+  const threadId="worker-1";
+  assert.equal(h.world.threads.get(threadId).visibility,"hidden");
+  const message:QuickAction={kind:"send_message",threadId,purpose:"instruction"};
+  const foreign={...h.envelope("foreign","Also inspect errors."),conversationId:"other"};
+  assert.equal((await h.executor().execute(foreign,message,"coordinator",h.context)).status,"failed");
+  assert.equal(h.world.sends.length,0);
+  const reply=await h.executor().execute(h.envelope("follow-up","Also inspect errors."),message,"coordinator",h.context);
+  assert.equal(reply.status,"succeeded");assert.equal(h.world.sends.length,1);assert.match(reply.speech,/I’ve queued your update/);
+  assert.equal((await h.executor().execute(h.envelope("stop-worker","Stop the investigation."),{kind:"stop_thread",threadId},"coordinator",h.context)).status,"succeeded");
+  assert.deepEqual(h.world.stops,[threadId]);
+});
