@@ -62,25 +62,51 @@ preview request does not prove that its contents rendered successfully. Preview
 requires a page with a native BB preview handler; Voice reports when the current
 page cannot open one.
 
-## One assistant, one request lifecycle
+## Three tiers, without mandatory extra hops
 
-Voice gives one short acknowledgment, works quietly, and reports useful results
-or a material blocker. It does not narrate internal dispatch or coordinator
-activity. The realtime model can look up targets and directly request one
-native navigation action or send one short comment or read-only status request
-to a thread. Messages queue if the thread is busy. Implementation requests,
-complex work, interruptions, destructive actions, and drafts use the coordinator.
-There are no direct archive, delete, stop, shell, or composer-submit tools.
+The **live operator** handles bounded reads, native UI actions, unsent drafts,
+real thread instructions, task stops, and creating new workers directly. The
+**fast coordinator** handles brief checks, ambiguous targets, and cross-thread
+coordination. **Workers** do investigation, planning, implementation, and review
+using independently configured model profiles. Difficult work is not a reason
+to route a clear dispatch through the coordinator first.
 
-Quick actions use the same transcript validation and durable request/reply
-records. A repeated tool call for the same spoken input cannot repeat a quick
-action. New speech cancels pending quick actions; an accepted thread message
-cannot be taken back. Unknown delivery is never retried automatically. Message
-targets are watched so their later results reach the voice conversation.
-The server sends comments as quoted information with no permission to change
-state, and status requests explicitly ask for a read-only answer. A conservative
-operation-word check sends potentially actionable requests to the coordinator;
-this is not a general natural-language safety classifier.
+Examples:
+
+| Say | Path |
+| --- | --- |
+| “Open Build Fix and ask it to add regression tests.” | Live resolves the target, opens it, and queues the instruction. |
+| “Start a thread in BB Plugins to investigate the retry problem.” | Live creates a visible investigation worker in a managed worktree. |
+| “Prepare a reply in that thread.” | Live edits an exact draft target, without submitting. |
+| “Stop the build task.” | Live requests a stop; acceptance is not proof every process exited. |
+| “Coordinate these three overlapping fixes.” | The fast coordinator checks briefly and delegates technical work. |
+| “Delete the old worktree.” | No direct live deletion tool; this requires the consequential-operation workflow. |
+
+A live request may contain one bounded group of up to four resolved actions.
+Each effect has a durable identity derived from its request and step position.
+Replays return recorded receipts, never repeat effects or resume unexecuted
+remaining steps after a partial/unknown outcome. New speech cancels pending
+live actions, not previously accepted worker tasks. An SDK send already in
+flight cannot be recalled. Late results are recorded and reported separately.
+
+Thread messages are **real delegated instructions**, not a read-only boundary.
+The original transcript, exact optional excerpt, reference interpretation, and
+application provenance remain separate. The English operation-word blacklist
+is removed. Sending an instruction does not escalate the receiving thread’s
+permissions; normal BB approvals remain in effect.
+
+Fast actions produce one concrete announcement, rather than an acknowledgment
+plus a generic “sent”: “Queued for Build Fix: add regression tests.” Worker
+creation names the task, project, machine, and role. Sent, queued, created,
+stop-requested, and completed are different states. The bridge owns speech
+scheduling and interrupted delivery. Internal RPC/model plumbing stays quiet;
+user-relevant assignments do not.
+
+Voice-created workers have a `voice_worker_report` tool. Structured reports
+are held until the worker turn settles and the call is quiet, then delivered
+without another coordinator turn. Other thread output and mixed update batches
+still use the coordinator for a short digest. Worker reports are claims, not
+permission to start follow-on work.
 
 Empty or failed transcripts cannot start work. Voice cancels the affected
 realtime response and asks once for the missed sentence. Requests wait up to
@@ -89,8 +115,9 @@ restart rejected work. The conversation marks speech with no usable transcript,
 and Diagnostics records per-item results, timing, and provider error details.
 The plugin does not record raw microphone audio.
 
-Quick navigation and the coordinator’s `voice_ui` tool share one UI command
-path. Neither uses speech text to trigger navigation. The server records each command and binds it to the request and
+Live actions and the coordinator’s `voice_actions` tool use the same effect
+executor. Native UI actions and `voice_ui` share the existing UI command path.
+Neither parses speech text to trigger navigation. The server records each command and binds it to the request and
 physical call. Only the client running that call applies it. Other BB windows
 can show call status without changing their own workspace. Commands are claimed
 before execution, so repeated delivery cannot repeat a draft edit or navigation.
@@ -111,12 +138,19 @@ boundaries, ownership rules, and failure cases.
 - **Behavior:** editable instructions for how Voice speaks and responds.
 - **Coordinator:** provider, model, supported reasoning effort, and Fast when
   the provider supports it. These execution choices apply to new sessions.
+- **Workers:** independent provider/model/reasoning/Fast profiles for investigation,
+  planning, implementation, and review, plus a creation limit (default 8).
+  The machine picker previews its catalog; execution validates the actual target.
+  New profiles use the provider default until you select a model; they never
+  inherit the coordinator model. Unsupported selections fail without substitution.
 - **Audio:** microphone selection and a microphone test. Playback uses the
   system's selected output device.
 - **Keyboard shortcuts:** start/stop and mute bindings.
 
-The coordinator is required. There are no coordinator enable/machine,
-Announcements, plugin-exposure, or thread-opening preference controls.
+The coordinator remains available and is warmed during call setup, but direct
+actions do not require a coordinator turn or a working coordinator provider.
+Choose a fast coordinator separately from larger worker models. Existing
+coordinator settings and user-saved instructions are retained.
 
 Saved instructions apply to the next realtime call and the next coordinator
 request. They customize behavior within the request and delivery rules. Saving
@@ -141,6 +175,7 @@ through WebRTC; this plugin stores transcripts and events, not audio recordings.
 ```sh
 npm run typecheck
 npm test
+npm run build:check
 bb plugin build .
 bb plugin reload voice-mode
 ```
@@ -154,6 +189,8 @@ For diagnosis:
 bb plugin list --json
 bb plugin logs voice-mode -f
 bb voice-mode live --json
+bb voice-mode actions --json
+bb voice-mode workers --json
 bb voice-mode read thr_example
 bb voice-mode usage
 bb voice-mode stop
@@ -166,11 +203,30 @@ Historical call records remain readable; they do not enable an old execution
 mode. The app-wide call controller survives route changes within its runtime.
 A live WebRTC connection cannot transfer between browser windows or devices.
 
-Automated tests cover coordinator delivery, native UI command ownership,
+Automated tests cover direct instruction delivery, worker role selection,
+creation limits, duplicate and partial groups, cancellation/late outcomes,
+speech-time target snapshots, worker settings, report routing, coordinator delivery, native UI command ownership,
 context changes, draft targeting, speech scheduling, and session history.
 Browser checks cover the BB controls and responsive layout. Physical desktop
 and phone calls still need microphone, interruption, playback, backgrounding,
 and keyboard tests. Passing a browser test does not establish those results.
+
+New workers use BB’s `accept-edits` mode. Investigation/review scope is an
+instruction, **not an enforced read-only sandbox**. SDK plugin tool selection
+does not remove native tools from a coding agent. This plugin does not claim
+that the coordinator or workers cannot bypass a typed operation through their
+native capabilities. The live surface itself has no shell, archive, delete,
+permission-grant, or composer-submit tool.
+
+Worktree creation uses `threads.spawn` with a managed worktree and default base
+branch. SDK 0.4.47 has no standalone environment/worktree creation method, so
+this change does not expose an unimplemented standalone creation tool. Unknown
+worker creation consumes its quota slot and is not automatically retried or
+adopted by title. Inspect diagnostics; a fresh user request is a separate action,
+not a safe retry. Test actual hardware calls and model behavior before relying
+on the new paths for consequential work.
+
+See [the operator architecture](docs/live-operator.md) for contracts and limits.
 
 Current BB boundaries and desired upstream improvements are recorded in the
 [repository README](../../README.md#desired-upstream-changes).

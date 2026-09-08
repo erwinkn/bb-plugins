@@ -44,7 +44,7 @@ test("session history and plugin logs preserve the same actions and error detail
 });
 
 test("realtime tools expose bounded quick actions without destructive or arbitrary tools", () => {
-  assert.deepEqual(coordinatorToolSchemas().map(tool => tool.name), ["lookup_targets", "quick_action", "delegate_to_coordinator", "remain_silent", "end_call"]);
+  assert.deepEqual(coordinatorToolSchemas().map(tool => tool.name), ["read_thread", "lookup_targets", "quick_action", "delegate_to_coordinator", "remain_silent", "end_call"]);
 });
 
 test("obsolete view preferences are ignored without changing other saved settings", async () => {

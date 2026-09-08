@@ -1,25 +1,45 @@
 import { z } from "zod";
-import { navigationActionSchemas } from "./ui-actions.ts";
+import { UiActionSchema } from "./ui-actions.ts";
+import { WORKER_ROLES } from "./worker-profiles.ts";
 
-/** No destructive operations, draft submission, or arbitrary tool names. */
+const id = z.string().min(1).max(128);
+/** These tools dispatch work, but never grant permissions or expose arbitrary commands. */
+export const liveOperationSchema = z.discriminatedUnion("kind", [
+  ...UiActionSchema.options,
+  z.object({ kind: z.literal("send_message"), threadId: id,
+    purpose: z.enum(["comment", "status", "instruction"]).default("instruction"),
+    text: z.string().trim().min(1).max(8000).optional() }).strict(),
+  z.object({ kind: z.literal("start_thread"), projectId: id, hostId: id.optional(),
+    role: z.enum(WORKER_ROLES), title: z.string().trim().min(1).max(120),
+    text: z.string().trim().min(1).max(8000).optional() }).strict(),
+  z.object({ kind: z.literal("stop_thread"), threadId: id }).strict(),
+]);
+export type LiveOperation = z.infer<typeof liveOperationSchema>;
 export const quickActionSchema = z.discriminatedUnion("kind", [
-  ...navigationActionSchemas,
-  z.object({ kind: z.literal("send_message"), threadId: z.string().min(1).max(128),
-    purpose: z.enum(["comment", "status"]), text: z.string().min(1).max(1000) }).strict(),
+  ...liveOperationSchema.options,
+  z.object({ kind: z.literal("group"), actions: z.array(liveOperationSchema).min(1).max(4) }).strict(),
 ]);
 export type QuickAction = z.infer<typeof quickActionSchema>;
+export const operationsOf = (action: QuickAction): LiveOperation[] => action.kind === "group" ? action.actions : [action];
 
-/** Conservative admission, not a general natural-language safety classifier. */
-export function quickMessageRefusal(action: Extract<QuickAction, {kind:"send_message"}>, original: string): string | null {
-  if (original.length > 1200 || !original.includes(action.text)) return "The message must be a short, verbatim part of the spoken request.";
-  if (/\b(archive|delete|remove|stop|interrupt|steer|cancel|merge|push|deploy|publish|install|restart|reload|reset|rebase|revert|implement|fix|edit|modify|change|execute|run|command|shell|approve|permission|credential|secret)\b/i.test(original) || /[\n\r`]|&&|\|\||;/.test(original)) return "This request needs the coordinator.";
+/** Optional excerpts must preserve words. The full transcript is always sent as authority. */
+export function quickMessageRefusal(action: Extract<LiveOperation, {kind:"send_message" | "start_thread"}>, original: string): string | null {
+  const normalize = (value: string) => value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  return action.text && !normalize(original).includes(normalize(action.text))
+    ? "The selected excerpt does not match the transcript. Preserve the user's complete request instead of rewriting it." : null;
+}
+export function quickActionRefusal(action: QuickAction, original: string): string | null {
+  for (const operation of operationsOf(action)) {
+    if (operation.kind === "send_message" || operation.kind === "start_thread") {
+      const refusal = quickMessageRefusal(operation, original);
+      if (refusal) return refusal;
+    }
+  }
   return null;
 }
 
-
 export const QUICK_ACTION_TIMEOUT_MS = 20_000;
-
-/** Bound SDK calls that have no cancellation parameter; never retry their effects. */
+/** Limits observation, not the SDK side effect. A timed-out effect must not be repeated. */
 export function waitForQuickAction<T>(work: Promise<T>, signal: AbortSignal, deadline: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const abort = () => { cleanup(); reject(new Error("Quick action cancelled.")); };

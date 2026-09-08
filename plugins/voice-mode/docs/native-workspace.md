@@ -1,5 +1,8 @@
 # Voice controls the BB workspace
 
+The native UI mechanics below are retained. The live/coordinator responsibility
+split is updated by [the three-tier operator architecture](live-operator.md).
+
 Voice is one conversation that continues as the user moves through BB. The
 Voice page contains session history, the conversation, and optional debugging
 views. BB owns work-thread pages, project navigation, splits, drafts, and file
@@ -7,11 +10,11 @@ previews. Voice does not maintain a second collection of work-thread views.
 
 ## Responsibilities
 
-- The realtime model listens, gives one short contextual acknowledgment, and
-  speaks results. It does not mutate BB state or invent UI capabilities.
-- The coordinator interprets the complete spoken request, resolves targets with
-  BB tools, performs work, and authors useful answers. Routine follow-ups and
-  comments queue behind current work. Steering is reserved for an interruption.
+- The realtime model listens, invokes bounded operator tools, and speaks actual
+  action receipts. It does not invent UI capabilities or execution outcomes.
+- The coordinator handles brief checks and coordination, using the same operator
+  executor. Substantive work goes to independently configured strong workers.
+  Routine thread instructions queue; explicit task stops use a separate operation.
 - The server validates coordinator calls and records request and UI-command
   delivery. UI commands belong to an explicit request and its physical call.
 - The client that owns the call applies structured commands through native BB

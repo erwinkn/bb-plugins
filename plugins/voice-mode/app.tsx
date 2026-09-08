@@ -1,3 +1,4 @@
+import { WorkerSettings } from "./worker-settings.tsx";
 // bb-plugin-voice-mode — frontend registration.
 //
 // Voice is one continuous assistant that lives in the app overlay
@@ -87,6 +88,7 @@ export default definePluginApp((app) => {
     title: "Coordinator",
     component: CoordinatorSettings,
   });
+  app.slots.settingsSection({id:"workers",title:"Workers",component:WorkerSettings});
   app.slots.settingsSection({
     id: "audio",
     title: "Audio",

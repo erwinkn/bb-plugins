@@ -1148,6 +1148,15 @@ export class VoiceAgent {
       } else if (this.interruptedResponses.has(String(event.response_id))) {
         requestResponseAfter = false;
         throw new Error("Held: this response was interrupted. Wait for the user's next complete request.");
+      } else if (name === "read_thread") {
+        const origin = this.responseIdentity.get(String(event.response_id));
+        const result = await bindings.rpc.call("readVoiceThread",{nonce:toolSessionId,threadId:typeof args.threadId === "string" ? args.threadId : ""});
+        if (origin?.userTurn !== this.userTurn || this.interruptedResponses.has(String(event.response_id))) {
+          requestResponseAfter = false;
+          throw new Error("This read belongs to an earlier spoken turn.");
+        }
+        output = JSON.stringify(result);
+        status = "success";
       } else if (name === "lookup_targets") {
         const origin = this.responseIdentity.get(String(event.response_id));
         const result = await bindings.rpc.call("lookupVoiceTargets", {nonce:toolSessionId,query:typeof args.query === "string" ? args.query : ""});

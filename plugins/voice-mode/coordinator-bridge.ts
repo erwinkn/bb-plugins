@@ -28,6 +28,7 @@ export interface BridgeHost {
 }
 
 interface UserItem {
+  view: ReturnType<BridgeHost["view"]>;
   itemId: string;
   text: string | null;
   failed: boolean;
@@ -70,6 +71,7 @@ export interface BridgeSnapshot {
 /** One voice call's view of the coordinator conversation. */
 export class CoordinatorBridge {
   private items: UserItem[] = [];
+  private speechView: ReturnType<BridgeHost["view"]> | null = null;
   private cursor = 0;
   private transcriptRevision = 0;
   private pending: PendingHandoff | null = null;
@@ -105,7 +107,7 @@ export class CoordinatorBridge {
 
   onUserItemCommitted(itemId: string) {
     if (!itemId || this.items.some((item) => item.itemId === itemId)) return;
-    this.items.push({ itemId, text: null, failed: false, turn: this.userTurnOf(), committedAt: this.host.now(), speechEndedAt: this.host.now() });
+    this.items.push({ itemId, view: { ...(this.speechView ?? this.host.view()) }, text: null, failed: false, turn: this.userTurnOf(), committedAt: this.host.now(), speechEndedAt: this.host.now() });
     if (this.items.length > 200) { const drop = this.items.length - 200; this.items.splice(0, drop); this.cursor = Math.max(0, this.cursor - drop); }
   }
 
@@ -152,6 +154,7 @@ export class CoordinatorBridge {
 
   /** The user started speaking: unsent speculative handoffs are held, not sent. */
   onSpeechStarted() {
+    this.speechView = { ...this.host.view() };
     for (const handoff of this.dispatched.values()) {
       if (!handoff.quickAction || handoff.status === "cancelled") continue;
       handoff.status = "cancelled";
@@ -192,7 +195,7 @@ export class CoordinatorBridge {
     this.pending = handoff;
     const spokenRequest = bound.map(item=>item.text ?? "").join(" ") || request;
     const fallback = /archive|stop|delete/i.test(spokenRequest) ? "I’ll check the target and your instructions." : /fix|implement|change|update/i.test(spokenRequest) ? "I’ll arrange that work." : "I’ll check that for you.";
-    this.acknowledgments.set(this.userTurnOf(), {requestId,text: typeof args.acknowledgment === "string" && args.acknowledgment.trim() ? args.acknowledgment.trim().slice(0,160) : fallback});
+    if (!quick) this.acknowledgments.set(this.userTurnOf(), {requestId,text: typeof args.acknowledgment === "string" && args.acknowledgment.trim() ? args.acknowledgment.trim().slice(0,160) : fallback});
     this.host.log("handoff.recorded", { requestId, callId, boundItems: handoff.boundItemIds, urgency, answersQuestionId });
     this.host.changed();
     if (!this.tryDispatch()) {
@@ -300,7 +303,7 @@ export class CoordinatorBridge {
       interpretation: handoff.interpretation ?? (originalText ? null : handoff.request || null),
       urgency: handoff.urgency,
       answersQuestionId: handoff.answersQuestionId,
-      view: this.host.view(),
+      view: utterance[0]?.view ?? this.host.view(),
       ...(handoff.quickAction ? {quickAction:handoff.quickAction} : {}),
     };
     // Consumed items never bind to a later handoff; superseded ones stay.

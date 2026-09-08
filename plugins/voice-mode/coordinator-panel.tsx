@@ -291,7 +291,7 @@ export function CoordinatorSettings() {
   const provider=catalog?.providers.find(provider=>provider.id === config?.providerId);
   const disabled=!config || !catalog || busy;
   return <div className="space-y-4">
-    <p className="text-xs text-muted-foreground">Every voice session uses a coordinator. These choices apply to new sessions; existing sessions keep their coordinator.</p>
+    <p className="text-xs text-muted-foreground">The coordinator handles brief checks and coordination; clear live actions bypass it. Choose a fast model here and larger models under Workers. Changes apply to new sessions; existing sessions retain their coordinator.</p>
     {error ? <div role="alert" className="text-sm text-destructive">{error}<Button variant="outline" onClick={refresh}>Retry coordinator settings</Button></div> : null}
     <label className="block space-y-1 text-sm">Coordinator provider
       <select aria-label="Coordinator provider" className={selectClass} disabled={disabled} value={config?.providerId ?? ""} onChange={event=>void update({providerId:event.target.value,model:null,reasoningLevel:null,serviceTier:"default"})}>

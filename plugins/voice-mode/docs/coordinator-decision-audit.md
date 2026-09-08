@@ -1,3 +1,10 @@
+# Current architecture revision — 8 September 2026
+
+The three-tier live-operator implementation supersedes the mandatory delegation
+and comments-only fast path in the historical audit below. See
+[live-operator.md](live-operator.md). Historical decisions remain for context;
+they are not active policy.
+
 # Voice workspace decision audit
 
 7 September 2026. Scope: the complete Voice reliability change in draft PR 15.

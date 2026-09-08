@@ -26,6 +26,7 @@ test("the actual app exposes one Voice area and no extra thread panel on either 
       assert.ok(page);
       const behavior = app.settingsSections.find(section => section.id === "behavior");
       assert.ok(behavior);
+      assert.ok(app.settingsSections.find(section => section.id === "workers"));
       assert.equal(behavior.title, undefined);
       assert.equal(page.fixedTabs?.length ?? 0, 0);
       assert.equal(app.threadPanelActions.some(action => action.id === "thread-workspace"), false);

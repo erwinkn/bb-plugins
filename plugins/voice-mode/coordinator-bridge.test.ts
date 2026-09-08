@@ -593,3 +593,27 @@ test("a lost quick-submit response never claims non-delivery or asks for an auto
   assert.ok(logs.some(event=>event.kind==="reply.speaking" && event.payload.text.includes("could not confirm")));
   assert.ok(!logs.some(event=>event.kind==="reply.speaking" && event.payload.text.includes("Please try again")));
 });
+
+test("request context stays bound to speech start when navigation changes during transcription",async t=>{
+  const {dc,submits}=await coordinatorFixture(t);
+  let current="thr_original";
+  t.mock.method(nativeUi,"snapshot",()=>({threadId:current,projectId:"proj_a",onNewThreadScreen:false,route:`/threads/${current}`,composers:[],draft:null,bound:true}));
+  speak(dc,"context-item");
+  delegate(dc,"context-response","context-tool",{request:"Ask this thread to investigate"});
+  current="thr_different";
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"context-item",transcript:"Ask this thread to investigate"});
+  await settle();
+  assert.equal(submits()[0].view.threadId,"thr_original");
+});
+
+test("direct worker creation carries interpretation and produces no extra starting acknowledgment",async t=>{
+  const {dc,submits}=await coordinatorFixture(t,{submit:()=>({status:"quick_running",receipt:null})});
+  speak(dc,"worker-item");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"worker-item",transcript:"Start a thread to investigate that retry problem"});
+  dc.emit("response.created",{response:{id:"worker-response"}});
+  dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"worker-tool",arguments:JSON.stringify({request:"Start a thread to investigate that retry problem",interpretation:"The empty transcript retry issue just discussed",action:{kind:"start_thread",projectId:"proj_a",role:"investigate",title:"Retry issue"}})});
+  await settle();
+  assert.equal(submits().length,1);assert.match(submits()[0].interpretation,/empty transcript/);
+  dc.emit("response.done",{response:{id:"worker-response",output:[]}});await settle();
+  assert.equal(dc.bridgeResponses().length,0,"only an actual action result should be announced");
+});

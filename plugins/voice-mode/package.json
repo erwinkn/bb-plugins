@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "test": "node --import tsx --test *.test.ts *.test.tsx",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:check": "node scripts/check-build.mjs"
   },
   "engines": {
     "bb": ">=0.42",

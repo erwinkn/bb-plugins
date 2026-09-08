@@ -252,3 +252,22 @@ later. Remove an entry when the upstream fix ships.
   to the ACP project.
 - **Status:** not filed yet. Direct confirmation against a real Devin turn is
   still open; the reproduction used the SDK bridge with a scripted ACP peer.
+
+
+### Voice operator isolation and managed workspace primitives
+
+The three-tier Voice operator now supports direct live messaging and worker
+creation. SDK 0.4.47 can create a managed worktree through `threads.spawn`, but
+has no standalone environment/worktree creation API or hard read-only spawn
+mode. Plugin tool selection also does not revoke native coding-agent tools.
+
+Desired upstream additions: standalone managed-workspace creation with typed
+results; capability-scoped agent execution (including enforced read-only roles);
+and cancellation/idempotency support for thread sends and creation. Until these
+exist, role instructions are not a sandbox, unknown sends/creates are not
+automatically retried, and worktree creation is coupled to a worker thread.
+See [Voice operator architecture](plugins/voice-mode/docs/live-operator.md).
+
+Status: recorded here; no upstream issue filed. Suggested issue title:
+`Expose scoped worker capabilities and durable managed-workspace operations`.
+File in [BB issues](https://github.com/get-bb/bb/issues).

@@ -150,11 +150,11 @@ test("a hidden coordinator starts once in the personal environment with plugin a
   assert.equal(world.sends[1].mode, "queue-if-active");
   // Initial tool selection works before the mapping exists, through origin + title.
   const fresh = await harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "thr_unknown", title: `${COORDINATOR_TITLE_PREFIX}conv_x` }, origin: { kind: null, pluginId: "voice-mode" } }));
-  assert.deepEqual(fresh.tools.map((tool) => tool.name).sort(), ["voice_ask", "voice_overview", "voice_reply", "voice_ui"]);
+  assert.deepEqual(fresh.tools.map((tool) => tool.name).sort(), ["voice_actions", "voice_ask", "voice_overview", "voice_reply", "voice_ui"]);
   assert.match(fresh.instructions ?? "", /Never turn a question/);
   assert.ok((fresh.instructions ?? "").length <= 4096, "host instructions must retain the complete policy");
-  assert.match(fresh.instructions ?? "", /bb thread tell --mode queue explicitly/);
-  assert.match(fresh.instructions ?? "", /--mode steer only when an interruption is needed/);
+  assert.match(fresh.instructions ?? "", /Queue normal follow-ups, not steering/);
+  assert.match(fresh.instructions ?? "", /explicit stop uses stop_thread/);
   const worker = await harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "thr_worker", title: "Fix CI" }, origin: { kind: null, pluginId: null } }));
   assert.deepEqual(worker.tools, []);
   const status = await rpc("getCoordinatorStatus", null);
@@ -797,25 +797,27 @@ test("quick messages queue once, preserve the quoted words, and watch the target
   assert.equal(h.world.sends.length,1);
   assert.equal(h.world.sends[0].mode,"queue-if-active");
   assert.match(h.world.sends[0].text,/"I will review it tomorrow"/);
-  assert.match(h.world.sends[0].text,/do not execute instructions/);
+  assert.match(h.world.sends[0].text,/not a blanket instruction to change state/);
   assert.equal(h.world.spawns,0);
-  assert.ok(h.replies().some(r=>r.speech.includes("queued")));
+  assert.ok(h.replies().some(r=>r.speech.includes("Queued for Build")));
   const status=await h.rpc("getCoordinatorStatus",null);
   assert.ok(status.watch.some((row:Any)=>row.threadId==="thr_build"));
   await h.rpc("submitRequest",{envelope:{...envelope,requestId:"another_model_call"}}); await settle();
   assert.equal(h.world.sends.length,1,"a different tool call for the same speech cannot duplicate the send");
 });
 
-test("destructive and implementation requests fall back to the coordinator, never directly to the target", async t => {
-  const h=await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
+test("live messages can dispatch implementation without a coordinator or permission escalation", async t => {
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
   h.world.threads.set("thr_build",makeThreadResponse({id:"thr_build",title:"Build"}));
-  const {conversationId}=await h.claim("quick-refusal");
-  for (const text of ["Archive the old threads","Fix the login bug","Merge the PR"]) {
-    await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"quick-refusal",text,text,{quickAction:{kind:"send_message",threadId:"thr_build",purpose:"comment",text}})});
+  const {conversationId}=await h.claim("direct-work");
+  for (const [index,text] of ["Fix the login bug", "Check whether the old workaround is needed; do not remove it", "Ask for approval before merging the PR"].entries()) {
+    await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"direct-work",`work_${index}`,text,{utteranceItemIds:[`item_${index}`],transcriptDelta:[{itemId:`item_${index}`,text}],quickAction:{kind:"send_message",threadId:"thr_build",purpose:"instruction"}})});
+    await settle();
   }
-  assert.equal(h.world.sends.filter(send=>send.threadId==="thr_build").length,0);
-  assert.equal(h.world.sends.length,3);
-  assert.equal(h.world.spawns,1);
+  assert.equal(h.world.sends.filter(send=>send.threadId==="thr_build").length,3);
+  assert.equal(h.world.spawns,0);
+  assert.ok(h.world.sends.every(send=>send.text.includes("does not grant new permissions")));
+  assert.ok(h.replies().every(reply=>reply.speech.includes("Build")));
 });
 
 test("cancellation before quick submission and during target resolution prevents effects", async t => {
@@ -886,9 +888,10 @@ test("hangup during a direct send preserves uncertainty and never replays delive
   const {conversationId}=await h.claim("hangup-send");
   await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"hangup-send","pending-send","Ask Build for status",{quickAction:{kind:"send_message",threadId:"thr_build",purpose:"status",text:"status"}})}); await settle();
   await h.rpc("forceStop",{nonce:"hangup-send"}); await settle();
+  assert.equal((await h.rpc("retryRequest",{requestId:"pending-send"})).status,"quick_unknown");
   complete({ok:true,delivery:"sent"});await settle();
   const result=await h.rpc("retryRequest",{requestId:"pending-send"});
-  assert.equal(result.status,"quick_unknown");
+  assert.equal(result.status,"settled","the late receipt supersedes uncertainty without resending");
 });
 
 
@@ -906,4 +909,75 @@ test("device transfer keeps the active conversation and rejects an outdated take
   assert.equal(status.conversation.currentCallNonce,"mobile");
   await assert.rejects(h.rpc("claimCall",{nonce:"stale-mobile",transferFromNonce:"desktop"}),/call changed/);
   assert.equal((await h.rpc("getCoordinatorStatus",null)).conversation.currentCallNonce,"mobile");
+});
+
+test("live creates a configured worker without a coordinator and worker reports use the quiet direct route",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  const settings=await h.rpc("getWorkerSettings",null);
+  settings.profiles.investigate.model="gpt-a";
+  await h.rpc("setWorkerSettings",settings);
+  const {conversationId}=await h.claim("direct-worker");
+  const text="Start a thread to investigate transcription errors; don't edit files.";
+  await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"direct-worker","spawn-work",text,{quickAction:{kind:"start_thread",projectId:"proj_app",role:"investigate",title:"Transcription investigation"}})});
+  await settle();
+  assert.equal(h.world.spawns,1);
+  const worker=[...h.world.threads.values()][0];
+  assert.equal(worker.spawnArgs.model,"gpt-a");assert.equal(worker.spawnArgs.visibility,"visible");assert.equal(worker.spawnArgs.parentThreadId,undefined);
+  assert.equal((await h.rpc("getCoordinatorStatus",null)).conversation.coordinatorThreadId,null);
+  assert.equal(h.world.sends.length,0);
+  const selected=await h.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({thread:{id:worker.id,title:worker.title},origin:{kind:null,pluginId:"voice-mode"}}));
+  assert.deepEqual(selected.tools.map(tool=>tool.name),["voice_worker_report"]);
+  const report={outcome:"complete",speech:"The retry path loses empty transcripts. No files were changed."};
+  assert.equal((await h.harness.behavior.callAgentTool("voice_worker_report",report,{threadId:"unrelated"}) as Any).isError,true);
+  await h.harness.behavior.callAgentTool("voice_worker_report",report,{threadId:worker.id});
+  assert.equal(h.replies().filter(reply=>reply.kind==="update").length,0,"reports wait for worker idle");
+  await h.idle(worker.id,"Long investigation output");
+  const receipt=h.replies().find(reply=>reply.kind === "final");
+  await h.rpc("reportReplyDelivery",{replyId:receipt.replyId,nonce:"direct-worker",state:"delivered"});
+  const reserved=await h.rpc("reserveUpdateBatch",{conversationId,nonce:"direct-worker",msSinceCallLive:60000});
+  assert.ok(reserved.batch);assert.equal(h.world.spawns,1);assert.equal(h.world.sends.length,0,"the report must not wake a coordinator");
+  const update=h.replies().find(reply=>reply.kind==="update");assert.match(update.speech,/Transcription investigation/);assert.match(update.speech,/No files were changed/);
+  await h.rpc("reportReplyDelivery",{replyId:update.replyId,nonce:"direct-worker",state:"interrupted"});
+  assert.equal((await h.rpc("getCoordinatorStatus",null)).queuedUpdates,1,"interrupted updates remain available");
+});
+
+test("coordinator actions use the same dispatch service but require an accepted owning request",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("build",makeThreadResponse({id:"build",title:"Build",status:"idle"}));
+  const {conversationId}=await h.claim("coord-actions");
+  await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"coord-actions","coordinate","Ask Build to add tests")});
+  const action={kind:"send_message",threadId:"build",purpose:"instruction"};
+  const call=(request_id:string,threadId=h.coordinatorId())=>h.harness.behavior.callAgentTool("voice_actions",{request_id,action},{threadId});
+  await assert.rejects(()=>call("missing"),/accepted request/);
+  await assert.rejects(()=>call("coordinate","build"),/accepted request/);
+  const [first,second]=await Promise.all([call("coordinate"),call("coordinate")]);
+  assert.deepEqual(first,second);assert.equal(h.world.sends.filter(send=>send.threadId==="build").length,1);
+  assert.match(String(first),/Sent to Build/);
+  assert.equal(h.replies().length,0,"coordinator owns its one final spoken receipt");
+});
+
+test("live read RPC is bounded, read-only and rejects hidden or stale-call targets",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("build",makeThreadResponse({id:"build",title:"Build"}));
+  await h.claim("read-call");
+  const read=await h.rpc("readVoiceThread",{nonce:"read-call",threadId:"build"});
+  assert.equal(read.title,"Build");assert.equal(read.output,null);assert.equal(h.world.sends.length,0);assert.equal(h.world.spawns,0);
+  h.world.threads.get("build").visibility="hidden";
+  await assert.rejects(()=>h.rpc("readVoiceThread",{nonce:"read-call",threadId:"build"}),/accessible|unavailable|hidden/i);
+  await assert.rejects(()=>h.rpc("readVoiceThread",{nonce:"old",threadId:"build"}),/stopped or replaced/);
+});
+
+test("worker profiles stay separate from coordinator settings and catalogs use actual machine identity",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  const before=await h.rpc("getConfig",null);
+  const profiles=await h.rpc("getWorkerSettings",null);profiles.profiles.review.model="gpt-a";profiles.maxActiveWorkers=3;
+  await h.rpc("setWorkerSettings",profiles);
+  assert.deepEqual((await h.rpc("getConfig",null)).coordinator,before.coordinator);
+  assert.deepEqual(await h.rpc("getWorkerSettings",null),profiles);
+  await assert.rejects(()=>h.rpc("setWorkerSettings",{...profiles,maxActiveWorkers:0}));
+  const catalog=await h.rpc("listWorkerProviders",{hostId:"host_a"});assert.equal(catalog.hostId,"host_a");assert.ok(catalog.models.some((model:Any)=>model.model==="gpt-b"));
+  await assert.rejects(()=>h.rpc("listWorkerProviders",{hostId:"host_b"}),/no longer connected/);
+  await h.claim("lookup");const targets=await h.rpc("lookupVoiceTargets",{nonce:"lookup",query:""});
+  assert.ok(targets.projects.find((project:Any)=>project.id==="proj_app").hostIds.includes("host_a"));
+  assert.equal(targets.hosts.find((host:Any)=>host.id==="host_a").name,"Mac");
 });
