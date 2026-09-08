@@ -67,6 +67,10 @@ export function FilterField({
       autoComplete="off"
       spellCheck={false}
       onChange={(event) => onChange(event.target.value)}
+      // Enter narrows the list; it must not submit an enclosing form.
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.preventDefault();
+      }}
       className={`${formInputClass} mb-2`}
     />
   );

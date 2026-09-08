@@ -240,9 +240,12 @@ function ThreadsList(props: PluginThreadListProps) {
     updateState((current) => ({ ...current, spaceId }));
   const removeProject = async (projectId: string) => {
     await projectRpc.call("deleteProject", { projectId });
-    const list = spaces.catalog.spaces;
-    if (list.some((space) => space.projectIds.includes(projectId)))
-      await spaces.save(
+    if (
+      spaces.catalog.spaces.some((space) =>
+        space.projectIds.includes(projectId),
+      )
+    )
+      await spaces.save((list) =>
         list.map((space) => ({
           ...space,
           projectIds: space.projectIds.filter((id) => id !== projectId),
@@ -352,8 +355,8 @@ function ThreadsList(props: PluginThreadListProps) {
     );
   const toggleSpace = (spaceId: string, projectId: string) =>
     spaces
-      .save(
-        spaces.catalog.spaces.map((space) =>
+      .save((list) =>
+        list.map((space) =>
           space.id === spaceId
             ? { ...space, projectIds: toggleValue(space.projectIds, projectId) }
             : space,

@@ -443,6 +443,66 @@ describe("spaces page", () => {
     );
   });
 
+  it("keeps a routed space the cache does not know until the server answers", async () => {
+    // Another client created "fresh"; this one still has an older cache.
+    window.localStorage.setItem(
+      "bb-plugin-erwin-activity:spaces-cache",
+      JSON.stringify(initial),
+    );
+    const fresh: Space = { id: "fresh", name: "Fresh", projectIds: [] };
+    let resolve!: (catalog: SpaceCatalog) => void;
+    const rpc = {
+      ...server(),
+      getSpaces: () => new Promise<SpaceCatalog>((r) => (resolve = r)),
+    };
+    const slot = await mountPage("fresh", rpc);
+    expect(slot.inspection.navigateCalls).toHaveLength(0);
+    resolve({ revision: 2, spaces: [one, both, fresh] });
+    await waitFor(() =>
+      expect(slot.getByRole("heading", { name: "Fresh" })).toBeTruthy(),
+    );
+    expect(slot.inspection.navigateCalls).toHaveLength(0);
+  });
+
+  it("chains membership edits started while a save is in flight", async () => {
+    const base = server();
+    const gates: Array<() => void> = [];
+    const rpc = {
+      ...base,
+      saveSpaces: vi.fn(async (input: unknown) => {
+        await new Promise<void>((release) => gates.push(release));
+        return base.saveSpaces(input);
+      }),
+    };
+    const slot = await mountPage("one", rpc);
+    fireEvent.click(
+      slot.getByRole("checkbox", { name: "Include Two in Only One" }),
+    );
+    fireEvent.click(
+      slot.getByRole("checkbox", { name: "Include Three in Only One" }),
+    );
+    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
+    expect(rpc.saveSpaces.mock.calls[0][0]).toMatchObject({
+      expectedRevision: 1,
+      spaces: [{ ...one, projectIds: ["project-1", "project-2"] }, both],
+    });
+    gates.shift()!();
+    // The second edit starts from the first save's result and revision.
+    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(2));
+    expect(rpc.saveSpaces.mock.calls[1][0]).toMatchObject({
+      expectedRevision: 2,
+      spaces: [
+        { ...one, projectIds: ["project-1", "project-2", "project-3"] },
+        both,
+      ],
+    });
+    gates.shift()!();
+    await waitFor(() =>
+      expect(spaceRows(slot)).toEqual(["Only One3", "Both2"]),
+    );
+    expect(slot.queryByRole("alert")).toBeNull();
+  });
+
   it("creates a space with its projects and moves to it", async () => {
     const rpc = server();
     const slot = await mountPage("new", rpc);
@@ -645,6 +705,72 @@ describe("spaces page", () => {
     });
     await waitFor(() => expect(projectRows(slot)).toContain("Delta!"));
     expect(slot.queryByRole("form")).toBeNull();
+  });
+
+  it("enables Add once the host inventory arrives after the form opened", async () => {
+    let resolve!: (list: ProjectInventory) => void;
+    const rpc = {
+      ...server(),
+      listProjects: () => new Promise<ProjectInventory>((r) => (resolve = r)),
+    };
+    const slot = renderSlot(
+      app.navPanels[0],
+      { subPath: "one" },
+      { sidebarThreads: { threads, projects }, rpc },
+    );
+    mounted.push(slot);
+    fireEvent.click(await slot.findByRole("button", { name: "Add project…" }));
+    const form = slot.getByRole("form", { name: "Add project" });
+    fireEvent.change(
+      within(form).getByRole("combobox", { name: "Folder path" }),
+      { target: { value: "/late/host" } },
+    );
+    const add = within(form).getByRole("button", {
+      name: "Add",
+    }) as HTMLButtonElement;
+    expect(add.disabled).toBe(true);
+    resolve(inventory);
+    await waitFor(() => expect(add.disabled).toBe(false));
+    fireEvent.click(add);
+    await waitFor(() =>
+      expect(rpc.createProject).toHaveBeenCalledWith({
+        name: "host",
+        hostId: "host-1",
+        path: "/late/host",
+      }),
+    );
+  });
+
+  it("does not create the space when Enter is pressed in the New space filter", async () => {
+    const many: ProjectInventory = {
+      projects: [
+        ...inventory.projects,
+        managed("project-4", "Four", "/srv/four"),
+        managed("project-5", "Five", "/srv/five"),
+      ],
+      hosts: inventory.hosts,
+    };
+    const rpc = server(many);
+    const slot = await mountPage("new", rpc);
+    const form = slot.getByRole("form", { name: "New space" });
+    fireEvent.change(
+      within(form).getByRole("textbox", { name: "Space name" }),
+      { target: { value: "Filtered" } },
+    );
+    const filter = within(form).getByRole("searchbox", {
+      name: "Filter projects",
+    });
+    fireEvent.change(filter, { target: { value: "fi" } });
+    const event = new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    });
+    filter.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    await tick();
+    expect(rpc.saveSpaces).not.toHaveBeenCalled();
+    expect(slot.inspection.navigateCalls).toHaveLength(0);
   });
 
   it("shows host badges and a host selector with several hosts, and reports load failures", async () => {

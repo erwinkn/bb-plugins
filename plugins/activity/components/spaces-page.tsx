@@ -104,19 +104,22 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
     detail.kind === "space"
       ? catalog.find((space) => space.id === detail.id)
       : undefined;
-  // A deleted or unknown space goes back to the list.
+  // A deleted or unknown space goes back to the list. Only the server's
+  // answer counts: the cached catalog may predate a space made elsewhere.
+  const routeSpaceId = route.kind === "space" ? route.id : null;
+  const routeSpaceKnown =
+    routeSpaceId !== null && catalog.some((space) => space.id === routeSpaceId);
   useEffect(() => {
-    if (
-      spaces.status === "ready" &&
-      route.kind === "space" &&
-      !catalog.some((space) => space.id === route.id)
-    )
+    if (spaces.synced && routeSpaceId !== null && !routeSpaceKnown)
       go("", true);
-  });
+    // `go` is recreated each render; the inputs that matter are listed.
+  }, [spaces.synced, routeSpaceId, routeSpaceKnown]);
 
   const { save } = spaces;
   const update = (id: string, change: (space: Space) => Space) =>
-    save(catalog.map((space) => (space.id === id ? change(space) : space)));
+    save((list) =>
+      list.map((space) => (space.id === id ? change(space) : space)),
+    );
   const toggleMember = (spaceId: string, projectId: string) =>
     update(spaceId, (space) => ({
       ...space,
@@ -124,12 +127,12 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
     })).catch(report);
   const moveSpace = (from: number, to: number) => {
     if (to < 0 || to >= catalog.length) return;
-    save(moveItem(catalog, from, to)).catch(report);
+    save((list) => moveItem(list, from, to)).catch(report);
   };
   const dropFromSpaces = async (projectId: string) => {
     if (!catalog.some((space) => space.projectIds.includes(projectId))) return;
-    await save(
-      catalog.map((space) => ({
+    await save((list) =>
+      list.map((space) => ({
         ...space,
         projectIds: space.projectIds.filter((id) => id !== projectId),
       })),
@@ -236,7 +239,7 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
           )}
           onSubmit={async (name, projectIds) => {
             const id = newSpaceId();
-            await save([...catalog, { id, name, projectIds }]);
+            await save((list) => [...list, { id, name, projectIds }]);
             go(id, true);
           }}
           onCancel={() => go("", true)}
@@ -285,7 +288,9 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
           moveSpace(index, index + delta);
         }}
         onDelete={async () => {
-          await save(catalog.filter((space) => space.id !== selected.id));
+          await save((list) =>
+            list.filter((space) => space.id !== selected.id),
+          );
           go("", true);
         }}
       >

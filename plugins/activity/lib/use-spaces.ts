@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   useRealtime,
   useRealtimeConnectionState,
@@ -34,9 +34,15 @@ export interface SpacesState {
   catalog: SpaceCatalog;
   /** `loading` and `error` only apply while no catalog is known at all. */
   status: "loading" | "ready" | "error";
+  /** False until the server (not just the local cache) has answered. */
+  synced: boolean;
   /** The last load or save failure; a stale cached catalog can still render. */
   error: string | null;
-  save: (spaces: Space[]) => Promise<SpaceCatalog>;
+  /**
+   * Save an edit of the latest known catalog. Saves run one after another,
+   * so an edit started while another is in flight builds on its result.
+   */
+  save: (change: (spaces: Space[]) => Space[]) => Promise<SpaceCatalog>;
   refresh: () => void;
 }
 
@@ -44,11 +50,18 @@ export function useSpaces(): SpacesState {
   const rpc = useRpc<typeof spaceContract>();
   const connection = useRealtimeConnectionState();
   const [catalog, setCatalog] = useState<SpaceCatalog | null>(readSpacesCache);
+  const [synced, setSynced] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const refresh = useCallback(() => setAttempt((value) => value + 1), []);
+  // Saves read the latest catalog from here, not from the render they
+  // started in, so back-to-back edits carry the right revision.
+  const latest = useRef(catalog);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
   const apply = useCallback((next: SpaceCatalog) => {
+    latest.current = next;
     setCatalog(next);
+    setSynced(true);
     setError(null);
     writeSpacesCache(next);
   }, []);
@@ -74,28 +87,34 @@ export function useSpaces(): SpacesState {
       cancelled = true;
     };
   }, [rpc, connection, attempt, apply]);
-  const revision = catalog?.revision ?? 0;
   const save = useCallback(
-    async (spaces: Space[]) => {
-      try {
-        const next = await rpc.call("saveSpaces", {
-          expectedRevision: revision,
-          spaces,
-        });
-        apply(next);
-        return next;
-      } catch (cause) {
-        // A conflict means another client saved first; pick up its version.
-        // Other failures are cheap to reconcile the same way.
-        refresh();
-        throw cause;
-      }
+    (change: (spaces: Space[]) => Space[]) => {
+      const run = async () => {
+        const current = latest.current ?? EMPTY_CATALOG;
+        try {
+          const next = await rpc.call("saveSpaces", {
+            expectedRevision: current.revision,
+            spaces: change(current.spaces),
+          });
+          apply(next);
+          return next;
+        } catch (cause) {
+          // A conflict means another client saved first; pick up its version.
+          // Other failures are cheap to reconcile the same way.
+          refresh();
+          throw cause;
+        }
+      };
+      const result = queue.current.then(run, run);
+      queue.current = result.catch(() => undefined);
+      return result;
     },
-    [rpc, revision, apply, refresh],
+    [rpc, apply, refresh],
   );
   return {
     catalog: catalog ?? EMPTY_CATALOG,
     status: catalog ? "ready" : error ? "error" : "loading",
+    synced,
     error,
     save,
     refresh,

@@ -140,7 +140,10 @@ export function AddProjectForm({
   }) => Promise<void>;
   onClose: () => void;
 }) {
-  const [hostId, setHostId] = useState(defaultHostId ?? "");
+  // The host inventory can arrive after the form opens, so the default
+  // applies until the user picks a host.
+  const [chosenHostId, setChosenHostId] = useState<string | null>(null);
+  const hostId = chosenHostId ?? defaultHostId ?? "";
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
@@ -165,7 +168,7 @@ export function AddProjectForm({
         <select
           aria-label="Host"
           value={hostId}
-          onChange={(event) => setHostId(event.target.value)}
+          onChange={(event) => setChosenHostId(event.target.value)}
           className={formInputClass}
         >
           {hosts.map((host) => (
