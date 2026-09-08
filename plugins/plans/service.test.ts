@@ -246,18 +246,15 @@ describe("Plans review workflow", () => {
     expect(JSON.parse((await waiting).stdout!)).toMatchObject({ status: "superseded", latestVersionId: revised.versions[1]!.id });
   }, 10_000);
 
-  it("messages the thread without the plan text when nobody is waiting, unless disabled", async () => {
-    const { harness, rpc, plan, send } = await setup();
+  it("messages the thread without the plan text when nobody is waiting", async () => {
+    const { rpc, plan, send } = await setup();
     const versionId = plan.versions[0]!.id;
     await rpc("submitReview", { id: plan.id, versionId, action: "approve", note: "Go.", requestId: "unattended" });
+    expect(send).toHaveBeenCalledTimes(1);
     const text = (send.mock.calls[0]![0] as { input: Array<{ text: string }> }).input[0]!.text;
     expect(text).toContain("approved plan");
     expect(text).toContain(`bb plans get ${plan.id} --version-id ${versionId}`);
     expect(text).not.toContain("Keep the existing data");
-    await harness.behavior.setSettings({ notifyThreadWhenUnattended: false });
-    const second = await rpc("create", { title: "Quiet", markdown: "Quiet plan", threadId: "thread-1" });
-    await rpc("submitReview", { id: second.id, versionId: second.versions[0]!.id, action: "approve", note: "", requestId: "quiet" });
-    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("lets another thread review a plan through the CLI, but never the plan's own thread", async () => {

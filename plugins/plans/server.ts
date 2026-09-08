@@ -69,12 +69,6 @@ export interface PluginOptions {
 
 export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
   const settings = bb.settings.define({
-    notifyThreadWhenUnattended: {
-      type: "boolean",
-      label: "Message the thread when no agent is waiting",
-      description: "When a review lands while no `bb plans wait` call is attached, send a compact message to the linked thread so the agent still hears about it.",
-      default: true,
-    },
     nonBlockingProviders: {
       type: "string",
       label: "Providers whose tool calls cannot block",
@@ -88,10 +82,7 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
     const thread = await bb.sdk.threads.get({ threadId });
     return listed.includes(thread.providerId);
   };
-  const service = createPlanService(bb, {
-    notifyUnattended: async () => (await settings.get()).notifyThreadWhenUnattended,
-    interactionChunkMs: options.interactionChunkMs,
-  });
+  const service = createPlanService(bb, { interactionChunkMs: options.interactionChunkMs });
   const { delivery, wait, hold: _hold, version, ...rpcHandlers } = service;
   bb.rpc.register(plansContract, rpcHandlers);
   bb.agents.registerTool({
@@ -114,7 +105,7 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
         service.hold({ id: plan.id, versionId });
         return JSON.stringify({ status: "submitted", planId: plan.id, versionId, instruction: heldInstruction(plan.id, versionId) });
       }
-      const result = await wait({ id: plan.id, versionId, timeoutMs: TOOL_WAIT_MS, signal, hold: true });
+      const result = await wait({ id: plan.id, versionId, timeoutMs: TOOL_WAIT_MS, signal });
       return JSON.stringify(result);
     },
   });
@@ -135,7 +126,7 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
         const [command, ...args] = flags.positional;
         let result: unknown;
         const awaitDecision = (planId: string, versionId: string): Promise<WaitResult> =>
-          wait({ id: planId, versionId, timeoutMs: flags.timeoutMs, signal: ctx.signal, hold: true });
+          wait({ id: planId, versionId, timeoutMs: flags.timeoutMs, signal: ctx.signal });
         if (command === "list") result = service.list({ threadId: flags.thread ?? ctx.threadId, offset: z.coerce.number().int().nonnegative().parse(args[0] ?? 0) });
         else if (command === "get" && args[0]) result = flags.version ? version({ id: args[0], versionId: flags.version }) : service.get({ id: args[0] });
         else if (command === "wait" && args[0]) result = await awaitDecision(args[0], flags.version ?? service.get({ id: args[0] }).versions.at(-1)!.id);

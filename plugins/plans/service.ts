@@ -27,16 +27,9 @@ export interface WaitInput {
   versionId?: string;
   timeoutMs: number;
   signal?: AbortSignal;
-  /**
-   * Hold a BB interaction on the plan's thread while waiting, so the thread
-   * shows as awaiting the user and the composer becomes the review prompt.
-   */
-  hold?: boolean;
 }
 
 export interface PlanServiceOptions {
-  /** Whether to message the thread when no `wait` call is attached. Read per review. */
-  notifyUnattended?: () => Promise<boolean>;
   /** Interaction lifetime per request; BB caps it at one hour. Tests shorten it. */
   interactionChunkMs?: number;
 }
@@ -66,7 +59,6 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
   const notifyWaiters = (planId: string, event: WaiterEvent) => {
     for (const listener of [...(waiters.get(planId) ?? [])]) listener(event);
   };
-  const notifyUnattended = options.notifyUnattended ?? (async () => true);
   const get = ({ id }: { id: string }): Plan => {
     const row = db.prepare("SELECT body FROM plans WHERE id = ?").get(id) as { body: string } | undefined;
     if (!row) throw new Error("Plan not found.");
@@ -235,65 +227,90 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
   };
   const attended = (planId: string) =>
     (db.prepare("SELECT COUNT(*) AS n FROM waits WHERE plan_id = ? AND expires_at > ?").get(planId, Date.now()) as { n: number }).n > 0;
+  const locate = (id: string, versionId?: string) => {
+    const plan = get({ id });
+    const version = versionId ? plan.versions.find((item) => item.id === versionId) : plan.versions.at(-1);
+    if (!version) throw new Error("Version not found.");
+    const settled = storedDecision(plan.id, version.id) !== null || plan.versions.at(-1)!.id !== version.id;
+    return { plan, version, settled };
+  };
+  type PromptOutcome =
+    | { kind: "decision"; result: WaitResult }
+    | { kind: "timeout" }
+    | { kind: "dismissed" }
+    | { kind: "stopped"; reason: string }
+    | { kind: "unavailable"; error: unknown };
   /**
-   * The agent-facing wait. With `hold`, a BB interaction stays pending on the
-   * thread for the whole wait: BB marks the thread as needing the user, and the
-   * composer shows the plugin's review prompt. The decision made in the panel
-   * aborts the interaction; the prompt's own buttons dismiss the wait instead.
+   * One prompt chunk: a BB interaction pending on the thread (so BB marks it as
+   * needing the user and the composer shows the review prompt) raced against
+   * the local wait for a decision. BB caps an interaction at an hour; callers
+   * loop on `timeout` to keep the prompt up. `attend` is passed to the local wait.
+   */
+  const promptChunk = async (
+    plan: Plan, version: Plan["versions"][number], threadId: string,
+    { timeoutMs, signal, attend }: { timeoutMs: number; signal?: AbortSignal; attend: boolean },
+  ): Promise<PromptOutcome> => {
+    const local = new AbortController();
+    const prompt = new AbortController();
+    const onAbort = () => { local.abort(); prompt.abort(); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const decision = waitLocal({ id: plan.id, versionId: version.id, timeoutMs, signal: local.signal }, attend)
+        .then((result) => ({ kind: "decision" as const, result }));
+      const interaction = bb.ui.requestInput({
+        threadId,
+        rendererId: REVIEW_INTERACTION_RENDERER,
+        title: `Review plan: ${plan.title}`,
+        payload: { planId: plan.id, versionId: version.id, title: plan.title, versionNumber: version.number },
+        timeoutMs,
+      }, { signal: prompt.signal }).then(
+        (result) => ({ kind: "interaction" as const, result }),
+        (error: unknown) => ({ kind: "unavailable" as const, error }),
+      );
+      const first = await Promise.race([decision, interaction]);
+      if (first.kind === "decision") {
+        prompt.abort();
+        await interaction;
+        return first.result.status === "pending" ? { kind: "timeout" } : first;
+      }
+      local.abort();
+      await decision.catch(() => undefined);
+      if (first.kind === "unavailable") return first;
+      const settled = first.result;
+      if (settled.outcome === "submitted" || settled.reason === "user") return { kind: "dismissed" };
+      if (settled.reason === "timeout") return { kind: "timeout" };
+      return { kind: "stopped", reason: settled.reason };
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  };
+  const chunkMs = () => Math.min(options.interactionChunkMs ?? INTERACTION_MAX_MS, INTERACTION_MAX_MS);
+  /**
+   * The attached wait: an agent blocks on it (tool call or `bb plans wait`)
+   * and receives the decision as its result, so no thread message is sent.
    */
   const wait = async (input: WaitInput): Promise<WaitResult> => {
-    const plan = get({ id: input.id });
-    const version = input.versionId ? plan.versions.find((item) => item.id === input.versionId) : plan.versions.at(-1);
-    if (!version) throw new Error("Version not found.");
-    const settledAlready = storedDecision(plan.id, version.id) !== null || plan.versions.at(-1)!.id !== version.id;
-    if (!input.hold || plan.threadId === null || settledAlready) return waitLocal(input);
-    const threadId = plan.threadId;
+    const { plan, version, settled } = locate(input.id, input.versionId);
+    if (plan.threadId === null || settled) return waitLocal(input);
     const deadline = Date.now() + input.timeoutMs;
-    const chunk = Math.min(options.interactionChunkMs ?? INTERACTION_MAX_MS, INTERACTION_MAX_MS);
     for (;;) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) return waitLocal({ ...input, timeoutMs: 1 });
-      const local = new AbortController();
-      const prompt = new AbortController();
-      const onOuterAbort = () => { local.abort(); prompt.abort(); };
-      input.signal?.addEventListener("abort", onOuterAbort, { once: true });
-      try {
-        const decision = waitLocal({ ...input, timeoutMs: remaining, signal: local.signal })
-          .then((result) => ({ kind: "decision" as const, result }));
-        const interaction = bb.ui.requestInput({
-          threadId,
-          rendererId: REVIEW_INTERACTION_RENDERER,
-          title: `Review plan: ${plan.title}`,
-          payload: { planId: plan.id, versionId: version.id, title: plan.title, versionNumber: version.number },
-          timeoutMs: Math.max(1, Math.min(chunk, remaining)),
-        }, { signal: prompt.signal }).then(
-          (result) => ({ kind: "interaction" as const, result }),
-          (error: unknown) => ({ kind: "interaction-failed" as const, error }),
-        );
-        const first = await Promise.race([decision, interaction]);
-        if (first.kind === "decision") {
-          prompt.abort();
-          await interaction;
-          return first.result;
-        }
-        local.abort();
-        await decision.catch(() => undefined);
-        if (first.kind === "interaction-failed") {
-          // The prompt could not be shown (thread archived, host limit). Keep
-          // waiting without it rather than failing the agent's call.
-          bb.log.warn(`Review prompt unavailable for plan ${plan.id}: ${first.error instanceof Error ? first.error.message : String(first.error)}`);
-          return waitLocal({ ...input, timeoutMs: Math.max(1, deadline - Date.now()) });
-        }
-        const settled = first.result;
-        if (settled.outcome === "submitted" || settled.reason === "user") {
+      const outcome = await promptChunk(plan, version, plan.threadId, { timeoutMs: Math.min(chunkMs(), remaining), signal: input.signal, attend: true });
+      switch (outcome.kind) {
+        case "decision": return outcome.result;
+        case "timeout": continue;
+        case "dismissed":
           return { status: "dismissed", planId: plan.id, versionId: version.id,
             instruction: "The user dismissed the review prompt without deciding. Ask how to proceed; the plan stays open in Review plan and a later decision arrives as a message." };
-        }
-        if (settled.reason === "timeout") continue;
-        return { status: "cancelled", planId: plan.id, versionId: version.id, reason: settled.reason,
-          instruction: `Waiting stopped (${settled.reason}). Run \`bb plans wait ${plan.id} --version-id ${version.id}\` to resume; a decision made meanwhile is returned immediately.` };
-      } finally {
-        input.signal?.removeEventListener("abort", onOuterAbort);
+        case "stopped":
+          return { status: "cancelled", planId: plan.id, versionId: version.id, reason: outcome.reason,
+            instruction: `Waiting stopped (${outcome.reason}). Run \`bb plans wait ${plan.id} --version-id ${version.id}\` to resume; a decision made meanwhile is returned immediately.` };
+        case "unavailable":
+          // The prompt could not be shown (thread archived, another prompt
+          // pending). Keep waiting without it rather than failing the call.
+          bb.log.warn(`Review prompt unavailable for plan ${plan.id}: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`);
+          return waitLocal({ ...input, timeoutMs: Math.max(1, deadline - Date.now()) });
       }
     }
   };
@@ -302,65 +319,26 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     await holds.get(planId)?.();
   };
   /**
-   * For providers whose tool calls cannot stay open (Cursor): keep the review
-   * prompt pending on the thread without any agent attached, so BB still marks
-   * the thread as waiting for the user. The decision reaches the agent as the
-   * unattended thread message, which is what starts its next turn. Released
-   * by the decision, a newer version, the user skipping the prompt, or a
-   * plugin reload (the prompt is not re-established afterwards).
+   * The detached hold, for providers whose tool calls cannot stay open
+   * (Cursor): the same prompt, with no agent attached, so the decision goes
+   * out as the thread message that starts the agent's next turn. Ends with
+   * the decision, a newer version, the user skipping the prompt, or a plugin
+   * reload (the prompt is not re-established afterwards).
    */
   const hold = ({ id, versionId }: { id: string; versionId?: string }): void => {
-    const plan = get({ id });
-    const version = versionId ? plan.versions.find((item) => item.id === versionId) : plan.versions.at(-1);
-    if (!version) throw new Error("Version not found.");
+    const { plan, version, settled } = locate(id, versionId);
     if (plan.threadId === null) throw new Error("Only plans linked to a thread can hold a review prompt.");
-    if (storedDecision(plan.id, version.id) !== null || plan.versions.at(-1)!.id !== version.id) return;
+    if (settled) return;
     const threadId = plan.threadId;
-    const chunk = Math.min(options.interactionChunkMs ?? INTERACTION_MAX_MS, INTERACTION_MAX_MS);
     const stop = new AbortController();
     const previous = holds.get(plan.id);
     const run = (async () => {
       await previous?.();
       while (!stop.signal.aborted) {
-        const local = new AbortController();
-        const prompt = new AbortController();
-        const onStop = () => prompt.abort();
-        stop.signal.addEventListener("abort", onStop, { once: true });
-        try {
-          const watch = waitLocal({ id: plan.id, versionId: version.id, timeoutMs: chunk, signal: local.signal }, false)
-            .then((result) => ({ kind: "watch" as const, result }), () => ({ kind: "watch" as const, result: null }));
-          const interaction = bb.ui.requestInput({
-            threadId,
-            rendererId: REVIEW_INTERACTION_RENDERER,
-            title: `Review plan: ${plan.title}`,
-            payload: { planId: plan.id, versionId: version.id, title: plan.title, versionNumber: version.number },
-            timeoutMs: chunk,
-          }, { signal: prompt.signal }).then(
-            (result) => ({ kind: "interaction" as const, result }),
-            (error: unknown) => ({ kind: "interaction-failed" as const, error }),
-          );
-          const first = await Promise.race([watch, interaction]);
-          if (first.kind === "watch") {
-            if (first.result === null || first.result.status !== "pending") {
-              prompt.abort();
-              await interaction;
-              return;
-            }
-            // Both time out together; the next chunk re-requests the prompt.
-            await interaction;
-            continue;
-          }
-          local.abort();
-          await watch;
-          if (first.kind === "interaction-failed") {
-            bb.log.warn(`Review prompt unavailable for plan ${plan.id}: ${first.error instanceof Error ? first.error.message : String(first.error)}`);
-            return;
-          }
-          if (first.result.outcome === "cancelled" && first.result.reason === "timeout") continue;
-          return;
-        } finally {
-          stop.signal.removeEventListener("abort", onStop);
-        }
+        const outcome = await promptChunk(plan, version, threadId, { timeoutMs: chunkMs(), signal: stop.signal, attend: false });
+        if (outcome.kind === "timeout") continue;
+        if (outcome.kind === "unavailable") bb.log.warn(`Review prompt unavailable for plan ${plan.id}: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`);
+        return;
       }
     })().finally(() => {
       if (holds.get(plan.id) === releaseThis) holds.delete(plan.id);
@@ -399,7 +377,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     // An agent blocked in `bb plans wait` gets the decision as its command
     // result. The thread message is only for agents that are not waiting; it
     // never repeats the plan text, which the agent already has or can fetch.
-    const notify = plan.threadId !== null && !attended(plan.id) && (await notifyUnattended()) ? plan.threadId : null;
+    const notify = plan.threadId !== null && !attended(plan.id) ? plan.threadId : null;
     const annotations = JSON.stringify(delivered(plan, input.action).map(({ versionId, quote, body, kind }) => ({ versionId, quote, body, kind: kind ?? "comment" })), null, 2);
     const fetchHint = `Run \`bb plans get ${plan.id} --version-id ${version.id}\` if the plan text is no longer in context.`;
     const text = input.action === "approve"

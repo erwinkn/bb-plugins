@@ -47,9 +47,7 @@ The decision never repeats the plan text: the agent already has it, and
 `bb plans get PLAN_ID --version-id VERSION_ID` fetches it after context loss.
 If no agent is waiting when you decide (its turn ended, or it never waited),
 the plugin falls back to a compact thread message with the same content, queued
-if the thread is busy. The **Message the thread when no agent is waiting**
-setting turns that fallback off. Approval does not authorize a merge or
-deployment.
+if the thread is busy. Approval does not authorize a merge or deployment.
 
 BB caps one interaction at an hour; the plugin re-requests it while the agent
 keeps waiting, so a review can take longer than that. BB also allows one
