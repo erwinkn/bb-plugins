@@ -102,7 +102,7 @@ export function ProjectHeaderMenu({
             </Menu.Item>
           )}
           <Menu.Item className={menuItemClass} onSelect={() => act("manage")}>
-            Manage spaces and projects…
+            Manage spaces…
           </Menu.Item>
           {!isPersonal && (
             <>

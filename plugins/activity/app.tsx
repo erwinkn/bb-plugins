@@ -25,7 +25,6 @@ import {
 import { ScopeMenu } from "./components/scope-menu";
 import {
   ALL_PROJECTS_SUBPATH,
-  NEW_SPACE_SUBPATH,
   SPACES_PANEL_PATH,
   SpacesPage,
 } from "./components/spaces-page";
@@ -374,7 +373,6 @@ function ThreadsList(props: PluginThreadListProps) {
             catalog={spaces.catalog}
             onSelectAll={selectAll}
             onSelectSpace={selectSpace}
-            onNew={() => openSpacesPage(NEW_SPACE_SUBPATH)}
             onManage={openManage}
           />
           <DisplayMenu />

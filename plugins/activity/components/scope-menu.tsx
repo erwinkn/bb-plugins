@@ -20,29 +20,27 @@ const chevron = (
 );
 
 // The Threads heading is the scope selector: All projects or a saved space.
-// Creating, editing, and project management live on the Spaces page.
+// Everything else lives on the Spaces page.
 export function ScopeMenu({
   scope,
   catalog,
   onSelectAll,
   onSelectSpace,
-  onNew,
   onManage,
 }: {
   scope: Scope;
   catalog: SpaceCatalog;
   onSelectAll: () => void;
   onSelectSpace: (id: string) => void;
-  onNew: () => void;
   onManage: () => void;
 }) {
   const label = scopeLabel(scope);
-  // New and Manage leave the sidebar for the Spaces page; Radix would
-  // otherwise move focus back to the trigger after the menu closes.
+  // Manage leaves the sidebar for the Spaces page; Radix would otherwise
+  // move focus back to the trigger after the menu closes.
   const leaving = useRef(false);
-  const leave = (action: () => void) => () => {
+  const manage = () => {
     leaving.current = true;
-    action();
+    onManage();
   };
   const radioValue = scope.kind === "space" ? scope.space.id : "all";
   return (
@@ -86,11 +84,8 @@ export function ScopeMenu({
           ))}
         </Menu.RadioGroup>
         <Menu.Separator className="my-1 h-px bg-border" />
-        <Menu.Item className={menuItemClass} onSelect={leave(onNew)}>
-          New space…
-        </Menu.Item>
-        <Menu.Item className={menuItemClass} onSelect={leave(onManage)}>
-          Manage spaces and projects…
+        <Menu.Item className={menuItemClass} onSelect={manage}>
+          Manage spaces…
         </Menu.Item>
       </MenuContent>
     </Menu.Root>

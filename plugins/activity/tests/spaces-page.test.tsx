@@ -747,7 +747,7 @@ describe("spaces page", () => {
       "New thread",
       "Spaces›",
       "Rename…",
-      "Manage spaces and projects…",
+      "Manage spaces…",
       "Remove…",
     ]);
     fireEvent.click(item(slot, "Rename…"));
@@ -780,7 +780,7 @@ describe("spaces page", () => {
 
     fireEvent.contextMenu(header);
     await tick();
-    fireEvent.click(item(slot, "Manage spaces and projects…"));
+    fireEvent.click(item(slot, "Manage spaces…"));
     expect(lastNavigation(slot)).toEqual({
       method: "toPluginPanel",
       path: "spaces",

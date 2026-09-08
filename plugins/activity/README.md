@@ -149,9 +149,9 @@ native behavior. No bulk read or delete actions are added.
 
 A space is a named selection of projects. The Threads heading is the scope
 selector: it reads **All projects** or a space name. Its menu lists All
-projects, each saved space, **New space…**, and **Manage spaces and
-projects…**. Both of the last two go to the plugin's **Spaces** page, which
-also has its own row in BB's sidebar navigation (route
+projects, each saved space, and **Manage spaces…**, which goes to the
+plugin's **Spaces** page. The page also has its own row in BB's sidebar
+navigation (route
 `/plugins/erwin-activity/spaces`). There are no dialogs; every edit is a form
 on the page, and on phones the page shows one column at a time with a back
 link so it works like any other BB page.
@@ -159,10 +159,10 @@ link so it works like any other BB page.
 - The Spaces page lists every space with its project count beside the
   selected space's projects. On desktop the list stays visible and the first
   space opens by default; on phones the list is the first screen and each row
-  opens the space. **Manage spaces and projects…** opens the current space when
+  opens the space. **Manage spaces…** opens the current space when
   one is selected, the list otherwise, and All projects when no space exists
   yet. Selecting a space on the page does not change the Threads scope.
-- **New space…** (heading menu or `+ New space…` on the page) opens a form
+- **New space…** on the page opens a form
   with a name and a checklist of every BB project. Create saves the space and
   opens it. Names are trimmed, limited to 60 characters, and unique ignoring
   case. An empty space shows a **Choose projects** link into its page.
@@ -197,7 +197,7 @@ link so it works like any other BB page.
   the path field.
 - In the by-project grouping, right-click or long-press a project header for
   **New thread**, **Spaces ›**, **Rename…** and **Remove…** (inline forms under
-  the header), and **Manage spaces and projects…**.
+  the header), and **Manage spaces…**.
 - Space definitions are shared by every client of one BB server and stored in
   the plugin's key-value store as one document with a revision. A save that
   races another client's save fails with an error, and the form keeps your

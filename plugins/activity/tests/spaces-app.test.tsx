@@ -174,7 +174,7 @@ async function openManage(slot: ReturnType<typeof renderSlot>) {
   await openScope(slot);
   fireEvent.click(
     slot.getByRole("menuitem", {
-      name: "Manage spaces and projects…",
+      name: "Manage spaces…",
       hidden: true,
     }),
   );
@@ -261,22 +261,21 @@ describe("spaces", () => {
     expect(rows(slot)).toHaveLength(4);
   });
 
-  it("sends New space and Manage to the Spaces page", async () => {
+  it("sends Manage spaces to the Spaces page", async () => {
     const rpc = server();
     const slot = mount(rpc);
     await tick();
     await openScope(slot);
-    fireEvent.click(
-      slot.getByRole("menuitem", { name: "New space…", hidden: true }),
-    );
-    expect(slot.inspection.navigateCalls).toEqual([
-      { method: "toPluginPanel", path: "spaces", options: { subPath: "new" } },
-    ]);
+    // The menu is scope radios plus one Manage entry.
+    expect(
+      slot
+        .getAllByRole("menuitem", { hidden: true })
+        .map((node) => node.textContent),
+    ).toEqual(["Manage spaces…"]);
     // Manage opens the list when All projects is selected...
-    await openScope(slot);
     fireEvent.click(
       slot.getByRole("menuitem", {
-        name: "Manage spaces and projects…",
+        name: "Manage spaces…",
         hidden: true,
       }),
     );
@@ -285,19 +284,16 @@ describe("spaces", () => {
       path: "spaces",
       options: { subPath: "" },
     });
-    // ...and the selected space otherwise. The menu has no edit items.
+    // ...and the selected space otherwise.
     await openScope(slot);
     fireEvent.click(
       slot.getByRole("menuitemradio", { name: "Both", hidden: true }),
     );
     await tick();
     await openScope(slot);
-    expect(
-      slot.queryByRole("menuitem", { name: "Rename space…", hidden: true }),
-    ).toBeNull();
     fireEvent.click(
       slot.getByRole("menuitem", {
-        name: "Manage spaces and projects…",
+        name: "Manage spaces…",
         hidden: true,
       }),
     );
@@ -338,7 +334,7 @@ describe("spaces", () => {
     await openScope(none);
     fireEvent.click(
       none.getByRole("menuitem", {
-        name: "Manage spaces and projects…",
+        name: "Manage spaces…",
         hidden: true,
       }),
     );
