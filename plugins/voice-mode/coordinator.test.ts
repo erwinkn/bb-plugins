@@ -1116,3 +1116,71 @@ test("one material first update is delivered before the coordinator ends, withou
   await h.harness.behavior.callAgentTool("voice_reply",{request_id:"first-finding",kind:"final",speech:"The upload credential expired. No code was changed."},{threadId:h.coordinatorId()});
   assert.equal(h.replies().filter(r=>r.kind==="final").length,1);
 });
+
+test("authored thread messages keep their destination on the direct path",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("editor",makeThreadResponse({id:"editor",title:"Editor and diff viewer",status:"active"}));
+  const {conversationId}=await h.claim("authored-send");
+  const words="Ask the agent in that thread if anything remains for review, then open Voice.";
+  const envelope=h.envelope(conversationId,"authored-send","authored",words,{utteranceId:"u1",utteranceVersion:1,
+    view:{threadId:"editor",projectId:"proj_app",onNewThreadScreen:false},quickAction:{kind:"send_message",threadId:"editor",purpose:"status",text:"Is anything left before this PR is ready for review?"}});
+  await h.rpc("submitRequest",{envelope});await settle();
+  assert.equal(h.world.sends.length,1);assert.equal(h.world.sends[0].threadId,"editor");assert.equal(h.world.sends[0].mode,"queue-if-active");
+  const body=JSON.parse(h.world.sends[0].text.split("\n").at(-1)!);
+  assert.equal(body.user.text,words);assert.equal(body.message,"Is anything left before this PR is ready for review?");assert.equal(body.destination.thread_id,"editor");
+  assert.equal(h.world.spawns,0);
+});
+
+test("separate direct steps wait for the earlier delivery receipt before navigation",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("editor",makeThreadResponse({id:"editor",title:"Editor"}));
+  const {conversationId}=await h.claim("ordered-direct");
+  let release!: (value:Any)=>void;
+  h.world.sendOverride=()=>new Promise(resolve=>{release=resolve;});
+  const first=h.envelope(conversationId,"ordered-direct","send-first","Ask Editor for status then open Voice",{utteranceId:"u1",utteranceVersion:1,quickAction:{kind:"send_message",threadId:"editor",purpose:"status"}});
+  await h.rpc("submitRequest",{envelope:first});await settle();
+  const next={...first,requestId:"open-second",quickAction:{kind:"show_voice"}};
+  await h.rpc("submitRequest",{envelope:next});await settle();
+  assert.equal((await h.rpc("pendingUiCommands",{conversationId,callNonce:"ordered-direct"})).commands.length,0);
+  release({ok:true,delivery:"sent"});await settle();await settle();
+  const {commands}=await h.rpc("pendingUiCommands",{conversationId,callNonce:"ordered-direct"});
+  assert.equal(commands.length,1);
+  const identity={conversationId,callNonce:"ordered-direct",commandId:commands[0].id};
+  await h.rpc("claimUiCommand",identity);await h.rpc("reportUiCommandResult",{...identity,result:{status:"succeeded",detail:"Voice open"}});await settle();
+  assert.equal(h.world.spawns,0);assert.equal(h.replies().filter(r=>r.kind==="final").length,2);
+});
+
+test("an uncertain earlier send stops the next direct step",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("editor",makeThreadResponse({id:"editor",title:"Editor"}));
+  const {conversationId}=await h.claim("ordered-unknown");
+  h.world.sendOverride=async()=>{throw new Error("receipt lost");};
+  const first=h.envelope(conversationId,"ordered-unknown","unknown-first","Ask Editor for status then open Voice",{utteranceId:"u1",utteranceVersion:1,quickAction:{kind:"send_message",threadId:"editor",purpose:"status"}});
+  await h.rpc("submitRequest",{envelope:first});await settle();
+  await h.rpc("submitRequest",{envelope:{...first,requestId:"must-not-open",quickAction:{kind:"show_voice"}}});await settle();
+  assert.equal((await h.rpc("pendingUiCommands",{conversationId,callNonce:"ordered-unknown"})).commands.length,0);
+  assert.ok(h.replies().some(r=>r.speech.includes("stopped the remaining actions")));
+});
+
+for (const firstPath of ["live","coordinator"] as const) test(`one utterance cannot switch from ${firstPath} to the other execution path`,async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("editor",makeThreadResponse({id:"editor",title:"Editor"}));
+  const {conversationId}=await h.claim(`path-${firstPath}`);
+  const base=h.envelope(conversationId,`path-${firstPath}`,"first","Ask Editor for status",{utteranceId:"u1",utteranceVersion:1});
+  const quickAction={kind:"send_message" as const,threadId:"editor",purpose:"status" as const};
+  await h.rpc("submitRequest",{envelope:{...base,...(firstPath==="live" ? {quickAction} : {})}});await settle();
+  const before=h.world.sends.length;
+  const response=await h.rpc("submitRequest",{envelope:{...base,requestId:"wrong-path",...(firstPath==="coordinator" ? {quickAction} : {})}});
+  assert.equal(response.status,"failed");assert.match(response.error,/execution path/);assert.equal(h.world.sends.length,before);
+});
+
+test("coordinator speech uses thread names while retaining structured IDs",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  const {conversationId}=await h.claim("spoken-names");
+  await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"spoken-names","names","What is the editor status?")});
+  const args={request_id:"names",kind:"final",speech:"Editor thr_j58nxpnz6q is ready.",thread_ids:["thr_j58nxpnz6q"]};
+  const bad=await h.harness.behavior.callAgentTool("voice_reply",args,{threadId:h.coordinatorId()}) as Any;
+  assert.equal(bad.isError,true);assert.equal(h.replies().length,0);
+  await h.harness.behavior.callAgentTool("voice_reply",{...args,speech:"The editor thread is ready."},{threadId:h.coordinatorId()});
+  assert.equal(h.replies()[0].speech,"The editor thread is ready.");assert.deepEqual(h.replies()[0].threadIds,["thr_j58nxpnz6q"]);
+});

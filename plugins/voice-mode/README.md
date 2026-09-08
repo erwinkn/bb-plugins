@@ -85,7 +85,10 @@ Examples:
 | “Delete the old worktree.” | No direct live deletion tool; this requires the consequential-operation workflow. |
 
 Each live tool call may contain a group of up to four resolved actions.
-Distinct tool calls can use the same complete spoken request. Effects have
+Distinct direct calls can use the same complete spoken request, but later calls
+wait for earlier receipts. A spoken request cannot mix direct and coordinator
+execution. Resolve targets first and group ordered actions; delegate the whole
+request when a step needs the coordinator. Effects have
 durable request/step identities and an utterance/action identity, so another
 tool call cannot repeat the same effect under a new request ID.
 Replays return recorded receipts, never repeat effects or resume unexecuted
@@ -94,8 +97,10 @@ live actions, not previously accepted worker tasks. An SDK send already in
 flight cannot be recalled. Late results are recorded and reported separately.
 
 Thread messages are **real delegated instructions**, not a read-only boundary.
-The original transcript, exact optional excerpt, reference interpretation, and
-application provenance remain separate. The English operation-word blacklist
+The original transcript, optional model-authored message body, reference
+interpretation, and application provenance remain separate. Requested reports
+and earlier drafts can be sent without converting them into a coordinator
+request. “Queue” uses thread delivery; drafts require an explicit draft request. The English operation-word blacklist
 is removed. Sending an instruction does not escalate the receiving thread’s
 permissions; normal BB approvals remain in effect.
 

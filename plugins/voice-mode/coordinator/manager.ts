@@ -1,6 +1,6 @@
 import { LiveActionExecutor, combineResults } from "../live-action-executor.ts";
 import { LiveActionStore, type ActionResult } from "../live-action-store.ts";
-import { quickActionRefusal, type QuickAction } from "../quick-actions.ts";
+import type { QuickAction } from "../quick-actions.ts";
 import type { UiAction, UiActionResult } from "../ui-actions.ts";
 import { coordinatorOptions } from "./settings.ts";
 // The voice bridge's server half: owns the hidden coordinator thread's
@@ -113,6 +113,7 @@ export class CoordinatorManager {
   private readonly nativeInteractions = new Map<string, { id: string; threadId: string; title: string; kind: string; conversationId: string }>();
   private disposed = false;
   private quickUi: ManagerDeps["quickUi"];
+  private quickRuns = new Map<string, Promise<void>>();
   private quickControllers = new Map<string, AbortController>();
 
   constructor(deps: ManagerDeps) {
@@ -398,7 +399,18 @@ export class CoordinatorManager {
         this.bb.log.info(`voice request ${envelope.requestId} referenced question ${envelope.answersQuestionId}, which is not open; sending as a normal request`);
       }
     }
-    if (envelope.quickAction && !envelope.answersQuestionId && envelope.urgency !== "steer") {
+    const predecessors = this.store.requestsForUtterance(envelope);
+    if (predecessors.some(previous=>!!previous.envelope.quickAction !== !!envelope.quickAction)) {
+      request = this.store.updateRequest(request.id, {status:"failed",error:"This spoken request already has an execution path. Do not run later steps through another path or repeat accepted steps. Keep the whole ordered request in one quick_action group, or delegate it before any direct action."});
+      this.recordFailureReply(conversation,request.id,"I stopped the remaining actions because this request already started on another execution path.");
+      return this.receiptOf(request,conversation);
+    }
+    if (envelope.quickAction) {
+      if (envelope.answersQuestionId || envelope.urgency === "steer") {
+        request = this.store.updateRequest(request.id,{status:"failed",error:"A direct action cannot answer a coordinator question or steer work. No action was sent. Use the appropriate tool before starting this request."});
+        this.recordFailureReply(conversation,request.id,"I did not send that action because it conflicts with the active request.");
+        return this.receiptOf(request,conversation);
+      }
       const action = envelope.quickAction;
       const transcribed = envelope.utteranceItemIds.map(id => envelope.transcriptDelta.find(item => item.itemId === id)?.text);
       if (transcribed.some(text=>!text?.trim()) || transcribed.join(" ").trim() !== envelope.originalText.trim()) {
@@ -406,20 +418,20 @@ export class CoordinatorManager {
         this.recordFailureReply(conversation,request.id,"I could not get a complete transcript. Please repeat the request.");
         return this.receiptOf(request,conversation);
       }
-      const refusal = quickActionRefusal(action, envelope.originalText);
-      if (!refusal) {
-        // A second model call for the same utterance must not repeat an effect.
-        const duplicate = this.store.priorQuickRequest(envelope);
-        if (duplicate || this.store.quickCancelled(envelope.callNonce, envelope.requestId)) {
-          request = this.store.updateRequest(request.id, { status: "quick_cancelled", error: "This quick request was cancelled or already handled." });
-          return this.receiptOf(request, conversation);
-        }
-        request = this.store.updateRequest(request.id, { status: "quick_running" });
-        void this.runQuickRequest(request, action).catch(error => this.bb.log.warn(`Quick request ${request.id} result could not be published: ${String(error)}`));
+      // A second model call for the same utterance must not repeat an effect.
+      const duplicate = this.store.priorQuickRequest(envelope);
+      if (duplicate || this.store.quickCancelled(envelope.callNonce, envelope.requestId)) {
+        request = this.store.updateRequest(request.id, { status: "quick_cancelled", error: "This quick request was cancelled or already handled." });
         return this.receiptOf(request, conversation);
       }
-      this.bb.log.info(`Quick request ${request.id} uses coordinator: ${refusal}`);
+      request = this.store.updateRequest(request.id, { status: "quick_running" });
+      const run = this.runQuickRequest(request, action, predecessors);
+      this.quickRuns.set(request.id,run);
+      void run.catch(error => this.bb.log.warn(`Quick request ${request.id} result could not be published: ${String(error)}`))
+        .finally(()=>this.quickRuns.delete(request.id));
+      return this.receiptOf(request, conversation);
     }
+
     request = await this.dispatchRequest(request);
     return this.receiptOf(request, this.store.getConversation(conversation.id) ?? conversation);
   }
@@ -433,13 +445,22 @@ export class CoordinatorManager {
     this.onRequestEnded(requestId);
   }
 
-  private async runQuickRequest(request: RequestRow, action: QuickAction) {
+  private async runQuickRequest(request: RequestRow, action: QuickAction, predecessors: RequestRow[]) {
     const controller = new AbortController();
     this.quickControllers.set(request.id, controller);
     const current = () => !this.disposed && !controller.signal.aborted && !this.store.quickCancelled(request.callNonce, request.id)
       && this.store.getConversation(request.conversationId)?.currentCallNonce === request.callNonce;
     let result: ActionResult;
     try {
+      // Submission returns before an effect completes. Separate live tool calls
+      // for the same speech must still wait for the preceding effect's receipt.
+      for (const previous of predecessors) {
+        await this.quickRuns.get(previous.id);
+        const receipt = this.store.getRequest(previous.id);
+        if (!receipt || receipt.status !== "settled" || receipt.error) {
+          throw new Error("An earlier step failed or has no confirmed result. The remaining steps were not run.");
+        }
+      }
       result = await this.actions.execute(request.envelope, action, "live", {
         signal: controller.signal, current,
         ui: async (operation, signal) => {
@@ -449,7 +470,7 @@ export class CoordinatorManager {
         lateResult: value => this.recordLateActionResult(request, value),
       });
     } catch (error) {
-      result = {status:"failed",speech:"I could not complete that action.",detail:String(error),threadIds:[],receipts:[]};
+      result = {status:"failed",speech:predecessors.length ? "An earlier step did not finish successfully. I stopped the remaining actions." : "I could not complete that action.",detail:String(error),threadIds:[],receipts:[]};
     }
     const interrupted = controller.signal.aborted;
     controller.abort("action-settled");
@@ -677,6 +698,9 @@ export class CoordinatorManager {
       return {content:[{type:"text",text:"A sequence requires a final reply for this call's active request, with empty speech. Put each spoken message in a speech step."}],isError:true};
     }
     const debugRequested = /debug|diagnos|troubleshoot|coordinator.*(?:log|status|work)/i.test(request?.envelope.originalText ?? "");
+    if (/\bthr[_ ]+[a-z0-9]{8,}\b/i.test(params.speech) && !/\b(?:id|ids|identifier|identifiers)\b/i.test(request?.envelope.originalText ?? "")) {
+      return {content:[{type:"text",text:"Use thread names in speech, not raw thread IDs. Keep IDs in thread_ids and receipts. Return the same result with ready-to-say speech."}],isError:true};
+    }
     const routingNoise = /\bcoordinator[’']?s?\b|\b(?:internal RPC|model routing|delegation plumbing)\b/i.test(params.speech);
     const internal = params.kind === "silent" || (!batchId && params.kind === "assigned");
     if (!debugRequested && routingNoise && !internal) {

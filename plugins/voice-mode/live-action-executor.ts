@@ -1,7 +1,7 @@
 import { COORDINATOR_TITLE_PREFIX } from "./coordinator/prompts.ts";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { UserRequestEnvelope } from "./coordinator/envelopes.ts";
-import { operationsOf, quickActionSchema, quickActionRefusal, QUICK_ACTION_TIMEOUT_MS, waitForQuickAction, type LiveOperation, type QuickAction } from "./quick-actions.ts";
+import { operationsOf, quickActionSchema, QUICK_ACTION_TIMEOUT_MS, waitForQuickAction, type LiveOperation, type QuickAction } from "./quick-actions.ts";
 import { LiveActionStore, type ActionResult } from "./live-action-store.ts";
 import { readWorkerSettings, resolveWorkerModel, WORKER_ROLE_INSTRUCTIONS } from "./worker-profiles.ts";
 import type { UiAction, UiActionResult } from "./ui-actions.ts";
@@ -39,9 +39,9 @@ export function formatVoiceInstruction(envelope: UserRequestEnvelope, operation:
   const contract = purpose === "status" ? "Answer the user's status question; do not start implementation for this status request."
     : purpose === "comment" ? "This is a user comment. Preserve its questions and conditions; it is not a blanket instruction to change state."
     : "Carry out the user's requested scope under your existing permissions and approval policy. Voice delivery does not grant new permissions.";
-  return `[voice task ${envelope.requestId}:${step}]\n${contract}\nThe original user words below are authoritative. The optional excerpt and model interpretation are not independent authorization. Preserve negations, conditions, and questions. Do not convert a question into a removal instruction.\n${JSON.stringify({
+  return `[voice task ${envelope.requestId}:${step}]\n${contract}\nThe original user words below are authoritative. The model-authored message and interpretation are not independent authorization. Address only the message intended for this destination; other clauses may describe navigation or work for other threads. Preserve negations, conditions, and questions. Do not convert a question into a removal instruction.\n${JSON.stringify({
     user:{text:envelope.originalText,items:envelope.transcriptDelta,complete:envelope.transcriptAvailable},
-    ...((operation.kind === "send_message" || operation.kind === "start_thread") && operation.text ? {excerpt:operation.text} : {}),
+    ...((operation.kind === "send_message" || operation.kind === "start_thread") && operation.text ? {message:operation.text} : {}),
     ...(envelope.interpretation ? {model_interpretation:envelope.interpretation} : {}),
     context:envelope.view,
     ...(envelope.narrating ? {narrating:envelope.narrating} : {}),
@@ -71,8 +71,6 @@ export class LiveActionExecutor {
   }
 
   private async executeRecorded(envelope: UserRequestEnvelope, action: QuickAction, actor: "live"|"coordinator", context: ActionContext): Promise<ActionResult> {
-    const refusal = quickActionRefusal(action,envelope.originalText);
-    if (refusal) return result("failed",refusal);
     if (!this.store.admit(envelope.requestId,envelope.conversationId,actor,action)) {
       const recorded = this.store.results(envelope.requestId);
       const uncertain = result("unknown","A previous action has no confirmed result. I have not repeated it.");

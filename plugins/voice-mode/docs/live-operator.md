@@ -58,13 +58,23 @@ are different concepts. All committed utterance fragments still require usable
 transcripts; late recognition does not restart rejected work. The live tool may
 supply reference interpretation, but not replace the original words with a rewrite.
 
-Messages include original transcript/context, an optional matching excerpt,
+Messages include original transcript/context, an optional model-authored body,
 separate interpretation, and application-generated request/step provenance. Real
 implementation instructions go directly to the existing thread using
 `queue-if-active`. A user comment or status query remains distinguished from an
 implementation request. There is no English operation-word blacklist. This is
 consequential delegation: the recipient can change state under its normal policy.
-Voice delivery cannot grant additional permissions.
+Voice delivery cannot grant additional permissions. The body may be a requested
+report or an earlier draft; it is not represented as a verbatim transcript or
+independent authorization. The destination and body stay attached to the direct
+action. No validation failure silently delegates the request.
+
+Resolve targets before starting an ordered request. Group supported actions in
+one call; use the coordinator for the whole request if any step requires it.
+The server retains the execution path per utterance and waits for preceding
+direct receipts before running separate direct calls. A failed or unknown step
+stops later steps. Queue/send means thread delivery; prepare_draft requires an
+explicit request to leave text unsent.
 
 Internal workers are hidden children of the conversation coordinator, use the requested
 project and an explicitly resolved connected machine, and select a managed

@@ -168,10 +168,12 @@ export class CoordinatorBridge {
     try {
       const receipt=await this.host.rpc<{status:string;receipt:{delivery:string}|null;error:string|null}>("submitRequest",{envelope});
       if((handoff as PendingHandoff).status!=="cancelled")handoff.status=receipt.status==="failed"||receipt.status==="quick_cancelled" ? "failed" : "dispatched";
-      if(receipt.status==="accepted")delete handoff.quickAction;
       if(receipt.status==="quick_cancelled")this.dispatched.delete(handoff.requestId);
       this.host.log("handoff.dispatched",{requestId:handoff.requestId,status:receipt.status,delivery:receipt.receipt?.delivery??null,error:receipt.error,transcriptWaitMs:this.host.now()-handoff.createdAt,transcriptAvailable:true});
-      return `Request ${handoff.requestId} recorded. Wait silently; the bridge speaks the actual result.`;
+      if(receipt.status==="failed" || receipt.status==="quick_cancelled") {
+        return `Request ${handoff.requestId} was not executed: ${receipt.error ?? receipt.status}. Do not claim delivery or repeat accepted steps. The bridge reports failures.`;
+      }
+      return `Request ${handoff.requestId} recorded on the ${quickAction ? "direct" : "coordinator"} path; this is not a delivery receipt. Keep all remaining steps on this path. Wait silently; the bridge speaks the actual result.`;
     } catch(error) {
       handoff.status="failed";
       this.host.log("handoff.error",{requestId:handoff.requestId,error:String(error)});

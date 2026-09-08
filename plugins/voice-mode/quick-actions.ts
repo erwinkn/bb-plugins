@@ -8,10 +8,10 @@ export const liveOperationSchema = z.discriminatedUnion("kind", [
   ...UiActionSchema.options,
   z.object({ kind: z.literal("send_message"), threadId: id,
     purpose: z.enum(["comment", "status", "instruction"]).default("instruction"),
-    text: z.string().trim().min(1).max(8000).optional() }).strict(),
+    text: z.string().trim().min(1).max(8000).optional().describe("Message or task body, including a requested report or previously discussed draft. Preserve the user’s scope and conditions; this is model-authored content, not a verbatim transcript.") }).strict(),
   z.object({ kind: z.literal("start_thread"), projectId: id, hostId: id.optional(),
     role: z.enum(WORKER_ROLES), title: z.string().trim().min(1).max(120),
-    text: z.string().trim().min(1).max(8000).optional() }).strict(),
+    text: z.string().trim().min(1).max(8000).optional().describe("Message or task body, including a requested report or previously discussed draft. Preserve the user’s scope and conditions; this is model-authored content, not a verbatim transcript.") }).strict(),
   z.object({ kind: z.literal("stop_thread"), threadId: id }).strict(),
 ]);
 export type LiveOperation = z.infer<typeof liveOperationSchema>;
@@ -21,22 +21,6 @@ export const quickActionSchema = z.discriminatedUnion("kind", [
 ]);
 export type QuickAction = z.infer<typeof quickActionSchema>;
 export const operationsOf = (action: QuickAction): LiveOperation[] => action.kind === "group" ? action.actions : [action];
-
-/** Optional excerpts must preserve words. The full transcript is always sent as authority. */
-export function quickMessageRefusal(action: Extract<LiveOperation, {kind:"send_message" | "start_thread"}>, original: string): string | null {
-  const normalize = (value: string) => value.replace(/\s+/g, " ").trim().toLocaleLowerCase();
-  return action.text && !normalize(original).includes(normalize(action.text))
-    ? "The selected excerpt does not match the transcript. Preserve the user's complete request instead of rewriting it." : null;
-}
-export function quickActionRefusal(action: QuickAction, original: string): string | null {
-  for (const operation of operationsOf(action)) {
-    if (operation.kind === "send_message" || operation.kind === "start_thread") {
-      const refusal = quickMessageRefusal(operation, original);
-      if (refusal) return refusal;
-    }
-  }
-  return null;
-}
 
 export const QUICK_ACTION_TIMEOUT_MS = 20_000;
 /** Limits observation, not the SDK side effect. A timed-out effect must not be repeated. */

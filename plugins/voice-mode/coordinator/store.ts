@@ -425,6 +425,19 @@ export class CoordinatorStore {
     };
   }
 
+  /** A spoken request keeps one executor, even across separate tool calls. */
+  requestsForUtterance(envelope: UserRequestEnvelope): RequestRow[] {
+    const rows = this.db.prepare(`SELECT * FROM voice_requests WHERE conversation_id=? AND call_nonce=? AND id!=?
+      AND status NOT IN ('failed','quick_cancelled') AND (
+        (? IS NOT NULL AND json_extract(envelope_json,'$.utteranceId')=?
+          AND COALESCE(json_extract(envelope_json,'$.utteranceVersion'),json_extract(envelope_json,'$.transcriptRevision'))=?)
+        OR (? IS NULL AND EXISTS (SELECT 1 FROM json_each(envelope_json,'$.utteranceItemIds') old
+          JOIN json_each(?) current ON old.value=current.value))) ORDER BY seq`).all(
+      envelope.conversationId,envelope.callNonce,envelope.requestId,envelope.utteranceId??null,envelope.utteranceId??null,
+      envelope.utteranceVersion??envelope.transcriptRevision,envelope.utteranceId??null,JSON.stringify(envelope.utteranceItemIds));
+    return rows.map(row=>this.rowToRequest(row as Record<string,unknown>)).filter((row): row is RequestRow=>!!row);
+  }
+
   priorQuickRequest(envelope: UserRequestEnvelope): RequestRow | null {
     if(envelope.utteranceId) {
       const row=this.db.prepare(`SELECT * FROM voice_requests WHERE conversation_id=? AND call_nonce=? AND id!=?

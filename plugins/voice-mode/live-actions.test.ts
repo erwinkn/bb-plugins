@@ -64,10 +64,15 @@ test("direct instructions preserve conditional questions and provenance and anno
   assert.match(message,/does not grant new permissions/);
 });
 
-test("an invented excerpt fails before any group effect, including UI",async t=>{
+test("a requested report remains model-authored content beside the full user scope",async t=>{
   const h=fixture();t.after(h.close);
-  const outcome=await h.executor().execute(h.envelope(),{kind:"group",actions:[{kind:"open_thread",threadId:"build",split:false},{kind:"send_message",threadId:"build",purpose:"instruction",text:"Delete the repository"}]},"live",h.context);
-  assert.equal(outcome.status,"failed");assert.equal(h.world.ui.length,0);assert.equal(h.world.sends.length,0);
+  const words="Send Build the report we discussed, then open Build. Do not implement yet.";
+  const message="Report: two dispatch bugs. Please investigate; do not implement yet.";
+  const outcome=await h.executor().execute(h.envelope("report",words),{kind:"group",actions:[{kind:"send_message",threadId:"build",purpose:"instruction",text:message},{kind:"open_thread",threadId:"build",split:false}]},"live",h.context);
+  assert.equal(outcome.status,"succeeded");assert.equal(h.world.ui.length,1);assert.equal(h.world.sends.length,1);
+  const body=JSON.parse(h.world.sends[0].input[0].text.split("\n").at(-1)!);
+  assert.equal(body.user.text,words);assert.equal(body.message,message);assert.equal(body.destination.thread_id,"build");
+  assert.equal(body.excerpt,undefined);assert.equal(h.world.sends[0].mode,"queue-if-active");
 });
 
 test("concurrent repeats execute each recorded step exactly once and reject changed arguments",async t=>{
