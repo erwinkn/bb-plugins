@@ -344,7 +344,8 @@ export function PlanDocument({
   );
 
   // Touch: the system callout owns the space around the selection, so the
-  // actions dock along the bottom edge of the document as a toolbar.
+  // actions dock along the bottom edge of the document as a toolbar. Copy is
+  // left to the callout, which already offers it.
   const barButton = (label: string, icon: IconName, className: string, props: typeof copyProps) => (
     <button key={label} type="button" className={cn("flex h-11 min-w-0 items-center justify-center gap-1 px-1 text-xs leading-none active:bg-state-active", className)} {...props}>
       <Icon name={icon} className="size-4 shrink-0" aria-hidden />
@@ -354,7 +355,6 @@ export function PlanDocument({
   const selectionBar = (
     <div role="toolbar" aria-label="Annotate selection" className="pointer-events-auto grid w-full auto-cols-fr grid-flow-col border-t border-border bg-popover text-popover-foreground shadow-[0_-4px_12px_-6px_rgb(0_0_0/0.25)]">
       {actions.map((action) => barButton(action.label, action.icon, action.className, action.props))}
-      {barButton("Copy", "Copy", "border-l border-border", copyProps)}
     </div>
   );
 

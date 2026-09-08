@@ -112,9 +112,9 @@ export function ReviewFooter({
             Feedback sent.{" "}
             {plan.sample ? "Add a revision yourself to try the version diff." : "Waiting for the agent's revision."}
           </p>
-          <Button type="button" variant={plan.sample ? "default" : "outline"} size="sm" onClick={onRevise}>
-            {plan.sample ? "Add revision" : "Import revision"}
-          </Button>
+          {plan.sample ? (
+            <Button type="button" size="sm" onClick={onRevise}>Add revision</Button>
+          ) : null}
         </div>
       ) : null}
       <div className="grid grid-cols-1 items-start gap-2 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 @3xl:grid-cols-[minmax(0,1fr)_auto]">

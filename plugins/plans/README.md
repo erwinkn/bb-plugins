@@ -177,7 +177,8 @@ report into the thread.
 ## Annotation controls
 
 Select text to open a vertical menu: Comment (C), Redline (D), Looks good (G),
-and Copy. Shortcuts are hidden on mobile, where the menu is a bar at the bottom
-of the document next to the system's own selection callout. Redlines request removal by the agent when
+and Copy. On mobile the menu is a bar at the bottom of the document with
+Comment, Redline, and Looks good; the system's own selection callout handles
+Copy. Redlines request removal by the agent when
 feedback is sent. They do not change the plan text. Deleting an unsent annotation
 removes only that annotation. The agent applies changes in its next revision.

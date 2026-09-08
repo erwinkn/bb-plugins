@@ -9,7 +9,7 @@
  * renderer that produces the same kind of DOM: headings, paragraphs, lists,
  * and a code block with a Copy button.
  */
-import { act, cleanup, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
 import { useState, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan, PlanComment } from "../contract";
@@ -392,7 +392,7 @@ describe("activating a comment from the document", () => {
     expect(screen.getByRole("button", { name: "Redline" })).toBeTruthy();
   });
 
-  it("copies the selected text from the menu", async () => {
+  it("copies the selected text from the desktop menu", async () => {
     const writeText = vi.fn(async (_text: string) => {});
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     const { content, onQuote } = renderDocument({ markdown: "Keep the existing data." });
@@ -401,6 +401,14 @@ describe("activating a comment from the document", () => {
     await act(async () => {});
     expect(writeText).toHaveBeenCalledWith("existing data");
     expect(onQuote).not.toHaveBeenCalled();
+  });
+
+  it("leaves Copy to the system callout on touch", async () => {
+    coarsePointer = true;
+    const { content } = renderDocument({ markdown: "Keep the existing data.", onAnnotate: vi.fn(async () => {}) });
+    await selectText(content(), "existing data");
+    const bar = screen.getByRole("toolbar", { name: "Annotate selection" });
+    expect(within(bar).getAllByRole("button").map((button) => button.textContent)).toEqual(["Comment", "Redline", "Looks good"]);
   });
 
   const saved = comment({ id: "keep", quote: "existing data" });

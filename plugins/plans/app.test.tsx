@@ -184,9 +184,11 @@ describe("review", () => {
   });
 
   it("adds a revision through the dialog and switches to the changes view", async () => {
-    const backend = fakeBackend([makePlan({ status: "revising" })]);
+    // Real plans reach the dialog from the header menu; the sample plan keeps
+    // an "Add revision" button in the banner, which jsdom can drive directly.
+    const backend = fakeBackend([makePlan({ status: "revising", sample: true })]);
     slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
-    fireEvent.click(await slot.findByRole("button", { name: "Import revision" }));
+    fireEvent.click(await slot.findByRole("button", { name: "Add revision" }));
     const field = await slot.findByLabelText("Revised plan Markdown");
     fireEvent.change(field, { target: { value: "# Plan\n\nStep 1, revised." } });
     fireEvent.click(slot.getByRole("button", { name: /Save as v2/ }));
