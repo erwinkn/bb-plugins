@@ -59,6 +59,13 @@ Call `2754a5a8-36e4-49cb-a2d6-3c2ebf568b88` in conversation
    coordinator runtimes receive settings when BB next configures them; a new
    conversation is the reliable way to test the updated coordinator prompt.
 
+7. **Message receipts confirm delivery without a recap.** The service now says
+   “Sent to Editor” or “Queued for Editor” without appending dictated or composed
+   text. Both role prompts use the same rule. The alternative was summarizing the
+   body for every send. Confidence: high. The complete body and original words
+   remain in the action record; readback is available when the user asks. Existing
+   tests assert the concise receipt and preservation of the complete payload.
+
 The fixes belong in Voice Mode. The SDK already provides queued delivery and
 native UI receipts. Coordinator access to native provider/BB tools is broader
 than the Voice action service: these guards cannot intercept arbitrary shell or

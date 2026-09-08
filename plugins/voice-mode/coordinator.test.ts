@@ -1074,7 +1074,8 @@ test("shared coordinator actions wait for receipts and recover the destination r
   assert.equal(attempts,1);
   assert.equal(h.replies().length,1);
   assert.match(h.replies()[0].speech,/Sent to Build/);
-  assert.match(h.replies()[0].speech,/Do not edit files/);
+  assert.equal(h.replies()[0].speech,"Sent to Build.");
+  assert.match(h.replies()[0].detail,/Do not edit files/);
   assert.equal(h.replies()[0].receipts[0].outcome,"done");
 });
 

@@ -55,7 +55,7 @@ test("direct instructions preserve conditional questions and provenance and anno
   const h=fixture();t.after(h.close);const text="Ask Build whether we still need it. If upstream fixed it, maybe not; don't remove anything yet.";
   const envelope={...h.envelope("conditional",text),interpretation:"The retry workaround"};
   const outcome=await h.executor().execute(envelope,send(),"live",h.context);
-  assert.equal(outcome.status,"succeeded");assert.match(outcome.speech,/Queued for Build Fix/);assert.match(outcome.speech,/don't remove/);
+  assert.equal(outcome.status,"succeeded");assert.equal(outcome.speech,"Queued for Build Fix.");
   const message=h.world.sends[0].input[0].text;
   const body=JSON.parse(message.split("\n").at(-1)!);
   assert.equal(body.user.text,text);assert.equal(body.model_interpretation,envelope.interpretation);
@@ -73,6 +73,7 @@ test("a requested report remains model-authored content beside the full user sco
   const body=JSON.parse(h.world.sends[0].input[0].text.split("\n").at(-1)!);
   assert.equal(body.user.text,words);assert.equal(body.message,message);assert.equal(body.destination.thread_id,"build");
   assert.equal(body.excerpt,undefined);assert.equal(h.world.sends[0].mode,"queue-if-active");
+  assert.doesNotMatch(outcome.speech,/two dispatch bugs|do not implement/i);
 });
 
 test("concurrent repeats execute each recorded step exactly once and reject changed arguments",async t=>{

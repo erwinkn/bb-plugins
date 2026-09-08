@@ -162,7 +162,7 @@ export class LiveActionExecutor {
         const sent = await this.bb.sdk.threads.send({threadId:thread.id,mode:"queue-if-active",input:[{type:"text",text,mentions:[]}]});
         const queued = sent.delivery === "queued";
         const internal=this.store.workerForThread(thread.id)?.conversationId===envelope.conversationId;
-        const speech = internal ? `I’ve ${queued ? "queued" : "sent"} your update for ${title}.` : `${queued ? "Queued for" : "Sent to"} ${title}: ${label(operation.text ?? envelope.originalText,180)}`;
+        const speech = internal ? `I’ve ${queued ? "queued" : "sent"} your update for ${title}.` : `${queued ? "Queued for" : "Sent to"} ${title}.`;
         return result("succeeded",speech,text,[thread.id],[{action:"send_message",thread_id:thread.id,outcome:queued ? "pending" : "done",note:queued ? `Queued: ${sent.queuedMessage.id}` : "Sent"}]);
       }};
     }

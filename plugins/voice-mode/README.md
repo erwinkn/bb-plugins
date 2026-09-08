@@ -104,8 +104,9 @@ request. “Queue” uses thread delivery; drafts require an explicit draft requ
 is removed. Sending an instruction does not escalate the receiving thread’s
 permissions; normal BB approvals remain in effect.
 
-Fast actions produce one concrete announcement, rather than an acknowledgment
-plus a generic “sent”: “Queued for Build Fix: add regression tests.” Worker
+Fast actions produce one receipt. Thread messages confirm delivery status and
+destination only: “Queued for Build Fix.” Aide does not repeat the message body
+unless asked. The full content remains in the delivery record. Worker
 creation names the task, project, machine, and role. Sent, queued, created,
 stop-requested, and completed are different states. The bridge owns speech
 scheduling and interrupted delivery. Internal RPC/model plumbing stays quiet;
