@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { usePortalScopeProps } from "@/lib/portal-scope";
 import { cn } from "@/lib/utils";
 import { CheckIcon } from "./icons";
 
@@ -98,10 +99,19 @@ export function ContextMenu({ state, onClose }: { state: MenuState | null; onClo
     };
   }, [open]);
 
+  // The menu lives under `document.body`, outside the plugin root; the scope
+  // attributes let the plugin's own styles reach it.
+  const scope = usePortalScopeProps();
   if (state === null) return null;
 
   return createPortal(
-    <div ref={menuRef} role="menu" style={{ left: position.x, top: position.y }} className={cn(MENU_CLASS, state.className)}>
+    <div
+      ref={menuRef}
+      role="menu"
+      {...scope}
+      style={{ left: position.x, top: position.y }}
+      className={cn(MENU_CLASS, state.className)}
+    >
       {state.items.map((item, index) => {
         if (item.type === "separator") return <div key={index} role="separator" className="my-1 h-px bg-border" />;
         if (item.type === "label") {
