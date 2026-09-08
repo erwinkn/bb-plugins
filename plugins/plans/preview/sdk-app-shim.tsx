@@ -40,7 +40,7 @@ export function emitRealtime(channel: string, payload: unknown): void {
 }
 
 const MUTATIONS = new Set([
-  "create", "revise", "addComment", "resolveComment", "updateComment", "removeComment", "remove", "submitReview",
+  "create", "revise", "addComment", "updateComment", "removeComment", "remove", "submitReview",
 ]);
 
 /* ---------- rpc over the preview middleware ---------- */

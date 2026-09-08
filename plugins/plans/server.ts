@@ -137,8 +137,17 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
           const action = z.enum(["approve", "feedback"]).parse(args[2]);
           const plan = service.get({ id: args[0] });
           if (ctx.threadId && plan.threadId === ctx.threadId) throw new Error("A thread cannot review its own plan. The reviewer is the user or another thread.");
+          const before = new Set(plan.comments.map((item) => item.id));
           for (const item of flags.comments) service.addComment({ id: plan.id, versionId: args[1], ...item });
-          result = await service.submitReview({ id: plan.id, versionId: args[1], action, note: flags.note, requestId: randomUUID() });
+          try {
+            result = await service.submitReview({ id: plan.id, versionId: args[1], action, note: flags.note, requestId: randomUUID() });
+          } catch (error) {
+            // A rejected review must not leave drafts that block a later approval.
+            for (const item of service.get({ id: plan.id }).comments) {
+              if (!before.has(item.id) && item.sentAt === null) service.removeComment({ id: plan.id, commentId: item.id });
+            }
+            throw error;
+          }
           result = { planId: plan.id, versionId: args[1], action, status: (result as { status: string }).status };
         } else if (command === "submit" && args[0] && ctx.threadId) {
           const thread = await bb.sdk.threads.get({ threadId: ctx.threadId });
@@ -146,7 +155,9 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
           const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
           const { resolve } = await import("node:path");
           if (!ctx.cwd) throw new Error("The invoking workspace path is unavailable. Submit from a BB thread with a working directory.");
-          const file = await bb.sdk.files.read({ path: resolve(ctx.cwd, args[0]), hostId: environment.hostId });
+          // The agent names the file; confine reads to the thread's workspace.
+          const rootPath = environment.path ?? ctx.cwd;
+          const file = await bb.sdk.files.read({ path: resolve(ctx.cwd, args[0]), rootPath, hostId: environment.hostId });
           if (file.contentEncoding !== "utf8") throw new Error("Use a UTF-8 Markdown file.");
           let plan;
           if (args[2]) {

@@ -53,7 +53,7 @@ export function CommentRail({
   emptyMessage,
   className,
 }: CommentRailProps) {
-  const unresolved = comments.filter((comment) => !comment.resolved && comment.kind !== "looksGood").length;
+  const open = comments.filter((comment) => comment.kind !== "looksGood").length;
   return (
     <div className={cn("flex min-h-0 flex-1 flex-col", className)}>
       {showHeader ? (
@@ -63,7 +63,7 @@ export function CommentRail({
           </h2>
           {comments.length > 0 ? (
             <span className="text-xs tabular-nums text-muted-foreground">
-              {unresolved > 0 ? `${unresolved} open · ` : ""}
+              {open > 0 ? `${open} open · ` : ""}
               {comments.length} total
             </span>
           ) : null}
@@ -237,7 +237,6 @@ function CommentCard({ comment, anchor, isActive, isHovered, onActivate, onHover
         "group relative space-y-1.5 px-3 py-2.5 transition-colors duration-150",
         isActive && "bg-state-active",
         isHovered && !isActive && "bg-state-hover",
-        comment.resolved && !isActive && "opacity-70",
       )}
     >
       <button
@@ -246,7 +245,7 @@ function CommentCard({ comment, anchor, isActive, isHovered, onActivate, onHover
         className="block w-full rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         aria-label={anchor === undefined || anchor.kind === "unique" ? "Show this passage in the plan" : "Select comment"}
       >
-        <Quote text={comment.quote} kind={kind} muted={comment.resolved} />
+        <Quote text={comment.quote} kind={kind} />
       </button>
       {note ? <p className="text-[11px] leading-4 text-muted-foreground">{note}</p> : null}
       {isEditing ? (
@@ -295,7 +294,7 @@ function CommentCard({ comment, anchor, isActive, isHovered, onActivate, onHover
           </div>
         </form>
       ) : kind === "comment" ? (
-        <p className={cn("whitespace-pre-wrap break-words text-sm leading-5", comment.resolved && "text-muted-foreground")}>
+        <p className="whitespace-pre-wrap break-words text-sm leading-5">
           {comment.body}
         </p>
       ) : null}

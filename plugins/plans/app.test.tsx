@@ -44,7 +44,6 @@ function comment(overrides: Partial<PlanComment> = {}): PlanComment {
     versionId: "v1",
     quote: "Step 1.",
     body: "Reconsider this.",
-    resolved: false,
     createdAt: now,
     sentAt: null,
     ...overrides,
@@ -98,15 +97,9 @@ function fakeBackend(initial: Plan[]) {
         plan.comments = plan.comments.filter((entry) => entry.id !== commentId);
         return plan;
       },
-      resolveComment: ({ id, commentId, resolved }: { id: string; commentId: string; resolved: boolean }) => {
-        const plan = get(id);
-        const target = plan.comments.find((entry) => entry.id === commentId)!;
-        target.resolved = resolved;
-        return plan;
-      },
       submitReview: ({ id, action, note }: { id: string; action: "feedback" | "approve"; note: string }) => {
         const plan = get(id);
-        if (action === "approve" && plan.comments.some((entry) => !entry.resolved && entry.kind !== "looksGood" && (entry.sentAt === null || entry.versionId === plan.versions.at(-1)!.id))) {
+        if (action === "approve" && plan.comments.some((entry) => entry.kind !== "looksGood" && (entry.sentAt === null || entry.versionId === plan.versions.at(-1)!.id))) {
           throw new Error("Resolve all comments first");
         }
         if (action === "feedback" && note === "" && !plan.comments.some((entry) => entry.sentAt === null)) {

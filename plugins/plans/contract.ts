@@ -12,7 +12,7 @@ export const commentSchema = z.object({
   id, versionId: id, quote: z.string().max(10_000), body: z.string().trim().max(10_000),
   kind: annotationKindSchema.optional(),
   prefix: context.optional(), suffix: context.optional(), position: position.optional(),
-  resolved: z.boolean(), createdAt: z.number(), sentAt: z.number().nullable(),
+  createdAt: z.number(), sentAt: z.number().nullable(),
 });
 export const planSchema = z.object({
   id, title: z.string().trim().min(1).max(200), threadId: id.nullable(), projectId: id.nullable(),
@@ -43,7 +43,6 @@ export const plansContract = defineRpcContract({
   create: { input: createSchema, output: planSchema },
   revise: { input: reviseSchema, output: planSchema },
   addComment: { input: addCommentSchema, output: planSchema },
-  resolveComment: { input: z.object({ id, commentId: id, resolved: z.boolean() }), output: planSchema },
   updateComment: { input: z.object({ id, commentId: id, body: z.string().trim().min(1).max(10_000) }), output: planSchema },
   removeComment: { input: z.object({ id, commentId: id }), output: planSchema },
   remove: { input: z.object({ id }), output: z.object({ ok: z.literal(true) }) },

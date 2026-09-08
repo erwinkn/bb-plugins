@@ -186,7 +186,7 @@ export function PlanDocument({
     const entries: HighlightEntry[] = [];
     for (const comment of comments) {
       const range = rangesRef.current.get(comment.id);
-      if (range === undefined || comment.resolved) continue;
+      if (range === undefined) continue;
       entries.push({
         range,
         kind: comment.kind ?? "comment",

@@ -48,15 +48,16 @@ export function unsentComments(plan: Plan, versionId: string): PlanComment[] {
 }
 
 /**
- * What "Send feedback" will deliver: every unsent, unresolved comment on any
- * version. The backend batches across versions and labels each by version.
+ * What "Send feedback" will deliver: every unsent comment on any version. The
+ * backend batches across versions and labels each by version.
  */
 export function pendingFeedbackComments(plan: Plan): PlanComment[] {
-  return plan.comments.filter((comment) => comment.sentAt === null && !comment.resolved);
+  return plan.comments.filter((comment) => comment.sentAt === null);
 }
 
-export function unresolvedComments(plan: Plan): PlanComment[] {
-  return plan.comments.filter((comment) => !comment.resolved && comment.kind !== "looksGood" && (comment.sentAt === null || comment.versionId === latestVersion(plan)?.id));
+/** Comments that still block approval: unsent, or sent against the latest version. */
+export function openComments(plan: Plan): PlanComment[] {
+  return plan.comments.filter((comment) => comment.kind !== "looksGood" && (comment.sentAt === null || comment.versionId === latestVersion(plan)?.id));
 }
 
 export interface ReviewGate {
@@ -69,7 +70,7 @@ export interface ReviewGate {
 /**
  * Mirrors the backend rules so controls disable with an explanation instead of
  * failing on submit: feedback needs a comment or a note; approval needs zero
- * unresolved comments on any version and must target the latest version.
+ * open comments on any version and must target the latest version.
  */
 export function reviewGate(
   plan: Plan,
@@ -80,7 +81,7 @@ export function reviewGate(
   const closed = plan.status === "approved";
   const pendingCount = pendingFeedbackComments(plan).length;
   const hasNote = note.trim().length > 0;
-  const unresolved = unresolvedComments(plan).length;
+  const open = openComments(plan).length;
 
   let feedbackReason: string | null = null;
   if (closed) feedbackReason = "This plan is approved.";
@@ -92,11 +93,11 @@ export function reviewGate(
   if (closed) approveReason = "This plan is already approved.";
   else if (!isLatest) approveReason = "Only the latest version can be approved.";
   else if (plan.status === "revising") approveReason = "Review the next revision before approving.";
-  else if (unresolved > 0)
+  else if (open > 0)
     approveReason =
-      unresolved === 1
+      open === 1
         ? "Send or delete the pending comment, then review the next revision."
-        : `Send or delete the ${unresolved} pending comments, then review the next revision.`;
+        : `Send or delete the ${open} pending comments, then review the next revision.`;
 
   return {
     canSendFeedback: feedbackReason === null,

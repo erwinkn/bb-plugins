@@ -157,7 +157,6 @@ function comment(overrides: Partial<PlanComment> & { quote: string }): PlanComme
     id: `c-${overrides.quote.slice(0, 8)}`,
     versionId: "v1",
     body: "Look at this.",
-    resolved: false,
     createdAt: 1,
     sentAt: null,
     ...overrides,

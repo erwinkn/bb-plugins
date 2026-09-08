@@ -75,9 +75,9 @@ describe("Plans review workflow", () => {
     expect(revised.comments[0]).toEqual(annotated.comments[0]);
     expect(revised.versions).toHaveLength(2);
     await expect(rpc("submitReview", { id: plan.id, versionId, action: "approve", note: "", requestId: "stale" })).rejects.toThrow(/latest version/);
-    await expect(rpc("submitReview", { id: plan.id, versionId: revised.versions[1]!.id, action: "approve", note: "", requestId: "unresolved" })).rejects.toThrow(/Send or delete/);
-    await rpc("resolveComment", { id: plan.id, commentId: annotated.comments[0]!.id, resolved: true });
-    const approved = await rpc("submitReview", { id: plan.id, versionId: revised.versions[1]!.id, action: "approve", note: "", requestId: "resolved" });
+    await expect(rpc("submitReview", { id: plan.id, versionId: revised.versions[1]!.id, action: "approve", note: "", requestId: "open" })).rejects.toThrow(/Send or delete/);
+    await rpc("removeComment", { id: plan.id, commentId: annotated.comments[0]!.id });
+    const approved = await rpc("submitReview", { id: plan.id, versionId: revised.versions[1]!.id, action: "approve", note: "", requestId: "deleted" });
     expect(approved.status).toBe("approved");
   });
 
@@ -134,6 +134,18 @@ describe("Plans review workflow", () => {
     disposers.push(() => replacement.harness.lifecycle.dispose());
     const loaded = await replacement.harness.behavior.callRpc("get", { id: plan.id }) as Plan;
     expect(loaded.versions).toEqual(plan.versions);
+  });
+
+  it("messages the thread after a reload even if an agent was waiting before it", async () => {
+    const { harness, plan, send } = await setup();
+    const versionId = plan.versions[0]!.id;
+    const waiting = harness.behavior.runCli(["wait", plan.id, "--version-id", versionId, "--timeout", "600"], { threadId: "thread-1", signal: new AbortController().signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const replacement = await harness.lifecycle.reload(plugin);
+    disposers.push(() => replacement.harness.lifecycle.dispose());
+    await waiting.catch(() => undefined);
+    await replacement.harness.behavior.callRpc("submitReview", { id: plan.id, versionId, action: "approve", note: "Go.", requestId: "after-reload" });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("blocks automatic retry after an uncertain send and allows explicit reconciliation", async () => {
@@ -274,13 +286,22 @@ describe("Plans review workflow", () => {
     ]);
   });
 
-  it("reads submitted files on the invoking environment host", async () => {
+  it("reads submitted files on the invoking environment host, confined to the workspace", async () => {
     const { harness } = await setup();
     harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ id: "thread-1", projectId: "project-1", environmentId: "remote-environment" }));
-    harness.inspection.sdk.stub("environments.get", async () => ({ id: "remote-environment", hostId: "remote-host" }));
+    harness.inspection.sdk.stub("environments.get", async () => ({ id: "remote-environment", hostId: "remote-host", path: "/remote/work" }));
     harness.inspection.sdk.stub("files.read", async () => ({ content: "# Remote plan", contentEncoding: "utf8" }));
-    const result = await harness.behavior.runCli(["submit", "plan.md", "Remote plan"], { cwd: "/remote/work", threadId: "thread-1", signal: new AbortController().signal });
+    const result = await harness.behavior.runCli(["submit", "plan.md", "Remote plan"], { cwd: "/remote/work/docs", threadId: "thread-1", signal: new AbortController().signal });
     expect(result.exitCode).toBe(0);
-    expect(harness.inspection.sdk.callsTo("files.read")[0]![0]).toEqual({ path: "/remote/work/plan.md", hostId: "remote-host" });
+    expect(harness.inspection.sdk.callsTo("files.read")[0]![0]).toEqual({ path: "/remote/work/docs/plan.md", rootPath: "/remote/work", hostId: "remote-host" });
+  });
+
+  it("rolls back CLI review comments when the submit is rejected", async () => {
+    const { harness, rpc, plan } = await setup();
+    const versionId = plan.versions[0]!.id;
+    // A redline on the version blocks approval, so the submit fails after the comment is stored.
+    const result = await harness.behavior.runCli(["review", plan.id, versionId, "approve", "--redline", "existing data"], { threadId: "other-thread", signal: new AbortController().signal });
+    expect(result.exitCode).not.toBe(0);
+    expect((await rpc("get", { id: plan.id })).comments).toEqual([]);
   });
 });

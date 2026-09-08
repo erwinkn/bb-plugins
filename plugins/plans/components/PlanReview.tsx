@@ -33,7 +33,7 @@ import {
   findVersion,
   latestVersion,
   sortedVersions,
-  unresolvedComments,
+  openComments,
 } from "../lib/plan-model";
 import { definedContext, type QuoteMatch } from "../lib/quote-anchor";
 import { CommentComposer, CommentRail, type CommentActions, type PendingComment } from "./CommentRail";
@@ -70,7 +70,9 @@ export function PlanReview({
   const width = useContainerWidth(rootRef);
   const isWide = width !== null && width >= RAIL_BREAKPOINT_PX;
   // Phones get a sheet for the composer; every other layout anchors it to the text.
-  const isMobile = useIsCompactViewport() || usePointerCoarse();
+  const isCompact = useIsCompactViewport();
+  const isCoarse = usePointerCoarse();
+  const isMobile = isCompact || isCoarse;
 
   const latest = latestVersion(plan);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
@@ -114,7 +116,7 @@ export function PlanReview({
   const isApproved = plan.status === "approved";
   const canEdit = isLatest && !isApproved && submitting === null;
   const blockers = useMemo(
-    () => (version ? unresolvedComments(plan).filter((comment) => comment.versionId !== version.id) : []),
+    () => (version ? openComments(plan).filter((comment) => comment.versionId !== version.id) : []),
     [plan, version],
   );
   const blockerVersion = useMemo(() => {

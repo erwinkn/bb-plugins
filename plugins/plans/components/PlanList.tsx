@@ -64,7 +64,7 @@ export function PlanList({
 
 function PlanRow({ plan, onSelect }: { plan: Plan; onSelect: () => void }) {
   const latest = latestVersion(plan);
-  const open = plan.comments.filter((comment) => !comment.resolved && comment.kind !== "looksGood").length;
+  const open = plan.comments.filter((comment) => comment.kind !== "looksGood").length;
   return (
     <button
       type="button"

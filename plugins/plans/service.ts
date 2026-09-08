@@ -52,8 +52,9 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     "ALTER TABLE deliveries ADD COLUMN decision TEXT",
     "CREATE TABLE waits (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, expires_at INTEGER NOT NULL)",
   ]);
-  // Rows left by a previous generation that was disposed mid-wait.
-  db.prepare("DELETE FROM waits WHERE expires_at <= ?").run(Date.now());
+  // A reload disposes every in-process waiter, so no row can still be attended.
+  // Leaving them would make the next decision skip the thread message.
+  db.prepare("DELETE FROM waits").run();
   type WaiterEvent = { kind: "decision"; decision: ReviewDecision } | { kind: "revised"; latestVersionId: string };
   const waiters = new Map<string, Set<(event: WaiterEvent) => void>>();
   const notifyWaiters = (planId: string, event: WaiterEvent) => {
@@ -126,7 +127,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
   };
   /** Comments a review delivers: every unsent one for feedback, positives only for approval. */
   const delivered = (plan: Plan, action: "feedback" | "approve") =>
-    plan.comments.filter((item) => !item.resolved && item.sentAt === null && (action === "feedback" || item.kind === "looksGood"));
+    plan.comments.filter((item) => item.sentAt === null && (action === "feedback" || item.kind === "looksGood"));
   const decisionFor = (plan: Plan, version: Plan["versions"][number], input: z.infer<typeof reviewSchema>): ReviewDecision => ({
     status: input.action === "approve" ? "approved" : "feedback",
     planId: plan.id,
@@ -250,13 +251,15 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     plan: Plan, version: Plan["versions"][number], threadId: string,
     { timeoutMs, signal, attend }: { timeoutMs: number; signal?: AbortSignal; attend: boolean },
   ): Promise<PromptOutcome> => {
+    if (signal?.aborted) throw new Error("Wait cancelled.");
     const local = new AbortController();
     const prompt = new AbortController();
     const onAbort = () => { local.abort(); prompt.abort(); };
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      const decision = waitLocal({ id: plan.id, versionId: version.id, timeoutMs, signal: local.signal }, attend)
-        .then((result) => ({ kind: "decision" as const, result }));
+      const decision = Promise.resolve()
+        .then(() => waitLocal({ id: plan.id, versionId: version.id, timeoutMs, signal: local.signal }, attend))
+        .then((result) => ({ kind: "decision" as const, result }), (error: unknown) => ({ kind: "failed" as const, error }));
       const interaction = bb.ui.requestInput({
         threadId,
         rendererId: REVIEW_INTERACTION_RENDERER,
@@ -268,13 +271,15 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
         (error: unknown) => ({ kind: "unavailable" as const, error }),
       );
       const first = await Promise.race([decision, interaction]);
-      if (first.kind === "decision") {
+      if (first.kind === "decision" || first.kind === "failed") {
+        // Never leave the prompt up without a wait behind it.
         prompt.abort();
         await interaction;
+        if (first.kind === "failed") throw first.error instanceof Error ? first.error : new Error(String(first.error));
         return first.result.status === "pending" ? { kind: "timeout" } : first;
       }
       local.abort();
-      await decision.catch(() => undefined);
+      await decision;
       if (first.kind === "unavailable") return first;
       const settled = first.result;
       if (settled.outcome === "submitted" || settled.reason === "user") return { kind: "dismissed" };
@@ -361,14 +366,14 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     const version = current(plan, input.versionId);
     if (plan.status === "approved") throw new Error("This version is already approved.");
     if (input.action === "approve" && plan.status === "revising") throw new Error("Review the next revision before approving. Feedback has been sent for this version.");
-    const open = plan.comments.filter((item) => !item.resolved);
+    const open = plan.comments;
     if (input.action === "approve" && open.some((item) => item.kind !== "looksGood" && (item.sentAt === null || item.versionId === version.id))) throw new Error("Send or delete pending comments, then review the next revision before approving.");
     const unsent = open.filter((item) => item.sentAt === null);
     if (input.action === "feedback" && !unsent.length && !input.note.trim()) throw new Error("Add a comment or a review note before sending feedback.");
     // Check the delivered state before sending. Receipt timestamps add bytes;
     // hitting the history limit must not strand a successfully sent review.
     serialize({ ...plan, status: input.action === "approve" ? "approved" : "revising",
-      comments: plan.comments.map((item) => (input.action === "feedback" || item.kind === "looksGood") && !item.resolved && item.sentAt === null
+      comments: plan.comments.map((item) => (input.action === "feedback" || item.kind === "looksGood") && item.sentAt === null
         ? { ...item, sentAt: Date.now() } : item) });
     if (plan.threadId) {
       const thread = await bb.sdk.threads.get({ threadId: plan.threadId });
@@ -412,7 +417,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       planId: plan.id, title: plan.title, status: plan.status, threadId: plan.threadId,
       latestVersionId: plan.versions.at(-1)!.id,
       version: item,
-      comments: plan.comments.filter((c) => c.versionId === item.id).map(({ id, quote, body, kind, resolved, sentAt }) => ({ id, quote, body, kind: kind ?? "comment", resolved, sent: sentAt !== null })),
+      comments: plan.comments.filter((c) => c.versionId === item.id).map(({ id, quote, body, kind, sentAt }) => ({ id, quote, body, kind: kind ?? "comment", sent: sentAt !== null })),
     };
   };
   return {
@@ -430,15 +435,8 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       plan.comments.push({
         id: randomUUID(), versionId, quote, body, ...(kind ? { kind } : {}),
         ...(prefix ? { prefix } : {}), ...(suffix ? { suffix } : {}), ...(position !== undefined ? { position } : {}),
-        resolved: false, createdAt: Date.now(), sentAt: null,
+        createdAt: Date.now(), sentAt: null,
       });
-      return save(plan);
-    },
-    resolveComment: ({ id, commentId, resolved }: { id: string; commentId: string; resolved: boolean }) => {
-      const plan = editable(id);
-      if (plan.status === "approved") throw new Error("Submit a new version before changing comments.");
-      const item = comment(plan, commentId);
-      item.resolved = resolved;
       return save(plan);
     },
     updateComment: ({ id, commentId, body }: { id: string; commentId: string; body: string }) => {

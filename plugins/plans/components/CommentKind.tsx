@@ -18,13 +18,13 @@ export function kindOf(comment: PlanComment): CommentKind {
   return comment.kind ?? "comment";
 }
 
-export function Quote({ text, kind, muted }: { text: string; kind: CommentKind; muted?: boolean }) {
+export function Quote({ text, kind }: { text: string; kind: CommentKind }) {
   return (
     <blockquote
       className={cn(
         "border-l-2 pl-2.5 text-xs leading-5 text-muted-foreground",
-        muted ? "border-border" : KIND_STYLE[kind].border,
-        kind === "redline" && !muted && "line-through decoration-destructive/50",
+        KIND_STYLE[kind].border,
+        kind === "redline" && "line-through decoration-destructive/50",
       )}
     >
       <span className="line-clamp-2 break-words">{text}</span>
