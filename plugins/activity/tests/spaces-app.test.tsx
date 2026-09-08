@@ -299,6 +299,11 @@ describe("spaces", () => {
     );
     expect(rows(slot)).toEqual([]);
     expect(slot.container.textContent).toContain("No projects in this space.");
+    // New thread has nowhere in scope to go, so it does nothing.
+    const plus = slot.getByRole("button", { name: "New thread" });
+    expect(plus.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(plus);
+    expect(slot.inspection.sidebarActionCalls).toEqual([]);
     fireEvent.click(slot.getByRole("button", { name: "Choose projects" }));
     expect(slot.inspection.navigateCalls.at(-1)).toEqual({
       method: "toPluginPanel",

@@ -19,14 +19,26 @@ export function NewThreadButton({
   onOpen: (projectId?: string) => void;
 }) {
   const members = projects.filter((project) => inScope(scope, project.id));
+  // A space with no listed projects has nowhere in scope to open a thread;
+  // BB's default project would land outside the space.
+  if (scope.kind !== "all" && members.length === 0)
+    return (
+      <button
+        type="button"
+        aria-label="New thread"
+        aria-disabled="true"
+        title="Add projects to this space first."
+        className={`${buttonClass} cursor-default opacity-50 hover:bg-transparent`}
+      >
+        +
+      </button>
+    );
   const direct =
     scope.kind === "all" || (activeProjectId && inScope(scope, activeProjectId))
       ? (activeProjectId ?? undefined)
       : members.length === 1
         ? members[0].id
-        : members.length === 0
-          ? undefined
-          : null;
+        : null;
   if (direct !== null)
     return (
       <button

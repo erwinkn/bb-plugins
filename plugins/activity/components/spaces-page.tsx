@@ -104,16 +104,17 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
     detail.kind === "space"
       ? catalog.find((space) => space.id === detail.id)
       : undefined;
-  // A deleted or unknown space goes back to the list. Only the server's
-  // answer counts: the cached catalog may predate a space made elsewhere.
+  // A deleted or unknown space goes back to the list once the server has
+  // answered or failed: the cached catalog may predate a space made
+  // elsewhere, and a page that never settles must not sit blank.
+  const settled = spaces.synced || spaces.error !== null;
   const routeSpaceId = route.kind === "space" ? route.id : null;
   const routeSpaceKnown =
     routeSpaceId !== null && catalog.some((space) => space.id === routeSpaceId);
   useEffect(() => {
-    if (spaces.synced && routeSpaceId !== null && !routeSpaceKnown)
-      go("", true);
+    if (settled && routeSpaceId !== null && !routeSpaceKnown) go("", true);
     // `go` is recreated each render; the inputs that matter are listed.
-  }, [spaces.synced, routeSpaceId, routeSpaceKnown]);
+  }, [settled, routeSpaceId, routeSpaceKnown]);
 
   const { save } = spaces;
   const update = (id: string, change: (space: Space) => Space) =>
@@ -151,10 +152,18 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
       className={compact ? "p-3" : "w-64 shrink-0 border-r border-border p-3"}
     >
       <h2 className={`${headingClass} mb-2 px-2`}>Spaces</h2>
+      {spaces.error !== null && (
+        <div role="alert" className="mb-2 px-2 text-xs text-destructive">
+          {spaces.error}
+          <button className="ml-2 underline" onClick={spaces.refresh}>
+            Retry
+          </button>
+        </div>
+      )}
       {spaces.status === "loading" && catalog.length === 0 && (
         <p className={`${subtleClass} px-2`}>Loading…</p>
       )}
-      {spaces.status !== "loading" && catalog.length === 0 && (
+      {spaces.status === "ready" && catalog.length === 0 && (
         <p className={`${subtleClass} px-2 py-1`}>
           No spaces yet. A space is a named set of projects that scopes the
           Threads sidebar.
@@ -234,9 +243,18 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
           New space
         </h2>
         <NewSpaceForm
-          projects={(projects.inventory?.projects ?? sidebar.projects).map(
-            (project) => ({ id: project.id, name: projectLabel(project) }),
-          )}
+          projects={
+            projects.inventory?.projects.map((project) => ({
+              id: project.id,
+              name: projectLabel(project),
+              path: project.source?.path ?? null,
+            })) ??
+            sidebar.projects.map((project) => ({
+              id: project.id,
+              name: projectLabel(project),
+              path: null,
+            }))
+          }
           onSubmit={async (name, projectIds) => {
             const id = newSpaceId();
             await save((list) => [...list, { id, name, projectIds }]);
@@ -305,6 +323,14 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
           report={report}
         />
       </SpaceDetail>
+    );
+  else if (detail.kind === "space")
+    // Not in the cache yet; the redirect above takes over once settled.
+    content = (
+      <section aria-label="Space">
+        {back}
+        <p className={subtleClass}>Loading space…</p>
+      </section>
     );
 
   return (
@@ -458,7 +484,7 @@ function NewSpaceForm({
   onSubmit,
   onCancel,
 }: {
-  projects: readonly { id: string; name: string }[];
+  projects: readonly { id: string; name: string; path: string | null }[];
   onSubmit: (name: string, projectIds: string[]) => Promise<void>;
   onCancel: () => void;
 }) {
@@ -466,7 +492,7 @@ function NewSpaceForm({
   const [projectIds, setProjectIds] = useState<string[]>([]);
   const [filter, setFilter] = useState("");
   const shown = projects.filter((project) =>
-    matchesFilter(filter, project.name),
+    matchesFilter(filter, project.name, project.path),
   );
   // The caller navigates to the new space; only a cancel goes back.
   const created = useRef(false);

@@ -383,14 +383,19 @@ describe("spaces page", () => {
     expect(short.queryByRole("searchbox")).toBeNull();
     short.lifecycle.unmount();
     const long = await mountPage("new", server(many));
+    const checked = () =>
+      within(long.getByRole("form", { name: "New space" }))
+        .getAllByRole("checkbox")
+        .map((box) => box.parentElement?.textContent);
     fireEvent.change(long.getByRole("searchbox", { name: "Filter projects" }), {
       target: { value: "fi" },
     });
-    expect(
-      within(long.getByRole("form", { name: "New space" }))
-        .getAllByRole("checkbox")
-        .map((box) => box.parentElement?.textContent),
-    ).toEqual(["Five"]);
+    expect(checked()).toEqual(["Five"]);
+    // Folder paths match too.
+    fireEvent.change(long.getByRole("searchbox", { name: "Filter projects" }), {
+      target: { value: "/srv" },
+    });
+    expect(checked()).toEqual(["Four", "Five"]);
   });
 
   it("reorders spaces and projects by dragging one row onto another", async () => {
@@ -501,6 +506,53 @@ describe("spaces page", () => {
       expect(spaceRows(slot)).toEqual(["Only One3", "Both2"]),
     );
     expect(slot.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows a load error with Retry, and sends an unknown route back once the load fails", async () => {
+    const getSpaces = vi
+      .fn<() => Promise<SpaceCatalog>>()
+      .mockRejectedValueOnce(new Error("Spaces store is offline."))
+      .mockResolvedValue(initial);
+    const rpc = { ...server(), getSpaces };
+    const slot = await mountPage("", rpc);
+    const alert = await slot.findByRole("alert");
+    expect(alert.textContent).toContain("Spaces store is offline.");
+    expect(slot.queryByText(/No spaces yet/)).toBeNull();
+    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
+    expect(spaceRows(slot)).toEqual(["Only One1", "Both2"]);
+    slot.lifecycle.unmount();
+
+    // With no cache and a failed load, an unknown space still leaves.
+    const failing = {
+      ...server(),
+      getSpaces: async () => {
+        throw new Error("Spaces store is offline.");
+      },
+    };
+    const gone = await mountPage("gone", failing);
+    await waitFor(() =>
+      expect(lastNavigation(gone)).toMatchObject({
+        options: { subPath: "", replace: true },
+      }),
+    );
+  });
+
+  it("shows a placeholder for a space the cache does not know while the load is pending", async () => {
+    compact = true;
+    window.localStorage.setItem(
+      "bb-plugin-erwin-activity:spaces-cache",
+      JSON.stringify(initial),
+    );
+    const rpc = {
+      ...server(),
+      getSpaces: () => new Promise<SpaceCatalog>(() => {}),
+    };
+    const slot = await mountPage("fresh", rpc);
+    const section = slot.getByRole("region", { name: "Space" });
+    expect(section.textContent).toContain("Loading space…");
+    fireEvent.click(within(section).getByRole("button", { name: "‹ Spaces" }));
+    expect(lastNavigation(slot)).toMatchObject({ options: { subPath: "" } });
   });
 
   it("creates a space with its projects and moves to it", async () => {
