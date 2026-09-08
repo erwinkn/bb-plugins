@@ -346,8 +346,8 @@ export function PlanDocument({
   // Touch: the system callout owns the space around the selection, so the
   // actions dock along the bottom edge of the document as a toolbar.
   const barButton = (label: string, icon: IconName, className: string, props: typeof copyProps) => (
-    <button key={label} type="button" className={cn("flex h-14 min-w-0 flex-col items-center justify-center gap-1 text-[11px] leading-none active:bg-state-active", className)} {...props}>
-      <Icon name={icon} className="size-5" aria-hidden />
+    <button key={label} type="button" className={cn("flex h-11 min-w-0 items-center justify-center gap-1 px-1 text-xs leading-none active:bg-state-active", className)} {...props}>
+      <Icon name={icon} className="size-4 shrink-0" aria-hidden />
       <span className="truncate">{label}</span>
     </button>
   );
@@ -484,7 +484,7 @@ export function PlanDocument({
       {showBar ? (
         <div className="absolute inset-x-0 bottom-0 z-10 animate-in slide-in-from-bottom-2 fade-in-0 duration-150">
           {tooLong ? (
-            <span role="status" className="flex h-14 w-full items-center justify-center gap-2 border-t border-border bg-popover px-4 text-sm text-muted-foreground">
+            <span role="status" className="flex h-11 w-full items-center justify-center gap-2 border-t border-border bg-popover px-4 text-sm text-muted-foreground">
               <Icon name="AlertCircle" className="size-4 shrink-0" aria-hidden />
               <span className="truncate">{limitLabel}</span>
             </span>
