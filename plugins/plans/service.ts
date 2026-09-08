@@ -488,6 +488,9 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       // Drop the review prompt before the plan it points at disappears.
       await release(id);
       db.transaction(() => {
+        // A review may have been sent while the hold was releasing; its receipt
+        // must not be deleted from under the agent. Re-check inside the transaction.
+        editable(id);
         db.prepare("DELETE FROM plans WHERE id = ?").run(id);
         db.prepare("DELETE FROM deliveries WHERE plan_id = ?").run(id);
       })();

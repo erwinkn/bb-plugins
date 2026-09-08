@@ -242,6 +242,24 @@ describe("Plans review workflow", () => {
     await expect(rpc("get", { id: result.planId })).rejects.toThrow(/not found/i);
   });
 
+  it("refuses to delete a plan whose review was sent while its hold was releasing", async () => {
+    const { harness, rpc } = await setup();
+    await harness.behavior.setSettings({ nonBlockingProviders: "acp-cursor, test-provider" });
+    const result = JSON.parse(String(await harness.behavior.callAgentTool("plans_submit", { title: "Raced", markdown: "# Raced\n\nKeep the existing data." }, { threadId: "thread-1" }))) as { planId: string; versionId: string };
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    // Hold the delivery open so the receipt stays pending while remove runs.
+    let finishSend!: () => void;
+    harness.inspection.sdk.stub("threads.send", () => new Promise((resolve) => { finishSend = () => resolve({ ok: true }); }));
+    // remove passes its first check, then yields while the hold releases; the
+    // review lands in that window and must survive.
+    const removing = rpc("remove", { id: result.planId });
+    const review = rpc("submitReview", { id: result.planId, versionId: result.versionId, action: "approve", note: "Go.", requestId: "raced" });
+    await expect(removing).rejects.toThrow(/delivery is pending/);
+    finishSend();
+    expect((await review).status).toBe("approved");
+    expect((await rpc("get", { id: result.planId })).status).toBe("approved");
+  });
+
   it("returns dismissed when the user skips the review prompt", async () => {
     const { harness } = await setup();
     const submitting = harness.behavior.callAgentTool("plans_submit", { title: "Skipped", markdown: "Skip me" }, { threadId: "thread-1" });

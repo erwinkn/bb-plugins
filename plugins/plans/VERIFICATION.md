@@ -227,3 +227,9 @@ retries a prompt the thread cannot show yet (another interaction pending)
 instead of giving up, and `remove` releases the plan's hold before deleting so
 no prompt points at a missing plan and the wait poll cannot reject unhandled.
 Both tests fail against the previous service code. Suite: 77 tests.
+
+Bugbot on 1529e53: `remove` re-checks for a pending delivery inside its delete
+transaction, since a review can be sent while the hold is releasing. The race
+test starts the delete, submits the review in the same tick with the thread
+send held open, and expects the delete to be refused; it passes against the
+fix and fails without it. Suite: 78 tests.
