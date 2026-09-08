@@ -58,7 +58,17 @@ export function useSpaces(): SpacesState {
   // started in, so back-to-back edits carry the right revision.
   const latest = useRef(catalog);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
+  // The server's revision only grows within a session. A `getSpaces` answer
+  // that was in flight while a save or signal landed a newer catalog is
+  // stale and must not roll the UI, the cache, or the next save back.
+  const serverRevision = useRef<number | null>(null);
   const apply = useCallback((next: SpaceCatalog) => {
+    if (
+      serverRevision.current !== null &&
+      next.revision < serverRevision.current
+    )
+      return;
+    serverRevision.current = next.revision;
     latest.current = next;
     setCatalog(next);
     setSynced(true);

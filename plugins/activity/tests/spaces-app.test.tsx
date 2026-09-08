@@ -360,6 +360,24 @@ describe("spaces", () => {
     });
   });
 
+  it("ignores a stale fetch that lands after a newer catalog", async () => {
+    updateState((state) => ({ ...state, spaceId: "one" }));
+    let resolve!: (catalog: SpaceCatalog) => void;
+    const rpc = {
+      ...server(),
+      getSpaces: () => new Promise<SpaceCatalog>((r) => (resolve = r)),
+    };
+    const slot = mount(rpc);
+    await slot.behavior.emitRealtime("spaces-changed", {
+      revision: 5,
+      spaces: [{ ...one, name: "Newer" }],
+    });
+    expect(scopeButton(slot).getAttribute("aria-label")).toBe("Threads: Newer");
+    await act(async () => resolve(initial));
+    expect(scopeButton(slot).getAttribute("aria-label")).toBe("Threads: Newer");
+    expect(JSON.parse(localStorage.getItem(CACHE_KEY)!).revision).toBe(5);
+  });
+
   it("keeps New thread inside the scope", async () => {
     updateState((state) => ({ ...state, spaceId: "one" }));
     const slot = mount(server(), { activeProjectId: "project-2" });
