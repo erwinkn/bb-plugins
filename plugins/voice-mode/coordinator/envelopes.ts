@@ -69,7 +69,7 @@ export const actionReceiptSchema = z
   .strict();
 export type ActionReceipt = z.infer<typeof actionReceiptSchema>;
 
-export const REPLY_KINDS = [ "assigned", "blocked", "final", "clarification", "silent"] as const;
+export const REPLY_KINDS = [ "assigned", "blocked", "final", "clarification", "silent", "progress"] as const;
 export type ReplyKind = (typeof REPLY_KINDS)[number];
 
 /** Parameters of the coordinator-only `voice_reply` tool. */

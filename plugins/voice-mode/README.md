@@ -78,7 +78,7 @@ Examples:
 | Say | Path |
 | --- | --- |
 | “Open Build Fix and ask it to add regression tests.” | Live resolves the target, opens it, and queues the instruction. |
-| “Start a thread in BB Plugins to investigate the retry problem.” | Live creates a visible investigation worker in a managed worktree. |
+| “Start a thread in BB Plugins to investigate the retry problem.” | Live creates a hidden internal worker under the Voice coordinator in a managed worktree. |
 | “Prepare a reply in that thread.” | Live edits an exact draft target, without submitting. |
 | “Stop the build task.” | Live requests a stop; acceptance is not proof every process exited. |
 | “Coordinate these three overlapping fixes.” | The fast coordinator checks briefly and delegates technical work. |
@@ -195,12 +195,17 @@ boundaries, ownership rules, and failure cases.
 New installations use GPT-5.4 mini with medium reasoning for the coordinator.
 Saved provider, model, reasoning, and Fast selections remain unchanged.
 
-- **Model & voice:** realtime model, voice, and credential source.
-- **Behavior:** editable instructions for how Voice speaks and responds.
-- **Coordinator:** provider, model, supported reasoning effort, and Fast when
+- **Live model & voice:** realtime model, voice, and credential source.
+- **Prompts:** complete live and coordinator role prompts, editable independently.
+  Saved text is sent verbatim. Tool descriptions, playback instructions, and session
+  context are separate. Old custom voice preferences remain visible on upgrade.
+- **Coordinator model:** provider, model, supported reasoning effort, and Fast when
   the provider supports it. These execution choices apply to new sessions.
-- **Workers:** independent provider/model/reasoning/Fast profiles for investigation,
-  planning, implementation, and review, plus a creation limit (default 8).
+- **Workers:** a default provider/model/reasoning/Fast profile, with optional
+  role-specific choices for investigation, planning, implementation, and review.
+  Changing the default updates matching profiles and keeps distinct choices.
+  Workers are hidden children of the coordinator; regular user threads are separate.
+  A creation limit defaults to 8.
   The machine picker previews its catalog; execution validates the actual target.
   New profiles use the provider default until you select a model; they never
   inherit the coordinator model. Unsupported selections fail without substitution.
@@ -209,13 +214,16 @@ Saved provider, model, reasoning, and Fast selections remain unchanged.
 - **Keyboard shortcuts:** start/stop and mute bindings.
 
 The coordinator remains available and is warmed during call setup, but direct
-actions do not require a coordinator turn or a working coordinator provider.
+UI actions and messages do not require a coordinator turn. Internal worker
+creation requires a confirmed coordinator parent; it does not delegate the task
+through another coordinator turn.
 Choose a fast coordinator separately from larger worker models. Existing
 coordinator settings and user-saved instructions are retained.
 
-Saved instructions apply to the next realtime call and the next coordinator
-request. They customize behavior within the request and delivery rules. Saving
-instructions does not rewrite earlier sessions or change ongoing work.
+Live prompt changes apply to the next call. Coordinator changes apply when BB
+next configures that thread; a new conversation uses the saved prompt. The
+coordinator editor enforces the SDK's 4,096-character limit. Running work is not
+restarted. See [the design and decision audit](docs/prompt-settings-design.md).
 
 ## Install and develop
 

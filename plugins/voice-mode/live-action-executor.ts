@@ -15,6 +15,7 @@ export interface ActionContext {
   lateResult?(result: ActionResult): void;
 }
 interface Hooks {
+  coordinatorParent(conversationId:string):Promise<string>;
   watch(conversationId: string, threadId: string): void;
   isCoordinator(thread: Thread): boolean;
 }
@@ -183,6 +184,7 @@ export class LiveActionExecutor {
       const candidates = hosts.filter(h=>h.status === "connected" && project.sources.some(s=>s.hostId === h.id));
       const host = operation.hostId ? candidates.find(h=>h.id === operation.hostId) : candidates.length === 1 ? candidates[0] : undefined;
       if (!host) throw new Error(candidates.length > 1 ? `Choose a machine for ${label(project.name)}: ${candidates.map(h=>label(h.name)).join(", ")}.` : "No matching connected machine hosts this project.");
+      const parentThreadId=await this.hooks.coordinatorParent(envelope.conversationId);
       const execution = await resolveWorkerModel(this.bb,host.id,settings.profiles[operation.role]);
       const prompt = `${WORKER_ROLE_INSTRUCTIONS[operation.role]}\nUse your normal BB permissions. Do not merge, publish, delete worktrees, or escalate permissions beyond the user's explicit scope. End with voice_worker_report containing a brief spoken outcome and any verification limits.\n\n${formatVoiceInstruction(envelope,operation,actor,step)}`;
       // Reserve under a common creation lock, so simultaneous callers cannot exceed the cap.
@@ -200,11 +202,11 @@ export class LiveActionExecutor {
           try {
             const thread = await this.bb.sdk.threads.spawn({projectId:project.id,
               environment:{type:"host",hostId:host.id,workspace:project.kind === "personal" ? {type:"personal"} : {type:"managed-worktree",baseBranch:{kind:"default"}}},
-              ...execution, permissionMode:"accept-edits", visibility:"visible", title:operation.title, prompt,
+              ...execution, permissionMode:"accept-edits", visibility:"hidden", parentThreadId, title:operation.title, prompt,
             });
             this.store.workerAccepted(envelope.requestId,step,thread.id);
             this.hooks.watch(envelope.conversationId,thread.id);
-            return result("succeeded",`Created ${label(operation.title,80)} in ${label(project.name,60)} on ${label(host.name,50)} for ${operation.role === "implement" ? "implementation" : operation.role === "investigate" ? "investigation" : operation.role === "plan" ? "planning" : "review"}.`,prompt,[thread.id],[{action:"start_thread",thread_id:thread.id,outcome:"done",note:label(`Created with ${execution.providerId}/${execution.model}; work is not complete.`,390)}]);
+            return result("succeeded",`I’ve started ${operation.role === "implement" ? "work on" : operation.role === "investigate" ? "investigating" : operation.role === "plan" ? "planning" : "reviewing"} ${label(operation.title,80)}. I’ll report the results here.`,prompt,[thread.id],[{action:"start_thread",thread_id:thread.id,outcome:"done",note:label(`Created with ${execution.providerId}/${execution.model}; work is not complete.`,390)}]);
           } catch (error) {
             this.store.workerStatus(envelope.requestId,step,"unknown");
             throw error;

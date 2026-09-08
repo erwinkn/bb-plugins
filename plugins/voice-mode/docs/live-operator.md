@@ -66,7 +66,7 @@ implementation request. There is no English operation-word blacklist. This is
 consequential delegation: the recipient can change state under its normal policy.
 Voice delivery cannot grant additional permissions.
 
-New threads are visible, unparented to the hidden coordinator, use the requested
+Internal workers are hidden children of the conversation coordinator, use the requested
 project and an explicitly resolved connected machine, and select a managed
 worktree/default base for standard projects (personal workspace for the personal
 project). Multiple matching machines require selection. New workers use
@@ -76,8 +76,9 @@ mode is accepted.
 
 ## Results and speech
 
-The action service creates factual receipts naming destinations, material scope,
-and actual status. Live fast actions skip an extra starting acknowledgment.
+The action service creates factual receipts with material scope and actual status.
+Speech names regular work-thread destinations, but keeps internal worker assignments
+behind the scenes. Live fast actions skip an extra starting acknowledgment.
 The bridge schedules a single result announcement; it never equates send/queue,
 thread creation, or stop-request acceptance with task completion. Full details
 remain available separately from short speech. Interrupted speech is not marked

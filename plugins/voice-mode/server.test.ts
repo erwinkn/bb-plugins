@@ -158,7 +158,7 @@ test("upgrade from the original five migrations preserves saved prompts and adds
     const historicalPayload = JSON.stringify({ text: "Original voice words", detail: "preserve exactly" });
     db.prepare("INSERT INTO session_events (session_id, ts, kind, payload) VALUES ('old-call', 10, 'user', ?)").run(historicalPayload);
     await plugin(bb);
-    assert.equal((await harness.behavior.callRpc("getPrompt", null) as any).content, "Keep my prompt");
+    assert.match((await harness.behavior.callRpc("getPrompt", null) as any).content, /## User preferences\nKeep my prompt$/);
     const history = await harness.behavior.callRpc("getVoiceSession", { sessionId: "old-call" }) as any;
     assert.equal(history.session.legacy, true);
     assert.equal(history.session.title, "Original voice words");

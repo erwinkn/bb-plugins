@@ -1,3 +1,5 @@
+import { PromptEditor } from "./prompt-editor";
+export { PromptEditor } from "./prompt-editor";
 // bb-plugin-voice-mode — polished settings sections.
 //
 // The host renders a single declarative field (the secret OpenAI API key) and
@@ -252,7 +254,7 @@ export function ModelsSettings() {
     <div className="space-y-4">
       <CredentialCard />
       <label className="block space-y-1">
-        <span className="text-sm font-medium text-foreground">Model</span>
+        <span className="text-sm font-medium text-foreground">Live model</span>
         <select
           value={model}
           disabled={loading}
@@ -298,127 +300,15 @@ export function ModelsSettings() {
 export function BehaviorSettings() {
   return (
     <div className="space-y-5">
-      <PromptEditor />
+      <PromptEditor role="live" />
+      <PromptEditor role="coordinator" />
     </div>
   );
 }
-
-const linkClass =
-  "text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline";
 
 // ---------------------------------------------------------------------------
 // Prompt editor — edit and save your own prompt, or reset to the default.
 // ---------------------------------------------------------------------------
-
-export function PromptEditor() {
-  const rpc = useRpc<typeof rpcContract>();
-  const [active, setActive] = useState("");
-  const [defaultContent, setDefaultContent] = useState("");
-  const [proposal, setProposal] = useState<{ id: string; content: string; reason: string } | null>(null);
-  const [reviewedProposalId, setReviewedProposalId] = useState<string | undefined>();
-  const draftRef = useRef<string | null>(null);
-  const activeRef = useRef("");
-  const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const refetch = useCallback(() => {
-    rpc.call("getPrompt", null).then((result) => {
-      if (draftRef.current === null || draftRef.current === activeRef.current) {
-        draftRef.current = result.content;
-        setDraft(result.content);
-      }
-      activeRef.current = result.content;
-      setActive(result.content);
-      setDefaultContent(result.defaultContent);
-      setProposal(result.proposal);
-    }, () => undefined);
-  }, [rpc]);
-  useEffect(refetch, [refetch]);
-  useRealtime("prompt-changed", refetch);
-
-  const isCustom = active.trim() !== defaultContent.trim();
-
-  async function save(content: string, note: string, proposalId?: string) {
-    if (content.trim().length === 0) return;
-    setBusy(true);
-    try {
-      await rpc.call("setPrompt", { content, source: "user", note, ...(proposalId ? { proposalId } : {}) });
-      setReviewedProposalId(undefined);
-      activeRef.current = content;
-      setActive(content);
-      draftRef.current = content;
-      setDraft(content);
-      toast.success("Prompt saved");
-    } catch (cause) {
-      toast.error(`Could not save prompt: ${cause instanceof Error ? cause.message : String(cause)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const changed = draft.trim() !== active.trim();
-  const stateText = isCustom ? "Currently using a custom prompt" : "Currently using the default prompt";
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium text-foreground">Prompt</span>
-      </div>
-
-      <p className="text-xs text-muted-foreground">Voice instructions apply to the next call and the next work request. Existing work keeps its current instructions.</p>
-      {proposal && reviewedProposalId !== proposal.id ? (
-        <div className="space-y-2 rounded-md border border-border p-3">
-          <p className="text-sm">Aide suggested a prompt change. It is not active.</p>
-          <p className="text-xs text-muted-foreground">{proposal.reason}</p>
-          <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => {
-            draftRef.current = proposal.content;
-            setDraft(proposal.content);
-            setReviewedProposalId(proposal.id);
-          }}>Review suggestion</Button>
-        </div>
-      ) : null}
-      <div className="space-y-2">
-        <textarea
-          value={draft}
-          aria-label="Voice instructions"
-          disabled={busy || draftRef.current === null}
-          spellCheck={false}
-          rows={16}
-          onChange={(event) => {
-            draftRef.current = event.target.value;
-            setDraft(event.target.value);
-          }}
-          className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-xs leading-relaxed text-foreground"
-        />
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            size="sm"
-            disabled={busy || !changed || draft.trim().length === 0}
-            onClick={() => void save(draft, "edited in settings", reviewedProposalId)}
-          >
-            Save
-          </Button>
-          <Button type="button" variant="outline" size="sm" disabled={busy || !changed} onClick={() => {
-            draftRef.current = active;
-            setDraft(active);
-            setReviewedProposalId(undefined);
-          }}>
-            Cancel
-          </Button>
-        </div>
-      </div>
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span>{stateText}</span>
-        {isCustom ? (
-          <button type="button" className={linkClass} disabled={busy} onClick={() => void save(defaultContent, "reset to built-in default")}>
-            Reset to default
-          </button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Audio: microphone picker and a live level meter to test it.

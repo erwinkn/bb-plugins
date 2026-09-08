@@ -27,23 +27,15 @@ test("a microphone test stopped before permission resolves releases the late str
   assert.equal(stops, 1);
 });
 
-test("prompt suggestions require review and Save before changing instructions", async () => {
-  const saves: unknown[] = [];
-  const slot = renderSlot({ component: PromptEditor }, {}, { rpc: {
-    getPrompt: () => ({ content: "Current", defaultContent: "Default", versions: [], proposal: { id: "p1", content: "Suggested", reason: "Use short replies" } }),
-    setPrompt: (args: unknown) => { saves.push(args); return { ok: true }; },
-  } });
-  try {
-    const ui = within(slot.container);
-    fireEvent.click(await ui.findByRole("button", { name: "Review suggestion" }));
-    assert.equal(saves.length, 0);
-    assert.equal((ui.getByRole("textbox", { name: "Voice instructions" }) as HTMLTextAreaElement).value, "Suggested");
-    fireEvent.click(ui.getByRole("button", { name: "Save" }));
-    await act(async () => { await Promise.resolve(); });
-    assert.deepEqual(saves, [{ content: "Suggested", source: "user", note: "edited in settings", proposalId: "p1" }]);
-  } finally { slot.lifecycle.unmount(); }
+test("restoring the full default requires Save before changing instructions", async () => {
+  const saves: unknown[]=[];
+  const slot=renderSlot({component:PromptEditor},{},{rpc:{getPrompt:()=>({content:"Current",defaultContent:"Default",versions:[],proposal:null}),setPrompt:(args:unknown)=>{saves.push(args);return {ok:true};}}});
+  try {const ui=within(slot.container);await ui.findByDisplayValue("Current");fireEvent.click(await ui.findByRole("button",{name:"Restore default"}));
+    assert.equal(saves.length,0);assert.equal((ui.getByRole("textbox",{name:"Live model prompt"}) as HTMLTextAreaElement).value,"Default");
+    fireEvent.click(ui.getByRole("button",{name:"Save"}));await act(async()=>{await Promise.resolve();});
+    assert.deepEqual(saves,[{role:"live",content:"Default",source:"user",note:"edited in settings"}]);
+  } finally {slot.lifecycle.unmount();}
 });
-
 
 test("prompt opens for editing and stays open after save and cancel", async () => {
   const saves: unknown[] = [];
@@ -54,7 +46,7 @@ test("prompt opens for editing and stays open after save and cancel", async () =
   try {
     const ui = within(slot.container);
     await act(async () => { await Promise.resolve(); });
-    const editor = ui.getByRole("textbox", { name: "Voice instructions" }) as HTMLTextAreaElement;
+    const editor = ui.getByRole("textbox", { name: "Live model prompt" }) as HTMLTextAreaElement;
     assert.equal(editor.value, "Current");
     assert.equal(ui.queryByRole("button", { name: "Preview" }), null);
     assert.equal(ui.queryByRole("button", { name: "Edit" }), null);
@@ -66,7 +58,7 @@ test("prompt opens for editing and stays open after save and cancel", async () =
     fireEvent.change(editor, { target: { value: "Discard this" } });
     fireEvent.click(ui.getByRole("button", { name: "Cancel" }));
     assert.equal(editor.value, "Updated");
-    fireEvent.click(ui.getByRole("button", { name: "Reset to default" }));
+    fireEvent.click(ui.getByRole("button", { name: "Restore default" }));
     await act(async () => { await Promise.resolve(); });
     assert.equal(editor.value, "Default");
   } finally { slot.lifecycle.unmount(); }
@@ -99,7 +91,7 @@ test("prompt updates refresh a clean editor but preserve unsaved edits", async (
   try {
     const ui = within(slot.container);
     await act(async () => { await Promise.resolve(); });
-    const editor = ui.getByRole("textbox", { name: "Voice instructions" }) as HTMLTextAreaElement;
+    const editor = ui.getByRole("textbox", { name: "Live model prompt" }) as HTMLTextAreaElement;
     content = "Remote update";
     await slot.behavior.emitRealtime("prompt-changed", null);
     assert.equal(editor.value, content);
@@ -120,9 +112,19 @@ test("behavior settings keep the prompt and drop the legacy plugin-command and t
   try {
     const ui = within(slot.container);
     await act(async () => { await Promise.resolve(); });
-    assert.ok(ui.getByRole("textbox", { name: "Voice instructions" }));
+    assert.ok(ui.getByRole("textbox", { name: "Live model prompt" }));
     assert.equal(ui.queryByRole("combobox"), null, "no plugin exposure picker");
     assert.equal(ui.queryByRole("button", { name: /built-in tools/i }), null);
     assert.equal(slot.inspection.rpcCalls.some(call => call.method === "getTools" || call.method === "listPlugins"), false);
   } finally { slot.lifecycle.unmount(); }
+});
+
+test("coordinator prompt save failures retain the draft and enforce the host length limit",async()=>{
+  const slot=renderSlot({component:PromptEditor},{role:"coordinator"},{rpc:{getPrompt:()=>({content:"Original",defaultContent:"Default",proposal:null,versions:[]}),setPrompt:()=>{throw Error("Save unavailable");}}});
+  try {
+    const ui=within(slot.container);const editor=await ui.findByRole("textbox",{name:"Coordinator prompt"}) as HTMLTextAreaElement;
+    await act(async()=>{await Promise.resolve();});
+    fireEvent.change(editor,{target:{value:"Keep this draft"}});fireEvent.click(ui.getByRole("button",{name:"Save"}));await ui.findByRole("alert");assert.equal(editor.value,"Keep this draft");
+    fireEvent.change(editor,{target:{value:"a".repeat(4097)}});assert.equal((ui.getByRole("button",{name:"Save"}) as HTMLButtonElement).disabled,true);
+  } finally {slot.lifecycle.unmount();}
 });

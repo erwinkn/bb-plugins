@@ -1593,6 +1593,7 @@ export class VoiceAgent {
         if(this.session!==session || this.sessionReady)return;
         this.sessionReady=true;this.clearConnectWatchdog();
         this.bridge=this.createBridge(dc,callConversationId);
+        dc.send(JSON.stringify({type:"conversation.item.create",item:{type:"message",role:"system",content:[{type:"input_text",text:JSON.stringify({voice_context:this.bindings?.context,instruction:"Current screen context only; remain silent until the user speaks."})}]}}));
         this.refreshBridgeSnapshot();void this.bridge.reconcile();
         for(const track of stream.getAudioTracks())track.enabled=true;
         this.setState("live");void this.syncUiCommands();this.startPresenceHeartbeat();

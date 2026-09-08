@@ -17,6 +17,7 @@ test("worker settings save roles independently and retain the old value after a 
     setWorkerSettings:(value:unknown)=>{if(fail)throw new Error("Save unavailable");settings=value as Settings;return settings;},
   }});const ui=within(slot.container);
   try {
+    fireEvent.click(ui.getByText("Role-specific models"));
     await ui.findByRole("option",{name:"Desktop"});
     const ready=()=>waitFor(()=>assert.equal(ui.getByRole("combobox",{name:"Review model"}).closest("fieldset")?.disabled,false));await ready();
     fireEvent.change(ui.getByRole("combobox",{name:"Review model"}),{target:{value:"strong"}});await waitFor(()=>assert.equal(settings.profiles.review.model,"strong"));await ready();
@@ -36,7 +37,22 @@ test("unavailable configured models remain visible instead of silently choosing 
   const settings=defaultWorkerSettings();settings.profiles.implement.model="missing-model";
   const slot=renderSlot({component:WorkerSettings},{},{rpc:{getWorkerSettings:()=>settings,listWorkerProviders:()=>catalog}});const ui=within(slot.container);
   try {
+    fireEvent.click(ui.getByText("Role-specific models"));
     await ui.findByRole("option",{name:"missing-model (unavailable)"});
     assert.equal((ui.getByRole("combobox",{name:"Implementation model"}) as HTMLSelectElement).value,"missing-model");
+  } finally {slot.lifecycle.unmount();}
+});
+
+test("default worker changes update inherited roles and preserve a role-specific choice",async()=>{
+  let settings=defaultWorkerSettings();settings.profiles.review.model="custom-review";
+  const slot=renderSlot({component:WorkerSettings},{},{rpc:{getWorkerSettings:()=>settings,listWorkerProviders:()=>catalog,setWorkerSettings:(value:unknown)=>{settings=value as Settings;return settings;}}});
+  const ui=within(slot.container);
+  try {
+    fireEvent.click(ui.getByText("Role-specific models"));
+    await ui.findByRole("option",{name:"custom-review (unavailable)"});
+    await waitFor(()=>assert.equal(ui.getByRole("combobox",{name:"Default worker model"}).closest("fieldset")?.disabled,false));
+    fireEvent.change(ui.getByRole("combobox",{name:"Default worker model"}),{target:{value:"strong"}});
+    await waitFor(()=>assert.equal(settings.defaultProfile?.model,"strong"));
+    assert.equal(settings.profiles.implement.model,"strong");assert.equal(settings.profiles.investigate.model,"strong");assert.equal(settings.profiles.plan.model,"strong");assert.equal(settings.profiles.review.model,"custom-review");
   } finally {slot.lifecycle.unmount();}
 });

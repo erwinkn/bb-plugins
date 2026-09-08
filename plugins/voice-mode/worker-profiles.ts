@@ -12,6 +12,7 @@ export const workerProfileSchema = z.object({
 }).strict();
 export type WorkerProfile = z.infer<typeof workerProfileSchema>;
 export const workerSettingsSchema = z.object({
+  defaultProfile: workerProfileSchema.optional(),
   profiles: z.object({ investigate: workerProfileSchema, plan: workerProfileSchema, implement: workerProfileSchema, review: workerProfileSchema }).strict(),
   maxActiveWorkers: z.number().int().min(1).max(64),
 }).strict();
@@ -19,7 +20,7 @@ export type WorkerSettings = z.infer<typeof workerSettingsSchema>;
 
 export function defaultWorkerSettings(): WorkerSettings {
   const profile = (): WorkerProfile => ({ providerId: "codex", model: null, reasoningLevel: null, serviceTier: "default" });
-  return { profiles: { investigate: profile(), plan: profile(), implement: profile(), review: profile() }, maxActiveWorkers: 8 };
+  return { defaultProfile: profile(), profiles: { investigate: profile(), plan: profile(), implement: profile(), review: profile() }, maxActiveWorkers: 8 };
 }
 
 export async function readWorkerSettings(bb: BbPluginApi): Promise<WorkerSettings> {

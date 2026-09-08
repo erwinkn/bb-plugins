@@ -124,6 +124,7 @@ export class CoordinatorManager {
     this.preferences = deps.preferences ?? (() => "");
     this.onRequestEnded = deps.onRequestEnded ?? (() => {});
     this.actions = new LiveActionExecutor(this.bb, new LiveActionStore(this.bb.storage.database()), {
+      coordinatorParent: async id => (await this.ensureCoordinator(id)).threadId,
       watch: (conversationId, threadId) => this.store.watch(conversationId, threadId, "voice-action"),
       isCoordinator: thread => this.isCoordinatorThread(thread),
     });
@@ -685,6 +686,7 @@ export class CoordinatorManager {
     const previousReplies = requestId ? this.store.listReplies(conversation.id,{requestId}) : [];
     if (request?.status === "settled" && !conversation.state.activeTasks.some(task=>task.requestId === request.id)) return "This request has ended; do not open another reply turn.";
     if (previousReplies.some(reply => reply.kind === "final")) return "A final reply is already recorded; this request has ended.";
+    if (params.kind === "progress" && previousReplies.some(reply=>reply.kind === "progress")) return "A first update was already given. Continue the work; report a material blocker or final result next.";
     if (params.kind === "assigned" && previousReplies.some(reply=>reply.kind === "assigned")) return "Assignment already reported.";
     if (params.kind === "blocked" && previousReplies.some(reply=>reply.kind === "blocked" && reply.body.speech === params.speech)) return "This blocker was already reported.";
     if (params.kind === "assigned" && !(params.receipts ?? []).some(receipt=>receipt.thread_id && (receipt.outcome === "done" || receipt.outcome === "pending"))) return "Assignment requires an actual thread receipt.";

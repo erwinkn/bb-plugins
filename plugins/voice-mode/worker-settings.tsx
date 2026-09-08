@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
-import { WORKER_ROLES, workerSettingsSchema, type WorkerRole, type WorkerProfile, type WorkerSettings as Settings } from "./worker-profiles.ts";
+import { WORKER_ROLES, workerProfileSchema, workerSettingsSchema, type WorkerRole, type WorkerProfile, type WorkerSettings as Settings } from "./worker-profiles.ts";
 import type { WorkerCatalog } from "./provider-catalog.ts";
 import { Button } from "./components/ui/button";
 
@@ -35,28 +35,23 @@ export function WorkerSettings() {
     catch(cause){setError(cause instanceof Error ? cause.message : String(cause));}
     finally {setBusy(false);setLoading(false);}
   };
-  const update = (role:WorkerRole,patch:Partial<WorkerProfile>)=>{
-    if (settings) void save({...settings,profiles:{...settings.profiles,[role]:{...settings.profiles[role],...patch}}});
+  const update = (role:WorkerRole|"default",patch:Partial<WorkerProfile>)=>{
+    if(!settings)return;
+    if(role!=="default"){void save({...settings,profiles:{...settings.profiles,[role]:{...settings.profiles[role],...patch}}});return;}
+    const previous=settings.defaultProfile ?? settings.profiles.implement;
+    const next={...previous,...patch};
+    const profiles={...settings.profiles};
+    for(const name of WORKER_ROLES)if(JSON.stringify(profiles[name])===JSON.stringify(previous))profiles[name]={...next};
+    void save({...settings,defaultProfile:next,profiles});
   };
   const disabled=!settings || !catalog || !catalog.hostId || busy || loading;
-  return <div className="space-y-5">
-    <p className="text-xs text-muted-foreground">Live can start workers directly. These role profiles are independent of the fast coordinator and apply only to new workers. Existing threads keep their model. Provider default means that provider’s default—not necessarily its largest model.</p>
-    <p className="text-xs text-muted-foreground">Workers use BB’s accept-edits permission mode. Investigation and review are task instructions, not read-only sandboxes. Voice does not grant new permissions.</p>
-    {error ? <div role="alert" className="space-y-2 text-sm text-destructive">{error}<Button variant="outline" onClick={refresh}>Retry worker settings</Button></div> : null}
-    <label className="block space-y-1 text-sm">Preview models on machine
-      <select aria-label="Worker catalog machine" className={inputClass} disabled={busy || loading || !catalog?.hosts.length} value={hostId ?? catalog?.hostId ?? ""} onChange={event=>setHostId(event.target.value || undefined)}>
-        {!catalog?.hosts.length ? <option value="">No connected machine</option> : null}
-        {catalog?.hosts.map(host=><option key={host.id} value={host.id}>{host.name}</option>)}
-      </select>
-    </label>
-    <p className="text-xs text-muted-foreground">This selector previews availability; it does not choose a task’s machine. Profiles are checked again on the actual destination, with no silent model substitution.</p>
-    {WORKER_ROLES.map(role=>{
-      const profile=settings?.profiles[role];
+  const renderProfile = (role:WorkerRole|"default") => {
+      const profile=role==="default" ? settings?.defaultProfile ?? settings?.profiles.implement : settings?.profiles[role];
       const providers=catalog?.providers ?? [];
       const provider=providers.find(provider=>provider.id === profile?.providerId);
       const models=catalog?.models.filter(model=>model.providerId === profile?.providerId) ?? [];
       const model=profile?.model ? models.find(model=>model.model === profile.model || model.id === profile.model) : models.find(model=>model.isDefault);
-      const prefix=names[role];
+      const prefix=role==="default" ? "Default worker" : names[role];
       return <fieldset key={role} className="space-y-3 border-t border-border pt-4" disabled={disabled}>
         <legend className="px-1 text-sm font-medium">{prefix}</legend>
         <label className="block space-y-1 text-sm">Provider
@@ -73,7 +68,7 @@ export function WorkerSettings() {
           </select>
         </label>
         {model?.reasoningLevels.length || profile?.reasoningLevel ? <label className="block space-y-1 text-sm">Reasoning effort
-          <select aria-label={`${prefix} reasoning effort`} className={inputClass} value={profile?.reasoningLevel ?? ""} onChange={event=>update(role,{reasoningLevel:event.target.value ? workerSettingsSchema.shape.profiles.shape[role].shape.reasoningLevel.parse(event.target.value) : null})}>
+          <select aria-label={`${prefix} reasoning effort`} className={inputClass} value={profile?.reasoningLevel ?? ""} onChange={event=>update(role,{reasoningLevel:event.target.value ? workerProfileSchema.shape.reasoningLevel.parse(event.target.value) : null})}>
             <option value="">Model default</option>
             {profile?.reasoningLevel && !model?.reasoningLevels.some(level=>level.id === profile.reasoningLevel) ? <option value={profile.reasoningLevel}>{profile.reasoningLevel} (unsupported)</option> : null}
             {model?.reasoningLevels.map(level=><option key={level.id} value={level.id}>{level.label}</option>)}
@@ -83,7 +78,20 @@ export function WorkerSettings() {
           <input type="checkbox" aria-label={`${prefix} Fast`} checked={profile?.serviceTier === "fast"} onChange={event=>update(role,{serviceTier:event.target.checked ? "fast" : "default"})}/>Fast{!provider?.serviceTiers.some(tier=>tier.id === "fast") ? " (unsupported here; disable or choose another provider)" : ""}
         </label> : null}
       </fieldset>;
-    })}
+  };
+  return <div className="space-y-5">
+    <p className="text-xs text-muted-foreground">Internal Voice workers run under the hidden coordinator and stay out of the regular thread list. The default model applies to new workers; role-specific changes remain separate. Existing work keeps its model.</p>
+    <p className="text-xs text-muted-foreground">Workers use BB’s accept-edits permission mode. Investigation and review are task instructions, not read-only sandboxes. Voice does not grant new permissions.</p>
+    {error ? <div role="alert" className="space-y-2 text-sm text-destructive">{error}<Button variant="outline" onClick={refresh}>Retry worker settings</Button></div> : null}
+    <label className="block space-y-1 text-sm">Preview models on machine
+      <select aria-label="Worker catalog machine" className={inputClass} disabled={busy || loading || !catalog?.hosts.length} value={hostId ?? catalog?.hostId ?? ""} onChange={event=>setHostId(event.target.value || undefined)}>
+        {!catalog?.hosts.length ? <option value="">No connected machine</option> : null}
+        {catalog?.hosts.map(host=><option key={host.id} value={host.id}>{host.name}</option>)}
+      </select>
+    </label>
+    <p className="text-xs text-muted-foreground">This selector previews availability; it does not choose a task’s machine. Profiles are checked again on the actual destination, with no silent model substitution.</p>
+    {renderProfile("default")}
+    <details className="space-y-3"><summary className="cursor-pointer text-sm font-medium">Role-specific models</summary>{WORKER_ROLES.map(renderProfile)}</details>
     <label className="block space-y-1 text-sm">Maximum active or unconfirmed Voice workers
       <input type="number" aria-label="Maximum Voice workers" min={1} max={64} className={inputClass} disabled={disabled} value={settings?.maxActiveWorkers ?? 8} onChange={event=>{
         const n=Number(event.target.value);if(settings && Number.isInteger(n) && n>=1 && n<=64) void save({...settings,maxActiveWorkers:n});

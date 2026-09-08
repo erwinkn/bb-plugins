@@ -201,7 +201,7 @@ test("voice_reply is validated against the stored coordinator mapping and final 
   const foreign = await harness.behavior.callAgentTool("voice_reply", { kind: "final", speech: "Done." }, { threadId: "thr_worker" }) as Any;
   assert.equal(foreign.isError, true);
   await idle(coordinatorId(), null); // bootstrap settles; r_1 was queued behind it
-  await assert.rejects(harness.behavior.callAgentTool("voice_reply", { request_id: "r_1", kind: "progress", speech: "Checking." }, { threadId: coordinatorId() }));
+  await assert.rejects(harness.behavior.callAgentTool("voice_reply", { request_id: "r_1", kind: "acknowledgment", speech: "Checking." }, { threadId: coordinatorId() }));
   assert.equal(replies().filter(reply => reply.requestId === "r_1").length, 0, "only the bridge acknowledges a request");
   await harness.behavior.callAgentTool("voice_reply", {
     request_id: "r_1", kind: "final", speech: "Archived the old speech thread.", thread_ids: ["thr_speech"],
@@ -605,7 +605,7 @@ test("one assistant flow keeps assignment internal, suppresses repeated blockers
   await reply({kind:"assigned",speech:"Assigned again.",receipts:[{action:"spawned",thread_id:"build_worker",outcome:"done"}]});
   await idle(coordinatorId(),"Internal dispatch details.");
   assert.equal(replies().length,0,"assignment and idle fallback create no user-facing speech");
-  await assert.rejects(reply({kind:"progress",speech:"Checking more things."}));
+  await assert.rejects(reply({kind:"acknowledgment",speech:"Checking more things."}));
   await reply({kind:"blocked",speech:"The build needs access to the package registry."});
   await reply({kind:"blocked",speech:"The build needs access to the package registry."});
   assert.equal(replies().length,1);
@@ -684,29 +684,23 @@ test("routine handoffs queue behind active work and only interrupting requests s
   }
 });
 
-test("saved voice instructions reach the actual call and coordinator without repeated context", async (t) => {
-  const { harness, rpc, claim, envelope, world } = await enabledHost();
-  t.after(() => harness.lifecycle.dispose());
-  await harness.behavior.setSettings({openaiApiKey:"test-key"});
-  let sentSession: Any;
-  t.mock.method(globalThis,"fetch",async (_url: unknown, options: RequestInit) => {
-    sentSession = JSON.parse(String((options.body as FormData).get("session")));
-    return new Response("test-answer", {status:200});
-  });
-  const preferences = "Answer in French. Use short sentences.";
-  await rpc("setPrompt",{content:preferences,source:"user",note:null});
-  const {conversationId} = await claim("preferences");
-  await rpc("createCall",{nonce:"preferences",sdp:"test-offer",threadId:null,projectId:null});
-  assert.ok(sentSession.instructions.includes(preferences));
-  assert.ok(sentSession.instructions.includes("delegate_to_coordinator"));
-  assert.ok(!sentSession.tools.some((tool:Any)=>tool.name === "archive_thread"));
-  await rpc("submitRequest",{envelope:envelope(conversationId,"preferences","pref1","Check CI.")});
-  assert.equal(JSON.parse(world.sends.at(-1)!.text.split("\n")[1]).user_preferences,preferences);
-  await rpc("submitRequest",{envelope:envelope(conversationId,"preferences","pref2","Then check docs.")});
-  assert.equal(JSON.parse(world.sends.at(-1)!.text.split("\n")[1]).user_preferences,undefined);
-  await rpc("setPrompt",{content:"Answer in English.",source:"user",note:null});
-  await rpc("submitRequest",{envelope:envelope(conversationId,"preferences","pref3","Now check the build.")});
-  assert.equal(JSON.parse(world.sends.at(-1)!.text.split("\n")[1]).user_preferences,"Answer in English.");
+test("complete live and coordinator prompts reach their models exactly and remain independent", async (t) => {
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  await h.harness.behavior.setSettings({openaiApiKey:"test-key"});
+  let sentSession:Any;
+  t.mock.method(globalThis,"fetch",async (_url:unknown,options:RequestInit)=>{sentSession=JSON.parse(String((options.body as FormData).get("session")));return new Response("test-answer",{status:200});});
+  const live="  Live prompt with intentional whitespace.\n", coordinator="## Coordinator\nCheck briefly, then delegate.";
+  await h.rpc("setPrompt",{role:"live",content:live,source:"user",note:null});
+  await h.rpc("setPrompt",{role:"coordinator",content:coordinator,source:"user",note:null});
+  const {conversationId}=await h.claim("prompts");
+  await h.rpc("createCall",{nonce:"prompts",sdp:"test-offer",threadId:null,projectId:null});
+  assert.equal(sentSession.instructions,live);
+  const config=await h.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({thread:{id:"new",title:`${COORDINATOR_TITLE_PREFIX}${conversationId}`},origin:{kind:null,pluginId:"voice-mode"}}));
+  assert.equal(config.instructions,coordinator);
+  assert.equal((await h.rpc("getPrompt",{role:"live"})).content,live);
+  assert.equal((await h.rpc("getPrompt",{role:"coordinator"})).content,coordinator);
+  await assert.rejects(h.rpc("setPrompt",{role:"coordinator",content:"x".repeat(4097),source:"user",note:null}),/4096/);
+  assert.equal((await h.rpc("getPrompt",{role:"coordinator"})).content,coordinator);
 });
 
 test("voice_ui requires the mapped coordinator and an active user request, and waits for the owner receipt", async t => {
@@ -920,7 +914,7 @@ test("device transfer keeps the active conversation and rejects an outdated take
   assert.equal((await h.rpc("getCoordinatorStatus",null)).conversation.currentCallNonce,"mobile");
 });
 
-test("live creates a configured worker without a coordinator and worker reports use the quiet direct route",async t=>{
+test("live creates a hidden child of its coordinator and worker reports use the quiet direct route",async t=>{
   const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
   const settings=await h.rpc("getWorkerSettings",null);
   settings.profiles.investigate.model="gpt-a";
@@ -929,10 +923,10 @@ test("live creates a configured worker without a coordinator and worker reports 
   const text="Start a thread to investigate transcription errors; don't edit files.";
   await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"direct-worker","spawn-work",text,{quickAction:{kind:"start_thread",projectId:"proj_app",role:"investigate",title:"Transcription investigation"}})});
   await settle();
-  assert.equal(h.world.spawns,1);
-  const worker=[...h.world.threads.values()][0];
-  assert.equal(worker.spawnArgs.model,"gpt-a");assert.equal(worker.spawnArgs.visibility,"visible");assert.equal(worker.spawnArgs.parentThreadId,undefined);
-  assert.equal((await h.rpc("getCoordinatorStatus",null)).conversation.coordinatorThreadId,null);
+  assert.equal(h.world.spawns,2);
+  const worker=[...h.world.threads.values()].find(thread=>thread.id!==h.coordinatorId());
+  assert.equal(worker.spawnArgs.model,"gpt-a");assert.equal(worker.spawnArgs.visibility,"hidden");assert.equal(worker.spawnArgs.parentThreadId,h.coordinatorId());
+  assert.equal((await h.rpc("getCoordinatorStatus",null)).conversation.coordinatorThreadId,h.coordinatorId());
   assert.equal(h.world.sends.length,0);
   const selected=await h.harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({thread:{id:worker.id,title:worker.title},origin:{kind:null,pluginId:"voice-mode"}}));
   assert.deepEqual(selected.tools.map(tool=>tool.name),["voice_worker_report"]);
@@ -943,8 +937,9 @@ test("live creates a configured worker without a coordinator and worker reports 
   await h.idle(worker.id,"Long investigation output");
   const receipt=h.replies().find(reply=>reply.kind === "final");
   await h.rpc("reportReplyDelivery",{replyId:receipt.replyId,nonce:"direct-worker",state:"delivered"});
+  await h.idle(h.coordinatorId(),null);
   const reserved=await h.rpc("reserveUpdateBatch",{conversationId,nonce:"direct-worker",msSinceCallLive:60000});
-  assert.ok(reserved.batch);assert.equal(h.world.spawns,1);assert.equal(h.world.sends.length,0,"the report must not wake a coordinator");
+  assert.ok(reserved.batch);assert.equal(h.world.spawns,2);assert.equal(h.world.sends.length,0,"the report must not wake a coordinator");
   const update=h.replies().find(reply=>reply.kind==="update");assert.match(update.speech,/Transcription investigation/);assert.match(update.speech,/No files were changed/);
   await h.rpc("reportReplyDelivery",{replyId:update.replyId,nonce:"direct-worker",state:"interrupted"});
   assert.equal((await h.rpc("getCoordinatorStatus",null)).queuedUpdates,1,"interrupted updates remain available");
@@ -1107,4 +1102,17 @@ test("historical request-labelled messages remain readable after the operator sc
   const status=await h.rpc("getCoordinatorStatus",null);
   assert.equal(status.requests.find((r:Any)=>r.id==="legacy-message")?.text,"Inspect this transcript.");
   await assert.rejects(h.rpc("submitRequest",{envelope:{...historical,requestId:"new-invalid"}}),/validation/);
+});
+
+test("one material first update is delivered before the coordinator ends, without settling its work",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  const {conversationId}=await h.claim("early-update");
+  await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"early-update","first-finding","Find why CI failed and investigate.")});
+  const send=(speech:string)=>h.harness.behavior.callAgentTool("voice_reply",{request_id:"first-finding",kind:"progress",speech},{threadId:h.coordinatorId()});
+  await send("The failure is in the upload step. I’m checking its error logs.");
+  assert.equal(h.replies().filter(r=>r.kind==="progress").length,1);
+  assert.equal((await h.rpc("getCoordinatorStatus",null)).requests[0].status,"accepted");
+  await send("Another routine update");assert.equal(h.replies().filter(r=>r.kind==="progress").length,1);
+  await h.harness.behavior.callAgentTool("voice_reply",{request_id:"first-finding",kind:"final",speech:"The upload credential expired. No code was changed."},{threadId:h.coordinatorId()});
+  assert.equal(h.replies().filter(r=>r.kind==="final").length,1);
 });

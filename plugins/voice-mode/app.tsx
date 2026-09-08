@@ -76,16 +76,17 @@ export default definePluginApp((app) => {
   });
   app.slots.settingsSection({
     id: "models",
-    title: "Model & voice",
+    title: "Live model & voice",
     component: ModelsSettings,
   });
   app.slots.settingsSection({
     id: "behavior",
+    title: "Prompts",
     component: BehaviorSettings,
   });
   app.slots.settingsSection({
     id: "coordinator",
-    title: "Coordinator",
+    title: "Coordinator model",
     component: CoordinatorSettings,
   });
   app.slots.settingsSection({id:"workers",title:"Workers",component:WorkerSettings});

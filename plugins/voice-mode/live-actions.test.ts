@@ -30,7 +30,7 @@ function fixture() {
   };
   const {bb,harness}=createFakePluginHost({pluginId:"voice-mode",sdk});
   const store=new LiveActionStore(db);
-  const executor=()=>new LiveActionExecutor(bb,store,{watch:(_c,id)=>world.watched.push(id),isCoordinator:thread=>thread.title?.startsWith("Voice coordinator ") ?? false});
+  const executor=()=>new LiveActionExecutor(bb,store,{coordinatorParent:async()=>"coordinator",watch:(_c,id)=>world.watched.push(id),isCoordinator:thread=>thread.title?.startsWith("Voice coordinator ") ?? false});
   const controller=new AbortController();
   const context:ActionContext={signal:controller.signal,current:()=>!controller.signal.aborted,ui:async action=>{world.ui.push(action);return {status:"succeeded",detail:"Accepted"};}};
   const envelope=(id="req-1",text="Open Build Fix and ask it to add regression tests."):UserRequestEnvelope=>({v:1,conversationId:"conversation",callNonce:"call",callSequence:1,requestId:id,utteranceItemIds:[`item-${id}`],transcriptRevision:1,transcriptAvailable:true,originalText:text,transcriptDelta:[{itemId:`item-${id}`,text}],interpretation:null,urgency:"new",answersQuestionId:null,view:{threadId:"build",projectId:"app",onNewThreadScreen:false}});
@@ -122,9 +122,9 @@ test("direct worker dispatch uses role settings and managed workspaces independe
   const h=fixture();t.after(h.close);const settings=defaultWorkerSettings();settings.profiles.investigate={providerId:"codex",model:"strong-model",reasoningLevel:"high",serviceTier:"fast"};
   await h.bb.storage.kv.set(WORKER_PROFILE_KEY,settings);await h.bb.storage.kv.set("config",{coordinator:{providerId:"codex",model:"tiny-coordinator"}});
   const result=await h.executor().execute(h.envelope("new","Investigate missing transcriptions; don't edit files."),start(),"live",h.context);
-  assert.equal(result.status,"succeeded");assert.match(result.speech,/Created Retry investigation in BB Plugins on Desktop for investigation/);
+  assert.equal(result.status,"succeeded");assert.match(result.speech,/started investigating Retry investigation/);
   const args=h.world.spawns[0];assert.equal(args.model,"strong-model");assert.equal(args.reasoningLevel,"high");assert.equal(args.serviceTier,"fast");
-  assert.equal(args.visibility,"visible");assert.equal(args.parentThreadId,undefined);assert.equal(args.permissionMode,"accept-edits");
+  assert.equal(args.visibility,"hidden");assert.equal(args.parentThreadId,"coordinator");assert.equal(args.permissionMode,"accept-edits");
   assert.deepEqual(args.environment,{type:"host",hostId:"mac",workspace:{type:"managed-worktree",baseBranch:{kind:"default"}}});
   assert.match(args.prompt,/don't edit files/);assert.match(args.prompt,/voice_worker_report/);assert.match(args.prompt,/not a read-only sandbox/);
   assert.deepEqual(h.world.watched,["worker-1"]);assert.equal(h.store.workerForThread("worker-1")?.role,"investigate");
