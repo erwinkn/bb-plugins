@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { Markdown } from "@get-bb/plugin-sdk/app";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
@@ -288,6 +289,32 @@ export function PlanDocument({
     },
   });
 
+  // The menu replaces the browser's own selection affordances on desktop, so
+  // it carries the one everybody expects as well.
+  const copySelection = async () => {
+    const recent = takeRecent();
+    if (recent === null) return;
+    try {
+      await navigator.clipboard.writeText(recent.quote);
+      toast.success("Copied");
+    } catch {
+      toast.error("Could not copy to the clipboard");
+    }
+    clearDocumentSelection(contentRef.current);
+  };
+  const copyProps = {
+    onPointerDown: (event: React.PointerEvent) => {
+      event.preventDefault();
+      void copySelection();
+    },
+    onKeyDown: (event: React.KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        void copySelection();
+      }
+    },
+  };
+
   const selectionActions = (mobile: boolean) => (
     <div role="toolbar" aria-label="Annotate selection" className="pointer-events-auto flex w-40 flex-col items-stretch gap-0.5 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg">
       <Button type="button" variant="ghost" size="sm" className="h-8 justify-between rounded-md px-2 text-xs" {...commitProps()}>Comment{mobile ? null : <kbd className="ml-3 text-[10px] opacity-60">C</kbd>}</Button>
@@ -295,6 +322,8 @@ export function PlanDocument({
         <Button type="button" variant="ghost" size="sm" className="h-8 justify-between rounded-md px-2 text-xs text-destructive" {...commitProps("redline")}>Redline{mobile ? null : <kbd className="ml-3 text-[10px] opacity-60">D</kbd>}</Button>
         <Button type="button" variant="ghost" size="sm" className="h-8 justify-between rounded-md px-2 text-xs text-success" {...commitProps("looksGood")}>Looks good{mobile ? null : <kbd className="ml-3 text-[10px] opacity-60">G</kbd>}</Button>
       </> : null}
+      <div role="separator" className="my-0.5 border-t border-border" />
+      <Button type="button" variant="ghost" size="sm" className="h-8 justify-between rounded-md px-2 text-xs" {...copyProps}>Copy{mobile ? null : <kbd className="ml-3 text-[10px] opacity-60">⌘C</kbd>}</Button>
     </div>
   );
 

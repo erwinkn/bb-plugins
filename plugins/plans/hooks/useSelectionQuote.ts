@@ -86,6 +86,11 @@ export function useSelectionQuote(
     };
     const startSelection = (event: PointerEvent) => {
       if (!(event.target instanceof Node) || !content.contains(event.target)) return;
+      // A touch long-press hands the gesture to the system's selection UI and
+      // iOS then delivers no pointerup or pointercancel, so waiting for the
+      // release would hide the actions for good. Touch selections are read as
+      // they change; only mouse and pen drags hide the actions until release.
+      if (event.pointerType === "touch") return;
       selecting = true;
       recentRef.current = null;
       setCurrent(null);

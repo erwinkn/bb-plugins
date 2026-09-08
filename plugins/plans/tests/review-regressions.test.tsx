@@ -381,6 +381,28 @@ describe("activating a comment from the document", () => {
     expect(commentButton()).toBeTruthy();
   });
 
+  it("shows actions for a touch selection even though iOS sends no pointerup", async () => {
+    coarsePointer = true;
+    const { content } = renderDocument({ markdown: "Keep the existing data.", onAnnotate: vi.fn(async () => {}) });
+    // jsdom has no PointerEvent, so pointerType is attached by hand.
+    const touchDown = Object.assign(new Event("pointerdown", { bubbles: true }), { pointerType: "touch" });
+    act(() => { screen.getByText("Keep the existing data.").dispatchEvent(touchDown); });
+    await selectText(content(), "existing data");
+    expect(screen.getByRole("toolbar", { name: "Annotate selection" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Redline" })).toBeTruthy();
+  });
+
+  it("copies the selected text from the menu", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { content, onQuote } = renderDocument({ markdown: "Keep the existing data." });
+    await selectText(content(), "existing data");
+    fireEvent.pointerDown(screen.getByRole("button", { name: /^Copy/ }));
+    await act(async () => {});
+    expect(writeText).toHaveBeenCalledWith("existing data");
+    expect(onQuote).not.toHaveBeenCalled();
+  });
+
   const saved = comment({ id: "keep", quote: "existing data" });
   const markdown = "Keep the existing data.\n\nDrop the cache.";
 

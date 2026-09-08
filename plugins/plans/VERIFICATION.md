@@ -233,3 +233,12 @@ transaction, since a review can be sent while the hold is releasing. The race
 test starts the delete, submits the review in the same tick with the thread
 send held open, and expects the delete to be refused; it passes against the
 fix and fails without it. Suite: 78 tests.
+
+Phone check on b8f037e (iOS 18.7 app WebView): Diagnostics reported
+`Text selection: text` and long-press selection worked, but the annotate bar
+did not appear. Cause: the selection hook hid actions from pointerdown until
+pointerup, and iOS delivers neither pointerup nor pointercancel once a
+long-press becomes a system selection. Touch pointerdowns no longer gate the
+actions; mouse and pen drags keep the hide-until-release behaviour. The menu
+also gained Copy. Tests: a touch selection with no release shows the toolbar
+(fails without the fix), and Copy writes the quote to the clipboard.
