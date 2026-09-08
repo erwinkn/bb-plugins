@@ -175,8 +175,8 @@ export default async function plugin(bb: BbPluginApi) {
     store.deleteThread(thread.id);
   });
 
-  async function ask(threadId: string, projectId: string, input: unknown, signal?: AbortSignal) {
-    const detached = await isNonBlocking(threadId);
+  async function ask(threadId: string, projectId: string, input: unknown, signal?: AbortSignal, delivery: "provider" | "message" = "provider") {
+    const detached = delivery === "message" || await isNonBlocking(threadId);
     if (!detached) {
       const pending = await bb.sdk.threads.interactions.list({ threadId });
       if (pending.some((item) => item.status === "pending" || item.status === "resolving")) throw new QuestionsError("This thread already has a pending interaction. Finish it before asking another round.");
@@ -329,6 +329,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb questions summary [--thread <id>] set <markdown> | clear | show",
     "",
     "The thread defaults to the thread the command runs in (BB_THREAD_ID).",
+    "CLI asks return immediately and hold the BB prompt on the server. End your turn; answers arrive as a message. Do not poll.",
     "--file reads on the invoking thread's machine. Outside a thread, pass --host and an absolute file path.",
     "questions.json holds the same object questions_ask accepts:",
     '  {"mode":"panel","intro":"…","questions":[{"title":"…","options":["A","B"],"select":"single"}]}',
@@ -380,7 +381,7 @@ export default async function plugin(bb: BbPluginApi) {
     commands: [
       {
         name: "ask",
-        summary: "Create a round of questions in a thread (quick form or --file JSON)",
+        summary: "Open a question round and return immediately; answers arrive as a thread message",
         usage: "bb questions ask [--thread <id>] [--inline] <title> [--option <label>]... | --file <questions.json>",
       },
       {
@@ -447,11 +448,8 @@ export default async function plugin(bb: BbPluginApi) {
                 ],
               };
             }
-            const result = await ask(threadId, projectId, input, ctx.signal);
-            const { response } = result;
-            if (response === null) return { exitCode: 0, stdout: heldResult(result.round.id) };
-            if ("outcome" in response) return { exitCode: 1, stderr: `Questions ended: ${response.outcome === "cancelled" ? response.reason : "invalid response"}. Round ${result.round.id} and its drafts are kept.` };
-            return { exitCode: 0, stdout: service.read(threadId, result.round.id) };
+            const result = await ask(threadId, projectId, input, ctx.signal, "message");
+            return { exitCode: 0, stdout: heldResult(result.round.id) };
           }
           case "read":
             return { exitCode: 0, stdout: service.read(threadId, parsed.flags.get("round")?.[0] ?? null, parsed.flags.get("after")?.[0] ?? null) };

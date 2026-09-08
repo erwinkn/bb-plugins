@@ -79,13 +79,12 @@ describe("Questions backend", () => {
     expect(h.harness.inspection.sdk.callsTo("threads.interactions.respond")).toHaveLength(0);
   });
 
-  it("uses the configured delivery policy for tools and CLI calls", async () => {
+  it("uses the configured delivery policy for native tools", async () => {
     const h = await setup();
     const provider = (await h.bb.sdk.threads.get({ threadId: "t" })).providerId;
     await h.harness.behavior.setSettings({ nonBlockingProviders: ` acp-cursor, ${provider} ` });
-    const result = await h.harness.behavior.runCli(["ask", "CLI held?"], { threadId: "t" });
-    expect(result.exitCode).toBe(0);
-    expect(JSON.parse(result.stdout!)).toMatchObject({ status: "waiting" });
+    const result = await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Configured hold?" }] }, { threadId: "t", projectId: "proj_t" });
+    expect(JSON.parse(result as string)).toMatchObject({ status: "waiting" });
     expect(h.harness.pendingInteractions).toHaveLength(1);
     const duplicate = await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Duplicate?" }] }, { threadId: "t", projectId: "proj_t" });
     expect(duplicate).toMatchObject({ isError: true });
@@ -260,15 +259,21 @@ describe("Questions backend", () => {
     expect(h.harness.pendingInteractions).toHaveLength(0);
     expect((await h.state()).rounds).toHaveLength(1);
   });
-  it("uses native waiting for CLI asks", async () => {
+  it("returns from CLI asks before answers on every provider, without a polling process", async () => {
     const h = await setup();
-    const call = h.harness.behavior.runCli(["ask", "CLI question?"], { threadId: "t" });
-    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
+    await h.harness.behavior.setSettings({ nonBlockingProviders: "" });
+    const controller = new AbortController();
+    const result = await h.harness.behavior.runCli(["ask", "CLI question?"], { threadId: "t", signal: controller.signal });
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout!)).toMatchObject({ status: "waiting", instruction: expect.stringContaining("Do not poll") });
+    controller.abort();
+    expect(h.harness.pendingInteractions).toHaveLength(1);
     const q = (await h.state()).rounds[0]!.questions[0]!;
     await h.save(q, { ...emptyAnswer(), text: "CLI answer" });
     await h.submit([q.id]);
-    expect(await call).toMatchObject({ exitCode: 0, stdout: expect.stringContaining("CLI answer") });
-    expect(h.send).not.toHaveBeenCalled();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(h.harness.pendingInteractions).toHaveLength(0);
+    expect(h.harness.inspection.sdk.callsTo("threads.send")[0]?.[0]).toMatchObject({ threadId: "t", input: [{ type: "text", text: expect.stringContaining("CLI answer") }] });
   });
   it("lets an all-optional round close with no answers", async () => {
     const h = await setup();
