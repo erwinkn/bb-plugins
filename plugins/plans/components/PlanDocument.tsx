@@ -10,7 +10,7 @@ import {
 import { Markdown } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Icon } from "@/components/ui/icon";
+import { Icon, type IconName } from "@/components/ui/icon";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse";
 import { cn } from "@/lib/utils";
@@ -315,15 +315,46 @@ export function PlanDocument({
     },
   };
 
-  const selectionActions = (mobile: boolean) => (
+  interface SelectionAction { label: string; icon: IconName; key: string; className: string; props: typeof copyProps }
+  const actions: SelectionAction[] = [
+    { label: "Comment", icon: "MessageSquarePlus", key: "C", className: "", props: commitProps() },
+    ...(onAnnotate
+      ? [
+          { label: "Redline", icon: "Strikethrough", key: "D", className: "text-destructive", props: commitProps("redline") } satisfies SelectionAction,
+          { label: "Looks good", icon: "CircleCheck", key: "G", className: "text-success", props: commitProps("looksGood") } satisfies SelectionAction,
+        ]
+      : []),
+  ];
+
+  // Desktop: a popover beside the selection, with shortcuts.
+  const selectionMenu = (
     <div role="toolbar" aria-label="Annotate selection" className="pointer-events-auto flex w-40 flex-col items-stretch gap-0.5 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg">
-      <Button type="button" variant="ghost" size="sm" className="h-8 justify-between rounded-md px-2 text-xs" {...commitProps()}>Comment{mobile ? null : <kbd className="ml-3 text-[10px] opacity-60">C</kbd>}</Button>
-      {onAnnotate ? <>
-        <Button type="button" variant="ghost" size="sm" className="h-8 justify-between rounded-md px-2 text-xs text-destructive" {...commitProps("redline")}>Redline{mobile ? null : <kbd className="ml-3 text-[10px] opacity-60">D</kbd>}</Button>
-        <Button type="button" variant="ghost" size="sm" className="h-8 justify-between rounded-md px-2 text-xs text-success" {...commitProps("looksGood")}>Looks good{mobile ? null : <kbd className="ml-3 text-[10px] opacity-60">G</kbd>}</Button>
-      </> : null}
+      {actions.map((action) => (
+        <Button key={action.label} type="button" variant="ghost" size="sm" className={cn("h-8 justify-between rounded-md px-2 text-xs", action.className)} {...action.props}>
+          {action.label}
+          <kbd className="ml-3 text-[10px] opacity-60">{action.key}</kbd>
+        </Button>
+      ))}
       <div role="separator" className="my-0.5 border-t border-border" />
-      <Button type="button" variant="ghost" size="sm" className="h-8 justify-between rounded-md px-2 text-xs" {...copyProps}>Copy{mobile ? null : <kbd className="ml-3 text-[10px] opacity-60">⌘C</kbd>}</Button>
+      <Button type="button" variant="ghost" size="sm" className="h-8 justify-between rounded-md px-2 text-xs" {...copyProps}>
+        Copy
+        <kbd className="ml-3 text-[10px] opacity-60">⌘C</kbd>
+      </Button>
+    </div>
+  );
+
+  // Touch: the system callout owns the space around the selection, so the
+  // actions dock along the bottom edge of the document as a toolbar.
+  const barButton = (label: string, icon: IconName, className: string, props: typeof copyProps) => (
+    <button key={label} type="button" className={cn("flex h-14 min-w-0 flex-col items-center justify-center gap-1 text-[11px] leading-none active:bg-state-active", className)} {...props}>
+      <Icon name={icon} className="size-5" aria-hidden />
+      <span className="truncate">{label}</span>
+    </button>
+  );
+  const selectionBar = (
+    <div role="toolbar" aria-label="Annotate selection" className="pointer-events-auto grid w-full auto-cols-fr grid-flow-col border-t border-border bg-popover text-popover-foreground shadow-[0_-4px_12px_-6px_rgb(0_0_0/0.25)]">
+      {actions.map((action) => barButton(action.label, action.icon, action.className, action.props))}
+      {barButton("Copy", "Copy", "border-l border-border", copyProps)}
     </div>
   );
 
@@ -432,7 +463,7 @@ export function PlanDocument({
                 {limitLabel}
               </span>
             ) : (
-              selectionActions(isMobile)
+              selectionMenu
             )}
           </div>
         ) : null}
@@ -451,14 +482,14 @@ export function PlanDocument({
         </div>
       ) : null}
       {showBar ? (
-        <div className="absolute inset-x-0 bottom-0 z-10 flex justify-center p-3 animate-in slide-in-from-bottom-2 fade-in-0 duration-150">
+        <div className="absolute inset-x-0 bottom-0 z-10 animate-in slide-in-from-bottom-2 fade-in-0 duration-150">
           {tooLong ? (
-            <span role="status" className="inline-flex h-10 w-full max-w-sm items-center justify-center gap-2 rounded-full border border-border bg-popover px-4 text-sm text-muted-foreground shadow-lg">
+            <span role="status" className="flex h-14 w-full items-center justify-center gap-2 border-t border-border bg-popover px-4 text-sm text-muted-foreground">
               <Icon name="AlertCircle" className="size-4 shrink-0" aria-hidden />
               <span className="truncate">{limitLabel}</span>
             </span>
           ) : (
-            selectionActions(true)
+            selectionBar
           )}
         </div>
       ) : null}
