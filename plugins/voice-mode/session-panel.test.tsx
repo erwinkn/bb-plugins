@@ -135,7 +135,8 @@ test("Diagnostics shows raw events with call boundaries; live log signals refres
     assert.ok(nav.getByRole("button", { name: "All sessions" }).querySelector("svg"));
     assert.deepEqual(nav.getAllByRole("option").map(option => option.textContent), ["Conversation", "Coordinator", "Diagnostics"]);
     assert.equal(nav.queryByRole("tablist"), null);
-    fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "diagnostics" } });
+    const controls = within(ui.getByRole("region", { name: "Voice session controls" }));
+    fireEvent.click(controls.getByRole("button", { name: "Diagnostics" }));
     assert.ok(ui.getByRole("separator", { name: "Call 1" }));
     assert.ok(ui.getByRole("separator", { name: "Call 2" }));
     assert.ok(ui.getByText("Handed off to the coordinator"));
@@ -147,7 +148,8 @@ test("Diagnostics shows raw events with call boundaries; live log signals refres
     await slot.behavior.emitRealtime("aide-log", { sessionId: "call_a_2" });
     assert.equal(detailCalls.length, before + 1);
     assert.equal((ui.getByRole("combobox", { name: "Session view" }) as HTMLSelectElement).value, "diagnostics", "a refresh keeps the current view");
-    fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "conversation" } });
+    fireEvent.click(controls.getByRole("button", { name: "Conversation" }));
+    assert.equal(controls.getByRole("button", { name: "Conversation" }).getAttribute("aria-current"), "page");
     assert.equal(ui.queryByText(/internal words/), null, "the picker returns to the conversation");
   } finally { slot.lifecycle.unmount(); }
 });
@@ -225,4 +227,33 @@ test("arriving on the conversation sub-path shows the live conversation without 
     await ui.findByText("Words in call_b_1");
     assert.ok(ui.getByText("Live now", { exact: false }));
   } finally { slot.lifecycle.unmount(); }
+});
+
+test("live transcript text grows in place and a durable final replaces it without a duplicate", async () => {
+  const row = sessionRow("stream", {callIds:["stream-call"],currentCallNonce:"stream-call"});
+  const {rpc} = baseRpc([row]);
+  let events: Any[] = [];
+  const slot = renderSlot({component:SessionsPanel}, {}, {rpc:{...rpc,
+    getLiveTranscript:()=>({callNonce:null,revision:0,items:[]}),
+    getVoiceSession:()=>({session:row,events}),
+  }});
+  const ui = within(slot.container);
+  try {
+    fireEvent.click(await ui.findByRole("button",{name:/Session stream/}));
+    await ui.findByText("Your conversation will appear here as you speak.");
+    const snapshot = (revision:number,text:string)=>({callNonce:"stream-call",revision,items:[{key:"user:u",kind:"user",ts:100,payload:{itemId:"u",text,partial:true}}]});
+    await slot.behavior.emitRealtime("voice-transcript",snapshot(1,"Inspect"));
+    const first = (await ui.findByText("Inspect")).closest("[data-message-id]");
+    await slot.behavior.emitRealtime("voice-transcript",snapshot(2,"Inspect this session"));
+    assert.equal((await ui.findByText("Inspect this session")).closest("[data-message-id]"),first);
+    await slot.behavior.emitRealtime("voice-transcript",snapshot(1,"Old text"));
+    assert.equal(ui.queryByText("Old text"),null);
+    await slot.behavior.emitRealtime("voice-transcript",{callNonce:"stream-call",revision:3,items:[]});
+    assert.ok(ui.getByText("Inspect this session"),"final delivery gap keeps the draft visible");
+    events=[{id:1,ts:100,kind:"user",callId:"stream-call",payload:JSON.stringify({itemId:"u",text:"Inspect the transcript for this session."})}];
+    await slot.behavior.emitRealtime("aide-log",{sessionId:"stream-call"});
+    assert.equal((await ui.findByText("Inspect the transcript for this session.")).closest("[data-message-id]"),first);
+    assert.equal(slot.container.querySelectorAll("[data-message-id]").length,1);
+    assert.equal(slot.container.querySelectorAll('[aria-label="Streaming"]').length,0);
+  } finally {slot.lifecycle.unmount();}
 });

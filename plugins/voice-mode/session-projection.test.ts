@@ -150,7 +150,7 @@ test("assistant playback separates short user turns but internal work and unplay
 });
 
 
-test("missing speech is visible once, separate from actual words, and replaced by a late transcript", () => {
+test("failed transcription is visible once, separate from actual words, and replaced by a late transcript", () => {
   const events = [event(1,"user",{itemId:"u",text:"Hello"}),
     event(2,"transcription.result",{itemId:"empty",outcome:"empty"}),
     event(3,"transcription.result",{itemId:"empty",outcome:"failed"})];
@@ -162,4 +162,15 @@ test("missing speech is visible once, separate from actual words, and replaced b
   const recovered = projectConversation([...events,event(4,"user",{itemId:"empty",text:"Check my threads"})]);
   assert.ok(recovered.every(row => row.kind !== "failure"));
   assert.match(recovered.map(row => row.text).join(" "), /Check my threads/);
+});
+
+test("empty detections and filler-only fragments do not appear as conversation messages", () => {
+  const rows = projectConversation([
+    event(1, "transcription.result", {itemId: "noise", outcome: "empty"}),
+    event(2, "user", {itemId: "filler", text: "Uh... um"}),
+    event(3, "user", {itemId: "punctuation", text: "..."}),
+    event(4, "user", {itemId: "stop", text: "Stop"}),
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].text, "Stop");
 });

@@ -48,7 +48,9 @@ pages; there is no separate thread workspace inside Voice.
 
 You do not need to paste IDs or links, search manually, or start Voice in the
 thread you want to control. Voice resolves spoken names and context across
-projects. It asks a short question when the target is ambiguous.
+projects. Partial descriptions such as "the latest voice mode thread" are enough.
+For navigation, Voice uses context and recency to choose the strongest match.
+It asks only when equally plausible targets remain after lookup.
 
 Opening a view is separate from changing work. A thread update does not move
 your screen. Starting work does not open its thread unless you ask to see it.
@@ -108,16 +110,66 @@ without another coordinator turn. Other thread output and mixed update batches
 still use the coordinator for a short digest. Worker reports are claims, not
 permission to start follow-on work.
 
-Empty or failed transcripts cannot start work. Voice cancels the affected
-realtime response and asks once for the missed sentence. Requests wait up to
+Empty or failed transcripts cannot start work. Empty detections, punctuation,
+and filler-only fragments stay quiet and out of the conversation. Short words
+such as “stop,” “wait,” “yes,” and “no” are preserved. The client waits for
+recognised words before cancelling playback or pending work, and for final
+transcription before a response or action. It requests manual interruption and
+response creation from the provider. However, live tests show that WebRTC can
+still clear playback at server VAD start despite those flags. Noise interruption
+is therefore an open transport issue; a proposed client utterance controller
+with server VAD disabled has not yet replaced this input path.
+Provider failures or missing transcript timeouts can ask once for the missed
+sentence; usable new input resets recovery.
+Rejected tool calls receive a terminal result without starting more work.
+Cancellation errors for responses already known to have finished stay in
+Diagnostics. Requests wait up to
 four seconds for transcription; a late transcript is retained but does not
-restart rejected work. The conversation marks speech with no usable transcript,
-and Diagnostics records per-item results, timing, and provider error details.
+restart rejected work. The conversation marks transcription failures,
+and Diagnostics records per-item results, detected speech duration, microphone
+track state, interruption timing, and correlated provider error details.
 The plugin does not record raw microphone audio.
 
-Live actions and the coordinator’s `voice_actions` tool use the same effect
-executor. Native UI actions and `voice_ui` share the existing UI command path.
-Neither parses speech text to trigger navigation. The server records each command and binds it to the request and
+User transcription and assistant output text stream in the Conversation view.
+Provisional text grows in one bubble, and final text replaces it by identity.
+The current transcription model uses its minimal-delay mode so words can arrive
+before the utterance ends. Recognition adds a delay before interruption; a
+sound threshold alone is not proof of speech. Empty and labelled non-speech
+fragments cannot trigger client cancellation. The server VAD limitation above
+still applies to playback. Generated text is separate from playback, so an
+interrupted answer is not marked as fully heard.
+
+Live drafts use bounded, coalesced snapshots shared across devices, not a new
+persistent event for every token. Reopening the page fetches the current draft;
+finals and unfinished text retained at hangup come from durable session history.
+Older calls and stale revisions cannot overwrite the active call's snapshot.
+The view follows new text only when the user is already at the live end.
+
+A validated final reply commits its request and becomes available for speech
+immediately, without waiting for the coordinator's idle event. Existing user
+speech and audio playback still take priority. A completed request cannot
+produce another final answer from trailing coordinator text.
+
+For a requested sequence of actions and explanations, the coordinator returns
+`voice_sequence`: an ordered list of native UI actions and speech steps. Voice
+runs the list as soon as the final plan is recorded. Each action waits for its native
+receipt. Each speech step waits for audio playback to finish before the next
+step starts. This supports tours, file reviews, comparisons, and other sequences;
+it is not limited to thread tours. One-step navigation still uses the direct path.
+
+Say "pause", "continue", "skip", "back", or "stop" to control a sequence.
+Speaking pauses it so you can ask a question without losing the current step.
+Skip moves to the next action and omits the explanation of a skipped action.
+Back moves one step; it cannot cross a draft edit. A device switch or manual
+navigation pauses the sequence. Resume restores preceding view actions before
+repeating unfinished narration where those actions can safely run again.
+A failed or unknown action pauses the sequence; its success narration does not
+play. Draft edits are never submitted or repeated. Routine updates wait across
+the whole sequence, including pauses. The cursor survives call transfer and
+plugin reload. Destructive actions and arbitrary tool calls are not plan steps.
+
+Live actions, `voice_actions`, `voice_ui`, and sequence actions share one UI command
+path. Neither uses speech text to trigger navigation. The server records each command and binds it to the request and
 physical call. Only the client running that call applies it. Other BB windows
 can show call status without changing their own workspace. Commands are claimed
 before execution, so repeated delivery cannot repeat a draft edit or navigation.
@@ -133,6 +185,9 @@ See [architecture and verification](docs/native-workspace.md) for the command
 boundaries, ownership rules, and failure cases.
 
 ## Settings
+
+New installations use GPT-5.4 mini with medium reasoning for the coordinator.
+Saved provider, model, reasoning, and Fast selections remain unchanged.
 
 - **Model & voice:** realtime model, voice, and credential source.
 - **Behavior:** editable instructions for how Voice speaks and responds.

@@ -34,7 +34,16 @@ previews. Voice does not maintain a second collection of work-thread views.
 | `show_voice` | Return to the Voice conversation. |
 
 The coordinator uses `voice_ui` and waits for its result before describing the
-outcome through `voice_reply`. A speech reply carries no navigation instruction.
+outcome through `voice_reply`. A single speech reply carries no navigation instruction. For actions interwoven
+with narration, the coordinator returns `voice_sequence` instead of running
+those UI actions. The plan is a final reply with typed action and speech steps.
+`SequenceManager` persists its cursor and execution revision; `SequencePlayer`
+requests one step at an idle boundary. Action completion waits for the native
+UI receipt. Speech completion waits for the matching output audio stopped event,
+not response generation. Late receipts cannot advance a paused or replaced
+step. The realtime model controls pause/resume/skip/back/stop without another
+coordinator turn. Only spoken steps appear in Conversation; plans and step
+state are diagnostic data.
 A background update cannot issue UI commands. New work does not automatically
 navigate the user away from what they are viewing.
 

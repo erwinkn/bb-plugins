@@ -3,6 +3,7 @@
 // the plugin boundary; nothing here trusts the realtime model, the coordinator
 // model, or persisted rows blindly.
 import { z } from "zod";
+import { narratedSequenceSchema } from "../narrated-sequence.ts";
 import { quickActionSchema } from "../quick-actions.ts";
 
 export const ENVELOPE_VERSION = 1 as const;
@@ -78,6 +79,7 @@ export const voiceReplyParamsSchema = z
     /** What to say. Empty for silent results. */
     speech: z.string().max(1200).default(""),
     detail: z.string().max(4000).optional(),
+    sequence: narratedSequenceSchema.optional(),
     thread_ids: z.array(z.string().min(1).max(128)).max(20).optional(),
     receipts: z.array(actionReceiptSchema).max(20).optional(),
     state: z
@@ -134,6 +136,7 @@ export const publishedReplySchema = z
     /** Call the reply is addressed to; null when no call is active. */
     targetCallNonce: z.string().nullable(),
     createdAt: z.number(),
+    sequence: narratedSequenceSchema.optional(),
   })
   .strict();
 export type PublishedReply = z.infer<typeof publishedReplySchema>;
@@ -163,6 +166,7 @@ export function formatRequestMessage(envelope: UserRequestEnvelope, extras: {
   const currentText = items.filter(item=>envelope.utteranceItemIds.includes(item.id)).map(item=>item.text ?? "").join(" ");
   const data = {
     request_id: envelope.requestId,
+    source: {call_id: envelope.callNonce, conversation_id: envelope.conversationId},
     user: {items, ...(currentText === envelope.originalText ? {} : {text:envelope.originalText}), complete:envelope.transcriptAvailable},
     ...(envelope.interpretation ? {model_interpretation:envelope.interpretation} : {}),
     urgency:envelope.urgency,

@@ -29,14 +29,6 @@ jobs:
           cache: npm
           cache-dependency-path: plugins/voice-mode/package-lock.json
       - run: npm ci --include=dev
-      - name: Capture verification workspace
-        if: always()
-        run: tar -czf "$RUNNER_TEMP/voice-workspace.tar.gz" .
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: voice-verification-workspace
-          path: ${{ runner.temp }}/voice-workspace.tar.gz
-          retention-days: 1
       - run: npm run typecheck
       - run: npm test
+      - run: npm run build:check

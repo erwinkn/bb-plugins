@@ -1,4 +1,4 @@
-import { LiveActionExecutor } from "../live-action-executor.ts";
+import { LiveActionExecutor, combineResults } from "../live-action-executor.ts";
 import { LiveActionStore, type ActionResult } from "../live-action-store.ts";
 import { quickActionRefusal, type QuickAction } from "../quick-actions.ts";
 import type { UiAction, UiActionResult } from "../ui-actions.ts";
@@ -32,8 +32,8 @@ export interface CoordinatorConfig {
 
 export const DEFAULT_COORDINATOR_CONFIG: CoordinatorConfig = {
   providerId: "codex",
-  model: null,
-  reasoningLevel: null,
+  model: "gpt-5.4-mini",
+  reasoningLevel: "medium",
   serviceTier: "default",
 };
 
@@ -623,6 +623,33 @@ export class CoordinatorManager {
 
   // ---- replies (voice_reply tool) ----
 
+  /** Recover pre-operator receipts without reviving the retired send path. */
+  private async recoverLegacySend(threadId: string, request: RequestRow): Promise<boolean> {
+    const record = this.store.getMessageSend(request.id);
+    if (!record) return false;
+    if (record.status === "sending") {
+      record.status = "unknown";
+      record.receipt = {action:"send_message",thread_id:record.threadId,outcome:"unknown",note:"The earlier send has no confirmed result; do not resend."};
+      this.store.putMessageSend(request.id,record);
+    }
+    await this.recordReply(threadId,{request_id:request.id,kind:"final",
+      speech:record.status === "unknown" ? "I could not confirm message delivery. I will not send it again automatically." : `Your message is ${record.status === "queued" ? "queued" : "sent"}.`,
+      thread_ids:[record.threadId],receipts:record.receipt ? [record.receipt] : []});
+    return true;
+  }
+
+  /** A tool result is more reliable than trailing coordinator text after dispatch. */
+  private async recoverActionReply(threadId: string, request: RequestRow): Promise<boolean> {
+    if (!this.actions.store.hasGroup(request.id)) return false;
+    if (this.actions.isRunning(request.id)) return true;
+    const unknown: ActionResult = {status:"unknown",speech:"An earlier action has no confirmed result. I have not repeated it.",detail:"Inspect the recorded action before retrying.",threadIds:[],receipts:[{action:"voice_actions",outcome:"unknown"}]};
+    const saved = this.actions.store.results(request.id);
+    const result = combineResults(saved.length ? saved.map(value => value ?? unknown) : [unknown]);
+    await this.recordReply(threadId,{request_id:request.id,kind:"final",speech:result.speech,
+      detail:result.detail,thread_ids:result.threadIds,receipts:result.receipts});
+    return true;
+  }
+
   async recordReply(callingThreadId: string, params: VoiceReplyParams): Promise<PluginAgentToolResult> {
     const conversation = this.store.conversationByCoordinator(callingThreadId);
     if (!conversation || conversation.coordinatorThreadId !== callingThreadId) {
@@ -642,7 +669,11 @@ export class CoordinatorManager {
       else return "This batch is no longer waiting for a reply; keep late output internal.";
     }
     const request = requestId ? this.store.getRequest(requestId) : null;
+    if (requestId && this.actions.isRunning(requestId)) return "Actions are still pending. Wait for their recorded results before replying.";
     if (!bootstrap && !requestId && !batchId) return "No active request or batch: keep this intermediate text internal.";
+    if (params.sequence && (params.kind !== "final" || !request || request.status !== "accepted" || batchId || !conversation.currentCallNonce || request.callNonce !== conversation.currentCallNonce || params.speech.trim())) {
+      return {content:[{type:"text",text:"A sequence requires a final reply for this call's active request, with empty speech. Put each spoken message in a speech step."}],isError:true};
+    }
     const debugRequested = /debug|diagnos|troubleshoot|coordinator.*(?:log|status|work)/i.test(request?.envelope.originalText ?? "");
     const routingNoise = /\bcoordinator[’']?s?\b|\b(?:internal RPC|model routing|delegation plumbing)\b/i.test(params.speech);
     const internal = params.kind === "silent" || (!batchId && params.kind === "assigned");
@@ -652,6 +683,7 @@ export class CoordinatorManager {
     if (batchId && params.kind === "assigned") return "Assignment is internal. Use silent for this batch, or report a material result.";
     const previousReplies = requestId ? this.store.listReplies(conversation.id,{requestId}) : [];
     if (request?.status === "settled" && !conversation.state.activeTasks.some(task=>task.requestId === request.id)) return "This request has ended; do not open another reply turn.";
+    if (previousReplies.some(reply => reply.kind === "final")) return "A final reply is already recorded; this request has ended.";
     if (params.kind === "assigned" && previousReplies.some(reply=>reply.kind === "assigned")) return "Assignment already reported.";
     if (params.kind === "blocked" && previousReplies.some(reply=>reply.kind === "blocked" && reply.body.speech === params.speech)) return "This blocker was already reported.";
     if (params.kind === "assigned" && !(params.receipts ?? []).some(receipt=>receipt.thread_id && (receipt.outcome === "done" || receipt.outcome === "pending"))) return "Assignment requires an actual thread receipt.";
@@ -678,6 +710,7 @@ export class CoordinatorManager {
 
     const body: StoredReply = {
       speech: truncateSpeech(params.speech, 1200),
+      ...(params.sequence ? {sequence:params.sequence} : {}),
       detail: params.detail ?? null,
       threadIds,
       receipts: params.receipts ?? [],
@@ -706,7 +739,7 @@ export class CoordinatorManager {
     }
     const kind = batchId ? "update" : params.kind;
     const addressedCall = this.callForReply(conversation, request, batchId);
-    const ready = kind !== "final";
+    const ready = true;
     const reply = this.store.recordReply({
       conversationId: conversation.id,
       requestId,
@@ -719,16 +752,15 @@ export class CoordinatorManager {
       delivery: addressedCall ? "pending" : "deferred",
       targetCallNonce: addressedCall,
     });
+    if (request && kind === "final") this.settleRequest(request.id, reply.id);
     if (batchId) this.store.setBatchStatus(batchId, "answered");
     if (!addressedCall && ready) this.deferReplyToInbox(conversation, reply);
     else if (ready) this.publishReply(reply);
     if (request && kind === "final") {
-      // Settlement happens on the coordinator's idle event, when the work behind
-      // this reply has actually stopped. Track that a structured reply exists.
-      this.bb.log.info(`voice reply ${reply.id} (final) recorded for ${request.id}; spoken after the coordinator turn settles`);
+      this.bb.log.info(`voice reply ${reply.id} committed for ${request.id}; ready for playback`);
     }
     this.publishStatus(conversation.id);
-    return `Recorded ${kind} reply ${reply.id}${ready ? "" : " (spoken when your turn settles)"}.`;
+    return `Recorded ${kind} reply ${reply.id}.${kind === "final" ? " This request is complete. Do not repeat its actions or reply again." : ""}`;
   }
 
   private callForReply(conversation: ConversationRow, request: RequestRow | null, batchId: string | null): string | null {
@@ -770,6 +802,7 @@ export class CoordinatorManager {
       receipts: reply.body.receipts,
       targetCallNonce: reply.targetCallNonce,
       createdAt: reply.createdAt,
+      ...(reply.body.sequence ? {sequence:reply.body.sequence} : {}),
     };
     this.bb.realtime.publish(REPLY_CHANNEL, payload);
   }
@@ -795,13 +828,14 @@ export class CoordinatorManager {
         receipts: reply.body.receipts,
         targetCallNonce: reply.targetCallNonce,
         createdAt: reply.createdAt,
+      ...(reply.body.sequence ? {sequence:reply.body.sequence} : {}),
       }));
   }
 
   /** The bridge reports what the user actually heard. */
   reportDelivery(replyId: string, state: "generated" | "playing" | "delivered" | "interrupted" | "partial" | "held" | "superseded" | "mismatch", callNonce: string): void {
     const reply = this.store.getReply(replyId);
-    if (!reply) return;
+    if (!reply || reply.body.sequence) return;
     if (reply.targetCallNonce && reply.targetCallNonce !== callNonce) {
       this.bb.log.warn(`reply ${replyId} delivery report from call ${callNonce} ignored (addressed to ${reply.targetCallNonce})`);
       return;
@@ -1030,8 +1064,7 @@ export class CoordinatorManager {
       const queuedRequests = accepted.filter((request) => request.receipt?.delivery === "queued");
       const keep = Math.max(0, Math.min(thread.queuedMessageCount, queuedRequests.length));
       const stillQueued = new Set(keep === 0 ? [] : queuedRequests.slice(-keep).map((request) => request.id));
-      // An assignment may have settled the initiating turn. A later worker
-      // result still waits for THIS coordinator turn to settle before speaking.
+      // Compatibility for final replies persisted by versions that waited for idle.
       for (const reply of this.store.listReplies(conversation.id, { ready: false })) {
         if (reply.kind !== "final" || (reply.requestId && stillQueued.has(reply.requestId))) continue;
         const ready = this.store.updateReply(reply.id, { ready: true });
@@ -1040,6 +1073,7 @@ export class CoordinatorManager {
       }
       for (const request of accepted) {
         if (stillQueued.has(request.id)) continue;
+        if (await this.recoverLegacySend(threadId, request) || await this.recoverActionReply(threadId, request)) continue;
         const replies = this.store.listReplies(conversation.id, { requestId: request.id }).filter((reply) => reply.createdAt >= (request.dispatchedAt ?? 0) && reply.source !== "bridge");
         if (!replies.some(reply => reply.kind !== "progress")) this.fallbackReply(conversation, request, lastAssistantText);
         if (request.callNonce === conversation.currentCallNonce && replies.some(reply => reply.kind === "assigned")) {
@@ -1091,7 +1125,10 @@ export class CoordinatorManager {
     const conversation = this.store.conversationByCoordinator(threadId);
     if (!conversation) return;
     const open = this.store.listRequests(conversation.id, ["accepted", "dispatching", "dispatch_unknown"]);
+    const failed: RequestRow[] = [];
     for (const request of open) {
+      if (await this.recoverLegacySend(threadId, request) || await this.recoverActionReply(threadId, request)) continue;
+      failed.push(request);
       this.store.updateRequest(request.id, { status: "failed", error: error ?? "coordinator failed" });
       this.onRequestEnded(request.id);
     }
@@ -1099,7 +1136,7 @@ export class CoordinatorManager {
       this.store.setBatchStatus(batch.id, "failed");
       this.markBatchUpdates(batch.id, "queued");
     }
-    if (open.length > 0) this.recordFailureReply(conversation, open[0].id, `I could not finish that request. Please try again.`);
+    if (failed.length > 0) this.recordFailureReply(conversation, failed[0].id, `I could not finish that request. Please try again.`);
     await this.releaseIfSettled(conversation.id);
   }
 

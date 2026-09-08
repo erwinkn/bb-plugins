@@ -2,6 +2,7 @@
 // through the plugin's append-only migration list (see server.ts), and every
 // JSON column is re-validated on read so a stale or hand-edited row cannot
 // crash the bridge.
+import { narratedSequenceSchema } from "../narrated-sequence.ts";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import {
@@ -20,6 +21,17 @@ import {
 export const QUICK_ACTION_MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS voice_quick_cancellations (call_nonce TEXT NOT NULL, request_id TEXT NOT NULL, PRIMARY KEY (call_nonce, request_id))`,
 ];
+
+// Retained at its original migration index for installed pre-operator databases.
+export const MESSAGE_SEND_MIGRATIONS = [
+  `CREATE TABLE IF NOT EXISTS voice_message_sends (request_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL)`,
+];
+const messageSendSchema = z.object({
+  threadId: z.string(), title: z.string(), text: z.string(), mode: z.enum(["queue", "steer"]),
+  status: z.enum(["sending", "sent", "queued", "unknown"]),
+  receipt: actionReceiptSchema.optional(),
+});
+export type MessageSendRecord = z.infer<typeof messageSendSchema>;
 
 export const COORDINATOR_MIGRATIONS: string[] = [
   `CREATE TABLE IF NOT EXISTS voice_conversations (
@@ -203,6 +215,7 @@ export const storedReplySchema = z
     threadIds: z.array(z.string()),
     receipts: z.array(actionReceiptSchema),
     focusThreadId: z.string().nullable(),
+    sequence: narratedSequenceSchema.optional(),
   })
   .strict();
 export type StoredReply = z.infer<typeof storedReplySchema>;
@@ -282,6 +295,16 @@ export function newId(prefix: string): string {
 /** Typed access to the coordinator tables. All methods are synchronous SQLite. */
 export class CoordinatorStore {
   constructor(private readonly db: Database.Database, private readonly now: () => number = Date.now) {}
+
+  getMessageSend(requestId: string): MessageSendRecord | null {
+    const row = this.db.prepare("SELECT payload_json FROM voice_message_sends WHERE request_id = ?").get(requestId) as {payload_json: string} | undefined;
+    return row ? messageSendSchema.parse(JSON.parse(row.payload_json)) : null;
+  }
+
+  putMessageSend(requestId: string, value: MessageSendRecord) {
+    this.db.prepare("INSERT INTO voice_message_sends (request_id, payload_json) VALUES (?, ?) ON CONFLICT(request_id) DO UPDATE SET payload_json = excluded.payload_json")
+      .run(requestId, JSON.stringify(messageSendSchema.parse(value)));
+  }
 
   // ---- conversations ----
 
@@ -374,7 +397,15 @@ export class CoordinatorStore {
   // ---- requests ----
 
   private rowToRequest(row: Record<string, unknown>): RequestRow | null {
-    const envelope = userRequestEnvelopeSchema.safeParse(parseJson(row.envelope_json as string, null));
+    const stored = parseJson<Record<string, unknown> | null>(row.envelope_json as string, null);
+    // A shipped local version called an actionable message "request". Decode
+    // that historical label without admitting it into the current tool schema.
+    const action = stored?.quickAction;
+    if (action && typeof action === "object" && !Array.isArray(action)) {
+      const legacy = action as Record<string, unknown>;
+      if (legacy.kind === "send_message" && legacy.purpose === "request") legacy.purpose = "instruction";
+    }
+    const envelope = userRequestEnvelopeSchema.safeParse(stored);
     if (!envelope.success) return null;
     return {
       id: row.id as string,

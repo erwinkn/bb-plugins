@@ -44,7 +44,7 @@ test("session history and plugin logs preserve the same actions and error detail
 });
 
 test("realtime tools expose bounded quick actions without destructive or arbitrary tools", () => {
-  assert.deepEqual(coordinatorToolSchemas().map(tool => tool.name), ["read_thread", "lookup_targets", "quick_action", "delegate_to_coordinator", "remain_silent", "end_call"]);
+  assert.deepEqual(coordinatorToolSchemas().map(tool => tool.name), ["sequence_control", "read_thread", "lookup_targets", "quick_action", "delegate_to_coordinator", "remain_silent", "end_call"]);
 });
 
 test("obsolete view preferences are ignored without changing other saved settings", async () => {
@@ -166,4 +166,59 @@ test("upgrade from the original five migrations preserves saved prompts and adds
     assert.equal(history.events[0].callId, "old-call");
     assert.equal((await harness.behavior.callRpc("claimCall", { nonce: "new" }) as any).sequence, 1);
   } finally { await harness.lifecycle.dispose(); }
+});
+
+test("new coordinator defaults use GPT-5.4 mini at medium without overwriting saved choices",async()=>{
+  const cases=[
+    [undefined,{providerId:"codex",model:"gpt-5.4-mini",reasoningLevel:"medium",serviceTier:"default"}],
+    [{providerId:"codex",model:null,reasoningLevel:null,serviceTier:"fast"},{providerId:"codex",model:null,reasoningLevel:null,serviceTier:"fast"}],
+    [{providerId:"codex",model:"gpt-5.4-mini",reasoningLevel:null,serviceTier:"fast"},{providerId:"codex",model:"gpt-5.4-mini",reasoningLevel:null,serviceTier:"fast"}],
+    [{providerId:"other"},{providerId:"other",model:null,reasoningLevel:null,serviceTier:"default"}],
+  ] as const;
+  for(const [saved,expected] of cases) {
+    const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+    try {
+      if(saved)await bb.storage.kv.set("config",{coordinator:saved});
+      await plugin(bb);
+      const config=await harness.behavior.callRpc("getConfig",null) as any;
+      assert.deepEqual(config.coordinator,expected);
+    }finally{await harness.lifecycle.dispose();}
+  }
+});
+
+test("live transcripts coalesce without durable token logs and reject stale calls or revisions", async t => {
+  const {bb,harness} = createFakePluginHost({pluginId:"voice-mode"});
+  t.after(() => harness.lifecycle.dispose()); await plugin(bb);
+  await harness.behavior.callRpc("claimCall", {nonce:"stream-call"});
+  const before = (bb.storage.database().prepare("SELECT count(*) n FROM session_events").get() as any).n;
+  const snapshot = {callNonce:"stream-call",revision:2,items:[{key:"user:u",kind:"user",ts:10,payload:{itemId:"u",text:"Check the build",partial:true}}]};
+  assert.deepEqual(await harness.behavior.callRpc("publishTranscript", snapshot),{ok:true});
+  assert.deepEqual(await harness.behavior.callRpc("publishTranscript", {...snapshot,revision:1,items:[]}),{ok:false});
+  assert.deepEqual(await harness.behavior.callRpc("getLiveTranscript", null),snapshot);
+  assert.equal((bb.storage.database().prepare("SELECT count(*) n FROM session_events").get() as any).n,before);
+  await harness.behavior.callRpc("claimCall", {nonce:"other-device"});
+  assert.deepEqual(await harness.behavior.callRpc("publishTranscript", {...snapshot,revision:3}),{ok:false});
+  assert.deepEqual(await harness.behavior.callRpc("getLiveTranscript", null),{callNonce:null,revision:0,items:[]});
+});
+
+test("call configuration leaves interruption and response creation to validated words", async t => {
+  const {bb,harness} = createFakePluginHost({pluginId:"voice-mode",settings:{openaiApiKey:"sk-test"}});
+  t.after(() => harness.lifecycle.dispose()); await plugin(bb);
+  await harness.behavior.callRpc("claimCall", {nonce:"config-call"});
+  let config: any;
+  t.mock.method(globalThis,"fetch", async (_url: unknown, init?: RequestInit) => {config=JSON.parse((init!.body as FormData).get("session") as string);return new Response("answer");});
+  await harness.behavior.callRpc("createCall", {nonce:"config-call",sdp:"offer",threadId:null,projectId:null});
+  assert.equal(config.audio.input.turn_detection.interrupt_response,false);
+  assert.equal(config.audio.input.turn_detection.create_response,false);
+  assert.deepEqual(config.audio.input.transcription,{model:"gpt-realtime-whisper",delay:"minimal"});
+});
+
+
+test("assistant drafts with request and playback identity cross the strict live transcript RPC", async t => {
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+  t.after(()=>harness.lifecycle.dispose());await plugin(bb);
+  await harness.behavior.callRpc("claimCall",{nonce:"assistant-draft"});
+  const snapshot={callNonce:"assistant-draft",revision:1,items:[{key:"assistant:item",ts:1,kind:"assistant",payload:{itemId:"item",text:"The build",partial:true,responseId:"response",requestId:"request",replyId:null,userTurn:1,source:"realtime"}}]};
+  assert.deepEqual(await harness.behavior.callRpc("publishTranscript",snapshot),{ok:true});
+  assert.deepEqual(await harness.behavior.callRpc("getLiveTranscript",null),snapshot);
 });

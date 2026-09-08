@@ -133,3 +133,13 @@ test("a lost successful report response can be acknowledged after request settle
     assert.equal(manager.report({ ...claim, result: { ...result, detail: "different" } }).accepted, false);
   } finally { manager.dispose(); db.close(); }
 });
+
+test("an elapsed timeout resolves even if wall time has not reached expiresAt",async t=>{
+  const h=setup(5);
+  t.mock.method(Date,"now",()=>1000);
+  try {
+    const waiting=h.manager.issue(h.input);
+    h.manager.claim({...h.identity,commandId:h.commands[0].id});
+    assert.equal((await waiting).status,"unknown");
+  }finally{h.close();}
+});

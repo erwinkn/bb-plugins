@@ -1,7 +1,9 @@
+import { TranscriptBuffer } from "./live-transcript.ts";
 // Voice session singleton for one loaded plugin module. Web slots share it;
 // separate windows/native webviews have separate instances. Presence and call
 // controls cross those boundaries, but opening views stays local to the caller.
 import { toast } from "sonner";
+import { hasSpokenWords } from "./spoken-input.ts";
 import type { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import {
@@ -149,6 +151,7 @@ export class VoiceAgent {
     if (this.uiConnected === connected) return;
     this.resetUiRecovery();
     this.uiConnected = connected;
+    if (!connected) this.bridge?.pauseSequence("The connection was lost.",true);
     this.uiReady = false;
     this.uiConnectionGeneration++;
     this.bufferedUiCommands.clear();
@@ -339,6 +342,18 @@ export class VoiceAgent {
   private spokenTurns = new Set<number>();
   private playbackResponseId: string | null = null;
   private interruptedResponses = new Set<string>();
+  private completedPlayback = new Set<string>();
+  private completedResponses = new Set<string>();
+  private cancellationEvents = new Map<string, {responseId: string; reason: string}>();
+  private rejectedToolCalls = new Set<string>();
+  private clearedInterruptedPlayback = new Set<string>();
+  private inputSegment: {itemId: unknown; startedAt: number; audioStartMs: number | null; playbackResponseId: string | null; activeResponseId: string | null} | null = null;
+  private transcriptBuffer = new TranscriptBuffer();
+  private transcriptTimer: ReturnType<typeof setTimeout> | null = null;
+  private transcriptSend: Promise<unknown> | null = null;
+  private transcriptDirty = false;
+  private inputOrder = 0;
+  private inputItems = new Map<string, { order: number; startedAt: number; speaking: boolean; confirmed: boolean; complete: boolean; requested: boolean; text: string; timer: ReturnType<typeof setTimeout> | null }>();
   private responseIdentity = new Map<string, { userTurn: number; requestId: string | null; replyId: string | null; source: string }>();
   /** end_call was requested; the call ends once the goodbye has played. */
   private endCallAfterResponse = false;
@@ -1054,7 +1069,7 @@ export class VoiceAgent {
    */
   private requestResponse(dc: RTCDataChannel) {
     if (dc.readyState !== "open") return;
-    if (this.responseActive || this.userSpeaking || (this.userTurnPending && this.responseUserTurn !== this.userTurn)) {
+    if (this.responseActive || this.userSpeaking || this.inputPending() || (this.userTurnPending && this.responseUserTurn !== this.userTurn)) {
       this.responsePending = true;
       return;
     }
@@ -1067,7 +1082,19 @@ export class VoiceAgent {
 
   stop() {
     const endedNonce = this.nonce;
-    if (endedNonce) this.log("session.stopped");
+    if (endedNonce) {
+      for (const item of this.transcriptBuffer.unfinished()) {
+        if (hasSpokenWords(item.payload.text)) this.log(item.kind, { ...item.payload, partial: false, unfinished: true });
+      }
+      if (this.playbackResponseId) this.log("speech.lifecycle", {responseId:this.playbackResponseId,state:"interrupted",...this.responseIdentity.get(this.playbackResponseId),reason:"hangup"});
+      this.log("session.stopped");
+    }
+    if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
+    this.transcriptTimer = null;
+    this.transcriptSend = null; this.transcriptDirty = false;
+    this.transcriptBuffer.reset();
+    for (const item of this.inputItems.values()) if (item.timer) clearTimeout(item.timer);
+    this.inputItems.clear(); this.inputOrder = 0;
     this.endCallAfterResponse = false;
     if (this.bridge) {
       this.bridge.dispose("hangup");
@@ -1178,6 +1205,13 @@ export class VoiceAgent {
         status = "success";
         label = "Request recorded";
         this.refreshBridgeSnapshot();
+      } else if (name === "sequence_control") {
+        const origin = this.responseIdentity.get(String(event.response_id));
+        if (!origin || origin.userTurn !== this.userTurn || this.userSpeaking) throw new Error("Wait for the current spoken instruction.");
+        const result = await this.bridge.controlSequence(args);
+        output = result.message;
+        requestResponseAfter = result.status !== "accepted";
+        status = "success";
       } else if (name === "remain_silent") {
         output = this.bridge.remainSilent();
         this.delegatedTurn = this.userTurn;
@@ -1211,6 +1245,146 @@ export class VoiceAgent {
     else this.scheduleReplyDrain();
   }
 
+  /** Publish bounded, replaceable drafts; durable logs contain final text only. */
+  private streamChanged() {
+    this.transcriptDirty = true;
+    if (this.transcriptTimer || this.transcriptSend || !this.nonce) return;
+    const nonce = this.nonce;
+    this.transcriptTimer = setTimeout(() => {
+      this.transcriptTimer = null;
+      if (this.nonce !== nonce || !this.bindings) return;
+      this.transcriptDirty = false;
+      const rpc = this.bindings.rpc, snapshot = this.transcriptBuffer.snapshot(nonce);
+      const pending = Promise.resolve().then(() => rpc.call("publishTranscript", snapshot)).catch(() => {});
+      this.transcriptSend = pending;
+      void pending.finally(() => {
+        if (this.transcriptSend !== pending || this.nonce !== nonce) return;
+        this.transcriptSend = null;
+        if (this.transcriptDirty) this.streamChanged();
+      });
+    }, 100);
+  }
+
+  private completeStream(kind: "user" | "assistant", itemId: string) {
+    this.transcriptBuffer.complete(kind, itemId);
+    const nonce = this.nonce;
+    // Keep the draft until its durable final is saved, so it cannot blink out
+    // between a live snapshot and the history refresh on another device.
+    void (this.logQueue ?? Promise.resolve()).then(() => {
+      if (this.nonce !== nonce) return;
+      this.transcriptBuffer.remove(kind, itemId);
+      this.streamChanged();
+    });
+  }
+
+  private inputItem(itemId: string) {
+    let item = this.inputItems.get(itemId);
+    if (!item) {
+      item = { order: ++this.inputOrder, startedAt: performance.now(), speaking: false, confirmed: false, complete: false, requested: false, text: "", timer: null };
+      this.inputItems.set(itemId, item);
+      // Finished identities remain long enough to reject duplicate late events.
+      if (this.inputItems.size > 300) {
+        const oldest = [...this.inputItems].find(([, value]) => value.complete);
+        if (oldest) this.inputItems.delete(oldest[0]);
+      }
+    }
+    return item;
+  }
+
+  private inputPending() { return [...this.inputItems.values()].some(item => !item.complete); }
+
+  /** A VAD candidate becomes an interruption only after recognised words. */
+  private confirmWords(itemId: string, text: string) {
+    const item = this.inputItem(itemId);
+    if (item.complete || item.confirmed || !hasSpokenWords(text) || item.order < this.userTurn) return;
+    item.confirmed = true;
+    this.userTurn = item.order;
+    this.userTurnPending = true;
+    this.userTurnCommitted = false;
+    this.responsePending = false;
+    this.setUserSpeaking(item.speaking);
+    const generation = this.activeResponseId, playback = this.playbackResponseId;
+    this.log("input.wordsConfirmed", { itemId, userTurn: item.order, sinceDetectionMs: performance.now() - item.startedAt, generation, playback });
+    if (generation) {
+      this.interruptedResponses.add(generation);
+      this.toolResponseIds.delete(generation);
+      this.cancelResponse(generation, "recognised-words");
+    }
+    if (playback) {
+      this.interruptedResponses.add(playback);
+      this.log("speech.lifecycle", { responseId: playback, state: "interrupted", ...this.responseIdentity.get(playback), reason: "recognised-words" });
+      this.session?.dc?.send(JSON.stringify({ type: "output_audio_buffer.clear" }));
+      this.playbackResponseId = null;
+    }
+    this.bridge?.onSpeechStarted();
+    this.setAssistantSpeaking(false);
+    this.scheduleReplyDrain();
+  }
+
+  private completeInput(itemId: string, text: string, error?: Record<string, unknown>) {
+    if (!itemId) return;
+    const item = this.inputItem(itemId);
+    if (item.complete) {
+      if (!item.text && hasSpokenWords(text)) {
+        item.text = text;
+        this.log("user", { text, itemId, userTurn: item.order });
+        this.log("transcription.result", { itemId, userTurn: item.order, outcome: "complete", characters: text.length, late: true });
+        this.completeStream("user", itemId);
+      }
+      return;
+    }
+    if (item.timer) clearTimeout(item.timer);
+    item.timer = null;
+    this.confirmWords(itemId, text);
+    item.complete = true;
+    item.text = text;
+    if (item.order === this.userTurn) this.setUserSpeaking(false);
+    if (hasSpokenWords(text)) {
+      this.log("user", { text, itemId, userTurn: item.order });
+      if (item.order === this.userTurn) {
+        this.userTurnCommitted = true;
+        this.bridge?.onUserItemCommitted(itemId, item.order);
+        this.bridge?.onTranscript(itemId, text);
+      } else {
+        if (this.bridge?.hasUserItem(itemId)) this.bridge.onTranscript(itemId, text);
+        this.log("transcription.result", { itemId, userTurn: item.order, outcome: "complete", characters: text.length, late: true });
+      }
+    } else if (item.confirmed && item.order === this.userTurn) {
+      this.bridge?.onUserItemCommitted(itemId, item.order);
+      this.bridge?.onTranscript(itemId, "", error);
+    } else {
+      if (this.bridge?.hasUserItem(itemId)) this.bridge.onTranscript(itemId, "", error);
+      // Noise owns no semantic turn, and cannot cancel an earlier valid answer.
+      this.log("transcription.result", { itemId, outcome: error ? "failed" : "empty", characters: 0, ...(error ? { error } : {}) });
+    }
+    this.completeStream("user", itemId);
+    this.maybeRespondToInput();
+    this.refreshBridgeSnapshot();
+    this.scheduleReplyDrain();
+  }
+
+  private maybeRespondToInput() {
+    const dc = this.session?.dc;
+    if (!dc || this.inputPending()) return;
+    const items = [...this.inputItems.values()].filter(item => item.order === this.userTurn);
+    if (!this.userTurnPending || this.bridge?.inputUnavailable() || !items.length || items.some(item => !item.complete || item.requested || !hasSpokenWords(item.text))) return;
+    for (const item of items) item.requested = true;
+    this.responseUserTurn = this.userTurn;
+    this.requestResponse(dc);
+  }
+
+  /** Generation may finish well before playback. Never cancel a finished response. */
+  private cancelResponse(responseId: string, reason: string) {
+    const dc = this.session?.dc;
+    if (dc?.readyState !== "open" || this.activeResponseId !== responseId || this.completedResponses.has(responseId)) return;
+    if ([...this.cancellationEvents.values()].some(event => event.responseId === responseId)) return;
+    const eventId = `cancel_${crypto.randomUUID()}`;
+    this.cancellationEvents.set(eventId, {responseId, reason});
+    if (this.cancellationEvents.size > 300) this.cancellationEvents.delete(this.cancellationEvents.keys().next().value!);
+    dc.send(JSON.stringify({type: "response.cancel", response_id: responseId, event_id: eventId}));
+    this.log("response.cancelRequested", {responseId, eventId, reason});
+  }
+
   /** Cancel only the current realtime answer when its input cannot be transcribed. */
   private cancelUntranscribedResponse(turn: number) {
     if (turn !== this.userTurn) return;
@@ -1222,7 +1396,7 @@ export class VoiceAgent {
     if (id && this.responseIdentity.get(id)?.source === "realtime" && this.responseIdentity.get(id)?.userTurn === turn) {
       this.toolResponseIds.delete(id);
       this.interruptedResponses.add(id);
-      dc?.send(JSON.stringify({type: "response.cancel", response_id: id}));
+      this.cancelResponse(id, "transcript-unavailable");
       this.log("response.ignored", {responseId: id, reason: "transcript-unavailable", userTurn: turn});
     }
     const playback = this.playbackResponseId;
@@ -1253,7 +1427,7 @@ export class VoiceAgent {
       log: (kind: string, payload: Record<string, unknown> = {}) => this.log(kind, payload),
       facts: () => ({
         userSpeaking: this.userSpeaking,
-        inputUnresolved: this.userTurnPending && this.responseUserTurn !== this.userTurn,
+        inputUnresolved: this.inputPending() || (this.userTurnPending && this.responseUserTurn !== this.userTurn),
         responseActive: this.responseActive,
         assistantSpeaking: this.assistantSpeaking,
         responsePending: this.responsePending,
@@ -1272,6 +1446,11 @@ export class VoiceAgent {
         this.setResponseActive(true);
       },
       changed: () => this.refreshBridgeSnapshot(),
+      cancelResponse: (responseId: string, reason: string) => this.cancelResponse(responseId, reason),
+      subscribeNavigation: (listener:()=>void) => {
+        let route=nativeUi.snapshot().route;
+        return nativeUi.subscribe(()=>{const next=nativeUi.snapshot().route;if(next!==route){route=next;listener();}});
+      },
       inputUnavailable: (turn: number) => this.cancelUntranscribedResponse(turn),
       cancelQuickRequest: (requestId: string) => { this.cancelledQuickRequests.add(requestId); },
     };
@@ -1294,6 +1473,12 @@ export class VoiceAgent {
       this.delegatedTurn = null;
       this.spokenTurns.clear();
       this.interruptedResponses.clear();
+      this.completedPlayback.clear();
+      this.completedResponses.clear();
+      this.cancellationEvents.clear();
+      this.rejectedToolCalls.clear();
+      this.clearedInterruptedPlayback.clear();
+      this.inputSegment = null;
       this.responseIdentity.clear();
       this.playbackResponseId = null;
       const selectedConversationId = this.nextConversationId;
@@ -1382,7 +1567,12 @@ export class VoiceAgent {
               : `microphone error (${name})`,
         );
       }
-      this.logDiag("audio.getUserMedia.ok", { deviceId: inputId || "default" });
+      const micTrack = stream.getAudioTracks()[0];
+      const micSettings = micTrack?.getSettings?.();
+      this.logDiag("audio.getUserMedia.ok", { deviceId: inputId || "default",
+        settings: micSettings ? {sampleRate: micSettings.sampleRate, channelCount: micSettings.channelCount,
+          echoCancellation: micSettings.echoCancellation, noiseSuppression: micSettings.noiseSuppression,
+          autoGainControl: micSettings.autoGainControl} : null });
       if (transferFromNonce && !await claimOwnership()) {
         stream.getTracks().forEach(track => track.stop());
         return;
@@ -1505,7 +1695,7 @@ export class VoiceAgent {
         const bridge = this.bridge;
         const responseData = event.response as Record<string, unknown> | undefined;
         const eventResponseId = typeof event.response_id === "string" ? event.response_id : typeof responseData?.id === "string" ? responseData.id : null;
-        if (/^(input_audio_buffer\.|output_audio_buffer\.|response\.(created|done))/.test(type) || type === "conversation.item.input_audio_transcription.failed") {
+        if (/^(input_audio_buffer\.|output_audio_buffer\.|response\.(created|done))/.test(type) || type === "conversation.item.input_audio_transcription.failed" || type === "conversation.item.truncated") {
           this.log("realtime.event", { eventType: type, responseId: eventResponseId, itemId: event.item_id ?? null,
             userTurn: this.userTurn, monotonicMs: performance.now(), audioStartMs: event.audio_start_ms ?? null, audioEndMs: event.audio_end_ms ?? null, status: responseData?.status ?? null,
             statusDetails: responseData?.status_details ?? null, activeResponseId: this.activeResponseId, playbackResponseId: this.playbackResponseId });
@@ -1518,10 +1708,10 @@ export class VoiceAgent {
           if (bridge && metadata?.bb_voice_source === "coordinator_reply" && !bridge.speechIdentity(this.activeResponseId)) {
             const staleId = this.activeResponseId;
             if (staleId) this.interruptedResponses.add(staleId);
-            dc.send(JSON.stringify({type:"response.cancel",response_id:staleId}));
+            if (staleId) this.cancelResponse(staleId, "reply-superseded");
             this.log("response.ignored", {responseId:staleId,replyId:metadata.bb_reply_id,reason:"reply was interrupted or replaced before generation started"});
-            this.activeResponseId = null;
-            this.setResponseActive(false);
+            // Keep the generation slot until response.done, including cancellation races.
+            this.setResponseActive(true);
             this.scheduleReplyDrain();
             return;
           }
@@ -1531,17 +1721,30 @@ export class VoiceAgent {
             this.responseIdentity.set(this.activeResponseId, {userTurn:this.userTurn, requestId:identity?.requestId ?? null, replyId:identity?.replyId ?? null, source:identity?.source ?? (background ? "background" : "realtime")});
             if (this.responseIdentity.size > 300) {
               const oldest = this.responseIdentity.keys().next().value!;
-              this.responseIdentity.delete(oldest); this.interruptedResponses.delete(oldest);
+              this.responseIdentity.delete(oldest); this.interruptedResponses.delete(oldest); this.completedPlayback.delete(oldest);
+              this.completedResponses.delete(oldest); this.clearedInterruptedPlayback.delete(oldest);
             }
           }
           if (this.activeResponseId && !background) this.toolResponseIds.add(this.activeResponseId);
           this.responseUserTurn = this.userTurnPending && this.userTurnCommitted && !this.userSpeaking && !background ? this.userTurn : null;
           this.setResponseActive(true);
-          if (!background && bridge?.inputUnavailable()) this.cancelUntranscribedResponse(this.userTurn);
+          if (!background && (bridge?.inputUnavailable() || !this.userTurnPending)) this.cancelUntranscribedResponse(this.userTurn);
           this.scheduleReplyDrain();
         } else if (type === "output_audio_buffer.started") {
           const id = eventResponseId ?? this.activeResponseId;
-          if (!id || !this.responseIdentity.has(id) || this.interruptedResponses.has(id)) return;
+          if (id && this.interruptedResponses.has(id)) {
+            // Ignoring the UI event does not stop the audio. Clear late playback,
+            // but never clear a different response that has since taken its place.
+            if ((!this.playbackResponseId || this.playbackResponseId === id) &&
+                (!this.activeResponseId || this.activeResponseId === id) && !this.clearedInterruptedPlayback.has(id)) {
+              this.cancelResponse(id, "interrupted-playback");
+              dc.send(JSON.stringify({type: "output_audio_buffer.clear"}));
+              this.clearedInterruptedPlayback.add(id);
+              this.log("speech.discarded", {responseId: id, reason: "late playback after interruption"});
+            }
+            return;
+          }
+          if (!id || !this.responseIdentity.has(id) || this.interruptedResponses.has(id) || this.completedPlayback.has(id)) return;
           this.playbackResponseId = id;
           this.setAssistantSpeaking(true);
           const identity = this.responseIdentity.get(id)!;
@@ -1553,48 +1756,75 @@ export class VoiceAgent {
           const id = eventResponseId ?? this.playbackResponseId;
           if (!id || id !== this.playbackResponseId) return;
           this.log("speech.lifecycle", {responseId:id,state:type.endsWith("stopped") ? "delivered" : "interrupted",...this.responseIdentity.get(id),monotonicMs:performance.now()});
-          this.interruptedResponses.add(id);
+          if (type.endsWith("cleared")) this.interruptedResponses.add(id);
+          else this.completedPlayback.add(id);
           this.playbackResponseId = null;
           this.setAssistantSpeaking(false);
           if (type.endsWith("stopped")) bridge?.onAudioStopped(id); else bridge?.onAudioCleared(id);
           if (this.endCallAfterResponse && !this.responseActive) { this.stop(); return; }
           this.scheduleReplyDrain();
         } else if (type === "input_audio_buffer.speech_started") {
-          this.userTurn += 1;
-          this.userTurnPending = true;
-          this.userTurnCommitted = false;
-          this.setUserSpeaking(true);
-          if (this.activeResponseId) this.interruptedResponses.add(this.activeResponseId);
-          if (this.playbackResponseId) this.interruptedResponses.add(this.playbackResponseId);
-          if (this.playbackResponseId) this.log("speech.lifecycle", {responseId:this.playbackResponseId,state:"interrupted",...this.responseIdentity.get(this.playbackResponseId),monotonicMs:performance.now(),reason:"user-speech"});
-          this.playbackResponseId = null;
-          bridge?.onSpeechStarted();
+          bridge?.onInputDetected();
+          this.inputSegment = {itemId: event.item_id ?? null, startedAt: performance.now(),
+            audioStartMs: typeof event.audio_start_ms === "number" ? event.audio_start_ms : null,
+            playbackResponseId: this.playbackResponseId, activeResponseId: this.activeResponseId};
+          if (typeof event.item_id !== "string" || !event.item_id) return;
+          const candidate = this.inputItem(event.item_id);
+          if (!candidate.complete) candidate.speaking = true;
+          if (candidate.confirmed && candidate.order === this.userTurn) this.setUserSpeaking(true);
+          // Detect sound without touching the current response or its playback.
           this.scheduleReplyDrain();
-          // Belt-and-suspenders: a new user turn always clears "Aide speaking",
-          // so a missed stopped/cleared event can never leave it stuck on.
-          this.setAssistantSpeaking(false);
         } else if (type === "input_audio_buffer.speech_stopped") {
-          this.setUserSpeaking(false);
+          const segment = this.inputSegment;
+          const track = stream.getAudioTracks()[0];
+          this.log("audio.inputSegment", {itemId: event.item_id ?? null, userTurn: this.userTurn,
+            durationMs: segment && segment.itemId === event.item_id && segment.audioStartMs !== null && typeof event.audio_end_ms === "number" ? event.audio_end_ms - segment.audioStartMs : null,
+            detectedForMs: segment ? performance.now() - segment.startedAt : null,
+            interruptedPlaybackResponseId: segment?.playbackResponseId ?? null,
+            interruptedGenerationResponseId: segment?.activeResponseId ?? null,
+            microphone: {enabled: track?.enabled ?? null, muted: track?.muted ?? null, readyState: track?.readyState ?? null}});
+          this.inputSegment = null;
+          if (typeof event.item_id !== "string" || !event.item_id) return;
+          const candidate = this.inputItem(event.item_id);
+          candidate.speaking = false;
+          if (candidate.confirmed && candidate.order === this.userTurn) this.setUserSpeaking(false);
           this.scheduleReplyDrain();
         } else if (type === "input_audio_buffer.committed") {
-          if (!this.userTurnPending && !bridge?.hasUserItem(String(event.item_id ?? ""))) {
-            this.userTurn += 1;
-            this.userTurnPending = true;
+          const itemId = String(event.item_id ?? "");
+          if (!itemId) return;
+          const existing = this.inputItems.has(itemId);
+          const candidate = this.inputItem(itemId);
+          // Multiple commits without another VAD start belong to the same
+          // unfinished utterance. Missing words there must still block work.
+          if (!existing && this.userTurnPending && [...this.inputItems.values()].some(item => item !== candidate && item.order === this.userTurn && item.confirmed && !item.complete)) {
+            candidate.order = this.userTurn;
+            candidate.confirmed = true;
           }
-          this.userTurnCommitted = true;
-          bridge?.onUserItemCommitted(String(event.item_id ?? ""));
-          if (bridge?.inputUnavailable()) {
-            this.userTurnPending = false;
-            this.userTurnCommitted = false;
+          if (candidate.confirmed) this.bridge?.onUserItemCommitted(itemId, candidate.order);
+          if (!candidate.complete && !candidate.timer) {
+            candidate.timer = setTimeout(() => this.completeInput(itemId, "", { code: "transcript_timeout", message: "No final transcript arrived." }), 4000);
           }
+        } else if (type === "conversation.item.input_audio_transcription.delta") {
+          const itemId = String(event.item_id ?? "");
+          if (!itemId || this.inputItem(itemId).complete) return;
+          const draft = this.transcriptBuffer.delta("user", itemId, String(event.delta ?? ""), Date.now(), {}, typeof event.event_id === "string" ? event.event_id : undefined);
+          if (draft) { this.confirmWords(itemId, draft.payload.text); this.streamChanged(); }
         } else if (type === "conversation.item.input_audio_transcription.failed") {
           const error = event.error as Record<string, unknown> | undefined;
-          bridge?.onTranscriptFailed(String(event.item_id ?? ""), Object.fromEntries(
+          this.completeInput(String(event.item_id ?? ""), "", Object.fromEntries(
             ["code", "type", "message"].filter(key => typeof error?.[key] === "string").map(key => [key, String(error![key]).slice(0, 1000)])));
-          this.refreshBridgeSnapshot();
         } else if (type === "response.function_call_arguments.done") {
           if (typeof event.response_id !== "string" || !this.toolResponseIds.has(event.response_id)) {
-            this.log("tool.blocked", { reason: "Response is not authorized to call tools", name: event.name });
+            this.log("tool.blocked", { reason: "Response is not authorized to call tools", name: event.name, responseId: event.response_id, callId: event.call_id });
+            // Close a known rejected conversational call without executing it or
+            // requesting another answer. A dangling tool call poisons later turns.
+            if (typeof event.response_id === "string" && this.responseIdentity.get(event.response_id)?.source === "realtime" &&
+                this.interruptedResponses.has(event.response_id) && typeof event.call_id === "string" && !this.rejectedToolCalls.has(event.call_id)) {
+              this.rejectedToolCalls.add(event.call_id);
+              if (this.rejectedToolCalls.size > 300) this.rejectedToolCalls.delete(this.rejectedToolCalls.values().next().value!);
+              dc.send(JSON.stringify({type: "conversation.item.create", item: {type: "function_call_output", call_id: event.call_id,
+                output: "Not executed: this response was interrupted or its input could not be transcribed. Wait silently for the user's next instruction."}}));
+            }
             return;
           }
           this.pendingToolCalls += 1;
@@ -1610,10 +1840,13 @@ export class VoiceAgent {
               this.scheduleReplyDrain();
             });
         } else if (type === "conversation.item.input_audio_transcription.completed") {
-          const text = String(event.transcript ?? "").trim();
-          if (text) this.log("user", { text, itemId: event.item_id ?? null, userTurn: bridge?.transcriptTurn(String(event.item_id ?? "")) ?? this.userTurn });
-          bridge?.onTranscript(String(event.item_id ?? ""), text);
-          this.refreshBridgeSnapshot();
+          this.completeInput(String(event.item_id ?? ""), String(event.transcript ?? "").trim());
+        } else if (type === "response.output_audio_transcript.delta" || type === "response.audio_transcript.delta") {
+          const itemId = String(event.item_id ?? "");
+          const identity = eventResponseId ? this.responseIdentity.get(eventResponseId) : undefined;
+          if (itemId && identity) {
+            if (this.transcriptBuffer.delta("assistant", itemId, String(event.delta ?? ""), Date.now(), { ...identity, responseId: eventResponseId }, typeof event.event_id === "string" ? event.event_id : undefined)) this.streamChanged();
+          }
         } else if (
           type === "response.output_audio_transcript.done" ||
           type === "response.audio_transcript.done"
@@ -1624,10 +1857,15 @@ export class VoiceAgent {
             if (identity?.source === "realtime") this.spokenTurns.add(identity.userTurn);
             bridge?.onAssistantTranscript(eventResponseId,text);
             this.log("assistant", {text,responseId:eventResponseId,itemId:event.item_id ?? null,userTurn:this.userTurn,...identity});
+            this.completeStream("assistant", String(event.item_id ?? ""));
           }
         } else if (type === "response.done") {
           const response = event.response as Record<string, unknown> | undefined;
-          if (typeof response?.id === "string") this.toolResponseIds.delete(response.id);
+          if (typeof response?.id === "string") {
+            this.toolResponseIds.delete(response.id);
+            this.completedResponses.add(response.id);
+            if (this.completedResponses.size > 300) this.completedResponses.delete(this.completedResponses.values().next().value!);
+          }
           bridge?.onResponseDone(typeof response?.id === "string" ? response.id : null, String(response?.status ?? ""));
           if (response?.id === this.activeResponseId) {
             const turnFinished = response?.status === "completed" || response?.status === "failed" || response?.status === "incomplete";
@@ -1660,8 +1898,15 @@ export class VoiceAgent {
               .catch(() => undefined); // cost tracking must never break the call
           }
         } else if (type === "error") {
-          const detail = (event.error as { message?: string } | undefined)?.message;
-          this.log("error", { message: detail ?? "realtime error" });
+          const error = event.error as {message?: string; code?: string; type?: string; event_id?: string} | undefined;
+          const detail = error?.message;
+          const cancellation = error?.event_id ? this.cancellationEvents.get(error.event_id) : undefined;
+          const benign = !!cancellation && this.completedResponses.has(cancellation.responseId) &&
+            (error?.code === "response_cancel_not_active" || detail === "Cancellation failed: no active response found");
+          this.log(benign ? "response.cancelSettled" : "error", {message: detail ?? "realtime error",
+            code: error?.code ?? null, type: error?.type ?? null, eventId: error?.event_id ?? null, ...cancellation});
+          if (error?.event_id) this.cancellationEvents.delete(error.event_id);
+          if (benign) return;
           toast.error(`Aide: ${detail ?? "realtime error"}`);
         }
       };

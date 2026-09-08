@@ -50,7 +50,12 @@ export class UiCommandManager {
         const started = this.get(command.id)?.state === "started";
         this.finish(command.id, { status: started ? "unknown" : "cancelled", detail: started ? "Execution started but the request ended before a result arrived." : "The request ended before UI execution." });
       };
-      const timer = setTimeout(() => { const row = this.get(command.id); if (row) this.expire(row, command); }, this.timeoutMs);
+      const timer = setTimeout(() => {
+        const row = this.get(command.id);
+        // The elapsed timer is authoritative. Wall time can lag by a millisecond
+        // or move backwards; checking expiresAt here can leave a waiter forever.
+        if (row) this.finish(row.id, {status:row.state === "started" ? "unknown" : "cancelled",detail:"No UI receipt arrived before the command timed out. Do not assume it completed."});
+      }, this.timeoutMs);
       this.waiters.set(command.id, { timer, resolve: result => { signal?.removeEventListener("abort", cancel); resolve(result); } });
       signal?.addEventListener("abort", cancel, { once: true });
       try { this.publish(command); } catch { /* Owner recovers pending commands through RPC. */ }

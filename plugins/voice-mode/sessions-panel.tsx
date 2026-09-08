@@ -1,3 +1,4 @@
+import { EMPTY_TRANSCRIPT, transcriptSnapshotSchema, withLiveTranscript, type TranscriptSnapshot } from "./live-transcript.ts";
 // Voice page: logical voice sessions inside bb. The home lists sessions (one
 // per logical conversation, spanning every physical call that continued it).
 // Selecting one shows the Conversation by default — your words and one
@@ -565,9 +566,9 @@ function KindChip({ kind }: { kind: ConversationMessage["kind"] }) {
 /** One message of the unified conversation: you, or the one assistant identity. */
 function MessageRow({ message }: { message: ConversationMessage }) {
   const you = message.who === "you";
-  const delivery = describeDelivery(message.delivery);
+  const delivery = message.unfinished && message.who === "you" ? "Transcript incomplete" : message.partial && message.delivery === "unknown" ? null : describeDelivery(message.delivery);
   return (
-    <div className={cn("flex gap-3 rounded-md px-3 py-3", you ? "bg-muted/40" : "bg-transparent")} data-message-id={message.id}>
+    <div className={cn("flex gap-3 rounded-md px-3 py-3", you ? "bg-muted/40" : "bg-transparent")} data-message-id={message.id} aria-busy={message.partial || undefined}>
       <span className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full", you ? "bg-muted text-muted-foreground" : "bg-primary/15 text-primary")}>
         <span className="scale-75">{you ? <MicIcon slashed={false} /> : <WaveformIcon live={false} />}</span>
       </span>
@@ -578,7 +579,7 @@ function MessageRow({ message }: { message: ConversationMessage }) {
           <KindChip kind={message.kind} />
           {delivery ? <span className={cn("text-[10px]", message.delivery === "interrupted" ? "text-destructive" : "text-muted-foreground")} title={message.attributedByWindow ? "Playback state inferred from the reply that was being spoken" : undefined}>{delivery}</span> : null}
         </span>
-        <p className={cn("whitespace-pre-wrap break-words text-sm leading-relaxed", message.delivery === "unplayed" ? "text-muted-foreground line-through decoration-muted-foreground/40" : "text-foreground")}>{message.text}</p>
+        <p className={cn("whitespace-pre-wrap break-words text-sm leading-relaxed", message.delivery === "unplayed" ? "text-muted-foreground line-through decoration-muted-foreground/40" : "text-foreground")}>{message.text}{message.partial ? <span aria-label="Streaming" className="ml-0.5 inline-block h-3 w-px animate-pulse bg-current align-baseline" /> : null}</p>
       </div>
     </div>
   );
@@ -622,6 +623,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
   const backToSessions = useCallback(() => setSelected(null), []);
   useEscapeToClose(selected ? backToSessions : undefined, active);
   const [detail, setDetail] = useState<{ session: VoiceSessionRow; events: EventRow[] } | null>(null);
+  const [liveTranscript, setLiveTranscript] = useState<TranscriptSnapshot>(EMPTY_TRANSCRIPT);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
   const detailRequest = useRef(0);
@@ -636,6 +638,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pendingBottom = useRef(false);
+  const followLive = useRef(true);
   /** Set by New session / Continue so the session that starts is selected once known. */
   const startRequested = useRef(false);
 
@@ -766,6 +769,30 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
     current.currentCallNonce !== null
   );
 
+  const acceptTranscript = useCallback((value: unknown) => {
+    const parsed = transcriptSnapshotSchema.safeParse(value);
+    if (!parsed.success) return;
+    const owner = voiceAgent.getSessionId();
+    if (owner && parsed.data.callNonce && owner !== parsed.data.callNonce) return;
+    setLiveTranscript(previous => {
+      if (previous.callNonce !== parsed.data.callNonce) return parsed.data;
+      if (previous.revision >= parsed.data.revision) return previous;
+      // Retain a finishing draft until the durable final arrives. The projection
+      // replaces it by identity; RPC/event delivery order cannot blink it out.
+      const items = new Map(previous.items.map(item => [item.key, item]));
+      for (const item of parsed.data.items) items.set(item.key, item);
+      return { ...parsed.data, items: [...items.values()].slice(-32) };
+    });
+  }, []);
+  useRealtime("voice-transcript", acceptTranscript);
+  useEffect(() => {
+    let active = true;
+    void rpc.call("getLiveTranscript", null).then(snapshot => { if (active) acceptTranscript(snapshot); }).catch(() => {});
+    return () => { active = false; };
+  }, [rpc, activeCallId, selected, acceptTranscript]);
+  const conversationEvents = detail ? withLiveTranscript(detail.events,
+    liveTranscript.callNonce && current?.callIds.includes(liveTranscript.callNonce) ? liveTranscript : EMPTY_TRANSCRIPT) : [];
+
   // Live updates: the server publishes on every logged event, keyed by call.
   useRealtime("aide-log", (payload) => {
     refreshNewest();
@@ -777,13 +804,12 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (!selected || !el || detailLoading || !detail || detail.events.length === 0) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
-    if (pendingBottom.current || nearBottom) {
+    if (!selected || !el || detailLoading || !detail || conversationEvents.length === 0) return;
+    if (pendingBottom.current || followLive.current) {
       el.scrollTop = el.scrollHeight;
       pendingBottom.current = false;
     }
-  }, [detail, selected, detailLoading, tab]);
+  }, [detail, selected, detailLoading, tab, liveTranscript.revision]);
 
   const startNew = () => {
     if (voiceAgent.getState() !== "idle") return;
@@ -835,7 +861,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
           </div>
         </nav>
       ) : null}
-      <div role="region" aria-label="Session content" ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
+      <div role="region" aria-label="Session content" ref={scrollRef} onScroll={event => { const el = event.currentTarget; followLive.current = el.scrollHeight - el.scrollTop - el.clientHeight < 160; }} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4 md:p-6">
       <div className="mx-auto w-full min-w-0 max-w-3xl space-y-4">
         {error ? (
           <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 p-3 text-sm">
@@ -857,12 +883,6 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
                   </div>
                 </div>
               </div>
-              {current && !isSelectedLive ? (
-                <Button type="button" size="sm" className="min-h-11 sm:min-h-8" onClick={continueSelected} aria-label="Continue this session">
-                  <WaveformIcon live={false} />
-                  Continue
-                </Button>
-              ) : null}
             </div>
             <div aria-label="Session detail" aria-busy={detailLoading} className="min-w-0 py-1">
               {detailError ? (
@@ -875,7 +895,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
               ) : detailLoading || !detail ? (
                 <p role="status" className="py-4 text-center text-sm text-muted-foreground">Loading session…</p>
               ) : tab === "conversation" ? (
-                <ConversationView events={detail.events} live={isSelectedLive} />
+                <ConversationView events={conversationEvents} live={isSelectedLive} />
               ) : (
                 <div className="space-y-2">
                   <FilterBar value={filter} onChange={setFilter} />
@@ -981,10 +1001,27 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
         )}
       </div>
       </div>
-      {callState !== "idle" ? (
-        <section aria-label="Current voice session" className="shrink-0 border-t border-border bg-background px-4 py-3">
-          <div className="mx-auto flex w-full max-w-3xl justify-center">
-            <CallConsole onViewTranscript={viewLive} viewingLive={selected !== null && isSelectedLive} />
+      {selected || callState !== "idle" ? (
+        <section aria-label="Voice session controls" className="shrink-0 border-t border-border bg-background px-4 py-3">
+          <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2">
+            {selected ? (
+              <nav aria-label="Session views" className="flex w-full gap-1 rounded-lg bg-muted p-1">
+                {SESSION_TABS.map(entry => (
+                  <button key={entry.id} type="button" onClick={() => setTab(entry.id)} aria-current={tab === entry.id ? "page" : undefined}
+                    className={cn("min-h-11 min-w-0 flex-1 rounded-md px-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8 sm:text-sm",
+                      tab === entry.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+                    {entry.label}
+                  </button>
+                ))}
+              </nav>
+            ) : null}
+            {current && !isSelectedLive ? (
+              <Button type="button" className="min-h-11 w-full sm:w-auto" onClick={continueSelected} aria-label="Continue this session">
+                <WaveformIcon live={false} />
+                Continue
+              </Button>
+            ) : null}
+            {callState !== "idle" ? <CallConsole onViewTranscript={viewLive} viewingLive={selected !== null && isSelectedLive} /> : null}
           </div>
         </section>
       ) : null}

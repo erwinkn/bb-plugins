@@ -106,3 +106,24 @@ This implementation exposes managed worktree creation as part of thread spawn,
 not a nonexistent standalone API. Model accuracy, multilingual intent handling,
 microphone quality, phone backgrounding, and real interrupt latency still need
 physical voice testing. No merge or installed-plugin reload is part of this change.
+
+
+## Reliability integration — 8 September 2026
+
+The live operator, fast coordinator, and worker profiles share the action ledger.
+The integration also retains streaming conversation text, destination lookup by
+recency, narrated UI/speech sequences, and immediate publication of validated
+coordinator finals. A coordinator final ends its request; trailing output cannot
+publish another final. If a coordinator ends without a reply after voice_actions,
+stored action receipts supply the answer instead of an unrelated fallback.
+
+The old voice_send tool is retired. Its historical receipt table remains readable
+for recovery; it cannot initiate another send. Both published migration histories
+retain their original statement indexes and gain the missing tables on upgrade.
+
+Noise handling still needs the reviewed client utterance controller. The current
+input path uses server VAD with automatic response/cancellation flags disabled;
+WebRTC tests showed that those flags do not prevent raw VAD from clearing audio.
+The five-second visible message merge is not an action-acceptance window. Neither
+the input-controller replacement nor a new continuation delay is part of this
+integration. The input bridge still binds by its existing turn/cursor logic.

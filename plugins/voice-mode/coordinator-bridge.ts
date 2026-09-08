@@ -1,3 +1,6 @@
+import { SequencePlayer, type SequenceControlResult } from "./sequence-player.ts";
+import { hasSpokenWords } from "./spoken-input.ts";
+import { sequenceControlSchema } from "./narrated-sequence.ts";
 // Frontend half of the voice bridge. Binds realtime tool calls to settled
 // user transcripts, dispatches validated requests, speaks coordinator replies
 // under the right gate, tracks what the user actually heard, and reserves
@@ -24,7 +27,9 @@ export interface BridgeHost {
   speaking(): void;
   changed(): void;
   inputUnavailable(turn: number): void;
+  cancelResponse(responseId: string, reason: string): void;
   cancelQuickRequest(requestId: string): void;
+  subscribeNavigation?(listener:()=>void):()=>void;
 }
 
 interface UserItem {
@@ -86,17 +91,31 @@ export class CoordinatorBridge {
   private liveAt: number;
   private disposed = false;
   private unavailableTurns = new Set<number>();
+  private inputRepairOffered = false;
   private acknowledgedTurns = new Set<number>();
   private acknowledgments = new Map<number, {requestId:string;text:string}>();
 
+  private sequence: SequencePlayer;
+  private unsubscribeNavigation?:()=>void;
+
   constructor(private readonly host: BridgeHost, readonly conversationId: string, private readonly userTurnOf: () => number) {
     this.liveAt = host.now();
+    this.sequence=new SequencePlayer({
+      callNonce:()=>host.nonce(),rpc:input=>host.rpc("sequence",input),
+      speak:reply=>this.speak(reply),cancelAction:id=>host.cancelQuickRequest(id),
+      context:text=>this.addContext(text),log:(kind,data)=>host.log(kind,data),
+      changed:()=>{host.changed();this.drain();},
+    },conversationId);
+    this.unsubscribeNavigation=host.subscribeNavigation?.(()=>{
+      if (!this.sequence.pending() || this.sequence.actionInFlight()) return;
+      this.pauseSequence("You changed the view. Say continue when ready.",true);
+    });
   }
 
   snapshot(): BridgeSnapshot {
     return {
       conversationId: this.conversationId,
-      working: this.pending !== null || [...this.dispatched.values()].some((handoff) => handoff.status === "dispatched"),
+      working: this.sequence.pending() || this.pending !== null || [...this.dispatched.values()].some((handoff) => handoff.status === "dispatched"),
       pendingHandoff: this.pending?.requestId ?? null,
       queuedReplies: this.replyQueue.length,
       openQuestion: this.openQuestion,
@@ -105,9 +124,9 @@ export class CoordinatorBridge {
 
   // ---- user input tracking ----
 
-  onUserItemCommitted(itemId: string) {
+  onUserItemCommitted(itemId: string, turn = this.userTurnOf()) {
     if (!itemId || this.items.some((item) => item.itemId === itemId)) return;
-    this.items.push({ itemId, view: { ...(this.speechView ?? this.host.view()) }, text: null, failed: false, turn: this.userTurnOf(), committedAt: this.host.now(), speechEndedAt: this.host.now() });
+    this.items.push({ itemId, view: { ...(this.speechView ?? this.host.view()) }, text: null, failed: false, turn, committedAt: this.host.now(), speechEndedAt: this.host.now() });
     if (this.items.length > 200) { const drop = this.items.length - 200; this.items.splice(0, drop); this.cursor = Math.max(0, this.cursor - drop); }
   }
 
@@ -123,7 +142,7 @@ export class CoordinatorBridge {
     if (!itemId) return;
     this.onUserItemCommitted(itemId);
     const item = this.items.find(entry => entry.itemId === itemId)!;
-    const normalized = text.trim();
+    const normalized = hasSpokenWords(text) ? text.trim() : "";
     // Repeated provider events must not speak another repair or erase valid words.
     if (item.text === normalized || (item.text && !normalized)) return;
     item.text = normalized;
@@ -133,7 +152,8 @@ export class CoordinatorBridge {
       outcome: normalized ? "complete" : error ? "failed" : "empty",
       characters: normalized.length, sinceCommitMs: this.host.now() - item.committedAt,
       ...(error ? { error } : {}) });
-    if (item.failed) this.recoverInput(item.turn);
+    if (item.failed) this.recoverInput(item.turn, !error);
+    else if (item.turn === this.userTurnOf() && !this.unavailableTurns.has(item.turn)) this.inputRepairOffered = false;
     this.tryDispatch();
   }
 
@@ -141,20 +161,32 @@ export class CoordinatorBridge {
     this.onTranscript(itemId, "", error ?? {});
   }
 
-  private recoverInput(turn: number) {
+  private recoverInput(turn: number, silent = false) {
     if (this.unavailableTurns.has(turn)) return;
     this.unavailableTurns.add(turn);
     if (turn !== this.userTurnOf()) return;
     this.acknowledgments.delete(turn);
     this.replyQueue = this.replyQueue.filter(reply => !reply.replyId.startsWith("local_ack_"));
     this.host.inputUnavailable(turn);
-    this.addContext("The last spoken sentence has no usable transcript. Do not infer it from audio or earlier context. Wait silently while the bridge asks the user to repeat that sentence. No work was accepted from it.");
+    if (silent) {
+      this.host.log("transcription.ignored", {userTurn: turn, reason: "no spoken words"});
+      return;
+    }
+    if (this.inputRepairOffered) {
+      this.host.log("transcription.repairSuppressed", {userTurn: turn, reason: "waiting for usable input"});
+      return;
+    }
+    this.inputRepairOffered = true;
+    this.addContext("The last spoken sentence has no usable transcript. Do not infer it from audio or earlier context. Wait silently for the user to repeat it. The bridge manages the repeat prompt. No work was accepted from it.");
     this.enqueueLocalReply("I missed that last sentence. Could you say it again?", "failure", `local_input_${turn}`);
   }
 
+  /** Capture reference context without treating detected sound as an interruption. */
+  onInputDetected() { this.speechView = { ...this.host.view() }; }
+
   /** The user started speaking: unsent speculative handoffs are held, not sent. */
   onSpeechStarted() {
-    this.speechView = { ...this.host.view() };
+    void this.sequence.pause("The user started speaking.");
     for (const handoff of this.dispatched.values()) {
       if (!handoff.quickAction || handoff.status === "cancelled") continue;
       handoff.status = "cancelled";
@@ -178,6 +210,7 @@ export class CoordinatorBridge {
     if (this.pending) this.supersedePending("a newer delegation replaced it");
     const bound = this.items.slice(this.cursor);
     const requestId = `r_${(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}${Math.random()}`).replace(/-/g, "").slice(0, 16)}`;
+    this.sequence.expectPlan(requestId);
     const handoff: PendingHandoff = {
       requestId,
       callId,
@@ -343,6 +376,11 @@ export class CoordinatorBridge {
     if (this.seenReplies.has(reply.replyId)) return;
     this.seenReplies.add(reply.replyId);
     if (reply.kind === "clarification" && reply.questionId) this.openQuestion = { id: reply.questionId, text: reply.speech };
+    if (reply.sequence) {
+      if (reply.requestId) this.dispatched.delete(reply.requestId);
+      void this.sequence.recover(reply.replyId,reply.requestId);
+      return;
+    }
     this.replyQueue.push(reply);
     this.replyQueue.sort((a, b) => a.seq - b.seq);
     this.host.log("reply.received", { replyId: reply.replyId, kind: reply.kind, requestId: reply.requestId, batchId: reply.batchId, source: reply.source });
@@ -366,6 +404,7 @@ export class CoordinatorBridge {
 
   /** Re-fetch replies the server still holds for this call (reconnect). */
   async reconcile() {
+    await this.sequence.recover();
     try {
       const { replies } = await this.host.rpc<{ replies: unknown[] }>("pendingReplies", { conversationId: this.conversationId, nonce: this.host.nonce() });
       for (const reply of replies) this.ingestReply(reply);
@@ -391,7 +430,7 @@ export class CoordinatorBridge {
     if (this.disposed || !this.host.nonce()) return;
     const facts = this.host.facts();
     if (this.active) return;
-    const next = this.replyQueue[0];
+    const next = this.replyQueue.find(reply=>reply.kind!=="update" || !this.sequence.pending());
     if (next) {
       const refusal = next.kind === "update" ? refuseBackgroundSpeech(facts) : refuseDirectSpeech(facts);
       if (refusal) {
@@ -401,10 +440,11 @@ export class CoordinatorBridge {
         }
         return;
       }
-      this.replyQueue.shift();
+      this.replyQueue.splice(this.replyQueue.indexOf(next),1);
       this.speak(next);
       return;
     }
+    if (this.sequence.pending()) { if (!refuseDirectSpeech(facts)) this.sequence.drain(); return; }
     if (this.inboxPending && !this.reserving && !refuseBackgroundSpeech(facts)) void this.reserveBatch();
   }
 
@@ -431,8 +471,8 @@ export class CoordinatorBridge {
         tool_choice: "none",
       },
     });
-    if (!sent) { this.active = null; return; }
-    this.host.log("reply.speaking", { replyId: reply.replyId, kind: reply.kind, requestId: reply.requestId, batchId: reply.batchId, text: reply.speech });
+    if (!sent) { this.active = null;this.sequence.playback(reply.replyId,"interrupted"); return; }
+    this.host.log("reply.speaking", { streaming: true, replyId: reply.replyId, kind: reply.kind, requestId: reply.requestId, batchId: reply.batchId, text: reply.speech });
     this.host.changed();
   }
 
@@ -489,6 +529,7 @@ export class CoordinatorBridge {
     if (mismatch) {
       this.host.log("reply.mismatch", {replyId:reply.replyId,responseId:active.responseId,expected:reply.speech,actual:active.actualSpeech});
       this.addContext(JSON.stringify({voice_output:{reply_id:reply.replyId,actual:active.actualSpeech,intended_reply_not_delivered:true}}));
+      this.sequence.playback(reply.replyId,"mismatch");
       this.report(reply,"mismatch");
       this.host.changed(); this.drain(); return;
     }
@@ -499,13 +540,14 @@ export class CoordinatorBridge {
     }
     if (!reply.replyId.startsWith("local_ack_")) this.addContext(JSON.stringify({voice_reply:{id:reply.replyId,request_id:reply.requestId,kind:reply.kind,delivery:state,text:reply.speech,...(reply.threadIds.length ? {threads:reply.threadIds} : {}),...(reply.questionId ? {question_id:reply.questionId} : {})}}));
     this.host.log(`reply.${state}`, { replyId: reply.replyId, requestId: reply.requestId, responseId: active.responseId, kind: reply.kind });
+    this.sequence.playback(reply.replyId,state);
     this.report(reply, state);
     this.host.changed();
     this.drain();
   }
 
   private report(reply: PublishedReply, state: "generated" | "playing" | "delivered" | "interrupted" | "partial" | "held" | "superseded" | "mismatch") {
-    if (reply.replyId.startsWith("local_")) return;
+    if (reply.replyId.startsWith("local_") || reply.replyId.startsWith("sequence_speech:")) return;
     const nonce = this.host.nonce();
     if (!nonce) return;
     void this.host.rpc("reportReplyDelivery", { replyId: reply.replyId, nonce, state }).catch(() => undefined);
@@ -544,7 +586,26 @@ export class CoordinatorBridge {
 
   // ---- lifecycle ----
 
+  pauseSequence(reason:string,restoreView=false) {
+    void this.sequence.pause(reason,restoreView);
+    if(this.active?.reply.replyId.startsWith("sequence_speech:")) {
+      if(this.active.responseId)this.host.cancelResponse(this.active.responseId,"sequence-paused");
+      this.host.send({type:"output_audio_buffer.clear"});
+      this.finishSpeech("interrupted");
+    }
+  }
+
+  async controlSequence(args:Record<string,unknown>):Promise<SequenceControlResult> {
+    const operation=sequenceControlSchema.parse(args.operation);
+    const turn=this.userTurnOf();
+    const items=this.items.filter(item=>item.turn===turn);
+    if (this.host.facts().userSpeaking || !items.length || items.some(item=>!item.text || item.failed)) return {status:"held",message:"Wait for the complete spoken instruction before controlling the sequence."};
+    return this.sequence.control(operation);
+  }
+
   dispose(reason: "hangup" | "replaced") {
+    this.unsubscribeNavigation?.();
+    this.sequence.dispose();
     this.disposed = true;
     const pending = this.pending;
     if (pending) {

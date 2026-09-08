@@ -13,7 +13,7 @@ const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
  * records every client event, and an rpc spy that answers claimCall with a
  * conversation id and records handoffs, delivery reports, and reservations.
  */
-async function coordinatorFixture(t: TestContext, options: { submit?: (envelope: Any) => Promise<Any> | Any; reserve?: () => Any; coordinator?: boolean } = {}) {
+async function coordinatorFixture(t: TestContext, options: { submit?: (envelope: Any) => Promise<Any> | Any; reserve?: () => Any; sequence?: (input:Any)=>Any; coordinator?: boolean } = {}) {
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"] });
   const originals = ["navigator", "RTCPeerConnection", "Audio"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const channels: FakeDataChannel[] = [];
@@ -67,6 +67,7 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
       if (method === "submitRequest") return options.submit ? options.submit(args.envelope) : { requestId: args.envelope.requestId, status: "accepted", receipt: { delivery: "sent", coordinatorThreadId: "thr_c", mode: "queue-if-active" }, error: null, coordinatorThreadId: "thr_c" };
       if (method === "reserveUpdateBatch") return options.reserve ? options.reserve() : { batch: null, reason: "empty" };
       if (method === "resolveThreadViews") return { views: args.threadIds.map((threadId:string)=>({kind:"thread",id:`thread:${threadId}`,threadId,projectId:"proj_other",title:"Build thread"})) };
+      if (method === "sequence") return options.sequence ? options.sequence(args) : {state:null};
       if (method === "pendingReplies") return { replies: [] };
       if (method === "runTool") return { output: "{}", status: "success" };
       return { ok: true };
@@ -93,8 +94,9 @@ async function coordinatorFixture(t: TestContext, options: { submit?: (envelope:
   return { agent, dc, calls, logs, submits, deliveries, reply, tick: (ms: number) => t.mock.timers.tick(ms) };
 }
 
-function speak(dc: { emit(type: string, extra?: Record<string, Any>): void }, itemId: string) {
+function speak(dc: { emit(type: string, extra?: Record<string, Any>): void }, itemId: string, words = "Hello") {
   dc.emit("input_audio_buffer.speech_started", { item_id: itemId });
+  if (words) dc.emit("conversation.item.input_audio_transcription.delta", { item_id: itemId, delta: words });
   dc.emit("input_audio_buffer.speech_stopped", { item_id: itemId });
   dc.emit("input_audio_buffer.committed", { item_id: itemId });
 }
@@ -139,7 +141,7 @@ test("a handoff without a transcript is rejected after the bounded wait", async 
   await settle();
   assert.equal(submits().length, 0);
   assert.ok(logs.some(log => log.kind === "handoff.rejected"));
-  assert.ok(logs.some((log) => log.kind === "handoff.transcriptTimeout"));
+  assert.ok(logs.some(log => log.kind === "transcription.result" && log.payload.error?.code === "transcript_timeout"));
 });
 
 test("speaking again holds an unsent handoff, and the next delegation carries both utterances", async (t) => {
@@ -174,6 +176,7 @@ test("replies are spoken under their gate, tracked to what was heard, and added 
   dc.emit("input_audio_buffer.committed", { item_id: "u1" });
   // The user's own turn still has no response, so the question waits for it.
   assert.equal(dc.bridgeResponses().length, 0);
+  dc.emit("conversation.item.input_audio_transcription.completed", { item_id: "u1", transcript: "Wait a moment." });
   dc.emit("response.created", { response: { id: "resp_user" } });
   dc.emit("response.done", { response: { id: "resp_user", status: "completed", output: [{ type: "message" }] } });
   tick(1);
@@ -264,17 +267,21 @@ test("hangup cancels a handoff still waiting for its transcript but lets a settl
 
 test("remain_silent returns no speech and end_call stops once the goodbye has played", async (t) => {
   const { agent, dc } = await coordinatorFixture(t);
+  speak(dc, "silent_input");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"silent_input",transcript:"No reply needed."});
   dc.emit("response.created", { response: { id: "resp_1" } });
   dc.emit("response.function_call_arguments.done", { name: "remain_silent", call_id: "call_s", arguments: "{}" });
   await settle();
   assert.equal(dc.toolOutputs().length, 1);
   dc.emit("response.done", { response: { id: "resp_1", status: "completed", output: [{ type: "function_call" }] } });
-  assert.equal(dc.responses().length, 0, "no response.create after remain_silent");
+  assert.equal(dc.responses().length, 1, "no response.create after remain_silent");
+  speak(dc, "bye_input");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"bye_input",transcript:"End this call."});
   dc.emit("response.created", { response: { id: "resp_2" } });
   dc.emit("response.function_call_arguments.done", { name: "end_call", call_id: "call_e", arguments: "{}" });
   await settle();
   dc.emit("response.done", { response: { id: "resp_2", status: "completed", output: [{ type: "function_call" }] } });
-  assert.equal(dc.responses().length, 1, "the model may say goodbye");
+  assert.equal(dc.responses().length, 3, "the model may say goodbye");
   dc.emit("response.created", { response: { id: "resp_bye" } });
   dc.emit("output_audio_buffer.started", { response_id: "resp_bye" });
   dc.emit("response.done", { response: { id: "resp_bye", status: "completed", output: [{ type: "message" }] } });
@@ -370,6 +377,7 @@ test("interruption before response.created cancels the late bridge response inst
   agent.ingestCoordinatorSignal("voice-reply",reply({replyId:"before_audio"})); tick(1);
   const metadata = dc.bridgeResponses()[0].response.metadata;
   dc.emit("input_audio_buffer.speech_started",{item_id:"correction"});
+  dc.emit("conversation.item.input_audio_transcription.delta",{item_id:"correction",delta:"Wait"});
   dc.emit("response.created",{response:{id:"late_audio",metadata}});
   dc.emit("output_audio_buffer.started",{response_id:"late_audio"});
   dc.emit("response.done",{response:{id:"late_audio",status:"cancelled"}});
@@ -403,10 +411,11 @@ test("a late tool from an interrupted response cannot dispatch while the user co
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"old_input",transcript:"Change the setting"});
   dc.emit("response.created",{response:{id:"old_response"}});
   dc.emit("input_audio_buffer.speech_started",{item_id:"continuation"});
+  dc.emit("conversation.item.input_audio_transcription.delta",{item_id:"continuation",delta:"Wait"});
   dc.emit("response.function_call_arguments.done",{response_id:"old_response",name:"delegate_to_coordinator",call_id:"late",arguments:"{}"});
   await settle();
   assert.equal(submits().length,0);
-  assert.match(dc.toolOutputs().at(-1)?.item.output,/Held/);
+  assert.match(dc.toolOutputs().at(-1)?.item.output,/Not executed/);
 });
 
 
@@ -435,7 +444,7 @@ test("realtime mutation names cannot bypass the coordinator", async t => {
 });
 
 
-test("empty transcription cancels a guessed answer and asks once for the missed sentence", async t => {
+test("empty transcription cancels a guessed answer without a spoken repair", async t => {
   const {dc, submits, logs, tick} = await coordinatorFixture(t);
   speak(dc, "missing");
   dc.emit("response.created", {response:{id:"guess"}});
@@ -449,8 +458,7 @@ test("empty transcription cancels a guessed answer and asks once for the missed 
   assert.ok(dc.sent.some(e => e.type === "response.cancel" && e.response_id === "guess"));
   assert.ok(dc.sent.some(e => e.type === "output_audio_buffer.clear"));
   assert.equal(logs.filter(e => e.kind === "transcription.result" && e.payload.outcome === "empty").length, 1);
-  assert.equal(dc.bridgeResponses().length, 1);
-  assert.match(dc.bridgeResponses()[0].response.instructions, /I missed that last sentence/);
+  assert.equal(dc.bridgeResponses().length, 0);
   assert.ok(!logs.some(e => e.kind === "reply.speaking" && e.payload.replyId.startsWith("local_ack_")));
 });
 
@@ -463,7 +471,162 @@ test("empty completion before generation blocks the later guessed tool response"
   await settle(); tick(2500); await settle();
   assert.equal(submits().length, 0);
   assert.ok(dc.sent.some(e => e.type === "response.cancel" && e.response_id === "late_guess"));
+  assert.equal(dc.bridgeResponses().length, 0);
+});
+
+test("non-verbal fragments stay quiet while short commands keep their words", async t => {
+  const {dc, logs, submits, tick} = await coordinatorFixture(t);
+  for (const [index, text] of ["", "...", "um", "uh, um"].entries()) {
+    const item = `noise_${index}`;
+    speak(dc, item);
+    delegate(dc, item, `${item}_call`, {request: "A guessed request"});
+    await settle();
+    dc.emit("conversation.item.input_audio_transcription.completed", {item_id: item, transcript: text});
+    dc.emit("response.done", {response: {id: item, status: "cancelled"}});
+    await settle(); tick(2500); await settle();
+  }
+  assert.equal(dc.bridgeResponses().length, 0);
+  assert.equal(submits().length, 0);
+  assert.equal(logs.filter(event => event.kind === "user").length, 0);
+  for (const [index, text] of ["Stop", "Wait", "Yes", "No", "I", "Go", "Um, open the latest Voice thread"].entries()) {
+    const item = `words_${index}`;
+    speak(dc, item);
+    dc.emit("conversation.item.input_audio_transcription.completed", {item_id: item, transcript: text});
+    delegate(dc, item, `${item}_call`, {request: text});
+    await settle();
+    assert.equal(submits().at(-1).originalText, text);
+    dc.emit("response.done", {response: {id: item, status: "completed"}});
+  }
+  assert.equal(submits().length, 7);
+});
+
+test("a cancellation racing completion stays diagnostic and cannot disturb the next response", async t => {
+  const {agent, dc, logs} = await coordinatorFixture(t);
+  speak(dc, "empty");
+  dc.emit("response.created", {response: {id: "guess"}});
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id: "empty", transcript: ""});
+  const cancel = dc.sent.find(event => event.type === "response.cancel")!;
+  assert.ok(cancel.event_id);
+  dc.emit("response.done", {response: {id: "guess", status: "completed"}});
+  speak(dc, "retry");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id: "retry", transcript: "Wait, I want to explain what to change."});
+  dc.emit("response.created", {response: {id: "next"}});
+  dc.emit("error", {error: {event_id: cancel.event_id, type: "invalid_request_error", code: "response_cancel_not_active", message: "Cancellation failed: no active response found"}});
+  await settle();
+  assert.equal(logs.filter(event => event.kind === "response.cancelSettled").length, 1);
+  assert.equal(logs.filter(event => event.kind === "error").length, 0);
+  assert.equal((agent as Any).activeResponseId, "next");
+  assert.equal((agent as Any).responseActive, true);
+  // An uncorrelated error is still surfaced, even if its wording is identical.
+  dc.emit("error", {error: {event_id: "unknown", message: "Cancellation failed: no active response found"}});
+  await settle();
+  assert.equal(logs.filter(event => event.kind === "error").length, 1);
+});
+
+test("rejected tools receive one terminal output without work or another response", async t => {
+  const {dc, submits} = await coordinatorFixture(t);
+  speak(dc, "empty");
+  dc.emit("response.created", {response: {id: "guess"}});
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id: "empty", transcript: ""});
+  const before = dc.responses().length;
+  for (let i = 0; i < 2; i++) dc.emit("response.function_call_arguments.done", {
+    response_id: "guess", name: "sequence_control", call_id: "rejected", arguments: '{"operation":"resume"}',
+  });
+  dc.emit("response.function_call_arguments.done", {response_id: "unknown", name: "quick_action", call_id: "unknown", arguments: "{}"});
+  await settle();
+  assert.equal(submits().length, 0);
+  assert.equal(dc.toolOutputs().length, 1);
+  assert.equal(dc.toolOutputs()[0].item.call_id, "rejected");
+  assert.match(dc.toolOutputs()[0].item.output, /Not executed/);
+  assert.equal(dc.responses().length, before);
+});
+
+test("consecutive provider failures ask once, then usable input restores normal recovery", async t => {
+  const {dc, tick, logs, submits} = await coordinatorFixture(t);
+  for (const id of ["first", "second", "third"]) {
+    speak(dc, id);
+    dc.emit("response.created", {response: {id}});
+    dc.emit("conversation.item.input_audio_transcription.failed", {item_id: id, error: {message: "Transcription failed"}});
+    dc.emit("response.done", {response: {id, status: "cancelled"}});
+    await settle(); tick(2500); await settle();
+    if (id === "first") {
+      const response = dc.bridgeResponses()[0].response;
+      dc.emit("response.created", {response: {id: "repair", metadata: response.metadata}});
+      dc.emit("output_audio_buffer.started", {response_id: "repair"});
+      dc.emit("response.done", {response: {id: "repair", status: "completed"}});
+      // The second utterance interrupts this prompt, as in the reported call.
+    }
+  }
   assert.equal(dc.bridgeResponses().length, 1);
+  assert.equal(logs.filter(event => event.kind === "transcription.repairSuppressed").length, 2);
+  speak(dc, "valid");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id: "valid", transcript: "Check the active threads."});
+  delegate(dc, "valid_response", "valid_tool", {request: "Check the active threads."});
+  await settle();
+  assert.equal(submits().length, 1);
+  assert.equal(submits()[0].originalText, "Check the active threads.");
+  dc.emit("response.done", {response: {id: "valid_response", status: "completed"}});
+  speak(dc, "new_empty");
+  dc.emit("response.created", {response: {id: "new_empty_response"}});
+  dc.emit("conversation.item.input_audio_transcription.failed", {item_id: "new_empty", error: {message: "Transcription failed"}});
+  dc.emit("response.done", {response: {id: "new_empty_response", status: "cancelled"}});
+  await settle(); tick(2500); await settle();
+  assert.equal(dc.bridgeResponses().filter(event => event.response.metadata.bb_reply_id.startsWith("local_input_")).length, 2);
+});
+
+test("late interrupted playback is cleared once without cancelling a completed response or newer audio", async t => {
+  const {agent, dc, logs} = await coordinatorFixture(t);
+  speak(dc, "explain");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"explain",transcript:"Explain this."});
+  dc.emit("response.created", {response: {id: "old"}});
+  dc.emit("output_audio_buffer.started", {response_id: "old"});
+  dc.emit("response.done", {response: {id: "old", status: "completed"}});
+  dc.emit("input_audio_buffer.speech_started", {item_id: "interrupt", audio_start_ms: 100});
+  dc.emit("conversation.item.input_audio_transcription.delta", {item_id:"interrupt",delta:"Wait"});
+  dc.emit("output_audio_buffer.cleared", {response_id: "old"});
+  dc.emit("output_audio_buffer.started", {response_id: "old"});
+  dc.emit("output_audio_buffer.started", {response_id: "old"});
+  assert.equal(dc.sent.filter(event => event.type === "output_audio_buffer.clear").length, 2);
+  assert.equal(dc.sent.filter(event => event.type === "response.cancel").length, 0);
+  dc.emit("input_audio_buffer.speech_stopped", {item_id: "interrupt", audio_end_ms: 1400});
+  dc.emit("input_audio_buffer.committed", {item_id: "interrupt"});
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id: "interrupt", transcript: "Wait, let me explain."});
+  dc.emit("response.created", {response: {id: "next"}});
+  dc.emit("output_audio_buffer.started", {response_id: "next"});
+  dc.emit("output_audio_buffer.started", {response_id: "old"});
+  assert.equal(dc.sent.filter(event => event.type === "output_audio_buffer.clear").length, 2);
+  assert.equal((agent as Any).playbackResponseId, "next");
+  await settle();
+  const segment = logs.find(event => event.kind === "audio.inputSegment" && event.payload.itemId === "interrupt")!.payload;
+  assert.equal(segment.durationMs, 1300);
+  assert.equal(segment.interruptedPlaybackResponseId, "old");
+  assert.equal(segment.microphone.enabled, true);
+});
+
+test("a superseded bridge response holds generation until its cancellation settles", async t => {
+  const {agent, dc} = await coordinatorFixture(t);
+  dc.emit("response.created", {response: {id: "stale", metadata: {bb_voice_source: "coordinator_reply", bb_reply_id: "no_longer_pending"}}});
+  assert.equal((agent as Any).responseActive, true);
+  assert.equal((agent as Any).activeResponseId, "stale");
+  assert.equal(dc.sent.filter(event => event.type === "response.cancel").length, 1);
+  dc.emit("response.done", {response: {id: "stale", status: "cancelled"}});
+  assert.equal((agent as Any).responseActive, false);
+  assert.equal((agent as Any).activeResponseId, null);
+});
+
+test("pausing narration after generation ends clears playback without a redundant cancellation", async t => {
+  const {agent, dc, reply, tick} = await coordinatorFixture(t);
+  agent.ingestCoordinatorSignal("voice-reply", reply({replyId: "sequence_speech:test:1", speech: "This thread contains the work in progress."}));
+  tick(2500); await settle();
+  const metadata = dc.bridgeResponses()[0].response.metadata;
+  dc.emit("response.created", {response: {id: "narration", metadata}});
+  dc.emit("output_audio_buffer.started", {response_id: "narration"});
+  dc.emit("response.done", {response: {id: "narration", status: "completed"}});
+  (agent as Any).bridge.pauseSequence("The user changed the view.", true);
+  assert.equal(dc.sent.filter(event => event.type === "response.cancel").length, 0);
+  assert.equal(dc.sent.filter(event => event.type === "output_audio_buffer.clear").length, 1);
+  dc.emit("output_audio_buffer.cleared", {response_id: "narration"});
+  assert.equal((agent as Any).assistantSpeaking, false);
 });
 
 test("a late failed transcript stays with its old turn and does not cancel a new valid request", async t => {
@@ -565,7 +728,8 @@ test("new speech cancels an in-flight quick action locally and on the server", a
   dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"quick_call",arguments:JSON.stringify({request:"Show Voice",action:{kind:"show_voice"}})});
   await settle();
   const requestId=submits()[0].requestId;
-  dc.emit("input_audio_buffer.speech_started");
+  dc.emit("input_audio_buffer.speech_started", {item_id:"interrupt-quick"});
+  dc.emit("conversation.item.input_audio_transcription.delta", {item_id:"interrupt-quick",delta:"Wait"});
   assert.ok(calls.some(call=>call.method==="cancelQuickRequest" && call.args.requestId===requestId));
   assert.ok((agent as any).cancelledQuickRequests.has(requestId));
   accept({status:"quick_cancelled",receipt:null,error:null}); await settle();
@@ -616,4 +780,115 @@ test("direct worker creation carries interpretation and produces no extra starti
   assert.equal(submits().length,1);assert.match(submits()[0].interpretation,/empty transcript/);
   dc.emit("response.done",{response:{id:"worker-response",output:[]}});await settle();
   assert.equal(dc.bridgeResponses().length,0,"only an actual action result should be announced");
+});
+
+test("normal playback completion does not reject a later tool from the same response",async t=>{
+  const {dc,submits}=await coordinatorFixture(t);
+  speak(dc,"normal_item");
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"normal_item",transcript:"Show the current workstreams in order."});
+  dc.emit("response.created",{response:{id:"normal_response"}});
+  dc.emit("output_audio_buffer.started",{response_id:"normal_response"});
+  dc.emit("output_audio_buffer.stopped",{response_id:"normal_response"});
+  dc.emit("response.function_call_arguments.done",{name:"delegate_to_coordinator",call_id:"normal_tool",arguments:JSON.stringify({request:"Show the current workstreams in order."})});
+  dc.emit("response.done",{response:{id:"normal_response",status:"completed"}});
+  await settle();assert.equal(submits().length,1);assert.ok(!dc.toolOutputs().at(-1)!.item.output.includes("interrupted"));
+});
+
+test("real playback events advance sequence speech, while generation and background replies do not",async t=>{
+  const steps=[{kind:"speech",text:"This is the current work."},{kind:"action",action:{kind:"show_voice"}},{kind:"speech",text:"Here is your Voice conversation."}];
+  const state:Any={replyId:"plan_reply",conversationId:"conv_1",callNonce:"",plan:{title:"Review",steps},index:0,revision:0,phase:"ready",reason:null,blocked:false,completedDrafts:[]};
+  let actions=0,loaded=false;
+  const f=await coordinatorFixture(t,{sequence:input=>{
+    state.callNonce=input.callNonce;
+    if(input.operation==="sync") {if(input.replyId)loaded=true;return {state:loaded ? structuredClone(state) : null};}
+    if(input.operation==="next") {
+      if(state.index===1){actions++;state.index=2;state.phase="ready";}else state.phase="speech";
+    } else if(input.operation==="delivered"){state.index++;state.phase=state.index===steps.length ? "complete" : "ready";}
+    state.revision++;return {state:structuredClone(state)};
+  }});
+  f.agent.ingestCoordinatorSignal("voice-reply", f.reply({replyId:"plan_reply",speech:"",sequence:{title:"Review",steps} as Any}));await settle();
+  const response=f.dc.bridgeResponses().at(-1)!;assert.ok(response);assert.equal(actions,0);
+  f.dc.emit("response.created",{response:{id:"seq_audio_1",metadata:response.response.metadata}});
+  f.dc.emit("output_audio_buffer.started",{response_id:"seq_audio_1"});
+  f.agent.ingestCoordinatorSignal("voice-reply", f.reply({replyId:"background_during_sequence",kind:"update",speech:"Background update."}));
+  f.dc.emit("response.done",{response:{id:"seq_audio_1",status:"completed",metadata:response.response.metadata}});
+  await settle();assert.equal(actions,0,"generated audio still has to play");
+  f.dc.emit("output_audio_buffer.stopped",{response_id:"seq_audio_1"});await settle();
+  assert.equal(actions,1);assert.equal(f.dc.bridgeResponses().length,2);
+  assert.equal(f.dc.bridgeResponses().at(-1)!.response.input[0].content[0].text,"Here is your Voice conversation.");
+  assert.equal(f.deliveries().length,0,"step playback uses its own durable cursor, not parent final delivery");
+});
+
+test("raw noise and an empty transcript never interrupt existing playback or its pending work", async t => {
+  const {dc, logs, tick} = await coordinatorFixture(t);
+  speak(dc, "request", "Show");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"request", transcript:"Show the current workstreams."});
+  dc.emit("response.created", {response:{id:"answer"}});
+  dc.emit("output_audio_buffer.started", {response_id:"answer"});
+  const requests = dc.responses().length;
+  speak(dc, "noise", "");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"noise", transcript:""});
+  await settle(); tick(5000); await settle();
+  assert.equal(dc.sent.filter(e => e.type === "response.cancel").length, 0);
+  assert.equal(dc.sent.filter(e => e.type === "output_audio_buffer.clear").length, 0);
+  assert.equal(dc.responses().length, requests, "noise starts no replacement answer");
+  assert.equal(logs.filter(e => e.kind === "input.wordsConfirmed").length, 1);
+});
+
+test("a first recognised word interrupts once, streams immediately, and cannot authorize unfinished work", async t => {
+  const {dc, calls, submits, tick} = await coordinatorFixture(t);
+  speak(dc, "request");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"request", transcript:"Explain the build."});
+  dc.emit("response.created", {response:{id:"answer"}});
+  dc.emit("output_audio_buffer.started", {response_id:"answer"});
+  dc.emit("response.output_audio_transcript.delta", {response_id:"answer", item_id:"answer-item", event_id:"out1", delta:"The build is"});
+  tick(100); await settle();
+  assert.ok(calls.some(c => c.method === "publishTranscript" && c.args.items.some((i:Any) => i.payload.text === "The build is")));
+  dc.emit("input_audio_buffer.speech_started", {item_id:"correction"});
+  dc.emit("conversation.item.input_audio_transcription.delta", {item_id:"correction", event_id:"noise1", delta:"..."});
+  assert.equal(dc.sent.filter(e => e.type === "response.cancel").length, 0);
+  dc.emit("conversation.item.input_audio_transcription.delta", {item_id:"correction", event_id:"word1", delta:"Wait"});
+  dc.emit("conversation.item.input_audio_transcription.delta", {item_id:"correction", event_id:"word1", delta:"Wait"});
+  assert.equal(dc.sent.filter(e => e.type === "response.cancel" && e.response_id === "answer").length, 1);
+  assert.equal(dc.sent.filter(e => e.type === "output_audio_buffer.clear").length, 1);
+  tick(100); await settle();
+  assert.ok(calls.some(c => c.method === "publishTranscript" && c.args.items.some((i:Any) => i.payload.text === "...Wait")));
+  assert.equal(submits().length, 0);
+  dc.emit("response.done", {response:{id:"answer", status:"cancelled"}});
+  const requests = dc.responses().length;
+  dc.emit("input_audio_buffer.speech_stopped", {item_id:"correction"});
+  dc.emit("input_audio_buffer.committed", {item_id:"correction"});
+  assert.equal(dc.responses().length, requests);
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"correction", transcript:"Wait, open the docs instead."});
+  assert.equal(dc.responses().length, requests + 1, "only final words start the next response");
+});
+
+test("late transcript deltas and finals from an older item cannot interrupt a newer answer", async t => {
+  const {dc} = await coordinatorFixture(t);
+  speak(dc, "old", "");
+  speak(dc, "new", "Explain");
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"new", transcript:"Explain this thread."});
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"old", transcript:""});
+  dc.emit("response.created", {response:{id:"answer"}});
+  dc.emit("output_audio_buffer.started", {response_id:"answer"});
+  dc.emit("conversation.item.input_audio_transcription.delta", {item_id:"old", delta:"Stop"});
+  dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"old", transcript:"Stop"});
+  assert.equal(dc.sent.filter(e => e.type === "response.cancel").length, 0);
+  assert.equal(dc.sent.filter(e => e.type === "output_audio_buffer.clear").length, 0);
+});
+
+
+test("speech-start context survives navigation before the first recognised word",async t=>{
+  const {dc,submits}=await coordinatorFixture(t);
+  let current="thr_original";
+  t.mock.method(nativeUi,"snapshot",()=>({threadId:current,projectId:"proj_a",onNewThreadScreen:false,route:`/threads/${current}`,composers:[],draft:null,bound:true}));
+  dc.emit("input_audio_buffer.speech_started",{item_id:"spoken-reference"});
+  current="thr_different";
+  dc.emit("conversation.item.input_audio_transcription.delta",{item_id:"spoken-reference",delta:"Ask"});
+  dc.emit("input_audio_buffer.speech_stopped",{item_id:"spoken-reference"});
+  dc.emit("input_audio_buffer.committed",{item_id:"spoken-reference"});
+  dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"spoken-reference",transcript:"Ask this thread to inspect the logs."});
+  delegate(dc,"context-response","context-tool",{request:"Ask this thread to inspect the logs."});
+  await settle();
+  assert.equal(submits()[0].view.threadId,"thr_original");
 });

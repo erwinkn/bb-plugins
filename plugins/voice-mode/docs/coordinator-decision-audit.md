@@ -1,5 +1,8 @@
 # Current architecture revision — 8 September 2026
 
+The current integration choices and remaining input work are in
+[three-tier-integration.md](three-tier-integration.md).
+
 The three-tier live-operator implementation supersedes the mandatory delegation
 and comments-only fast path in the historical audit below. See
 [live-operator.md](live-operator.md). Historical decisions remain for context;

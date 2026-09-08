@@ -30,6 +30,9 @@ export class LiveActionStore {
     if (row.conversation_id !== conversationId || row.actor !== actor || row.actions_json !== text) throw new Error("This request already has a different recorded action group. Inspect its receipts; do not redispatch it.");
     return inserted;
   }
+  hasGroup(requestId: string): boolean {
+    return !!this.db.prepare("SELECT 1 FROM voice_action_groups WHERE request_id = ?").get(requestId);
+  }
   results(requestId: string): (ActionResult | null)[] {
     return this.db.prepare("SELECT result_json FROM voice_action_steps WHERE request_id = ? ORDER BY step").all(requestId).map(value => {
       const row = value as {result_json:string|null}; return row.result_json ? stepResultSchema.parse(JSON.parse(row.result_json)) : null;

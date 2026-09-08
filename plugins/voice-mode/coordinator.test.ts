@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost, makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server.ts";
-import { COORDINATOR_TITLE_PREFIX } from "./coordinator/prompts.ts";
+import { COORDINATOR_INSTRUCTIONS, COORDINATOR_TITLE_PREFIX } from "./coordinator/prompts.ts";
 import { formatRequestMessage, userRequestEnvelopeSchema, type UserRequestEnvelope } from "./coordinator/envelopes.ts";
 
 type Any = any;
@@ -22,6 +22,7 @@ function fakeWorld(options: { providerAvailable?: boolean; spawnFails?: "before"
     queued: new Map<string, Any[]>(),
     timelineText: new Map<string, string>(),
     opened: [] as string[],
+    sendOverride: null as null | ((args: Any) => Promise<Any>),
   };
   const spawn = async (args: Any) => {
     world.spawns += 1;
@@ -54,6 +55,7 @@ function fakeWorld(options: { providerAvailable?: boolean; spawnFails?: "before"
       get: async ({ threadId }: Any) => { const t = world.threads.get(threadId); if (!t) throw new Error(`no thread ${threadId}`); return t; },
       list: async (args: Any) => [...world.threads.values()].filter((t) => (!args?.originPluginId || t.originPluginId === args.originPluginId) && (args?.includeHidden || t.visibility !== "hidden")),
       send: async ({ threadId, mode, input }: Any) => {
+        if (world.sendOverride) return world.sendOverride({ threadId, mode, input });
         world.sends.push({ threadId, mode, text: input[0].text });
         const thread = world.threads.get(threadId);
         if (thread && thread.status === "active") {
@@ -150,9 +152,10 @@ test("a hidden coordinator starts once in the personal environment with plugin a
   assert.equal(world.sends[1].mode, "queue-if-active");
   // Initial tool selection works before the mapping exists, through origin + title.
   const fresh = await harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "thr_unknown", title: `${COORDINATOR_TITLE_PREFIX}conv_x` }, origin: { kind: null, pluginId: "voice-mode" } }));
-  assert.deepEqual(fresh.tools.map((tool) => tool.name).sort(), ["voice_actions", "voice_ask", "voice_overview", "voice_reply", "voice_ui"]);
+  assert.deepEqual(fresh.tools.map((tool) => tool.name).sort(), ["voice_actions", "voice_ask", "voice_overview", "voice_reply", "voice_sequence", "voice_ui"]);
   assert.match(fresh.instructions ?? "", /Never turn a question/);
-  assert.ok((fresh.instructions ?? "").length <= 4096, "host instructions must retain the complete policy");
+  assert.ok(COORDINATOR_INSTRUCTIONS.length <= 4096, "host instructions must retain the complete policy");
+  assert.equal(fresh.instructions, COORDINATOR_INSTRUCTIONS, "the host must receive the entire policy");
   assert.match(fresh.instructions ?? "", /Queue normal follow-ups, not steering/);
   assert.match(fresh.instructions ?? "", /explicit stop uses stop_thread/);
   const worker = await harness.behavior.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: { id: "thr_worker", title: "Fix CI" }, origin: { kind: null, pluginId: null } }));
@@ -190,7 +193,7 @@ test("an unavailable coordinator provider is a recoverable failure and never fal
   await assert.rejects(rpc("runTool", { name: "archive_thread", args: {} }));
 });
 
-test("voice_reply is validated against the stored coordinator mapping and final replies wait for the turn to settle", async (t) => {
+test("voice_reply is validated against the stored coordinator mapping and final replies commit before the turn settles", async (t) => {
   const { harness, world, rpc, claim, envelope, coordinatorId, idle, replies } = await enabledHost();
   t.after(() => harness.lifecycle.dispose());
   const { conversationId } = await claim("call-1");
@@ -204,7 +207,8 @@ test("voice_reply is validated against the stored coordinator mapping and final 
     request_id: "r_1", kind: "final", speech: "Archived the old speech thread.", thread_ids: ["thr_speech"],
     receipts: [{ action: "archive", thread_id: "thr_speech", outcome: "done" }], state: { discussed_thread_id: "thr_speech", topic: "speech thread cleanup" },
   }, { threadId: coordinatorId() });
-  assert.equal(replies().filter((reply) => reply.kind === "final").length, 0, "final waits for idle");
+  assert.equal(replies().filter((reply) => reply.kind === "final").length, 1, "final publishes before idle");
+  assert.equal((await rpc("getCoordinatorStatus", null)).requests[0].status, "settled");
   await idle(coordinatorId(), "Archived thr_speech.");
   const finals = replies().filter((reply) => reply.kind === "final");
   assert.equal(finals.length, 1);
@@ -624,6 +628,7 @@ test("compact requests preserve every input item once and unchanged context is o
   const data=JSON.parse(world.sends[0].text.split("\n")[1]);
   assert.deepEqual(data.user.items.map((item:Any)=>item.text),first.transcriptDelta.map(item=>item.text));
   assert.equal(data.user.text,undefined,"last item is not repeated");
+  assert.deepEqual(data.source, {call_id:"compact",conversation_id:conversationId});
   await rpc("submitRequest",{envelope:envelope(conversationId,"compact","compact_2","Also check the tests.")});
   assert.equal(JSON.parse(world.sends[1].text.split("\n")[1]).context,"unchanged");
 });
@@ -798,6 +803,7 @@ test("quick messages queue once, preserve the quoted words, and watch the target
   assert.equal(h.world.sends[0].mode,"queue-if-active");
   assert.match(h.world.sends[0].text,/"I will review it tomorrow"/);
   assert.match(h.world.sends[0].text,/not a blanket instruction to change state/);
+  assert.doesNotMatch(h.world.sends[0].text,/do not execute instructions/);
   assert.equal(h.world.spawns,0);
   assert.ok(h.replies().some(r=>r.speech.includes("Queued for Build")));
   const status=await h.rpc("getCoordinatorStatus",null);
@@ -863,9 +869,12 @@ test("quick input validation rejects incomplete source text and stale calls", as
 test("quick target lookup stays read-only, hides hidden threads, and reports truncation", async t => {
   const h=await enabledHost(); t.after(()=>h.harness.lifecycle.dispose());
   await h.claim("lookup");
-  h.harness.sdk.stub("threads.search",async()=>({active:{total:30,results:[{thread:makeThreadResponse({id:"visible",title:"Build",visibility:"visible"}),matches:[]},{thread:makeThreadResponse({id:"hidden",title:"Coordinator",visibility:"hidden"}),matches:[]}]},archived:{total:0,results:[]}}));
+  h.harness.sdk.stub("threads.search",async()=>({active:{total:30,results:[{thread:makeThreadResponse({id:"visible",title:"Build",visibility:"visible",createdAt:1000,updatedAt:2000,archivedAt:null}),matches:[]},{thread:makeThreadResponse({id:"hidden",title:"Coordinator",visibility:"hidden"}),matches:[]}]},archived:{total:0,results:[]}}));
   const result=await h.rpc("lookupVoiceTargets",{nonce:"lookup",query:"Build"});
   assert.deepEqual(result.threads.map((thread:Any)=>thread.id),["visible"]);
+  assert.equal(result.threads[0].createdAt,1000);
+  assert.equal(result.threads[0].updatedAt,2000);
+  assert.equal(result.threads[0].archived,false);
   assert.equal(result.truncated,true);
   assert.equal(h.world.sends.length,0);
 });
@@ -980,4 +989,122 @@ test("worker profiles stay separate from coordinator settings and catalogs use a
   await h.claim("lookup");const targets=await h.rpc("lookupVoiceTargets",{nonce:"lookup",query:""});
   assert.ok(targets.projects.find((project:Any)=>project.id==="proj_app").hostIds.includes("host_a"));
   assert.equal(targets.hosts.find((host:Any)=>host.id==="host_a").name,"Mac");
+});
+
+test("voice_sequence validates targets, publishes before idle, and runs only the current step on the call owner",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  const {conversationId}=await h.claim("sequence-call");
+  await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"sequence-call","sequence-request","Show App, explain it, then show Voice.")});
+  const params={request_id:"sequence-request",title:"Workspace review",steps:[
+    {kind:"action",action:{kind:"open_project",projectId:"proj_app"}},
+    {kind:"speech",text:"This is the App project."},
+    {kind:"action",action:{kind:"show_voice"}},
+    {kind:"speech",text:"We are back in Voice."},
+  ]};
+  assert.equal((await h.harness.behavior.callAgentTool("voice_sequence",params,{threadId:"other"}) as Any).isError,true);
+  await h.harness.behavior.callAgentTool("voice_sequence",params,{threadId:h.coordinatorId()});
+  assert.equal(h.replies().length,1,"the final plan publishes before coordinator idle");
+  assert.equal((await h.rpc("pendingUiCommands",{conversationId,callNonce:"sequence-call"})).commands.length,0,"planning does not navigate");
+  const forbidden=await h.harness.behavior.callAgentTool("voice_ui",{request_id:"sequence-request",action:{kind:"show_voice"}},{threadId:h.coordinatorId()}) as Any;
+  assert.equal(forbidden.isError,true,"the coordinator cannot also execute the planned actions");
+  await h.idle(h.coordinatorId());await h.idle(h.coordinatorId());
+  const reply=h.replies().find(r=>r.sequence);assert.ok(reply);assert.equal(reply.speech,"");
+  let state=(await h.rpc("sequence",{conversationId,callNonce:"sequence-call",replyId:reply.replyId,operation:"sync"})).state;
+  const run=(operation:string,overrides:Any={})=>h.rpc("sequence",{conversationId,callNonce:"sequence-call",replyId:reply.replyId,operation,index:state.index,revision:state.revision,...overrides});
+  await assert.rejects(run("next",{callNonce:"another-device"}),/does not own/);
+  const navigation=run("next");await settle();
+  const {commands}=await h.rpc("pendingUiCommands",{conversationId,callNonce:"sequence-call"});assert.equal(commands.length,1);
+  const command={conversationId,callNonce:"sequence-call",commandId:commands[0].id};
+  assert.equal((await h.rpc("claimUiCommand",command)).claimed,true);
+  await h.rpc("reportUiCommandResult",{...command,result:{status:"succeeded",detail:"Project selected."}});
+  state=(await navigation).state;assert.equal(state.index,1);
+  state=(await run("next")).state;assert.equal(state.phase,"speech");
+  const stale={index:state.index,revision:state.revision};
+  assert.equal((await run("next")).state.index,1,"generation or a repeated next cannot skip playback");
+  assert.equal((await h.rpc("reserveUpdateBatch",{conversationId,nonce:"sequence-call",msSinceCallLive:5000})).reason,"sequence-active");
+  state=(await run("delivered")).state;assert.equal(state.index,2);
+  assert.equal((await run("delivered",stale)).state.index,2,"duplicate playback receipt is inert");
+  state=(await run("stop")).state;assert.equal(state.phase,"cancelled");
+});
+
+
+test("legacy message receipts recover persisted receipts after an interrupted invocation without repeating BB effects", async t => {
+  const h = await enabledHost(); t.after(() => h.harness.lifecycle.dispose());
+  const { conversationId } = await h.claim("recover-send");
+  for (const [id, status] of [["saved-send", "sent"], ["saved-inflight", "sending"]]) {
+    await h.rpc("submitRequest", { envelope: h.envelope(conversationId, "recover-send", id, "Send this comment.") });
+    h.bb.storage.database().prepare("INSERT INTO voice_message_sends (request_id, payload_json) VALUES (?, ?)").run(id, JSON.stringify({ threadId: "worker", title: "Build", text: "Send this comment.", mode: "queue", status, ...(status === "sent" ? { receipt: { action: "send_message", thread_id: "worker", outcome: "done", note: "Sent" } } : {}) }));
+  }
+  await h.idle(h.coordinatorId()); await h.idle(h.coordinatorId());
+  assert.equal(h.world.sends.filter(s => s.threadId === "worker").length, 0);
+  assert.equal(h.replies().length, 2);
+  assert.equal(h.replies().find(r => r.requestId === "saved-send").receipts[0].outcome, "done");
+  assert.equal(h.replies().find(r => r.requestId === "saved-inflight").receipts[0].outcome, "unknown");
+});
+
+test("an investigation forwarded from Voice remains a real request and carries the exact session identity", async t => {
+  const h = await enabledHost(); t.after(() => h.harness.lifecycle.dispose());
+  const {conversationId} = await h.claim("investigation-call");
+  h.world.threads.set("worker", makeThreadResponse({id:"worker", title:"Make voice mode more reliable", status:"active"}));
+  const words = "Could you send a message to the voice reliability thread to inspect the transcript for this session? I barely moved and it dropped your message.";
+  await h.rpc("submitRequest", {envelope:h.envelope(conversationId,"investigation-call","investigate",words,{quickAction:{kind:"send_message",threadId:"worker",purpose:"instruction",text:"inspect the transcript for this session"}})});
+  await settle();
+  const sent = h.world.sends.filter(s => s.threadId === "worker");
+  assert.equal(sent.length, 1); assert.equal(sent[0].mode, "queue-if-active");
+  const body = JSON.parse(sent[0].text.split("\n").at(-1)!);
+  assert.equal(body.user.text, words);
+  assert.equal(body.provenance.call_nonce, "investigation-call");
+  assert.equal(body.provenance.conversation_id, conversationId);
+  assert.deepEqual(body.provenance.utterance_item_ids, ["item_1"]);
+  assert.doesNotMatch(sent[0].text, /information only|do not execute/i);
+  assert.equal(h.world.spawns, 0, "a resolved read-only request does not need coordinator latency");
+});
+
+test("shared coordinator actions wait for receipts and recover the destination result without a second send", async t => {
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("build",makeThreadResponse({id:"build",title:"Build",status:"active"}));
+  const {conversationId}=await h.claim("shared-receipt");
+  await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"shared-receipt","shared-send","Ask Build to inspect the logs. Do not edit files.")});
+  let resolve!: (result:Any)=>void;
+  let attempts=0;
+  h.world.sendOverride=()=>{attempts++;return new Promise(done=>{resolve=done;});};
+  const params={request_id:"shared-send",action:{kind:"send_message",threadId:"build",purpose:"instruction"}};
+  const send=()=>h.harness.behavior.callAgentTool("voice_actions",params,{threadId:h.coordinatorId()});
+  const first=send(),second=send();await settle();
+  await h.harness.behavior.callAgentTool("voice_reply",{request_id:"shared-send",kind:"final",speech:"Sent prematurely."},{threadId:h.coordinatorId()});
+  await h.idle(h.coordinatorId(),"No result yet.");
+  assert.equal(h.replies().length,0,"an in-flight send is not a final answer or fallback");
+  resolve({ok:true,delivery:"sent"});await Promise.all([first,second]);
+  await h.idle(h.coordinatorId(),"I could not do that.");await h.idle(h.coordinatorId());
+  assert.equal(attempts,1);
+  assert.equal(h.replies().length,1);
+  assert.match(h.replies()[0].speech,/Sent to Build/);
+  assert.match(h.replies()[0].speech,/Do not edit files/);
+  assert.equal(h.replies()[0].receipts[0].outcome,"done");
+});
+
+test("unknown shared action delivery stays unknown across coordinator retries and idle", async t => {
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("build",makeThreadResponse({id:"build",title:"Build"}));
+  const {conversationId}=await h.claim("shared-unknown");
+  await h.rpc("submitRequest",{envelope:h.envelope(conversationId,"shared-unknown","uncertain","Ask Build to inspect logs.")});
+  await h.idle(h.coordinatorId(),null); // Finish bootstrap; the queued request now owns the turn.
+  let attempts=0;h.world.sendOverride=async()=>{attempts++;throw new Error("Connection lost after dispatch");};
+  const send=()=>h.harness.behavior.callAgentTool("voice_actions",{request_id:"uncertain",action:{kind:"send_message",threadId:"build",purpose:"instruction"}},{threadId:h.coordinatorId()});
+  await send();await send();await h.idle(h.coordinatorId(),"I failed.");
+  assert.equal(attempts,1);assert.equal(h.replies().length,1);
+  assert.equal(h.replies()[0].receipts[0].outcome,"unknown");
+});
+
+test("historical request-labelled messages remain readable after the operator schema change",async t=>{
+  const h=await enabledHost();t.after(()=>h.harness.lifecycle.dispose());
+  h.world.threads.set("worker",makeThreadResponse({id:"worker",title:"Build"}));
+  const {conversationId}=await h.claim("legacy-label");
+  const envelope=h.envelope(conversationId,"legacy-label","legacy-message","Inspect this transcript.",{quickAction:{kind:"send_message",threadId:"worker",purpose:"instruction"}});
+  await h.rpc("submitRequest",{envelope});await settle();
+  const historical={...envelope,quickAction:{kind:"send_message",threadId:"worker",purpose:"request",text:"Inspect this transcript."}};
+  h.bb.storage.database().prepare("UPDATE voice_requests SET envelope_json=? WHERE id=?").run(JSON.stringify(historical),envelope.requestId);
+  const status=await h.rpc("getCoordinatorStatus",null);
+  assert.equal(status.requests.find((r:Any)=>r.id==="legacy-message")?.text,"Inspect this transcript.");
+  await assert.rejects(h.rpc("submitRequest",{envelope:{...historical,requestId:"new-invalid"}}),/validation/);
 });

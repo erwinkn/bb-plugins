@@ -54,6 +54,8 @@ export class LiveActionExecutor {
   private creationChain: Promise<unknown> = Promise.resolve();
   constructor(private readonly bb: BbPluginApi, readonly store: LiveActionStore, private readonly hooks: Hooks) {}
 
+  isRunning(requestId: string): boolean { return this.requests.has(requestId); }
+
   execute(envelope: UserRequestEnvelope, action: QuickAction, actor: "live"|"coordinator", context: ActionContext): Promise<ActionResult> {
     action = quickActionSchema.parse(action);
     // Serialize duplicate coordinator tool invocations as well as live RPC retries.

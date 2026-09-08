@@ -9,6 +9,8 @@
 // separate, with unknown delivery. Delivery is reported honestly:
 // generation is not playback, and an unknown state stays "unknown".
 
+import { hasSpokenWords } from "./spoken-input.ts";
+
 export interface SessionEvent {
   id: number;
   ts: number;
@@ -37,6 +39,8 @@ export interface ConversationMessage {
   eventIds: number[];
   /** True when correlation relied on an open reply window plus identical text. */
   attributedByWindow?: boolean;
+  partial?: boolean;
+  unfinished?: boolean;
 }
 
 function parse(raw: string): Record<string, unknown> {
@@ -109,6 +113,7 @@ function groupUserMessages(messages: ConversationMessage[], events: readonly Ses
   }
   const users = messages.filter(message => message.who === "you").map(message => {
     const boundary = boundaries.get(itemByEvent.get(message.eventIds[0]) ?? "");
+    if (boundary?.start !== undefined) message.ts = boundary.start;
     return { message, start: boundary?.start ?? message.ts, end: boundary?.end ?? message.ts, boundary };
   }).sort((a,b) => a.start - b.start || a.message.eventIds[0] - b.message.eventIds[0]);
   const grouped: ConversationMessage[] = [];
@@ -121,6 +126,7 @@ function groupUserMessages(messages: ConversationMessage[], events: readonly Ses
     const answered = previousStart !== undefined && (speechStarts.get(call) ?? []).some(ts => ts >= previousStart && ts <= current.start);
     if (previous && previous.message.kind === "speech" && current.message.kind === "speech" && previous.message.callId === call && gap >= 0 && gap < USER_MESSAGE_PAUSE_MS && !answered) {
       const group = grouped.at(-1)!;
+      group.partial = current.message.partial;
       group.text += ` ${current.message.text}`;
       group.eventIds.push(...current.message.eventIds);
     } else {
@@ -199,12 +205,12 @@ export function projectConversation(events: readonly SessionEvent[]): Conversati
     switch (event.kind) {
       case "user": {
         const text = str(p.text);
-        if (!text?.trim()) break;
-        messages.push({ id: `user:${event.id}`, who: "you", text, ts: event.ts, callId, delivery: null, source: "realtime", kind: "speech", eventIds: [event.id] });
+        if (!text || !hasSpokenWords(text)) break;
+        messages.push({ id: str(p.itemId) ? `user:${callId ?? "legacy"}:${p.itemId}` : `user:${event.id}`, partial: p.partial === true, unfinished: p.unfinished === true, who: "you", text, ts: event.ts, callId, delivery: null, source: "realtime", kind: "speech", eventIds: [event.id] });
         break;
       }
       case "transcription.result": {
-        if (!["empty", "failed", "timeout"].includes(String(p.outcome)) || !str(p.itemId)) break;
+        if (!["failed", "timeout"].includes(String(p.outcome)) || !str(p.itemId)) break;
         const key = JSON.stringify([callId, p.itemId]);
         if (transcribedItems.has(key) || missingItems.has(key)) break;
         missingItems.add(key);
@@ -225,7 +231,7 @@ export function projectConversation(events: readonly SessionEvent[]): Conversati
         const ack = replyId.startsWith("local_ack_") || p.source === "bridge" && p.kind === "acknowledgment";
         const d = forReply(replyId, event.ts, callId, ack ? "acknowledgment" : replyKind(p.kind));
         if (ack || p.source === "bridge") d.message.source = "bridge";
-        d.requestedSpeech = str(p.text) ?? d.requestedSpeech;
+        d.requestedSpeech = p.streaming ? null : str(p.text) ?? d.requestedSpeech;
         d.message.eventIds.push(event.id);
         d.open = true;
         if (!openReplies.includes(d)) openReplies.push(d);
@@ -270,11 +276,15 @@ export function projectConversation(events: readonly SessionEvent[]): Conversati
           if (responseId && !byResponse.has(responseId)) byResponse.set(responseId, d);
           d.message.source = p.source === "acknowledgment" ? "bridge" : source;
           if (p.source === "acknowledgment") d.message.kind = "acknowledgment";
+          d.message.partial = p.partial === true;
+          d.message.unfinished = p.unfinished === true;
           addPart(d, itemId, text, event.id);
           break;
         }
         if (responseId) {
           const d = forResponse(responseId, event.ts, callId, source, kind);
+          d.message.partial = p.partial === true;
+          d.message.unfinished = p.unfinished === true;
           addPart(d, itemId, text, event.id);
           break;
         }
