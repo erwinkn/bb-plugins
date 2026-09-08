@@ -1,5 +1,5 @@
 /**
- * Builds the Pierre editor bundle this plugin serves, into `dist/pierre`.
+ * Builds the Pierre editor bundle this plugin serves, into `assets/pierre`.
  *
  * Pierre cannot go through `bb plugin build`: that build emits one file with no
  * code splitting, so every Shiki grammar and theme would parse at app boot for
@@ -14,8 +14,9 @@
  * work reach the worker's global scope, where `document` does not exist. The
  * duplicated Shiki core is worth that isolation.
  *
- * `server.ts` runs this script when `dist/pierre` is missing or older than its
- * inputs, so a fresh install builds on first use.
+ * Run this during development and commit its output. The installed plugin
+ * serves these files without running a build. An optional output directory
+ * argument lets check-assets.mjs compare a fresh build with the committed one.
  */
 import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -26,7 +27,7 @@ const pluginRoot = path.resolve(import.meta.dirname, "..");
 const require = createRequire(path.join(pluginRoot, "package.json"));
 const esbuild = require("esbuild");
 
-const outDir = path.join(pluginRoot, "dist", "pierre");
+const outDir = process.argv[2] ? path.resolve(process.argv[2]) : path.join(pluginRoot, "assets", "pierre");
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
 const fontInput = "node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2";

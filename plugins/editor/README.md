@@ -103,19 +103,25 @@ Extensions → Editor:
 
 ```sh
 cd plugins/editor
-npm install --include=dev
-npm run build:pierre
+npm ci --include=dev --include=optional
+npm run build
+npm run check:assets
 npm run typecheck
 npm test
-bb plugin build
 ```
 
 Install with
 `bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin erwin-editor`
 and follow the repository's draft-PR and branch-install procedure for changes.
-`bb plugin dev` rebuilds the app; the lazy Pierre bundle is separate, and the
-server builds `dist/pierre` on first use when it is missing or stale (hence
-esbuild is a runtime dependency).
+`assets/pierre/` contains the committed browser editor, worker, language and
+theme chunks, font, and license notices. Installation and first use serve
+these files without rebuilding them. esbuild is a development dependency.
+
+After changing `pierre-bundle/`, the asset build script, or its dependencies,
+run `npm run build:pierre` and commit the generated changes too.
+`npm run check:assets` rebuilds into a temporary directory and checks that its
+output matches the shipped files. `bb plugin dev` rebuilds the app; run the
+Pierre build separately when its inputs change.
 
 ### Checking the UI from a driven browser
 
