@@ -16,7 +16,7 @@
   spaces list, the New space form, a space's heading actions, and the All
   projects view; one column at a time on phones.
 - `components/project-list.tsx`: every BB project with optional membership
-  checkboxes, row menus, inline edit forms, drag handles on desktop, and the
+  checkboxes, row menus, inline edit forms, draggable rows on desktop, and the
   Add project form.
 - `components/project-forms.tsx`: inline rename, change-folder, remove, and
   add-project forms.

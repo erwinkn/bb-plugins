@@ -20,7 +20,6 @@ import {
   AddButton,
   FILTER_THRESHOLD,
   FilterField,
-  Grip,
   matchesFilter,
   ProjectList,
   RowMenu,
@@ -163,14 +162,9 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
           return (
             <li
               key={space.id}
-              className={`group relative rounded ${drag.dropClass(space.id)} ${current ? "bg-accent" : ""}`}
+              className={`rounded ${drag.dropClass(space.id)} ${current ? "bg-accent" : ""}`}
               {...drag.props(space.id)}
             >
-              {drag.grip && (
-                <span className="absolute -left-3.5 top-1/2 -translate-y-1/2">
-                  <Grip id={space.id} onStart={drag.start} onEnd={drag.end} />
-                </span>
-              )}
               <SpaceRowMenu
                 spaceName={space.name}
                 canMoveUp={index > 0}

@@ -92,34 +92,10 @@ export function RowMenu({
   );
 }
 
-export function Grip({
-  id,
-  onStart,
-  onEnd,
-}: {
-  id: string;
-  onStart: (id: string) => void;
-  onEnd: () => void;
-}) {
-  return (
-    <span
-      draggable
-      aria-hidden="true"
-      title="Drag to reorder"
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData("text/plain", id);
-        onStart(id);
-      }}
-      onDragEnd={onEnd}
-      className="cursor-grab select-none px-0.5 text-muted-foreground opacity-0 group-hover:opacity-60"
-    >
-      ⋮⋮
-    </span>
-  );
-}
-
-/** Drag-to-reorder bookkeeping for one list; desktop only. */
+/**
+ * Drag-to-reorder bookkeeping for one list; desktop only. The whole row is
+ * the handle: press and move to drag, drop on another row to take its place.
+ */
 export function useDragOrder(
   enabled: boolean,
   onDrop: (fromId: string, toId: string) => void,
@@ -134,6 +110,14 @@ export function useDragOrder(
     !enabled
       ? {}
       : {
+          draggable: true,
+          title: "Drag to reorder",
+          onDragStart: (event: React.DragEvent) => {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", id);
+            setDrag(id);
+          },
+          onDragEnd: end,
           onDragOver: (event: React.DragEvent) => {
             if (!drag) return;
             event.preventDefault();
@@ -148,8 +132,8 @@ export function useDragOrder(
           },
         };
   const dropClass = (id: string) =>
-    over === id && drag !== id ? "ring-1 ring-ring" : "";
-  return { grip: enabled, start: setDrag, end, props, dropClass };
+    `${over === id && drag !== id ? "ring-1 ring-ring" : ""} ${drag === id ? "opacity-50" : ""}`;
+  return { props, dropClass };
 }
 
 // Every BB project, with a membership checkbox when a space is being edited.
@@ -215,7 +199,6 @@ export function ProjectList({
         orderable.findIndex((project) => project.id === toId),
       ),
   );
-  const spacer = !compact && <span className="w-4" aria-hidden="true" />;
   return (
     <div>
       {projects.error && (
@@ -252,12 +235,6 @@ export function ProjectList({
               className={`${rowClass} flex-wrap ${drag.dropClass(project.id)}`}
               {...(project.isPersonal ? {} : drag.props(project.id))}
             >
-              {drag.grip &&
-                (project.isPersonal ? (
-                  spacer
-                ) : (
-                  <Grip id={project.id} onStart={drag.start} onEnd={drag.end} />
-                ))}
               {space && (
                 <input
                   type="checkbox"
@@ -388,7 +365,6 @@ export function ProjectList({
           !filtering &&
           unavailable.map((id) => (
             <li key={id} className={rowClass}>
-              {spacer}
               <input
                 type="checkbox"
                 aria-label={`Include Unavailable project in ${space.name}`}

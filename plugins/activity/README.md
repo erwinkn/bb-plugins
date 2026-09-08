@@ -170,7 +170,7 @@ link so it works like any other BB page.
   returns to the list. A member project BB no longer lists appears as
   *Unavailable project* so it can be removed. Right-click or long-press a
   space in the list for Rename…, Move up, Move down, and Delete…; on desktop
-  the grip at the left of a space row also drags it to a new position.
+  a space row can also be dragged onto another row to take its place.
 - **All projects** at the bottom of the list shows every BB project without
   membership checkboxes; use it to manage projects before any space exists.
 - Project lists with six or more entries get a **Filter projects** field that
@@ -183,8 +183,8 @@ link so it works like any other BB page.
   new-thread panel and every client see the same list. **Remove…** says how
   many active threads the project has and requires typing its name; BB then
   deletes the project with all of its threads, and the plugin drops it from
-  every space. Files on disk are untouched. On desktop the grip drags a project
-  row to a new position.
+  every space. Files on disk are untouched. On desktop a project row can be
+  dragged onto another row to take its place.
 - **+ Add project…** opens a form with a folder path field with directory
   completion (type `/Users/me/Co` and pick from the list; Tab or Enter accepts
   the highlighted folder) or **Browse…** for the native folder dialog, and a

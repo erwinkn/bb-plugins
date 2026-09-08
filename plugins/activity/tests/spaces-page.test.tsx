@@ -393,6 +393,45 @@ describe("spaces page", () => {
     ).toEqual(["Five"]);
   });
 
+  it("reorders spaces and projects by dragging one row onto another", async () => {
+    const rpc = server();
+    const slot = await mountPage("one", rpc);
+    const rowOf = (name: string) =>
+      slot.container.querySelector(`[data-space-row="${name}"]`)!
+        .parentElement as HTMLElement;
+    expect(rowOf("Only One").getAttribute("draggable")).toBe("true");
+    const transfer = { effectAllowed: "", setData: () => {} };
+    fireEvent.dragStart(rowOf("Only One"), { dataTransfer: transfer });
+    fireEvent.dragOver(rowOf("Both"), { dataTransfer: transfer });
+    expect(rowOf("Both").className).toContain("ring-ring");
+    fireEvent.drop(rowOf("Both"), { dataTransfer: transfer });
+    await waitFor(() => expect(rpc.saveSpaces).toHaveBeenCalledTimes(1));
+    expect(rpc.saveSpaces.mock.calls[0][0]).toMatchObject({
+      spaces: [both, one],
+    });
+
+    const projectRow = (name: string) =>
+      Array.from(
+        slot.getByRole("list", { name: "Projects" }).querySelectorAll("li"),
+      ).find(
+        (li) => li.querySelector("[data-project-name]")?.textContent === name,
+      )!;
+    expect(projectRow("Personal").getAttribute("draggable")).toBeNull();
+    fireEvent.dragStart(projectRow("Three"), { dataTransfer: transfer });
+    fireEvent.dragOver(projectRow("One"), { dataTransfer: transfer });
+    fireEvent.drop(projectRow("One"), { dataTransfer: transfer });
+    await waitFor(() =>
+      expect(rpc.reorderProject).toHaveBeenCalledWith({
+        projectId: "project-3",
+        previousProjectId: null,
+        nextProjectId: "project-1",
+      }),
+    );
+    await waitFor(() =>
+      expect(projectRows(slot)).toEqual(["Three", "One", "Two", "Personal"]),
+    );
+  });
+
   it("redirects an unknown space to the list", async () => {
     const slot = await mountPage("gone");
     await waitFor(() =>
