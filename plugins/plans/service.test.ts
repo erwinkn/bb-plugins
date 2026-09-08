@@ -1,0 +1,348 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import plugin from "./server";
+import type { Plan } from "./contract";
+
+const disposers: Array<() => Promise<void>> = [];
+async function setup(send = vi.fn(async (_args: unknown) => ({ ok: true })), options: Parameters<typeof plugin>[1] = {}) {
+  const host = createFakePluginHost({ pluginId: "plans", sdk: {
+    threads: { get: async () => makeThreadResponse({ id: "thread-1", projectId: "project-1" }), send },
+    projects: { get: async () => ({ id: "project-1", name: "Test project" }) },
+  } });
+  await plugin(host.bb, options);
+  disposers.push(() => host.harness.lifecycle.dispose());
+  const rpc = async (method: string, input: unknown) => host.harness.behavior.callRpc(method, input) as Promise<Plan>;
+  const plan = await rpc("create", { title: "A plan", markdown: "# A plan\n\nKeep the existing data.", threadId: "thread-1" });
+  return { ...host, rpc, plan, send };
+}
+afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
+
+describe("Plans review workflow", () => {
+  it("waits for a submitted revision after note-only feedback, even when the text is unchanged", async () => {
+    const { rpc, plan } = await setup();
+    const version = plan.versions[0]!;
+    await rpc("submitReview", { id: plan.id, versionId: version.id, action: "feedback", note: "Explain the data retention step.", requestId: "note-only" });
+    await expect(rpc("submitReview", { id: plan.id, versionId: version.id, action: "approve", note: "", requestId: "too-early" })).rejects.toThrow(/next revision/);
+    const revised = await rpc("revise", { id: plan.id, markdown: version.markdown, expectedVersionId: version.id });
+    expect(revised.versions).toHaveLength(2);
+    expect(revised.status).toBe("review");
+    const approved = await rpc("submitReview", { id: plan.id, versionId: revised.versions[1]!.id, action: "approve", note: "", requestId: "after-explanation" });
+    expect(approved.status).toBe("approved");
+  });
+
+  it("delivers redlines as removal requests and blocks approval before feedback", async () => {
+    const { rpc, plan, send } = await setup();
+    const versionId = plan.versions[0]!.id;
+    const marked = await rpc("addComment", { id: plan.id, versionId, quote: "existing data", kind: "redline" });
+    expect(marked.comments[0]).toMatchObject({ kind: "redline", body: "", sentAt: null });
+    await expect(rpc("submitReview", { id: plan.id, versionId, action: "approve", note: "", requestId: "redline-block" })).rejects.toThrow(/Send or delete/);
+    const sent = await rpc("submitReview", { id: plan.id, versionId, action: "feedback", note: "", requestId: "redline-send" });
+    expect(sent.comments[0]!.sentAt).not.toBeNull();
+    expect(JSON.stringify(send.mock.calls)).toContain('redline');
+    expect(JSON.stringify(send.mock.calls)).toContain('requests removal');
+  });
+
+  it("sends positive annotations with approval without blocking or duplicating delivery", async () => {
+    const { rpc, plan, send } = await setup();
+    const versionId = plan.versions[0]!.id;
+    await rpc("addComment", { id: plan.id, versionId, quote: "existing data", kind: "looksGood" });
+    const input = { id: plan.id, versionId, action: "approve", note: "", requestId: "positive-approval" };
+    const approved = await rpc("submitReview", input);
+    expect(approved.status).toBe("approved");
+    expect(approved.comments[0]!.sentAt).not.toBeNull();
+    expect(JSON.stringify(send.mock.calls)).toContain('looksGood');
+    expect(JSON.stringify(send.mock.calls)).toContain('existing data');
+    await rpc("submitReview", input);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends positive annotations with feedback and validates annotation input", async () => {
+    const { rpc, plan } = await setup();
+    const input = { id: plan.id, versionId: plan.versions[0]!.id, quote: "existing data" };
+    await expect(rpc("addComment", input)).rejects.toThrow();
+    await expect(rpc("addComment", { ...input, quote: " ", kind: "redline" })).rejects.toThrow();
+    await expect(rpc("addComment", { ...input, kind: "unknown" })).rejects.toThrow();
+    await rpc("addComment", { ...input, kind: "looksGood" });
+    const sent = await rpc("submitReview", { id: plan.id, versionId: input.versionId, action: "feedback", note: "", requestId: "positive-feedback" });
+    expect(sent.comments[0]!.sentAt).not.toBeNull();
+  });
+
+  it("saves a revision without moving existing comments and rejects stale approval", async () => {
+    const { rpc, plan } = await setup();
+    const versionId = plan.versions[0]!.id;
+    const annotated = await rpc("addComment", { id: plan.id, versionId, quote: "existing data", body: "Keep the schedules too." });
+    const revised = await rpc("revise", { id: plan.id, expectedVersionId: versionId, markdown: "# A plan\n\nKeep data and schedules." });
+    expect(revised.comments[0]).toEqual(annotated.comments[0]);
+    expect(revised.versions).toHaveLength(2);
+    await expect(rpc("submitReview", { id: plan.id, versionId, action: "approve", note: "", requestId: "stale" })).rejects.toThrow(/latest version/);
+    await expect(rpc("submitReview", { id: plan.id, versionId: revised.versions[1]!.id, action: "approve", note: "", requestId: "open" })).rejects.toThrow(/Send or delete/);
+    await rpc("removeComment", { id: plan.id, commentId: annotated.comments[0]!.id });
+    const approved = await rpc("submitReview", { id: plan.id, versionId: revised.versions[1]!.id, action: "approve", note: "", requestId: "deleted" });
+    expect(approved.status).toBe("approved");
+  });
+
+  it("sends quoted feedback to the original thread once and keeps sent comments immutable", async () => {
+    const { rpc, plan, send } = await setup();
+    const versionId = plan.versions[0]!.id;
+    const annotated = await rpc("addComment", { id: plan.id, versionId, quote: "existing data", body: "Include schedules." });
+    const input = { id: plan.id, versionId, action: "feedback", note: "Please revise.", requestId: "review-1" };
+    const sent = await rpc("submitReview", input);
+    expect(sent.status).toBe("revising");
+    expect(sent.comments[0]!.sentAt).not.toBeNull();
+    await rpc("submitReview", input);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toMatchObject({ threadId: "thread-1", mode: "queue-if-active", input: [{ type: "text", text: expect.stringContaining("Include schedules.") }] });
+    await expect(rpc("updateComment", { id: plan.id, commentId: annotated.comments[0]!.id, body: "Changed" })).rejects.toThrow(/cannot be edited/);
+  });
+
+  it("approves only the reviewed snapshot and avoids duplicate starts", async () => {
+    const { rpc, plan, send } = await setup();
+    const input = { id: plan.id, versionId: plan.versions[0]!.id, action: "approve", note: "Proceed.", requestId: "approve-1" };
+    const approved = await rpc("submitReview", input);
+    expect(approved.status).toBe("approved");
+    await expect(rpc("submitReview", { ...input, requestId: "approve-2" })).rejects.toThrow(/already approved/);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets the reviewer approve a revision after sent feedback without resolving comments", async () => {
+    const { rpc, plan } = await setup();
+    const versionId = plan.versions[0]!.id;
+    await rpc("addComment", { id: plan.id, versionId, quote: "existing data", body: "Keep schedules too." });
+    await rpc("submitReview", { id: plan.id, versionId, action: "feedback", note: "", requestId: "sent-before-revise" });
+    await expect(rpc("submitReview", { id: plan.id, versionId, action: "approve", note: "", requestId: "before-revise" })).rejects.toThrow(/next revision/);
+    const revised = await rpc("revise", { id: plan.id, expectedVersionId: versionId, markdown: "# A plan\n\nKeep data and schedules." });
+    const approved = await rpc("submitReview", { id: plan.id, versionId: revised.versions.at(-1)!.id, action: "approve", note: "", requestId: "after-revise" });
+    expect(approved.status).toBe("approved");
+    expect(approved.comments[0]!.body).toBe("Keep schedules too.");
+  });
+
+  it("never sends sample reviews to an agent", async () => {
+    const { rpc, send } = await setup();
+    const plan = await rpc("create", { title: "Sample", markdown: "Sample plan", sample: true });
+    expect(plan.threadId).toBeNull();
+    await rpc("submitReview", { id: plan.id, versionId: plan.versions[0]!.id, action: "feedback", note: "Make it shorter.", requestId: "sample-feedback" });
+    const revision = await rpc("revise", { id: plan.id, expectedVersionId: plan.versions[0]!.id, markdown: "Short plan" });
+    const approved = await rpc("submitReview", { id: plan.id, versionId: revision.versions.at(-1)!.id, action: "approve", note: "", requestId: "sample-approve" });
+    expect(approved.status).toBe("approved");
+    expect(send).not.toHaveBeenCalled();
+    await expect(rpc("create", { title: "Bad sample", markdown: "Text", sample: true, threadId: "thread-1" })).rejects.toThrow(/cannot be linked/);
+  });
+
+  it("retains data through plugin reload", async () => {
+    const { harness, plan } = await setup();
+    const replacement = await harness.lifecycle.reload(plugin);
+    disposers.push(() => replacement.harness.lifecycle.dispose());
+    const loaded = await replacement.harness.behavior.callRpc("get", { id: plan.id }) as Plan;
+    expect(loaded.versions).toEqual(plan.versions);
+  });
+
+  it("messages the thread after a reload even if an agent was waiting before it", async () => {
+    const { harness, plan, send } = await setup();
+    const versionId = plan.versions[0]!.id;
+    const waiting = harness.behavior.runCli(["wait", plan.id, "--version-id", versionId, "--timeout", "600"], { threadId: "thread-1", signal: new AbortController().signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const replacement = await harness.lifecycle.reload(plugin);
+    disposers.push(() => replacement.harness.lifecycle.dispose());
+    await waiting.catch(() => undefined);
+    await replacement.harness.behavior.callRpc("submitReview", { id: plan.id, versionId, action: "approve", note: "Go.", requestId: "after-reload" });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks automatic retry after an uncertain send and allows explicit reconciliation", async () => {
+    const send = vi.fn(async () => { throw new Error("Connection lost"); });
+    const { harness, rpc, plan } = await setup(send);
+    const input = { id: plan.id, versionId: plan.versions[0]!.id, action: "approve", note: "", requestId: "uncertain" };
+    await expect(rpc("submitReview", input)).rejects.toThrow(/could not be confirmed/);
+    await expect(rpc("submitReview", input)).rejects.toThrow(/could not be confirmed/);
+    await expect(rpc("revise", { id: plan.id, expectedVersionId: input.versionId, markdown: "Revised" })).rejects.toThrow(/pending/);
+    expect(send).toHaveBeenCalledTimes(1);
+    const result = await harness.behavior.runCli(["delivery", "uncertain", "sent"]);
+    expect(result.exitCode).toBe(0);
+    expect((await rpc("get", { id: plan.id })).status).toBe("approved");
+  });
+
+  it("serializes simultaneous approvals across browser windows", async () => {
+    const { rpc, plan, send } = await setup();
+    const input = { id: plan.id, versionId: plan.versions[0]!.id, action: "approve", note: "" };
+    const results = await Promise.allSettled([
+      rpc("submitReview", { ...input, requestId: "window-1" }),
+      rpc("submitReview", { ...input, requestId: "window-2" }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects agent revisions from another thread", async () => {
+    const { harness, plan } = await setup();
+    await expect(harness.behavior.callAgentTool("plans_submit", {
+      title: "Changed", markdown: "Changed plan", planId: plan.id, expectedVersionId: plan.versions[0]!.id,
+    }, { threadId: "other-thread" })).rejects.toThrow(/another thread/);
+  });
+
+  it("blocks plans_submit on a pending interaction until the panel decides, then clears it", async () => {
+    const { harness, rpc, send } = await setup();
+    const submitting = harness.behavior.callAgentTool("plans_submit", { title: "Held", markdown: "# Held\n\nKeep the existing data." }, { threadId: "thread-1" });
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    const interaction = harness.inspection.pendingInteractions[0]!;
+    expect(interaction).toMatchObject({ threadId: "thread-1", rendererId: "plan-review", title: "Review plan: Held" });
+    const { planId, versionId } = interaction.payload as { planId: string; versionId: string };
+    await rpc("addComment", { id: planId, versionId, quote: "existing data", kind: "redline" });
+    await rpc("submitReview", { id: planId, versionId, action: "feedback", note: "Drop it.", requestId: "held-feedback" });
+    const result = JSON.parse(String(await submitting)) as { status: string; comments: unknown[]; note: string };
+    expect(result).toMatchObject({ status: "feedback", note: "Drop it.", comments: [{ quote: "existing data", kind: "redline" }] });
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(0));
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("on non-blocking providers, returns at once, holds the prompt, and delivers the decision as a message", async () => {
+    const { harness, rpc, send } = await setup();
+    await harness.behavior.setSettings({ nonBlockingProviders: "acp-cursor, test-provider" });
+    const result = JSON.parse(String(await harness.behavior.callAgentTool("plans_submit", { title: "Held", markdown: "# Held\n\nKeep the existing data." }, { threadId: "thread-1" }))) as { status: string; planId: string; versionId: string; instruction: string };
+    expect(result.status).toBe("submitted");
+    expect(result.instruction).toMatch(/End your turn/);
+    expect(result.instruction).toMatch(/do not poll or run `bb plans wait`/);
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    expect(harness.inspection.pendingInteractions[0]).toMatchObject({ threadId: "thread-1", title: "Review plan: Held" });
+    // A revision replaces the held prompt with one for the new version.
+    const revised = JSON.parse(String(await harness.behavior.callAgentTool("plans_submit", { title: "Held", markdown: "# Held\n\nKeep the data.", planId: result.planId, expectedVersionId: result.versionId }, { threadId: "thread-1" }))) as { versionId: string };
+    await vi.waitFor(() => {
+      expect(harness.inspection.pendingInteractions).toHaveLength(1);
+      expect((harness.inspection.pendingInteractions[0]!.payload as { versionId: string }).versionId).toBe(revised.versionId);
+    });
+    await rpc("addComment", { id: result.planId, versionId: revised.versionId, quote: "the data", body: "Which data?" });
+    await rpc("submitReview", { id: result.planId, versionId: revised.versionId, action: "feedback", note: "", requestId: "held-message" });
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    const text = (send.mock.calls[0]![0] as { input: Array<{ text: string }> }).input[0]!.text;
+    expect(text).toContain("Which data?");
+    expect(text).not.toContain("bb plans wait");
+    expect(text).not.toContain("Keep the data");
+  });
+
+  it("retries a held prompt the thread could not show yet", async () => {
+    const { harness, bb } = await setup(undefined, { holdRetryMs: 20 });
+    const original = bb.ui.requestInput.bind(bb.ui);
+    const spy = vi.spyOn(bb.ui, "requestInput")
+      .mockRejectedValueOnce(new Error("Thread thread-1 is already awaiting user interaction"))
+      .mockImplementation(original);
+    await harness.behavior.setSettings({ nonBlockingProviders: "acp-cursor, test-provider" });
+    await harness.behavior.callAgentTool("plans_submit", { title: "Second", markdown: "# Second\n\nKeep the existing data." }, { threadId: "thread-1" });
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title: "Review plan: Second" });
+  });
+
+  it("deleting a plan releases its held prompt", async () => {
+    const { harness, rpc } = await setup();
+    await harness.behavior.setSettings({ nonBlockingProviders: "acp-cursor, test-provider" });
+    const result = JSON.parse(String(await harness.behavior.callAgentTool("plans_submit", { title: "Doomed", markdown: "# Doomed\n\nKeep the existing data." }, { threadId: "thread-1" }))) as { planId: string };
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    await rpc("remove", { id: result.planId });
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+    await expect(rpc("get", { id: result.planId })).rejects.toThrow(/not found/i);
+  });
+
+  it("refuses to delete a plan whose review was sent while its hold was releasing", async () => {
+    const { harness, rpc } = await setup();
+    await harness.behavior.setSettings({ nonBlockingProviders: "acp-cursor, test-provider" });
+    const result = JSON.parse(String(await harness.behavior.callAgentTool("plans_submit", { title: "Raced", markdown: "# Raced\n\nKeep the existing data." }, { threadId: "thread-1" }))) as { planId: string; versionId: string };
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    // Hold the delivery open so the receipt stays pending while remove runs.
+    let finishSend!: () => void;
+    harness.inspection.sdk.stub("threads.send", () => new Promise((resolve) => { finishSend = () => resolve({ ok: true }); }));
+    // remove passes its first check, then yields while the hold releases; the
+    // review lands in that window and must survive.
+    const removing = rpc("remove", { id: result.planId });
+    const review = rpc("submitReview", { id: result.planId, versionId: result.versionId, action: "approve", note: "Go.", requestId: "raced" });
+    await expect(removing).rejects.toThrow(/delivery is pending/);
+    finishSend();
+    expect((await review).status).toBe("approved");
+    expect((await rpc("get", { id: result.planId })).status).toBe("approved");
+  });
+
+  it("returns dismissed when the user skips the review prompt", async () => {
+    const { harness } = await setup();
+    const submitting = harness.behavior.callAgentTool("plans_submit", { title: "Skipped", markdown: "Skip me" }, { threadId: "thread-1" });
+    await vi.waitFor(() => expect(harness.inspection.pendingInteractions).toHaveLength(1));
+    harness.behavior.cancelInteraction(harness.inspection.pendingInteractions[0]!.id);
+    const result = JSON.parse(String(await submitting)) as { status: string };
+    expect(result.status).toBe("dismissed");
+  });
+
+  it("hands the decision to a waiting agent and skips the thread message", async () => {
+    const { harness, rpc, plan, send } = await setup();
+    const versionId = plan.versions[0]!.id;
+    await rpc("addComment", { id: plan.id, versionId, quote: "existing data", body: "Name the table." });
+    const waiting = harness.behavior.runCli(["wait", plan.id, "--version-id", versionId, "--timeout", "30"], { threadId: "thread-1", signal: new AbortController().signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await rpc("submitReview", { id: plan.id, versionId, action: "feedback", note: "Be specific.", requestId: "attended" });
+    const result = await waiting;
+    expect(result.exitCode).toBe(0);
+    const decision = JSON.parse(result.stdout!);
+    expect(decision).toMatchObject({ status: "feedback", planId: plan.id, versionId, note: "Be specific.", comments: [{ quote: "existing data", body: "Name the table.", kind: "comment" }] });
+    expect(decision.instruction).toMatch(/plans_submit/);
+    expect(JSON.stringify(decision)).not.toContain("Keep the existing data");
+    expect(send).not.toHaveBeenCalled();
+    // A later wait on the same version reads the stored decision.
+    const again = await harness.behavior.runCli(["wait", plan.id, "--version-id", versionId, "--timeout", "1"], { threadId: "thread-1", signal: new AbortController().signal });
+    expect(JSON.parse(again.stdout!).status).toBe("feedback");
+  });
+
+  it("times out with a pending status and reports superseded versions", async () => {
+    const { harness, rpc, plan } = await setup();
+    const versionId = plan.versions[0]!.id;
+    const pending = await harness.behavior.runCli(["wait", plan.id, "--timeout", "1"], { threadId: "thread-1", signal: new AbortController().signal });
+    expect(JSON.parse(pending.stdout!)).toMatchObject({ status: "pending", versionId });
+    const waiting = harness.behavior.runCli(["wait", plan.id, "--version-id", versionId, "--timeout", "30"], { threadId: "thread-1", signal: new AbortController().signal });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const revised = await rpc("revise", { id: plan.id, expectedVersionId: versionId, markdown: "Changed" });
+    expect(JSON.parse((await waiting).stdout!)).toMatchObject({ status: "superseded", latestVersionId: revised.versions[1]!.id });
+  }, 10_000);
+
+  it("messages the thread without the plan text when nobody is waiting", async () => {
+    const { rpc, plan, send } = await setup();
+    const versionId = plan.versions[0]!.id;
+    await rpc("submitReview", { id: plan.id, versionId, action: "approve", note: "Go.", requestId: "unattended" });
+    expect(send).toHaveBeenCalledTimes(1);
+    const text = (send.mock.calls[0]![0] as { input: Array<{ text: string }> }).input[0]!.text;
+    expect(text).toContain("approved plan");
+    expect(text).toContain(`bb plans get ${plan.id} --version-id ${versionId}`);
+    expect(text).not.toContain("Keep the existing data");
+  });
+
+  it("lets another thread review a plan through the CLI, but never the plan's own thread", async () => {
+    const { harness, plan } = await setup();
+    const versionId = plan.versions[0]!.id;
+    const self = await harness.behavior.runCli(["review", plan.id, versionId, "feedback", "--note", "x"], { threadId: "thread-1", signal: new AbortController().signal });
+    expect(self.exitCode).toBe(1);
+    expect(self.stderr).toMatch(/own plan/);
+    const parent = await harness.behavior.runCli(["review", plan.id, versionId, "feedback", "--redline", "existing data", "--comment", "A plan::Rename it", "--note", "From the parent."], { threadId: "parent-thread", signal: new AbortController().signal });
+    expect(parent.exitCode).toBe(0);
+    const got = await harness.behavior.runCli(["get", plan.id, "--version-id", versionId], { threadId: "thread-1", signal: new AbortController().signal });
+    const shown = JSON.parse(got.stdout!);
+    expect(shown.status).toBe("revising");
+    expect(shown.comments).toEqual([
+      expect.objectContaining({ quote: "existing data", kind: "redline", sent: true }),
+      expect.objectContaining({ quote: "A plan", body: "Rename it", kind: "comment", sent: true }),
+    ]);
+  });
+
+  it("reads submitted files on the invoking environment host, confined to the workspace", async () => {
+    const { harness } = await setup();
+    harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ id: "thread-1", projectId: "project-1", environmentId: "remote-environment" }));
+    harness.inspection.sdk.stub("environments.get", async () => ({ id: "remote-environment", hostId: "remote-host", path: "/remote/work" }));
+    harness.inspection.sdk.stub("files.read", async () => ({ content: "# Remote plan", contentEncoding: "utf8" }));
+    const result = await harness.behavior.runCli(["submit", "plan.md", "Remote plan"], { cwd: "/remote/work/docs", threadId: "thread-1", signal: new AbortController().signal });
+    expect(result.exitCode).toBe(0);
+    expect(harness.inspection.sdk.callsTo("files.read")[0]![0]).toEqual({ path: "/remote/work/docs/plan.md", rootPath: "/remote/work", hostId: "remote-host" });
+  });
+
+  it("rolls back CLI review comments when the submit is rejected", async () => {
+    const { harness, rpc, plan } = await setup();
+    const versionId = plan.versions[0]!.id;
+    // A redline on the version blocks approval, so the submit fails after the comment is stored.
+    const result = await harness.behavior.runCli(["review", plan.id, versionId, "approve", "--redline", "existing data"], { threadId: "other-thread", signal: new AbortController().signal });
+    expect(result.exitCode).not.toBe(0);
+    expect((await rpc("get", { id: plan.id })).comments).toEqual([]);
+  });
+});
