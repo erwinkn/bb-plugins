@@ -4,7 +4,7 @@ import plugin from "../server";
 /** Preview-only transport. No BB instance or provider receives these messages. */
 const messages: unknown[] = [];
 const { bb, harness } = createFakePluginHost({
-  pluginId: "erwin-plans",
+  pluginId: "plans",
   sdk: {
     threads: {
       get: async ({ threadId }: { threadId: string }) => {

@@ -5,7 +5,7 @@ import type { Plan } from "./contract";
 
 const disposers: Array<() => Promise<void>> = [];
 async function setup(send = vi.fn(async (_args: unknown) => ({ ok: true })), options: Parameters<typeof plugin>[1] = {}) {
-  const host = createFakePluginHost({ pluginId: "erwin-plans", sdk: {
+  const host = createFakePluginHost({ pluginId: "plans", sdk: {
     threads: { get: async () => makeThreadResponse({ id: "thread-1", projectId: "project-1" }), send },
     projects: { get: async () => ({ id: "project-1", name: "Test project" }) },
   } });

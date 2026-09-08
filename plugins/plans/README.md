@@ -15,11 +15,11 @@ own plan approval, its native approval step remains separate.
 After this change merges, install from the repository's main branch:
 
 ```sh
-bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin erwin-plans
+bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin plans
 ```
 
 While the draft PR is open, use its tested branch instead of `main`. Keep the
-plugin ID `erwin-plans` unchanged. New provider sessions receive the bundled
+plugin ID `plans` unchanged. New provider sessions receive the bundled
 `plan-review` skill and submission tool. Existing sessions may need to restart
 or resume before new agent tools become available.
 
@@ -28,7 +28,7 @@ or resume before new agent tools become available.
 1. Ask the agent to submit a plan for review in BB. The included `plan-review`
    skill calls `plans_submit`, which blocks the agent the way a question to the
    user does: BB marks the thread as waiting for you, and the composer shows a
-   **Review plan** prompt with **Open review** and **Skip review**. New tools
+   **Review plan** prompt with **Open** and **Skip**. New tools
    become available when BB starts or resumes the provider session.
 2. Open **Review plan** from the prompt or the **Plan** header button. Select
    text to add a comment, or add a general review note. Draft text stays in this
@@ -41,7 +41,7 @@ or resume before new agent tools become available.
 5. After reviewing the revision, select **Approve**. The call returns
    `status: "approved"` and the agent implements that exact version.
 
-**Skip review** releases the agent without a decision (`status: "dismissed"`);
+**Skip** releases the agent without a decision (`status: "dismissed"`);
 the plan stays open and a later decision reaches the agent as a thread message.
 The decision never repeats the plan text: the agent already has it, and
 `bb plans get PLAN_ID --version-id VERSION_ID` fetches it after context loss.
@@ -88,7 +88,7 @@ decides on that version, then prints the decision as JSON: `status`
 (`feedback` or `approved`), `note`, `comments` with their `quote`, `body`, and
 `kind`, and an `instruction`. It exits 0 with `status: "pending"` when the
 timeout (default 20 minutes, max 24 hours) passes; run it again to keep
-waiting. `dismissed` means the user chose **Skip review**. A wait on a version
+waiting. `dismissed` means the user chose **Skip**. A wait on a version
 that was replaced returns `status: "superseded"` with the latest version ID.
 Decisions are stored, so a wait that starts after the decision returns
 immediately, and a wait that is interrupted (plugin reload, shell time limit)
@@ -105,7 +105,7 @@ the server's local disk.
 ## Storage and delivery
 
 Plans, immutable versions, saved comments, and delivery receipts use the
-plugin's SQLite database. Keep plugin ID `erwin-plans` unchanged. Do not remove
+plugin's SQLite database. Keep plugin ID `plans` unchanged. Do not remove
 the installation to switch its Git ref: removal can delete its stored data.
 
 Comments remain attached to their reviewed version. A repeated quotation does

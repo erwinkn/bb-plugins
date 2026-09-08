@@ -13,7 +13,7 @@ export interface ReviewDraft {
 
 export const EMPTY_DRAFT: ReviewDraft = { note: "", pendingComment: null };
 
-const PREFIX = "bb-plugin-erwin-plans:draft:";
+const PREFIX = "bb-plugin-plans:draft:";
 
 export function draftKey(planId: string, versionId: string): string {
   return `${PREFIX}${planId}:${versionId}`;

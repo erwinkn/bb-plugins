@@ -4,7 +4,7 @@
   "name": "erwin-plugins",
   "plugins": [
     {
-      "name": "erwin-plans",
+      "name": "plans",
       "source": "./plugins/plans"
     },
     {

@@ -2,7 +2,7 @@
 
 A private GitHub collection of BB plugins.
 
-`erwin-plans` provides plan review with a per-thread
+`plans` provides plan review with a per-thread
 review panel, comments, revision history, and feedback to the original agent. See
 [Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
 
@@ -472,14 +472,14 @@ later. Remove an entry when the upstream fix ships.
 - **Where:** `bb plugin dev .` in `plugins/plans`, bb 0.42.1, plugin installed
   from a worktree path (`source: path:...`). Plugin declares a frontend
   (`app.tsx`, `app.css`) and a server bundle.
-- **Symptom:** the command prints `Watching <path> for plugin "erwin-plans"
+- **Symptom:** the command prints `Watching <path> for plugin "plans"
   (frontend rebuild + reload on change)` and stays running, but editing or
   touching `app.tsx` / `app.css` produces no further output, `dist/` keeps its
   old mtime, and BB keeps serving the previous bundle. Observed twice: once
   when started from a subshell that was reaped, once under `nohup` where the
   process stayed alive (confirmed with `pgrep`) for over a minute.
 - **Workaround:** `npm run build` (`bb plugin build`) followed by
-  `bb plugin reload erwin-plans`. Both work immediately.
+  `bb plugin reload plans`. Both work immediately.
 - **Status:** not filed yet; not yet reproduced in isolation. Open questions
   for the repro: whether the watcher follows the path under `~/.bb/worktrees`
   (symlink or FSEvents scope), whether it only reacts to files listed in the

@@ -48,14 +48,7 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
       <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-warning/15 text-warning">
         <Icon name="ListTodo" className="size-4" aria-hidden />
       </span>
-      <div className="min-w-0 flex-[1_1_14rem]">
-        <p className="truncate text-sm font-medium text-foreground">
-          {payload ? `${payload.title} · v${payload.versionNumber}` : interaction.title}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          The agent is waiting for your review. Comment, send feedback, or approve in Review plan.
-        </p>
-      </div>
+      <p className="min-w-0 flex-[1_1_12rem] text-sm text-foreground">The agent is waiting for your review.</p>
       <div className="ml-auto flex items-center gap-2">
         <Button
           type="button"
@@ -67,10 +60,10 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
             void cancel().finally(() => setReleasing(false));
           }}
         >
-          Skip review
+          Skip
         </Button>
         <Button type="button" size="sm" onClick={open} disabled={payload === null}>
-          Open review
+          Open
           <Icon name="ArrowRight" className="size-3.5" aria-hidden />
         </Button>
       </div>

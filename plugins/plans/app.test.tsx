@@ -234,7 +234,7 @@ describe("comments", () => {
   it("saves a pending comment that predates selection context without sending undefined fields", async () => {
     const backend = fakeBackend([makePlan()]);
     window.localStorage.setItem(
-      "bb-plugin-erwin-plans:draft:plan-1:v1",
+      "bb-plugin-plans:draft:plan-1:v1",
       JSON.stringify({ note: "", pendingComment: { quote: "Step 1.", body: "Older draft" } }),
     );
     slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
@@ -249,7 +249,7 @@ describe("comments", () => {
   it("keeps the selection context when the composer saves a pending comment", async () => {
     const backend = fakeBackend([makePlan()]);
     window.localStorage.setItem(
-      "bb-plugin-erwin-plans:draft:plan-1:v1",
+      "bb-plugin-plans:draft:plan-1:v1",
       JSON.stringify({ note: "", pendingComment: { quote: "Step 1.", body: "Pinned", prefix: "Plan ", suffix: "", position: 5 } }),
     );
     slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
