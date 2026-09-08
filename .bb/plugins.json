@@ -26,6 +26,10 @@
     {
       "name": "erwin-editor",
       "source": "./plugins/editor"
+    },
+    {
+      "name": "questions",
+      "source": "./plugins/questions"
     }
   ]
 }
