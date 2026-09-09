@@ -142,7 +142,8 @@ test("reloads audio preferences saved by another browser window", () => {
 });
 
 const settleVoice = () => new Promise<void>(resolve => setImmediate(resolve));
-async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output: "Tool complete", status: "success" })) {
+async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output: "Tool complete", status: "success" }), overrides: Record<string, (args: any) => unknown> = {}, initialState = "live") {
+  const rpcCalls: {method:string;args:any}[]=[];
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"] });
   const originals = ["navigator", "RTCPeerConnection", "Audio"].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const channels: FakeDataChannel[] = [];
@@ -192,7 +193,11 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
   Object.defineProperty(globalThis, "Audio", { configurable: true, value: FakeAudio });
   const agent = new VoiceAgent(async () => () => {});
   agent.bind({
-    rpc: { call: (async (method: string) => method === "claimCall" ? { sequence: 1, conversationId: "conv_test" } : method === "createCall" ? { sdp: "answer" } : method === "runTool" ? runTool() : { ok: true }) as never },
+    rpc: { call: (async (method: string, args: any) => {
+      rpcCalls.push({method,args});
+      if (overrides[method]) return overrides[method](args);
+      return method === "claimCall" ? { sequence: 1, conversationId: "conv_test" } : method === "createCall" ? { sdp: "answer" } : method === "runTool" ? runTool() : method === "callStartContext" ? {type:"call_start_context",tasks:[],recentTurns:[]} : { ok: true };
+    }) as never },
     context: { threadId: null, projectId: null, onNewThreadScreen: false },
   });
   t.after(() => {
@@ -205,11 +210,11 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
   const start = async () => {
     agent.toggle();
     await settleVoice();
-    assert.equal(agent.getState(), "live");
+    assert.equal(agent.getState(), initialState);
     return channels.at(-1)!;
   };
   const dc = await start();
-  return { agent, dc, start, peers, tick: (ms: number) => t.mock.timers.tick(ms) };
+  return { agent, dc, start, peers, track, rpcCalls, tick: (ms: number) => t.mock.timers.tick(ms) };
 }
 
 test("stopping during the SDP exchange closes the mic and cancels startup", async () => {
@@ -508,19 +513,22 @@ test("denied microphone access leaves the other device's call running", async t 
   agent.ingestPresence({nonce:"desktop",phase:"idle"});
 });
 
-async function sequencerFixture(t: TestContext, read: (id: string) => unknown = id => ({ threadId: id, output: "Read complete", asOf: 123 }), submit?: () => unknown) {
-  const fixture = await liveVoiceFixture(t);
+async function sequencerFixture(t: TestContext, read: (id: string) => unknown = id => ({ threadId: id, output: "Read complete", asOf: 123 }), submit?: () => unknown, options: {settleInput?:boolean; rpc?:Record<string,(args:any)=>unknown>} = {}) {
+  const fixture = await liveVoiceFixture(t, undefined, options.rpc);
   const calls: string[] = [];
   const logs: { kind: string; payload: any }[] = [];
   fixture.agent.bind({
     rpc: { call: (async (method: string, args: any) => {
+      fixture.rpcCalls.push({method,args});
+      if (options.rpc?.[method]) return options.rpc[method](args);
       if (method === "logEvent") logs.push({ kind: args.kind, payload: args.payload });
-      if (method === "readVoiceThread" || method === "lookupVoiceTargets") {
-        const id = args.threadId ?? args.query;
+      if (method === "runTool" && ["read_threads", "find_targets"].includes(args.tool)) {
+        const id = args.args.thread_ids?.[0] ?? args.args.query;
         calls.push(id);
         return read(id);
       }
-      if (method === "submitRequest") { calls.push("submit"); return submit?.(); }
+      if (method === "runTool" && args.tool === "message_thread") { calls.push("submit"); return submit?.(); }
+      if (method === "runTool" && ["remain_silent", "end_call"].includes(args.tool)) return { action:args.tool, ...args.args };
       if (method === "pendingReplies") return { replies: [] };
       if (method === "reserveUpdateBatch") return { batch: null, reason: "empty" };
       return { ok: true };
@@ -533,15 +541,15 @@ async function sequencerFixture(t: TestContext, read: (id: string) => unknown = 
     fixture.dc.emit("conversation.item.input_audio_transcription.delta", { item_id: id, delta: "Check this thread" });
     fixture.tick(300); input.sample(0); fixture.tick(800); input.sample(0);
     fixture.dc.emit("input_audio_buffer.committed", { item_id: id });
-    if (final) fixture.dc.emit("conversation.item.input_audio_transcription.completed", { item_id: id, transcript: "Check this thread." });
+    if (final) { fixture.dc.emit("conversation.item.input_audio_transcription.completed", { item_id: id, transcript: "Check this thread." }); if(options.settleInput!==false){fixture.tick(2000); input.sample(0);} }
   };
   words("request");
   const outputs = () => fixture.dc.sent.filter(event => event.item?.type === "function_call_output").map(event => event.item);
   const speech = { id: "speech", type: "message", content: [{ type: "audio", transcript: "I will check." }] };
-  const tool = (id: string) => ({ id, type: "function_call", name: "read_thread", call_id: id });
+  const tool = (id: string) => ({ id, type: "function_call", name: "read_threads", call_id: id });
   const addItem = (responseId: string, outputIndex: number, item: Record<string, unknown>, done = false) =>
     fixture.dc.emit(`response.output_item.${done ? "done" : "added"}`, { response_id: responseId, output_index: outputIndex, item });
-  const call = (responseId: string, id: string, outputIndex: number, name = "read_thread", args = { threadId: id, query: id } as Record<string, unknown>) =>
+  const call = (responseId: string, id: string, outputIndex: number, name = "read_threads", args = (name === "find_targets" ? { query:id } : { thread_ids:[id], what:"output" }) as Record<string, unknown>) =>
     fixture.dc.emit("response.function_call_arguments.done", { response_id: responseId, item_id: id, output_index: outputIndex, call_id: id, name, arguments: JSON.stringify(args) });
   const done = (id: string, output: Record<string, unknown>[]) =>
     fixture.dc.emit("response.done", { response: { id, status: "completed", output } });
@@ -552,7 +560,7 @@ async function sequencerFixture(t: TestContext, read: (id: string) => unknown = 
       fixture.dc.emit("output_audio_buffer.started", { response_id: id });
     }
   };
-  return { ...fixture, calls, logs, words, outputs, speech, tool, addItem, call, done, startResponse: start };
+  return { ...fixture, tick:(ms:number)=>{fixture.tick(ms);input.sample(0);}, calls, logs, words, outputs, speech, tool, addItem, call, done, startResponse: start };
 }
 
 test("speech then tool waits for natural drain and sends one continuation after its output", async t => {
@@ -606,7 +614,8 @@ test("a tool-only continuation waits for every other response to drain", async t
   f.startResponse("tools", false); f.call("tools", "read", 0);
   // Simulate previously overlapping responses to test the complete ledger gate.
   for (const id of ["audio-a", "audio-b"]) {
-    f.dc.emit("response.created", { response: { id, metadata: { bb_voice_source: "background" } } });
+    (f.agent as any).responseBinding={origin:"background",utterance:null};
+    f.dc.emit("response.created", { response: { id, metadata: { bb_voice_origin: "background" } } });
     f.addItem(id, 0, f.speech); f.dc.emit("output_audio_buffer.started", { response_id: id });
     f.done(id, [f.speech]);
   }
@@ -656,7 +665,7 @@ test("message after a function call logs ordering.violation and keeps the tool h
   assert.deepEqual(f.calls, ["read"]);
 });
 
-for (const name of ["read_thread", "lookup_targets"]) {
+for (const name of ["read_threads", "find_targets"]) {
   test(`completed ${name} returns its data after a new word without reviving the old turn`, async t => {
     let finish!: (value: unknown) => void;
     const f = await sequencerFixture(t, () => new Promise(resolve => { finish = resolve; }));
@@ -680,7 +689,7 @@ for (const outcome of ["throw", "unknown-tool"] as const) {
       return { status: outcome, output: "Read result" };
     });
     f.startResponse("failure", false);
-    f.call("failure", "first", 0, outcome === "unknown-tool" ? "missing_tool" : "read_thread");
+    f.call("failure", "first", 0, outcome === "unknown-tool" ? "missing_tool" : "read_threads");
     f.call("failure", "second", 1);
     const before = f.dc.responses().length;
     f.done("failure", [f.tool("first"), f.tool("second")]); await settleVoice();
@@ -693,31 +702,31 @@ for (const outcome of ["throw", "unknown-tool"] as const) {
 }
 
 for (const outcome of ["failed", "unknown"] as const) {
-  test(`${outcome} bridge receipt cancels the remaining calls and returns a failure continuation`, async t => {
+  test(`${outcome} operation receipt cancels the remaining calls and returns a failure continuation`, async t => {
     const f = await sequencerFixture(t, undefined, () => {
-      if (outcome === "unknown") throw new Error("Submission response lost");
+      if (outcome === "unknown") return { status:"unknown", error:"Submission response could not be confirmed" };
       return { status: "failed", error: "Action failed", receipt: null };
     });
     f.startResponse("failure", false);
-    f.call("failure", "first", 0, "quick_action", { request: "Show Voice", action: { kind: "show_voice" } });
+    f.call("failure", "first", 0, "message_thread", { thread_id:"first", body:"Check this", mode:"normal" });
     f.call("failure", "second", 1);
     const before = f.dc.responses().length;
     f.done("failure", [f.tool("first"), f.tool("second")]); await settleVoice();
     assert.deepEqual(f.calls, ["submit"]);
     assert.equal(f.outputs().length, 2);
-    assert.match(f.outputs()[0].output, outcome === "failed" ? /was not executed/ : /could not be confirmed/);
+    assert.match(f.outputs()[0].output, outcome === "failed" ? /Action failed/ : /could not be confirmed/);
     assert.equal(f.outputs()[1].output, "Not executed: an earlier action failed.");
     assert.equal(f.dc.responses().length, before + 1);
   });
 }
 
 test("a successful read of a failed thread returns data and does not cancel the next read", async t => {
-  const f = await sequencerFixture(t, id => ({ threadId: id, status: "failed", output: "Thread error", asOf: 123 }));
+  const f = await sequencerFixture(t, id => ({ threads:[{ threadId: id, status: "failed", output: "Thread error", asOf: 123 }] }));
   f.startResponse("reads", false); f.call("reads", "first", 0); f.call("reads", "second", 1);
   f.done("reads", [f.tool("first"), f.tool("second")]); await settleVoice();
   assert.deepEqual(f.calls, ["first", "second"]);
   assert.equal(f.outputs().length, 2);
-  assert.ok(f.outputs().every(item => JSON.parse(item.output).status === "failed"));
+  assert.ok(f.outputs().every(item => JSON.parse(item.output).threads[0].status === "failed"));
   assert.ok(f.logs.filter(event => event.kind === "tool.result").every(event => event.payload.status === "success"));
 });
 
@@ -750,9 +759,146 @@ test("interruption cancels a queued call after drain while a running read return
 test("word interruption closes all tracked playback gates even when the playback pointer changed", async t => {
   const f = await sequencerFixture(t);
   f.startResponse("first"); f.done("first", [f.speech]);
-  f.dc.emit("response.created", { response: { id: "second", metadata: { bb_voice_source: "background" } } });
+  (f.agent as any).responseBinding={origin:"background",utterance:null};
+  f.dc.emit("response.created", { response: { id: "second", metadata: { bb_voice_origin: "background" } } });
   f.dc.emit("output_audio_buffer.started", { response_id: "second" }); f.done("second", [f.speech]);
   const before = f.dc.responses().length;
   f.words("new"); await settleVoice();
   assert.equal(f.dc.responses().length, before + 1);
+});
+
+test("call-start context is injected once before the microphone and first response are enabled", async t => {
+  // Duplicate session events must not fetch context again.
+  const f = await liveVoiceFixture(t);
+  const context = f.dc.sent.filter(event=>event.item?.role==="system");
+  assert.equal(context.length,1);
+  assert.equal(JSON.parse(context[0].item.content[0].text).type,"call_start_context");
+  for(let i=0;i<2;i++) f.dc.emit("session.updated",{session:{audio:{input:{turn_detection:null,transcription:{model:"gpt-realtime-whisper"}}}}});
+  await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="callStartContext").length,1);
+  assert.equal(f.dc.sent.filter(event=>event.item?.role==="system").length,1);
+});
+
+test("an effect waits two seconds and carries the frozen utterance and occurrence", async t => {
+  const f = await sequencerFixture(t,undefined,undefined,{settleInput:false,rpc:{runTool:()=>({status:"succeeded"})}});
+  f.startResponse("effect",false);
+  f.call("effect","send",0,"message_thread",{thread_id:"build",body:"Inspect it",mode:"normal"});
+  f.done("effect",[f.tool("send")]);await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="runTool").length,0);
+  f.tick(1999);await settleVoice();assert.equal(f.rpcCalls.filter(call=>call.method==="runTool").length,0);
+  f.tick(1);await settleVoice();
+  const sent=f.rpcCalls.find(call=>call.method==="runTool")!.args;
+  assert.equal(sent.tool,"message_thread");assert.equal(sent.responseOrigin,"user");assert.equal(sent.occurrence,0);
+  assert.deepEqual(sent.utterance,{id:"utterance_1",version:1,text:"Check this thread.",startedAt:sent.utterance.startedAt});
+  assert.equal(typeof sent.utterance.startedAt,"number");
+  assert.equal(sent.conversationId,"conv_test");assert.equal(sent.nonce,f.agent.getSessionId());
+});
+
+test("a version change cancels an effect held in the correction window without a continuation",async t=>{
+  const f=await sequencerFixture(t,undefined,undefined,{settleInput:false,rpc:{runTool:()=>({status:"succeeded"})}});
+  f.startResponse("effect",false);f.call("effect","send",0,"message_thread",{thread_id:"build",body:"Inspect it",mode:"normal"});
+  f.done("effect",[f.tool("send")]);await settleVoice();const before=f.dc.responses().length;
+  f.words("qualifier",false);await settleVoice();f.tick(2000);await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="runTool").length,0);
+  assert.equal(f.outputs()[0].output,"Not executed: the user continued speaking.");
+  assert.equal(f.dc.responses().length,before);
+});
+
+async function offeredFixture(t:TestContext, rpc:Record<string,(args:any)=>unknown>={}) {
+  let available=true;
+  const f=await sequencerFixture(t,undefined,undefined,{rpc:{
+    nextUpdateBatch:()=>{if(!available)return null;available=false;return {offerId:"offer",items:[{summary:"Build finished"}],asOf:123};},
+    ...rpc,
+  }});
+  f.startResponse("user-response",false);f.done("user-response",[{type:"message",content:[{type:"output_text",text:"Okay"}]}]);
+  await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="nextUpdateBatch").length,0);
+  f.tick(1999);await settleVoice();assert.equal(f.rpcCalls.filter(call=>call.method==="nextUpdateBatch").length,0);
+  f.tick(1);await settleVoice();
+  const updates=f.dc.sent.filter(event=>event.item?.role==="system").map(event=>JSON.parse(event.item.content[0].text)).filter(item=>item.type==="background_updates");
+  assert.equal(updates.length,1);assert.equal(updates[0].offerId,"offer");
+  assert.equal(f.dc.responses().at(-1)!.response.metadata.bb_voice_origin,"background");
+  f.dc.emit("response.created",{response:{id:"background",metadata:f.dc.responses().at(-1)!.response.metadata}});
+  return f;
+}
+
+for(const outcome of ["stopped","cleared"] as const)test(`a background offer closes after ${outcome} with the correct drain evidence`,async t=>{
+  const f=await offeredFixture(t);
+  f.addItem("background",0,f.speech);f.dc.emit("output_audio_buffer.started",{response_id:"background"});
+  f.done("background",[f.speech]);await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="closeOffer").length,0);
+  f.dc.emit(`output_audio_buffer.${outcome}`,{response_id:"background"});await settleVoice();
+  const close=f.rpcCalls.filter(call=>call.method==="closeOffer");
+  assert.equal(close.length,1);assert.equal(close[0].args.outcome,outcome==="stopped"?"delivered":"not_delivered");
+  assert.equal(close[0].args.responseId,"background");
+  const drains=f.rpcCalls.filter(call=>call.method==="reportDrain");
+  assert.equal(drains.length,outcome==="stopped"?1:0);
+  if(outcome==="stopped")assert.ok(f.rpcCalls.indexOf(drains[0])<f.rpcCalls.indexOf(close[0]));
+  f.dc.emit("output_audio_buffer.stopped",{response_id:"background"});await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="closeOffer").length,1);
+  assert.equal(f.rpcCalls.filter(call=>call.method==="reportDrain").length,outcome==="stopped"?1:0);
+});
+
+for(const updates of ["dismiss","defer"] as const)test(`remain_silent closes an offer as ${updates} without a continuation`,async t=>{
+  const f=await offeredFixture(t);const before=f.dc.responses().length;
+  f.call("background","quiet",0,"remain_silent",{updates});f.done("background",[f.tool("quiet")]);await settleVoice();
+  assert.equal(f.rpcCalls.find(call=>call.method==="closeOffer")?.args.outcome,updates==="dismiss"?"dismissed":"deferred");
+  assert.equal(f.dc.responses().length,before);
+});
+
+test("a no-audio offer is not delivered and no drain is reported",async t=>{
+  const f=await offeredFixture(t);f.done("background",[]);await settleVoice();
+  assert.equal(f.rpcCalls.find(call=>call.method==="closeOffer")?.args.outcome,"not_delivered");
+  assert.equal(f.rpcCalls.filter(call=>call.method==="reportDrain").length,0);
+});
+
+test("finishUserExchange is sent once at the final drain and never by the quiet timer",async t=>{
+  const f=await sequencerFixture(t);
+  f.startResponse("spoken");f.done("spoken",[f.speech]);await settleVoice();f.tick(5000);await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="finishUserExchange").length,0);
+  f.dc.emit("output_audio_buffer.stopped",{response_id:"spoken"});await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="finishUserExchange").length,1);
+  f.tick(10000);await settleVoice();f.dc.emit("output_audio_buffer.stopped",{response_id:"spoken"});await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="finishUserExchange").length,1);
+
+});
+
+test("control_ui from a background response never runs on the client",async t=>{
+  const {nativeUi}=await import("./native-ui.ts");
+  const execute=t.mock.method(nativeUi,"execute",async()=>({status:"succeeded" as const,detail:"Opened"}));
+  const f=await offeredFixture(t,{beginClientEffect:()=>({execute:true,operationId:"op",receipt:{},action:{kind:"show_voice"}})});
+  f.call("background","ui",0,"control_ui",{action:"show_voice"});f.done("background",[f.tool("ui")]);await settleVoice();
+  assert.equal(f.rpcCalls.find(call=>call.method==="beginClientEffect")?.args.responseOrigin,"background");
+  assert.equal(execute.mock.callCount(),0);
+  assert.equal(f.rpcCalls.find(call=>call.method==="finishClientEffect")?.args.status,"cancelled");
+});
+
+test("end_call returns its output then ends after the current response drains",async t=>{
+  const f=await sequencerFixture(t);f.startResponse("goodbye");f.call("goodbye","end",1,"end_call",{});
+  f.done("goodbye",[f.speech,f.tool("end")]);await settleVoice();assert.equal(f.agent.getState(),"live");
+  const before=f.dc.responses().length;f.dc.emit("output_audio_buffer.stopped",{response_id:"goodbye"});await settleVoice();
+  assert.equal(f.outputs().length,1);assert.equal(f.agent.getState(),"idle");assert.equal(f.dc.responses().length,before);
+});
+
+test("the quiet timer cannot finish an exchange before any user input",async t=>{
+  const f=await liveVoiceFixture(t);f.tick(5000);await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="finishUserExchange").length,0);
+});
+
+test("pending call-start context keeps microphone input disabled until injection",async t=>{
+  let complete!:(value:unknown)=>void;
+  const f=await liveVoiceFixture(t,undefined,{callStartContext:()=>new Promise(resolve=>{complete=resolve;})},"connecting");
+  assert.equal(f.track.enabled,false);assert.equal(f.dc.sent.filter(event=>event.item?.role==="system").length,0);
+  f.dc.emit("conversation.item.input_audio_transcription.delta",{item_id:"early",delta:"Send it"});
+  assert.equal(f.dc.responses().length,0);
+  complete({type:"call_start_context",tasks:[],recentTurns:[]});await settleVoice();
+  assert.equal(f.agent.getState(),"live");assert.equal(f.track.enabled,true);
+  assert.equal(f.dc.sent.filter(event=>event.item?.role==="system").length,1);
+});
+
+test("a silent user exchange finishes once with no model continuation",async t=>{
+  const f=await sequencerFixture(t);const before=f.dc.responses().length;
+  f.startResponse("silent",false);f.call("silent","quiet",0,"remain_silent",{});f.done("silent",[f.tool("quiet")]);await settleVoice();
+  assert.equal(f.dc.responses().length,before);
+  assert.equal(f.rpcCalls.filter(call=>call.method==="finishUserExchange").length,1);
 });

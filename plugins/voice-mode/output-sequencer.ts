@@ -137,5 +137,14 @@ export class OutputSequencer {
         (!response.generationDone || response.audioStarted || response.hasAudio))).map(([id]) => id);
   }
 
+  state(id: string) { return this.responses.get(id); }
+
+  settled(id: string) {
+    const response = this.responses.get(id);
+    return !!response && response.generationDone &&
+      (response.drained || response.interrupted || (!response.hasAudio && !response.audioStarted)) &&
+      response.calls.every(call => call.state === "finished");
+  }
+
   reset() { this.responses.clear(); }
 }

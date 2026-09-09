@@ -1,7 +1,9 @@
+import { LIVE_PROMPT } from "./live-prompt.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
-import plugin, { coordinatorToolSchemas } from "./server.ts";
+import plugin from "./server.ts";
+import { liveToolSchemas } from "./live-tools.ts";
 import { legacyMigrations } from "./test-fixtures/legacy-migrations";
 
 test("audio diagnostics remain stored but never appear as voice sessions", async () => {
@@ -44,7 +46,7 @@ test("session history and plugin logs preserve the same actions and error detail
 });
 
 test("realtime tools expose bounded quick actions without destructive or arbitrary tools", () => {
-  assert.deepEqual(coordinatorToolSchemas().map(tool => tool.name), ["sequence_control", "read_thread", "lookup_targets", "quick_action", "delegate_to_coordinator", "remain_silent", "end_call"]);
+  assert.deepEqual(liveToolSchemas().map(tool => tool.name), ["find_targets", "read_threads", "message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "subscriptions", "prepare_archive", "archive_threads", "answer_interaction", "remain_silent", "end_call"]);
 });
 
 test("obsolete view preferences are ignored without changing other saved settings", async () => {
@@ -158,7 +160,8 @@ test("upgrade from the original five migrations preserves saved prompts and adds
     const historicalPayload = JSON.stringify({ text: "Original voice words", detail: "preserve exactly" });
     db.prepare("INSERT INTO session_events (session_id, ts, kind, payload) VALUES ('old-call', 10, 'user', ?)").run(historicalPayload);
     await plugin(bb);
-    assert.match((await harness.behavior.callRpc("getPrompt", null) as any).content, /## User preferences\nKeep my prompt$/);
+    assert.equal((await harness.behavior.callRpc("getPrompt", null) as any).content, LIVE_PROMPT);
+    assert.equal((db.prepare("SELECT content FROM prompt_versions ORDER BY id DESC LIMIT 1").get() as any).content,"Keep my prompt");
     const history = await harness.behavior.callRpc("getVoiceSession", { sessionId: "old-call" }) as any;
     assert.equal(history.session.legacy, true);
     assert.equal(history.session.title, "Original voice words");
@@ -220,4 +223,16 @@ test("assistant drafts with request and playback identity cross the strict live 
   const snapshot={callNonce:"assistant-draft",revision:1,items:[{key:"assistant:item",ts:1,kind:"assistant",payload:{itemId:"item",text:"The build",partial:true,responseId:"response",requestId:"request",replyId:null,userTurn:1,source:"realtime"}}]};
   assert.deepEqual(await harness.behavior.callRpc("publishTranscript",snapshot),{ok:true});
   assert.deepEqual(await harness.behavior.callRpc("getLiveTranscript",null),snapshot);
+});
+
+test("live cutover registers no agent tools or worker instruction injection",async()=>{
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+  try{
+    const tools:string[]=[];let configurations=0;
+    const register=bb.agents.registerTool;const configure=bb.agents.configure;
+    bb.agents.registerTool=((tool:any)=>{tools.push(tool.name);return register(tool);}) as typeof register;
+    bb.agents.configure=((...args:Parameters<typeof configure>)=>{configurations++;return configure(...args);}) as typeof configure;
+    await plugin(bb);
+    assert.deepEqual(tools,[]);assert.equal(configurations,0);
+  }finally{await harness.lifecycle.dispose();}
 });

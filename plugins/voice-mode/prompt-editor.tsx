@@ -14,8 +14,8 @@ export function PromptEditor({ role = "live" }: { role?: PromptRole }) {
   const [saved, setSaved] = useState(false);
   const current = useRef({ active: null as string | null, draft: "" });
   const generation = useRef(0);
-  const label = role === "live" ? "Live model prompt" : "Coordinator prompt";
-  const limit = role === "live" ? 20000 : 4096;
+  const label = role === "live" ? "Live model prompt" : role === "worker" ? "Worker prompt" : "Coordinator prompt";
+  const limit = role === "coordinator" ? 4096 : 32000;
   const refresh = useCallback(() => {
     const request = ++generation.current;
     void rpc.call("getPrompt", { role }).then(

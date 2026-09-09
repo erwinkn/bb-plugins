@@ -1,3 +1,4 @@
+import { UiActionSchema, type UiAction } from "./ui-actions.ts";
 /** Client RPC contract for the next cutover step.
  * runTool(input) -> compact read data or {operationId,status,asOf,...receipt}.
  * input = {nonce,conversationId,utterance:{id,version,text,startedAt}|null,
@@ -66,7 +67,7 @@ export class LiveRuntime {
   private creationChain: Promise<unknown> = Promise.resolve();
   private startChain: Promise<unknown> = Promise.resolve();
   constructor(readonly bb: BbPluginApi, readonly owner: () => { nonce: string | null; conversationId?: string | null },
-    readonly now = Date.now, readonly timeoutMs = 30000) {
+    readonly now = Date.now, readonly timeoutMs = 30000, private workerPrompt?: () => string) {
     this.store = new LiveStore(bb.storage.database(), now);
     this.operations = new Operations(this.store); this.watches = new Watches(bb, this.store, this.operations);
   }
@@ -272,7 +273,7 @@ export class LiveRuntime {
       this.watches.reserveTask(row.id, input.conversationId, worker ? "worker" : "thread", args.title, profile.name);
     });
     this.creationChain = reserve.catch(() => undefined); await reserve;
-    const prompt = "task" in args ? assembleWorkerPrompt(settings.workerBasePrompt, profile, args.title, args.task, spoken) : args.body;
+    const prompt = "task" in args ? assembleWorkerPrompt(this.workerPrompt?.() ?? settings.workerBasePrompt, profile, args.title, args.task, spoken) : args.body;
     let thread: Thread;
     try {
       thread = await this.sdkEffect(input, () => this.bb.sdk.threads.spawn({ projectId: project.id, title: args.title, prompt,
@@ -307,23 +308,32 @@ export class LiveRuntime {
   private async read(input: ToolInput, call: CallState): Promise<unknown> {
     switch (input.tool) {
       case "find_targets": {
-        const args = liveToolArgs.find_targets.parse(input.args), query = args.query.toLowerCase();
+        const args = liveToolArgs.find_targets.parse(input.args), query = args.query.trim().toLowerCase();
+        const ignored = new Set(["thread", "threads", "the", "latest", "recent", "newest"]);
+        const tokens = (query.match(/[\p{L}\p{N}]+/gu) ?? []).filter(word => word.length >= 3 && !ignored.has(word));
+        const matches = (title: string) => tokens.every(word => title.toLowerCase().includes(word));
         const [projects, hosts] = await Promise.all([this.bb.sdk.projects.list({ includePersonal: true }), this.bb.sdk.hosts.list()]);
         const found: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>> = [];
         let truncated = false;
         for (const archived of args.include_archived ? [false, true] : [false]) {
           for (let offset = 0; offset < 1000; offset += 100) {
             const page = await this.bb.sdk.threads.list({ archived, ...(args.include_children ? {} : { hasParent: false }), limit: 100, offset });
-            found.push(...page.filter(t => `${t.title ?? ""} ${t.titleFallback}`.toLowerCase().includes(query)));
+            found.push(...page.filter(t => matches(`${t.title ?? ""} ${t.titleFallback}`)));
             if (page.length < 100) break;
             if (offset === 900) truncated = true;
           }
         }
-        const tasks = this.store.tasks(input.conversationId).filter(t => t.title.toLowerCase().includes(query) && t.thread_id);
+        const tasks = this.store.tasks(input.conversationId).filter(t => matches(t.title) && t.thread_id);
         const taskThreads = await Promise.all(tasks.map(t => this.bb.sdk.threads.get({ threadId: t.thread_id! })));
-        const byId = new Map([...found, ...taskThreads.filter(t => args.include_archived || !t.archivedAt)].map(t => [t.id, t]));
+        const searched = query ? await this.bb.sdk.threads.search({ query: args.query }).then(search => {
+          if (Object.values(search).some(group => group.total > group.results.length)) truncated = true;
+          return Object.values(search).flatMap(group => group.results.map(entry => entry.thread));
+        }) : [];
+        const byId = new Map([...found, ...searched, ...taskThreads].filter(t => !t.deletedAt &&
+          (args.include_archived || !t.archivedAt) && (args.include_children || !t.parentThreadId) &&
+          matches(`${t.title ?? ""} ${t.titleFallback}`)).map(t => [t.id, t]));
         const threads = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(t => ({ id: t.id, title: threadName(t), projectId: t.projectId, parentThreadId: t.parentThreadId, status: t.status, updatedAt: t.updatedAt, archived: t.archivedAt !== null }));
-        const ps = projects.filter(p => p.name.toLowerCase().includes(query)).map(p => ({ id: p.id, name: p.name, hostIds: p.sources.map(s => s.hostId) }));
+        const ps = projects.filter(p => matches(p.name)).map(p => ({ id: p.id, name: p.name, hostIds: p.sources.map(s => s.hostId) }));
         const hs = hosts.map(h => ({ id: h.id, name: h.name, status: h.status }));
         threads.forEach(t => this.remember(call, t.id, t.projectId, t.parentThreadId)); ps.forEach(p => this.remember(call, p.id, ...p.hostIds)); hs.forEach(h => this.remember(call, h.id));
         return { threads, projects: ps, hosts: hs, searched: { query: args.query, includeChildren: !!args.include_children, includeArchived: !!args.include_archived, conversationTasks: true }, asOf: this.now(), truncated: truncated || byId.size > 50 };
@@ -389,7 +399,7 @@ export class LiveRuntime {
       default: throw new Error("Unsupported read tool");
     }
   }
-  beginClientEffect(raw: ToolInput) {
+  async beginClientEffect(raw: ToolInput) {
     const input = liveToolInputSchema.parse(raw), args = this.parse(input);
     this.authorize(input, args);
     if (input.tool !== "prepare_draft" && input.tool !== "control_ui") throw new Error("Only prepare_draft and control_ui run on the client");
@@ -400,9 +410,28 @@ export class LiveRuntime {
       const ui = liveToolArgs.control_ui.parse(args);
       if ((ui.action === "open_thread" && !ui.thread_id) || (ui.action === "open_project" && !ui.project_id) || (ui.action === "preview_file" && (!ui.path || !ui.thread_id))) throw new Error("The UI action is missing its target");
     }
+    let action: UiAction;
+    if (input.tool === "prepare_draft") {
+      const draft = liveToolArgs.prepare_draft.parse(args);
+      action = { kind: "prepare_draft", target: draft.thread_id ? { kind: "thread", threadId: draft.thread_id } : { kind: "new", projectId: draft.project_id }, text: draft.text, mode: draft.mode };
+    } else {
+      const ui = liveToolArgs.control_ui.parse(args);
+      if (ui.action === "preview_file") {
+        if (ui.source === "thread-storage") action = { kind: "preview_file", target: { kind: "thread-storage", threadId: ui.thread_id!, path: ui.path! } };
+        else {
+          const thread = await this.bb.sdk.threads.get({ threadId: ui.thread_id! });
+          if (!thread.environmentId) throw new Error("This thread has no workspace");
+          action = { kind: "preview_file", target: { kind: "workspace", environmentId: thread.environmentId, path: ui.path! } };
+        }
+      } else if (ui.action === "open_thread") action = { kind: "open_thread", threadId: ui.thread_id!, split: false };
+      else if (ui.action === "open_project") action = { kind: "open_project", projectId: ui.project_id! };
+      else action = { kind: "show_voice" };
+    }
+    this.authorize(input, args);
+    action = UiActionSchema.parse(action);
     const begun = this.operations.begin({ ...input, args });
     if ("thread_id" in args && typeof args.thread_id === "string") this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(args.thread_id, begun.row.id);
-    return json({ execute: begun.execute, operationId: begun.row.id, receipt: this.operations.receipt(begun.row) });
+    return json({ execute: begun.execute, operationId: begun.row.id, receipt: this.operations.receipt(begun.row), action });
   }
   finishClientEffect(input: z.infer<typeof liveRpcContract.finishClientEffect.input>) {
     const call = this.state(input.nonce), row = this.operations.get(input.operationId);

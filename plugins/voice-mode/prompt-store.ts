@@ -1,3 +1,5 @@
+import { LIVE_PROMPT } from "./live-prompt.ts";
+import { WORKER_BASE_PROMPT } from "./worker-prompt.ts";
 import type Database from "better-sqlite3";
 import {
   COORDINATOR_INSTRUCTIONS,
@@ -7,18 +9,24 @@ import {
 } from "./coordinator/prompts.ts";
 import { LEGACY_DEFAULT_PROMPT } from "./legacy-prompt.ts";
 
-export type PromptRole = "live" | "coordinator";
+export type PromptRole = "live" | "worker" | "coordinator";
 export const PROMPT_MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS voice_role_prompts (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, ts INTEGER NOT NULL, source TEXT NOT NULL, note TEXT, content TEXT NOT NULL)`,
 ];
 export const promptDefault = (role: PromptRole) =>
-  role === "live" ? COORDINATOR_VOICE_PROMPT : COORDINATOR_INSTRUCTIONS;
+  role === "live" ? LIVE_PROMPT : role === "worker" ? WORKER_BASE_PROMPT : COORDINATOR_INSTRUCTIONS;
 export const promptLimit = (role: PromptRole) =>
-  role === "live" ? 20000 : 4096;
+  role === "coordinator" ? 4096 : 32000;
 
 /** Full role prompts are used verbatim. Old preference edits remain visible on upgrade. */
 export class PromptStore {
   constructor(private db: Database.Database) {}
+  activateLiveDefault() {
+    const note = "aide-live-tools-v1";
+    if (this.db.prepare("SELECT 1 FROM voice_role_prompts WHERE role='live' AND source='system' AND note=?").get(note)) return;
+    this.db.prepare("INSERT INTO voice_role_prompts(role,ts,source,note,content) VALUES ('live',?,'system',?,?)")
+      .run(Date.now(), note, LIVE_PROMPT);
+  }
   read(role: PromptRole): string {
     const saved = this.db
       .prepare(

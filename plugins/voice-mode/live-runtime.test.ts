@@ -32,6 +32,7 @@ async function fixture() {
     hosts: { list: async () => [{ id: "mac", name: "Desktop", status: "connected" }] },
     providers: { list: async () => [{ id: "codex", available: true }], models: async () => ({ models: [{ id: "worker", model: "worker", isDefault: true }], modelLoadError: null }) },
     threads: {
+      search: async () => ({}),
       get: async (args: Any) => { if (world.get) return world.get(args); const t = world.threads.get(args.threadId); if (!t) throw new Error("Missing thread"); return t; },
       output: async ({ threadId }: Any) => ({ output: world.outputs.get(threadId) ?? null }),
       list: async (args: Any) => [...world.threads.values()].filter(t => (!args.parentThreadId || t.parentThreadId === args.parentThreadId) && (args.hasParent !== false || !t.parentThreadId) && !!t.archivedAt === !!args.archived && (args.includeHidden || t.visibility !== "hidden")).slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 100)),
@@ -318,12 +319,12 @@ test("read_threads carries native user questions and responds with structured an
 
 test("draft begin and finish are idempotent; restart and device switch cannot apply again", async t => {
   const h = await fixture(); t.after(h.close); const args = { thread_id: "build", text: "Draft", mode: "append" };
-  const begun = h.runtime.beginClientEffect(h.input("prepare_draft", args)) as Any; assert.equal(begun.execute, true);
-  assert.equal((h.runtime.beginClientEffect(h.input("prepare_draft", args)) as Any).execute, false);
+  const begun = await h.runtime.beginClientEffect(h.input("prepare_draft", args)) as Any; assert.equal(begun.execute, true);
+  assert.equal((await h.runtime.beginClientEffect(h.input("prepare_draft", args)) as Any).execute, false);
   const result = h.runtime.finishClientEffect({ nonce: "call", operationId: begun.operationId, status: "succeeded", result: { applied: true } });
-  assert.deepEqual((h.runtime.beginClientEffect(h.input("prepare_draft", args)) as Any).receipt, result);
-  await h.switch(); assert.equal((h.runtime.beginClientEffect(h.input("prepare_draft", args)) as Any).execute, false);
-  const pending = h.runtime.beginClientEffect(h.input("control_ui", { action: "show_voice" })) as Any;
+  assert.deepEqual((await h.runtime.beginClientEffect(h.input("prepare_draft", args)) as Any).receipt, result);
+  await h.switch(); assert.equal((await h.runtime.beginClientEffect(h.input("prepare_draft", args)) as Any).execute, false);
+  const pending = await h.runtime.beginClientEffect(h.input("control_ui", { action: "show_voice" })) as Any;
   await h.restart(); assert.equal(h.runtime.operations.get(pending.operationId)!.status, "unknown");
 });
 
@@ -507,4 +508,27 @@ test("an unknown effect cannot be retried through another tool in the same utter
   const unknown=await h.run("spawn_worker",worker);assert.equal(unknown.status,"unknown");
   assert.deepEqual(await h.run("spawn_worker",worker),unknown);
   const retry=await h.run("create_thread",{project_id:"app",title:worker.title,body:worker.task});assert.match(retry.error,/unknown effect/);assert.equal(h.world.spawns.length,1);
+});
+
+test("find_targets matches useful title tokens and merges bounded SDK search results",async t=>{
+  const h=await fixture();t.after(h.close);
+  h.world.threads.set("editor",makeThreadResponse({id:"editor",title:"Editor mobile fixes",updatedAt:12000}));
+  h.world.threads.set("other",makeThreadResponse({id:"other",title:"Mobile API fixes",updatedAt:13000}));
+  const searched=makeThreadResponse({id:"remote-editor",title:"Mobile editor notes",updatedAt:14000});
+  const queries:string[]=[];
+  h.harness.inspection.sdk.stub("threads.search",async({query}:Any)=>{queries.push(query);return {matches:{total:2,results:[{thread:searched}]}};});
+  const result=await h.run("find_targets",{query:"the latest editor mobile thread"});
+  assert.deepEqual(result.threads.map((thread:Any)=>thread.id),["remote-editor","editor"]);
+  assert.deepEqual(queries,["the latest editor mobile thread"]);
+  assert.equal(result.truncated,true);
+  const recent=await h.run("find_targets",{query:"the latest threads"});
+  assert.deepEqual(recent.threads.map((thread:Any)=>thread.id),["remote-editor","other","editor","build"]);
+});
+
+test("client file previews resolve the thread workspace into a native UI action",async t=>{
+  const h=await fixture();t.after(h.close);
+  h.world.threads.get("build").environmentId="workspace";
+  const result=await h.runtime.beginClientEffect(h.input("control_ui",{action:"preview_file",thread_id:"build",source:"workspace",path:"README.md"})) as Any;
+  assert.equal(result.execute,true);
+  assert.deepEqual(result.action,{kind:"preview_file",target:{kind:"workspace",environmentId:"workspace",path:"README.md"}});
 });
