@@ -141,6 +141,24 @@ Status: recorded here; no upstream issue filed.
 Suggested issue title: `Plugin SDK: expose the host that runs the BB server`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Mobile: keep an active voice call alive when the screen locks
+
+The plugin no longer hangs up when the phone screen locks: it holds the call,
+marks the microphone suspended, and revives it when the app returns to the
+foreground. A screen wake lock keeps the phone awake while the call runs. But the
+plugin cannot capture or play audio while the BB app is in the background, because
+the iOS webview pauses media capture and playback when it hides. A held call
+therefore goes quiet under a lock and only resumes on unlock.
+
+For true hands-free use while walking, the BB iOS app should let an active voice
+call keep audio in the background, for example with a `voip` or `audio` background
+mode and an audio session that stays active. Then a locked phone can still hear
+and answer.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Mobile: allow background audio for an active voice call`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Mobile: choose Steer or Queue from the Send button
 
 When Steer is the default send action, desktop users can press Command+Enter

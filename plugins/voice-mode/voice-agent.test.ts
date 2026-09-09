@@ -442,6 +442,53 @@ test("transient disconnection recovers, but a prolonged disconnect or failure en
   assert.equal(agent.getState(), "idle");
 });
 
+/**
+ * Install a minimal `document` whose visibility is settable and whose listeners
+ * fire on demand. Returns the doc plus a `restore`; call `restore` via `t.after`
+ * AFTER the live fixture so it uninstalls document only once the fixture's own
+ * teardown (which touches document) has run — `t.after` hooks run in order.
+ */
+function fakeDocument(): { doc: { visibilityState: string; fire: (type: string) => void }; restore: () => void } {
+  const listeners: Record<string, Array<() => void>> = {};
+  const doc = {
+    visibilityState: "visible" as string,
+    addEventListener: (type: string, fn: () => void) => { (listeners[type] ??= []).push(fn); },
+    removeEventListener: (type: string, fn: () => void) => { listeners[type] = (listeners[type] ?? []).filter(f => f !== fn); },
+    fire: (type: string) => { for (const fn of listeners[type] ?? []) fn(); },
+  };
+  const original = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { configurable: true, value: doc });
+  return { doc, restore: () => { if (original) Object.defineProperty(globalThis, "document", original); else Reflect.deleteProperty(globalThis, "document"); } };
+}
+
+test("a screen lock holds the call instead of ending it, and unlock revives the mic", async (t) => {
+  const { doc, restore } = fakeDocument();
+  const { agent, track } = await liveVoiceFixture(t);
+  t.after(restore);
+  // Phone screen locks: iOS mutes the mic track while the page is hidden.
+  doc.visibilityState = "hidden";
+  (track as { onmute?: () => void }).onmute?.();
+  assert.equal(agent.getState(), "live", "a screen lock must not end the call");
+  assert.equal(agent.getMicSuspended(), true, "the suspended mic is surfaced honestly");
+  // Unlock: the OS resumes the same track and the uplink is back.
+  doc.visibilityState = "visible";
+  (track as { onunmute?: () => void }).onunmute?.();
+  assert.equal(agent.getMicSuspended(), false);
+  assert.equal(agent.getState(), "live");
+});
+
+test("a call held through a lock ends only if the mic never returns", async (t) => {
+  const { doc, restore } = fakeDocument();
+  const { agent, track, tick } = await liveVoiceFixture(t);
+  t.after(restore);
+  doc.visibilityState = "hidden";
+  (track as { onmute?: () => void }).onmute?.();
+  tick(5 * 60_000); // well within the hold window
+  assert.equal(agent.getState(), "live");
+  tick(11 * 60_000); // now past the suspension deadline
+  assert.equal(agent.getState(), "idle", "a mic that never comes back ends the call");
+});
+
 test("a stopped call's disconnect timer cannot stop a replacement call", async (t) => {
   const { agent, peers, tick, start } = await liveVoiceFixture(t);
   const old = peers.at(-1)!;

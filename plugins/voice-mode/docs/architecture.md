@@ -9,6 +9,13 @@ It fetches `callStartContext` before enabling the microphone and injects one sys
 item. During the call it injects only tool results and `background_updates` batches.
 `input-controller.ts` keeps word-checked interruption and the correction window.
 
+When the phone screen locks, iOS mutes the microphone track while the page is
+hidden. The agent holds the call instead of hanging up: it marks the microphone
+suspended, keeps the WebRTC connection, and revives the microphone when the track
+unmutes or the page returns to the foreground. A deadline ends a held call only if
+the microphone never comes back. A screen wake lock, re-requested on each return
+to the foreground, keeps the phone awake during a call.
+
 `output-sequencer.ts` holds calls until their response drains naturally. A response
 without audio releases calls at generation completion. Calls run one at a time.
 Interrupted responses close held calls without requesting a continuation. A failed

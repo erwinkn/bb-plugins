@@ -89,6 +89,23 @@ function maybeUnref(timer: ReturnType<typeof setInterval>) {
 
 const REPLY_QUIET_MS = 2000;
 const DISCONNECT_GRACE_MS = 10_000;
+/**
+ * How long a call may hold with its mic suspended (mobile backgrounding) before
+ * it ends on its own. A screen lock must not drop the call — the user walks with
+ * the phone locked and expects Aide to resume on unlock — so this is generous.
+ * It is only a safety net for a mic that never returns while the WebRTC link
+ * somehow stays up; a real connection drop ends the call far sooner on its own.
+ */
+const SUSPEND_DEADLINE_MS = 15 * 60_000;
+
+/** The Screen Wake Lock sentinel, typed loosely so we don't depend on a lib version. */
+interface WakeLockSentinelLike {
+  release(): Promise<void>;
+  addEventListener?(type: "release", listener: () => void): void;
+}
+interface WakeLockNavigator {
+  wakeLock?: { request(type: "screen"): Promise<WakeLockSentinelLike> };
+}
 
 function browserStorage(): Storage | null {
   try {
@@ -163,6 +180,18 @@ export class VoiceAgent {
   /** Aborts a session that never reaches "live", so it can't hang connecting. */
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Ends a call whose mic has stayed suspended past the deadline (mobile
+   * backgrounding). Armed on a hidden mic-mute, cleared the moment the mic
+   * recovers. Null while the mic is healthy.
+   */
+  private suspendDeadline: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * A held Screen Wake Lock, so the phone does not idle-lock mid-call while the
+   * user walks or reads. Auto-released by the browser when the page hides, so it
+   * is re-requested on every return to the foreground; null when not held.
+   */
+  private wakeLock: WakeLockSentinelLike | null = null;
   /** When the call first went live (ms), for elapsed-duration UI; null if not. */
   private liveStartedAt: number | null = null;
   /**
@@ -306,6 +335,8 @@ export class VoiceAgent {
     this.micSuspended && (this.state === "live" || this.state === "muted");
 
   private setMicSuspended(value: boolean) {
+    // The mic is healthy again: cancel the countdown that would have ended the call.
+    if (!value && this.suspendDeadline) { clearTimeout(this.suspendDeadline); this.suspendDeadline = null; }
     if (this.micSuspended === value) return;
     this.micSuspended = value;
     this.input?.setAvailable(!value && this.session?.pc.connectionState === "connected");
@@ -460,6 +491,10 @@ export class VoiceAgent {
 
   private setState(next: VoiceState) {
     this.state = next;
+    // Hold a screen wake lock for the life of the call so the phone does not
+    // idle-lock while Aide is live; release it the moment the call goes idle.
+    if (next === "idle") this.releaseWakeLock();
+    else void this.requestWakeLock();
     this.emitChange();
     // Announce our own transitions so other realms mirror this call. Idle is
     // announced explicitly by stop() (which clears the nonce first), so skip it
@@ -824,11 +859,14 @@ export class VoiceAgent {
         this.lastTool && Date.now() - this.lastTool.at < 4000 ? this.lastTool.name : null;
       this.logDiag("mic.track.muted", { hidden, cause });
       if (hidden) {
-        // Backgrounded on mobile: the mic is gone and this realm is about to
-        // freeze. End cleanly NOW (while the handler still runs) and enforce it
-        // server-side, so it never becomes an unstoppable zombie.
-        this.logDiag("mic.suspend.teardown", { cause });
-        this.endBecauseSuspended();
+        // Backgrounded on mobile (screen lock, app switch): iOS pauses mic
+        // capture. Do NOT hang up — that turned every screen lock into a dropped
+        // call. Hold the session and connection, mark the mic honestly suspended,
+        // and recover when the mic unmutes or the page returns to the foreground.
+        // A deadline is the only thing that ends a call this way, and only if the
+        // mic never comes back.
+        this.logDiag("mic.suspend.hold", { cause });
+        this.holdSuspended();
       } else {
         // Mic muted while visible (another app grabbed it, glitch): try to heal.
         this.setMicSuspended(true);
@@ -849,16 +887,64 @@ export class VoiceAgent {
   }
 
   /**
-   * End a call because the OS suspended its mic while backgrounded (mobile).
-   * Force-stops server-side FIRST (so the end survives even if this realm freezes
-   * a beat later), then tears down locally. This is the honest alternative to a
-   * silent one-way zombie: the call ends and every surface goes idle.
+   * Hold a call whose mic the OS suspended (mobile backgrounding). Keeps the
+   * session and the WebRTC connection so a return to the foreground revives the
+   * uplink; arms a generous deadline that ends the call only if the mic never
+   * comes back. Idempotent — a repeated mute while already held does not restart
+   * the countdown.
+   */
+  private holdSuspended() {
+    this.setMicSuspended(true);
+    if (this.suspendDeadline) return; // already counting down
+    this.suspendDeadline = setTimeout(() => {
+      this.suspendDeadline = null;
+      if (this.micSuspended && (this.state === "live" || this.state === "muted")) {
+        this.logDiag("mic.suspend.deadline", {});
+        this.endBecauseSuspended();
+      }
+    }, SUSPEND_DEADLINE_MS);
+    maybeUnref(this.suspendDeadline);
+  }
+
+  /**
+   * End a call whose mic stayed suspended past the deadline (mobile). Force-stops
+   * server-side FIRST (so the end survives even if this realm is frozen), then
+   * tears down locally. This is the honest alternative to a silent one-way
+   * zombie: the call ends and every surface goes idle.
    */
   private endBecauseSuspended() {
     const nonce = this.nonce;
-    toast.info("Aide: call ended — the app moved to the background");
+    toast.info("Aide: call ended — the microphone stayed off too long");
     if (nonce) this.forceStop(nonce);
     this.stop();
+  }
+
+  /**
+   * Hold a screen wake lock while a call is live, so an idle phone does not lock
+   * mid-call. Best-effort: unsupported browsers, denied requests, and non-secure
+   * contexts are silently fine. Idempotent — a lock already held is kept.
+   */
+  private async requestWakeLock() {
+    if (this.wakeLock) return;
+    const nav = typeof navigator !== "undefined" ? (navigator as Navigator & WakeLockNavigator) : null;
+    if (!nav?.wakeLock) return;
+    try {
+      const lock = await nav.wakeLock.request("screen");
+      // A late resolve after the call ended (or was replaced) must not leave a
+      // dangling lock: release it immediately.
+      if (this.state === "idle") { void lock.release().catch(() => undefined); return; }
+      this.wakeLock = lock;
+      // The browser auto-releases on hide; drop our reference so the next
+      // foreground visibility re-requests a fresh one.
+      lock.addEventListener?.("release", () => { if (this.wakeLock === lock) this.wakeLock = null; });
+    } catch { /* denied or unsupported — the call runs without it */ }
+  }
+
+  /** Release the held screen wake lock, if any. Safe to call when none is held. */
+  private releaseWakeLock() {
+    const lock = this.wakeLock;
+    this.wakeLock = null;
+    void lock?.release().catch(() => undefined);
   }
 
   /** On returning to the foreground, try to revive a suspended mic. */
@@ -867,7 +953,12 @@ export class VoiceAgent {
     const onVisibility = () => {
       if (this.session !== session) return;
       this.logDiag("page.visibility", { state: document.visibilityState });
-      if (document.visibilityState === "visible") void this.recoverMicIfNeeded(session);
+      if (document.visibilityState === "visible") {
+        // The browser dropped the wake lock when we hid; take a fresh one and
+        // revive the mic the OS suspended while backgrounded.
+        void this.requestWakeLock();
+        void this.recoverMicIfNeeded(session);
+      }
     };
     document.addEventListener("visibilitychange", onVisibility);
     session.disposeLifecycle = () => document.removeEventListener("visibilitychange", onVisibility);
@@ -1017,6 +1108,9 @@ export class VoiceAgent {
     this.clearConnectWatchdog();
     if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
     this.disconnectTimer = null;
+    if (this.suspendDeadline) clearTimeout(this.suspendDeadline);
+    this.suspendDeadline = null;
+    this.releaseWakeLock();
     this.stopPresenceHeartbeat();
     this.liveStartedAt = null;
     const session = this.session;
