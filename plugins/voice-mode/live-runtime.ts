@@ -261,7 +261,10 @@ export class LiveRuntime {
     const names = settings.profiles.map(p => p.name);
     const fallback = settings.profiles.find(p => p.name === settings.defaultProfile) ?? settings.profiles[0];
     if (!fallback) throw new Error("No worker profile is configured. Add one in Voice Mode → Workers.");
-    if (!requested || /^default$/i.test(requested.trim())) return fallback;
+    if (!requested) return fallback;
+    const exact = settings.profiles.find(p => p.name.trim().toLowerCase() === requested.trim().toLowerCase());
+    if (exact) return exact;
+    if (/^default$/i.test(requested.trim())) return fallback;
     const resolved = resolveName(requested, settings.profiles, p => p.name);
     if (!resolved) throw new Error(`Unknown worker profile "${requested}". Configured profiles: ${names.join(", ")}. Omit profile for ${fallback.name}.`);
     return resolved;
@@ -331,7 +334,7 @@ export class LiveRuntime {
       case "find_targets": {
         const args = liveToolArgs.find_targets.parse(input.args), tokens = queryTokens(args.query);
         const [projects, hosts] = await Promise.all([this.bb.sdk.projects.list({ includePersonal: true }), this.bb.sdk.hosts.list()]);
-        type Candidate = Pick<Thread, "id" | "title" | "titleFallback" | "projectId" | "parentThreadId" | "status" | "updatedAt" | "archivedAt" | "deletedAt">;
+        type Candidate = Pick<Thread, "id" | "title" | "titleFallback" | "projectId" | "parentThreadId" | "status" | "createdAt" | "updatedAt" | "archivedAt" | "deletedAt">;
         const found: Candidate[] = [];
         let truncated = false;
         const listArgs = args.parent_id ? { parentThreadId: args.parent_id, includeHidden: true } : args.include_children ? {} : { hasParent: false };
@@ -359,14 +362,16 @@ export class LiveRuntime {
         // The title is what the user knows a thread by. The prompt excerpt only stands in for a missing title; BB search covers bodies.
         const name = (t: Candidate) => t.title?.trim() || t.titleFallback || "";
         // Strong title matches and message hits come first. A few weak matches follow when little else was found, so the model can offer a near miss instead of nothing.
-        const scored = rank([...byId.values()], tokens, name, t => t.updatedAt, { threshold: 0, limit: Number.MAX_SAFE_INTEGER });
+        // "The child that thread just started" is the newest by creation; elsewhere recent activity matters more.
+        const scored = rank([...byId.values()], tokens, name, t => args.parent_id ? t.createdAt : t.updatedAt, { threshold: 0, limit: Number.MAX_SAFE_INTEGER });
         const strong = scored.filter(({ item, match }) => match >= 0.5 || searched.has(item.id));
         const weak = scored.filter(entry => !strong.includes(entry) && entry.match >= 0.25);
         const ranked = strong.length >= 5 ? strong : [...strong, ...weak];
         const projectName = new Map(projects.map(p => [p.id, p.name]));
         const threads = ranked.slice(0, 30).map(({ item: t, match }) => ({ id: t.id, title: threadName(t), match, projectId: t.projectId, projectName: projectName.get(t.projectId) ?? null,
-          parentThreadId: t.parentThreadId, status: t.status, updatedAt: t.updatedAt, archived: t.archivedAt !== null, ...(searched.has(t.id) ? { foundInMessages: true } : {}) }));
-        const ps = rank(projects, tokens, p => p.name, p => p.updatedAt ?? 0, { threshold: 0, limit: 30 }).map(({ item: p, match }) => ({ id: p.id, name: p.name, match, outsideProject: p.kind === "personal", hostIds: p.sources.map(s => s.hostId) }));
+          parentThreadId: t.parentThreadId, status: t.status, createdAt: t.createdAt, updatedAt: t.updatedAt, archived: t.archivedAt !== null, ...(searched.has(t.id) ? { foundInMessages: true } : {}) }));
+        // Every project is listed so the model can resolve an imprecise name itself; the list is small.
+        const ps = rank(projects, tokens, p => p.name, p => p.updatedAt ?? 0, { threshold: 0, limit: Number.MAX_SAFE_INTEGER }).map(({ item: p, match }) => ({ id: p.id, name: p.name, match, outsideProject: p.kind === "personal", hostIds: p.sources.map(s => s.hostId) }));
         const hs = hosts.map(h => ({ id: h.id, name: h.name, status: h.status }));
         threads.forEach(t => this.remember(call, t.id, t.projectId, t.parentThreadId)); ps.forEach(p => this.remember(call, p.id, ...p.hostIds)); hs.forEach(h => this.remember(call, h.id));
         return { threads, projects: ps, hosts: hs, searched: { query: args.query, words: tokens, includeChildren: !!args.include_children, includeArchived: !!args.include_archived, parentId: args.parent_id ?? null, conversationTasks: !args.parent_id }, asOf: this.now(), truncated: truncated || ranked.length > 30 };

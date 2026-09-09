@@ -548,14 +548,16 @@ test("find_targets ranks title matches with scores and merges bounded SDK search
 test("find_targets resolves misheard descriptions, keeps near misses, and always ranks projects",async t=>{
   const h=await fixture();t.after(h.close);
   h.world.threads.set("parent",makeThreadResponse({id:"parent",title:"Overhaul well plans plugin",updatedAt:15000}));
-  h.world.threads.set("child",makeThreadResponse({id:"child",title:"Live plan review trial",parentThreadId:"parent",updatedAt:16000}));
-  h.world.threads.set("older",makeThreadResponse({id:"older",title:"Plans live review: backend",parentThreadId:"parent",updatedAt:14000}));
+  h.world.threads.set("child",makeThreadResponse({id:"child",title:"Live plan review trial",parentThreadId:"parent",createdAt:15500,updatedAt:16000}));
+  h.world.threads.set("older",makeThreadResponse({id:"older",title:"Plans live review: backend",parentThreadId:"parent",createdAt:13000,updatedAt:17500}));
   h.world.threads.set("voice",makeThreadResponse({id:"voice",title:"Make voice mode more reliable",updatedAt:17000}));
   const spoken=await h.run("find_targets",{query:"planned plugin child thread for new plans feature",include_children:true});
   assert.deepEqual(spoken.threads.map((thread:Any)=>[thread.id,thread.match]),[["parent",0.71],["older",0.46],["child",0.45]]);
   const children=await h.run("find_targets",{query:"",parent_id:"parent"});
-  assert.deepEqual(children.threads.map((thread:Any)=>thread.id),["child","older"]);
+  assert.deepEqual(children.threads.map((thread:Any)=>[thread.id,thread.createdAt]),[["child",15500],["older",13000]]);
   assert.equal(children.searched.parentId,"parent");
+  const active=await h.run("find_targets",{query:"",include_children:true});
+  assert.deepEqual(active.threads.slice(0,2).map((thread:Any)=>thread.id),["older","voice"]);
   const project=await h.run("find_targets",{query:"BB plugin project"});
   assert.deepEqual(project.projects.map((p:Any)=>[p.name,p.match,p.outsideProject]),[["BB Plugins",0.95,false],["Personal",0,true],["docs-site",0,false]]);
   assert.deepEqual(project.threads.map((thread:Any)=>thread.id),["parent"]);
@@ -583,11 +585,14 @@ test("workers run outside any project on the primary machine unless a project is
 test("worker profiles resolve leniently and unknown names list the configured choices",async t=>{
   const h=await fixture();t.after(h.close);
   const first=await h.run("spawn_worker",{...worker,profile:"default"});assert.equal(first.profile,"implement");
+  const settings=await readNamedWorkerSettings(h.bb);settings.profiles.push({...settings.profiles[0],name:"default"});await h.bb.storage.kv.set(NAMED_WORKER_PROFILE_KEY,settings);
+  const named=await h.run("spawn_worker",{...worker,profile:"Default",title:"Named default"},h.later("u0"));assert.equal(named.profile,"default");
+  settings.profiles.pop();await h.bb.storage.kv.set(NAMED_WORKER_PROFILE_KEY,settings);
   const second=await h.run("spawn_worker",{...worker,profile:"Investigation",title:"Second"},h.later());assert.equal(second.profile,"investigate");
   assert.match(second.hostId,/mac/);assert.match(h.world.spawns.at(-1).prompt,/## Profile: investigate/);
   const unknown=await h.run("spawn_worker",{...worker,profile:"wizard",title:"Third"},h.later("u3"));
   assert.equal(unknown.status,"failed");assert.match(unknown.error,/Unknown worker profile "wizard". Configured profiles: investigate, plan, implement, review. Omit profile for implement./);
-  assert.equal(h.world.spawns.length,2);
+  assert.equal(h.world.spawns.length,3);
 });
 
 test("call tool schemas enumerate configured profiles",()=>{
