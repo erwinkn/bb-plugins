@@ -100,7 +100,8 @@ describe("live plan review backend", () => {
     expect(harness.inspection.pendingInteractions[0]).toMatchObject({ rendererId: "plan-review", title: "Review plan: New", timeoutMs: 3_600_000 });
     await harness.behavior.emitThreadEvent("message.queued", { entry: makeQueueEntry({ threadId: "thread-1", waitingOn: { kind: "interaction" } }) });
     expect(harness.inspection.pendingInteractions).toHaveLength(0);
-    await tool("plans_handoff", { planId: result.planId }); expect(harness.inspection.pendingInteractions).toHaveLength(1);
+    const handoff = JSON.parse(String(await tool("plans_handoff", { planId: result.planId })));
+    expect(handoff).toMatchObject({ status: "waiting" }); expect(harness.inspection.pendingInteractions).toHaveLength(1);
   });
   it("renews timeouts and stops after Skip", async () => {
     const { tool, harness, plan } = await setup(undefined, { interactionChunkMs: 1_000 });
@@ -501,8 +502,9 @@ it("does not request an interaction on handoff with an existing queued row", asy
   const send = vi.fn<Send>(async () => ({ ok: true, delivery: "queued", queuedMessage: entry() }));
   const { annotate, tool, plan, harness } = await setup(send);
   await annotate(); await tick();
-  await tool("plans_handoff", { planId: plan.id });
+  const result = JSON.parse(String(await tool("plans_handoff", { planId: plan.id })));
   expect(harness.inspection.pendingInteractions).toHaveLength(0);
+  expect(result).toMatchObject({ status: "queued" }); expect(result).not.toHaveProperty("openCount");
 });
 
 it("isolates message.queued events from unrelated threads", async () => {

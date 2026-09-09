@@ -114,8 +114,11 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     return { planId, annotationId: item.id, number: item.number, state: item.state };
   };
   const handoff = ({ planId }: { planId: string }) => {
-    const plan = open(idSchema.parse(planId)); session(planId).hold();
-    return { planId, openCount: plan.comments.filter((item) => item.state === "open").length, instruction: handoffInstruction };
+    const plan = open(idSchema.parse(planId));
+    const live = session(planId); live.hold();
+    const status = plan.delivery.queuedMessageId ? "queued" : "waiting";
+    // waiting: the review prompt is up. queued: a feedback message is still queued and brings the agent back by itself.
+    return { planId, status, instruction: handoffInstruction };
   };
   const submit = async (input: z.input<typeof createSchema>) => {
     const plan = await create(input, "agent"); session(plan.id).hold();

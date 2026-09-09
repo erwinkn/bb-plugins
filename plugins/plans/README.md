@@ -87,7 +87,7 @@ Feedback arrives as thread messages.
 | `plans_update {planId, edits, summary, resolves}` | Edit the current plan with exact-match `{old, new}` pairs. Each `old` must occur exactly once. |
 | `plans_update {planId, markdown, summary, resolves}` | Replace the full Markdown. Use this instead of `edits`. |
 | `plans_reply {planId, annotation, body, resolve}` | Answer an ask or comment on an annotation. For asks, `resolve` defaults to true. |
-| `plans_handoff {planId}` | Restore the review prompt. Return the count of open annotations. |
+| `plans_handoff {planId}` | Restore the review prompt. Return a status line: `waiting` when the prompt is up, `queued` when a feedback message is still queued. |
 
 Each update saves a version with a summary.
 It returns the new version ID.
