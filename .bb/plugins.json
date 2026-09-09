@@ -4,6 +4,10 @@
   "name": "erwin-plugins",
   "plugins": [
     {
+      "name": "plans",
+      "source": "./plugins/plans"
+    },
+    {
       "name": "erwin-devin",
       "source": "./plugins/devin"
     },
@@ -18,6 +22,18 @@
     {
       "name": "erwin-activity",
       "source": "./plugins/activity"
+    },
+    {
+      "name": "erwin-editor",
+      "source": "./plugins/editor"
+    },
+    {
+      "name": "questions",
+      "source": "./plugins/questions"
+    },
+    {
+      "name": "erwin-plugin-nav",
+      "source": "./plugins/plugin-nav"
     }
   ]
 }

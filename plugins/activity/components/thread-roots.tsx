@@ -41,7 +41,7 @@ export function ThreadRoots({
       {shown.map(renderRow)}
       {shownDrafts.map(renderDraft)}
       {(remaining > 0 || expanded) && (
-        <li className="flex flex-wrap items-center gap-x-1 pl-6">
+        <li className="flex flex-wrap items-center gap-x-1">
           <button
             type="button"
             aria-controls={id}

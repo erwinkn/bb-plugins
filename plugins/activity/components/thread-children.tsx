@@ -49,7 +49,7 @@ export function ThreadChildren({
       {(remaining > 0 || expanded) && (
         <li
           className="flex flex-wrap items-center gap-x-1"
-          style={{ paddingLeft: `${1.25 + depth * 1.5}rem` }}
+          style={{ paddingLeft: `${1.25 + (depth - 1) * 1.5}rem` }}
         >
           <button
             type="button"

@@ -1,8 +1,14 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { useEffect, useState, type ReactNode } from "react";
-import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
+import {
+  useRpc,
+  type PluginSidebarPullRequest,
+  type PluginSidebarThread,
+} from "@get-bb/plugin-sdk/app";
+import type { archiveContract } from "../lib/archive-contract";
 import { STATUS_LABEL, threadTitle, type Status } from "../lib/status";
 import { usePortalScopeProps } from "../lib/portal-scope";
+import { PullRequestIcon, pullRequestSummary } from "./pull-request";
 import { StatusIcon } from "./status-icon";
 
 function Detail({ label, children }: { label: string; children: ReactNode }) {
@@ -20,6 +26,7 @@ export function ThreadInfo({
   project,
   provider,
   parent,
+  pullRequest,
   disabled,
   children,
 }: {
@@ -28,10 +35,27 @@ export function ThreadInfo({
   project: string;
   provider: string;
   parent?: string;
+  pullRequest: PluginSidebarPullRequest | null;
   disabled: boolean;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const rpc = useRpc<typeof archiveContract>();
+  const [fetchedParent, setFetchedParent] = useState<{ id: string; title: string } | null>(null);
+  const parentId = thread.parentThreadId;
+  useEffect(() => {
+    if (!open || disabled || parent || !parentId) return;
+    let cancelled = false;
+    setFetchedParent(null);
+    void rpc.call("parentTitle", { threadId: parentId }).then(
+      (title) => { if (!cancelled) setFetchedParent({ id: parentId, title }); },
+      () => { if (!cancelled) setFetchedParent({ id: parentId, title: "Unavailable" }); },
+    );
+    return () => { cancelled = true; };
+  }, [rpc, open, disabled, parent, parentId]);
+  const parentLabel = parent ?? (parentId
+    ? fetchedParent?.id === parentId ? fetchedParent.title : "Loading…"
+    : undefined);
   const scope = usePortalScopeProps();
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -59,7 +83,7 @@ export function ThreadInfo({
   });
   const description = [
     title,
-    STATUS_LABEL[status],
+    thread.isArchived ? "Archived" : STATUS_LABEL[status],
     provider,
     project,
     branch,
@@ -67,7 +91,10 @@ export function ThreadInfo({
     workspace,
     environment,
     thread.isPinned ? "Pinned" : null,
-    parent ? `Child of ${parent}` : null,
+    parentLabel ? `Child of ${parentLabel}` : null,
+    pullRequest
+      ? `${pullRequestSummary(pullRequest)}: ${pullRequest.title}`
+      : null,
     ...dates.map((date) => `${date.label}: ${date.text}`),
   ]
     .filter(Boolean)
@@ -98,7 +125,7 @@ export function ThreadInfo({
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--subtle-foreground)]">
               <span className="flex items-center gap-1.5 text-popover-foreground">
                 <StatusIcon status={status} size="small" />
-                {STATUS_LABEL[status]}
+                {thread.isArchived ? "Archived" : STATUS_LABEL[status]}
               </span>
               <span aria-hidden="true">·</span>
               <span>{provider}</span>
@@ -122,7 +149,21 @@ export function ThreadInfo({
                     : ""}
                 </Detail>
               )}
-              {parent && <Detail label="Parent">{parent}</Detail>}
+              {parentLabel && <Detail label="Parent">{parentLabel}</Detail>}
+              {pullRequest && (
+                <Detail label="PR">
+                  <span className="flex items-start gap-1.5">
+                    <PullRequestIcon
+                      pullRequest={pullRequest}
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0">
+                      <span className="tabular-nums">#{pullRequest.number}</span>{" "}
+                      {pullRequest.title}
+                    </span>
+                  </span>
+                </Detail>
+              )}
             </dl>
             <dl className="mb-0 mt-3 grid grid-cols-[64px_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-border pt-2 text-xs leading-4 text-[var(--subtle-foreground)]">
               {dates.map((date) => (

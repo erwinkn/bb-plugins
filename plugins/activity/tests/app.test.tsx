@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import {
   loadPluginApp,
   renderSlot as renderSdkSlot,
@@ -8,10 +14,35 @@ import {
 import { parseState, updateState, recordDraft } from "../lib/client-state";
 import { thread } from "./fixtures";
 
+const splitOverride = vi.hoisted(() => ({ enabled: false, drag: vi.fn() }));
+const renameOverride = vi.hoisted(() => ({ handler: null as null | ((id: string, title: string) => Promise<void>) }));
+vi.mock("@get-bb/plugin-sdk/app", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@get-bb/plugin-sdk/app")>();
+  return {
+    ...actual,
+    experimental_useSidebarThreadActions: () => {
+      const actions = actual.experimental_useSidebarThreadActions();
+      return { ...actions, rename: renameOverride.handler ?? actions.rename };
+    },
+    experimental_useSidebarThreadSplit: (id: string) =>
+      splitOverride.enabled
+        ? {
+            isAvailable: true,
+            splitProps: { onPointerDown: splitOverride.drag },
+            layout: null,
+          }
+        : actual.experimental_useSidebarThreadSplit(id),
+  };
+});
+
 const app = await loadPluginApp(() => import("../app"));
 const mountedSlots: ReturnType<typeof renderSdkSlot>[] = [];
 const renderSlot: typeof renderSdkSlot = (registration, props, options) => {
-  const slot = renderSdkSlot(registration, props, options);
+  const slot = renderSdkSlot(registration, props, {
+    ...options,
+    rpc: { listArchived: async () => [], archiveTree: async () => ({ ok: true }), ...options?.rpc },
+  });
   mountedSlots.push(slot);
   return slot;
 };
@@ -61,6 +92,7 @@ beforeEach(() => {
   localStorage.clear();
   updateState(() => parseState(null));
   vi.clearAllMocks();
+  renameOverride.handler = null;
 });
 afterEach(async () => {
   for (const slot of mountedSlots.splice(0)) slot.lifecycle.unmount();
@@ -72,6 +104,387 @@ afterEach(async () => {
 });
 
 describe("activity sidebar", () => {
+  it("keeps the name after a failed save and prevents duplicate submissions", async () => {
+    let rejectSave!: (error: Error) => void;
+    const rename = vi.fn().mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectSave = reject; })).mockResolvedValue(undefined);
+    renameOverride.handler = rename;
+    const slot = mount();
+    fireEvent.contextMenu(slot.container.querySelector('[data-sidebar-thread-id="working"]')!);
+    fireEvent.click(within(await slot.findByRole("menu")).getByRole("menuitem", { name: "Rename" }));
+    fireEvent.change(slot.getByRole("textbox"), { target: { value: "Retry name" } });
+    const form = slot.getByRole("form", { name: "Rename thread" });
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(slot.getByRole("textbox"));
+    expect((slot.getByRole("textbox") as HTMLInputElement).readOnly).toBe(true);
+    await act(async () => rejectSave(new Error("offline")));
+    expect(slot.getByRole("alert").textContent).toContain("Try again");
+    expect((slot.getByRole("textbox") as HTMLInputElement).value).toBe("Retry name");
+    expect(document.activeElement).toBe(slot.getByRole("textbox"));
+    expect((slot.getByRole("textbox") as HTMLInputElement).readOnly).toBe(false);
+    fireEvent.submit(form);
+    await waitFor(() => expect(slot.queryByRole("textbox")).toBeNull());
+    expect(rename).toHaveBeenLastCalledWith("working", "Retry name");
+    expect(document.activeElement).toBe(slot.container.querySelector('[data-sidebar-thread-id="working"]'));
+  });
+  it.each([false, true])("renames a thread in compact mode %s without navigation", async (isCompactViewport) => {
+    const slot = renderSlot(app.threadLists[0], { ...props, isCompactViewport }, {
+      sidebarThreads: { threads, projects },
+    });
+    fireEvent.contextMenu(slot.container.querySelector('[data-sidebar-thread-id="child"]')!);
+    fireEvent.click(within(await slot.findByRole("menu")).getByRole("menuitem", { name: "Rename" }));
+    const input = slot.getByRole("textbox", { name: "Thread name" }) as HTMLInputElement;
+    expect(input.value).toBe("Blocked child");
+    fireEvent.change(input, { target: { value: "   " } });
+    expect((slot.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(input, { target: { value: "  New child name  " } });
+    fireEvent.submit(slot.getByRole("form", { name: "Rename thread" }));
+    await waitFor(() => expect(slot.queryByRole("textbox")).toBeNull());
+    expect(slot.inspection.sidebarActionCalls).toEqual([
+      { method: "rename", threadId: "child", title: "New child name" },
+    ]);
+    expect(props.onNavigate).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(slot.container.querySelector('[data-sidebar-thread-id="child"]'));
+  });
+  it.each(["Cancel", "Escape", "unchanged"])("closes rename with %s without saving", async (method) => {
+    const slot = mount();
+    fireEvent.contextMenu(slot.container.querySelector('[data-sidebar-thread-id="working"]')!);
+    fireEvent.click(within(await slot.findByRole("menu")).getByRole("menuitem", { name: "Rename" }));
+    if (method === "Cancel") fireEvent.click(slot.getByRole("button", { name: "Cancel" }));
+    else if (method === "Escape") fireEvent.keyDown(slot.getByRole("textbox"), { key: "Escape" });
+    else fireEvent.submit(slot.getByRole("form", { name: "Rename thread" }));
+    expect(slot.queryByRole("textbox")).toBeNull();
+    expect(slot.inspection.sidebarActionCalls).toEqual([]);
+    expect(document.activeElement).toBe(slot.container.querySelector('[data-sidebar-thread-id="working"]'));
+  });
+  it.each(["status", "project"] as const)(
+    "keeps pins above %s groups, including children and filtered statuses",
+    (groupBy) => {
+      updateState((state) => ({ ...state, groupBy, hidden: ["done"] }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: {
+          projects,
+          threads: [
+            thread({ id: "parent", indicator: "runtime" }),
+            thread({
+              id: "pin-child",
+              parentThreadId: "parent",
+              isPinned: true,
+              updatedAt: 300,
+            }),
+            thread({
+              id: "pin-parent",
+              projectId: "project-2",
+              isPinned: true,
+              updatedAt: 200,
+            }),
+            thread({
+              id: "child",
+              parentThreadId: "pin-parent",
+              isUnread: true,
+            }),
+            thread({ id: "archived-pin", isPinned: true, isArchived: true }),
+          ],
+        },
+      });
+      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe(
+        "Pinned",
+      );
+      const pins = slot.getByRole("list", { name: "Pinned threads" });
+      expect(
+        Array.from(pins.querySelectorAll("[data-sidebar-thread-id]"), (row) =>
+          row.getAttribute("data-sidebar-thread-id"),
+        ),
+      ).toEqual(["pin-child", "pin-parent", "child"]);
+      expect(
+        slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+      ).toHaveLength(4);
+      expect(
+        slot.container.querySelector('[data-sidebar-thread-id="child"]'),
+      ).not.toBeNull();
+      act(() =>
+        updateState((state) => ({
+          ...state,
+          groupBy: groupBy === "status" ? "project" : "status",
+        })),
+      );
+      expect(slot.getAllByRole("region")[0].getAttribute("aria-label")).toBe(
+        "Pinned",
+      );
+    },
+  );
+
+  it.each(["status", "project"] as const)(
+    "keeps a pinned family together across filters and pin changes in %s view",
+    (groupBy) => {
+      updateState((state) => ({ ...state, groupBy, hidden: ["done", "working"] }));
+      const threads = [
+        thread({ id: "grandchild", parentThreadId: "child", isPinned: true }),
+        thread({ id: "child", title: "child", parentThreadId: "pin", projectId: "project-2", indicator: "runtime" }),
+        thread({ id: "pin", title: "pin", isPinned: true }),
+        thread({ id: "archived-child", parentThreadId: "pin", isArchived: true }),
+        thread({ id: "other", isUnread: true }),
+      ];
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: { projects, threads },
+      });
+      const pins = slot.getByRole("list", { name: "Pinned threads" });
+      const rowIds = (element: Element) => Array.from(
+        element.querySelectorAll("[data-sidebar-thread-id]"),
+        (row) => row.getAttribute("data-sidebar-thread-id"),
+      );
+      expect(rowIds(pins)).toEqual(["pin", "child", "grandchild"]);
+      expect(within(pins).getByRole("img", { name: "Working" })).toBeTruthy();
+      expect(rowIds(slot.container).sort()).toEqual(["child", "grandchild", "other", "pin"]);
+      expect(within(pins).getByRole("list", { name: "Children of pin" })).toBeTruthy();
+      expect(within(pins).getByRole("list", { name: "Descendants of child" })).toBeTruthy();
+
+      // Unpin the ancestor: the independently pinned grandchild stays visible.
+      threads[2] = { ...threads[2], isPinned: false };
+      const Component = app.threadLists[0].component;
+      slot.rerender(<Component {...props} />);
+      expect(rowIds(slot.getByRole("list", { name: "Pinned threads" }))).toEqual(["grandchild"]);
+      expect(rowIds(slot.container).sort()).toEqual(["grandchild", "other"]);
+    },
+  );
+
+  it("hides the pinned section when there are no pins", () => {
+    const slot = mount();
+    expect(slot.queryByRole("region", { name: "Pinned" })).toBeNull();
+  });
+
+  const archiveRows = ["project-1", "project-2"].map((projectId, index) => ({
+    id: `old-${index}`,
+    projectId,
+    title: `Old thread ${index}`,
+    titleFallback: null,
+    parentThreadId: null,
+    providerId: "codex",
+    createdAt: 1,
+    updatedAt: 2,
+    environmentId: null,
+    environmentName: null,
+    environmentBranchName: null,
+    environmentWorkspaceDisplayKind: "other",
+  }));
+  it("hides archives until the display setting is enabled", async () => {
+    const list = vi.fn(async () => archiveRows);
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { projects, threads: [] },
+      rpc: { listArchived: list },
+    });
+    await act(async () => {});
+    expect(list).not.toHaveBeenCalled();
+    expect(slot.queryByRole("button", { name: "Archived" })).toBeNull();
+
+    fireEvent.keyDown(
+      slot.getByRole("button", { name: "Threads display options" }),
+      { key: "Enter" },
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const toggle = slot.getByRole("menuitemcheckbox", {
+      name: "Archived",
+      hidden: true,
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith({ offset: 0 }),
+    );
+    const archive = await slot.findByRole("button", {
+      name: "Archived",
+      hidden: true,
+    });
+    expect(archive.getAttribute("aria-expanded")).toBe("false");
+    expect(
+      parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
+        .showArchives,
+    ).toBe(true);
+
+    fireEvent.click(
+      slot.getByRole("menuitemcheckbox", {
+        name: "Archived",
+        hidden: true,
+      }),
+    );
+    expect(
+      slot.queryByRole("button", { name: "Archived", hidden: true }),
+    ).toBeNull();
+    expect(
+      parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
+        .showArchives,
+    ).toBe(false);
+  });
+  it.each(["status", "project"] as const)(
+    "browses and restores archives in %s view",
+    async (groupBy) => {
+      updateState((state) => ({
+        ...state,
+        groupBy,
+        hidden: ["done"],
+        showArchives: true,
+      }));
+      const restore = vi.fn(async () => ({ ok: true }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: { projects, threads: [] },
+        rpc: { listArchived: async () => archiveRows, restoreThread: restore },
+      });
+      await waitFor(() =>
+        expect(slot.getAllByRole("button", { name: "Archived" })).toHaveLength(
+          groupBy === "status" ? 1 : 2,
+        ),
+      );
+      expect(slot.queryByText("Old thread 0")).toBeNull();
+      expect(slot.queryByText("No matching threads.")).toBeNull();
+      const group =
+        groupBy === "project"
+          ? within(slot.getByRole("region", { name: "One" }))
+          : slot;
+      fireEvent.click(group.getByRole("button", { name: "Archived" }));
+      expect(group.getByText("Old thread 0")).toBeTruthy();
+      if (groupBy === "project")
+        expect(group.queryByText("Old thread 1")).toBeNull();
+      const target = slot.container.querySelector(
+        '[data-sidebar-thread-id="old-0"]',
+      )!;
+      const marker = within(target as HTMLElement).getByRole("img", { name: "Archived" });
+      expect(marker.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+      expect(marker.parentElement?.firstElementChild?.textContent).toBe("Old thread 0");
+      fireEvent.click(target);
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "toThread",
+        threadId: "old-0",
+      });
+      fireEvent.contextMenu(target);
+      expect(
+        slot.getAllByRole("menuitem").map((item) => item.textContent),
+      ).toEqual(["Restore"]);
+      fireEvent.click(slot.getByRole("menuitem", { name: "Restore" }));
+      await waitFor(() =>
+        expect(restore).toHaveBeenCalledWith({ threadId: "old-0" }),
+      );
+      expect(
+        parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
+          .expandedArchives,
+      ).toEqual([
+        groupBy === "status" ? "archive:status" : "archive:project:project-1",
+      ]);
+      fireEvent.click(group.getByRole("button", { name: "Archived" }));
+      expect(group.queryByText("Old thread 0")).toBeNull();
+    },
+  );
+  it("does not expose split gestures or other active actions for archives", async () => {
+    splitOverride.enabled = true;
+    try {
+      updateState((state) => ({ ...state, showArchives: true }));
+      const slot = renderSlot(app.threadLists[0], props, {
+        rpc: { listArchived: async () => archiveRows },
+      });
+      fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
+      const row = slot.container.querySelector(
+        '[data-sidebar-thread-id="old-0"]',
+      )!;
+      touch(row, "pointerdown", "mouse");
+      expect(splitOverride.drag).not.toHaveBeenCalled();
+      fireEvent.click(row, { ctrlKey: true });
+      expect(slot.inspection.navigateCalls).toEqual([
+        { method: "toThread", threadId: "old-0" },
+      ]);
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
+      fireEvent.contextMenu(row);
+      expect(
+        slot.getAllByRole("menuitem").map((item) => item.textContent),
+      ).toEqual(["Restore"]);
+    } finally {
+      splitOverride.enabled = false;
+    }
+  });
+  it("loads every archive page, limits mounted rows, and refreshes on restore signals", async () => {
+    updateState((state) => ({ ...state, showArchives: true }));
+    const firstPage = Array.from({ length: 200 }, (_, index) => ({
+      ...archiveRows[0],
+      id: `page-${index}`,
+      title: `Page ${index}`,
+      updatedAt: 1000 - index,
+    }));
+    let restored = false;
+    const list = vi.fn(async (input: unknown) =>
+      restored
+        ? []
+        : (input as { offset: number }).offset === 0
+          ? firstPage
+          : [archiveRows[1]],
+    );
+    const slot = renderSlot(app.threadLists[0], props, {
+      rpc: { listArchived: list },
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
+    expect(list.mock.calls.map(([input]) => input)).toEqual([
+      { offset: 0 },
+      { offset: 200 },
+    ]);
+    expect(
+      slot.container.querySelectorAll("[data-sidebar-thread-id]"),
+    ).toHaveLength(10);
+    expect(
+      slot.getByRole("button", {
+        name: "Show more Archived threads, 191 hidden",
+      }),
+    ).toBeTruthy();
+    restored = true;
+    await slot.behavior.emitRealtime("archives-changed", {});
+    await waitFor(() =>
+      expect(slot.queryByRole("region", { name: "Archived" })).toBeNull(),
+    );
+  });
+  it("retains archive expansion on remount", async () => {
+    updateState((state) => ({ ...state, showArchives: true }));
+    const options = { rpc: { listArchived: async () => archiveRows } };
+    let slot = renderSlot(app.threadLists[0], props, options);
+    fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
+    slot.unmount();
+    slot = renderSlot(app.threadLists[0], props, options);
+    expect(await slot.findByText("Old thread 0")).toBeTruthy();
+  });
+  it("retries archive loading without hiding active threads", async () => {
+    updateState((state) => ({ ...state, showArchives: true }));
+    const list = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Offline"))
+      .mockResolvedValue(archiveRows);
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { projects, threads },
+      rpc: { listArchived: list },
+    });
+    await slot.findByText("Cannot load archived threads.");
+    expect(slot.getByText("Read reply")).toBeTruthy();
+    fireEvent.click(slot.getByRole("button", { name: "Retry" }));
+    await slot.findByRole("button", { name: "Archived" });
+    expect(slot.queryByText("Cannot load archived threads.")).toBeNull();
+  });
+  it("reports restore errors and keeps the archive available", async () => {
+    updateState((state) => ({ ...state, showArchives: true }));
+    const slot = renderSlot(app.threadLists[0], props, {
+      rpc: {
+        listArchived: async () => archiveRows,
+        restoreThread: async () => {
+          throw new Error("Restore failed");
+        },
+      },
+    });
+    fireEvent.click(await slot.findByRole("button", { name: "Archived" }));
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-sidebar-thread-id="old-0"]')!,
+    );
+    fireEvent.click(slot.getByRole("menuitem", { name: "Restore" }));
+    await slot.findByText("Restore failed");
+    expect(slot.getByText("Old thread 0")).toBeTruthy();
+  });
   it.each([
     ["Needs Attention", { hasPendingInteraction: true }],
     ["Unread", { isUnread: true }],
@@ -108,15 +521,20 @@ describe("activity sidebar", () => {
       );
       rows.forEach((row, depth) => {
         expect(row.style.paddingLeft).toBe(
-          ["2rem", "3.25rem", "4.75rem"][depth],
+          ["0.5rem", "1.75rem", "3.25rem"][depth],
         );
         expect(row.parentElement?.className).toBe(
           rows[0].parentElement?.className,
         );
         if (label !== "Done") {
           const marker = within(row).getByRole("img", { name: label });
-          expect(marker.classList.contains("left-2")).toBe(true);
+          // The marker ends the title line; nesting never moves it.
+          expect(marker.classList.contains("absolute")).toBe(false);
           expect(marker.style.left).toBe("");
+          expect(marker.parentElement?.firstElementChild?.textContent).toBe(
+            "Test thread",
+          );
+          expect(marker.parentElement?.lastElementChild).toBe(marker);
         }
       });
       for (const list of Array.from(
@@ -163,11 +581,15 @@ describe("activity sidebar", () => {
           .querySelector("[data-sidebar-thread-id]")
           ?.getAttribute("data-sidebar-thread-id"),
       ).toBe(`project-1-${sortBy === "updated" ? 0 : 22}`);
-      fireEvent.click(
-        within(one).getByRole("button", {
-          name: "Show more One threads, 13 hidden",
-        }),
+      const moreOne = within(one).getByRole("button", {
+        name: "Show more One threads, 13 hidden",
+      });
+      // Root rows start at 0.5rem, so the control keeps only its own padding.
+      expect((moreOne.parentElement as HTMLElement).className).not.toMatch(
+        /\bpl-/,
       );
+      expect(moreOne.classList.contains("px-2")).toBe(true);
+      fireEvent.click(moreOne);
       expect(count(one)).toBe(20);
       expect(count(two)).toBe(10);
       const less = within(one).getByRole("button", {
@@ -256,13 +678,13 @@ describe("activity sidebar", () => {
         sidebarThreads: { projects: [], threads: [] },
       });
       const draft = slot.getByRole("button", {
-        name: "Draft New thread draft No project",
+        name: "New thread draft Draft Unknown project",
       });
       expect(slot.getAllByText("New thread draft")).toHaveLength(1);
       expect(slot.queryByText("No matching threads.")).toBeNull();
       expect(
         slot.getByRole("region", {
-          name: groupBy === "status" ? "Draft" : "No project",
+          name: groupBy === "status" ? "Draft" : "Unknown project",
         }),
       ).toBeTruthy();
       fireEvent.click(draft);
@@ -291,10 +713,10 @@ describe("activity sidebar", () => {
         },
       });
       expect(loaded.getAllByText("New thread draft")).toHaveLength(1);
-      expect(loaded.queryByText("No project")).toBeNull();
+      expect(loaded.queryByText("Unknown project")).toBeNull();
       expect(
         loaded.getByRole("button", {
-          name: "Draft New thread draft Recovered",
+          name: "New thread draft Draft Recovered",
         }),
       ).toBeTruthy();
     },
@@ -321,7 +743,7 @@ describe("activity sidebar", () => {
         },
       },
     );
-    const unknown = slot.getAllByRole("region", { name: "No project" });
+    const unknown = slot.getAllByRole("region", { name: "Unknown project" });
     expect(unknown).toHaveLength(2);
     expect(
       unknown[0].querySelectorAll("[data-sidebar-thread-id]"),
@@ -335,7 +757,7 @@ describe("activity sidebar", () => {
     expect(selected.getAttribute("aria-current")).toBe("page");
     expect(selected.closest("[data-thread-children-depth]")).not.toBeNull();
     fireEvent.click(
-      within(unknown[0]).getByRole("button", { name: "No project" }),
+      within(unknown[0]).getByRole("button", { name: "Unknown project" }),
     );
     expect(
       unknown[0].querySelectorAll("[data-sidebar-thread-id]"),
@@ -518,6 +940,12 @@ describe("activity sidebar", () => {
         within(list).getByRole("button", { name: /^Show more children/ });
       expect(rowCount()).toBe(3);
       expect(more().textContent).toContain("5");
+      // The control's text starts where the child rows' text starts:
+      // the list item inset plus the button's own 0.5rem padding.
+      expect(
+        (more().parentElement as HTMLElement).style.paddingLeft,
+      ).toBe("1.25rem");
+      expect(more().classList.contains("px-2")).toBe(true);
       fireEvent.click(more());
       expect(rowCount()).toBe(6);
       const less = within(list).getByRole("button", {
@@ -686,7 +1114,7 @@ describe("activity sidebar", () => {
     },
   );
   it.each(["working", "child"])(
-    "archives the selected %s thread through BB's native action",
+    "archives the selected %s thread through the recursive RPC",
     async (id) => {
       const slot = mount();
       const row = slot.container.querySelector(
@@ -696,13 +1124,24 @@ describe("activity sidebar", () => {
       const menu = await slot.findByRole("menu");
       expect(slot.inspection.sidebarActionCalls).toEqual([]);
       fireEvent.click(within(menu).getByRole("menuitem", { name: "Archive" }));
-      expect(slot.inspection.sidebarActionCalls).toEqual([
-        { method: "archive", threadId: id },
-      ]);
+      await waitFor(() => expect(slot.inspection.rpcCalls).toContainEqual({
+        method: "archiveTree", input: { threadId: id },
+      }));
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
       expect(props.onNavigate).not.toHaveBeenCalled();
       expect(slot.queryByRole("menu")).toBeNull();
     },
   );
+  it("shows recursive archive failures without hiding the active row", async () => {
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads, projects },
+      rpc: { archiveTree: async () => { throw new Error("Archive stopped after 1 of 3 threads."); } },
+    });
+    fireEvent.contextMenu(slot.container.querySelector('[data-sidebar-thread-id="working"]')!);
+    fireEvent.click(await slot.findByRole("menuitem", { name: "Archive" }));
+    await slot.findByText("Archive stopped after 1 of 3 threads.");
+    expect(slot.getByText("Running parent")).toBeTruthy();
+  });
   it("opens row actions on right-click without an actions button or navigation", async () => {
     const slot = mount();
     expect(slot.queryByRole("button", { name: /^Actions for/ })).toBeNull();
@@ -1032,7 +1471,7 @@ describe("activity sidebar", () => {
     expect(slot.getByText("New thread draft")).toBeTruthy();
     expect(
       within(
-        slot.getByRole("button", { name: "Draft New thread draft One" }),
+        slot.getByRole("button", { name: "New thread draft Draft One" }),
       ).getByRole("img", { name: "Draft" }),
     ).toBeTruthy();
   });
@@ -1068,24 +1507,24 @@ describe("activity sidebar", () => {
     expect(parent.querySelector("[data-child-arrow]")).toBeNull();
     expect(child.querySelector("[data-child-arrow]")).not.toBeNull();
     expect(within(child as HTMLElement).queryByRole("img")).toBeNull();
-    expect((parent as HTMLElement).style.paddingLeft).toBe("2rem");
-    expect((child as HTMLElement).style.paddingLeft).toBe("3.25rem");
+    expect((parent as HTMLElement).style.paddingLeft).toBe("0.5rem");
+    expect((child as HTMLElement).style.paddingLeft).toBe("1.75rem");
     expect(
       (child.querySelector("[data-child-arrow]") as SVGElement).style.left,
-    ).toBe("2rem");
+    ).toBe("0.5rem");
     expect(grandchild.querySelector("[data-child-arrow]")).not.toBeNull();
     expect(
       within(grandchild as HTMLElement).getByRole("img", { name: "Draft" }),
     ).toBeTruthy();
-    expect((grandchild as HTMLElement).style.paddingLeft).toBe("4.75rem");
+    expect((grandchild as HTMLElement).style.paddingLeft).toBe("3.25rem");
     expect(
       (grandchild.querySelector("[data-child-arrow]") as SVGElement).style.left,
-    ).toBe("3.5rem");
+    ).toBe("2rem");
     expect(
       within(grandchild as HTMLElement)
         .getByRole("img", { name: "Draft" })
-        .classList.contains("left-2"),
-    ).toBe(true);
+        .classList.contains("absolute"),
+    ).toBe(false);
     for (const list of slot.getAllByRole("list", { name: /Children of/ })) {
       expect(list.classList.contains("border-l")).toBe(false);
       expect(list.className).toBe("m-0 list-none p-0");
@@ -1198,7 +1637,7 @@ describe("activity sidebar", () => {
   it("shows Threads without filters and ignores the old saved project selector", () => {
     updateState(() => parseState(JSON.stringify({ projectId: "project-1" })));
     const slot = mount();
-    expect(slot.getByRole("heading", { name: "Threads" })).toBeTruthy();
+    expect(slot.getByRole("button", { name: "Threads: All projects" })).toBeTruthy();
     expect(slot.queryByRole("textbox")).toBeNull();
     expect(slot.queryByRole("combobox")).toBeNull();
     expect(slot.getByText("New reply")).toBeTruthy();
@@ -1281,6 +1720,159 @@ describe("activity sidebar", () => {
     expect(card.textContent).not.toContain("Manage Environment");
     expect(slot.inspection.sidebarActionCalls).toEqual([]);
   });
+  it("shows the pull request, project, and branch with a right-aligned age, and the PR in the info card", async () => {
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: [
+          thread({
+            id: "open",
+            title: "Open",
+            updatedAt: 100,
+            environment: {
+              id: "env",
+              name: "Local",
+              branchName: "feat/prod-step",
+              workspaceDisplayKind: "managed-worktree",
+            },
+          }),
+          thread({ id: "merged", title: "Merged", updatedAt: 100 }),
+          thread({ id: "none", title: "None", updatedAt: 100 }),
+        ],
+      },
+      sidebarPullRequests: {
+        open: {
+          number: 2683,
+          title: "Reduce prod step overhead",
+          url: "https://github.com/example/capy/pull/2683",
+          state: "open",
+          attention: "checks_failed",
+        },
+        merged: {
+          number: 12,
+          title: "Ship it",
+          url: "https://github.com/example/capy/pull/12",
+          state: "merged",
+          attention: "merged",
+        },
+      },
+    });
+    const row = (id: string) =>
+      slot.container.querySelector(
+        `[data-sidebar-thread-id="${id}"]`,
+      ) as HTMLElement;
+    const lines = (id: string) =>
+      Array.from(row(id).children).filter((e) => e.tagName === "SPAN");
+    // Title line, then one metadata line.
+    expect(lines("open")).toHaveLength(2);
+    const meta = lines("open")[1] as HTMLElement;
+    // PR · project · branch on the left, age last.
+    expect(meta.firstElementChild?.textContent).toBe("#2683·One·feat/prod-step");
+    expect(meta.lastElementChild?.tagName).toBe("TIME");
+    expect(
+      within(meta).getByRole("img", {
+        name: "Open pull request #2683, checks failed",
+      }),
+    ).toBeTruthy();
+    expect(row("open").textContent).not.toContain("Reduce prod step overhead");
+    expect(
+      within(lines("merged")[1] as HTMLElement).getByRole("img", {
+        name: "Merged pull request #12",
+      }),
+    ).toBeTruthy();
+    expect(lines("none")[1]!.firstElementChild?.textContent).toBe("One");
+    expect(lines("none")[1]!.querySelector("time")).not.toBeNull();
+    expect(row("none").querySelector("[data-thread-pull-request]")).toBeNull();
+    // A link cannot nest another link; the info card carries the title.
+    expect(row("open").querySelector("a")).toBeNull();
+    vi.useFakeTimers();
+    try {
+      touch(row("open"), "pointermove", "mouse");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    const card = document.querySelector('[data-thread-info="open"]')!;
+    expect(
+      Array.from(card.querySelectorAll("dt")).some((e) => e.textContent === "PR"),
+    ).toBe(true);
+    expect(card.textContent).toContain("#2683 Reduce prod step overhead");
+    expect(slot.getByRole("tooltip").textContent).toContain(
+      "Open pull request #2683, checks failed: Reduce prod step overhead",
+    );
+  });
+  it("drops the project name from rows under a project header", () => {
+    updateState((state) => ({ ...state, groupBy: "project" }));
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects,
+        threads: [
+          thread({
+            id: "branch",
+            environment: {
+              id: "env",
+              name: "Local",
+              branchName: "feature/activity",
+              workspaceDisplayKind: "managed-worktree",
+            },
+          }),
+          thread({ id: "plain" }),
+          thread({ id: "pinned", isPinned: true }),
+        ],
+      },
+      sidebarPullRequests: {
+        branch: {
+          number: 7,
+          title: "Seven",
+          url: "https://github.com/example/repo/pull/7",
+          state: "open",
+          attention: "none",
+        },
+      },
+    });
+    const meta = (id: string) =>
+      slot.container.querySelector(
+        `[data-sidebar-thread-id="${id}"] > span:nth-child(2) > span`,
+      )!;
+    expect(meta("branch").textContent).toBe("#7·feature/activity");
+    expect(meta("plain").textContent).toBe("");
+    // The Pinned section has no project header, so its rows keep the name.
+    expect(meta("pinned").textContent).toBe("One");
+    expect(slot.getByRole("region", { name: "One" })).toBeTruthy();
+  });
+  it.each([false, true])("fetches a missing parent title on focus with compact=%s, without loading archives", async (isCompactViewport) => {
+    const parentTitle = vi.fn(async () => "Archived parent name");
+    const listArchived = vi.fn(async () => []);
+    const slot = renderSlot(app.threadLists[0], { ...props, isCompactViewport }, {
+      sidebarThreads: { projects, threads: [thread({ id: "restored", parentThreadId: "missing-parent" })] },
+      rpc: { parentTitle, listArchived },
+    });
+    expect(parentTitle).not.toHaveBeenCalled();
+    const row = slot.container.querySelector('[data-sidebar-thread-id="restored"]')!;
+    fireEvent.focus(row);
+    await waitFor(() => expect(slot.getByRole("tooltip").textContent).toContain("Child of Archived parent name"));
+    expect(parentTitle).toHaveBeenCalledWith({ threadId: "missing-parent" });
+    expect(slot.getByRole("tooltip").textContent).not.toContain("missing-parent");
+    expect(listArchived).not.toHaveBeenCalled();
+    expect(slot.queryByRole("button", { name: "Archived" })).toBeNull();
+  });
+  it("shows an unavailable parent and retries on reopening the card", async () => {
+    const parentTitle = vi.fn().mockRejectedValueOnce(new Error("Offline")).mockResolvedValue("Recovered parent");
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { projects, threads: [thread({ id: "restored", parentThreadId: "missing-parent" })] },
+      rpc: { parentTitle },
+    });
+    const row = slot.container.querySelector('[data-sidebar-thread-id="restored"]')!;
+    fireEvent.focus(row);
+    await waitFor(() => expect(slot.getByRole("tooltip").textContent).toContain("Unavailable"));
+    fireEvent.keyDown(row, { key: "Escape" });
+    fireEvent.blur(row);
+    fireEvent.focus(row);
+    await waitFor(() => expect(slot.getByRole("tooltip").textContent).toContain("Recovered parent"));
+    expect(parentTitle).toHaveBeenCalledTimes(2);
+  });
   it("shows child details on keyboard focus and closes them with Escape", () => {
     const slot = mount();
     const row = slot.container.querySelector(
@@ -1290,6 +1882,7 @@ describe("activity sidebar", () => {
     expect(slot.getByRole("tooltip").textContent).toContain(
       "Child of Running parent",
     );
+    expect(slot.inspection.rpcCalls.some(call => call.method === "parentTitle")).toBe(false);
     const card = document.querySelector('[data-thread-info="child"]')!;
     expect(
       Array.from(card.querySelectorAll("dt")).map((e) => e.textContent),
@@ -1421,7 +2014,14 @@ describe("activity sidebar", () => {
       slot
         .getAllByRole("menuitemcheckbox", { hidden: true })
         .map((item) => item.textContent?.replace("✓", "")),
-    ).toEqual(["Needs Attention", "Unread", "Working", "Draft", "Done"]);
+    ).toEqual([
+      "Needs Attention",
+      "Unread",
+      "Working",
+      "Draft",
+      "Done",
+      "Archived",
+    ]);
     fireEvent.click(
       slot.getByRole("menuitemcheckbox", { name: "Done", hidden: true }),
     );

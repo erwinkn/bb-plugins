@@ -5,16 +5,23 @@ export interface ClientState {
   groupBy: "status" | "project";
   sortBy: SortBy;
   hidden: Status[];
+  showArchives: boolean;
   collapsed: string[];
   drafts: string[];
+  expandedArchives: string[];
+  /** Selected saved space; an id missing from the catalog means All projects. */
+  spaceId: string | null;
 }
 const KEY = "bb-plugin-erwin-activity:v1";
 const DEFAULT: ClientState = {
   groupBy: "status",
   sortBy: "updated",
   hidden: [],
+  showArchives: false,
   collapsed: [],
   drafts: [],
+  expandedArchives: [],
+  spaceId: null,
 };
 const strings = (value: unknown): string[] =>
   Array.isArray(value)
@@ -31,10 +38,16 @@ export function parseState(raw: string | null): ClientState {
       hidden: strings(value.hidden).filter((s): s is Status =>
         STATUSES.includes(s as Status),
       ),
+      showArchives: value.showArchives === true,
       collapsed: strings(value.collapsed),
+      expandedArchives: strings(value.expandedArchives),
       drafts: strings(value.drafts).filter(
         (key) => key.startsWith("thread:") || key.startsWith("new:"),
       ),
+      spaceId:
+        typeof value.spaceId === "string" && value.spaceId
+          ? value.spaceId
+          : null,
     };
   } catch {
     return DEFAULT;

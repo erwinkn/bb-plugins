@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildThreadTree,
   familyStatus,
+  pinnedThreadIds,
   flattenDescendants,
   type ThreadNode,
 } from "../lib/thread-tree";
@@ -123,5 +124,20 @@ describe("thread families", () => {
     expect(tree[0].children[0].status).toBe("working");
     tree[0].children[0].children[0].children = [];
     expect(familyStatus(tree[0])).toBe("unread");
+  });
+});
+
+describe("pinned families", () => {
+  it("collects descendants once across nested pins and cycles, excluding ancestors", () => {
+    expect([...pinnedThreadIds(rows(
+      thread({ id: "parent" }),
+      thread({ id: "child", parentThreadId: "pin" }),
+      thread({ id: "nested", parentThreadId: "child", isPinned: true }),
+      thread({ id: "pin", parentThreadId: "parent", isPinned: true }),
+      thread({ id: "a", parentThreadId: "b", isPinned: true }),
+      thread({ id: "b", parentThreadId: "a" }),
+      thread({ id: "self", parentThreadId: "self", isPinned: true }),
+      thread({ id: "orphan", parentThreadId: "missing" }),
+    ))].sort()).toEqual(["a", "b", "child", "nested", "pin", "self"]);
   });
 });

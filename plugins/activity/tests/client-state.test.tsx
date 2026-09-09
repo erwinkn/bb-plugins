@@ -17,6 +17,16 @@ afterEach(() => {
 });
 
 describe("client state persistence", () => {
+  it("hides archives by default and accepts only a boolean setting", () => {
+    expect(parseState(null).showArchives).toBe(false);
+    expect(parseState(JSON.stringify({ showArchives: true })).showArchives).toBe(
+      true,
+    );
+    expect(
+      parseState(JSON.stringify({ showArchives: "true" })).showArchives,
+    ).toBe(false);
+  });
+
   it("keeps consecutive updates when reads work but writes fail", () => {
     storage.setItem(KEY, JSON.stringify(parseState(null)));
     const { result } = renderHook(useClientState);

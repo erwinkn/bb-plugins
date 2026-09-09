@@ -1,0 +1,98 @@
+/* Preview-only theme: BB's default light and dark tokens, copied from the
+   installed bb app bundle so the preview matches the host. The real plugin
+   never ships this file; BB supplies these variables at runtime. */
+
+:root, .light {
+  --canvas: oklch(100% 0 0);
+  --ink: oklch(32.11% 0 0);
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  --card: var(--canvas);
+  --card-foreground: var(--ink);
+  --popover: var(--canvas);
+  --popover-foreground: var(--ink);
+  --primary: oklch(27% 0 0);
+  --primary-foreground: oklch(100% 0 0);
+  --secondary: color-mix(in oklch, var(--ink) 8%, var(--canvas));
+  --secondary-foreground: var(--ink);
+  --accent: color-mix(in oklch, var(--ink) 8%, var(--canvas));
+  --accent-foreground: var(--ink);
+  --muted: color-mix(in oklch, var(--ink) 11%, var(--canvas));
+  --muted-foreground: oklch(44% 0 0);
+  --state-hover: color-mix(in oklab, var(--ink) 5.9%, transparent);
+  --state-active: color-mix(in oklab, var(--ink) 11.8%, transparent);
+  --destructive: oklch(45% .19 25.8625);
+  --destructive-foreground: oklch(100% 0 0);
+  --destructive-text: oklch(45% .19 25.8625);
+  --warning: oklch(70% .16 50);
+  --warning-text: oklch(55% .14 50);
+  --success: oklch(70% .15 155);
+  --success-foreground: color-mix(in oklch, var(--success) 45%, var(--ink));
+  --border: color-mix(in oklch, var(--ink) 14%, var(--canvas));
+  --input: color-mix(in oklch, var(--ink) 29.5%, var(--canvas));
+  --ring: var(--primary);
+  --sidebar: color-mix(in oklch, var(--ink) 2.2%, var(--canvas));
+  --sidebar-foreground: var(--ink);
+  --sidebar-border: color-mix(in oklch, var(--ink) 14%, var(--canvas));
+  --sidebar-accent: color-mix(in oklch, var(--ink) 8%, var(--canvas));
+  --radius: .5rem;
+  --font-sans: "Inter Variable", Inter, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --shadow-2xs: 0px 2px 0px 0px #33333312;
+  --shadow-xs: 0px 2px 0px 0px #33333312;
+  --shadow-sm: 0px 2px 0px 0px #33333326, 0px 1px 2px -1px #33333326;
+  --shadow-md: 0px 2px 0px 0px #33333326, 0px 2px 4px -1px #33333326;
+  --shadow-lg: 0px 2px 0px 0px #33333326, 0px 4px 6px -1px #33333326;
+  --shadow: 0px 2px 0px 0px #33333326, 0px 1px 2px -1px #33333326;
+  --surface-raised: color-mix(in oklab, var(--ink) 2.5%, transparent);
+  --surface-recessed: color-mix(in oklab, var(--ink) 6%, transparent);
+  --diff-added: oklch(40% .13 163);
+  --diff-removed: oklch(40% .17 28);
+}
+.dark {
+  --canvas: oklch(19.5% 0 0);
+  --ink: oklch(81% 0 0);
+  --background: var(--canvas);
+  --foreground: var(--ink);
+  --card: var(--canvas);
+  --card-foreground: var(--ink);
+  --popover: var(--canvas);
+  --popover-foreground: var(--ink);
+  --primary: oklch(82% 0 0);
+  --primary-foreground: oklch(21.78% 0 0);
+  --secondary: color-mix(in oklch, var(--ink) 13%, var(--canvas));
+  --secondary-foreground: var(--ink);
+  --accent: color-mix(in oklch, var(--ink) 13%, var(--canvas));
+  --accent-foreground: var(--ink);
+  --muted: color-mix(in oklch, var(--ink) 16%, var(--canvas));
+  --muted-foreground: oklch(78% 0 0);
+  --state-hover: color-mix(in oklab, var(--ink) 13.8%, transparent);
+  --state-active: color-mix(in oklab, var(--ink) 22.5%, transparent);
+  --destructive: oklch(56% .19 22.1703);
+  --destructive-foreground: oklch(100% 0 0);
+  --destructive-text: oklch(65% .16 22);
+  --warning: oklch(75% .16 50);
+  --warning-text: oklch(75% .16 50);
+  --success: oklch(74% .15 155);
+  --success-foreground: color-mix(in oklch, var(--success) 45%, var(--ink));
+  --border: color-mix(in oklch, var(--ink) 19.4%, var(--canvas));
+  --input: color-mix(in oklch, var(--ink) 32.6%, var(--canvas));
+  --ring: var(--primary);
+  --sidebar: color-mix(in oklch, var(--ink) 4.3%, var(--canvas));
+  --sidebar-foreground: var(--ink);
+  --sidebar-border: color-mix(in oklch, var(--ink) 18.1%, var(--canvas));
+  --sidebar-accent: color-mix(in oklch, var(--ink) 12%, var(--canvas));
+  --radius: .5rem;
+  --font-sans: "Inter Variable", Inter, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --shadow-2xs: 0px 2px 0px 0px #0003;
+  --shadow-xs: 0px 2px 0px 0px #0003;
+  --shadow-sm: 0px 2px 0px 0px #0000004d, 0px 1px 2px -1px #0006;
+  --shadow-md: 0px 2px 0px 0px #0000004d, 0px 2px 4px -1px #00000080;
+  --shadow-lg: 0px 2px 0px 0px #0000004d, 0px 4px 6px -1px #00000080;
+  --shadow: 0px 2px 0px 0px #0000004d, 0px 1px 2px -1px #0006;
+  --surface-raised: color-mix(in oklab, var(--ink) 2.5%, transparent);
+  --surface-recessed: color-mix(in oklab, var(--ink) 6%, transparent);
+  --diff-added: oklch(77% .17 163);
+  --diff-removed: oklch(72% .19 22);
+}
