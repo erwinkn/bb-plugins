@@ -158,7 +158,7 @@ export class Watches {
       if (page.length < 200) return all;
     }
   }
-  private async reconcileThread(thread: Thread, suppliedText?: string | null, suppliedError?: string | null) {
+  private async reconcileThread(thread: Thread, suppliedText?: string | null, suppliedError?: string | null, discovery = false) {
     const matches = await this.match(thread);
     if (!matches.length) return;
     if (this.store.db.prepare("SELECT 1 FROM voice_operations WHERE target_thread_id = ? AND tool = 'message_thread' AND status = 'unknown'").get(thread.id))
@@ -190,7 +190,9 @@ export class Watches {
         }
         // Some lifecycle announcements have no stored turn boundary, including fast spawns.
         const kind: InboxKind | null = archived ? "archived" : failed && lastEnd?.data.status !== "failed" ? "failed" : idle && !lastEnd ? queued ? "milestone" : "result" : null;
-        if (kind && (watch.last_status !== thread.status || output !== watch.last_text || archived)
+        // A row first seen during recovery records its baseline silently. Only a later change is news.
+        const firstObservation = discovery && watch.last_status === null;
+        if (kind && !firstObservation && (watch.last_status !== thread.status || output !== watch.last_text || archived)
           && (kind !== "milestone" || output !== watch.last_text)) {
           const correlations = idle ? this.correlate(watch.conversation_id, thread.id, thread.updatedAt, true) : [];
           this.add(watch, thread, kind, { title: threadName(thread), ...tail(output), error: suppliedError ?? null,
@@ -244,11 +246,12 @@ export class Watches {
       const ids = new Set(active.map(w => w.thread_id));
       // Discover children created while the plugin was down, including hidden children.
       for (const id of [...ids]) {
-        try { for (const child of await this.descendants(id)) ids.add(child.id); }
+        // An archived child that was never tracked is finished history, not an update.
+        try { for (const child of await this.descendants(id)) if (!child.archivedAt || ids.has(child.id)) ids.add(child.id); }
         catch (error) { this.bb.log.warn(`Live runtime child recovery failed for ${id}: ${String(error)}`); }
       }
       for (const id of ids) {
-        try { await this.reconcileThread(await this.bb.sdk.threads.get({ threadId: id })); }
+        try { await this.reconcileThread(await this.bb.sdk.threads.get({ threadId: id }), undefined, undefined, true); }
         catch (error) { this.bb.log.warn(`Live runtime recovery failed for ${id}; cursor retained: ${String(error)}`); }
       }
     });

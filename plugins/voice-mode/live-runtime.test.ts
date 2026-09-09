@@ -603,6 +603,25 @@ test("new child watches begin at the latest event and report only current output
   assert.equal(h.runtime.store.inbox("conversation").length, 2);
 });
 
+test("recovery records untracked children silently and skips archived ones", async t => {
+  const h = await fixture(); t.after(h.close); await h.watch();
+  // Children that existed before the watch was ever reconciled: one idle with output, one archived.
+  h.world.threads.set("old-child", makeThreadResponse({ id: "old-child", title: "Old child", projectId: "app", parentThreadId: "build", status: "idle", updatedAt: 500 }));
+  h.world.outputs.set("old-child", "Old result");
+  h.world.events.set("old-child", [{ seq: 7, type: "turn/completed", createdAt: 1, data: { status: "completed" } }]);
+  h.world.threads.set("gone-child", makeThreadResponse({ id: "gone-child", title: "Gone child", projectId: "app", parentThreadId: "build", status: "idle", updatedAt: 600 }));
+  h.world.threads.get("gone-child").archivedAt = 650;
+  await h.runtime.watches.recover();
+  const watched = h.runtime.store.watches().map(w => w.thread_id).sort();
+  assert.deepEqual(watched, ["build", "old-child"]);
+  assert.equal(h.runtime.store.watches().find(w => w.thread_id === "old-child")!.last_status, "idle");
+  assert.equal(h.runtime.store.inbox("conversation").length, 0);
+  // A later change on the discovered child is still reported.
+  await h.idle("old-child", "Next result");
+  assert.equal(h.runtime.store.inbox("conversation").length, 1);
+  assert.match(h.runtime.store.inbox("conversation")[0].detail, /Next result/);
+});
+
 test("background end_call is refused while an explicit user end_call remains available", async t => {
   const h = await fixture(); t.after(h.close);
   assert.match((await h.run("end_call", {}, { responseOrigin: "background", utterance: null })).error, /background updates cannot act/);
