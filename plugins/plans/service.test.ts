@@ -239,6 +239,14 @@ describe("live plan review backend", () => {
     expect(deleteQueue).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(1);
     expect((await rpc("get", { id: plan.id })).delivery.queuedMessageId).toBeNull();
   });
+  it("drops a queued annotation from the row once the agent resolves it", async () => {
+    const send = vi.fn<Send>(async () => ({ ok: true, delivery: "queued", queuedMessage: entry() }));
+    const { annotate, rpc, plan, tool, deleteQueue } = await setup(send); await annotate(); await tick();
+    await tool("plans_update", { planId: plan.id, edits: [{ old: "existing data", new: "existing data and schedules" }], summary: "Applied #1", resolves: ["#1"] }); await tick();
+    expect(deleteQueue).toHaveBeenCalledTimes(1); expect(send).toHaveBeenCalledTimes(1);
+    const saved = await rpc("get", { id: plan.id });
+    expect(saved.delivery.queuedMessageId).toBeNull(); expect(saved.comments[0]!.state).toBe("addressed");
+  });
   it("changes delivery mode for the next batch", async () => {
     const { annotate, rpc, plan, send } = await setup();
     await annotate(); await rpc("setDeliveryMode", { id: plan.id, mode: "steer-if-active" }); await tick();

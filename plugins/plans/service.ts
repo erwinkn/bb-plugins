@@ -71,6 +71,12 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     plan.comments.push(item);
     return mutate(plan, () => { outbox.add(id, annotationEvent(item)); });
   };
+  /** The agent already acted on this annotation; a still-undelivered message for it only repeats it. */
+  const settle = (planId: string, item: PlanComment) => {
+    if (item.deliveredAt !== null) return;
+    const rows = outbox.list(planId).filter((row) => (row.event.kind === "annotation" || row.event.kind === "edited") && row.event.annotationId === item.id && (row.state === "pending" || row.state === "queued"));
+    if (rows.length) outbox.state(rows.map((row) => row.id), "dropped");
+  };
   const update = (input: z.input<typeof updateSchema>) => {
     const { planId, edits, summary, resolves, markdown: replacement } = updateSchema.parse(input);
     const plan = open(planId);
@@ -92,7 +98,8 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       item.state = "addressed";
     }
     const version = { id: randomUUID(), number: plan.versions.at(-1)!.number + 1, markdown, summary, resolves: [...new Set(addressed.map((item) => item.id))], source: "agent" as const, createdAt: Date.now() };
-    plan.versions.push(version); mutate(plan);
+    plan.versions.push(version);
+    mutate(plan, () => { for (const item of addressed) settle(planId, item); });
     return { planId, versionId: version.id, openAnnotations: plan.comments.filter((item) => item.state === "open").map(({ number, kind, quote, body }) => ({ number, kind, quote, body })) };
   };
   const reply = (input: z.input<typeof agentReplySchema>) => {
@@ -101,8 +108,9 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     const item = annotation(plan, ref);
     if (item.state === "withdrawn") throw new Error("This annotation was withdrawn.");
     item.replies.push({ id: randomUUID(), author: "agent", body, createdAt: Date.now(), deliveredAt: null });
-    if (resolve ?? item.kind === "ask") item.state = item.kind === "ask" ? "answered" : "addressed";
-    mutate(plan);
+    const settled = resolve ?? item.kind === "ask";
+    if (settled) item.state = item.kind === "ask" ? "answered" : "addressed";
+    mutate(plan, () => { if (settled) settle(planId, item); });
     return { planId, annotationId: item.id, number: item.number, state: item.state };
   };
   const handoff = ({ planId }: { planId: string }) => {
