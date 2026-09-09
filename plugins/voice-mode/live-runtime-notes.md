@@ -16,7 +16,7 @@ retains it on retries. It is not a model tool argument.
 
 | RPC | Input | Output |
 | --- | --- | --- |
-| `runTool` | `ToolInput` | Read data or `{operationId, status, asOf, ...receipt}`. Refusals have `{status:"failed", error, asOf}`. |
+| `runTool` | `ToolInput` | Read data or `{operationId, status, asOf, ...receipt}`. Refusals have `{status:"failed", error, asOf}`. `find_targets` returns ranked `threads` and `projects` with a `match` score from 0 to 1, `foundInMessages` on BB search hits, and `searched.words`; `parent_id` lists one thread's children. |
 | `beginClientEffect` | `ToolInput` for `prepare_draft` or `control_ui` | `{execute, operationId, receipt, action}` |
 | `finishClientEffect` | `{nonce, operationId, status, result}` | Stored receipt. Status is `succeeded`, `failed`, `cancelled`, or `unknown`. |
 | `nextUpdateBatch` | `{nonce}` | `{offerId, items, asOf}` or `null`. Up to three roots; each item can include child results and `offered_before`. |
@@ -59,8 +59,13 @@ unique index stores the source utterance text only on its first operation row.
 
 Spawn uses an operation-ID watch placeholder until BB returns the thread ID. An
 unconfirmed spawn stays unknown and consumes worker capacity. Workers have no
-parent and use hidden visibility; created threads are visible. Both use an explicit
-project and destination machine. Worker capacity is global to this plugin, as in
+parent and use hidden visibility; created threads are visible. A created thread
+needs a project. A worker without `project_id` runs in BB's personal project with a
+personal workspace on the primary machine: `host_id` if given, else the connected
+machine that hosts the most projects. The receipt reports `profile`, `outsideProject`,
+and the machine. The call schema enumerates configured profile names; a missing
+`profile` is the default, an approximate name resolves by stem, and an unknown name
+fails with the configured list. Worker capacity is global to this plugin, as in
 the previous executor. Before reserving a slot, lifecycle reads release finished
 workers, including muted workers. An unavailable worker keeps its slot.
 

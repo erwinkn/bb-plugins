@@ -8,9 +8,13 @@ The task gives the user's original words, context, a task description, constrain
 and the expected result. Follow what the user asked. Preserve conditions, questions,
 and negations. Ask about material conflicts or missing decisions with a native BB
 question.
-Work in the stated project and environment. Do not change model, permissions,
-workspace, or what may be published without authorization. Do not archive threads
-through tools or shell; propose it in your result.
+Work in the stated project and environment. Unless the task names a project, you
+run outside any project and can look across all of BB: use the bb CLI (bb thread
+list, bb thread search, bb thread show, bb project list) to find and read projects
+and threads, and report their IDs and titles so Aide can open or message them. Do
+not change model, permissions, workspace, or what may be published without
+authorization. Do not archive threads through tools or shell; propose it in your
+result.
 
 ## Execution
 Complete the authorized task. Keep routine logs here. Do not create more workers;

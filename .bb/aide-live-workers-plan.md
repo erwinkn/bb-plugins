@@ -124,7 +124,7 @@ Re-offer triggers: a newer event on the same root, the end of the next user exch
 
 ### Tasks
 
-`spawn_worker` and `create_thread` share one implementation: task row, watch, `threads.spawn`, receipt. A worker is hidden, receives the worker base prompt plus a profile, and is described as "I'm doing this in the background". A created thread is visible, receives the body as its prompt, and is named to the user. Both are root threads with an explicit project and machine. The worker cap stays configurable, default 8.
+`spawn_worker` and `create_thread` share one implementation: task row, watch, `threads.spawn`, receipt. A worker is hidden, receives the worker base prompt plus a profile, and is described as "I'm doing this in the background". A created thread is visible, receives the body as its prompt, and is named to the user. Both are root threads with an explicit machine. A created thread needs a project. A worker is an extension of Aide: without a project it runs in BB's personal project with a personal workspace, on the primary machine (the connected machine that hosts the most projects, or `host_id`), and looks across all of BB with the bb CLI. A project is given only when the task needs that repository's files. The worker cap stays configurable, default 8.
 
 Task status comes from lifecycle events only. Aide reads the last text and judges completion. The code never parses a Result section.
 
@@ -160,10 +160,10 @@ Fourteen tools. Arguments carry BB IDs. Reads run early. Effects follow the rule
 
 | Tool | Arguments | Effect | Contract |
 |---|---|---|---|
-| `find_targets` | query, include_children, include_archived | no | Threads and projects by description and current view. Default: non-archived parents. Also matches this conversation's tasks. Returns names, IDs, parent, recency, and what was searched. |
+| `find_targets` | query, include_children, include_archived, parent_id? | no | Threads and projects by approximate spoken description. Every result carries a match score from 0 to 1; words are matched by stem and small edit distance, and category words are ignored. Threads: strong title matches and BB search hits first, then a few weak near misses when little was found. Projects: always returned, ranked. parent_id lists one thread's children, newest first. Default: non-archived parents. Also matches this conversation's tasks. |
 | `read_threads` | thread_ids[], what: status, output, receipts, updates | no | Several targets at once. Returns the tail of long output, not the head. Includes sources, timestamps, truncation, and missing data. |
 | `message_thread` | thread_id, body, mode: normal, steer | yes | normal is `queue-if-active`. steer is `steer-if-active`. Auto-watch. A request to send later returns an error. |
-| `spawn_worker` | profile, title, task, project_id, host_id? | yes | Hidden worker. Returns launch status, not completion. Auto-watch. |
+| `spawn_worker` | profile?, title, task, project_id?, host_id? | yes | Hidden worker. Without project_id it runs in BB's personal project on the primary machine and can inspect every project and thread with the bb CLI. The call schema lists the configured profile names as an enum with a summary of each; a missing profile is the default profile, and an unknown one fails with the list. Returns launch status, not completion. Auto-watch. |
 | `create_thread` | project_id, title, body, host_id? | yes | Visible thread. Auto-watch. |
 | `prepare_draft` | thread_id or project_id, text, mode: append, replace | yes, on the client | Writes to the exact composer. Never submits. |
 | `control_ui` | action: open_thread, open_project, preview_file, show_voice, and its target | screen | Runs on the owner device through the native UI adapter. Reports what the UI did. |
@@ -199,8 +199,16 @@ thread" with find_targets and context. Ask only when a missing fact could cause 
 material error. Preserve conditions, questions, negations, and corrections. Planning
 does not authorize implementation. A status question does not authorize a change. The
 user's words set the scope, not your summary.
+Speech recognition is approximate. Names you hear are hints, not exact strings: "BB
+plugin", "bb-plugins", and "BB underscore plugins" are the same project, and "planned
+plugin" can mean the plans plugin. Search with the distinctive words only. find_targets
+ranks every result with a match score and always lists the projects; take the best
+match when it stands out, and ask only when two matches are close. Never ask the user
+to spell a name, and never ask for an ID, a project ID, or a profile name.
 "Thread" normally means a parent workstream with its children. Use the parent for
-overviews, navigation, and messages unless the user asks for child detail.
+overviews, navigation, and messages unless the user asks for child detail. For "the
+child that thread just started", find the parent, then call find_targets with
+parent_id to list its children, newest first.
 Finish the necessary reads before you summarize. Say what is missing when a partial
 answer helps. Do not repeat the overview as each read returns. A title or an activity
 status does not prove a task is done.
@@ -209,11 +217,15 @@ status does not prove a task is done.
 Use a tool directly when you know the action and the target. Keep speech before a
 tool call short: the runtime finishes your speech before the tool runs, so long
 speech delays the result. Never announce an outcome before its tool result arrives.
-Start a worker for work that would block the conversation. Give it the task, the
-user's relevant words, context, constraints, project, and expected result. Choose a
-configured profile. Reuse existing work for follow-ups. Acknowledge longer work once.
-After launch, say it runs in the background when useful, then stay available. Do not
-claim a launch or a completion before its result.
+Start a worker for work that would block the conversation, and whenever one search
+or two reads did not resolve what the user meant. Delegate instead of asking: a
+worker can read every BB project and thread and report back, so an unresolved
+reference is a task for a worker, not a question for the user. Give it the task, the
+user's relevant words, context, constraints, and expected result. Workers need no
+project; name one only when the task needs that repository's files. Omit the
+profile for the default, or pick a listed one. Reuse existing work for follow-ups.
+Acknowledge longer work once. After launch, say it runs in the background when
+useful, then stay available. Do not claim a launch or a completion before its result.
 "Send", "tell", "ask that thread", and "queue" mean delivery with message_thread.
 Queue normal follow-ups; steer only for a requested interruption or an urgent
 correction. Confirm delivery status and destination without repeating the message.
@@ -265,9 +277,13 @@ The task gives the user's original words, context, a task description, constrain
 and the expected result. Follow what the user asked. Preserve conditions, questions,
 and negations. Ask about material conflicts or missing decisions with a native BB
 question.
-Work in the stated project and environment. Do not change model, permissions,
-workspace, or what may be published without authorization. Do not archive threads
-through tools or shell; propose it in your result.
+Work in the stated project and environment. Unless the task names a project, you
+run outside any project and can look across all of BB: use the bb CLI (bb thread
+list, bb thread search, bb thread show, bb project list) to find and read projects
+and threads, and report their IDs and titles so Aide can open or message them. Do
+not change model, permissions, workspace, or what may be published without
+authorization. Do not archive threads through tools or shell; propose it in your
+result.
 
 ## Execution
 Complete the authorized task. Keep routine logs here. Do not create more workers;
@@ -365,6 +381,16 @@ Measure the delay from final transcript to acknowledgment, to worker launch, and
 2. **Prompt migration.** The new live default becomes active. The user's earlier edits are not carried over; the version history keeps them.
 3. **Approvals by voice.** Yes, through `answer_interaction`, under the spoken-confirmation checks above.
 4. **Archive confirmation.** One spoken confirmation for every archive, including one idle thread.
+
+## Changes in version 3
+
+Driven by the first live session on 2026-09-09 (issues #23 to #27 in erwinkn/bb-plugins).
+
+- `find_targets` ranks instead of filtering. The all-token substring filter returned nothing for descriptive or misheard queries and discarded BB search hits. Results now carry match scores, projects are always listed ranked, and a `parent_id` argument lists one thread's children.
+- Workers run outside projects by default. `project_id` is optional; the personal project and primary machine apply.
+- Profiles are shown, not guessed. The call schema enumerates configured profile names with summaries; `profile` is optional and defaults to the configured default.
+- The live prompt treats heard names as approximate, forbids asking for IDs, exact names, or profiles, and delegates unresolved references to a worker instead of asking.
+- The worker base prompt says a worker outside a project reads all of BB with the bb CLI.
 
 ## Changes in version 2
 

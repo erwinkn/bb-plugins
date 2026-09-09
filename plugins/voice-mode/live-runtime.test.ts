@@ -29,8 +29,8 @@ async function fixture() {
     send: null as null | ((args: Any) => Promise<Any>), spawn: null as null | ((args: Any) => Promise<Any>), get: null as null | ((args: Any) => Promise<Any>),
   };
   const sdk: Any = {
-    projects: { list: async () => [{ id: "app", name: "BB Plugins", kind: "standard", sources: [{ hostId: "mac" }] }] },
-    hosts: { list: async () => [{ id: "mac", name: "Desktop", status: "connected" }] },
+    projects: { list: async () => [{ id: "proj_personal", name: "Personal", kind: "personal", sources: [] }, { id: "app", name: "BB Plugins", kind: "standard", sources: [{ hostId: "mac" }] }, { id: "docs", name: "docs-site", kind: "standard", sources: [{ hostId: "mac" }] }] },
+    hosts: { list: async () => [{ id: "laptop", name: "Laptop", status: "connected" }, { id: "mac", name: "Desktop", status: "connected" }, { id: "away", name: "Away", status: "disconnected" }] },
     providers: { list: async () => [{ id: "codex", available: true }], models: async () => ({ models: [{ id: "worker", model: "worker", isDefault: true }], modelLoadError: null }) },
     threads: {
       search: async () => ({}),
@@ -526,7 +526,7 @@ test("an unknown effect cannot be retried through another tool in the same utter
   const retry=await h.run("create_thread",{project_id:"app",title:worker.title,body:worker.task});assert.match(retry.error,/unknown effect/);assert.equal(h.world.spawns.length,1);
 });
 
-test("find_targets matches useful title tokens and merges bounded SDK search results",async t=>{
+test("find_targets ranks title matches with scores and merges bounded SDK search results",async t=>{
   const h=await fixture();t.after(h.close);
   h.world.threads.set("editor",makeThreadResponse({id:"editor",title:"Editor mobile fixes",updatedAt:12000}));
   h.world.threads.set("other",makeThreadResponse({id:"other",title:"Mobile API fixes",updatedAt:13000}));
@@ -534,11 +534,71 @@ test("find_targets matches useful title tokens and merges bounded SDK search res
   const queries:string[]=[];
   h.harness.inspection.sdk.stub("threads.search",async({query}:Any)=>{queries.push(query);return {matches:{total:2,results:[{thread:searched}]}};});
   const result=await h.run("find_targets",{query:"the latest editor mobile thread"});
-  assert.deepEqual(result.threads.map((thread:Any)=>thread.id),["remote-editor","editor"]);
+  assert.deepEqual(result.threads.map((thread:Any)=>[thread.id,thread.match]),[["remote-editor",1],["editor",1],["other",0.5]]);
+  assert.equal(result.threads[0].foundInMessages,true);assert.equal(result.threads[1].foundInMessages,undefined);
   assert.deepEqual(queries,["the latest editor mobile thread"]);
+  assert.deepEqual(result.searched.words,["editor","mobile"]);
   assert.equal(result.truncated,true);
   const recent=await h.run("find_targets",{query:"the latest threads"});
-  assert.deepEqual(recent.threads.map((thread:Any)=>thread.id),["remote-editor","other","editor","build"]);
+  assert.deepEqual(recent.threads.map((thread:Any)=>thread.id),["other","editor","build"]);
+  assert.equal(recent.threads[2].projectName,"BB Plugins");
+  assert.deepEqual(queries,["the latest editor mobile thread"]);
+});
+
+test("find_targets resolves misheard descriptions, keeps near misses, and always ranks projects",async t=>{
+  const h=await fixture();t.after(h.close);
+  h.world.threads.set("parent",makeThreadResponse({id:"parent",title:"Overhaul well plans plugin",updatedAt:15000}));
+  h.world.threads.set("child",makeThreadResponse({id:"child",title:"Live plan review trial",parentThreadId:"parent",updatedAt:16000}));
+  h.world.threads.set("older",makeThreadResponse({id:"older",title:"Plans live review: backend",parentThreadId:"parent",updatedAt:14000}));
+  h.world.threads.set("voice",makeThreadResponse({id:"voice",title:"Make voice mode more reliable",updatedAt:17000}));
+  const spoken=await h.run("find_targets",{query:"planned plugin child thread for new plans feature",include_children:true});
+  assert.deepEqual(spoken.threads.map((thread:Any)=>[thread.id,thread.match]),[["parent",0.71],["older",0.46],["child",0.45]]);
+  const children=await h.run("find_targets",{query:"",parent_id:"parent"});
+  assert.deepEqual(children.threads.map((thread:Any)=>thread.id),["child","older"]);
+  assert.equal(children.searched.parentId,"parent");
+  const project=await h.run("find_targets",{query:"BB plugin project"});
+  assert.deepEqual(project.projects.map((p:Any)=>[p.name,p.match,p.outsideProject]),[["BB Plugins",0.95,false],["Personal",0,true],["docs-site",0,false]]);
+  assert.deepEqual(project.threads.map((thread:Any)=>thread.id),["parent"]);
+  const spelled=await h.run("find_targets",{query:"BB_plugins"});
+  assert.equal(spelled.projects[0].name,"BB Plugins");assert.equal(spelled.projects[0].match,1);
+});
+
+test("workers run outside any project on the primary machine unless a project is given",async t=>{
+  const h=await fixture();t.after(h.close);
+  const receipt=await h.run("spawn_worker",{title:"Find the plans child thread",task:"Find the parent and its newest child."});
+  assert.equal(receipt.status,"running");assert.equal(receipt.profile,"implement");assert.equal(receipt.outsideProject,true);
+  assert.equal(receipt.projectId,"proj_personal");assert.equal(receipt.hostId,"mac");assert.equal(receipt.hostName,"Desktop");
+  const spawn=h.world.spawns.at(-1);
+  assert.deepEqual(spawn.environment,{type:"host",hostId:"mac",workspace:{type:"personal"}});
+  assert.equal(spawn.projectId,"proj_personal");assert.equal(spawn.visibility,"hidden");
+  assert.match(spawn.prompt,/## Profile: implement/);
+  const explicit=await h.run("spawn_worker",{title:"Elsewhere",task:"Look around.",host_id:"laptop"},h.later());
+  assert.equal(explicit.hostId,"laptop");
+  const inProject=await h.run("spawn_worker",{...worker,title:"In project"},h.later("u3"));
+  assert.equal(inProject.outsideProject,false);assert.deepEqual(h.world.spawns.at(-1).environment,{type:"host",hostId:"mac",workspace:{type:"managed-worktree",baseBranch:{kind:"default"}}});
+  const created=await h.run("create_thread",{title:"Visible",body:"Do it"} as Any,h.later("u4"));
+  assert.match(created.error,/project_id/);
+});
+
+test("worker profiles resolve leniently and unknown names list the configured choices",async t=>{
+  const h=await fixture();t.after(h.close);
+  const first=await h.run("spawn_worker",{...worker,profile:"default"});assert.equal(first.profile,"implement");
+  const second=await h.run("spawn_worker",{...worker,profile:"Investigation",title:"Second"},h.later());assert.equal(second.profile,"investigate");
+  assert.match(second.hostId,/mac/);assert.match(h.world.spawns.at(-1).prompt,/## Profile: investigate/);
+  const unknown=await h.run("spawn_worker",{...worker,profile:"wizard",title:"Third"},h.later("u3"));
+  assert.equal(unknown.status,"failed");assert.match(unknown.error,/Unknown worker profile "wizard". Configured profiles: investigate, plan, implement, review. Omit profile for implement./);
+  assert.equal(h.world.spawns.length,2);
+});
+
+test("call tool schemas enumerate configured profiles",()=>{
+  const bare=liveToolSchemas().find(tool=>tool.name==="spawn_worker")!;
+  assert.deepEqual((bare.parameters as Any).required,["title","task"]);
+  const profiles=[{name:"investigate",instructions:"Gather evidence and explain causes or options. Return sources and uncertainties. Do not implement."},{name:"implement",instructions:"Make the change."}];
+  const shown=liveToolSchemas({profiles,defaultProfile:"implement"}).find(tool=>tool.name==="spawn_worker")!;
+  assert.deepEqual((shown.parameters as Any).properties.profile.enum,["investigate","implement"]);
+  assert.deepEqual((shown.parameters as Any).required,["title","task"]);
+  assert.match(shown.description,/Profiles: investigate \(Gather evidence and explain causes or options\. Return sources and uncertainties\. Do not\.\.\.\); implement \(Make the change\.\)\. Default: implement\.$/);
+  assert.equal(liveToolSchemas({profiles,defaultProfile:"missing"}).find(tool=>tool.name==="spawn_worker")!.description.endsWith("Default: investigate."),true);
 });
 
 test("client file previews resolve the thread workspace into a native UI action",async t=>{

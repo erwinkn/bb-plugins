@@ -24,6 +24,11 @@ Client effects use `beginClientEffect`, the validated native action, and
 
 `live-runtime.ts`, `operations.ts`, `watches.ts`, and `live-store.ts` own operation
 receipts, workers, watches, inbox items, offers, and spoken-confirmation checks.
+`target-matching.ts` scores spoken descriptions against names: tokens split on any
+separator, category words are neutral, stems and small edit distances count, and
+`find_targets` returns ranked candidates with scores instead of an exact filter.
+Workers default to BB's personal project and the primary machine; `server.ts` builds
+the call's tool schemas from the configured profiles so the model sees valid names.
 Background responses cannot authorize effects. Historical agent thread IDs are
 readable but cannot receive new effects through the runtime.
 

@@ -27,8 +27,9 @@ import { LiveStore, type OperationRow, type InboxRow } from "./live-store.ts";
 import { Operations, hash, type EffectInput } from "./operations.ts";
 import { LIVE_EFFECTS, liveToolArgs, type LiveTool } from "./live-tools.ts";
 import { Watches, interactionData, tail, threadName, type Thread } from "./watches.ts";
-import { readNamedWorkerSettings, resolveWorkerModel } from "./worker-profiles.ts";
+import { readNamedWorkerSettings, resolveWorkerModel, type NamedWorkerSettings } from "./worker-profiles.ts";
 import { assembleWorkerPrompt } from "./worker-prompt.ts";
+import { queryTokens, rank, resolveName } from "./target-matching.ts";
 
 const nonceInput = z.object({ nonce: z.string().min(1).max(256) }).strict();
 const conversationInput = nonceInput.extend({ conversationId: z.string().min(1).max(256) });
@@ -139,6 +140,8 @@ export class LiveRuntime {
         const project = (await this.bb.sdk.projects.list({ includePersonal: true })).find(p => p.id === input.view!.projectId);
         if (project) { this.remember(call, project.id, ...project.sources.map(s => s.hostId)); view = { ...view, projectId: project.id, projectName: project.name, hostIds: project.sources.map(s => s.hostId) }; }
       }
+      // Machines are not secrets: a worker may name any connected machine without a prior search.
+      try { (await this.bb.sdk.hosts.list()).forEach(h => this.remember(call, h.id)); } catch (error) { this.bb.log.warn(`Call start could not list machines: ${String(error)}`); }
       this.state(input.nonce, input.conversationId);
       pending.forEach(i => this.present(call, `interaction:${i.id}`));
       return json({ type: "call_start_context", view, tasks: tasks.map(({op_id, thread_id, title, kind, profile, status, updated_at}) => ({op_id, thread_id, title, kind, profile, status, updated_at})), pendingInteractions: pending, pendingUpdates: this.store.inbox(input.conversationId).filter(i => !["spoken", "resolved", "dismissed"].includes(i.status)).length,
@@ -253,18 +256,35 @@ export class LiveRuntime {
       default: throw new Error("Unsupported effect");
     }
   }
+  /** A missing or approximate profile name never blocks a launch: the configured default applies. */
+  private profileFor(settings: NamedWorkerSettings, requested: string | undefined) {
+    const names = settings.profiles.map(p => p.name);
+    const fallback = settings.profiles.find(p => p.name === settings.defaultProfile) ?? settings.profiles[0];
+    if (!fallback) throw new Error("No worker profile is configured. Add one in Voice Mode → Workers.");
+    if (!requested || /^default$/i.test(requested.trim())) return fallback;
+    const resolved = resolveName(requested, settings.profiles, p => p.name);
+    if (!resolved) throw new Error(`Unknown worker profile "${requested}". Configured profiles: ${names.join(", ")}. Omit profile for ${fallback.name}.`);
+    return resolved;
+  }
+  /** Workers run outside any project unless one is requested; the primary machine hosts the most projects. */
+  private async destination(projectId: string | undefined, hostId: string | undefined) {
+    const [projects, hosts] = await Promise.all([this.bb.sdk.projects.list({ includePersonal: true }), this.bb.sdk.hosts.list()]);
+    const project = projectId ? projects.find(p => p.id === projectId) : projects.find(p => p.kind === "personal");
+    if (!project) throw new Error(projectId ? "The requested project is unavailable" : "BB has no personal project for work outside a project");
+    const connected = hosts.filter(h => h.status === "connected");
+    const candidates = project.kind === "personal" ? connected : connected.filter(h => project.sources.some(s => s.hostId === h.id));
+    const load = (h: { id: string }) => projects.filter(p => p.sources.some(s => s.hostId === h.id)).length;
+    const primary = [...candidates].sort((a, b) => load(b) - load(a))[0];
+    const host = hostId ? candidates.find(h => h.id === hostId) : project.kind === "personal" ? primary : candidates.length === 1 ? candidates[0] : undefined;
+    if (!host) throw new Error(project.kind === "personal" ? "No connected machine can run the worker" : hostId ? "That machine is not connected or does not host this project" : `Choose one connected machine that hosts this project: ${candidates.map(h => h.name).join(", ")}`);
+    return { project, host };
+  }
   private async spawn(input: ToolInput, row: OperationRow, spoken: string, call: CallState) {
     const worker = input.tool === "spawn_worker";
     const args = worker ? liveToolArgs.spawn_worker.parse(input.args) : liveToolArgs.create_thread.parse(input.args);
     const settings = await readNamedWorkerSettings(this.bb);
-    const profile = settings.profiles.find(p => p.name === ("profile" in args ? args.profile : settings.defaultProfile));
-    if (!profile) throw new Error("Worker profile is unavailable. Choose a configured profile.");
-    const [projects, hosts] = await Promise.all([this.bb.sdk.projects.list({ includePersonal: true }), this.bb.sdk.hosts.list()]);
-    const project = projects.find(p => p.id === args.project_id);
-    if (!project) throw new Error("The requested project is unavailable");
-    const candidates = hosts.filter(h => h.status === "connected" && project.sources.some(s => s.hostId === h.id));
-    const host = args.host_id ? candidates.find(h => h.id === args.host_id) : candidates.length === 1 ? candidates[0] : undefined;
-    if (!host) throw new Error("Choose one connected machine that hosts this project");
+    const profile = this.profileFor(settings, "profile" in args ? args.profile : undefined);
+    const { project, host } = await this.destination(args.project_id, args.host_id);
     const execution = await resolveWorkerModel(this.bb, host.id, profile);
     const reserve = this.creationChain.then(async () => {
       await this.refreshWorkerQuota();
@@ -285,7 +305,7 @@ export class LiveRuntime {
     }
     this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(thread.id, row.id);
     this.remember(call, thread.id, project.id, host.id);
-    this.operations.finish(row.id, "running", { threadId: thread.id, title: threadName(thread), projectId: project.id, projectName: project.name, hostId: host.id, hostName: host.name, visibility: worker ? "hidden" : "visible", launchAccepted: true });
+    this.operations.finish(row.id, "running", { threadId: thread.id, title: threadName(thread), profile: profile.name, projectId: project.id, projectName: project.name, outsideProject: project.kind === "personal", hostId: host.id, hostName: host.name, visibility: worker ? "hidden" : "visible", launchAccepted: true });
     try { await this.watches.spawned(row.id, thread); }
     catch (error) { this.operations.finish(row.id, "running", { recoveryNeeded: true, error: errorMessage(error) }); }
     return this.operations.receipt(this.operations.get(row.id)!);
@@ -309,35 +329,47 @@ export class LiveRuntime {
   private async read(input: ToolInput, call: CallState): Promise<unknown> {
     switch (input.tool) {
       case "find_targets": {
-        const args = liveToolArgs.find_targets.parse(input.args), query = args.query.trim().toLowerCase();
-        const ignored = new Set(["thread", "threads", "the", "latest", "recent", "newest"]);
-        const tokens = (query.match(/[\p{L}\p{N}]+/gu) ?? []).filter(word => word.length >= 3 && !ignored.has(word));
-        const matches = (title: string) => tokens.every(word => title.toLowerCase().includes(word));
+        const args = liveToolArgs.find_targets.parse(input.args), tokens = queryTokens(args.query);
         const [projects, hosts] = await Promise.all([this.bb.sdk.projects.list({ includePersonal: true }), this.bb.sdk.hosts.list()]);
-        const found: Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>> = [];
+        type Candidate = Pick<Thread, "id" | "title" | "titleFallback" | "projectId" | "parentThreadId" | "status" | "updatedAt" | "archivedAt" | "deletedAt">;
+        const found: Candidate[] = [];
         let truncated = false;
+        const listArgs = args.parent_id ? { parentThreadId: args.parent_id, includeHidden: true } : args.include_children ? {} : { hasParent: false };
         for (const archived of args.include_archived ? [false, true] : [false]) {
           for (let offset = 0; offset < 1000; offset += 100) {
-            const page = await this.bb.sdk.threads.list({ archived, ...(args.include_children ? {} : { hasParent: false }), limit: 100, offset });
-            found.push(...page.filter(t => matches(`${t.title ?? ""} ${t.titleFallback}`)));
+            const page = await this.bb.sdk.threads.list({ archived, ...listArgs, limit: 100, offset });
+            found.push(...page);
             if (page.length < 100) break;
             if (offset === 900) truncated = true;
           }
         }
-        const tasks = this.store.tasks(input.conversationId).filter(t => matches(t.title) && t.thread_id);
-        const taskThreads = await Promise.all(tasks.map(t => this.bb.sdk.threads.get({ threadId: t.thread_id! })));
-        const searched = query ? await this.bb.sdk.threads.search({ query: args.query }).then(search => {
-          if (Object.values(search).some(group => group.total > group.results.length)) truncated = true;
-          return Object.values(search).flatMap(group => group.results.map(entry => entry.thread));
-        }) : [];
-        const byId = new Map([...found, ...searched, ...taskThreads].filter(t => !t.deletedAt &&
-          (args.include_archived || !t.archivedAt) && (args.include_children || !t.parentThreadId) &&
-          matches(`${t.title ?? ""} ${t.titleFallback}`)).map(t => [t.id, t]));
-        const threads = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 50).map(t => ({ id: t.id, title: threadName(t), projectId: t.projectId, parentThreadId: t.parentThreadId, status: t.status, updatedAt: t.updatedAt, archived: t.archivedAt !== null }));
-        const ps = projects.filter(p => matches(p.name)).map(p => ({ id: p.id, name: p.name, hostIds: p.sources.map(s => s.hostId) }));
+        const tasks = args.parent_id ? [] : this.store.tasks(input.conversationId).filter(t => t.thread_id);
+        const taskThreads = (await Promise.all(tasks.map(t => this.bb.sdk.threads.get({ threadId: t.thread_id! }).catch(() => null)))).filter((t): t is Thread => !!t);
+        // BB's own search sees message bodies, so it can find a thread whose title never says the words.
+        const searched = new Set<string>();
+        if (tokens.length > 0 && !args.parent_id) {
+          const search = await this.bb.sdk.threads.search({ query: args.query }).catch(() => ({} as Record<string, { total: number; results: { thread: Candidate }[] }>));
+          for (const group of Object.values(search)) {
+            if (group.total > group.results.length) truncated = true;
+            for (const entry of group.results) { searched.add(entry.thread.id); found.push(entry.thread); }
+          }
+        }
+        const byId = new Map<string, Candidate>([...found, ...taskThreads].filter(t => !t.deletedAt && (args.include_archived || !t.archivedAt) &&
+          (args.parent_id ? t.parentThreadId === args.parent_id : args.include_children || !t.parentThreadId)).map(t => [t.id, t]));
+        // The title is what the user knows a thread by. The prompt excerpt only stands in for a missing title; BB search covers bodies.
+        const name = (t: Candidate) => t.title?.trim() || t.titleFallback || "";
+        // Strong title matches and message hits come first. A few weak matches follow when little else was found, so the model can offer a near miss instead of nothing.
+        const scored = rank([...byId.values()], tokens, name, t => t.updatedAt, { threshold: 0, limit: Number.MAX_SAFE_INTEGER });
+        const strong = scored.filter(({ item, match }) => match >= 0.5 || searched.has(item.id));
+        const weak = scored.filter(entry => !strong.includes(entry) && entry.match >= 0.25);
+        const ranked = strong.length >= 5 ? strong : [...strong, ...weak];
+        const projectName = new Map(projects.map(p => [p.id, p.name]));
+        const threads = ranked.slice(0, 30).map(({ item: t, match }) => ({ id: t.id, title: threadName(t), match, projectId: t.projectId, projectName: projectName.get(t.projectId) ?? null,
+          parentThreadId: t.parentThreadId, status: t.status, updatedAt: t.updatedAt, archived: t.archivedAt !== null, ...(searched.has(t.id) ? { foundInMessages: true } : {}) }));
+        const ps = rank(projects, tokens, p => p.name, p => p.updatedAt ?? 0, { threshold: 0, limit: 30 }).map(({ item: p, match }) => ({ id: p.id, name: p.name, match, outsideProject: p.kind === "personal", hostIds: p.sources.map(s => s.hostId) }));
         const hs = hosts.map(h => ({ id: h.id, name: h.name, status: h.status }));
         threads.forEach(t => this.remember(call, t.id, t.projectId, t.parentThreadId)); ps.forEach(p => this.remember(call, p.id, ...p.hostIds)); hs.forEach(h => this.remember(call, h.id));
-        return { threads, projects: ps, hosts: hs, searched: { query: args.query, includeChildren: !!args.include_children, includeArchived: !!args.include_archived, conversationTasks: true }, asOf: this.now(), truncated: truncated || byId.size > 50 };
+        return { threads, projects: ps, hosts: hs, searched: { query: args.query, words: tokens, includeChildren: !!args.include_children, includeArchived: !!args.include_archived, parentId: args.parent_id ?? null, conversationTasks: !args.parent_id }, asOf: this.now(), truncated: truncated || ranked.length > 30 };
       }
       case "read_threads": {
         const args = liveToolArgs.read_threads.parse(input.args);

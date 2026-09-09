@@ -781,6 +781,9 @@ export default async function plugin(bb: BbPluginApi) {
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       const key = await apiKey();
       const { model, voice } = await readConfig();
+      // The model can only choose a profile it was shown; unreadable settings leave the free-form schema.
+      const profiles = await readNamedWorkerSettings(bb).then(s => ({ profiles: s.profiles.map(p => ({ name: p.name, instructions: p.instructions })), defaultProfile: s.defaultProfile }))
+        .catch(error => { bb.log.warn(`Worker profiles unavailable for the call schema: ${String(error)}`); return {}; });
 
       const session = {
         type: "realtime",
@@ -795,7 +798,7 @@ export default async function plugin(bb: BbPluginApi) {
           },
           output: { voice },
         },
-        tools: liveToolSchemas(),
+        tools: liveToolSchemas(profiles),
       };
       const form = new FormData();
       form.set("sdp", sdp);

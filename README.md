@@ -127,6 +127,20 @@ No upstream issue filed.
 Suggested issue title: `Allow hiding individual providers from selection menus`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Plugin SDK: identify the machine that runs the BB server
+
+Voice Mode starts workers outside any project. BB's personal project has no
+sources, so the plugin cannot read a machine from it, and the SDK's `Host` has no
+flag for the machine that runs the server. The plugin picks the connected machine
+that hosts the most projects, which is a heuristic.
+
+Expose the server's own host ID to plugins, for example `bb.hosts.current()` or an
+`isServer` flag on `Host`, so project-less work has a deterministic destination.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Plugin SDK: expose the host that runs the BB server`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Mobile: choose Steer or Queue from the Send button
 
 When Steer is the default send action, desktop users can press Command+Enter

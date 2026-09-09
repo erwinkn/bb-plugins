@@ -24,6 +24,13 @@ stop work, manage subscriptions, prepare and confirm archives, and answer native
 questions or approvals. Archive and approval actions require a later spoken
 confirmation after their explanation has drained.
 
+Spoken names are approximate. Searches rank threads and projects with a match score,
+accept word stems and small mishearings, and always list the projects. When one
+search does not settle what you meant, Aide starts a worker to look instead of asking
+for exact names or IDs. Workers run outside any project unless the task needs a
+repository; they can read every BB project and thread. A worker uses the default
+profile unless Aide picks one of the configured names.
+
 Calls wait for preceding speech to finish playing. Effects also wait two seconds
 after the final user text, so a correction can cancel work before dispatch. Unknown
 results are not retried automatically. Drafts append by default and never submit.
