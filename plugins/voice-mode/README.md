@@ -56,6 +56,12 @@ after the final user text, so a correction can cancel work before dispatch. Unkn
 results are not retried automatically. Drafts append by default and never submit.
 A worker's turn ending is reported separately from whether its task is complete.
 
+Ada reads a pending question with its options and answers it from what you say:
+"the second one", the option's words, or free text. Questions from the Questions
+plugin work the same way, one round at a time. A word that matches no option is
+refused with the options, so nothing is answered by guess. Prompts from other plugins
+must be answered in the app.
+
 Background updates wait for a quiet boundary and cannot navigate or act. Every
 thread Ada messages, starts, or stops reports back in the call when it finishes,
 fails, or asks a question, also after a reconnect. A send result is the receipt:

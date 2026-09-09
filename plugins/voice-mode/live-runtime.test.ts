@@ -25,7 +25,7 @@ async function fixture() {
     threads: new Map<string, Any>([["build", makeThreadResponse({ id: "build", projectId: "app", title: "Build Fix", status: "active", updatedAt: 9000 })]]),
     outputs: new Map<string, string>(), events: new Map<string, Any[]>(), interactions: new Map<string, Any[]>(), queue: new Map<string, Any[]>(),
     list: null as null | ((args: Any) => Promise<Any[]>), interactionReads: 0,
-    sends: [] as Any[], spawns: [] as Any[], archives: [] as string[], resolutions: [] as Any[], answers: [] as Any[], stops: [] as string[], updates: [] as Any[], queueSends: [] as Any[], queueDeletes: [] as Any[], queueUpdates: [] as Any[],
+    sends: [] as Any[], spawns: [] as Any[], archives: [] as string[], resolutions: [] as Any[], answers: [] as Any[], stops: [] as string[], updates: [] as Any[], queueSends: [] as Any[], queueDeletes: [] as Any[], queueUpdates: [] as Any[], pluginCalls: [] as Any[], rounds: new Map<string, Any>(),
     send: null as null | ((args: Any) => Promise<Any>), spawn: null as null | ((args: Any) => Promise<Any>), get: null as null | ((args: Any) => Promise<Any>),
   };
   const sdk: Any = {
@@ -37,6 +37,14 @@ async function fixture() {
         ? { models: [{ id: "worker", model: "worker", displayName: "Worker", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }] }, { id: "gpt-6-astra", model: "gpt-6-astra", displayName: "GPT-6 Astra", isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: "high" }, { reasoningEffort: "xhigh" }] }], providers: [{ id: "codex", serviceTiers: [{ id: "fast" }] }], modelLoadError: null }
         : { models: [{ id: "claude-opus-5", model: "claude-opus-5", displayName: "Opus 5", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], modelLoadError: null },
     },
+    plugins: { callRpc: async (args: Any) => {
+      world.pluginCalls.push(args);
+      if (args.pluginId !== "questions") throw new Error(`Unknown plugin ${args.pluginId}`);
+      if (args.method === "questions_round") { const r = world.rounds.get(args.input.roundId); return r ?? { round: null, answers: [], labels: {} }; }
+      if (args.method === "questions_save_draft") { const r = world.rounds.get(args.input.threadId === "build" ? [...world.rounds.keys()][0] : ""); const a = r.answers.find((a: Any) => a.questionId === args.input.questionId); if (a.version !== args.input.expectedVersion) return { outcome: "conflict", state: a }; a.version += 1; a.draft = args.input.draft; return { outcome: "saved", state: a }; }
+      if (args.method === "questions_submit") return { outcome: "submitted", submission: { id: "sub-1", state: "delivered" } };
+      throw new Error(`Unknown method ${args.method}`);
+    } },
     threads: {
       search: async () => ({}),
       get: async (args: Any) => { if (world.get) return world.get(args); const t = world.threads.get(args.threadId); if (!t) throw new Error("Missing thread"); return t; },
@@ -349,12 +357,51 @@ test("approval requires spoken subject, later utterance, pending status, and use
   assert.match((await h.run("answer_interaction", args, h.later("again"))).error, /no longer pending/);
 });
 
-test("read_threads carries native user questions and responds with structured answer", async t => {
+test("a provider question is read with its options and answered by spoken label through a user_answer resolution", async t => {
   const h = await fixture(); t.after(h.close);
-  h.world.interactions.set("build", [{ id: "question", threadId: "build", createdAt: h.now(), status: "pending", payload: { kind: "user_question", questions: [{ id: "q", question: "Which branch?" }] } }]);
-  const read = await h.run("read_threads", { thread_ids: ["build"], what: "status" }); assert.equal(read.threads[0].pendingInteractions[0].id, "question"); h.drain();
-  const answer = { answers: { q: { selected: [], freeText: "main" } } };
-  assert.equal((await h.run("answer_interaction", { thread_id: "build", interaction_id: "question", answer }, h.later())).status, "succeeded"); assert.deepEqual(h.world.answers[0].value, answer);
+  h.world.interactions.set("build", [{ id: "question", threadId: "build", createdAt: h.now(), status: "pending", payload: { kind: "user_question", questions: [
+    { id: "q1", prompt: "Where should the work go?", multiSelect: false, options: [{ value: "q1:option-1", label: "Merge main into this branch (Recommended)", description: "Conflict-free." }, { value: "q1:option-2", label: "Split across two branches" }, { value: "q1:option-3", label: "Wait for PR 15 to merge" }] } ] } }]);
+  const read = await h.run("read_threads", { thread_ids: ["build"], what: "status" });
+  const spec = read.threads[0].pendingInteractions[0];
+  assert.equal(spec.kind, "question"); assert.equal(spec.questions[0].prompt, "Where should the work go?"); assert.deepEqual(spec.questions[0].options.map((o: Any) => o.label), ["Merge main into this branch (Recommended)", "Split across two branches", "Wait for PR 15 to merge"]);
+  h.drain();
+  const miss = await h.run("answer_interaction", { thread_id: "build", interaction_id: "question", answers: [{ choices: ["rebase"] }] }, h.later());
+  assert.match(miss.error, /No option of "Where should the work go\?" matches "rebase"\. Options: Merge main/); assert.equal(h.world.resolutions.length, 0, "nothing was sent for a mishearing");
+  const done = await h.run("answer_interaction", { thread_id: "build", interaction_id: "question", answers: [{ choices: ["merge main"] }] }, h.later("u3"));
+  assert.equal(done.status, "succeeded", done.error); assert.deepEqual(done.answered, [{ question: "Where should the work go?", choices: ["Merge main into this branch (Recommended)"] }]);
+  assert.deepEqual(h.world.resolutions.at(-1).resolution, { kind: "user_answer", answers: { q1: { selected: ["q1:option-1"] } } });
+  assert.equal(h.world.answers.length, 0, "respond is never used for a provider question");
+});
+
+test("a Questions-plugin round is read through the plugin and answered with drafts then one submit", async t => {
+  const h = await fixture(); t.after(h.close);
+  const round = { id: "round-1", threadId: "build", number: 1, intro: null, questions: [
+    { id: "color", title: "Which color?", optional: false, help: null, select: "single", options: [{ id: "red", label: "Red" }, { id: "blue", label: "Blue" }] },
+    { id: "why", title: "Why?", optional: true, help: null, select: null, options: [] } ] };
+  h.world.rounds.set("round-1", { round, answers: [{ questionId: "color", version: 2, submitted: null }, { questionId: "why", version: 0, submitted: null }], labels: {} });
+  h.world.interactions.set("build", [{ id: "pint_round", threadId: "build", createdAt: h.now(), status: "pending", origin: { kind: "plugin", pluginId: "questions", rendererId: "round" }, payload: { kind: "plugin", title: "Round 1 — 2 questions", data: { roundId: "round-1" } } }]);
+  const read = await h.run("read_threads", { thread_ids: ["build"], what: "status" });
+  const spec = read.threads[0].pendingInteractions[0];
+  assert.equal(spec.kind, "round"); assert.deepEqual(spec.questions.map((q: Any) => [q.id, q.select, q.optional]), [["color", "single", false], ["why", null, true]]);
+  h.drain();
+  const partial = await h.run("answer_interaction", { thread_id: "build", interaction_id: "pint_round", answers: [{ question: "why", text: "because" }] }, h.later());
+  assert.match(partial.error, /Still unanswered: "Which color\?"/);
+  const done = await h.run("answer_interaction", { thread_id: "build", interaction_id: "pint_round", answers: [{ question: "color", choices: ["the second one"] }, { question: "why", text: "because" }] }, h.later("u3"));
+  assert.equal(done.status, "succeeded", done.error); assert.equal(done.kind, "round"); assert.equal(done.submissionId, "sub-1");
+  assert.deepEqual(h.world.pluginCalls.slice(-4).map((c: Any) => c.method), ["questions_round", "questions_save_draft", "questions_save_draft", "questions_submit"], "drafts then one submit");
+  const drafts = h.world.pluginCalls.filter((c: Any) => c.method === "questions_save_draft").map((c: Any) => [c.input.questionId, c.input.draft.selected, c.input.draft.text, c.input.expectedVersion]);
+  assert.deepEqual(drafts, [["color", ["blue"], "", 2], ["why", [], "because", 0]]);
+  assert.deepEqual(h.world.pluginCalls.at(-1).input.items, [{ questionId: "color", expectedVersion: 3 }, { questionId: "why", expectedVersion: 1 }]);
+});
+
+test("a prompt from another plugin is surfaced as unanswerable by voice", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.world.interactions.set("build", [{ id: "pint_other", threadId: "build", createdAt: h.now(), status: "pending", origin: { kind: "plugin", pluginId: "plans", rendererId: "review" }, payload: { kind: "plugin", title: "Review plan", data: {} } }]);
+  const read = await h.run("read_threads", { thread_ids: ["build"], what: "status" });
+  assert.match(read.threads[0].pendingInteractions[0].unanswerable, /belongs to the plans plugin/);
+  h.drain();
+  const attempt = await h.run("answer_interaction", { thread_id: "build", interaction_id: "pint_other", answers: [{ text: "ok" }] }, h.later());
+  assert.match(attempt.error, /belongs to the plans plugin/);
 });
 
 test("draft begin and finish are idempotent; restart and device switch cannot apply again", async t => {

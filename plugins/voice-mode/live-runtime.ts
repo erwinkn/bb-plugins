@@ -30,6 +30,7 @@ import { Watches, interactionData, tail, threadName, type Thread } from "./watch
 import { readNamedWorkerSettings, resolveWorkerModel, type NamedWorkerSettings } from "./worker-profiles.ts";
 import { assembleWorkerPrompt } from "./worker-prompt.ts";
 import { queryTokens, rank, resolveName } from "./target-matching.ts";
+import { describeInteraction, resolveAnswers, submitAnswers } from "./interaction-answers.ts";
 import type { WorkerProfile } from "./worker-profiles.ts";
 
 interface ModelChoice { id: string; name: string; isDefault: boolean; reasoning: string[]; fast: boolean }
@@ -319,18 +320,24 @@ export class LiveRuntime {
         const interaction = await this.bb.sdk.threads.interactions.get({ threadId: args.thread_id, interactionId: args.interaction_id });
         if (interaction.status !== "pending" || interaction.threadId !== args.thread_id) throw new Error("Not authorized: interaction is no longer pending on this thread");
         this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(args.thread_id, row.id);
-        let result;
-        if (interaction.payload.kind === "approval") {
-          if (!args.decision || args.answer !== undefined || !interaction.payload.availableDecisions.includes(args.decision)) throw new Error("Not authorized: select an available approval decision");
+        const spec = await describeInteraction(this.bb, interaction);
+        const resolved = () => this.store.db.prepare("UPDATE voice_inbox SET status = 'resolved', eligible = 0 WHERE conversation_id = ? AND interaction_id = ?").run(input.conversationId, args.interaction_id);
+        if (spec.kind === "approval") {
+          if (!args.decision || args.answers !== undefined || !spec.availableDecisions?.includes(args.decision)) throw new Error("Not authorized: select an available approval decision");
           const decision = args.decision;
-          result = await this.sdkEffect(input, () => this.bb.sdk.threads.interactions.resolve({ threadId: args.thread_id, interactionId: args.interaction_id,
+          const result = await this.sdkEffect(input, () => this.bb.sdk.threads.interactions.resolve({ threadId: args.thread_id, interactionId: args.interaction_id,
             resolution: decision === "deny" ? { decision } : { decision, grantedPermissions: null } }));
-        } else if (interaction.payload.kind === "user_question") {
-          if (args.answer === undefined || args.decision) throw new Error("Not authorized: a user question needs an answer");
-          result = await this.sdkEffect(input, () => this.bb.sdk.threads.interactions.respond({ threadId: args.thread_id, interactionId: args.interaction_id, value: args.answer! }));
-        } else throw new Error("Not authorized: this interaction kind is not supported");
-        if (result.status !== "pending") this.store.db.prepare("UPDATE voice_inbox SET status = 'resolved', eligible = 0 WHERE conversation_id = ? AND interaction_id = ?").run(input.conversationId, args.interaction_id);
-        return this.operations.finish(row.id, "succeeded", { interaction: interactionData(result) });
+          if (result.status !== "pending") resolved();
+          return this.operations.finish(row.id, "succeeded", { interaction: interactionData(result) });
+        }
+        if (args.decision) throw new Error("Not authorized: a decision only answers an approval; this is a question");
+        // Labels resolve to options before anything is sent, so a mishearing never half-answers.
+        const answers = resolveAnswers(spec, args.answers ?? []);
+        const outcome = await this.sdkEffect(input, () => submitAnswers(this.bb, spec, answers));
+        resolved();
+        return this.operations.finish(row.id, "succeeded", { interactionId: spec.id, threadId: spec.threadId, kind: spec.kind, title: spec.title,
+          answered: answers.map(a => ({ question: a.question.prompt, choices: a.selected.map(v => a.question.options.find(o => o.value === v)?.label ?? v), ...(a.text ? { text: a.text } : {}) })),
+          ...(outcome.kind === "round" ? { submissionId: outcome.submissionId } : { interaction: interactionData(outcome.interaction) }) });
       }
       default: throw new Error("Unsupported effect");
     }
@@ -552,7 +559,7 @@ export class LiveRuntime {
             return { threadId, title: threadName(thread), status: thread.status, projectId: thread.projectId, parentThreadId: thread.parentThreadId, environmentId: thread.environmentId,
               ...(environment !== undefined ? { environment } : {}),
               output: tail(output.output), receipts: this.operations.forThread(input.conversationId, threadId),
-              pendingInteractions: pending.map(interactionData), ...(updates ? { updates } : {}), task: this.taskData(input.conversationId, threadId),
+              pendingInteractions: await Promise.all(pending.map(i => describeInteraction(this.bb, i))), ...(updates ? { updates } : {}), task: this.taskData(input.conversationId, threadId),
               asOf: this.now(), evidenceAt: thread.updatedAt, ageMs: Math.max(0, this.now() - thread.updatedAt), source: "BB thread and latest output" };
           } catch (error) { return { threadId, missing: true, error: errorMessage(error), asOf: this.now() }; }
         }));

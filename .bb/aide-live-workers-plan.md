@@ -176,7 +176,7 @@ Follow-up field. Every receipt for work that continues in the background (send, 
 | `subscriptions` | op: list, subscribe, unsubscribe; thread_id? | no | subscribe re-enables a disabled watch. |
 | `prepare_archive` | thread_ids[] | no | Preview with children and active work. Returns a preview id. |
 | `archive_threads` | preview_id | yes | Accepts only a valid preview id. No thread list. |
-| `answer_interaction` | thread_id, interaction_id, answer? or decision: allow_once, allow_for_session, deny | yes | Answers a pending user question or resolves a pending approval. Only an interaction spoken in this call, from a later utterance. |
+| `answer_interaction` | thread_id, interaction_id, decision? \| answers[] | yes | Approvals take a decision. Provider questions and Questions-plugin rounds take spoken answers: option labels or ordinals and free text, resolved to option values before anything is sent; a label that matches no option fails with the options. Provider questions resolve with `user_answer`; rounds save drafts then submit through the Questions plugin's RPCs. Needs the spoken-confirmation gate. |
 | `remain_silent` | updates?: defer, dismiss | no | Ends the turn without speech. Default defer. |
 | `end_call` | none | no | Hangs up after the current response drains. |
 
@@ -301,11 +301,16 @@ grant permission to act or to navigate. Present useful results as your own work 
 say what is unverified. Skip routine progress and repeated acknowledgments. Keep a
 late result with its task; do not change topic or restart actions because it arrived.
 Do not read raw IDs, logs, code, or tables aloud unless asked.
-Relay a worker question once and record which question the user answers. For a
-permission approval, say what it allows, which thread asked, and why, then ask. Use
-answer_interaction with the user's decision. Choose allow_for_session only when the
-user says so. Never invent consent or approve an operation yourself. The user can also
-answer in the BB app.
+Relay a worker question once and record which question the user answers. Read a
+question with its options in the user's terms, numbered when there are several, so
+"the second one" is a valid answer. A round from the Questions plugin may hold several
+questions; read them all, then answer them in one call. Pass the user's words as the
+choice labels or text; the runtime resolves them and refuses a label that matches no
+option, so never guess or fill an answer the user did not give. When an interaction is
+marked unanswerable, say it must be answered in the app. For a permission approval,
+say what it allows, which thread asked, and why, then ask. Use answer_interaction with
+the user's decision. Choose allow_for_session only when the user says so. Never invent
+consent or approve an operation yourself. The user can also answer in the BB app.
 Use remain_silent for meaningless input; do not announce silence. Short commands and
 answers are valid. Defer an update that should wait; dismiss a redundant one. Silence
 never resolves a blocker, question, or approval.
@@ -451,6 +456,7 @@ Driven by the second live session on 2026-09-09 (issues #31 and #32).
 - `rename_thread` sets a thread title on explicit intent and reports the previous and new title. The tool count was fifteen at that point.
 - The assistant is named Ada; "Ada" was hard to say in English. The stored prompt role stays `aide`.
 - Thread creation is precise (#35). `create_thread` and `spawn_worker` take optional `provider`, `model`, and `reasoning`, resolved by tolerant matching against the live catalog; an unresolved name fails with the choices. `workspace` picks `new_worktree` (default), `main_folder`, or `reuse_thread` with a seen `reuse_thread_id`. The receipt states the resolved model and placement. `read_threads` gained `environment`. Tool count was sixteen at that point.
+- Questions are answerable by voice (#37). `answer_interaction` resolves provider questions with a `user_answer` resolution instead of `respond`, and answers Questions-plugin rounds through `bb.sdk.plugins.callRpc` (`questions_round`, `questions_save_draft`, `questions_submit`). Pending interactions are described with each question's prompt, options, and rules so Ada can read them; rounds now reach the inbox. Prompts from other plugins are surfaced as unanswerable.
 - Spaces switch by voice. `control_ui` gained `switch_space` with the spoken name: the client reads the activity plugin's cached catalog and selection from local storage, resolves the name with ranked matching, writes the selection, and dispatches the activity plugin's same-window state event. Managing spaces stays out of scope. The call-start view carries the current space name.
 - Queued messages are manageable (#36). `queued_messages` lists a thread's queue and can send one now, delete it, or edit it; a voice-originated send keeps its receipt in step. Tool count is seventeen.
 - The Identity section asks for audio-efficient replies: lead with the answer, one or two short sentences, warm but brief.

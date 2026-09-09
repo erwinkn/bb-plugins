@@ -53,6 +53,12 @@ returns path, branch, base branch, kind, and pull request.
 each ID; `send_now` (steer), `delete`, and `edit` (optimistic `expectedUpdatedAt`)
 are effects on a remembered ID. When the item came from this conversation, the
 matching operation moves to running, cancelled, or a new body.
+`interaction-answers.ts` describes a pending interaction in spoken form (prompt,
+options, single or multiple, free text, optional) and resolves spoken labels or
+ordinals to option values before any SDK call. Provider questions resolve with a
+`user_answer` resolution; Questions-plugin rounds are read and answered through
+`bb.sdk.plugins.callRpc` with one draft per question and one submit. Watches describe
+interactions before the transaction so rounds reach the inbox with their questions.
 `spaces-bridge.ts` switches the Threads sidebar of the erwin-activity plugin:
 it reads that plugin's cached space catalog and client state from local storage,
 resolves a spoken name with the same ranked matching, writes `spaceId` the way the

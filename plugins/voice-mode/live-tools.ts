@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { spokenAnswerSchema } from "./interaction-answers.ts";
 
 const id = z.string().min(1).max(256);
 const ids = z.array(id).min(1).max(30);
@@ -33,7 +34,10 @@ export const liveToolArgs = {
   subscriptions: z.object({ op: z.enum(["list", "subscribe", "unsubscribe"]), thread_id: id.optional() }).strict(),
   prepare_archive: z.object({ thread_ids: ids }).strict(),
   archive_threads: z.object({ preview_id: id }).strict(),
-  answer_interaction: z.object({ thread_id: id, interaction_id: id, answer: z.json().optional(), decision: z.enum(["allow_once", "allow_for_session", "deny"]).optional() }).strict(),
+  answer_interaction: z.object({ thread_id: id, interaction_id: id,
+    decision: z.enum(["allow_once", "allow_for_session", "deny"]).optional().describe("Approvals only."),
+    answers: z.array(spokenAnswerSchema).max(30).optional().describe("Questions only: one entry per question, with option labels as spoken and/or free text."),
+  }).strict(),
   remain_silent: z.object({ updates: z.enum(["defer", "dismiss"]).optional() }).strict(),
   end_call: z.object({}).strict(),
 };
@@ -54,7 +58,7 @@ const descriptions: Record<LiveTool, string> = {
   subscriptions: "List watches, explicitly subscribe or re-enable one, or disable updates without stopping work. A later send does not re-enable updates.",
   prepare_archive: "Preview the requested threads, all children, active work, and queued messages. Explain the list aloud and ask once before archive_threads.",
   archive_threads: "Archive only the unused preview after it was spoken and drained and a later utterance confirms it. Changed scope requires a fresh preview.",
-  answer_interaction: "Answer a pending native question or approval that was spoken in this call. Requires a later user utterance after drain. For approvals say the subject and reason first. Never invent consent.",
+  answer_interaction: "Answer a pending approval, provider question, or Questions-plugin round that was spoken in this call. Requires a later user utterance after drain. Approvals take decision. Questions take answers: option labels as spoken (ordinals like 'the first one' work) and/or free text; labels resolve to options before anything is sent, and an unresolved label fails with the options. For approvals say the subject and reason first. Never invent consent or an answer.",
   remain_silent: "End without speech. Defer updates by default, or dismiss redundant updates. Critical items remain pending.",
   end_call: "Hang up after the current response drains, only on clear user intent.",
 };

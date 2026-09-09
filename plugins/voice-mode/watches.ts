@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginThreadEventPayloads } from "@get-bb/plugin-sdk";
 import { critical, LiveStore, type InboxKind, type InboxRow, type OfferOutcome, type OfferRow, type OperationRow, type WatchRow } from "./live-store.ts";
 import { Operations } from "./operations.ts";
+import { describeInteraction, type InteractionSpec } from "./interaction-answers.ts";
 
 export type Thread = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["get"]>>;
 export type Interaction = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["interactions"]["get"]>>;
@@ -107,7 +108,8 @@ export class Watches {
       if (!this.store.watches().some(w => w.state === "active")) return;
       if (name === "interaction.pending") {
         const { interaction } = payload as PluginThreadEventPayloads["interaction.pending"];
-        for (const watch of await this.match(thread)) this.pending(watch, thread, interaction);
+        const spec = interaction.status === "pending" ? await describeInteraction(this.bb, interaction) : undefined;
+        for (const watch of await this.match(thread)) this.pending(watch, thread, interaction, spec);
         return;
       }
       if (name === "thread.idle" || name === "thread.failed" || name === "thread.active" || name === "thread.archived") {
@@ -130,10 +132,11 @@ export class Watches {
     }
     return [...matched.values()];
   }
-  private pending(watch: WatchRow, thread: Thread, interaction: Interaction) {
-    if (interaction.status !== "pending") return;
-    const kind = interaction.payload.kind === "approval" ? "approval" : interaction.payload.kind === "user_question" ? "question" : null;
-    if (kind) this.add(watch, thread, kind, interactionData(interaction), `interaction:${interaction.id}`, interaction.id);
+  private pending(watch: WatchRow, thread: Thread, interaction: Interaction, spec?: InteractionSpec) {
+    if (interaction.status !== "pending" || !spec) return;
+    // Approvals keep their native shape. Questions and Questions-plugin rounds carry the spoken form with options.
+    const kind: InboxKind | null = spec.kind === "approval" ? "approval" : spec.kind === "question" || spec.kind === "round" ? "question" : null;
+    if (kind) this.add(watch, thread, kind, spec.kind === "approval" ? interactionData(interaction) : spec, `interaction:${interaction.id}`, interaction.id);
   }
   private correlate(conversationId: string, threadId: string, endAt: number, terminal: boolean, outcome = "completed") {
     const rows = this.store.db.prepare("SELECT * FROM voice_operations WHERE conversation_id = ? AND target_thread_id = ? AND tool = 'message_thread' AND completed_at IS NULL AND created_at <= ? AND status IN ('queued','running')").all(conversationId, threadId, endAt) as OperationRow[];
@@ -165,6 +168,8 @@ export class Watches {
       await this.reconcileUnknown(thread.id);
     const output = suppliedText !== undefined ? suppliedText : (await this.bb.sdk.threads.output({ threadId: thread.id })).output;
     const interactions = await this.bb.sdk.threads.interactions.list({ threadId: thread.id });
+    // Described outside the transaction: a Questions-plugin round needs an RPC to read its questions.
+    const described = new Map(await Promise.all(interactions.filter(i => i.status === "pending").map(async i => [i.id, await describeInteraction(this.bb, i)] as const)));
     for (const watch of matches) {
       const events = await this.eventsAfter(thread.id, watch.cursor_seq);
       this.store.db.transaction(() => {
@@ -200,7 +205,7 @@ export class Watches {
         }
         const taskStatus = archived || (idle && lastEnd?.type === "turn/completed" && lastEnd.data.status === "interrupted") ? "stopped" : failed ? "failed" : idle && !queued ? "turn_ended" : "running";
         this.store.db.prepare("UPDATE voice_tasks SET status = ?, last_text = ?, follow_ups_queued = ?, updated_at = ? WHERE conversation_id = ? AND thread_id = ?").run(taskStatus, output, thread.queuedMessageCount, thread.updatedAt, watch.conversation_id, thread.id);
-        for (const interaction of interactions) this.pending(watch, thread, interaction);
+        for (const interaction of interactions) this.pending(watch, thread, interaction, described.get(interaction.id));
         const pending = new Set(interactions.filter(i => i.status === "pending").map(i => i.id));
         for (const item of this.store.inbox(watch.conversation_id)) if (item.thread_id === thread.id && item.interaction_id && !pending.has(item.interaction_id))
           this.store.db.prepare("UPDATE voice_inbox SET status = 'resolved', eligible = 0 WHERE id = ?").run(item.id);
