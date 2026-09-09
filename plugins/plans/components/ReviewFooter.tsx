@@ -1,83 +1,34 @@
-import { useEffect, useRef, type KeyboardEvent } from "react";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { Plan } from "../contract";
-import { reviewGate } from "../lib/plan-model";
-import { formatRelativeTime } from "../lib/time";
+import { openAnnotations } from "../lib/plan-model";
+import { useLiveStatus } from "../hooks/useLiveStatus";
 
-export type ReviewAction = "feedback" | "approve";
-
-export interface SubmitFailure {
-  message: string;
-  requestId: string;
-  action: ReviewAction;
-}
-
+export type ReviewAction = "approve";
+export interface SubmitFailure { message: string; requestId: string; action: ReviewAction }
 interface ReviewFooterProps {
   plan: Plan;
-  versionId: string;
-  note: string;
-  onNoteChange: (note: string) => void;
-  persistFailed: boolean;
+  failedCount: number;
+  approvalState?: "pending" | "failed" | "dropped" | "sent";
   submitting: ReviewAction | null;
   failure: SubmitFailure | null;
   onSubmit: (action: ReviewAction) => void;
   onDismissFailure: () => void;
-  /** Confirmation for approval is shown as a dialog; this toggles it. */
   confirmOpen: boolean;
   onConfirmOpenChange: (open: boolean) => void;
-  onRevise: () => void;
   className?: string;
 }
 
-const NOTE_MAX_ROWS = 6;
-const NOTE_LINE_HEIGHT = 20;
-
-/**
- * The decision bar: a note for the agent plus the two explicit outcomes.
- * "Send feedback" keeps the plan in review; "Approve" hands it to
- * the agent. Both disable, without commentary, when the gate says no.
- */
-export function ReviewFooter({
-  plan,
-  versionId,
-  note,
-  onNoteChange,
-  persistFailed,
-  submitting,
-  failure,
-  onSubmit,
-  onDismissFailure,
-  confirmOpen,
-  onConfirmOpenChange,
-  onRevise,
-  className,
-}: ReviewFooterProps) {
-  const gate = reviewGate(plan, versionId, note);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+export function ReviewFooter({ plan, failedCount, approvalState = "pending", submitting, failure, onSubmit,
+  onDismissFailure, confirmOpen, onConfirmOpenChange, className }: ReviewFooterProps) {
+  const liveStatus = useLiveStatus(plan.threadId);
+  const open = openAnnotations(plan).length;
   const busy = submitting !== null;
-
-  useEffect(() => {
-    const element = textareaRef.current;
-    if (element === null) return;
-    element.style.height = "auto";
-    // Border-box: content + padding (14px) + border (2px). One line matches the
-    // 36px buttons beside it.
-    element.style.height = `${Math.min(element.scrollHeight + 2, NOTE_LINE_HEIGHT * NOTE_MAX_ROWS + 16)}px`;
-  }, [note]);
-
   if (plan.status === "approved") {
     return (
       <div className={cn("flex items-center gap-3 border-t border-border bg-background px-4 py-3", className)}>
@@ -86,120 +37,52 @@ export function ReviewFooter({
         </span>
         <div className="min-w-0 flex-1 text-sm">
           <p className="font-medium text-foreground">Approved</p>
-          <p className="text-xs text-muted-foreground">
+          <p role="status" className="text-xs text-muted-foreground">
             {plan.sample
               ? "Sample plan: nothing was sent to an agent."
-              : `Approval sent to the thread · ${formatRelativeTime(plan.updatedAt)}`}
+              : approvalState === "dropped" ? "Approval not delivered. The linked thread is archived or deleted."
+              : approvalState === "failed" ? "Approval not delivered · retrying"
+              : approvalState === "sent" ? "Approval sent to the thread" : "Sending approval…"}
           </p>
+          {failedCount > 0 ? <p className="text-xs text-muted-foreground">{failedCount} not delivered</p> : null}
         </div>
       </div>
     );
   }
 
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && gate.canSendFeedback && !busy) {
-      event.preventDefault();
-      onSubmit("feedback");
-    }
-  };
-
   return (
-    <div className={cn("border-t border-border bg-background", className)}>
-      {plan.status === "revising" ? (
-        <div className="flex items-center gap-3 border-b border-border px-4 py-2 text-sm">
-          <Icon name="Loading" className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden />
-          <p className="min-w-0 flex-1 text-muted-foreground">
-            Feedback sent.{" "}
-            {plan.sample ? "Add a revision yourself to try the version diff." : "Waiting for the agent's revision."}
-          </p>
-          {plan.sample ? (
-            <Button type="button" size="sm" onClick={onRevise}>Add revision</Button>
-          ) : null}
+    <div className={cn("border-t border-border bg-background px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]", className)}>
+      {failure ? (
+        <div role="alert" className="mb-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">
+          <div className="min-w-0 flex-1"><p>{failure.message}</p><p className="text-xs text-muted-foreground">Request {failure.requestId}</p></div>
+          <Button variant="ghost" size="sm" onClick={onDismissFailure}>Dismiss</Button>
         </div>
       ) : null}
-      <div className="grid grid-cols-1 items-start gap-2 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 @3xl:grid-cols-[minmax(0,1fr)_auto]">
-        <Textarea
-          ref={textareaRef}
-          value={note}
-          onChange={(event) => onNoteChange(event.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Note for the agent (optional)"
-          aria-label="Note for the agent"
-          rows={1}
-          disabled={busy}
-          className="order-1 min-w-0 min-h-9 resize-none py-[7px] leading-5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        />
-        {failure ? (
-          <div role="alert" className="order-first col-span-full flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">
-            <Icon name="AlertCircle" className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
-            <div className="min-w-0 flex-1">
-              <p className="text-foreground">{failure.message}</p>
-              <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">
-                Request {failure.requestId}
-              </p>
-            </div>
-            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={onDismissFailure}>
-              Dismiss
+      <div className="flex flex-wrap items-center gap-3">
+        <p role="status" className="min-w-0 flex-1 text-xs text-muted-foreground">
+          {[liveStatus, !liveStatus && open === 0 ? "No open annotations" : `${open} open`, failedCount ? `${failedCount} not delivered` : null].filter(Boolean).join(" · ")}
+        </p>
+        <AlertDialog open={confirmOpen} onOpenChange={onConfirmOpenChange}>
+          <AlertDialogTrigger asChild>
+            <Button type="button" disabled={busy}>
+              <Icon name={busy ? "Loading" : "Play"} className={cn("size-4", busy && "animate-spin")} aria-hidden />
+              Approve
             </Button>
-          </div>
-        ) : null}
-        <div className="contents">
-          {persistFailed ? (
-            <p className="order-2 col-span-full min-w-0 text-xs text-muted-foreground @3xl:order-3" aria-live="polite">
-              Draft not saved in this browser.
-            </p>
-          ) : null}
-          <div className="order-3 flex items-center justify-start gap-2 @3xl:order-2 @3xl:justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!gate.canSendFeedback || busy}
-              onClick={() => onSubmit("feedback")}
-            >
-              {submitting === "feedback" ? (
-                <Icon name="Loading" className="size-4 animate-spin" aria-hidden />
-              ) : (
-                <Icon name="Sent" className="size-4" aria-hidden />
-              )}
-              Send feedback
-            </Button>
-            <AlertDialog open={confirmOpen} onOpenChange={onConfirmOpenChange}>
-              <Button
-                type="button"
-                disabled={!gate.canApprove || busy}
-                onClick={() => (plan.sample ? onSubmit("approve") : onConfirmOpenChange(true))}
-              >
-                {submitting === "approve" ? (
-                  <Icon name="Loading" className="size-4 animate-spin" aria-hidden />
-                ) : (
-                  <Icon name="Play" className="size-4" aria-hidden />
-                )}
-                Approve
-              </Button>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Approve this plan?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    The approval{note.trim() ? " and your note are" : " is"} sent to the linked
-                    thread, queued if the agent is busy. The agent starts from the plan when it
-                    reads the message.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={() => {
-                      onConfirmOpenChange(false);
-                      onSubmit("approve");
-                    }}
-                  >
-                    Approve
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
-        </div>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Approve this plan?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {open > 0 ? `${open} ${open === 1 ? "annotation is" : "annotations are"} still open. ` : ""}
+                The agent implements the current version.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={() => { onConfirmOpenChange(false); onSubmit("approve"); }}>Approve</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );

@@ -24,6 +24,8 @@ export function usePlan(planId: string | null): PlanState {
   const [error, setError] = useState<string | null>(null);
   const [isMissing, setMissing] = useState(false);
   const requestRef = useRef(0);
+  const planRef = useRef<Plan | null>(null);
+  const mountedRef = useRef(false);
 
   const refetch = useCallback(() => {
     if (planId === null) return;
@@ -31,6 +33,7 @@ export function usePlan(planId: string | null): PlanState {
     api.call("get", { id: planId }).then(
       (result) => {
         if (request !== requestRef.current) return;
+        planRef.current = result;
         setPlan(result);
         setError(null);
         setMissing(false);
@@ -45,18 +48,27 @@ export function usePlan(planId: string | null): PlanState {
   }, [api, planId]);
 
   useEffect(() => {
+    mountedRef.current = true;
+    planRef.current = null;
     setPlan(null);
     setError(null);
     setMissing(false);
     refetch();
+    return () => { mountedRef.current = false; requestRef.current += 1; };
   }, [refetch]);
   useRealtime(PLANS_CHANGED, refetch);
 
   const apply = useCallback((next: Plan) => {
+    if (!mountedRef.current || next.id !== planId) return;
+    if (planRef.current && next.revision < planRef.current.revision) {
+      refetch();
+      return;
+    }
     requestRef.current += 1;
+    planRef.current = next;
     setPlan(next);
     setError(null);
-  }, []);
+  }, [planId, refetch]);
 
   return { plan, error, isMissing, refetch, apply };
 }

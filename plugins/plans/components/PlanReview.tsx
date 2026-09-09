@@ -14,7 +14,6 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -26,14 +25,13 @@ import type { Plan } from "../contract";
 import { useContainerWidth, RAIL_BREAKPOINT_PX } from "../hooks/useContainerWidth";
 import { usePlansApi } from "../hooks/usePlansApi";
 import { useReviewDraft } from "../hooks/useReviewDraft";
-import { clearDraft, isDraftEmpty, readDraft, type ReviewDraft } from "../lib/draft-store";
+import { readLastSeen, writeLastSeen, readShownNotice, writeShownNotice } from "../lib/seen-store";
+import { useDeliveryStatus } from "../hooks/useDeliveryStatus";
 import { describeError } from "../lib/errors";
 import {
   commentsForVersion,
   findVersion,
   latestVersion,
-  sortedVersions,
-  openComments,
 } from "../lib/plan-model";
 import { definedContext, type QuoteMatch } from "../lib/quote-anchor";
 import { CommentComposer, CommentRail, type CommentActions, type PendingComment } from "./CommentRail";
@@ -42,7 +40,6 @@ import { PlanChanges } from "./PlanChanges";
 import { PlanDocument, type AnchorMap } from "./PlanDocument";
 import { PlanHeader, type ReviewView } from "./PlanHeader";
 import { ReviewFooter, type ReviewAction, type SubmitFailure } from "./ReviewFooter";
-import { RevisionDialog } from "./RevisionDialog";
 
 interface PlanReviewProps {
   plan: Plan;
@@ -76,6 +73,13 @@ export function PlanReview({
   const isMobile = isCompact || isCoarse;
 
   const latest = latestVersion(plan);
+  const delivery = useDeliveryStatus(plan.id, plan.status);
+  const seenRef = useRef(readLastSeen(plan.id));
+  const [changesBase, setChangesBase] = useState(seenRef.current);
+  const [agentUpdate, setAgentUpdate] = useState<typeof latest>(() => {
+    const seen = findVersion(plan, seenRef.current);
+    return seen && latest && latest.number > seen.number && latest.source === "agent" ? latest : null;
+  });
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const version = findVersion(plan, selectedVersionId) ?? latest;
   const [view, setView] = useState<ReviewView>("document");
@@ -83,7 +87,6 @@ export function PlanReview({
   const [hoveredCommentId, setHoveredCommentId] = useState<string | null>(null);
   const [anchors, setAnchors] = useState<AnchorMap>({});
   const [pendingMatch, setPendingMatch] = useState<QuoteMatch | null>(null);
-  const [reviseOpen, setReviseOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -97,11 +100,13 @@ export function PlanReview({
   const previousLatestRef = useRef(latestId);
   useEffect(() => {
     if (previousLatestRef.current !== latestId) {
+      setChangesBase(seenRef.current);
+      if (latest?.source === "agent") setAgentUpdate(latest);
       previousLatestRef.current = latestId;
       setSelectedVersionId(null);
       setActiveCommentId(null);
     }
-  }, [latestId]);
+  }, [latestId, latest]);
 
   useEffect(() => {
     if (isWide && view === "comments") setView("document");
@@ -117,27 +122,30 @@ export function PlanReview({
   const isLatest = version !== null && latest !== null && version.id === latest.id;
   const isApproved = plan.status === "approved";
   const canEdit = isLatest && !isApproved && submitting === null;
-  const blockers = useMemo(
-    () => (version ? openComments(plan).filter((comment) => comment.versionId !== version.id) : []),
-    [plan, version],
-  );
-  const blockerVersion = useMemo(() => {
-    const first = blockers[0];
-    return first ? findVersion(plan, first.versionId) : null;
-  }, [blockers, plan]);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const markSeen = () => {
+      clearTimeout(timer);
+      if (view !== "document" || !isLatest || !latestId || document.visibilityState === "hidden") return;
+      seenRef.current = latestId;
+      writeLastSeen(plan.id, latestId);
+      timer = setTimeout(() => {
+        setAgentUpdate((update) => update?.id === latestId ? null : update);
+      }, 3000);
+    };
+    markSeen();
+    document.addEventListener("visibilitychange", markSeen);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", markSeen);
+    };
+  }, [view, isLatest, latestId, plan.id]);
 
-  // A note written for an older version stays keyed to it; surface it here
-  // instead of letting it vanish when the agent's revision switches the view.
-  const [dismissedRecovery, setDismissedRecovery] = useState<string | null>(null);
-  const recovery = useMemo(() => {
-    if (version === null) return null;
-    for (const older of sortedVersions(plan)) {
-      if (older.id === version.id || older.number > version.number) continue;
-      const stored = readDraft(plan.id, older.id);
-      if (!isDraftEmpty(stored) && dismissedRecovery !== older.id) return { version: older, draft: stored };
-    }
-    return null;
-  }, [dismissedRecovery, plan, version]);
+  const notice = plan.delivery.notice;
+  const [dismissedNotice, setDismissedNotice] = useState(() => readShownNotice(plan.id));
+  useEffect(() => {
+    if (notice) writeShownNotice(plan.id, notice);
+  }, [plan.id, notice]);
 
   const runMutation = useCallback(
     async (work: () => Promise<Plan>) => {
@@ -151,10 +159,16 @@ export function PlanReview({
   const commentActions = useMemo<CommentActions>(
     () => ({
       update: async (commentId, body) => {
-        await runMutation(() => api.call("updateComment", { id: plan.id, commentId, body }));
+        await runMutation(() => api.call("updateAnnotation", { id: plan.id, annotationId: commentId, body }));
+      },
+      resolve: async (annotationId) => {
+        await runMutation(() => api.call("resolveAnnotation", { id: plan.id, annotationId }));
+      },
+      reply: async (annotationId, body) => {
+        await runMutation(() => api.call("replyToAnnotation", { id: plan.id, annotationId, body }));
       },
       remove: async (commentId) => {
-        await runMutation(() => api.call("removeComment", { id: plan.id, commentId }));
+        await runMutation(() => api.call("withdrawAnnotation", { id: plan.id, annotationId: commentId }));
         setActiveCommentId((current) => (current === commentId ? null : current));
       },
     }),
@@ -170,12 +184,15 @@ export function PlanReview({
     async (pending: PendingComment) => {
       if (version === null) return;
       const next = await runMutation(() =>
-        api.call("addComment", {
+        api.call("addAnnotation", {
           id: plan.id,
-          versionId: version.id,
+          versionId: pending.versionId ?? version.id,
+          kind: pending.kind ?? "comment",
           quote: pending.quote,
           body: pending.body,
-          ...definedContext(pending),
+          ...definedContext({ prefix: pending.prefix, suffix: pending.suffix,
+            ...(pending.versionId ? { position: pending.position }
+              : pendingMatch?.kind === "unique" ? { position: pendingMatch.start } : {}) }),
         }),
       );
       updateDraft({ pendingComment: null });
@@ -185,10 +202,10 @@ export function PlanReview({
       if (added) setActiveCommentId(added.id);
       if (!isWide) setView("comments");
     },
-    [api, isWide, plan.comments, plan.id, runMutation, updateDraft, version],
+    [api, isWide, plan.comments, plan.id, runMutation, updateDraft, version, pendingMatch],
   );
 
-  const submitReview = useCallback(
+  const approvePlan = useCallback(
     async (action: ReviewAction) => {
       if (version === null) return;
       // One request id per attempt series: a retry after a failure reuses it so
@@ -199,56 +216,18 @@ export function PlanReview({
       setFailure(null);
       try {
         await runMutation(() =>
-          api.call("submitReview", {
-            id: plan.id,
-            versionId: version.id,
-            action,
-            note: draft.note.trim(),
-            requestId,
-          }),
+          api.call("approve", { id: plan.id, requestId, versionId: version.id }),
         );
         requestIdRef.current = null;
         resetDraft();
-        toast.success(
-          action === "approve"
-            ? plan.sample
-              ? "Sample plan approved"
-              : "Approval sent to the thread"
-            : plan.sample
-              ? "Feedback recorded on the sample"
-              : "Feedback sent to the thread",
-        );
+        toast.success(plan.sample ? "Sample plan approved" : "Plan approved");
       } catch (cause) {
         setFailure({ message: describeError(cause), requestId, action });
       } finally {
         setSubmitting(null);
       }
     },
-    [api, draft.note, plan.id, plan.sample, resetDraft, runMutation, version],
-  );
-
-  const submitRevision = useCallback(
-    async (markdown: string) => {
-      if (latest === null) return;
-      await runMutation(() =>
-        api.call("revise", { id: plan.id, markdown, expectedVersionId: latest.id }),
-      );
-      setSelectedVersionId(null);
-      setView("changes");
-    },
-    [api, latest, plan.id, runMutation],
-  );
-
-  const adoptRecovery = useCallback(
-    (from: { version: { id: string }; draft: ReviewDraft }) => {
-      updateDraft((current) => ({
-        note: [current.note.trim(), from.draft.note.trim()].filter(Boolean).join("\n\n"),
-        pendingComment: current.pendingComment ?? from.draft.pendingComment,
-      }));
-      clearDraft(plan.id, from.version.id);
-      setDismissedRecovery(from.version.id);
-    },
-    [plan.id, updateDraft],
+    [api, plan.id, plan.sample, resetDraft, runMutation, version],
   );
 
   const deletePlan = useCallback(async () => {
@@ -267,7 +246,7 @@ export function PlanReview({
     );
   }
 
-  const pending = draft.pendingComment;
+  const pending = canEdit ? draft.pendingComment : null;
 
   return (
     <div ref={rootRef} className={cn("plans-review @container flex h-full min-h-0 flex-col bg-background", className)}>
@@ -283,7 +262,9 @@ export function PlanReview({
         showCommentsTab={!isWide}
         commentCount={comments.length}
         onBack={onBack}
-        onRevise={() => setReviseOpen(true)}
+        onDeliveryModeChange={(mode) => {
+          void runMutation(() => api.call("setDeliveryMode", { id: plan.id, mode })).catch((cause) => toast.error(describeError(cause)));
+        }}
         onDelete={() => setDeleteOpen(true)}
         onDiagnostics={() => setDiagnosticsOpen(true)}
       />
@@ -300,62 +281,26 @@ export function PlanReview({
             className="h-6 px-2 text-xs"
             onClick={() => setSelectedVersionId(null)}
           >
-            Go to v{latest.number}
+            Go to latest
           </Button>
         </div>
-      ) : blockers.length > 0 && !isApproved ? (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-muted/60 px-4 py-1.5 text-xs text-muted-foreground">
-          <Icon name="MessageSquare" className="size-3.5 shrink-0" aria-hidden />
-          <span className="min-w-0 flex-1">
-            {blockers.length} open {blockers.length === 1 ? "comment" : "comments"} on{" "}
-            {blockerVersion ? `v${blockerVersion.number}` : "an earlier version"} still{" "}
-            {blockers.length === 1 ? "blocks" : "block"} approval.
-          </span>
-          <span className="flex items-center gap-1">
-            {blockerVersion ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-6 px-2 text-xs"
-                onClick={() => {
-                  setSelectedVersionId(blockerVersion.id);
-                  setActiveCommentId(blockers[0]?.id ?? null);
-                  if (!isWide) setView("comments");
-                }}
-              >
-                Show
-              </Button>
-            ) : null}
-          </span>
+      ) : null}
+      {agentUpdate ? (
+        <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-xs text-muted-foreground" role="status">
+          <span className="min-w-0 flex-1 break-words">Updated by the agent · v{agentUpdate.number}{agentUpdate.summary ? ` · ${agentUpdate.summary}` : ""}</span>
+          <Button size="sm" variant="ghost" className="shrink-0" onClick={() => { setSelectedVersionId(null); setView("changes"); setAgentUpdate(null); }}>Show changes</Button>
+          <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Dismiss update" onClick={() => setAgentUpdate(null)}>
+            <Icon name="X" className="size-3.5" aria-hidden />
+          </Button>
         </div>
       ) : null}
-      {recovery !== null && isLatest && !isApproved ? (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-muted/60 px-4 py-1.5 text-xs text-muted-foreground">
-          <Icon name="Edit" className="size-3.5 shrink-0" aria-hidden />
-          <span className="min-w-0 flex-1">
-            You have an unsent draft from v{recovery.version.number}
-            {recovery.draft.note.trim() ? `: “${truncate(recovery.draft.note.trim(), 60)}”` : "."}
-          </span>
-          <span className="flex items-center gap-1">
-            <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => adoptRecovery(recovery)}>
-              Copy to v{version.number}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-xs"
-              onClick={() => {
-                clearDraft(plan.id, recovery.version.id);
-                setDismissedRecovery(recovery.version.id);
-              }}
-            >
-              Discard
-            </Button>
-          </span>
+      {notice && notice !== dismissedNotice ? (
+        <div className="flex items-center gap-2 border-b border-border px-4 py-1 text-xs text-muted-foreground">
+          <p className="flex-1">{notice}</p>
+          <Button size="sm" variant="ghost" aria-label="Dismiss delivery notice" onClick={() => setDismissedNotice(notice)}>Dismiss</Button>
         </div>
       ) : null}
+      {persistFailed ? <p className="px-4 py-1 text-xs text-muted-foreground">Draft not saved in this browser.</p> : null}
       <div className="flex min-h-0 flex-1">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* Keep the rendered text index alive across tabs, including new comments. */}
@@ -363,13 +308,16 @@ export function PlanReview({
             <PlanDocument
               visible={view === "document"}
               markdown={version.markdown}
+              versionId={version.id}
               comments={comments}
               activeCommentId={activeCommentId}
               hoveredCommentId={hoveredCommentId}
               onHoverComment={setHoveredCommentId}
               canComment={canEdit}
               pendingQuote={pending?.quote ?? null}
-              pendingContext={pending ?? undefined}
+              pendingKind={pending?.kind}
+              pendingContext={pending ? { prefix: pending.prefix, suffix: pending.suffix,
+                ...(pending.versionId ? { position: pending.position } : {}) } : undefined}
               onPendingMatch={setPendingMatch}
               composer={
                 !isMobile && pending ? (
@@ -384,11 +332,11 @@ export function PlanReview({
               }
               onAnnotate={async (quote, kind, context) => {
                 try {
-                  await runMutation(() => api.call("addComment", { id: plan.id, versionId: version.id, quote, kind, body: "", ...context }));
+                  await runMutation(() => api.call("addAnnotation", { id: plan.id, versionId: version.id, quote, kind, body: "", ...context }));
                 } catch (error) { toast.error(describeError(error)); }
               }}
-              onQuote={(quote, context) => {
-                setPending({ quote, ...context, body: pending?.quote === quote ? pending.body : "" });
+              onQuote={(quote, context, kind = "comment") => {
+                setPending({ quote, kind, versionId: version.id, ...context, body: pending?.quote === quote ? pending.body : "" });
                 setActiveCommentId(null);
               }}
               onActivateComment={(id) => {
@@ -399,7 +347,7 @@ export function PlanReview({
             />
           </div>
           {view === "changes" ? (
-            <PlanChanges plan={plan} version={version} isWide={isWide} />
+            <PlanChanges key={version.id} plan={plan} version={version} isWide={isWide} lastSeenId={changesBase} />
           ) : view === "comments" ? (
             <CommentRail
               comments={comments}
@@ -412,7 +360,8 @@ export function PlanReview({
               hoveredCommentId={hoveredCommentId}
               onHover={setHoveredCommentId}
               actions={commentActions}
-              canEdit={!isApproved && submitting === null}
+              canEdit={canEdit}
+              failedAnnotations={delivery.failedAnnotations}
               pending={pending}
               showHeader={false}
             />
@@ -428,7 +377,8 @@ export function PlanReview({
               hoveredCommentId={hoveredCommentId}
               onHover={setHoveredCommentId}
               actions={commentActions}
-              canEdit={!isApproved && submitting === null}
+              canEdit={canEdit}
+              failedAnnotations={delivery.failedAnnotations}
               pending={pending}
               emptyMessage={view === "changes" && canEdit ? "Open Document to comment on the text." : undefined}
             />
@@ -438,17 +388,14 @@ export function PlanReview({
       {isLatest ? (
         <ReviewFooter
           plan={plan}
-          versionId={version.id}
-          note={draft.note}
-          onNoteChange={(note) => updateDraft({ note })}
-          persistFailed={persistFailed}
+          failedCount={delivery.failedCount}
+          approvalState={delivery.approvalState}
           submitting={submitting}
           failure={failure}
-          onSubmit={(action) => void submitReview(action)}
+          onSubmit={(action) => void approvePlan(action)}
           onDismissFailure={() => setFailure(null)}
           confirmOpen={confirmOpen}
           onConfirmOpenChange={setConfirmOpen}
-          onRevise={() => setReviseOpen(true)}
         />
       ) : null}
 
@@ -456,7 +403,7 @@ export function PlanReview({
         <Dialog open={pending !== null && view === "document"} onOpenChange={(open) => !open && setPending(null)}>
           <DialogContent className="sm:max-w-md" aria-describedby={undefined}>
             <DialogHeader>
-              <DialogTitle>New comment</DialogTitle>
+              <DialogTitle>{pending?.kind === "ask" ? "New ask" : "New comment"}</DialogTitle>
             </DialogHeader>
             {pending ? (
               <CommentComposer
@@ -471,14 +418,6 @@ export function PlanReview({
         </Dialog>
       ) : null}
 
-      <RevisionDialog
-        plan={plan}
-        latest={latest}
-        open={reviseOpen}
-        onOpenChange={setReviseOpen}
-        onSubmit={submitRevision}
-      />
-
       <DiagnosticsDialog open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen} root={rootRef.current} anchors={anchors} />
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
@@ -486,9 +425,8 @@ export function PlanReview({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete “{plan.title}”?</AlertDialogTitle>
             <AlertDialogDescription>
-              All {plan.versions.length} {plan.versions.length === 1 ? "version" : "versions"} and{" "}
-              {plan.comments.length} {plan.comments.length === 1 ? "comment" : "comments"} are removed.
-              The linked thread is not affected.
+              This removes all {plan.versions.length} versions and {plan.comments.length} annotations,
+              and any queued feedback message. The thread's history stays.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -504,8 +442,4 @@ export function PlanReview({
       </AlertDialog>
     </div>
   );
-}
-
-function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }

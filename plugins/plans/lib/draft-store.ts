@@ -1,22 +1,13 @@
-/**
- * Review drafts live in localStorage so a half-written note survives reloads,
- * tab switches, and a plan being reopened later. One draft per plan version:
- * comments are pinned to a version, and so is the note that accompanies them.
- * Storage can be missing or throw (private mode, quota); every access reports
- * that instead of failing, so review state never depends on persistence.
- */
-
 export interface ReviewDraft {
-  note: string;
-  pendingComment: { quote: string; body: string; prefix?: string; suffix?: string; position?: number } | null;
+  pendingComment: { quote: string; body: string; kind?: "comment" | "ask"; versionId?: string; prefix?: string; suffix?: string; position?: number } | null;
 }
 
-export const EMPTY_DRAFT: ReviewDraft = { note: "", pendingComment: null };
+export const EMPTY_DRAFT: ReviewDraft = { pendingComment: null };
 
 const PREFIX = "bb-plugin-plans:draft:";
 
-export function draftKey(planId: string, versionId: string): string {
-  return `${PREFIX}${planId}:${versionId}`;
+export function draftKey(planId: string, _versionId?: string): string {
+  return `${PREFIX}${planId}`;
 }
 
 function storage(): Storage | null {
@@ -28,14 +19,13 @@ function storage(): Storage | null {
 }
 
 export function isDraftEmpty(draft: ReviewDraft): boolean {
-  return draft.note.trim() === "" && draft.pendingComment === null;
+  return draft.pendingComment === null;
 }
 
 function parseDraft(raw: string): ReviewDraft {
   const parsed: unknown = JSON.parse(raw);
   if (typeof parsed !== "object" || parsed === null) return EMPTY_DRAFT;
   const record = parsed as Record<string, unknown>;
-  const note = typeof record.note === "string" ? record.note : "";
   const pending = record.pendingComment as Record<string, unknown> | null | undefined;
   const pendingComment =
     typeof pending === "object" &&
@@ -44,19 +34,36 @@ function parseDraft(raw: string): ReviewDraft {
     typeof pending.body === "string"
       ? {
           quote: pending.quote,
+          ...(typeof pending.versionId === "string" ? { versionId: pending.versionId } : {}),
           body: pending.body,
+          kind: pending.kind === "ask" ? "ask" as const : "comment" as const,
           ...(typeof pending.prefix === "string" ? { prefix: pending.prefix } : {}),
           ...(typeof pending.suffix === "string" ? { suffix: pending.suffix } : {}),
           ...(typeof pending.position === "number" ? { position: pending.position } : {}),
         }
       : null;
-  return { note, pendingComment };
+  return { pendingComment };
 }
 
 export function readDraft(planId: string, versionId: string): ReviewDraft {
   try {
-    const raw = storage()?.getItem(draftKey(planId, versionId));
-    return raw ? parseDraft(raw) : EMPTY_DRAFT;
+    const store = storage();
+    const raw = store?.getItem(draftKey(planId));
+    if (raw) return parseDraft(raw);
+    // Recover drafts saved by the former per-version format, including a
+    // draft on an older version when the review reopens on the latest one.
+    const legacyPrefix = `${PREFIX}${planId}:`;
+    const keys = store ? Array.from({ length: store.length }, (_, index) => store.key(index)!) : [];
+    const legacyKeys = keys.filter((key) => key.startsWith(legacyPrefix));
+    legacyKeys.sort((a, b) => Number(b === `${legacyPrefix}${versionId}`) - Number(a === `${legacyPrefix}${versionId}`));
+    for (const key of legacyKeys) {
+      const draft = parseDraft(store!.getItem(key)!);
+      if (!draft.pendingComment) continue;
+      draft.pendingComment.versionId ??= key.slice(legacyPrefix.length);
+      if (writeDraft(planId, versionId, draft)) legacyKeys.forEach((old) => store!.removeItem(old));
+      return draft;
+    }
+    return EMPTY_DRAFT;
   } catch {
     return EMPTY_DRAFT;
   }

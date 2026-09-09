@@ -20,16 +20,17 @@ interface PlanChangesProps {
   /** The version whose changes are shown (the "after" side). */
   version: PlanVersion;
   isWide: boolean;
+  lastSeenId?: string | null;
   className?: string;
 }
 
 /** Compares the displayed version with an earlier one through BB's diff viewer. */
-export function PlanChanges({ plan, version, isWide, className }: PlanChangesProps) {
+export function PlanChanges({ plan, version, isWide, lastSeenId, className }: PlanChangesProps) {
   const earlier = useMemo(
     () => sortedVersions(plan).filter((candidate) => candidate.number < version.number),
     [plan, version.number],
   );
-  const defaultBase = previousVersion(plan, version);
+  const defaultBase = earlier.find((candidate) => candidate.id === lastSeenId) ?? previousVersion(plan, version);
   const [baseId, setBaseId] = useState<string | null>(null);
   const [view, setView] = useState<"unified" | "split">("unified");
   const base =

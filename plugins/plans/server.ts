@@ -1,183 +1,128 @@
 import { randomUUID } from "node:crypto";
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { resolve } from "node:path";
+import type { BbPluginApi, PluginCliContext } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { plansContract } from "./contract";
-import { createPlanService, type WaitResult } from "./service";
-
-/** `bb thread wait` uses the same default; long enough for a human review pass. */
-const DEFAULT_WAIT_SECONDS = 20 * 60;
-const MAX_WAIT_SECONDS = 24 * 60 * 60;
+import { addAnnotationSchema, agentReplySchema, createSchema, idSchema, plansContract, updateSchema } from "./contract";
+import { createPlanService, type PlanServiceOptions } from "./service";
 
 interface Flags {
-  positional: string[];
-  wait: boolean;
-  timeoutMs: number;
-  version?: string;
-  thread?: string;
-  note: string;
-  comments: Array<{ quote: string; body: string; kind: "comment" | "redline" | "looksGood" }>;
+  positional: string[]; version?: string; thread?: string; summary?: string;
+  resolves: string[]; noResolve: boolean; approve: boolean;
+  annotations: Array<{ quote: string; body: string; kind: "comment" | "ask" | "redline" | "looksGood" }>;
 }
-
-/** Tiny argv parser: `--flag`, `--key value`, and repeatable annotation flags. */
 function parseFlags(argv: string[]): Flags {
-  const flags: Flags = { positional: [], wait: false, timeoutMs: DEFAULT_WAIT_SECONDS * 1000, note: "", comments: [] };
+  const flags: Flags = { positional: [], resolves: [], noResolve: false, approve: false, annotations: [] };
   const take = (index: number, name: string) => {
     const value = argv[index + 1];
-    if (value === undefined) throw new Error(`${name} needs a value.`);
+    if (value === undefined || value.startsWith("--")) throw new Error(`${name} needs a value.`);
     return value;
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
-    if (arg === "--wait") flags.wait = true;
-    else if (arg === "--timeout") {
-      const seconds = z.coerce.number().int().min(1).max(MAX_WAIT_SECONDS).parse(take(i, arg));
-      flags.timeoutMs = seconds * 1000;
-      i += 1;
-    } else if (arg === "--version-id") { flags.version = take(i, arg); i += 1; }
-    else if (arg === "--thread") { flags.thread = take(i, arg); i += 1; }
-    else if (arg === "--note") { flags.note = take(i, arg); i += 1; }
-    else if (arg === "--comment") {
-      const raw = take(i, arg);
-      const split = raw.indexOf("::");
-      if (split <= 0) throw new Error("--comment expects <quote>::<body>.");
-      flags.comments.push({ quote: raw.slice(0, split), body: raw.slice(split + 2), kind: "comment" });
-      i += 1;
-    } else if (arg === "--redline") { flags.comments.push({ quote: take(i, arg), body: "", kind: "redline" }); i += 1; }
-    else if (arg === "--looks-good") { flags.comments.push({ quote: take(i, arg), body: "", kind: "looksGood" }); i += 1; }
-    else if (arg.startsWith("--")) throw new Error(`Unknown flag ${arg}.`);
+    if (arg === "--version-id") flags.version = take(i++, arg);
+    else if (arg === "--thread") flags.thread = take(i++, arg);
+    else if (arg === "--summary") flags.summary = take(i++, arg);
+    else if (arg === "--no-resolve") flags.noResolve = true;
+    else if (arg === "--approve") flags.approve = true;
+    else if (arg === "--resolve") {
+      flags.resolves.push(take(i++, arg));
+      while (argv[i + 1]?.startsWith("#")) flags.resolves.push(argv[++i]!);
+    } else if (arg === "--comment" || arg === "--ask") {
+      const raw = take(i++, arg); const split = raw.indexOf("::");
+      if (split <= 0) throw new Error(`${arg} expects quote::body.`);
+      flags.annotations.push({ quote: raw.slice(0, split), body: raw.slice(split + 2), kind: arg === "--ask" ? "ask" : "comment" });
+    } else if (arg === "--redline" || arg === "--looks-good") {
+      flags.annotations.push({ quote: take(i++, arg), body: "", kind: arg === "--redline" ? "redline" : "looksGood" });
+    } else if (arg.startsWith("--")) throw new Error(`Unknown flag ${arg}.`);
     else flags.positional.push(arg);
   }
   return flags;
 }
 
-export function waitInstruction(planId: string, versionId: string): string {
-  return `Plan saved for review. Run \`bb plans wait ${planId} --version-id ${versionId}\` and act on its JSON result; run it in the background and await it if your shell tool has a time limit. Do not implement yet.`;
-}
-
-/** For providers whose tool calls cannot block: the prompt is held server-side. */
-export function heldInstruction(planId: string, versionId: string): string {
-  return `Plan ${planId} version ${versionId} is open for review and the thread is marked as waiting for the user. End your turn now without implementing. The decision arrives as a new message with the comments and note (never the plan text); do not poll or run \`bb plans wait\`.`;
-}
-
-/** The tool holds the thread for at most this long before returning `pending`. */
-const TOOL_WAIT_MS = 24 * 60 * 60 * 1000;
-
-export interface PluginOptions {
-  /** Test hook: shorten the BB interaction lifetime per request. */
-  interactionChunkMs?: number;
-  /** Test hook: shorten the retry delay of a detached hold. */
-  holdRetryMs?: number;
-}
-
+export type PluginOptions = PlanServiceOptions;
+const toolBehavior = " Returns at once by design. After you finish the plan changes, call plans_handoff and end your turn. Feedback arrives as thread messages. Implement only after approval.";
 export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
-  const settings = bb.settings.define({
-    nonBlockingProviders: {
-      type: "string",
-      label: "Providers whose tool calls cannot block",
-      description: "Comma-separated provider IDs whose tool calls time out quickly (Cursor's MCP client stops after 60 seconds). For these, plans_submit keeps the review prompt pending on the thread without blocking, and the decision arrives as a thread message.",
-      default: "acp-cursor",
-    },
-  });
-  const isNonBlocking = async (threadId: string) => {
-    const listed = (await settings.get()).nonBlockingProviders.split(",").map((item) => item.trim()).filter(Boolean);
-    if (listed.length === 0) return false;
-    const thread = await bb.sdk.threads.get({ threadId });
-    return listed.includes(thread.providerId);
+  const service = createPlanService(bb, options);
+  bb.rpc.register(plansContract, service.rpc);
+  const owns = (planId: string, threadId?: string | null) => {
+    if (!threadId) throw new Error("Use this command from the plan's BB thread.");
+    if (service.get({ id: planId }).threadId !== threadId) throw new Error("This plan belongs to another thread.");
   };
-  const service = createPlanService(bb, { interactionChunkMs: options.interactionChunkMs, holdRetryMs: options.holdRetryMs });
-  const { delivery, wait, hold: _hold, version, ...rpcHandlers } = service;
-  bb.rpc.register(plansContract, rpcHandlers);
   bb.agents.registerTool({
-    name: "plans_submit",
-    description: "Submit a Markdown plan to the Plans review panel, or submit a revised version, then block until the user sends feedback or approves. The result is the decision as JSON (status feedback|approved with comments and note). On providers whose tool calls cannot block, it returns status submitted while the review prompt stays pending on the thread; end the turn and the decision arrives as a message. This tool does not itself enforce provider plan mode.",
-    presentation: { label: { pending: "Awaiting plan review", completed: "Plan reviewed" } },
-    parameters: z.object({ title: z.string().min(1).max(200), markdown: z.string().min(1).max(100_000), planId: z.string().optional(), expectedVersionId: z.string().optional() }),
-    async execute({ title, markdown, planId, expectedVersionId }, { threadId, signal }) {
+    name: "plans_submit", description: "Create a Markdown plan and open its review prompt. This tool returns at once by design. End your turn after calling it. Feedback arrives as thread messages. Implement only after approval.",
+    presentation: { label: { pending: "Submitting plan", completed: "Plan submitted" } },
+    parameters: createSchema.pick({ title: true, markdown: true }),
+    async execute(input, { threadId }) {
       if (!threadId) throw new Error("Submit a plan from a BB thread.");
-      let plan;
-      if (planId) {
-        if (!expectedVersionId) throw new Error("A revision needs expectedVersionId.");
-        if (service.get({ id: planId }).threadId !== threadId) throw new Error("This plan belongs to another thread.");
-        plan = service.revise({ id: planId, markdown, expectedVersionId });
-      } else {
-        plan = await service.create({ title, markdown, threadId });
-      }
-      const versionId = plan.versions.at(-1)!.id;
-      if (await isNonBlocking(threadId)) {
-        service.hold({ id: plan.id, versionId });
-        return JSON.stringify({ status: "submitted", planId: plan.id, versionId, instruction: heldInstruction(plan.id, versionId) });
-      }
-      const result = await wait({ id: plan.id, versionId, timeoutMs: TOOL_WAIT_MS, signal });
-      return JSON.stringify(result);
+      return JSON.stringify(await service.submit({ ...input, threadId }));
     },
   });
+  bb.agents.registerTool({
+    name: "plans_update", description: "Update the latest plan with exact-match edits or full Markdown and a summary. The resolves field sets each named annotation to addressed, including asks." + toolBehavior,
+    presentation: { label: { pending: "Updating plan", completed: "Plan updated" } }, parameters: updateSchema,
+    execute(input, { threadId }) { owns(input.planId, threadId); return JSON.stringify(service.update(input)); },
+  });
+  bb.agents.registerTool({
+    name: "plans_reply", description: "Reply to an annotation by number or ID. An ask becomes answered by default. With resolve=false, keep its current state, including answered or addressed. For a comment or redline, keep the state by default; resolve=true sets addressed." + toolBehavior,
+    presentation: { label: { pending: "Replying to annotation", completed: "Reply saved" } }, parameters: agentReplySchema,
+    execute(input, { threadId }) { owns(input.planId, threadId); return JSON.stringify(service.reply(input)); },
+  });
+  bb.agents.registerTool({
+    name: "plans_handoff", description: "Restore the plan review prompt. Create no prompt while a plugin message is still queued for the thread; that message already brings the agent back. This tool returns at once by design. End your turn after calling it. Feedback arrives as thread messages. Do not poll.",
+    presentation: { label: { pending: "Opening plan review", completed: "Plan ready for review" } }, parameters: z.object({ planId: idSchema }),
+    execute(input, { threadId }) { owns(input.planId, threadId); return JSON.stringify(service.handoff(input)); },
+  });
+  const readFile = async (file: string, ctx: PluginCliContext) => {
+    if (!ctx.threadId || !ctx.cwd) throw new Error("Read a plan file from a BB thread with a working directory.");
+    const thread = await bb.sdk.threads.get({ threadId: ctx.threadId });
+    if (!thread.environmentId) throw new Error("This thread has no environment.");
+    const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
+    const result = await bb.sdk.files.read({ path: resolve(ctx.cwd, file), rootPath: environment.path ?? ctx.cwd, hostId: environment.hostId });
+    if (result.contentEncoding !== "utf8") throw new Error("Use a UTF-8 Markdown file.");
+    return result.content;
+  };
   bb.cli.register({
-    name: "plans",
-    summary: "Submit plans for human review in the thread panel and wait for the decision.",
+    name: "plans", summary: "Submit and update live plans. Tools return at once; feedback arrives as thread messages.",
     commands: [
-      { name: "submit", summary: "Submit a plan from a Markdown file in this thread; --wait blocks until it is reviewed", usage: "bb plans submit <file> [title] [plan-id expected-version-id] [--wait] [--timeout <seconds>]" },
-      { name: "wait", summary: "Block until the reviewer sends feedback or approves; prints the decision as JSON, or status pending on timeout", usage: "bb plans wait <plan-id> [--version-id <id>] [--timeout <seconds>]" },
-      { name: "get", summary: "Read a plan; --version-id returns one version's text and comments", usage: "bb plans get <plan-id> [--version-id <id>]" },
-      { name: "list", summary: "List plans for this thread (or another with --thread), ten per page", usage: "bb plans list [offset] [--thread <thread-id>]" },
-      { name: "review", summary: "Review another thread's plan (for example a child's) as its reviewer; a thread cannot review its own plan", usage: "bb plans review <plan-id> <version-id> approve|feedback [--note <text>] [--comment <quote>::<body>] [--redline <quote>] [--looks-good <quote>]" },
-      { name: "delivery", summary: "Inspect a review receipt; resolve only after checking the linked thread", usage: "bb plans delivery <request-id> [sent|not-sent]" },
+      { name: "submit", summary: "Submit a plan and end the turn", usage: "bb plans submit <file> [title]" },
+      { name: "update", summary: "Update a plan from a file", usage: "bb plans update <plan> <file> --summary <text> [--resolve #n ...]" },
+      { name: "reply", summary: "Reply to an annotation", usage: "bb plans reply <plan> <#n> <text> [--no-resolve]" },
+      { name: "handoff", summary: "Open the review prompt and end the turn", usage: "bb plans handoff <plan>" },
+      { name: "get", summary: "Read a plan or stored version", usage: "bb plans get <plan> [--version-id <id>]" },
+      { name: "list", summary: "List ten plans for a thread", usage: "bb plans list [offset] [--thread <id>]" },
+      { name: "review", summary: "Annotate or approve another thread's plan", usage: 'bb plans review <plan> [--comment "quote::body"] [--ask "quote::body"] [--redline "quote"] [--looks-good "quote"] [--approve]' },
     ],
     async run(argv, ctx) {
       try {
-        const flags = parseFlags(argv);
-        const [command, ...args] = flags.positional;
+        const flags = parseFlags(argv); const [command, ...args] = flags.positional;
         let result: unknown;
-        const awaitDecision = (planId: string, versionId: string): Promise<WaitResult> =>
-          wait({ id: planId, versionId, timeoutMs: flags.timeoutMs, signal: ctx.signal });
-        if (command === "list") result = service.list({ threadId: flags.thread ?? ctx.threadId, offset: z.coerce.number().int().nonnegative().parse(args[0] ?? 0) });
-        else if (command === "get" && args[0]) result = flags.version ? version({ id: args[0], versionId: flags.version }) : service.get({ id: args[0] });
-        else if (command === "wait" && args[0]) result = await awaitDecision(args[0], flags.version ?? service.get({ id: args[0] }).versions.at(-1)!.id);
-        else if (command === "delivery" && args[0]) {
-          const resolution = z.enum(["sent", "not-sent"]).optional().parse(args[1]);
-          result = delivery(args[0], resolution);
-        } else if (command === "review" && args[0] && args[1]) {
-          const action = z.enum(["approve", "feedback"]).parse(args[2]);
-          const plan = service.get({ id: args[0] });
-          if (ctx.threadId && plan.threadId === ctx.threadId) throw new Error("A thread cannot review its own plan. The reviewer is the user or another thread.");
-          const before = new Set(plan.comments.map((item) => item.id));
-          for (const item of flags.comments) service.addComment({ id: plan.id, versionId: args[1], ...item });
-          try {
-            result = await service.submitReview({ id: plan.id, versionId: args[1], action, note: flags.note, requestId: randomUUID() });
-          } catch (error) {
-            // A rejected review must not leave drafts that block a later approval.
-            for (const item of service.get({ id: plan.id }).comments) {
-              if (!before.has(item.id) && item.sentAt === null) service.removeComment({ id: plan.id, commentId: item.id });
-            }
-            throw error;
-          }
-          result = { planId: plan.id, versionId: args[1], action, status: (result as { status: string }).status };
-        } else if (command === "submit" && args[0] && ctx.threadId) {
-          const thread = await bb.sdk.threads.get({ threadId: ctx.threadId });
-          if (!thread.environmentId) throw new Error("This thread has no environment.");
-          const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
-          const { resolve } = await import("node:path");
-          if (!ctx.cwd) throw new Error("The invoking workspace path is unavailable. Submit from a BB thread with a working directory.");
-          // The agent names the file; confine reads to the thread's workspace.
-          const rootPath = environment.path ?? ctx.cwd;
-          const file = await bb.sdk.files.read({ path: resolve(ctx.cwd, args[0]), rootPath, hostId: environment.hostId });
-          if (file.contentEncoding !== "utf8") throw new Error("Use a UTF-8 Markdown file.");
-          let plan;
-          if (args[2]) {
-            if (!args[3]) throw new Error("A revision needs the expected version ID.");
-            if (service.get({ id: args[2] }).threadId !== ctx.threadId) throw new Error("This plan belongs to another thread.");
-            plan = service.revise({ id: args[2], markdown: file.content, expectedVersionId: args[3] });
-          } else plan = await service.create({ title: args[1] ?? "Plan", markdown: file.content, threadId: ctx.threadId });
-          const versionId = plan.versions.at(-1)!.id;
-          result = flags.wait
-            ? await awaitDecision(plan.id, versionId)
-            : { planId: plan.id, versionId, instruction: waitInstruction(plan.id, versionId) };
-        } else throw new Error("Usage: bb plans submit <file> [title] [plan-id expected-version-id] [--wait] [--timeout <s>], wait <plan-id> [--version-id <id>] [--timeout <s>], get <id> [--version-id <id>], list, review <plan-id> <version-id> approve|feedback [...], or delivery <receipt> [sent|not-sent].");
+        if (command === "list" && args.length <= 1) result = service.list({ threadId: flags.thread ?? ctx.threadId, offset: z.coerce.number().int().nonnegative().parse(args[0] ?? 0) });
+        else if (command === "get" && args.length === 1) result = flags.version ? service.version({ id: args[0]!, versionId: flags.version }) : service.get({ id: args[0]! });
+        else if (command === "submit" && args.length >= 1 && args.length <= 2 && ctx.threadId) {
+          result = await service.submit({ title: args[1] ?? "Plan", markdown: await readFile(args[0]!, ctx), threadId: ctx.threadId });
+        } else if (command === "update" && args.length === 2) {
+          owns(args[0]!, ctx.threadId);
+          if (!flags.summary) throw new Error("update needs --summary <text>.");
+          result = service.update({ planId: args[0]!, markdown: await readFile(args[1]!, ctx), summary: flags.summary, resolves: flags.resolves });
+        } else if (command === "reply" && args.length === 3) {
+          owns(args[0]!, ctx.threadId);
+          result = service.reply({ planId: args[0]!, annotation: args[1]!, body: args[2]!, resolve: flags.noResolve ? false : undefined });
+        } else if (command === "handoff" && args.length === 1) {
+          owns(args[0]!, ctx.threadId); result = service.handoff({ planId: args[0]! });
+        } else if (command === "review" && args.length === 1) {
+          if (!ctx.threadId) throw new Error("Review a plan from a reviewer thread.");
+          const plan = service.get({ id: args[0]! });
+          if (plan.threadId === ctx.threadId) throw new Error("A thread cannot review its own plan.");
+          if (!flags.annotations.length && !flags.approve) throw new Error("Add an annotation or use --approve.");
+          // Validate the whole batch before any annotations are saved.
+          const inputs = flags.annotations.map((item) => addAnnotationSchema.parse({ id: plan.id, ...item }));
+          for (const input of inputs) service.addAnnotation(input);
+          result = flags.approve ? service.approve({ id: plan.id, requestId: randomUUID(), versionId: plan.versions.at(-1)!.id }) : service.get({ id: plan.id });
+        } else throw new Error("Usage: bb plans submit <file> [title], update <plan> <file> --summary <text>, reply <plan> <#n> <text>, handoff <plan>, get <plan>, list [offset], or review <plan> [annotations] [--approve].");
         const stdout = JSON.stringify(result, null, 2);
         if (Buffer.byteLength(stdout) > 900_000) throw new Error("This result is too large for the CLI. Open the plan in the Plans panel.");
         return { exitCode: 0, stdout };
-      } catch (error) {
-        return { exitCode: 1, stderr: error instanceof Error ? error.message : String(error) };
-      }
+      } catch (error) { return { exitCode: 1, stderr: error instanceof Error ? error.message : String(error) }; }
     },
   });
 }

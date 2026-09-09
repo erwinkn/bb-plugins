@@ -12,6 +12,7 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
 import { useState, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { planSchema, commentSchema } from "../contract";
 import type { Plan, PlanComment } from "../contract";
 import { readDraft } from "../lib/draft-store";
 import { ACTIVE_HIGHLIGHT_NAME, HIGHLIGHT_NAME } from "../lib/highlight-registry";
@@ -23,7 +24,7 @@ vi.mock("@get-bb/plugin-sdk/app", () => ({
 }));
 
 // The component is imported after the mock so it sees the stub renderer.
-import { CommentComposer } from "../components/CommentRail";
+import { CommentComposer, CommentRail } from "../components/CommentRail";
 import { DiagnosticsDialog } from "../components/DiagnosticsDialog";
 import { PlanDocument, type AnchorMap } from "../components/PlanDocument";
 import { ReviewFooter } from "../components/ReviewFooter";
@@ -156,14 +157,14 @@ async function clearSelection() {
 }
 
 function comment(overrides: Partial<PlanComment> & { quote: string }): PlanComment {
-  return {
+  return commentSchema.parse({
     id: `c-${overrides.quote.slice(0, 8)}`,
     versionId: "v1",
     body: "Look at this.",
     createdAt: 1,
     sentAt: null,
     ...overrides,
-  };
+  });
 }
 
 function renderDocument(props: Partial<ComponentProps<typeof PlanDocument>> & { markdown: string }) {
@@ -173,6 +174,7 @@ function renderDocument(props: Partial<ComponentProps<typeof PlanDocument>> & { 
   const onPendingMatch = vi.fn();
   const view = render(
     <PlanDocument
+      versionId="v1"
       comments={[]}
       activeCommentId={null}
       canComment
@@ -318,7 +320,7 @@ describe("duplicate passages", () => {
 
 describe("render stability", () => {
   it("settles when the parent passes fresh comment arrays and inline callbacks", () => {
-    const plan: Plan = {
+    const plan: Plan = planSchema.parse({
       id: "plan-1",
       title: "A plan",
       threadId: null,
@@ -330,7 +332,7 @@ describe("render stability", () => {
       updatedAt: 1,
       versions: [{ id: "v1", number: 1, markdown: "Keep the existing data.", createdAt: 1 }],
       comments: [comment({ id: "keep", quote: "existing data" })],
-    };
+    });
     let renders = 0;
 
     function Parent() {
@@ -408,7 +410,7 @@ describe("activating a comment from the document", () => {
     const { content } = renderDocument({ markdown: "Keep the existing data.", onAnnotate: vi.fn(async () => {}) });
     await selectText(content(), "existing data");
     const bar = screen.getByRole("toolbar", { name: "Annotate selection" });
-    expect(within(bar).getAllByRole("button").map((button) => button.textContent)).toEqual(["Comment", "Redline", "Looks good"]);
+    expect(within(bar).getAllByRole("button").map((button) => button.textContent)).toEqual(["Comment", "Ask", "Redline", "Looks good"]);
   });
 
   const saved = comment({ id: "keep", quote: "existing data" });
@@ -495,36 +497,37 @@ describe("activating a comment from the document", () => {
 /* ---------- 5. drafts survive a quick navigation ---------- */
 
 describe("review drafts", () => {
-  it("keeps the note when the reviewer leaves before the debounce fires", () => {
+  it("keeps the pending comment when the reviewer leaves before the debounce fires", () => {
     const { result, unmount } = renderHook(() => useReviewDraft("plan-1", "v1"));
 
-    act(() => result.current.update({ note: "Keep the schedules too." }));
+    act(() => result.current.update({ pendingComment: { quote: "schedules", body: "Keep the schedules too.", kind: "ask" } }));
     unmount();
 
-    expect(readDraft("plan-1", "v1").note).toBe("Keep the schedules too.");
+    expect(readDraft("plan-1", "v1").pendingComment?.body).toBe("Keep the schedules too.");
   });
 
-  it("keeps the note when the page is hidden right after typing", () => {
+  it("keeps the pending comment when the page is hidden right after typing", () => {
     const { result } = renderHook(() => useReviewDraft("plan-1", "v1"));
 
-    act(() => result.current.update({ note: "Half a thought" }));
+    act(() => result.current.update({ pendingComment: { quote: "scope", body: "Half a thought" } }));
     act(() => {
       window.dispatchEvent(new Event("pagehide"));
     });
 
-    expect(readDraft("plan-1", "v1").note).toBe("Half a thought");
+    expect(readDraft("plan-1", "v1").pendingComment?.body).toBe("Half a thought");
   });
 
-  it("does not let a version switch drop the note typed on the previous version", () => {
+  it("does not let a version switch drop the comment typed on the previous version", () => {
     const { result, rerender } = renderHook(({ version }) => useReviewDraft("plan-1", version), {
       initialProps: { version: "v1" },
     });
 
-    act(() => result.current.update({ note: "About v1" }));
+    act(() => result.current.update({ pendingComment: { quote: "scope", body: "About v1" } }));
     rerender({ version: "v2" });
 
-    expect(readDraft("plan-1", "v1").note).toBe("About v1");
-    expect(result.current.draft.note).toBe("");
+    expect(readDraft("plan-1", "v1").pendingComment?.body).toBe("About v1");
+    expect(result.current.draft.pendingComment).toMatchObject({ quote: "scope", body: "About v1", versionId: "v1" });
+    expect(readDraft("plan-1", "v2").pendingComment?.body).toBe("About v1");
   });
 });
 
@@ -645,19 +648,16 @@ describe("inside BB's select-none panel shell", () => {
     expect(content().classList.contains("select-text")).toBe(true);
   });
 
-  it("keeps the decision buttons on the left in the stacked layout", () => {
-    const plan: Plan = {
-      id: "plan-1", title: "A plan", threadId: null, projectId: null, projectName: null, status: "review", sample: true,
+  it("shows the open count beside approval without a note or feedback step", () => {
+    const plan = planSchema.parse({
+      id: "plan-1", title: "A plan", threadId: null, projectId: null, projectName: null, status: "open", sample: true,
       createdAt: 1, updatedAt: 1, versions: [{ id: "v1", number: 1, markdown: "Keep the existing data.", createdAt: 1 }], comments: [],
-    };
-    render(
-      <ReviewFooter plan={plan} versionId="v1" note="" onNoteChange={vi.fn()} persistFailed={false} submitting={null} failure={null}
-        onSubmit={vi.fn()} onDismissFailure={vi.fn()} confirmOpen={false} onConfirmOpenChange={vi.fn()} onRevise={vi.fn()} />,
-    );
-    const row = screen.getByRole("button", { name: "Approve" }).parentElement!;
-    expect(row.className).toContain("justify-start");
-    expect(row.className).toContain("@3xl:justify-end");
-    expect(row.className).not.toMatch(/(^|\s)justify-end(\s|$)/);
+    });
+    render(<ReviewFooter plan={plan} failedCount={0} submitting={null} failure={null}
+      onSubmit={vi.fn()} onDismissFailure={vi.fn()} confirmOpen={false} onConfirmOpenChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("No open annotations");
+    expect(screen.queryByRole("textbox")).toBeNull();
   });
 
   it("reports a blocked selection and unpainted anchors in the diagnostics", () => {
@@ -687,4 +687,82 @@ describe("inside BB's select-none panel shell", () => {
     expect(writeText).toHaveBeenCalledTimes(1);
     expect(writeText.mock.calls[0]![0]).toMatch(/^Highlight API: available\nAnchors: 0 resolved/);
   });
+});
+
+it.each(["Send", "Control+Enter"])("keeps a failed reply for retry with %s", async (submit) => {
+  const reply = vi.fn().mockRejectedValueOnce(new Error("Could not send reply")).mockResolvedValue(undefined);
+  const annotation = commentSchema.parse({ id: "a", number: 1, versionId: "v1", quote: "A passage", body: "Explain this", createdAt: 1 });
+  render(<CommentRail comments={[annotation]} anchors={{}} activeCommentId={null} onActivate={vi.fn()}
+    actions={{ update: vi.fn(), remove: vi.fn(), resolve: vi.fn(), reply }} canEdit pending={null} />);
+  fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+  const field = screen.getByRole("textbox", { name: "Reply to #1" });
+  fireEvent.change(field, { target: { value: "  Please explain.  " } });
+  const send = () => submit === "Send"
+    ? fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    : fireEvent.keyDown(field, { key: "Enter", ctrlKey: true });
+  await act(async () => { send(); });
+  expect(screen.getByRole("alert").textContent).toBe("Could not send reply");
+  expect((field as HTMLTextAreaElement).value).toBe("  Please explain.  ");
+  await act(async () => { send(); });
+  expect(reply).toHaveBeenLastCalledWith("a", "Please explain.");
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Reply" }));
+});
+
+
+it.each([false, true])("opens Ask from the selection menu with touch=%s", async (touch) => {
+  coarsePointer = touch;
+  const { content, onQuote } = renderDocument({ markdown: "Keep the existing data." });
+  await selectText(content(), "existing data");
+  fireEvent.pointerDown(screen.getByRole("button", { name: /^Ask/ }));
+  expect(onQuote).toHaveBeenCalledWith("existing data", expect.any(Object), "ask");
+});
+
+it("opens Ask with the a shortcut", async () => {
+  const { content, onQuote } = renderDocument({ markdown: "Keep the existing data." });
+  await selectText(content(), "existing data");
+  fireEvent.keyDown(document, { key: "a" });
+  expect(onQuote).toHaveBeenCalledWith("existing data", expect.any(Object), "ask");
+});
+
+it("paints asks in both highlight tiers and leaves withdrawn quotes unpainted", () => {
+  const annotations = [comment({ id: "ask", quote: "existing data", kind: "ask" }), comment({ id: "gone", quote: "Keep", state: "withdrawn" })];
+  const view = renderDocument({ markdown: "Keep the existing data.", comments: annotations });
+  expect(paintedQuotes("plans-ask")).toEqual(["existing data"]);
+  expect(paintedQuotes()).toEqual([]);
+  view.rerender(<PlanDocument markdown="Keep the existing data." comments={annotations} activeCommentId="ask" canComment
+    pendingQuote={null} onQuote={vi.fn()} onActivateComment={vi.fn()} onAnchorsChange={vi.fn()} onPendingMatch={vi.fn()} />);
+  expect(paintedQuotes("plans-ask-active")).toEqual(["existing data"]);
+  expect(paintedQuotes("plans-ask")).toEqual([]);
+});
+
+it("anchors a repeated quote by context when equal-length paragraphs swap versions", () => {
+  const first = "Alpha: shared quote, first.";
+  const second = "Bravo: shared quote, other.";
+  expect(first.length).toBe(second.length);
+  const saved = comment({ id: "moved", quote: "shared quote", prefix: "Alpha: ", suffix: ", first.", position: 7 });
+  const props = { comments: [saved], activeCommentId: null, canComment: true, pendingQuote: null,
+    onQuote: vi.fn(), onActivateComment: vi.fn(), onAnchorsChange: vi.fn(), onPendingMatch: vi.fn() };
+  const view = render(<PlanDocument {...props} versionId="v1" markdown={`${first}\n\n${second}`} />);
+  expect(highlightRegistry.get(HIGHLIGHT_NAME)?.ranges[0]?.startContainer.textContent).toBe(first);
+  view.rerender(<PlanDocument {...props} versionId="v2" markdown={`${second}\n\n${first}`} />);
+  expect(highlightRegistry.get(HIGHLIGHT_NAME)?.ranges[0]?.startContainer.textContent).toBe(first);
+  expect(props.onAnchorsChange).toHaveBeenLastCalledWith({ moved: { kind: "unique", start: second.length + 8, end: second.length + 20 } });
+});
+
+it("returns focus to Approve after cancelling its dialog", async () => {
+  const plan = planSchema.parse({ id: "p", title: "Plan", threadId: null, projectId: null, projectName: null, status: "open", createdAt: 1, updatedAt: 1,
+    versions: [{ id: "v1", number: 1, markdown: "Plan", createdAt: 1 }] });
+  function Footer() {
+    const [open, setOpen] = useState(false);
+    return <ReviewFooter plan={plan} failedCount={0} submitting={null} failure={null}
+      onSubmit={vi.fn()} onDismissFailure={vi.fn()} confirmOpen={open} onConfirmOpenChange={setOpen} />;
+  }
+  render(<Footer />);
+  const approve = screen.getByRole("button", { name: "Approve" });
+  fireEvent.click(approve);
+  const dialog = screen.getByRole("alertdialog");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(document.activeElement).toBe(approve);
 });

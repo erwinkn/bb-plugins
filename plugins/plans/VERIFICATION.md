@@ -2,6 +2,14 @@
 
 Checked on 2026-09-07 with BB 0.42.1 and Plugin SDK 0.4.47.
 
+## Status after the live review change
+
+The entries below record checks of earlier builds.
+They do not verify the live review change from 2026-09-09.
+Earlier approval rules, delivery controls, prompt behavior, and annotation controls no longer describe the current design.
+Live review sends annotations as thread messages, stores each agent edit as a version, and binds approval to the version the user viewed.
+This documentation update adds no runtime verification claims.
+
 ## Passed
 
 - `npm run typecheck`
