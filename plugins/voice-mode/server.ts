@@ -1,3 +1,4 @@
+import { importLegacyWatches } from "./legacy-watch-import.ts";
 import { ConversationRecord } from "./conversation-record.ts";
 import { CONVERSATION_HISTORY_MIGRATIONS, QUICK_ACTION_MIGRATIONS, UI_COMMAND_MIGRATIONS } from "./legacy-migrations.ts";
 import { liveToolSchemas } from "./live-tools.ts";
@@ -69,7 +70,6 @@ export const rpcContract = defineRpcContract({
         conversationId: z.string().nullable(),
         voiceSessionId: z.string(),
         resumed: z.boolean(),
-        queuedUpdates: z.number(),
       })
       .strict(),
   },
@@ -384,6 +384,7 @@ export default async function plugin(bb: BbPluginApi) {
   for (const name of ["thread.active", "thread.idle", "thread.failed", "thread.archived", "interaction.pending", "message.dispatched"] as const) {
     bb.events.on(name, payload => liveRuntime.watches.event(name, payload).catch(error => bb.log.warn(`Live runtime event failed: ${error instanceof Error ? error.message : String(error)}`)));
   }
+  await importLegacyWatches(bb, liveRuntime.watches);
   await liveRuntime.initialize();
   function forceStopCall(nonce: string, transferring = false) {
     db.prepare("UPDATE voice_call_control SET nonce = NULL WHERE nonce = ?").run(nonce);
@@ -771,7 +772,7 @@ export default async function plugin(bb: BbPluginApi) {
       bb.realtime.publish("voice-call", { nonce, sequence });
       const started = conversations.startCall({ nonce, sequence, view: { threadId, projectId }, newConversation: selectedId ? false : newConversation, conversationId: selectedId });
       voiceSessions.link(nonce, started.conversationId);
-      return { sequence, conversationId: started.conversationId, voiceSessionId: started.conversationId, resumed: started.resumed, queuedUpdates: started.queuedUpdates };
+      return { sequence, conversationId: started.conversationId, voiceSessionId: started.conversationId, resumed: started.resumed };
     },
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");

@@ -85,3 +85,11 @@ test("duplicate calls cannot produce duplicate work, and reset clears the sessio
   assert.equal(output.hold("a", call("late", 1)), false);
   assert.equal(output.next(), undefined);
 });
+
+test("known audio blocks continuations before playback starts", () => {
+  const output=new OutputSequencer();output.created("speech");output.done("speech",audio);
+  assert.equal(output.playbackPending,true);
+  output.stopped("speech");assert.equal(output.playbackPending,false);
+  output.created("cancelled");output.done("cancelled",audio);output.interrupted("cancelled");
+  assert.equal(output.playbackPending,false);
+});

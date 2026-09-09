@@ -143,7 +143,6 @@ export class VoiceAgent {
   private activeResponseId: string | null = null;
   /** Only known conversational responses may dispatch tools; notice responses never may. */
   private toolResponseIds = new Set<string>();
-  private responseUserTurn: number | null = null;
   private input: InputController | null = null;
   private meterStop: (()=>void) | null = null;
   private sessionReady = false;
@@ -204,7 +203,6 @@ export class VoiceAgent {
   private startNewConversation = false;
   private nextConversationId: string | undefined;
   private logicalConversationId: string | null = null;
-  private spokenTurns = new Set<number>();
   private playbackResponseId: string | null = null;
   private interruptedResponses = new Set<string>();
   private completedPlayback = new Set<string>();
@@ -377,7 +375,9 @@ export class VoiceAgent {
 
   private settleLiveOutputs() {
     const offer = this.openOffer;
-    if (offer?.responseId && this.outputSequencer.settled(offer.responseId)) {
+    const backgroundContinuation = (this.responseActive && this.responseBinding?.origin === "background") ||
+      (this.responsePending && this.pendingBinding?.origin === "background");
+    if (offer?.responseId && !backgroundContinuation && this.outputSequencer.settled(offer.responseId)) {
       const state = this.outputSequencer.state(offer.responseId)!;
       this.closeOffer(state.drained ? "delivered" : "not_delivered");
     }
@@ -1030,7 +1030,6 @@ export class VoiceAgent {
     this.responsePending = false;
     this.activeResponseId = null;
     this.toolResponseIds.clear();
-    this.responseUserTurn = null;
     this.outputSequencer.reset();
     if (this.replyTimer) clearTimeout(this.replyTimer);
     this.replyTimer = null;
@@ -1079,7 +1078,7 @@ export class VoiceAgent {
       if (!this.liveClient || !binding) throw new Error("The live conversation is unavailable");
       await this.reports;
       if (this.nonce !== toolSessionId) return;
-      result = await this.liveClient.execute(callId, name, args, binding);
+      result = await this.liveClient.execute(callId, name, args, binding, String(event.response_id));
       if (result === continuedSpeaking) requestResponseAfter = false;
       const directive = result as { action?: string; updates?: string } | null;
       if (directive?.action === "remain_silent") {
@@ -1250,7 +1249,6 @@ export class VoiceAgent {
     this.log("session.started", { ...bindings.context, device: deviceSummary() });
     let acquiredStream: MediaStream | null = null;
     try {
-      this.spokenTurns.clear();
       this.interruptedResponses.clear();
       this.completedPlayback.clear();
       this.completedResponses.clear();
@@ -1285,7 +1283,7 @@ export class VoiceAgent {
         if (!conversationId) throw new Error("The server did not provide a voice conversation.");
         this.logicalConversationId = conversationId;
         this.emitChange();
-        if (conversationId) this.log("voice.conversation", { conversationId, resumed: claim.resumed, queuedUpdates: claim.queuedUpdates, newConversation });
+        if (conversationId) this.log("voice.conversation", { conversationId, resumed: claim.resumed, newConversation });
         const newerClaim = this.newerClaim as { nonce: string; sequence: number } | null;
         if (newerClaim) this.onCallStarted(newerClaim.nonce, newerClaim.sequence);
         if (this.nonce !== nonce) return false;
@@ -1523,7 +1521,6 @@ export class VoiceAgent {
             else this.toolResponseIds.add(id);
             if (background && this.openOffer) this.openOffer.responseId=id;
           }
-          this.responseUserTurn = !background ? this.responseRequestVersion : null;
           this.setResponseActive(true);
           this.responseRequestVersion=null;
           this.scheduleReplyDrain();
@@ -1553,7 +1550,6 @@ export class VoiceAgent {
           session.audio.muted=false;
           this.setAssistantSpeaking(true);
           const identity = this.responseIdentity.get(id)!;
-          if (identity.source === "realtime") this.spokenTurns.add(identity.userTurn);
           this.log("speech.lifecycle", {responseId:id,state:"started",...identity,monotonicMs:performance.now()});
           this.scheduleReplyDrain();
         } else if (type === "output_audio_buffer.stopped" || type === "output_audio_buffer.cleared") {
@@ -1615,7 +1611,6 @@ export class VoiceAgent {
           const text = String(event.transcript ?? "").trim();
           if (text) {
             const identity = eventResponseId ? this.responseIdentity.get(eventResponseId) : undefined;
-            if (identity?.source === "realtime") this.spokenTurns.add(identity.userTurn);
             this.log("assistant", {text,responseId:eventResponseId,itemId:event.item_id ?? null,userTurn:this.userTurn,...identity});
             this.completeStream("assistant", String(event.item_id ?? ""));
           }

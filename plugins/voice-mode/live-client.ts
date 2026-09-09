@@ -17,23 +17,20 @@ export function canonicalArgs(value: unknown): string {
 
 /** One call's immutable tool bindings and occurrence numbers. */
 export class LiveClient {
-  private calls = new Map<string, LiveToolInput>();
-  private occurrences = new Map<string, number>();
+  private occurrences = new Map<string, string[]>();
   constructor(private rpc: ClientRpc, private current: () => boolean, private input: Pick<InputController, "version" | "waitFor">,
     private nonce: string, private conversationId: string) {}
 
-  async execute(callId: string, name: string, raw: unknown, binding: ResponseBinding): Promise<unknown> {
+  async execute(callId: string, name: string, raw: unknown, binding: ResponseBinding, responseId: string): Promise<unknown> {
     if (!(name in liveToolArgs)) throw new Error(`Unknown realtime tool: ${name}`);
     const tool = name as LiveTool;
     const args = liveToolArgs[tool].parse(raw) as Record<string, unknown>;
-    let call = this.calls.get(callId);
-    if (!call) {
-      const key = `${binding.utterance?.id}:${binding.utterance?.version}:${tool}:${canonicalArgs(args)}`;
-      const occurrence = this.occurrences.get(key) ?? 0;
-      this.occurrences.set(key, occurrence + 1);
-      call = { ...binding, nonce: this.nonce, conversationId: this.conversationId, tool, args, occurrence };
-      this.calls.set(callId, call);
-    }
+    const key = `${responseId}:${binding.utterance?.id}:${binding.utterance?.version}:${tool}:${canonicalArgs(args)}`;
+    const ids = this.occurrences.get(key) ?? [];
+    if (!ids.includes(callId)) ids.push(callId);
+    this.occurrences.set(key, ids);
+    const call: LiveToolInput = { ...binding, nonce: this.nonce, conversationId: this.conversationId,
+      tool, args, occurrence: ids.indexOf(callId) };
     if (LIVE_EFFECTS.has(tool) && call.origin === "user") {
       if (!call.utterance) return { status: "failed", error: "Not authorized: an effect needs a complete user utterance" };
       const delay = tool !== "prepare_draft" && tool !== "control_ui";

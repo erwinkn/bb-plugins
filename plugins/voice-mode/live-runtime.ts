@@ -52,9 +52,9 @@ export const liveRpcContract = {
 type ToolInput = z.infer<typeof liveToolInputSchema>;
 type Presented = { returnedAt: number; spokenAt: number | null };
 interface CallState {
-  nonce: string; conversationId: string; allowed: Set<string>; drains: Map<string, number>;
-  presented: Map<string, Presented>; lastDrain: number | null; exchanges: Set<string>;
-  deferredAfter: Map<string, string | null>; lastUtterance: string | null;
+  nonce: string; conversationId: string; allowed: Set<string>; drains: Map<string, { at: number; receivedAt: number }>;
+  presented: Map<string, Presented>; exchanges: Set<string>;
+  deferredAfter: Map<string, string | null>;
   previews: Map<string, { roots: string[]; scopeHash: string; utteranceId: string; used: boolean }>;
 }
 class SdkTimeout extends Error { constructor() { super("SDK call timed out. The result is unknown; do not repeat this effect."); } }
@@ -94,7 +94,6 @@ export class LiveRuntime {
       const id = args[key];
       if (typeof id === "string" && !call.allowed.has(id)) throw new Error(`Not authorized: unknown target ID ${id}. Resolve it with find_targets or read_threads first.`);
     }
-    if (input.utterance) call.lastUtterance = input.utterance.id;
     return call;
   }
   private remember(call: CallState, ...ids: (string | null | undefined)[]) { for (const id of ids) if (id) call.allowed.add(id); }
@@ -116,21 +115,21 @@ export class LiveRuntime {
     const work = async () => {
       this.assertOwner(input.nonce, input.conversationId);
       const fresh = this.call?.nonce !== input.nonce;
-      if (fresh) this.call = { nonce: input.nonce, conversationId: input.conversationId, allowed: new Set(), drains: new Map(), presented: new Map(), lastDrain: null,
-        exchanges: new Set(), deferredAfter: new Map(), lastUtterance: null, previews: new Map() };
+      if (fresh) this.call = { nonce: input.nonce, conversationId: input.conversationId, allowed: new Set(), drains: new Map(), presented: new Map(),
+        exchanges: new Set(), deferredAfter: new Map(), previews: new Map() };
       const call = this.state(input.nonce, input.conversationId);
-      if (fresh) { await this.watches.recover(input.conversationId); this.watches.trigger(input.conversationId, "resume"); }
+      if (fresh) {
+        this.watches.prepareRecovery(input.conversationId);
+        this.watches.trigger(input.conversationId, "resume");
+        void this.watches.reconcileRecovery(input.conversationId).catch(error => this.bb.log.warn(`Call recovery failed: ${String(error)}`));
+      }
       const tasks = this.store.tasks(input.conversationId).filter(t => ["spawning", "running", "unknown"].includes(t.status));
       tasks.forEach(t => this.remember(call, t.thread_id));
-      const pending = [];
-      for (const watch of this.store.watches(input.conversationId).filter(w => w.state === "active" && !w.thread_id.startsWith("spawn:"))) {
-        const thread = await this.bb.sdk.threads.get({ threadId: watch.thread_id });
-        const interactions = await this.bb.sdk.threads.interactions.list({ threadId: thread.id });
-        for (const interaction of interactions.filter(i => i.status === "pending")) {
-          this.remember(call, thread.id, interaction.id);
-          pending.push({ threadId: thread.id, title: threadName(thread), ...interactionData(interaction) });
-        }
-      }
+      const activeRoots = new Set(this.store.watches(input.conversationId).filter(watch => watch.state === "active").map(watch => watch.root_thread_id));
+      const pending = this.store.inbox(input.conversationId)
+        .filter(item => item.interaction_id && item.status !== "resolved" && activeRoots.has(item.root_thread_id))
+        .map(item => ({ threadId: item.thread_id, ...JSON.parse(item.detail) }));
+      pending.forEach(item => this.remember(call, item.threadId, item.id));
       let view: Record<string, unknown> = {};
       if (input.view?.threadId) {
         const thread = await this.bb.sdk.threads.get({ threadId: input.view.threadId });
@@ -380,6 +379,7 @@ export class LiveRuntime {
       case "prepare_archive": {
         const { thread_ids } = liveToolArgs.prepare_archive.parse(input.args);
         if (!input.utterance) throw new Error("Not authorized: archive preview needs a user utterance");
+        if (thread_ids.some(id => !call.allowed.has(id))) throw new Error("Not authorized: unknown target ID. Resolve it with find_targets or read_threads first.");
         const scope = await this.archiveScope(thread_ids), previewId = randomUUID();
         scope.forEach(t => this.remember(call, t.id));
         const selected = new Set(thread_ids);
@@ -397,7 +397,9 @@ export class LiveRuntime {
         return { previewId, threads: scope, activeWork: scope.some(t => ["active", "starting"].includes(t.status) || t.queuedMessageCount > 0), asOf: this.now(), truncated: false };
       }
       case "remain_silent": return { action: "remain_silent", updates: liveToolArgs.remain_silent.parse(input.args).updates ?? "defer" };
-      case "end_call": return { action: "end_call", afterDrain: true };
+      case "end_call":
+        if (input.responseOrigin === "background") throw new Error("Not authorized: background updates cannot act");
+        return { action: "end_call", afterDrain: true };
       default: throw new Error("Unsupported read tool");
     }
   }
@@ -442,10 +444,10 @@ export class LiveRuntime {
   }
   reportDrain(input: z.infer<typeof liveRpcContract.reportDrain.input>) {
     const call = this.state(input.nonce);
-    if (input.at > this.now()) throw new Error("Not authorized: drain time is in the future");
+    const receivedAt = this.now();
     if (!call.drains.has(input.responseId)) {
-      call.drains.set(input.responseId, input.at); call.lastDrain = Math.max(call.lastDrain ?? 0, input.at);
-      for (const item of call.presented.values()) if (item.spokenAt === null && item.returnedAt < input.at) item.spokenAt = input.at;
+      call.drains.set(input.responseId, { at: input.at, receivedAt });
+      for (const item of call.presented.values()) if (item.spokenAt === null && item.returnedAt < receivedAt) item.spokenAt = input.at;
       for (const item of this.store.inbox(call.conversationId)) if (call.presented.get(`inbox:${item.id}`)?.spokenAt && !["question", "approval", "failed"].includes(item.kind))
         this.store.db.prepare("UPDATE voice_inbox SET status = 'spoken', eligible = 0 WHERE id = ?").run(item.id);
     }
@@ -453,6 +455,7 @@ export class LiveRuntime {
   }
   async nextUpdateBatch({ nonce }: { nonce: string }) {
     const call = this.state(nonce);
+    if (!this.store.inbox(call.conversationId).some(item => item.eligible && ["queued", "offered"].includes(item.status))) return null;
     await this.watches.refreshInteractions(call.conversationId);
     this.state(nonce);
     const batch = this.watches.next(call.conversationId, nonce);
@@ -465,10 +468,16 @@ export class LiveRuntime {
   closeOffer(input: z.infer<typeof liveRpcContract.closeOffer.input>) {
     const call = this.state(input.nonce), offer = this.watches.offer(input.offerId);
     if (!offer || offer.call_nonce !== input.nonce || offer.conversation_id !== call.conversationId) throw new Error("Not authorized: offer belongs to another call");
-    const responseId = input.responseId ?? [...call.drains].filter(([, at]) => at > offer.created_at).sort((a, b) => b[1] - a[1])[0]?.[0];
-    if (input.outcome === "delivered" && (!responseId || (call.drains.get(responseId) ?? 0) <= offer.created_at)) throw new Error("Not authorized: offer response has not drained");
-    const closed = this.watches.close(input.offerId, input.outcome, responseId);
-    if (closed && input.outcome === "deferred") for (const id of JSON.parse(offer.item_ids_json)) call.deferredAfter.set(id, call.lastUtterance);
+    const responseId = input.responseId ?? [...call.drains].filter(([, drain]) => drain.receivedAt > offer.created_at).sort((a, b) => b[1].receivedAt - a[1].receivedAt)[0]?.[0];
+    const outcome = input.outcome === "delivered" && (!responseId || (call.drains.get(responseId)?.receivedAt ?? 0) <= offer.created_at)
+      ? "not_delivered" : input.outcome;
+    const closed = this.watches.close(input.offerId, outcome, responseId);
+    if (closed && outcome !== "delivered") for (const id of JSON.parse(offer.item_ids_json) as string[]) {
+      call.presented.delete(`inbox:${id}`);
+      const item = this.store.inbox(call.conversationId).find(item => item.id === id);
+      if (item?.interaction_id) call.presented.delete(`interaction:${item.interaction_id}`);
+      if (outcome === "deferred") call.deferredAfter.set(id, [...call.exchanges].at(-1) ?? null);
+    }
     return { closed };
   }
   finishUserExchange({ nonce, utteranceId }: { nonce: string; utteranceId: string }) {

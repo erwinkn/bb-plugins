@@ -24,6 +24,7 @@ async function fixture() {
   const world = {
     threads: new Map<string, Any>([["build", makeThreadResponse({ id: "build", projectId: "app", title: "Build Fix", status: "active", updatedAt: 9000 })]]),
     outputs: new Map<string, string>(), events: new Map<string, Any[]>(), interactions: new Map<string, Any[]>(), queue: new Map<string, Any[]>(),
+    list: null as null | ((args: Any) => Promise<Any[]>), interactionReads: 0,
     sends: [] as Any[], spawns: [] as Any[], archives: [] as string[], resolutions: [] as Any[], answers: [] as Any[], stops: [] as string[],
     send: null as null | ((args: Any) => Promise<Any>), spawn: null as null | ((args: Any) => Promise<Any>), get: null as null | ((args: Any) => Promise<Any>),
   };
@@ -35,7 +36,7 @@ async function fixture() {
       search: async () => ({}),
       get: async (args: Any) => { if (world.get) return world.get(args); const t = world.threads.get(args.threadId); if (!t) throw new Error("Missing thread"); return t; },
       output: async ({ threadId }: Any) => ({ output: world.outputs.get(threadId) ?? null }),
-      list: async (args: Any) => [...world.threads.values()].filter(t => (!args.parentThreadId || t.parentThreadId === args.parentThreadId) && (args.hasParent !== false || !t.parentThreadId) && !!t.archivedAt === !!args.archived && (args.includeHidden || t.visibility !== "hidden")).slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 100)),
+      list: async (args: Any) => world.list ? world.list(args) : [...world.threads.values()].filter(t => (!args.parentThreadId || t.parentThreadId === args.parentThreadId) && (args.hasParent !== false || !t.parentThreadId) && !!t.archivedAt === !!args.archived && (args.includeHidden || t.visibility !== "hidden")).slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 100)),
       events: { list: async ({ threadId, afterSeq, order, limit, beforeSeq }: Any) => {
         const events = (world.events.get(threadId) ?? []).filter(e => (!afterSeq || e.seq > +afterSeq) && (!beforeSeq || e.seq < +beforeSeq));
         return (order === "desc" ? [...events].reverse() : events).slice(0, +(limit ?? 100));
@@ -50,7 +51,7 @@ async function fixture() {
       archive: async ({ threadId }: Any) => { world.archives.push(threadId); const t = world.threads.get(threadId); t.archivedAt = at; return { ok: true, archivedThreadIds: [threadId] }; },
       interactions: {
         list: async ({ threadId }: Any) => (world.interactions.get(threadId) ?? []).filter(i => i.status === "pending"),
-        get: async ({ threadId, interactionId }: Any) => { const i = world.interactions.get(threadId)?.find(i => i.id === interactionId); if (!i) throw new Error("Missing interaction"); return i; },
+        get: async ({ threadId, interactionId }: Any) => { world.interactionReads++; const i = world.interactions.get(threadId)?.find(i => i.id === interactionId); if (!i) throw new Error("Missing interaction"); return i; },
         resolve: async (args: Any) => { world.resolutions.push(args); const i = world.interactions.get(args.threadId)!.find(i => i.id === args.interactionId); i.status = "resolved"; return i; },
         respond: async (args: Any) => { world.answers.push(args); const i = world.interactions.get(args.threadId)!.find(i => i.id === args.interactionId); i.status = "resolved"; return i; },
       },
@@ -63,6 +64,7 @@ async function fixture() {
   let runtime = makeRuntime();
   const start = () => runtime.callStartContext({ nonce, conversationId: "conversation", view: { threadId: "build", projectId: "app" } });
   await start();
+  await runtime.watches.serial(async () => {});
   const input = (tool: Any, args: Any, overrides: Any = {}) => ({ nonce, conversationId: "conversation", utterance: { id: "u1", version: 1, text: "Please check the build", startedAt: at - 100 }, responseOrigin: "user", tool, args, occurrence: 0, ...overrides });
   const run = (tool: Any, args: Any, overrides: Any = {}): Promise<Any> => runtime.runTool(input(tool, args, overrides));
   const idle = async (threadId = "build", text = "Done", queued = 0) => {
@@ -81,7 +83,7 @@ async function fixture() {
     get runtime() { return runtime; }, tick: (ms = 10) => at += ms, now: () => at,
     switch: async () => { nonce = "new-call"; await start(); },
     restart: async () => { runtime = makeRuntime(); await runtime.initialize(); await start(); },
-    close: () => harness.lifecycle.dispose() };
+    close: async () => { await runtime.watches.serial(async () => {}); await harness.lifecycle.dispose(); } };
 }
 const message = { thread_id: "build", body: "Check the build", mode: "normal" };
 const worker = { profile: "investigate", title: "Build investigation", task: "Find the cause. Do not implement.", project_id: "app" };
@@ -249,8 +251,8 @@ test("interrupted offers requeue once, show offered_before, and no-audio is not 
   const h = await fixture(); t.after(h.close); await h.watch(); await h.idle();
   const batch = await h.runtime.nextUpdateBatch({ nonce: "call" }) as Any; assert.equal(batch.items[0].offered_before, false);
   assert.equal(await h.runtime.nextUpdateBatch({ nonce: "call" }), null);
-  assert.throws(() => h.runtime.closeOffer({ nonce: "call", offerId: batch.offerId, outcome: "delivered", responseId: "no-audio" }), /not drained/);
-  assert.deepEqual(h.runtime.closeOffer({ nonce: "call", offerId: batch.offerId, outcome: "not_delivered" }), { closed: true });
+  assert.deepEqual(h.runtime.closeOffer({ nonce: "call", offerId: batch.offerId, outcome: "delivered", responseId: "no-audio" }), { closed: true });
+  assert.equal(h.runtime.watches.offer(batch.offerId)!.outcome, "not_delivered");
   assert.deepEqual(h.runtime.closeOffer({ nonce: "call", offerId: batch.offerId, outcome: "not_delivered" }), { closed: false });
   assert.equal(h.runtime.store.inbox("conversation")[0].offer_count, 1);
   const retry = await h.runtime.nextUpdateBatch({ nonce: "call" }) as Any; assert.equal(retry.items[0].offered_before, true);
@@ -260,6 +262,7 @@ test("interrupted offers requeue once, show offered_before, and no-audio is not 
 
 test("defer waits for the next exchange, dismiss waits for an event or explicit ask", async t => {
   const h = await fixture(); t.after(h.close); await h.run("message_thread", message); await h.idle();
+  h.runtime.finishUserExchange({ nonce: "call", utteranceId: "u1" });
   const batch = await h.runtime.nextUpdateBatch({ nonce: "call" }) as Any; h.runtime.closeOffer({ nonce: "call", offerId: batch.offerId, outcome: "deferred" });
   assert.equal(await h.runtime.nextUpdateBatch({ nonce: "call" }), null);
   h.runtime.finishUserExchange({ nonce: "call", utteranceId: "u1" }); assert.equal(await h.runtime.nextUpdateBatch({ nonce: "call" }), null);
@@ -552,4 +555,206 @@ test("historical coordinator threads cannot be messaged or used as client effect
   const result=await h.run("message_thread",message);
   assert.equal(result.status,"failed");assert.match(result.error,/historical agent threads/);assert.equal(h.world.sends.length,0);
   await assert.rejects(h.runtime.beginClientEffect(h.input("prepare_draft",{thread_id:"build",text:"Run",mode:"append"})),/historical agent threads/);
+});
+
+for (const offset of [-5000, 5000]) test(`drains use the correct clock with a ${offset} ms device offset`, async t => {
+  const h = await fixture(); t.after(h.close); await h.watch();
+  const preview = await h.run("prepare_archive", { thread_ids: ["build"] });
+  const approval = h.approval();
+  await h.runtime.watches.event("interaction.pending", { thread: h.world.threads.get("build"), interaction: approval as Any });
+  const batch = await h.runtime.nextUpdateBatch({ nonce: "call" }) as Any;
+  const clientAt = h.tick() + offset;
+  h.runtime.reportDrain({ nonce: "call", responseId: "offset", at: clientAt });
+  assert.deepEqual(h.runtime.closeOffer({ nonce: "call", offerId: batch.offerId, outcome: "delivered", responseId: "offset" }), { closed: true });
+  assert.equal(h.runtime.watches.offer(batch.offerId)!.outcome, "delivered");
+  const later = { utterance: { id: "after-device-drain", version: 1, text: "Yes, once", startedAt: clientAt + 1 } };
+  assert.equal((await h.run("archive_threads", { preview_id: preview.previewId }, later)).status, "succeeded");
+  assert.equal((await h.run("answer_interaction", { thread_id: "build", interaction_id: approval.id, decision: "allow_once" }, later)).status, "succeeded");
+});
+
+for (const outcome of ["not_delivered", "deferred", "dismissed"] as const) test(`${outcome} removes offer presentation evidence before unrelated speech`, async t => {
+  const h = await fixture(); t.after(h.close); await h.watch();
+  const approval = h.approval();
+  await h.runtime.watches.event("interaction.pending", { thread: h.world.threads.get("build"), interaction: approval as Any });
+  await h.run("read_threads", { thread_ids: ["build"], what: "updates" });
+  const batch = await h.runtime.nextUpdateBatch({ nonce: "call" }) as Any;
+  h.runtime.closeOffer({ nonce: "call", offerId: batch.offerId, outcome });
+  const before = h.runtime.store.inbox("conversation").map(row => row.status);
+  h.drain("unrelated");
+  const args = { thread_id: "build", interaction_id: approval.id, decision: "allow_once" };
+  assert.match((await h.run("answer_interaction", args, h.later("unrelated-yes"))).error, /not been spoken/);
+  assert.equal(h.world.resolutions.length, 0);
+  assert.deepEqual(h.runtime.store.inbox("conversation").map(row => row.status), before);
+  await h.run("read_threads", { thread_ids: ["build"], what: "status" }); h.drain("explained");
+  assert.equal((await h.run("answer_interaction", args, h.later("explained-yes"))).status, "succeeded");
+});
+
+test("new child watches begin at the latest event and report only current output", async t => {
+  const h = await fixture(); t.after(h.close); await h.watch();
+  h.world.threads.set("child", makeThreadResponse({ id: "child", title: "Child", projectId: "app", parentThreadId: "build", status: "active" }));
+  h.world.events.set("child", [1, 2, 3].map(seq => ({ seq, type: "turn/completed", createdAt: seq, data: { status: "completed" } })));
+  await h.idle("child", "New result");
+  assert.equal(h.runtime.store.watches().find(w => w.thread_id === "child")!.cursor_seq, 4);
+  assert.equal(h.runtime.store.inbox("conversation").length, 1);
+  assert.match(h.runtime.store.inbox("conversation")[0].detail, /New result/);
+  await h.runtime.watches.recover();
+  assert.equal(h.runtime.store.inbox("conversation").length, 1);
+  await h.idle("child", "Next result");
+  assert.equal(h.runtime.store.inbox("conversation").length, 2);
+});
+
+test("background end_call is refused while an explicit user end_call remains available", async t => {
+  const h = await fixture(); t.after(h.close);
+  assert.match((await h.run("end_call", {}, { responseOrigin: "background", utterance: null })).error, /background updates cannot act/);
+  assert.deepEqual(await h.run("end_call", {}), { action: "end_call", afterDrain: true });
+});
+
+test("archive preview rejects every unreturned ID before reading its scope", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.world.threads.set("unreturned", makeThreadResponse({ id: "unreturned", title: "Unreturned", projectId: "app" }));
+  const reads: string[] = [];
+  h.world.get = async ({ threadId }) => { reads.push(threadId); return h.world.threads.get(threadId); };
+  assert.match((await h.run("prepare_archive", { thread_ids: ["build", "unreturned"] })).error, /unknown target ID/);
+  assert.deepEqual(reads, []);
+  await h.run("find_targets", { query: "Unreturned" });
+  assert.ok((await h.run("prepare_archive", { thread_ids: ["build", "unreturned"] })).previewId);
+});
+
+test("dispatch uses arrival time even when recovery holds the serial queue", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.world.send = async () => ({ delivery: "queued", queuedMessage: { id: "delayed" } });
+  const operation = await h.run("message_thread", message);
+  let release!: () => void;
+  const barrier = h.runtime.watches.serial(() => new Promise<void>(resolve => { release = resolve; }));
+  await new Promise(resolve => setImmediate(resolve));
+  const dispatchAt = h.tick();
+  const dispatched = h.runtime.watches.event("message.dispatched", { entry: { id: "delayed", threadId: "build" } as Any });
+  const ended = h.idle("build", "Reply to your message");
+  h.tick(1000); release(); await Promise.all([barrier, dispatched, ended]);
+  const row = h.runtime.operations.get(operation.operationId)!;
+  assert.equal(row.dispatched_at, dispatchAt); assert.equal(row.status, "succeeded");
+  assert.match(h.runtime.store.inbox("conversation").at(-1)!.detail, /included your message/);
+});
+
+test("defer uses the most recent completed exchange even if it ran no tools", async t => {
+  const h = await fixture(); t.after(h.close); await h.watch(); await h.idle();
+  h.runtime.finishUserExchange({ nonce: "call", utteranceId: "pure-conversation" });
+  const batch = await h.runtime.nextUpdateBatch({ nonce: "call" }) as Any;
+  h.runtime.closeOffer({ nonce: "call", offerId: batch.offerId, outcome: "deferred" });
+  assert.equal((h.runtime as Any).call.deferredAfter.get(batch.items[0].id), "pure-conversation");
+  h.runtime.finishUserExchange({ nonce: "call", utteranceId: "pure-conversation" });
+  assert.equal(await h.runtime.nextUpdateBatch({ nonce: "call" }), null);
+  h.runtime.finishUserExchange({ nonce: "call", utteranceId: "next-conversation" });
+  assert.ok(await h.runtime.nextUpdateBatch({ nonce: "call" }));
+});
+
+test("an idle event reconciles an unknown send before correlating its answer", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.world.send = async () => { throw new Error("SDK timeout"); };
+  const unknown = await h.run("message_thread", message);
+  assert.equal(unknown.status, "unknown");
+  h.world.events.set("build", [{ seq: 1, type: "item/started", createdAt: h.tick(), data: { item: {
+    id: "native-message", type: "userMessage", content: [{ type: "text", text: "Check the build\nSpoken request: Please check the build" }],
+  } } }]);
+  await h.idle("build", "Your requested answer");
+  assert.equal(h.runtime.operations.get(unknown.operationId)!.status, "succeeded");
+  assert.match(h.runtime.store.inbox("conversation").at(-1)!.detail, /included your message/);
+  assert.equal(h.world.sends.length, 1);
+});
+
+test("quiet polls with no eligible inbox item do not refresh interactions", async t => {
+  const h = await fixture(); t.after(h.close); await h.watch(); const approval = h.approval();
+  await h.runtime.watches.event("interaction.pending", { thread: h.world.threads.get("build"), interaction: approval as Any });
+  const batch = await h.runtime.nextUpdateBatch({ nonce: "call" }) as Any;
+  h.runtime.closeOffer({ nonce: "call", offerId: batch.offerId, outcome: "dismissed" });
+  const reads = h.world.interactionReads;
+  for (let i = 0; i < 5; i++) { h.tick(2000); assert.equal(await h.runtime.nextUpdateBatch({ nonce: "call" }), null); }
+  assert.equal(h.world.interactionReads, reads);
+});
+
+test("call context returns saved state while watched-thread recovery is blocked", async t => {
+  const h = await fixture(); t.after(h.close); await h.watch(); await h.idle();
+  const offered = await h.runtime.nextUpdateBatch({ nonce: "call" }) as Any;
+  h.runtime.watches.reserveTask("pending-worker", "conversation", "worker", "Pending", "investigate");
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  let reads = 0; h.world.list = async () => { reads++; await blocked; return []; };
+  try {
+    const nextRuntime = new LiveRuntime(h.bb, () => ({ nonce: "new-call", conversationId: "conversation" }), h.now);
+    const context = await Promise.race([
+      nextRuntime.callStartContext({ nonce: "new-call", conversationId: "conversation" }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Context waited for thread recovery")), 100)),
+    ]) as Any;
+    // The context is ready before the queued SDK work can finish.
+    assert.equal(h.runtime.watches.offer(offered.offerId)!.outcome, "not_delivered");
+    assert.equal(h.runtime.store.tasks().find(task => task.op_id === "pending-worker")!.status, "unknown");
+    assert.equal(context.type, "call_start_context");
+    assert.equal(context.tasks.find((task: Any) => task.op_id === "pending-worker").status, "unknown");
+    assert.ok(reads > 0);
+    release(); await nextRuntime.watches.serial(async () => {});
+  } finally { release(); await h.runtime.watches.serial(async () => {}); }
+});
+
+test("startup imports legacy watches and workers once without replay or coordinator subscriptions",async t=>{
+  const h=await fixture();t.after(h.close);
+  const {importLegacyWatches,LEGACY_WATCH_IMPORT_KEY}=await import("./legacy-watch-import.ts");
+  h.db.exec([...CONVERSATION_HISTORY_MIGRATIONS,...LIVE_ACTION_MIGRATIONS].join(";"));
+  h.db.prepare("INSERT INTO voice_conversations(id,created_at,updated_at,coordinator_thread_id) VALUES ('conversation',1,1,'coord-id')").run();
+  for(const [id,title,parentThreadId] of [["coord-id","Renamed coordinator",null],["coord-title","Voice coordinator old",null],["removed","Removed",null],["worker-active","Active worker","coord-id"],["worker-unknown","Unknown worker",null],["settled","Settled",null]] as const)
+    h.world.threads.set(id,makeThreadResponse({id,title,parentThreadId,projectId:"app",status:"active"}));
+  h.world.threads.get("build").status="idle";h.world.outputs.set("build","Old result");
+  h.world.events.set("build",[{seq:25,type:"turn/completed",createdAt:1,data:{status:"completed"}}]);
+  h.world.events.set("worker-active",[{seq:9,type:"turn/completed",createdAt:1,data:{status:"completed"}}]);
+  const addWatch=h.db.prepare("INSERT INTO voice_watch(conversation_id,thread_id,reason,added_at,removed_at) VALUES ('conversation',?,'legacy',1,?)");
+  for(const id of ["build","coord-id","coord-title","missing","worker-active"])addWatch.run(id,null);
+  addWatch.run("removed",2);
+  const addWorker=h.db.prepare(`INSERT INTO voice_workers(request_id,step,conversation_id,thread_id,project_id,host_id,role,model,title,status,created_at,updated_at)
+    VALUES (?,0,'conversation',?,'app','mac','investigate','worker','Legacy work',?,1,1)`);
+  for(const [id,thread,status] of [["active","worker-active","active"],["creating",null,"creating"],["unknown","worker-unknown","unknown"],["missing","gone","active"],["settled","settled","settled"]])addWorker.run(id,thread,status);
+  const oldWatches=h.db.prepare("SELECT * FROM voice_watch").all(),oldWorkers=h.db.prepare("SELECT * FROM voice_workers").all();
+  const migrations=h.db.prepare("SELECT * FROM _bb_migrations").all();
+  await importLegacyWatches(h.bb,h.runtime.watches);
+  assert.equal(await h.bb.storage.kv.get(LEGACY_WATCH_IMPORT_KEY),true);
+  assert.deepEqual(h.runtime.store.tasks().map(task=>[task.op_id,task.status]).sort(),[["legacy:active:0","running"],["legacy:creating:0","unknown"],["legacy:unknown:0","unknown"]]);
+  const watched=h.runtime.store.watches();
+  assert.deepEqual(watched.map(w=>w.thread_id).sort(),["build","spawn:legacy:creating:0","worker-active","worker-unknown"]);
+  assert.equal(watched.find(w=>w.thread_id==="build")!.cursor_seq,25);
+  assert.equal(watched.find(w=>w.thread_id==="build")!.last_status,"idle");
+  assert.equal(watched.find(w=>w.thread_id==="worker-active")!.root_thread_id,"worker-active");
+  assert.equal(watched.find(w=>w.thread_id==="worker-active")!.cursor_seq,9);
+  await h.runtime.watches.recover();assert.equal(h.runtime.store.inbox("conversation").length,0);
+  assert.deepEqual(h.db.prepare("SELECT * FROM voice_watch").all(),oldWatches);
+  assert.deepEqual(h.db.prepare("SELECT * FROM voice_workers").all(),oldWorkers);
+  assert.deepEqual(h.db.prepare("SELECT * FROM _bb_migrations").all(),migrations);
+  h.db.prepare("UPDATE voice_watches SET state='disabled' WHERE thread_id='build'").run();
+  const before=h.runtime.store.watches();let reads=0;
+  h.world.get=async()=>{reads++;throw new Error("Import ran twice");};
+  await importLegacyWatches(h.bb,h.runtime.watches);
+  assert.equal(reads,0);assert.deepEqual(h.runtime.store.watches(),before);
+});
+
+test("legacy import retries an SDK outage without marking completion",async t=>{
+  const h=await fixture();t.after(h.close);
+  const {importLegacyWatches,LEGACY_WATCH_IMPORT_KEY}=await import("./legacy-watch-import.ts");
+  h.db.exec(CONVERSATION_HISTORY_MIGRATIONS.join(";"));
+  h.db.prepare("INSERT INTO voice_watch(conversation_id,thread_id,reason,added_at) VALUES ('conversation','build','legacy',1)").run();
+  h.world.get=async()=>{throw new Error("Connection unavailable");};
+  await assert.rejects(importLegacyWatches(h.bb,h.runtime.watches),/Connection unavailable/);
+  assert.equal(await h.bb.storage.kv.get(LEGACY_WATCH_IMPORT_KEY),undefined);
+  assert.equal(h.runtime.store.watches().length,0);
+  h.world.get=null;await importLegacyWatches(h.bb,h.runtime.watches);
+  assert.equal(h.runtime.store.watches().length,1);
+  assert.equal(await h.bb.storage.kv.get(LEGACY_WATCH_IMPORT_KEY),true);
+});
+
+test("call resume preserves historical state and omits retired update counts",async t=>{
+  const h=await fixture();t.after(h.close);
+  const {ConversationRecord}=await import("./conversation-record.ts");
+  h.db.exec(CONVERSATION_HISTORY_MIGRATIONS.join(";"));
+  const state='{"viewedThreadId":"old-view","topic":"Saved history"}';
+  h.db.prepare("INSERT INTO voice_conversations(id,created_at,updated_at,call_started_at,state_json) VALUES ('conversation',1,1,1,?)").run(state);
+  const record=new ConversationRecord(h.db,h.now);
+  assert.deepEqual(record.startCall({nonce:"new",sequence:2,view:{threadId:"new-view",projectId:"app"},newConversation:false,conversationId:"conversation"}),{conversationId:"conversation",resumed:true});
+  assert.equal((h.db.prepare("SELECT state_json FROM voice_conversations WHERE id='conversation'").get() as Any).state_json,state);
+  assert.equal(record.getConversation("conversation")!.currentCallNonce,"new");
 });

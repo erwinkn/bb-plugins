@@ -127,7 +127,7 @@ export class OutputSequencer {
 
   get playbackPending() {
     return [...this.responses.values()].some(response =>
-      response.audioStarted && !response.drained && !response.interrupted);
+      (response.audioStarted || response.hasAudio) && !response.drained && !response.interrupted);
   }
 
   unsettledResponseIds() {

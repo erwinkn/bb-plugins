@@ -922,3 +922,31 @@ test("an input-repair response completes its failed user exchange after drain",a
   f.dc.emit("output_audio_buffer.stopped",{response_id:"repair"});await settleVoice();
   assert.equal(f.rpcCalls.filter(call=>call.method==="finishUserExchange").length,1);
 });
+
+for(const outcome of ["stopped","cleared"] as const)test(`a background tool continuation keeps its offer until ${outcome}`,async t=>{
+  const f=await offeredFixture(t);const before=f.dc.responses().length;
+  f.call("background","read",0,"read_threads",{thread_ids:["build"],what:"status"});
+  f.done("background",[f.tool("read")]);await settleVoice();
+  assert.equal(f.dc.responses().length,before+1);
+  assert.equal(f.rpcCalls.filter(call=>call.method==="closeOffer").length,0);
+  f.dc.emit("response.created",{response:{id:"continuation",metadata:f.dc.responses().at(-1)!.response.metadata}});
+  f.dc.emit("output_audio_buffer.started",{response_id:"continuation"});f.done("continuation",[f.speech]);await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="closeOffer").length,0);
+  f.dc.emit(`output_audio_buffer.${outcome}`,{response_id:"continuation"});await settleVoice();
+  const closed=f.rpcCalls.filter(call=>call.method==="closeOffer");assert.equal(closed.length,1);
+  assert.equal(closed[0].args.responseId,"continuation");assert.equal(closed[0].args.outcome,outcome==="stopped"?"delivered":"not_delivered");
+});
+
+test("an offer stays open while a background continuation waits for another drain",async t=>{
+  const f=await offeredFixture(t);
+  const agent=f.agent as any;
+  agent.outputSequencer.created("other-audio");agent.outputSequencer.started("other-audio");agent.outputSequencer.done("other-audio",[f.speech]);
+  f.call("background","read",0);f.done("background",[f.tool("read")]);await settleVoice();
+  assert.equal(agent.responsePending,true);
+  assert.equal(f.rpcCalls.filter(call=>call.method==="closeOffer").length,0);
+  f.dc.emit("output_audio_buffer.stopped",{response_id:"other-audio"});await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="closeOffer").length,0);
+  f.dc.emit("response.created",{response:{id:"continuation"}});
+  f.done("continuation",[]);await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="closeOffer").length,1);
+});
