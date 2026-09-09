@@ -24,6 +24,7 @@ import { ThemePicker } from "./ThemePicker";
 import { themeNameFor } from "@/lib/themes";
 import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
 import { useFileWatch } from "@/lib/file-watch";
+import { previewKind } from "@/lib/file-preview";
 
 export type Surface = "opener" | "panel";
 
@@ -243,7 +244,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   const openFile = useCallback(
     (path: string, options: { newTab: boolean }) => {
-      if (options.newTab && openInTab(path)) return;
+      // BB's Original belongs to the file that opened this host tab. Give a
+      // different HTML file its own tab so it receives the correct preview.
+      if ((options.newTab || previewKind(path) === "html") && openInTab(path)) return;
       guardedShow(path, { record: true });
     },
     [guardedShow, openInTab],
@@ -437,7 +440,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           onSetPref={onSetPref}
           themePreview={themePreview}
           onPickTheme={openThemePicker}
-          Original={Original}
+          Original={activePath === initialPath ? Original : undefined}
           focusNonce={focusNonce}
         />
       </div>

@@ -27,6 +27,13 @@ root; relative links to files under the root open in the same pane. In
 Changes, the eye button in the file row renders the new side, and its links
 open in the Files tab.
 
+HTML files (`.html` and `.htm`) open with BB's built-in preview in file tabs.
+The same pencil button switches to the editor. This preview shows the saved
+file and reloads after a save; Markdown continues to show unsaved edits.
+Other text files open in the editor. Opening HTML from the workspace tree
+uses a separate file tab so BB supplies a preview for that exact file.
+If BB does not supply a preview, the file stays in the editor.
+
 ## Changes
 
 Open **+ → Changes** or run **Editor: open changes**. Pick a file and a

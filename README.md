@@ -360,6 +360,15 @@ Verified against BB 0.42.1: `plugin source` is read-only, `plugin update` keeps
 the current ref, and install refuses an existing managed plugin ID from a
 different ref. Removal deletes settings, secrets, and schedules.
 
+Rechecked on 2026-09-09 for `erwin-editor`: installing the HTML-preview
+worktree over its Git `main` installation returned HTTP 422, with
+`plugin id "erwin-editor" is already installed ...; remove it first`.
+The Editor has saved settings, so this command could not activate the change.
+The user then explicitly authorized removal and reinstallation. After backing
+up the plugin directory and exporting its settings, installation from the
+worktree succeeded with the same `erwin-editor` ID. All seven settings were
+restored and verified. This was an explicit exception, not an in-place switch.
+
 Status: no upstream issue filed. Suggested issue title:
 `Allow changing a plugin Git ref while preserving plugin data`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).

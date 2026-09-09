@@ -7,7 +7,6 @@ import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/l
 import { useAssets } from "@/lib/use-assets";
 import { useFileSession } from "@/lib/use-file-session";
 import type { FileSessionSnapshot } from "@/lib/file-session";
-import { splitPath } from "@/lib/file-tree";
 import { usePierreTheme } from "@/lib/pierre-theme";
 import { cn } from "@/lib/utils";
 import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceStatus } from "./PierreSurface";
@@ -16,14 +15,11 @@ import { GoToLine } from "./GoToLine";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { workspaceRoot } from "@/lib/markdown-preview";
 import { indicatorFor, Toolbar } from "./Toolbar";
+import { previewKind } from "@/lib/file-preview";
 
-/** Files that open as a rendered preview, with the editor one switch away. */
-const PREVIEW_EXTENSIONS = new Set(["md", "markdown"]);
-
+/** Buffer-backed previews supported by the editable diff pane. */
 export function hasPreview(path: string): boolean {
-  const { name } = splitPath(path);
-  const dot = name.lastIndexOf(".");
-  return dot > 0 && PREVIEW_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+  return previewKind(path) === "markdown";
 }
 
 /** Which previewed files the user switched to the editor, for this page. */
@@ -57,7 +53,7 @@ export interface EditorPaneProps {
   /** A Pierre theme name being previewed by the picker; null follows BB. */
   themePreview: string | null;
   onPickTheme: () => void;
-  /** BB's preview for this file; rendered when the file is not editable text. */
+  /** BB's preview, bound to this exact file. */
   Original?: ComponentType;
   /** Changes when the user opened the file deliberately; the editor takes focus. */
   focusNonce?: number;
@@ -96,9 +92,10 @@ export function EditorPane({
   const assets = useAssets();
   const [surfaceStatus, setSurfaceStatus] = useState<PierreSurfaceStatus>({ kind: "loading" });
   const [goToLineOpen, setGoToLineOpen] = useState(false);
-  // A Markdown file opens as its rendered preview. The editor is one switch
+  // Markdown and HTML open as previews. The editor is one switch
   // away and the choice is remembered for the file while the page lives.
-  const previewable = hasPreview(path);
+  const preview = previewKind(path);
+  const previewable = preview === "markdown" || (preview === "html" && Original !== undefined);
   const [editingFor, setEditingFor] = useState<{ path: string; editing: boolean } | null>(null);
   const editing = !previewable || (editingFor?.path === path ? editingFor.editing : editingByPath.get(path) ?? false);
   /** Set by a switch to the editor: the caret goes there once it exists. */
@@ -263,12 +260,19 @@ export function EditorPane({
         onRestoreDraft={file.restoreDraft}
         onDiscardDraft={file.discardDraft}
       />
+      {!editing && preview === "html" && state?.dirty ? (
+        <NoticeRow tone="warning">HTML preview shows the saved file. Save to show your changes.</NoticeRow>
+      ) : null}
       <div className="relative min-h-0 flex-1">
         {unsupported ? (
           <div className="absolute inset-0 overflow-auto bg-background">
             {Original ? <Original /> : <p className="p-4 text-sm text-muted-foreground">{state.load.reason}</p>}
           </div>
-        ) : !editing && state !== null && state.load.kind === "ready" ? (
+        ) : !editing && preview === "html" && Original && state?.load.kind === "ready" ? (
+          <div className="absolute inset-0 overflow-auto bg-background">
+            <Original key={state.sha256} />
+          </div>
+        ) : !editing && preview === "markdown" && state !== null && state.load.kind === "ready" ? (
           // The preview follows the shared buffer, so unsaved edits from the
           // Changes tab or an earlier draft show here too.
           <MarkdownPreview
