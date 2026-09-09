@@ -80,7 +80,7 @@ async function callTool(name: string, input: unknown, threadId: string) {
 
 export async function simulateAgent(input: { threadId: string; input: Array<{ type: string; text?: string }> }) {
   const text = input.input.map((part) => part.text ?? "").join("\n");
-  const planId = text.match(/\(plan ([^,]+), v\d+\)/)?.[1];
+  const planId = text.match(/^Plan "[^\n]*" \(([^)]+)\)/)?.[1];
   if (!planId) return;
   for (const match of text.matchAll(/^(?:#(\d+) (ask|comment|redline)\b|edited #(\d+)\b)/gm)) {
     const plan = await handleRpc("get", { id: planId }) as Plan;

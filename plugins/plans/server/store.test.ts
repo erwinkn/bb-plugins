@@ -52,7 +52,7 @@ it("migrates unsent annotations before dropping named pending deliveries and coa
   await vi.advanceTimersByTimeAsync(1_500);
   expect(send).toHaveBeenCalledTimes(1);
   const call = harness.inspection.sdk.callsTo("threads.send")[0];
-  expect(JSON.stringify(call)).toContain("2 new items");
+  expect(JSON.stringify(call)).toContain("#2 comment");
   expect(JSON.stringify(call)).toContain("First unsent"); expect(JSON.stringify(call)).toContain("Second unsent");
   const replacement = await harness.lifecycle.reload(plugin); disposers.push(() => replacement.harness.lifecycle.dispose());
   await vi.advanceTimersByTimeAsync(300_000); expect(send).toHaveBeenCalledTimes(1);

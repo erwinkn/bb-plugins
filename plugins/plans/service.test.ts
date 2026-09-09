@@ -61,21 +61,21 @@ describe("live plan review backend", () => {
     await annotate(); await tick(500); await annotate("Why keep it?", "ask");
     await tick(1_499); expect(send).not.toHaveBeenCalled(); await tick(1);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0]![0]).toMatchObject({ threadId: "thread-1", mode: "queue-if-active", input: [{ type: "text", mentions: [], text: expect.stringContaining("2 new items") }] });
+    expect(send.mock.calls[0]![0]).toMatchObject({ threadId: "thread-1", mode: "queue-if-active", input: [{ type: "text", mentions: [], text: expect.stringMatching(/#1 comment[\s\S]*#2 ask/) }] });
     expect((await rpc("get", { id: plan.id })).comments.every((item) => item.deliveredAt !== null)).toBe(true);
   });
   it("flushes a continuous burst within five seconds", async () => {
     const { annotate, send } = await setup();
     for (let i = 0; i < 5; i++) { await annotate(`Item ${i}`); await tick(1_000); }
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0]![0].input).toEqual([{ type: "text", mentions: [], text: expect.stringContaining("5 new items") }]);
+    expect(send.mock.calls[0]![0].input).toEqual([{ type: "text", mentions: [], text: expect.stringMatching(/#1 comment[\s\S]*#5 comment/) }]);
   });
   it("appends to a queued row and records delivery only on dispatch", async () => {
     const send = vi.fn<Send>(async () => ({ ok: true, delivery: "queued", queuedMessage: entry() }));
     const { annotate, update, rpc, plan, harness } = await setup(send);
     await annotate(); await tick(); await annotate("Second"); await tick();
     expect(send).toHaveBeenCalledTimes(1); expect(update).toHaveBeenCalledTimes(1);
-    expect(update.mock.calls[0]![0]).toMatchObject({ threadId: "thread-1", queuedMessageId: "queue-1", expectedUpdatedAt: 10, input: [{ text: expect.stringContaining("2 new items") }] });
+    expect(update.mock.calls[0]![0]).toMatchObject({ threadId: "thread-1", queuedMessageId: "queue-1", expectedUpdatedAt: 10, input: [{ text: expect.stringMatching(/#1 comment[\s\S]*#2 comment/) }] });
     expect((await rpc("get", { id: plan.id })).comments[0]!.deliveredAt).toBeNull();
     await harness.behavior.emitThreadEvent("message.dispatched", { entry: entry() });
     await harness.behavior.emitThreadEvent("message.dispatched", { entry: entry() });

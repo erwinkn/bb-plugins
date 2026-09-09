@@ -24,6 +24,6 @@ export function renderEvent(plan: Plan, event: ReviewEvent): string {
   return `${label}${location}\n> ${messageQuote(event.quote)}${event.body ? `\n${event.body}` : ""}`;
 }
 export function renderMessage(plan: Plan, events: ReviewEvent[]): string {
-  const header = `Plan "${plan.title}" (plan ${plan.id}, v${plan.versions.at(-1)!.number}) — ${events.length} new ${events.length === 1 ? "item" : "items"}`;
+  const header = `Plan "${plan.title}" (${plan.id})`;
   return [header, ...events.map((event) => renderEvent(plan, event))].join("\n\n");
 }

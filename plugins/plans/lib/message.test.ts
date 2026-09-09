@@ -9,7 +9,7 @@ const event = (number: number, annotationKind: "comment" | "ask" | "redline" | "
 
 describe("compact feedback messages", () => {
   it("renders all four kinds and the exact closing instructions", () => {
-    expect(renderMessage(plan, [event(7, "comment", "Migrate the users table first", "Do the sessions table first."), event(8, "ask", "Run the backfill in a single transaction", "Why one transaction?"), event(9, "redline", "Add a feature flag"), event(10, "looksGood", "Keep the old API")])).toBe(`Plan "Storage migration" (plan plan-1, v4) — 4 new items
+    expect(renderMessage(plan, [event(7, "comment", "Migrate the users table first", "Do the sessions table first."), event(8, "ask", "Run the backfill in a single transaction", "Why one transaction?"), event(9, "redline", "Add a feature flag"), event(10, "looksGood", "Keep the old API")])).toBe(`Plan "Storage migration" (plan-1)
 
 #7 comment · L3
 > Migrate the users table first
@@ -26,7 +26,7 @@ Why one transaction?
 > Keep the old API`);
   });
   it("omits locations for missing and repeated quotes", () => {
-    expect(renderMessage(plan, [event(1, "redline", "Missing"), event(2, "looksGood", "Repeat")])).toBe(`Plan "Storage migration" (plan plan-1, v4) — 2 new items
+    expect(renderMessage(plan, [event(1, "redline", "Missing"), event(2, "looksGood", "Repeat")])).toBe(`Plan "Storage migration" (plan-1)
 
 #1 redline
 > Missing
@@ -40,7 +40,7 @@ Why one transaction?
       { kind: "withdrawn", annotationId: "a8", number: 8 },
       { kind: "deliveryMode", mode: "steer-if-active" },
       { kind: "approved", versionId: "version-6", versionNumber: 6 },
-    ])).toBe(`Plan "Storage migration" (plan plan-1, v4) — 4 new items
+    ])).toBe(`Plan "Storage migration" (plan-1)
 
 reply on #7 · L3
 > Migrate the users table first

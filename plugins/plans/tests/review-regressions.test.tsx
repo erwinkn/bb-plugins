@@ -383,6 +383,23 @@ describe("activating a comment from the document", () => {
     expect(commentButton()).toBeTruthy();
   });
 
+  it("selects the word under a double-click when the host left nothing selected", async () => {
+    const { content } = renderDocument({ markdown: "Keep the existing data." });
+    const paragraph = screen.getByText("Keep the existing data.");
+    fireEvent.pointerDown(paragraph);
+    await act(async () => { fireEvent.pointerUp(paragraph); await nextFrame(); });
+    expect(screen.queryByRole("toolbar", { name: "Annotate selection" })).toBeNull();
+    // jsdom has no caret-from-point API; the fallback takes the target's first word.
+    await act(async () => {
+      document.getSelection()?.removeAllRanges();
+      fireEvent.dblClick(paragraph, { clientX: 5, clientY: 5 });
+      await nextFrame();
+    });
+    expect(document.getSelection()?.toString()).toBe("Keep");
+    expect(commentButton()).toBeTruthy();
+    void content;
+  });
+
   it("shows actions for a touch selection even though iOS sends no pointerup", async () => {
     coarsePointer = true;
     const { content } = renderDocument({ markdown: "Keep the existing data.", onAnnotate: vi.fn(async () => {}) });

@@ -100,13 +100,31 @@ export function useSelectionQuote(
       selecting = false;
       schedule();
     };
+    // Some hosts cancel the browser's own word selection on a double-click
+    // (a shell that prevents mousedown with detail > 1). Select the word under
+    // the pointer ourselves when nothing is selected, then read as usual.
+    const doubleClick = (event: MouseEvent) => {
+      if (!(event.target instanceof Node) || !content.contains(event.target)) return;
+      selecting = false;
+      const selection = doc.getSelection();
+      if (selection && selection.isCollapsed) {
+        const range = wordRangeAtPoint(doc, event.clientX, event.clientY, event.target);
+        if (range !== null) {
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      }
+      schedule();
+    };
     doc.addEventListener("pointerdown", startSelection);
+    doc.addEventListener("dblclick", doubleClick);
     doc.addEventListener("pointerup", finishSelection);
     doc.addEventListener("pointercancel", finishSelection);
     doc.defaultView?.addEventListener("blur", finishSelection);
     doc.addEventListener("selectionchange", schedule);
     return () => {
       doc.removeEventListener("pointerdown", startSelection);
+      doc.removeEventListener("dblclick", doubleClick);
       doc.removeEventListener("pointerup", finishSelection);
       doc.removeEventListener("pointercancel", finishSelection);
       doc.defaultView?.removeEventListener("blur", finishSelection);
@@ -130,4 +148,42 @@ export function useSelectionQuote(
 export function clearDocumentSelection(node: Node | null): void {
   const doc = node?.ownerDocument ?? (typeof document === "undefined" ? null : document);
   doc?.getSelection()?.removeAllRanges();
+}
+
+/** The word around the caret under (x, y), or under the target's first text when the host has no caret API. */
+function wordRangeAtPoint(doc: Document, x: number, y: number, target: Node): Range | null {
+  let node: Node | null = null;
+  let offset = 0;
+  const caretDoc = doc as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  if (typeof caretDoc.caretPositionFromPoint === "function") {
+    const caret = caretDoc.caretPositionFromPoint(x, y);
+    if (caret) { node = caret.offsetNode; offset = caret.offset; }
+  } else if (typeof caretDoc.caretRangeFromPoint === "function") {
+    const caret = caretDoc.caretRangeFromPoint(x, y);
+    if (caret) { node = caret.startContainer; offset = caret.startOffset; }
+  }
+  if (node === null || node.nodeType !== Node.TEXT_NODE) {
+    const text = doc.createTreeWalker(target, NodeFilter.SHOW_TEXT).nextNode();
+    if (text === null) return null;
+    node = text; offset = 0;
+  }
+  const data = (node as Text).data;
+  const isWord = (ch: string) => /[\p{L}\p{N}_'’-]/u.test(ch);
+  let start = Math.min(offset, data.length);
+  let end = start;
+  if (start < data.length && !isWord(data[start]!)) {
+    // Caret after the last letter of a word: step back into it.
+    if (start > 0 && isWord(data[start - 1]!)) start -= 1; else return null;
+    end = start;
+  }
+  while (start > 0 && isWord(data[start - 1]!)) start -= 1;
+  while (end < data.length && isWord(data[end]!)) end += 1;
+  if (end <= start) return null;
+  const range = doc.createRange();
+  range.setStart(node, start);
+  range.setEnd(node, end);
+  return range;
 }

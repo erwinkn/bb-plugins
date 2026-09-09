@@ -132,7 +132,7 @@ Annotations use numbers starting at `#1` within each plan.
 Messages use compact text:
 
 ```
-Plan "Storage migration" (plan 3f2c…, v4) — 4 new items
+Plan "Storage migration" (3f2c…)
 
 #7 comment · L12
 > Migrate the users table first
@@ -149,6 +149,7 @@ Why one transaction? Can this lock the table for minutes?
 > Open question 2: keep the old API for one release
 ```
 
+The header names the plan and its ID.
 Line labels refer to the current Markdown source.
 A missing or repeated match has no line label; the quote remains.
 Later events use `reply on #7`, `edited #7`, `withdrawn #8`, `approved v6`, and `delivery mode: steer-if-active`.

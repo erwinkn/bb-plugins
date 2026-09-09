@@ -114,7 +114,7 @@ it("reapplies an edited preview comment with the corrected body", async () => {
     let updated = await preview.handleRpc("get", { id: plan.id }) as Plan;
     expect(updated.versions.at(-1)!.markdown).toBe("First step. (updated: Old request)");
     await preview.simulateAgent({ threadId: "preview-thread-1", input: [{ type: "text", text:
-      `Plan "Correction" (plan ${plan.id}, v2) — 1 new item\n\nedited #1\n> First step.\nNew request` }] });
+      `Plan "Correction" (${plan.id})\n\nedited #1\n> First step.\nNew request` }] });
     updated = await preview.handleRpc("get", { id: plan.id }) as Plan;
     expect(updated.versions.at(-1)!.markdown).toBe("First step. (updated: New request)");
     expect(updated.versions).toHaveLength(3);

@@ -89,7 +89,7 @@ The plugin removes an undelivered annotation from the pending batch without a me
 ### Message format
 
 ```
-Plan "Storage migration" (plan 3f2c…, v4) — 4 new items
+Plan "Storage migration" (3f2c…)
 
 #7 comment · L12
 > Migrate the users table first
@@ -106,6 +106,7 @@ Why one transaction? Can this lock the table for minutes?
 > Open question 2: keep the old API for one release
 ```
 
+The header names the plan and its ID.
 Line labels refer to the current Markdown source.
 Missing or repeated matches have no line label.
 Later messages use `reply on #7`, `edited #7`, `withdrawn #8`, `approved v6`, and `delivery mode: steer-if-active`.
