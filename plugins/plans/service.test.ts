@@ -158,7 +158,7 @@ describe("live plan review backend", () => {
     const { annotate, plan, tool, rpc } = await setup();
     await annotate("Why?", "ask"); const annotated = await annotate();
     const result = JSON.parse(await tool("plans_update", { planId: plan.id, edits: [{ old: "existing data", new: "data and schedules" }], summary: "Include schedules", resolves: ["#1", annotated.comments[1]!.id] }) as string);
-    expect(result.openAnnotations).toEqual([]);
+    expect(result).not.toHaveProperty("openAnnotations");
     const updated = await rpc("get", { id: plan.id });
     expect(updated.versions.at(-1)).toMatchObject({ source: "agent", summary: "Include schedules", resolves: annotated.comments.map((item) => item.id) });
     expect(updated.comments.map((item) => item.state)).toEqual(["addressed", "addressed"]);

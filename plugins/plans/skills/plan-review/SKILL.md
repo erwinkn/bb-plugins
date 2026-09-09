@@ -73,6 +73,7 @@ On each feedback message:
 6. End your turn.
 
 Use `plans_update` for an existing plan.
+Annotations reach you only as thread messages; tool results do not list them.
 `plans_update.resolves` sets each named annotation to **addressed**, including asks.
 `plans_reply` sets an ask to **answered** by default.
 With `resolve=false`, it keeps the current state, including **answered** or **addressed**.

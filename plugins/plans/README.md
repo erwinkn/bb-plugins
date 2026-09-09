@@ -90,7 +90,8 @@ Feedback arrives as thread messages.
 | `plans_handoff {planId}` | Restore the review prompt. Return the count of open annotations. |
 
 Each update saves a version with a summary.
-It returns the new version ID and the open annotations.
+It returns the new version ID.
+New annotations reach the agent only as thread messages.
 `plans_update.resolves` sets each named annotation to **addressed**, including asks.
 `plans_reply` sets an ask to **answered** by default.
 With `resolve=false`, it keeps the current state, including **answered** or **addressed**.

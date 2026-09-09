@@ -100,7 +100,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     const version = { id: randomUUID(), number: plan.versions.at(-1)!.number + 1, markdown, summary, resolves: [...new Set(addressed.map((item) => item.id))], source: "agent" as const, createdAt: Date.now() };
     plan.versions.push(version);
     mutate(plan, () => { for (const item of addressed) settle(planId, item); });
-    return { planId, versionId: version.id, openAnnotations: plan.comments.filter((item) => item.state === "open").map(({ number, kind, quote, body }) => ({ number, kind, quote, body })) };
+    return { planId, versionId: version.id, versionNumber: version.number };
   };
   const reply = (input: z.input<typeof agentReplySchema>) => {
     const { planId, annotation: ref, body, resolve } = agentReplySchema.parse(input);
