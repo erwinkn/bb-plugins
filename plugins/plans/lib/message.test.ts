@@ -23,12 +23,7 @@ Why one transaction?
 > Add a feature flag
 
 #10 looks good · L7
-> Keep the old API
-
-Answer each ask with plans_reply. Apply comments and redlines with
-plans_update and name the items in \`resolves\`. A looks good needs no change;
-if it answers an open question in the plan, fold the answer into the text.
-When you are done with this batch, call plans_handoff and end your turn.`);
+> Keep the old API`);
   });
   it("omits locations for missing and repeated quotes", () => {
     expect(renderMessage(plan, [event(1, "redline", "Missing"), event(2, "looksGood", "Repeat")])).toBe(`Plan "Storage migration" (plan plan-1, v4) — 2 new items
@@ -37,12 +32,7 @@ When you are done with this batch, call plans_handoff and end your turn.`);
 > Missing
 
 #2 looks good
-> Repeat
-
-Answer each ask with plans_reply. Apply comments and redlines with
-plans_update and name the items in \`resolves\`. A looks good needs no change;
-if it answers an open question in the plan, fold the answer into the text.
-When you are done with this batch, call plans_handoff and end your turn.`);
+> Repeat`);
   });
   it("renders replies, withdrawals, approval and mode changes", () => {
     expect(renderMessage(plan, [

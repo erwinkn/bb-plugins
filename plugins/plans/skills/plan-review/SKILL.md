@@ -104,11 +104,6 @@ Why one transaction? Can this lock the table for minutes?
 
 #10 looks good · L88–90
 > Open question 2: keep the old API for one release
-
-Answer each ask with plans_reply. Apply comments and redlines with
-plans_update and name the items in `resolves`. A looks good needs no change;
-if it answers an open question in the plan, fold the answer into the text.
-When you are done with this batch, call plans_handoff and end your turn.
 ```
 
 Line labels refer to the current Markdown source.
@@ -119,8 +114,7 @@ An `edited` item repeats the quote and gives the new body.
 Apply the correction with the new body, even if you already addressed the annotation.
 Quotes keep every word and collapse whitespace.
 `edited #n` items have no line label.
-A batch with only withdrawals or a mode change has no closing instruction.
-An approval batch also has no closing instruction.
+Messages carry no instructions; this skill is the instruction.
 
 Each plan defaults to `queue-if-active`.
 Feedback then arrives after the current turn.

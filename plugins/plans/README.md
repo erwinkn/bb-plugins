@@ -147,11 +147,6 @@ Why one transaction? Can this lock the table for minutes?
 
 #10 looks good · L88–90
 > Open question 2: keep the old API for one release
-
-Answer each ask with plans_reply. Apply comments and redlines with
-plans_update and name the items in `resolves`. A looks good needs no change;
-if it answers an open question in the plan, fold the answer into the text.
-When you are done with this batch, call plans_handoff and end your turn.
 ```
 
 Line labels refer to the current Markdown source.
@@ -160,8 +155,7 @@ Later events use `reply on #7`, `edited #7`, `withdrawn #8`, `approved v6`, and 
 Reply and edited events repeat the original quote.
 Quotes keep every word and collapse whitespace.
 `edited #n` items have no line label.
-A batch with only withdrawals or a mode change has no closing instruction.
-An approval batch also has no closing instruction.
+Messages carry no instructions; the bundled skill tells the agent what to do.
 
 ## Storage and delivery
 
