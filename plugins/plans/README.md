@@ -202,6 +202,7 @@ An edit before delivery updates the queued text.
 If dispatch wins the edit race, the plugin sends a correction as `edited #7`.
 You can withdraw delivered annotations or reply to them.
 A withdrawal sends `withdrawn #n` only if the annotation was already delivered.
+If the agent resolves an annotation before its message is dispatched, the plugin removes it from the queued message.
 The plugin removes an undelivered annotation from the pending batch without a message.
 The card label before delivery is **Pending** and after delivery is **Delivered**.
 Answered, addressed, and withdrawn items show their state instead.
@@ -264,4 +265,3 @@ A looks good needs no change unless it settles an open question.
 The agent then folds that answer into the text.
 Annotation cards show their number, kind, state, and replies.
 Use the reply field to continue the discussion.
-
