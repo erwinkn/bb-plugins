@@ -1,3 +1,4 @@
+import { isLegacyCoordinator } from "./legacy-watch-import.ts";
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi, PluginThreadEventPayloads } from "@get-bb/plugin-sdk";
 import { critical, LiveStore, type InboxKind, type InboxRow, type OfferOutcome, type OfferRow, type OperationRow, type WatchRow } from "./live-store.ts";
@@ -23,7 +24,10 @@ export class Watches {
     const seen = new Set<string>();
     while (thread.parentThreadId) {
       if (seen.has(thread.id) || seen.size >= 100) throw new Error("Thread parent chain is cyclic or too deep");
-      seen.add(thread.id); thread = await this.bb.sdk.threads.get({ threadId: thread.parentThreadId });
+      seen.add(thread.id);
+      const parent = await this.bb.sdk.threads.get({ threadId: thread.parentThreadId });
+      if (isLegacyCoordinator(this, parent)) break;
+      thread = parent;
     }
     return thread.id;
   }
@@ -87,12 +91,13 @@ export class Watches {
     }
   }
   async event<E extends keyof PluginThreadEventPayloads>(name: E, payload: PluginThreadEventPayloads[E]) {
+    const receivedAt = this.store.now();
     return this.serial(async () => {
       if (name === "message.dispatched") {
         const { entry } = payload as PluginThreadEventPayloads["message.dispatched"];
         if (!this.store.watches().some(w => w.state === "active" && w.thread_id === entry.threadId)) return;
         for (const row of this.store.db.prepare("SELECT * FROM voice_operations WHERE queued_message_id = ? AND target_thread_id = ? AND completed_at IS NULL").all(entry.id, entry.threadId) as OperationRow[]) {
-          this.store.db.prepare("UPDATE voice_operations SET dispatched_at = ? WHERE id = ?").run(this.store.now(), row.id);
+          this.store.db.prepare("UPDATE voice_operations SET dispatched_at = ? WHERE id = ?").run(receivedAt, row.id);
           this.operations.finish(row.id, "running", { delivery: "dispatched" });
         }
         return;
@@ -115,9 +120,12 @@ export class Watches {
     const root = await this.root(thread);
     const matched = new Map<string, WatchRow>();
     for (const w of this.store.watches()) if (w.state === "active" && w.root_thread_id === root) {
-      // One cursor per child lets recovery replay child turns without moving the parent's cursor.
-      this.store.db.prepare(`INSERT OR IGNORE INTO voice_watches (conversation_id, thread_id, root_thread_id, state, created_at, updated_at)
-        VALUES (?, ?, ?, 'active', ?, ?)`).run(w.conversation_id, thread.id, root, this.store.now(), this.store.now());
+      if (!this.store.watches(w.conversation_id).some(row => row.thread_id === thread.id)) {
+        // Begin at subscription time. The lifecycle branch reports the current state.
+        const [latest] = await this.bb.sdk.threads.events.list({ threadId: thread.id, order: "desc", limit: "1" });
+        this.store.db.prepare(`INSERT OR IGNORE INTO voice_watches (conversation_id, thread_id, root_thread_id, state, cursor_seq, created_at, updated_at)
+          VALUES (?, ?, ?, 'active', ?, ?, ?)`).run(w.conversation_id, thread.id, root, latest?.seq ?? 0, this.store.now(), this.store.now());
+      }
       matched.set(w.conversation_id, this.store.watches(w.conversation_id).find(v => v.thread_id === thread.id)!);
     }
     return [...matched.values()];
@@ -153,6 +161,8 @@ export class Watches {
   private async reconcileThread(thread: Thread, suppliedText?: string | null, suppliedError?: string | null) {
     const matches = await this.match(thread);
     if (!matches.length) return;
+    if (this.store.db.prepare("SELECT 1 FROM voice_operations WHERE target_thread_id = ? AND tool = 'message_thread' AND status = 'unknown'").get(thread.id))
+      await this.reconcileUnknown(thread.id);
     const output = suppliedText !== undefined ? suppliedText : (await this.bb.sdk.threads.output({ threadId: thread.id })).output;
     const interactions = await this.bb.sdk.threads.interactions.list({ threadId: thread.id });
     for (const watch of matches) {
@@ -196,8 +206,8 @@ export class Watches {
       })();
     }
   }
-  async reconcileUnknown() {
-    for (const row of this.store.db.prepare("SELECT * FROM voice_operations WHERE status IN ('unknown','queued') AND tool = 'message_thread'").all() as OperationRow[]) {
+  async reconcileUnknown(threadId?: string) {
+    for (const row of this.store.db.prepare("SELECT * FROM voice_operations WHERE status IN ('unknown','queued') AND tool = 'message_thread' AND (? IS NULL OR target_thread_id = ?)").all(threadId ?? null, threadId ?? null) as OperationRow[]) {
       try {
       if (!row.target_thread_id || !row.body) continue;
       const queued = await this.bb.sdk.threads.queuedMessages.list({ threadId: row.target_thread_id });
@@ -217,12 +227,18 @@ export class Watches {
       } catch (error) { this.bb.log.warn(`Live runtime delivery reconciliation failed for ${row.id}; receipt retained: ${String(error)}`); }
     }
   }
+  prepareRecovery(conversationId?: string) {
+    for (const task of this.store.tasks(conversationId)) if (task.status === "spawning" && !task.thread_id)
+      this.store.db.prepare("UPDATE voice_tasks SET status = 'unknown', updated_at = ? WHERE op_id = ?").run(this.store.now(), task.op_id);
+    const offers = this.store.db.prepare("SELECT * FROM voice_offers WHERE outcome = 'pending'").all() as OfferRow[];
+    for (const offer of offers) if (!conversationId || offer.conversation_id === conversationId) this.close(offer.id, "not_delivered");
+  }
   async recover(conversationId?: string) {
+    this.prepareRecovery(conversationId);
+    return this.reconcileRecovery(conversationId);
+  }
+  async reconcileRecovery(conversationId?: string) {
     return this.serial(async () => {
-      for (const task of this.store.tasks(conversationId)) if (task.status === "spawning" && !task.thread_id)
-        this.store.db.prepare("UPDATE voice_tasks SET status = 'unknown', updated_at = ? WHERE op_id = ?").run(this.store.now(), task.op_id);
-      const offers = this.store.db.prepare("SELECT * FROM voice_offers WHERE outcome = 'pending'").all() as OfferRow[];
-      for (const offer of offers) if (!conversationId || offer.conversation_id === conversationId) this.close(offer.id, "not_delivered");
       await this.reconcileUnknown();
       const active = this.store.watches(conversationId).filter(w => w.state === "active" && !w.thread_id.startsWith("spawn:"));
       const ids = new Set(active.map(w => w.thread_id));

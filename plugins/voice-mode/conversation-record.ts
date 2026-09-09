@@ -27,10 +27,10 @@ export class ConversationRecord {
     const resumed=!!conversation?.callStartedAt;
     conversation ??= this.createConversation();
     const at=this.now();
-    this.db.prepare("UPDATE voice_conversations SET status='active',current_call_nonce=?,current_call_sequence=?,call_started_at=?,resumed_at=CASE WHEN ? THEN ? ELSE resumed_at END,updated_at=?,revision=revision+1,state_json=json_set(state_json,'$.viewedThreadId',?,'$.viewedProjectId',?) WHERE id=?")
-      .run(input.nonce,input.sequence,at,resumed?1:0,at,at,input.view.threadId,input.view.projectId,conversation.id);
+    this.db.prepare("UPDATE voice_conversations SET status='active',current_call_nonce=?,current_call_sequence=?,call_started_at=?,resumed_at=CASE WHEN ? THEN ? ELSE resumed_at END,updated_at=?,revision=revision+1 WHERE id=?")
+      .run(input.nonce,input.sequence,at,resumed?1:0,at,at,conversation.id);
     this.db.prepare("UPDATE voice_conversation_control SET current_conversation_id=? WHERE slot=1").run(conversation.id);
-    return {conversationId:conversation.id,resumed,queuedUpdates:0};
+    return {conversationId:conversation.id,resumed};
   }
   endCall(nonce:string) {
     this.db.prepare("UPDATE voice_conversations SET current_call_nonce=NULL,status='released',updated_at=? WHERE current_call_nonce=?").run(this.now(),nonce);

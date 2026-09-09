@@ -800,7 +800,6 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
     if (!selected || typeof callId !== "string") return;
     if (selected === callId || current?.callIds.includes(callId) || (activeCallId === callId && isSelectedLive)) refetchDetail(selected);
   });
-  useRealtime("voice-coordinator", () => refreshNewest());
 
   useEffect(() => {
     const el = scrollRef.current;

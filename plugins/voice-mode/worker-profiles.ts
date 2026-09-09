@@ -68,10 +68,3 @@ export async function resolveWorkerModel(bb: BbPluginApi, hostId: string, profil
   if (profile.serviceTier === "fast" && !catalog.providers?.find(p => p.id === profile.providerId)?.serviceTiers?.some(t => t.id === "fast")) throw new Error("The worker provider does not support Fast service.");
   return { providerId: profile.providerId, model: model.model, ...(profile.reasoningLevel ? { reasoningLevel: profile.reasoningLevel } : {}), serviceTier: profile.serviceTier };
 }
-
-export const WORKER_ROLE_INSTRUCTIONS: Record<WorkerRole, string> = {
-  investigate: "Investigate and report findings. Do not make implementation changes unless the user explicitly authorizes them. This role is an instruction, not a read-only sandbox.",
-  plan: "Produce a substantive plan with relevant evidence and tradeoffs. Do not implement before the user authorizes implementation.",
-  implement: "Implement the user's requested scope, run relevant checks, and distinguish verified results from remaining uncertainty.",
-  review: "Review the requested work for correctness, regressions, and security. Report findings; do not apply fixes unless the user requests them.",
-};

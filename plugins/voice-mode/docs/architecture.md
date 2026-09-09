@@ -52,3 +52,10 @@ and session records remain in place.
 Verification uses fake WebRTC, SDK, database, and UI tests plus both entry point
 build checks. No physical audio, live call, installation, or reload is part of this
 cutover. Earlier design documents are retained in `history/`.
+
+## Rollback
+
+The old build cannot see tasks created by the new runtime. Their threads remain
+in BB; `bb thread list --include-hidden` shows them. The startup import preserves
+legacy worker and watch records in the new runtime, but it does not copy new tasks
+back to the old tables.
