@@ -36,7 +36,7 @@ stopping the work; a later send does not re-enable a disabled watch.
 ## Settings and history
 
 Settings let you add, rename, and edit named worker profiles. Each profile has a
-provider, model, reasoning level, Fast option, and instructions. Choose a default
+provider, model, reasoning level, Fast option, permission mode, and instructions. Choose a default
 profile and a worker cap. Saving checks every profile on the selected machine;
 launch checks the actual destination again.
 

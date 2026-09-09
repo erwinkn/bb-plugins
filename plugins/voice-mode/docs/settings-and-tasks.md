@@ -11,6 +11,12 @@ v2 is absent. It retains v1. With neither key, the reader returns defaults witho
 writing either key. The old four roles become four named profiles, the default is
 `implement`, and the cap carries over.
 
+Named profiles accept `permissionMode` values `accept-edits`, `auto`, and `full`.
+Migrated profiles use `accept-edits`. Existing v2 values without the field read as
+`accept-edits` without a storage rewrite. The profile editor saves the choice,
+and the shared spawn path passes it to BB. Tests cover all three launch values,
+missing-field defaults, invalid saves, and independent profile edits.
+
 The editable prompt roles are `aide` and `worker`, labelled Live prompt and Worker
 prompt. `aide` reads the approved default without inserting a row. A saved `aide`
 row takes precedence. The `live` and `coordinator` roles are read-only under Previous
@@ -52,6 +58,7 @@ jsdom tests checked interactions. This did not test an installed plugin or live 
 | Keep prompt version selection separate from the editable draft. | Make selection immediately activate the version. | High | Restoring a version takes an explicit Use this version and Save. |
 | Refresh only while Tasks is mounted and the document is visible. | Poll all sessions continuously. | High | A hidden page waits until it is visible before fetching fresh rows. |
 | Use the new `aide` role and leave `live` unchanged. | Insert the new default under `live`. | High | Old clients that explicitly try to edit `live` receive a read-only error until updated. This follows the revised rollback requirement. |
+| Default omitted permission modes to `accept-edits` and pass saved modes to spawn. | Require existing v2 profiles to be rewritten. | High | A profile set to `auto` or `full` grants that BB permission mode to future launches. This follows the explicit profile setting. |
 | Use synthetic UI previews without installing the plugin. | Reload BB for a live UI check. | High | Installed host integration and physical audio remain untested, as required by this task. |
 
 I stand behind these changes and their tests. No live call, installation, or reload

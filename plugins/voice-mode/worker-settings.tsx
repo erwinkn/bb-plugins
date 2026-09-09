@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
-import { namedWorkerSettingsSchema, workerProfileSchema, type NamedWorkerProfile, type NamedWorkerSettings as Settings } from "./worker-profiles.ts";
+import { namedWorkerSettingsSchema, namedWorkerProfileSchema, workerProfileSchema, type NamedWorkerProfile, type NamedWorkerSettings as Settings } from "./worker-profiles.ts";
 import type { WorkerCatalog } from "./provider-catalog.ts";
 import { Button } from "./components/ui/button";
 
@@ -116,6 +116,14 @@ export function WorkerSettings() {
                 </select>
               </label>
             </div>
+            <label className="block min-w-0 space-y-1 text-sm">Permission mode
+              <select aria-label={`${prefix} permission mode`} className={inputClass} value={profile.permissionMode} onChange={event => update(index, { permissionMode: namedWorkerProfileSchema.shape.permissionMode.parse(event.target.value) })}>
+                <option value="accept-edits">Accept edits</option>
+                <option value="auto">Auto</option>
+                <option value="full">Full</option>
+              </select>
+              <span className="block text-xs text-muted-foreground">Investigate and review profiles usually keep accept-edits.</span>
+            </label>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" aria-label={`${prefix} Fast`} checked={profile.serviceTier === "fast"} disabled={loadingCatalog || (!provider?.serviceTiers.some(t => t.id === "fast") && profile.serviceTier !== "fast")} onChange={event => update(index, { serviceTier: event.target.checked ? "fast" : "default" })} />Fast
               {!provider?.serviceTiers.some(t => t.id === "fast") ? <span className="text-xs text-muted-foreground">Unavailable on this machine</span> : null}
@@ -134,7 +142,7 @@ export function WorkerSettings() {
       <label className="block min-w-0 space-y-1 text-sm">Maximum active or unconfirmed workers
         <input type="number" aria-label="Maximum Voice workers" min={1} max={64} className={inputClass} disabled={disabled} value={settings.maxActiveWorkers} onChange={event => edit({ ...settings, maxActiveWorkers: Number(event.target.value) })} />
       </label>
-      <p className="text-xs text-muted-foreground">Workers use BB's accept-edits permissions. Profile instructions do not grant new permissions. An unconfirmed launch keeps its worker slot.</p>
+      <p className="text-xs text-muted-foreground">BB applies the selected permission mode. An unconfirmed launch keeps its worker slot.</p>
       {dirty && validation && !validation.success ? <p role="alert" className="break-words text-sm text-destructive">{validation.error.issues[0].message}</p> : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button disabled={disabled || loadingCatalog || !catalog?.hostId || !dirty || !validation?.success} onClick={() => void save()}>{busy ? "Saving..." : "Save profiles"}</Button>

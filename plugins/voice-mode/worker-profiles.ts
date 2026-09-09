@@ -23,6 +23,7 @@ export type WorkerSettings = z.infer<typeof workerSettingsSchema>;
 export const NAMED_WORKER_PROFILE_KEY = "voice.worker-profiles.v2";
 export const namedWorkerProfileSchema = workerProfileSchema.extend({
   name: z.string().trim().min(1).max(64), instructions: z.string().min(1).max(16000).refine(value => !!value.trim(), "Instructions cannot be empty"),
+  permissionMode: z.enum(["accept-edits", "auto", "full"]).default("accept-edits"),
 });
 export type NamedWorkerProfile = z.infer<typeof namedWorkerProfileSchema>;
 export const namedWorkerSettingsSchema = z.object({
@@ -42,7 +43,7 @@ export async function migrateWorkerSettings(bb: BbPluginApi): Promise<void> {
 }
 
 export function namedSettingsFromLegacy(old: WorkerSettings): NamedWorkerSettings {
-  return { profiles: WORKER_ROLES.map(name => ({ ...old.profiles[name], name, instructions: DEFAULT_PROFILE_INSTRUCTIONS[name] })),
+  return { profiles: WORKER_ROLES.map(name => ({ ...old.profiles[name], name, instructions: DEFAULT_PROFILE_INSTRUCTIONS[name], permissionMode: "accept-edits" })),
     defaultProfile: "implement", maxActiveWorkers: old.maxActiveWorkers, workerBasePrompt: WORKER_BASE_PROMPT };
 }
 

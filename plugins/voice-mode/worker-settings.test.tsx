@@ -38,6 +38,20 @@ test("named profiles can be added, renamed, selected as default, and deleted aft
   }finally{h.slot.lifecycle.unmount();}
 });
 
+test("profile permission modes save independently with guidance for investigate and review", async () => {
+  const h = fixture(); try {
+    const select = await h.ui.findByRole("combobox", { name: "review permission mode" }) as HTMLSelectElement;
+    assert.equal(select.value, "accept-edits");
+    assert.deepEqual(Array.from(select.options, option => option.value), ["accept-edits", "auto", "full"]);
+    assert.equal(h.ui.getAllByText("Investigate and review profiles usually keep accept-edits.").length, 4);
+    fireEvent.change(select, { target: { value: "full" } });
+    fireEvent.change(h.ui.getByRole("combobox", { name: "implement permission mode" }), { target: { value: "auto" } });
+    assert.equal(h.saves.length, 0);
+    fireEvent.click(h.ui.getByRole("button", { name: "Save profiles" })); await h.ui.findByText("Profiles saved");
+    assert.deepEqual(h.settings.profiles.map(p => p.permissionMode), ["accept-edits", "accept-edits", "auto", "full"]);
+  } finally { h.slot.lifecycle.unmount(); }
+});
+
 test("profile model edits are independent and failed saves preserve the complete draft",async()=>{
   const h=fixture();try{
     await h.ui.findByRole("textbox",{name:"review name"});

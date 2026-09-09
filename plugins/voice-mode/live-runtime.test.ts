@@ -86,6 +86,19 @@ async function fixture() {
 const message = { thread_id: "build", body: "Check the build", mode: "normal" };
 const worker = { profile: "investigate", title: "Build investigation", task: "Find the cause. Do not implement.", project_id: "app" };
 
+test("worker spawn passes each configured profile permission mode to BB", async t => {
+  const h = await fixture(); t.after(h.close);
+  const settings = await readNamedWorkerSettings(h.bb);
+  for (const mode of ["accept-edits", "auto", "full"] as const) {
+    settings.profiles.find(p => p.name === "investigate")!.permissionMode = mode;
+    await h.bb.storage.kv.set(NAMED_WORKER_PROFILE_KEY, settings);
+    const receipt = await h.run("spawn_worker", { ...worker, title: `Investigation ${mode}` });
+    assert.equal(receipt.status, "running");
+    assert.equal(h.world.spawns.at(-1).permissionMode, mode);
+  }
+  assert.equal(h.world.spawns.length, 3);
+});
+
 test("live tools expose all fourteen strict argument schemas", () => {
   const schemas = liveToolSchemas(); assert.equal(schemas.length, 14); assert.equal(new Set(schemas.map(s => s.name)).size, 14);
   for (const s of schemas) assert.equal(s.parameters.additionalProperties, false);

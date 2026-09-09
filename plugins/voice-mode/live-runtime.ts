@@ -280,7 +280,7 @@ export class LiveRuntime {
     try {
       thread = await this.sdkEffect(input, () => this.bb.sdk.threads.spawn({ projectId: project.id, title: args.title, prompt,
         environment: { type: "host", hostId: host.id, workspace: project.kind === "personal" ? { type: "personal" } : { type: "managed-worktree", baseBranch: { kind: "default" } } },
-        ...execution, permissionMode: "accept-edits", visibility: worker ? "hidden" : "visible" }));
+        ...execution, permissionMode: profile.permissionMode, visibility: worker ? "hidden" : "visible" }));
     } catch (error) {
       this.store.db.prepare("UPDATE voice_tasks SET status = ?, updated_at = ? WHERE op_id = ?").run(isTimeout(error) ? "unknown" : "failed", this.now(), row.id); throw error;
     }

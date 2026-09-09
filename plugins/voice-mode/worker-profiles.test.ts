@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server.ts";
-import { defaultWorkerSettings, namedSettingsFromLegacy, NAMED_WORKER_PROFILE_KEY, WORKER_PROFILE_KEY } from "./worker-profiles.ts";
+import { defaultWorkerSettings, namedSettingsFromLegacy, readNamedWorkerSettings, NAMED_WORKER_PROFILE_KEY, WORKER_PROFILE_KEY } from "./worker-profiles.ts";
 import { WORKER_BASE_PROMPT, DEFAULT_PROFILE_INSTRUCTIONS } from "./worker-prompt.ts";
 
 const sdk = {
@@ -19,6 +19,7 @@ test("plugin startup migrates v1 to named profiles once and preserves both old s
   const migrated=await bb.storage.kv.get<any>(NAMED_WORKER_PROFILE_KEY);
   assert.deepEqual(migrated,namedSettingsFromLegacy(old));assert.equal(migrated.defaultProfile,"implement");assert.equal(migrated.workerBasePrompt,WORKER_BASE_PROMPT);
   assert.equal(migrated.profiles[0].instructions,DEFAULT_PROFILE_INSTRUCTIONS.investigate);
+  assert.deepEqual(migrated.profiles.map((p: any) => p.permissionMode), Array(4).fill("accept-edits"));
   const db=bb.storage.database();const before=db.prepare("SELECT * FROM voice_role_prompts").all();
   const edited={...migrated,maxActiveWorkers:9};await bb.storage.kv.set(NAMED_WORKER_PROFILE_KEY,edited);
   const reloaded=await harness.lifecycle.reload(plugin);t.after(()=>reloaded.harness.lifecycle.dispose());
@@ -32,7 +33,7 @@ test("a fresh installation reads defaults without writing either profile key", a
   assert.equal(await bb.storage.kv.get(WORKER_PROFILE_KEY),undefined);assert.equal(await bb.storage.kv.get(NAMED_WORKER_PROFILE_KEY),undefined);
 });
 
-test("v2 save validates names, default, model, reasoning, Fast, and selected machine before writing", async t => {
+test("v2 save validates names, default, model, reasoning, Fast, permissions, and selected machine before writing", async t => {
   const {bb,harness}=createFakePluginHost({pluginId:"voice-mode",sdk:sdk as any});t.after(()=>harness.lifecycle.dispose());await plugin(bb);
   const settings=namedSettingsFromLegacy(defaultWorkerSettings());settings.profiles[0].model="chosen";
   assert.deepEqual(await harness.behavior.callRpc("setWorkerSettings",{hostId:"desktop",settings}),settings);
@@ -44,11 +45,21 @@ test("v2 save validates names, default, model, reasoning, Fast, and selected mac
     {...settings,profiles:settings.profiles.map((p,i)=>i===0?{...p,providerId:"missing"}:p)},
     {...settings,profiles:settings.profiles.map((p,i)=>i===0?{...p,reasoningLevel:"max"}:p)},
     {...settings,profiles:settings.profiles.map((p,i)=>i===0?{...p,serviceTier:"fast"}:p)},
+    {...settings,profiles:settings.profiles.map((p,i)=>i===0?{...p,permissionMode:"invalid"}:p)},
   ];
   for(const value of invalid) await assert.rejects(harness.behavior.callRpc("setWorkerSettings",{hostId:"desktop",settings:value}));
   await assert.rejects(harness.behavior.callRpc("setWorkerSettings",{hostId:"offline",settings}),/no longer connected/);
   assert.deepEqual(await bb.storage.kv.get(NAMED_WORKER_PROFILE_KEY),settings);
   assert.ok(harness.inspection.sdk.callsTo("providers.models").every(call=>(call[0] as any).hostId==="desktop"));
+});
+
+test("existing v2 profiles without a permission mode read as accept-edits without rewriting storage", async t => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" }); t.after(() => harness.lifecycle.dispose());
+  const settings = namedSettingsFromLegacy(defaultWorkerSettings());
+  const stored = { ...settings, profiles: settings.profiles.map(({ permissionMode, ...profile }) => profile) };
+  await bb.storage.kv.set(NAMED_WORKER_PROFILE_KEY, stored);
+  assert.deepEqual(await readNamedWorkerSettings(bb), settings);
+  assert.deepEqual(await bb.storage.kv.get(NAMED_WORKER_PROFILE_KEY), stored);
 });
 
 test("historical coordinator prompt is readable but cannot be saved by RPC", async t => {
