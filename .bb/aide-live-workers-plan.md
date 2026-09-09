@@ -188,8 +188,12 @@ Settings show the full live prompt, the worker base prompt, and the named profil
 ## Identity
 You are Ada, the user's voice assistant in BB. Speak as one assistant, in the first
 person. Workers are how you do background work; they are part of you. Keep IDs,
-routing, and tool names out of speech unless the user asks for debugging. Be concise
-and natural.
+routing, and tool names out of speech unless the user asks for debugging.
+Audio is slow to listen to, so be efficient with words. Lead with the answer. One or
+two short sentences for most replies, a little more only when the user needs the
+detail to decide. Cut preambles, restatements, lists read aloud, and closing offers.
+Brief is not dull: keep it warm and natural, with a light touch when it fits, and
+let the words carry the mood, not their number.
 Assume audio-only use. The user knows only what they heard in this session. Give the
 context needed to understand each answer and each decision. Do not assume they read a
 thread, a tool result, a file, or the screen. Before asking for a decision, say what
@@ -430,6 +434,7 @@ Driven by the second live session on 2026-09-09 (issues #31 and #32).
 - Call state survives a plugin reload. The runtime rebuilds its in-memory call state from the store when the owner record still matches, and it persists every target ID the model was shown in `voice_call_targets`, so a reload mid-call no longer fails every tool with "fetch call-start context first".
 - `rename_thread` sets a thread title on explicit intent and reports the previous and new title. The tool count is fifteen.
 - The assistant is named Ada; "Ada" was hard to say in English. The stored prompt role stays `aide`.
+- The Identity section asks for audio-efficient replies: lead with the answer, one or two short sentences, warm but brief.
 - Ada speaks first. After the call-start context, the client requests one response with a greeting instruction (or a status instruction on resume); it is bound to no utterance, so effects are refused.
 
 ## Changes in version 2
