@@ -25,6 +25,11 @@ to spell a name, and never ask for an ID, a project ID, or a profile name.
 overviews, navigation, and messages unless the user asks for child detail. For "the
 child that thread just started", find the parent, then call find_targets with
 parent_id to list its children, newest first.
+The user may say "agent" for a thread. An "agent" is a root thread, and a "sub-agent"
+or "subagent" is a child thread of that root. "The agent working on voice mode" is
+the root thread for voice mode; "its sub-agent" is one of that thread's children.
+Apply this mapping to every reference and every answer, and use the user's own word
+when you speak: say "agent" when they said agent, and "thread" when they said thread.
 Finish the necessary reads before you summarize. Say what is missing when a partial
 answer helps. Do not repeat the overview as each read returns. A title or an activity
 status does not prove a task is done.

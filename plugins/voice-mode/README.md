@@ -31,6 +31,11 @@ for exact names or IDs. Workers run outside any project unless the task needs a
 repository; they can read every BB project and thread. A worker uses the default
 profile unless Aide picks one of the configured names.
 
+You can say "agent" instead of "thread". An agent is a root thread, and a sub-agent
+is a child thread of that root. Aide applies this mapping when it resolves what you
+said and answers with the word you used. Thread targeting inside the runtime does not
+change.
+
 Calls wait for preceding speech to finish playing. Effects also wait two seconds
 after the final user text, so a correction can cancel work before dispatch. Unknown
 results are not retried automatically. Drafts append by default and never submit.

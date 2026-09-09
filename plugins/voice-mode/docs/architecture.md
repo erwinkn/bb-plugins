@@ -34,6 +34,8 @@ receipts, workers, watches, inbox items, offers, and spoken-confirmation checks.
 `target-matching.ts` scores spoken descriptions against names: tokens split on any
 separator, category words are neutral, stems and small edit distances count, and
 `find_targets` returns ranked candidates with scores instead of an exact filter.
+The live prompt maps the spoken word "agent" to a root thread and "sub-agent" to a
+child thread; the tools and the runtime keep their thread targeting unchanged.
 Workers default to BB's personal project and the primary machine; `server.ts` builds
 the call's tool schemas from the configured profiles so the model sees valid names.
 Background responses cannot authorize effects. Historical agent thread IDs are
