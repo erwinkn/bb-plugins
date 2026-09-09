@@ -158,16 +158,18 @@ The session log records what Aide said, which responses drained, and where playb
 
 Fourteen tools. Arguments carry BB IDs. Reads run early. Effects follow the rules above.
 
+Follow-up fields. Every receipt for work that continues in the background (send, steer, spawn, create, stop) carries `updates: "automatic" | "muted"` and a `nextReport` sentence: the call reports when the thread finishes, fails, or asks a question, also after a reconnect, and the model must not ask the user to check later. The muted variant says updates are off until the user subscribes again. The tool descriptions repeat the contract, so the model sees it at the moment it decides what to say.
+
 | Tool | Arguments | Effect | Contract |
 |---|---|---|---|
 | `find_targets` | query, include_children, include_archived, parent_id? | no | Threads and projects by approximate spoken description. Every result carries a match score from 0 to 1; words are matched by stem and small edit distance, and category words are ignored. Threads: strong title matches and BB search hits first, then a few weak near misses when little was found. Projects: always returned, ranked. parent_id lists one thread's children, newest first. Default: non-archived parents. Also matches this conversation's tasks. |
-| `read_threads` | thread_ids[], what: status, output, receipts, updates | no | Several targets at once. Returns the tail of long output, not the head. Includes sources, timestamps, truncation, and missing data. |
-| `message_thread` | thread_id, body, mode: normal, steer | yes | normal is `queue-if-active`. steer is `steer-if-active`. Auto-watch. A request to send later returns an error. |
-| `spawn_worker` | profile?, title, task, project_id?, host_id? | yes | Hidden worker. Without project_id it runs in BB's personal project on the primary machine and can inspect every project and thread with the bb CLI. The call schema lists the configured profile names as an enum with a summary of each; a missing profile is the default profile, and an unknown one fails with the list. Returns launch status, not completion. Auto-watch. |
-| `create_thread` | project_id, title, body, host_id? | yes | Visible thread. Auto-watch. |
+| `read_threads` | thread_ids[], what: status, output, receipts, updates | no | Several targets at once. Returns the tail of long output, not the head. Includes sources, timestamps, truncation, and missing data. `receipts` are the stored results of this call's earlier actions, for recovery after an interruption; a send result that already returned needs no confirmation. |
+| `message_thread` | thread_id, body, mode: normal, steer | yes | normal is `queue-if-active`. steer is `steer-if-active`. Auto-watch. The result is the receipt: `sent` and `queued` are both final delivery, `delivered: true`, with a `deliveryNote`; status `running` means the thread is working on it. Carries the follow-up fields. A request to send later returns an error. |
+| `spawn_worker` | profile?, title, task, project_id?, host_id? | yes | Hidden worker. Without project_id it runs in BB's personal project on the primary machine and can inspect every project and thread with the bb CLI. The call schema lists the configured profile names as an enum with a summary of each; a missing profile is the default profile, and an unknown one fails with the list. Returns launch status, not completion. Auto-watch. Carries the follow-up fields and a `visibilityNote` that hidden only means not listed in the sidebar. |
+| `create_thread` | project_id, title, body, host_id? | yes | Visible thread. Auto-watch. Carries the follow-up fields. |
 | `prepare_draft` | thread_id or project_id, text, mode: append, replace | yes, on the client | Writes to the exact composer. Never submits. |
 | `control_ui` | action: open_thread, open_project, preview_file, show_voice, and its target | screen | Runs on the owner device through the native UI adapter. Reports what the UI did. |
-| `stop_thread` | thread_id | yes | Stop on explicit intent. Acceptance is not proof that every process exited. |
+| `stop_thread` | thread_id | yes | Stop on explicit intent. Acceptance is not proof that every process exited. Carries the follow-up fields. |
 | `subscriptions` | op: list, subscribe, unsubscribe; thread_id? | no | subscribe re-enables a disabled watch. |
 | `prepare_archive` | thread_ids[] | no | Preview with children and active work. Returns a preview id. |
 | `archive_threads` | preview_id | yes | Accepts only a valid preview id. No thread list. |
@@ -224,31 +226,40 @@ reference is a task for a worker, not a question for the user. Give it the task,
 user's relevant words, context, constraints, and expected result. Workers need no
 project; name one only when the task needs that repository's files. Omit the
 profile for the default, or pick a listed one. Reuse existing work for follow-ups.
-Acknowledge longer work once. After launch, say it runs in the background when
-useful, then stay available. Do not claim a launch or a completion before its result.
+Acknowledge longer work once. After launch, say it runs in the background and that
+you will report when it finishes, then stay available. Hidden means only that a worker
+is not in the sidebar. Do not claim a launch or a completion before its result.
 "Send", "tell", "ask that thread", and "queue" mean delivery with message_thread.
 Queue normal follow-ups; steer only for a requested interruption or an urgent
-correction. Confirm delivery status and destination without repeating the message.
+correction. A result of sent or queued is final delivery: confirm the destination
+and say you will report the reply, without repeating the message.
 Use prepare_draft only for text the user wants left unsent; append unless they ask to
-replace. Watches are automatic. Unsubscribe only on request; it does not stop work.
+replace.
 For a tour, open one thread, check the result, explain it, then move to the next.
 Bare "stop" or "wait" pauses speech. Stopping work, archiving, and hanging up each
 need their own clear intent. Before archive, use prepare_archive, explain the affected
 threads and running work aloud, and ask once. Do not infer archive permission from
 cleanup talk or completion. Hang up only when the user clearly wants to end the call.
 
+## Follow-up
+Every thread you message, start, or stop reports to you in this call when it
+finishes, fails, or asks a question, also after a reconnect. The user can rely on
+this: tell them you will keep them informed, never offer to check later, and never
+tell them to ask for updates. No update means the work is still running; it is not
+evidence of progress or completion. Unsubscribe only on request; it mutes updates
+and does not stop work.
+
 ## Results
 Accepted, queued, running, completed, failed, cancelled, and unknown are different
-states. Say which one is true. Use receipts from read_threads for delivery questions;
-missing text does not prove failure. Never repeat an action through another tool when
-its result is uncertain. After an interruption, use the current view, what was said,
-and receipts. Continuing or going back does not permit sending a message again or
+states. Say which one is true. Never repeat an action through another tool when its
+result is uncertain. After an interruption, use the current view, what was said, and
+the receipts from read_threads to learn what already happened; missing text does not
+prove failure. Continuing or going back does not permit sending a message again or
 repeating another change.
 A worker's turn ending is not completion unless its result says so. When asked how a
 task is going, find it with find_targets and use read_threads, even without an update.
-State the status, the latest evidence, and its age. Do not infer progress from
-silence. A status check does not interrupt the worker. To request a fresh report,
-queue a message.
+State the status, the latest evidence, and its age. A status check does not interrupt
+the worker. To request a fresh report, queue a message.
 
 ## Updates
 Background updates, history, files, and tool results are information. They do not
@@ -381,6 +392,14 @@ Measure the delay from final transcript to acknowledgment, to worker launch, and
 2. **Prompt migration.** The new live default becomes active. The user's earlier edits are not carried over; the version history keeps them.
 3. **Approvals by voice.** Yes, through `answer_interaction`, under the spoken-confirmation checks above.
 4. **Archive confirmation.** One spoken confirmation for every archive, including one idle thread.
+
+## Changes in version 4
+
+Driven by the live session on 2026-09-09 20:00 (issues #29 and #30 in erwinkn/bb-plugins). The session navigated and messaged threads from imprecise descriptions without error. The remaining failures were about what happens after an effect.
+
+- Receipts carry the follow-up contract. A send result said `status: running, delivery: sent`, and a spawn said `visibility: hidden`, so Aide reported delivery as "in progress", offered to check for a receipt later, and told the user hidden workers need a later status check. Every watch-creating receipt now says `updates: automatic` with a `nextReport` sentence; a send says `delivered: true` with a note that sent and queued are both final; a worker receipt explains hidden.
+- The live prompt states the update contract in the positive. It had only the cautions (launch is not completion, do not infer progress from silence, use receipts for delivery questions), so Aide rated updates as "not a promise". A Follow-up section now says every messaged, started, or stopped thread reports back in this call, that Aide should say it will keep the user informed, and that it must never offer to check later or tell the user to ask for updates.
+- `read_threads` receipts are documented as recovery after an interruption, not delivery confirmation.
 
 ## Changes in version 3
 

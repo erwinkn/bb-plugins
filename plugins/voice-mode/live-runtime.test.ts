@@ -108,6 +108,17 @@ test("live tools expose all fourteen strict argument schemas", () => {
   assert.equal(hash({ a: 1, b: 2 }), hash({ b: 2, a: 1 }));
 });
 
+test("receipts for background work carry the follow-up contract", async t => {
+  const h = await fixture(); t.after(h.close);
+  const sent = await h.run("message_thread", message);
+  assert.equal(sent.delivered, true); assert.equal(sent.updates, "automatic"); assert.match(sent.deliveryNote, /final delivery/); assert.match(sent.nextReport, /reports to you when the thread finishes/);
+  const stopped = await h.run("stop_thread", { thread_id: "build" }); assert.equal(stopped.updates, "automatic"); assert.match(stopped.nextReport, /Do not ask the user to check later/);
+  const spawned = await h.run("spawn_worker", worker); assert.equal(spawned.updates, "automatic"); assert.match(spawned.visibilityNote, /not listed in the sidebar/);
+  const created = await h.run("create_thread", { project_id: "app", title: "Visible", body: "Check tests" }); assert.equal(created.updates, "automatic"); assert.equal(created.visibilityNote, undefined);
+  const receipts = await h.run("read_threads", { thread_ids: ["build"], what: "receipts" });
+  assert.ok(receipts.threads[0].receipts.every((r: Any) => r.updates === "automatic"));
+});
+
 test("ledger retries, reconnects, and device switches never send twice", async t => {
   const h = await fixture(); t.after(h.close);
   const first = await h.run("message_thread", message);
@@ -160,7 +171,7 @@ test("unsubscribe then send stays muted; explicit subscribe re-enables", async t
   const h = await fixture(); t.after(h.close); await h.watch(); await h.idle();
   await h.run("subscriptions", { op: "unsubscribe", thread_id: "build" });
   assert.equal(h.runtime.store.inbox("conversation").length, 0);
-  const sent = await h.run("message_thread", message); assert.equal(sent.updatesMuted, true); assert.match(sent.updates, /muted/);
+  const sent = await h.run("message_thread", message); assert.equal(sent.updatesMuted, true); assert.equal(sent.updates, "muted"); assert.match(sent.nextReport, /muted until the user subscribes again/);
   await h.idle("build", "Second result"); assert.equal(h.runtime.store.inbox("conversation").length, 0);
   await h.run("subscriptions", { op: "subscribe", thread_id: "build" });
   assert.equal(h.runtime.store.watches("conversation")[0].state, "active"); assert.equal(h.runtime.store.inbox("conversation").length, 1);

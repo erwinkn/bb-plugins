@@ -187,6 +187,13 @@ export class LiveRuntime {
     const receipt = this.operations.receipt(row);
     if (typeof receipt.threadId === "string") this.remember(call, receipt.threadId);
   }
+  /** Every receipt for work that continues in the background states the follow-up contract, so the model never hands the follow-up back to the user. */
+  private followUp(watch: { state: string }) {
+    const muted = watch.state === "disabled";
+    return { updates: muted ? "muted" : "automatic",
+      nextReport: muted ? "Updates for this thread are muted until the user subscribes again."
+        : "This call reports to you when the thread finishes, fails, or asks a question, also after a reconnect. Do not ask the user to check later." };
+  }
   private async sdkEffect<T>(input: ToolInput, work: () => Promise<T>) {
     this.state(input.nonce, input.conversationId);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -205,7 +212,9 @@ export class LiveRuntime {
         const result = await this.sdkEffect(input, () => this.bb.sdk.threads.send({ threadId: args.thread_id, input: [{ type: "text", text: body, mentions: [] }], mode: args.mode === "steer" ? "steer-if-active" : "queue-if-active" }));
         const queued = result.delivery === "queued";
         this.store.db.prepare("UPDATE voice_operations SET queued_message_id = ?, dispatched_at = ? WHERE id = ?").run(queued ? result.queuedMessage.id : null, queued ? null : this.now(), row.id);
-        return this.operations.finish(row.id, queued ? "queued" : "running", { threadId: args.thread_id, title: watch.title, delivery: result.delivery, ...(queued ? { queuedMessageId: result.queuedMessage.id } : {}), updatesMuted: watch.state === "disabled", ...(watch.state === "disabled" ? { updates: "Updates for this thread are muted." } : {}) });
+        return this.operations.finish(row.id, queued ? "queued" : "running", { threadId: args.thread_id, title: watch.title, delivery: result.delivery, delivered: true,
+          deliveryNote: queued ? "Queued is final delivery: the thread reads it when its current turn ends." : "Sent is final delivery: the thread has the message and is working on it.",
+          ...(queued ? { queuedMessageId: result.queuedMessage.id } : {}), updatesMuted: watch.state === "disabled", ...this.followUp(watch) });
         });
       }
       case "spawn_worker": case "create_thread": return this.spawn(input, row, text, call);
@@ -214,7 +223,7 @@ export class LiveRuntime {
         const watch = await this.watches.watch(input.conversationId, thread_id);
         this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(thread_id, row.id);
         await this.sdkEffect(input, () => this.bb.sdk.threads.stop({ threadId: thread_id }));
-        return this.operations.finish(row.id, "succeeded", { threadId: thread_id, title: watch.title, stopRequested: true, processesExited: null, updatesMuted: watch.state === "disabled" });
+        return this.operations.finish(row.id, "succeeded", { threadId: thread_id, title: watch.title, stopRequested: true, processesExited: null, updatesMuted: watch.state === "disabled", ...this.followUp(watch) });
       }
       case "archive_threads": {
         const { preview_id } = liveToolArgs.archive_threads.parse(input.args);
@@ -308,7 +317,8 @@ export class LiveRuntime {
     }
     this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(thread.id, row.id);
     this.remember(call, thread.id, project.id, host.id);
-    this.operations.finish(row.id, "running", { threadId: thread.id, title: threadName(thread), profile: profile.name, projectId: project.id, projectName: project.name, outsideProject: project.kind === "personal", hostId: host.id, hostName: host.name, visibility: worker ? "hidden" : "visible", launchAccepted: true });
+    this.operations.finish(row.id, "running", { threadId: thread.id, title: threadName(thread), profile: profile.name, projectId: project.id, projectName: project.name, outsideProject: project.kind === "personal", hostId: host.id, hostName: host.name, visibility: worker ? "hidden" : "visible",
+      ...(worker ? { visibilityNote: "Hidden only means the worker is not listed in the sidebar. It reports like any thread." } : {}), launchAccepted: true, ...this.followUp({ state: "active" }) });
     try { await this.watches.spawned(row.id, thread); }
     catch (error) { this.operations.finish(row.id, "running", { recoveryNeeded: true, error: errorMessage(error) }); }
     return this.operations.receipt(this.operations.get(row.id)!);

@@ -36,8 +36,11 @@ after the final user text, so a correction can cancel work before dispatch. Unkn
 results are not retried automatically. Drafts append by default and never submit.
 A worker's turn ending is reported separately from whether its task is complete.
 
-Background updates wait for a quiet boundary and cannot navigate or act. Watches
-are automatic when work is sent or started. Unsubscribing mutes updates without
+Background updates wait for a quiet boundary and cannot navigate or act. Every
+thread Aide messages, starts, or stops reports back in the call when it finishes,
+fails, or asks a question, also after a reconnect. A send result is the receipt:
+sent and queued are both final delivery, and Aide says it will keep you informed
+rather than asking you to check later. Unsubscribing mutes updates without
 stopping the work; a later send does not re-enable a disabled watch.
 
 ## Settings and history
