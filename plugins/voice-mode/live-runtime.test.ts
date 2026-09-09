@@ -700,13 +700,14 @@ test("startup imports legacy watches and workers once without replay or coordina
   const {importLegacyWatches,LEGACY_WATCH_IMPORT_KEY}=await import("./legacy-watch-import.ts");
   h.db.exec([...CONVERSATION_HISTORY_MIGRATIONS,...LIVE_ACTION_MIGRATIONS].join(";"));
   h.db.prepare("INSERT INTO voice_conversations(id,created_at,updated_at,coordinator_thread_id) VALUES ('conversation',1,1,'coord-id')").run();
-  for(const [id,title,parentThreadId] of [["coord-id","Renamed coordinator",null],["coord-title","Voice coordinator old",null],["removed","Removed",null],["worker-active","Active worker","coord-id"],["worker-unknown","Unknown worker",null],["settled","Settled",null]] as const)
+  for(const [id,title,parentThreadId] of [["coord-id","Renamed coordinator",null],["coord-title","Voice coordinator old",null],["removed","Removed",null],["worker-active","Active worker","coord-id"],["worker-unknown","Unknown worker",null],["settled","Settled",null],["archived","Archived work",null]] as const)
     h.world.threads.set(id,makeThreadResponse({id,title,parentThreadId,projectId:"app",status:"active"}));
+  h.world.threads.get("archived").archivedAt=5;
   h.world.threads.get("build").status="idle";h.world.outputs.set("build","Old result");
   h.world.events.set("build",[{seq:25,type:"turn/completed",createdAt:1,data:{status:"completed"}}]);
   h.world.events.set("worker-active",[{seq:9,type:"turn/completed",createdAt:1,data:{status:"completed"}}]);
   const addWatch=h.db.prepare("INSERT INTO voice_watch(conversation_id,thread_id,reason,added_at,removed_at) VALUES ('conversation',?,'legacy',1,?)");
-  for(const id of ["build","coord-id","coord-title","missing","worker-active"])addWatch.run(id,null);
+  for(const id of ["build","coord-id","coord-title","missing","worker-active","archived"])addWatch.run(id,null);
   addWatch.run("removed",2);
   const addWorker=h.db.prepare(`INSERT INTO voice_workers(request_id,step,conversation_id,thread_id,project_id,host_id,role,model,title,status,created_at,updated_at)
     VALUES (?,0,'conversation',?,'app','mac','investigate','worker','Legacy work',?,1,1)`);
@@ -715,9 +716,10 @@ test("startup imports legacy watches and workers once without replay or coordina
   const migrations=h.db.prepare("SELECT * FROM _bb_migrations").all();
   await importLegacyWatches(h.bb,h.runtime.watches);
   assert.equal(await h.bb.storage.kv.get(LEGACY_WATCH_IMPORT_KEY),true);
-  assert.deepEqual(h.runtime.store.tasks().map(task=>[task.op_id,task.status]).sort(),[["legacy:active:0","running"],["legacy:creating:0","unknown"],["legacy:unknown:0","unknown"]]);
+  // A creating worker without a thread id is not imported: the new runtime could never resolve it and it would hold a slot.
+  assert.deepEqual(h.runtime.store.tasks().map(task=>[task.op_id,task.status]).sort(),[["legacy:active:0","running"],["legacy:unknown:0","unknown"]]);
   const watched=h.runtime.store.watches();
-  assert.deepEqual(watched.map(w=>w.thread_id).sort(),["build","spawn:legacy:creating:0","worker-active","worker-unknown"]);
+  assert.deepEqual(watched.map(w=>w.thread_id).sort(),["build","worker-active","worker-unknown"]);
   assert.equal(watched.find(w=>w.thread_id==="build")!.cursor_seq,25);
   assert.equal(watched.find(w=>w.thread_id==="build")!.last_status,"idle");
   assert.equal(watched.find(w=>w.thread_id==="worker-active")!.root_thread_id,"worker-active");

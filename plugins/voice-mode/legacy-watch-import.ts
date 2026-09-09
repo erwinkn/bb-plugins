@@ -29,7 +29,8 @@ export async function importLegacyWatches(bb: BbPluginApi, watches: Watches) {
       if (status !== 404 && !/not found|does not exist|missing thread/i.test(String(error))) throw error;
       loaded.set(id, null); return null;
     }
-    if (thread.deletedAt || isLegacyCoordinator(watches, thread)) { loaded.set(id, null); return null; }
+    // Archived or deleted threads are finished; importing them would only announce their archive.
+    if (thread.deletedAt || thread.archivedAt || isLegacyCoordinator(watches, thread)) { loaded.set(id, null); return null; }
     const root = await watches.root(thread);
     const [latest] = await bb.sdk.threads.events.list({ threadId: id, order: "desc", limit: "1" });
     const output = await bb.sdk.threads.output({ threadId: id });
@@ -50,13 +51,13 @@ export async function importLegacyWatches(bb: BbPluginApi, watches: Watches) {
       if (data) insertWatch.run(row.conversation_id, row.thread_id, data.root, data.cursor, data.thread.status, data.text, at, at);
     }
     for (const row of workers) {
+      // A worker without a thread id cannot be resolved by the new runtime and would hold a slot forever.
       const data = row.thread_id ? loaded.get(row.thread_id) : null;
-      if (row.thread_id && !data) continue;
+      if (!row.thread_id || !data) continue;
       const id = `legacy:${row.request_id}:${row.step}`;
       insertTask.run(id, row.conversation_id, row.thread_id, row.role, row.title,
-        row.status === "active" && row.thread_id ? "running" : "unknown", data?.text ?? null, row.created_at, at);
-      insertWatch.run(row.conversation_id, row.thread_id ?? `spawn:${id}`, data?.root ?? `spawn:${id}`,
-        data?.cursor ?? 0, data?.thread.status ?? null, data?.text ?? null, at, at);
+        row.status === "active" ? "running" : "unknown", data.text, row.created_at, at);
+      insertWatch.run(row.conversation_id, row.thread_id, data.root, data.cursor, data.thread.status, data.text, at, at);
     }
   })();
   // If this write fails, INSERT OR IGNORE makes the next startup safe to retry.

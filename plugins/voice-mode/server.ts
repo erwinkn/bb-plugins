@@ -384,8 +384,11 @@ export default async function plugin(bb: BbPluginApi) {
   for (const name of ["thread.active", "thread.idle", "thread.failed", "thread.archived", "interaction.pending", "message.dispatched"] as const) {
     bb.events.on(name, payload => liveRuntime.watches.event(name, payload).catch(error => bb.log.warn(`Live runtime event failed: ${error instanceof Error ? error.message : String(error)}`)));
   }
-  await importLegacyWatches(bb, liveRuntime.watches);
-  await liveRuntime.initialize();
+  // Startup must not fail on a transient SDK error. The import keeps its marker unset and retries next start.
+  try { await importLegacyWatches(bb, liveRuntime.watches); }
+  catch (error) { bb.log.warn(`Legacy watch import deferred to the next start: ${error instanceof Error ? error.message : String(error)}`); }
+  try { await liveRuntime.initialize(); }
+  catch (error) { bb.log.warn(`Live runtime recovery failed at startup: ${error instanceof Error ? error.message : String(error)}`); }
   function forceStopCall(nonce: string, transferring = false) {
     db.prepare("UPDATE voice_call_control SET nonce = NULL WHERE nonce = ?").run(nonce);
     conversations.endCall(nonce);
