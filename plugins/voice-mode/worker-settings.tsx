@@ -80,7 +80,7 @@ export function WorkerSettings() {
       </fieldset>;
   };
   return <div className="space-y-5">
-    <p className="text-xs text-muted-foreground">Internal Voice workers run under the hidden coordinator and stay out of the regular thread list. The default model applies to new workers; role-specific changes remain separate. Existing work keeps its model.</p>
+    <p className="text-xs text-muted-foreground">Voice workers run in hidden threads and stay out of the regular thread list. The default model applies to new workers; role-specific changes remain separate. Existing work keeps its model.</p>
     <p className="text-xs text-muted-foreground">Workers use BB’s accept-edits permission mode. Investigation and review are task instructions, not read-only sandboxes. Voice does not grant new permissions.</p>
     {error ? <div role="alert" className="space-y-2 text-sm text-destructive">{error}<Button variant="outline" onClick={refresh}>Retry worker settings</Button></div> : null}
     <label className="block space-y-1 text-sm">Preview models on machine

@@ -160,7 +160,9 @@ test("upgrade from the original five migrations preserves saved prompts and adds
     const historicalPayload = JSON.stringify({ text: "Original voice words", detail: "preserve exactly" });
     db.prepare("INSERT INTO session_events (session_id, ts, kind, payload) VALUES ('old-call', 10, 'user', ?)").run(historicalPayload);
     await plugin(bb);
-    assert.equal((await harness.behavior.callRpc("getPrompt", null) as any).content, LIVE_PROMPT);
+    const prompt=await harness.behavior.callRpc("getPrompt", null) as any;
+    assert.equal(prompt.content, LIVE_PROMPT);
+    assert.ok(prompt.versions.some((version:any)=>version.content.endsWith("Keep my prompt")));
     assert.equal((db.prepare("SELECT content FROM prompt_versions ORDER BY id DESC LIMIT 1").get() as any).content,"Keep my prompt");
     const history = await harness.behavior.callRpc("getVoiceSession", { sessionId: "old-call" }) as any;
     assert.equal(history.session.legacy, true);
@@ -171,22 +173,15 @@ test("upgrade from the original five migrations preserves saved prompts and adds
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("new coordinator defaults use GPT-5.4 mini at medium without overwriting saved choices",async()=>{
-  const cases=[
-    [undefined,{providerId:"codex",model:"gpt-5.4-mini",reasoningLevel:"medium",serviceTier:"default"}],
-    [{providerId:"codex",model:null,reasoningLevel:null,serviceTier:"fast"},{providerId:"codex",model:null,reasoningLevel:null,serviceTier:"fast"}],
-    [{providerId:"codex",model:"gpt-5.4-mini",reasoningLevel:null,serviceTier:"fast"},{providerId:"codex",model:"gpt-5.4-mini",reasoningLevel:null,serviceTier:"fast"}],
-    [{providerId:"other"},{providerId:"other",model:null,reasoningLevel:null,serviceTier:"default"}],
-  ] as const;
-  for(const [saved,expected] of cases) {
-    const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
-    try {
-      if(saved)await bb.storage.kv.set("config",{coordinator:saved});
-      await plugin(bb);
-      const config=await harness.behavior.callRpc("getConfig",null) as any;
-      assert.deepEqual(config.coordinator,expected);
-    }finally{await harness.lifecycle.dispose();}
-  }
+test("historical coordinator settings remain stored but are absent from active config",async()=>{
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+  try {
+    const historical={providerId:"codex",model:"old",reasoningLevel:null,serviceTier:"fast"};
+    await bb.storage.kv.set("config",{coordinator:historical});await plugin(bb);
+    assert.equal("coordinator" in (await harness.behavior.callRpc("getConfig",null) as any),false);
+    await harness.behavior.callRpc("setConfig",{voice:"cedar"});
+    assert.deepEqual((await bb.storage.kv.get("config") as any).coordinator,historical);
+  }finally{await harness.lifecycle.dispose();}
 });
 
 test("live transcripts coalesce without durable token logs and reject stale calls or revisions", async t => {
@@ -234,5 +229,23 @@ test("live cutover registers no agent tools or worker instruction injection",asy
     bb.agents.configure=((...args:Parameters<typeof configure>)=>{configurations++;return configure(...args);}) as typeof configure;
     await plugin(bb);
     assert.deepEqual(tools,[]);assert.equal(configurations,0);
+  }finally{await harness.lifecycle.dispose();}
+});
+
+test("resuming historical conversations never wakes or messages their old coordinator",async()=>{
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+  try {
+    await plugin(bb);const db=bb.storage.database();
+    db.prepare("INSERT INTO voice_conversations(id,created_at,updated_at,status,coordinator_thread_id,state_json) VALUES ('history',1,1,'released','retired-thread','{}')").run();
+    db.prepare("INSERT INTO voice_requests(id,conversation_id,call_nonce,call_sequence,seq,status,envelope_json,created_at,updated_at) VALUES ('old-request','history','old',1,1,'accepted','{}',1,1)").run();
+    db.prepare("INSERT INTO voice_questions(id,conversation_id,coordinator_thread_id,question,status,created_at,updated_at) VALUES ('old-question','history','retired-thread','Proceed?','submitted',1,1)").run();
+    const requests=db.prepare("SELECT * FROM voice_requests").all(),questions=db.prepare("SELECT * FROM voice_questions").all();
+    await harness.behavior.callRpc("claimCall",{nonce:"new",conversationId:"history"});
+    assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,0);
+    assert.equal(harness.inspection.sdk.callsTo("threads.send").length,0);
+    assert.deepEqual(db.prepare("SELECT * FROM voice_requests").all(),requests);
+    assert.deepEqual(db.prepare("SELECT * FROM voice_questions").all(),questions);
+    for(const method of ["submitRequest","retryRequest","reserveUpdateBatch","reportReplyDelivery","pendingReplies","getCoordinatorStatus","answerQuestion","setWatch","sequence","pendingUiCommands","claimUiCommand","reportUiCommandResult","cancelQuickRequest","listCoordinatorProviders"])
+      await assert.rejects(harness.behavior.callRpc(method as never,{} as never));
   }finally{await harness.lifecycle.dispose();}
 });

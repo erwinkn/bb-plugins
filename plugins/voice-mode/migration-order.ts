@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import { LIVE_ACTION_MIGRATIONS } from "./live-action-store.ts";
-import { MESSAGE_SEND_MIGRATIONS } from "./coordinator/store.ts";
-import { SEQUENCE_MIGRATIONS } from "./sequence-manager.ts";
-import { UTTERANCE_EFFECT_MIGRATIONS } from "./live-action-store.ts";
+import { LIVE_ACTION_MIGRATIONS } from "./legacy-migrations.ts";
+import { MESSAGE_SEND_MIGRATIONS } from "./legacy-migrations.ts";
+import { SEQUENCE_MIGRATIONS } from "./legacy-migrations.ts";
+import { UTTERANCE_EFFECT_MIGRATIONS } from "./legacy-migrations.ts";
 import { PROMPT_MIGRATIONS } from "./prompt-store.ts";
 import { LIVE_RUNTIME_MIGRATIONS } from "./live-store.ts";
 

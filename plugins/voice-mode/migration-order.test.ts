@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { voiceFeatureMigrations } from "./migration-order.ts";
-import { LIVE_ACTION_MIGRATIONS } from "./live-action-store.ts";
-import { SEQUENCE_MIGRATIONS } from "./sequence-manager.ts";
-import { MESSAGE_SEND_MIGRATIONS } from "./coordinator/store.ts";
+import { LIVE_ACTION_MIGRATIONS } from "./legacy-migrations.ts";
+import { SEQUENCE_MIGRATIONS } from "./legacy-migrations.ts";
+import { MESSAGE_SEND_MIGRATIONS } from "./legacy-migrations.ts";
 
 for (const [name, history] of [
   ["sequence-enabled installation", [...SEQUENCE_MIGRATIONS, ...MESSAGE_SEND_MIGRATIONS]],
@@ -26,3 +26,14 @@ for (const [name, history] of [
     } finally {await harness.lifecycle.dispose();}
   });
 }
+
+for(const branch of ["sequence","actions"] as const)test(`the ordered ${branch} migration list is unchanged by the runtime removal`,async()=>{
+  const {readFileSync}=await import("node:fs");
+  const expected=JSON.parse(readFileSync(new URL("./test-fixtures/feature-migrations-before-cutover.json",import.meta.url),"utf8"));
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+  try {
+    const db=bb.storage.database();
+    if(branch==="actions")db.exec("CREATE TABLE voice_action_groups (id TEXT)");
+    assert.deepEqual(voiceFeatureMigrations(db,0),expected[branch]);
+  }finally{await harness.lifecycle.dispose();}
+});

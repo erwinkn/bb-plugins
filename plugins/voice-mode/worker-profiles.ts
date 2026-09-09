@@ -48,7 +48,7 @@ export function defaultWorkerSettings(): WorkerSettings {
 
 export async function readWorkerSettings(bb: BbPluginApi): Promise<WorkerSettings> {
   const saved = await bb.storage.kv.get<unknown>(WORKER_PROFILE_KEY);
-  // Missing settings use an independent provider default, never the coordinator model.
+  // Missing settings use the independent worker provider default.
   if (saved === null || saved === undefined) return defaultWorkerSettings();
   const parsed = workerSettingsSchema.safeParse(saved);
   if (!parsed.success) throw new Error("Worker profiles are invalid. Review Voice Mode → Workers before starting work.");

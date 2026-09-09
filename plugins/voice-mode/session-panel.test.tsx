@@ -109,8 +109,8 @@ test("older physical call ids still open their session, and a legacy call has no
     fireEvent.click(await ui.findByRole("button", { name: /Session old/ }));
     await ui.findByText("Words in old");
     assert.ok(ui.getByText("single call", { exact: false }));
-    fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "coordinator" } });
-    assert.match(within(ui.getByRole("region", { name: "Voice coordinator" })).getByText(/no coordinator thread/i).textContent ?? "", /before coordinator mode/);
+    assert.equal(ui.queryByRole("option",{name:"Coordinator"}),null);
+    assert.equal(ui.queryByRole("button",{name:"Coordinator"}),null);
     assert.equal(ui.queryByTestId("bb-thread-chat"), null);
   } finally { slot.lifecycle.unmount(); }
 });
@@ -154,7 +154,7 @@ test("Diagnostics shows raw events with call boundaries; live log signals refres
   } finally { slot.lifecycle.unmount(); }
 });
 
-test("the Voice page embeds only coordinator debugging and opens work threads in bb's workspace", async () => {
+test("the Voice page shows only a read-only coordinator history with no work controls", async () => {
   const { rpc } = baseRpc();
   const slot = renderSlot({ component: SessionsPanel }, {}, { rpc: { ...rpc,
     getCoordinatorStatus: () => ({ conversation: { id: "a", status: "active", coordinatorThreadId: "coord_a", providerId: "p", model: "m", hostId: null, currentCallNonce: null, topic: null, discussedThreadId: null }, requests: [], questions: [], pendingInteractions: [{ id: "i1", threadId: "thr_work", title: "Needs approval", kind: "permission" }], watch: [{ threadId: "thr_watched", reason: "started by voice", addedAt: 1 }], queuedUpdates: 0, recentReplies: [], conversations: [] }),
@@ -166,9 +166,9 @@ test("the Voice page embeds only coordinator debugging and opens work threads in
     assert.equal(ui.queryByRole("group", { name: "Voice area" }), null, "no Session/Threads switcher");
     fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "coordinator" } });
     const coordinator = within(await ui.findByRole("region", { name: "Voice coordinator" }));
-    fireEvent.click(await coordinator.findByRole("button", { name: "Open" }));
-    fireEvent.click(coordinator.getByRole("button", { name: "thr_watched" }));
-    assert.deepEqual(slot.inspection.sidebarActionCalls.map(call => call.threadId), ["thr_work", "thr_watched"]);
+    assert.equal(coordinator.queryAllByRole("button").length,0);
+    assert.deepEqual(slot.inspection.sidebarActionCalls,[]);
+    assert.equal(slot.inspection.rpcCalls.some(call=>call.method==="getCoordinatorStatus"),false);
     assert.equal(slot.inspection.rpcCalls.some(call => call.method === "resolveThreadViews"), false);
     assert.deepEqual(ui.queryAllByTestId("bb-thread-chat").map(node => node.getAttribute("data-thread-id")), ["coord_a"], "only coordinator debugging is embedded");
   } finally { slot.lifecycle.unmount(); }

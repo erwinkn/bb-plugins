@@ -1,3 +1,4 @@
+import { isHistoricalAgentThread } from "./history-boundary.ts";
 import { UiActionSchema, type UiAction } from "./ui-actions.ts";
 /** Client RPC contract for the next cutover step.
  * runTool(input) -> compact read data or {operationId,status,asOf,...receipt}.
@@ -84,6 +85,7 @@ export class LiveRuntime {
   private authorize(input: ToolInput, args: Record<string, unknown>, effect = LIVE_EFFECTS.has(input.tool)) {
     const call = this.state(input.nonce, input.conversationId);
     if (effect && input.responseOrigin === "background") throw new Error("Not authorized: background updates cannot act");
+    if (effect && typeof args.thread_id === "string" && isHistoricalAgentThread(this.store.db,args.thread_id)) throw new Error("Not authorized: historical agent threads cannot run new work");
     if (effect && !input.utterance) throw new Error("Not authorized: an effect needs a user utterance");
     if (effect && input.utterance && this.store.db.prepare(`SELECT 1 FROM voice_operations WHERE conversation_id = ? AND utterance_id = ? AND utterance_version = ? AND status = 'unknown'
       AND (tool != ? OR args_hash != ? OR occurrence != ?)`).get(input.conversationId, input.utterance.id, input.utterance.version, input.tool, hash(args), input.occurrence))

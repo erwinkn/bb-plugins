@@ -21,9 +21,7 @@ import {
 } from "./audio-devices.ts";
 import { actionStatus } from "./session-events.ts";
 import { nativeUi } from "./native-ui.ts";
-import { UiCommandSchema, type UiCommand, type UiActionResult } from "./ui-actions.ts";
 import { clientId, realmId, identityTag, clientDescriptor, deviceSummary } from "./client-identity.ts";
-import { type BridgeSnapshot } from "./coordinator-bridge.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
 /** Who currently has the floor during a live call, for the "listening" UI. */
@@ -135,156 +133,6 @@ export class VoiceAgent {
       ? readAudioDevicePreferences(this.storage)
       : { inputDeviceId: "", inputLabel: "" };
   /** Serializes tool executions so outputs are submitted in call order. */
-  private uiChain: Promise<void> = Promise.resolve();
-  private uiConnected = false;
-  private uiReady = false;
-  private uiSync: Promise<void> | null = null;
-  private uiRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  private uiRetryAttempt = 0;
-  private uiConnectionGeneration = 0;
-  private bufferedUiCommands = new Map<string, UiCommand>();
-  private revokedUiCommands = new Set<string>();
-  private cancelledQuickRequests = new Set<string>();
-  private uiCommands = new Map<string, { command: UiCommand; result?: UiActionResult }>();
-
-  private ownsUiCommand(command: UiCommand): boolean {
-    return this.session !== null && (this.state === "live" || this.state === "muted") &&
-      this.nonce === command.callNonce && this.logicalConversationId === command.conversationId && !this.cancelledQuickRequests.has(command.requestId);
-  }
-
-  setUiConnectionState(connected: boolean): void {
-    if (this.uiConnected === connected) return;
-    this.resetUiRecovery();
-    this.uiConnected = connected;
-
-    this.uiReady = false;
-    this.uiConnectionGeneration++;
-    this.bufferedUiCommands.clear();
-    if (connected) void this.syncUiCommands();
-  }
-
-  ingestUiCancellation(payload: unknown): void {
-    if (!payload || typeof payload !== "object") return;
-    const value = payload as Record<string, unknown>;
-    if (typeof value.commandId !== "string" || !value.commandId ||
-      value.callNonce !== this.nonce || value.conversationId !== this.logicalConversationId || !this.session) return;
-    this.revokedUiCommands.add(`${value.callNonce}:${value.commandId}`);
-  }
-
-  /** Signals can reach every realm. Only the call owner may claim an action. */
-  ingestUiCommand(payload: unknown): Promise<void> {
-    const parsed = UiCommandSchema.safeParse(payload);
-    if (!parsed.success || !this.ownsUiCommand(parsed.data)) return Promise.resolve();
-    const command = parsed.data;
-    if (!this.uiConnected || (command.expiresAt !== undefined && command.expiresAt <= Date.now())) return Promise.resolve();
-    if (!this.uiReady) {
-      this.bufferedUiCommands.set(command.id, command);
-      if (!this.uiRetryTimer) void this.syncUiCommands();
-      return Promise.resolve();
-    }
-    const key = `${command.callNonce}:${command.id}`;
-    if (this.revokedUiCommands.has(key)) return Promise.resolve();
-    if (this.uiCommands.has(key)) return this.uiChain;
-    const receipt: { command: UiCommand; result?: UiActionResult } = { command };
-    this.uiCommands.set(key, receipt);
-    const connectionGeneration = this.uiConnectionGeneration;
-    this.uiChain = this.uiChain.then(async () => {
-      const rpc = this.bindings?.rpc;
-      const isCurrent = () => this.uiConnected && this.uiReady && this.uiConnectionGeneration === connectionGeneration && !this.revokedUiCommands.has(key) && this.ownsUiCommand(command) &&
-        (command.expiresAt === undefined || command.expiresAt > Date.now());
-      if (!rpc || !isCurrent()) { this.uiCommands.delete(key); return; }
-      let claimed = false;
-      try {
-        const claim = await rpc.call("claimUiCommand", {
-          conversationId: command.conversationId, callNonce: command.callNonce, commandId: command.id,
-        });
-        if (!claim.claimed) return;
-        claimed = true;
-        const validated = UiCommandSchema.safeParse(claim.command);
-        if (!validated.success || validated.data.id !== command.id ||
-          validated.data.callNonce !== command.callNonce || validated.data.conversationId !== command.conversationId ||
-          validated.data.requestId !== command.requestId) {
-          receipt.result = { status: "failed", detail: "The server returned an invalid UI command." };
-        } else if (!isCurrent()) {
-          receipt.result = { status: "cancelled", detail: "The call ended or the command expired." };
-        } else {
-          receipt.command = validated.data;
-          const isClaimCurrent = () => isCurrent() && (validated.data.expiresAt === undefined || validated.data.expiresAt > Date.now());
-          if (!isClaimCurrent()) receipt.result = { status: "cancelled", detail: "The command expired." };
-          else {
-            try { receipt.result = await nativeUi.execute(validated.data.action, isClaimCurrent); }
-            catch (error) { receipt.result = { status: "unknown", detail: String(error).slice(0, 2000) }; }
-          }
-        }
-        await this.reportUiReceipt(receipt);
-      } catch (error) {
-        // Only a pre-execution claim may retry. The server refuses a second
-        // claim if its first acceptance was lost in transport.
-        if (!claimed) this.uiCommands.delete(key);
-        this.log("ui.commandFailed", { commandId: command.id, error: String(error) });
-      }
-    }).catch(error => this.log("ui.commandFailed", { commandId: command.id, error: String(error) }));
-    return this.uiChain;
-  }
-
-  private async reportUiReceipt(receipt: { command: UiCommand; result?: UiActionResult }) {
-    if (!receipt.result || !this.ownsUiCommand(receipt.command)) return;
-    const command = receipt.command;
-    // Keep the receipt if reporting fails. A reconnect retries only the report.
-    const response = await this.bindings?.rpc.call("reportUiCommandResult", {
-      conversationId: command.conversationId, callNonce: command.callNonce,
-      commandId: command.id, result: receipt.result,
-    });
-    if (response?.accepted) receipt.result = undefined;
-  }
-
-  private resetUiRecovery(): void {
-    if (this.uiRetryTimer) clearTimeout(this.uiRetryTimer);
-    this.uiRetryTimer = null;
-    this.uiRetryAttempt = 0;
-    this.uiSync = null;
-  }
-
-  syncUiCommands(): Promise<void> {
-    if (this.uiSync) return this.uiSync;
-    if (this.uiRetryTimer) clearTimeout(this.uiRetryTimer);
-    this.uiRetryTimer = null;
-    const pending = this.reconcileUiCommands();
-    this.uiSync = pending;
-    void pending.finally(() => { if (this.uiSync === pending) this.uiSync = null; });
-    return pending;
-  }
-
-  private async reconcileUiCommands(): Promise<void> {
-    const conversationId = this.logicalConversationId;
-    const callNonce = this.nonce;
-    const rpc = this.bindings?.rpc;
-    const connectionGeneration = this.uiConnectionGeneration;
-    if (!this.uiConnected || !rpc || !conversationId || !callNonce || !this.session || (this.state !== "live" && this.state !== "muted")) return;
-    try {
-      const { commands, revokedCommandIds } = await rpc.call("pendingUiCommands", { conversationId, callNonce });
-      if (this.nonce !== callNonce || !this.uiConnected || this.uiConnectionGeneration !== connectionGeneration) return;
-      for (const commandId of revokedCommandIds) this.ingestUiCancellation({ commandId, conversationId, callNonce });
-      this.uiRetryAttempt = 0;
-      this.uiReady = true;
-      const recovered = [...commands, ...this.bufferedUiCommands.values()];
-      this.bufferedUiCommands.clear();
-      for (const receipt of this.uiCommands.values()) {
-        try { await this.reportUiReceipt(receipt); } catch { /* retain the receipt */ }
-      }
-      for (const command of recovered) await this.ingestUiCommand(command);
-    } catch (error) {
-      if (this.nonce !== callNonce || !this.uiConnected || this.uiConnectionGeneration !== connectionGeneration) return;
-      this.log("ui.syncFailed", { error: String(error) });
-      const delay = Math.min(500 * 2 ** Math.min(this.uiRetryAttempt++, 4), 5000);
-      this.uiRetryTimer = setTimeout(() => {
-        this.uiRetryTimer = null;
-        if (this.nonce === callNonce && this.uiConnected && this.uiConnectionGeneration === connectionGeneration) void this.syncUiCommands();
-      }, delay);
-      maybeUnref(this.uiRetryTimer);
-    }
-  }
-
   private toolChain: Promise<void> = Promise.resolve();
   /** True while the model is generating a response (response.created→done). */
   private responseActive = false;
@@ -340,7 +188,7 @@ export class VoiceAgent {
   private helloed = false;
   private bindingSources = new Map<symbol, { bindings: Bindings; priority: 0 | 1 | 2 }>();
   private logQueue: Promise<unknown> | null = null;
-  /** Coordinator bridge state for the current call. */
+  /** Current live tool dispatcher. */
   private liveClient: LiveClient | null = null;
   private responseBinding: ResponseBinding | null = null;
   private pendingBinding: ResponseBinding | null = null;
@@ -348,6 +196,7 @@ export class VoiceAgent {
   private openOffer: { id: string; nonce: string; responseId: string | null } | null = null;
   private batchPending = false;
   private reports: Promise<unknown> = Promise.resolve();
+  private pendingReports = 0;
   private exchanges = new Map<string, { version: number; finished: boolean }>();
   /** When speaking/generation/tool state last changed, for the quiet gate. */
   private conversationChangedAt = 0;
@@ -355,7 +204,6 @@ export class VoiceAgent {
   private startNewConversation = false;
   private nextConversationId: string | undefined;
   private logicalConversationId: string | null = null;
-  private delegatedTurn: number | null = null;
   private spokenTurns = new Set<number>();
   private playbackResponseId: string | null = null;
   private interruptedResponses = new Set<string>();
@@ -482,14 +330,6 @@ export class VoiceAgent {
 
   readonly getAudioPreferences = (): AudioDevicePreferences => this.audioPreferences;
 
-  /** Coordinator-path status for the UI (working, queued replies, open question). */
-  readonly getBridgeSnapshot = (): BridgeSnapshot | null => this.bridgeSnapshot;
-  private bridgeSnapshot: BridgeSnapshot | null = null;
-  private refreshBridgeSnapshot() {
-    this.bridgeSnapshot = null;
-    this.emitChange();
-  }
-
   /** Start the next call in a fresh logical conversation instead of resuming. */
   startConversationFresh() { this.startConversation(); }
 
@@ -504,11 +344,6 @@ export class VoiceAgent {
     this.startNewConversation = !conversationId;
     void this.start();
   }
-
-  private settleDelegatedTurn() { this.settleLiveOutputs(); }
-
-  // Retained only while the old history UI is removed in the next commit.
-  ingestCoordinatorSignal(_channel: string, _payload: unknown) {}
 
   private rpc(method: string, input: unknown): Promise<unknown> {
     if (!this.bindings) return Promise.reject(new Error("No BB surface is bound"));
@@ -525,8 +360,11 @@ export class VoiceAgent {
   private report(method: string, input: unknown) {
     const rpc = this.bindings?.rpc;
     if (!rpc) return;
+    const reportNonce=this.nonce;
+    this.pendingReports++;
     this.reports = this.reports.then(() => rpc.call(method as never, input as never))
-      .catch(error => this.log("live.reportFailed", { method, error: String(error) }));
+      .catch(error => { if(reportNonce)this.writeEvent(rpc,reportNonce,"live.reportFailed",{method,error:String(error)}); })
+      .finally(() => { this.pendingReports--; });
   }
 
   private closeOffer(outcome: "delivered" | "not_delivered" | "deferred" | "dismissed") {
@@ -545,12 +383,12 @@ export class VoiceAgent {
     }
     for (const [id, exchange] of this.exchanges) {
       if (exchange.finished) continue;
-      const responses = [...this.responseIdentity].filter(([, value]) => value.binding.origin === "user" && value.binding.utterance?.id === id);
+      const responses = [...this.responseIdentity].filter(([, value]) => value.binding.origin === "user" && (value.binding.utterance?.id === id || (!value.binding.utterance && value.userTurn === exchange.version)));
       if (!responses.length || responses.some(([responseId]) => !this.outputSequencer.settled(responseId))) continue;
       if ((this.responseActive && this.responseBinding?.utterance?.id === id) ||
           (this.responsePending && this.pendingBinding?.utterance?.id === id)) continue;
       if (this.userTurn === exchange.version && (this.userSpeaking || this.input?.unresolved)) continue;
-      if (this.userTurn === exchange.version && !responses.some(([, value]) => value.binding.utterance?.version === exchange.version)) continue;
+      if (this.userTurn === exchange.version && !responses.some(([, value]) => value.userTurn === exchange.version)) continue;
       exchange.finished = true;
       if (this.userTurn === exchange.version) this.input?.answered(exchange.version);
       if (this.nonce) this.report("finishUserExchange", { nonce: this.nonce, utteranceId: id });
@@ -1187,14 +1025,6 @@ export class VoiceAgent {
     this.callSequence = null;
     this.newerClaim = null;
     this.toolChain = Promise.resolve();
-    this.uiChain = Promise.resolve();
-    this.resetUiRecovery();
-    this.uiCommands.clear();
-    this.cancelledQuickRequests.clear();
-    this.revokedUiCommands.clear();
-    this.bufferedUiCommands.clear();
-    this.uiReady = false;
-    this.uiConnectionGeneration++;
     this.setResponseActive(false);
     this.setAssistantSpeaking(false);
     this.responsePending = false;
@@ -1217,7 +1047,11 @@ export class VoiceAgent {
     this.setState("idle");
     // Clear every mirror now that the call is over. Done after nulling nonce so
     // setState's own broadcast is skipped and this is the single idle announce.
-    if (endedNonce) this.broadcastPresence("idle", endedNonce);
+    // Terminal offer reports must reach the server before presence releases the nonce.
+    if (endedNonce) {
+      if (this.pendingReports) void this.reports.then(() => this.broadcastPresence("idle", endedNonce));
+      else this.broadcastPresence("idle", endedNonce);
+    }
   }
 
   private async handleToolCall(dc: RTCDataChannel, event: Record<string, unknown>) {
@@ -1313,7 +1147,7 @@ export class VoiceAgent {
           if (this.session === session) this.outputSequencer.finished(call);
         }
         if (this.responsePending) this.requestResponse(dc);
-        this.settleDelegatedTurn();
+        this.settleLiveOutputs();
         this.markConversationChange();
         this.scheduleReplyDrain();
       }
@@ -1416,7 +1250,6 @@ export class VoiceAgent {
     this.log("session.started", { ...bindings.context, device: deviceSummary() });
     let acquiredStream: MediaStream | null = null;
     try {
-      this.delegatedTurn = null;
       this.spokenTurns.clear();
       this.interruptedResponses.clear();
       this.completedPlayback.clear();
@@ -1800,7 +1633,7 @@ export class VoiceAgent {
             const hasToolCalls = response?.status === "completed" && Array.isArray(response.output) && response.output.some(item => item?.type === "function_call");
             this.activeResponseId = null;
             this.setResponseActive(false);
-            this.settleDelegatedTurn();
+            this.settleLiveOutputs();
             if (this.endCallAfterResponse && !hasToolCalls && !this.assistantSpeaking) { this.stop(); return; }
             if (this.responsePending) {
               this.requestResponse(dc);

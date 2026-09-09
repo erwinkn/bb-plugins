@@ -4,7 +4,7 @@ export { PromptEditor } from "./prompt-editor";
 //
 // The host renders a single declarative field (the secret OpenAI API key) and
 // then these custom sections below it. Everything the user tunes day-to-day —
-// which model and voice to use, the prompt, the coordinator, the microphone,
+// which model and voice to use, the prompts, the microphone,
 // and the keyboard shortcuts — lives here as curated sections
 // instead of a flat auto-form.
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -303,7 +303,7 @@ export function BehaviorSettings() {
   return (
     <div className="space-y-5">
       <PromptEditor role="live" />
-      <PromptEditor role="coordinator" />
+      <PromptEditor role="worker" />
     </div>
   );
 }

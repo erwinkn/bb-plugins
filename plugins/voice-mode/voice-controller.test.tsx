@@ -51,30 +51,18 @@ test("the overlay binds live route context and navigation to the native UI contr
   assert.equal(nativeUi.snapshot().bound, false);
 });
 
-test("UI command channels reach the agent and the transport state is reported both ways", async (t) => {
-  const commands: unknown[] = [];
-  const cancellations: unknown[] = [];
-  const connection: boolean[] = [];
-  t.mock.method(voiceAgent, "ingestUiCommand", async (payload: unknown) => { commands.push(payload); });
-  t.mock.method(voiceAgent, "ingestUiCancellation", (payload: unknown) => { cancellations.push(payload); });
-  t.mock.method(voiceAgent, "setUiConnectionState", (connected: boolean) => { connection.push(connected); });
-  const slot = renderSlot({ component: VoiceController }, {}, { rpc });
+test("retired UI command signals cannot act and native transport state stays current", async t => {
+  const execute=t.mock.method(nativeUi,"execute",async()=>({status:"succeeded" as const,detail:"Unexpected action"}));
+  const slot=renderSlot({component:VoiceController},{},{rpc});
   try {
-    await slot.behavior.emitRealtime("voice-ui-command", { id: "ui-1" });
-    await slot.behavior.emitRealtime("voice-ui-cancelled", { commandId: "ui-1" });
-    assert.deepEqual(commands, [{ id: "ui-1" }]);
-    assert.deepEqual(cancellations, [{ commandId: "ui-1" }]);
-    assert.deepEqual(connection, [true]);
-    assert.equal(nativeUi.transportConnected(), true);
-    await slot.behavior.setRealtimeConnectionState("reconnecting");
-    assert.equal(nativeUi.transportConnected(), false);
-    await slot.behavior.setRealtimeConnectionState("connected");
-    assert.equal(nativeUi.transportConnected(), true);
-    // Every transition reports (the effect cleanup reports false in between).
-    assert.equal(connection.at(-1), true);
-    assert.ok(connection.includes(false));
-  } finally { slot.lifecycle.unmount(); }
-  assert.equal(connection.at(-1), false, "unmounting reports the transport as gone");
+    await slot.behavior.emitRealtime("voice-ui-command",{id:"old-command"});
+    await slot.behavior.emitRealtime("voice-ui-cancelled",{commandId:"old-command"});
+    assert.equal(execute.mock.callCount(),0);
+    assert.equal(nativeUi.transportConnected(),true);
+    await slot.behavior.setRealtimeConnectionState("reconnecting");assert.equal(nativeUi.transportConnected(),false);
+    await slot.behavior.setRealtimeConnectionState("connected");assert.equal(nativeUi.transportConnected(),true);
+  }finally{slot.lifecycle.unmount();}
+  assert.equal(nativeUi.transportConnected(),false);
   nativeUi.setTransportConnected(true);
 });
 

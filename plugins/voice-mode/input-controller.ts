@@ -193,7 +193,7 @@ export class InputController {
       now - this.current.items.at(-1)!.endedAt >= UTTERANCE_MERGE_MS
     ) {
       this.current = {
-        id: `utterance_${this.counter + 1}`,
+        id: `utterance_${globalThis.crypto.randomUUID()}`,
         version: 0,
         items: [],
         finalAt: 0,

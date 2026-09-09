@@ -1,20 +1,14 @@
 import { LIVE_PROMPT } from "./live-prompt.ts";
 import { WORKER_BASE_PROMPT } from "./worker-prompt.ts";
 import type Database from "better-sqlite3";
-import {
-  COORDINATOR_INSTRUCTIONS,
-  COORDINATOR_VOICE_PROMPT,
-  DEFAULT_VOICE_PREFERENCES,
-  realtimeInstructions,
-} from "./coordinator/prompts.ts";
-import { LEGACY_DEFAULT_PROMPT } from "./legacy-prompt.ts";
+import { LEGACY_DEFAULT_PROMPT, LEGACY_COORDINATOR_PROMPT, LEGACY_VOICE_PREFERENCES, legacyLiveInstructions } from "./legacy-prompt.ts";
 
 export type PromptRole = "live" | "worker" | "coordinator";
 export const PROMPT_MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS voice_role_prompts (id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, ts INTEGER NOT NULL, source TEXT NOT NULL, note TEXT, content TEXT NOT NULL)`,
 ];
 export const promptDefault = (role: PromptRole) =>
-  role === "live" ? LIVE_PROMPT : role === "worker" ? WORKER_BASE_PROMPT : COORDINATOR_INSTRUCTIONS;
+  role === "live" ? LIVE_PROMPT : role === "worker" ? WORKER_BASE_PROMPT : LEGACY_COORDINATOR_PROMPT;
 export const promptLimit = (role: PromptRole) =>
   role === "coordinator" ? 4096 : 32000;
 
@@ -24,6 +18,11 @@ export class PromptStore {
   activateLiveDefault() {
     const note = "aide-live-tools-v1";
     if (this.db.prepare("SELECT 1 FROM voice_role_prompts WHERE role='live' AND source='system' AND note=?").get(note)) return;
+    if (!this.db.prepare("SELECT 1 FROM voice_role_prompts WHERE role='live'").get()) {
+      const table=this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='prompt_versions'").get();
+      const legacy=table ? this.db.prepare("SELECT content FROM prompt_versions ORDER BY id DESC LIMIT 1").get() as {content:string}|undefined : undefined;
+      if (legacy && ![LEGACY_DEFAULT_PROMPT,LEGACY_VOICE_PREFERENCES].includes(legacy.content)) this.save("live",legacyLiveInstructions(legacy.content),"Imported earlier prompt");
+    }
     this.db.prepare("INSERT INTO voice_role_prompts(role,ts,source,note,content) VALUES ('live',?,'system',?,?)")
       .run(Date.now(), note, LIVE_PROMPT);
   }
@@ -40,11 +39,11 @@ export class PromptStore {
         .get() as { content: string } | undefined;
       if (
         legacy &&
-        ![LEGACY_DEFAULT_PROMPT, DEFAULT_VOICE_PREFERENCES].includes(
+        ![LEGACY_DEFAULT_PROMPT, LEGACY_VOICE_PREFERENCES].includes(
           legacy.content,
         )
       )
-        return realtimeInstructions(legacy.content);
+        return legacyLiveInstructions(legacy.content);
     }
     return promptDefault(role);
   }

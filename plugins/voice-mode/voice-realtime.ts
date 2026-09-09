@@ -59,27 +59,13 @@ export function VoiceController() {
   useRealtime("voice-presence", (payload) => voiceAgent.ingestPresence(payload));
   useRealtime("voice-command", (payload) => voiceAgent.applyVoiceCommand(payload));
   useRealtime("voice-presence-query", () => voiceAgent.answerPresenceQuery());
-  useRealtime("voice-reply", (payload) => voiceAgent.ingestCoordinatorSignal("voice-reply", payload));
-  useRealtime("voice-inbox", (payload) => voiceAgent.ingestCoordinatorSignal("voice-inbox", payload));
-  useRealtime("voice-coordinator", (payload) => voiceAgent.ingestCoordinatorSignal("voice-coordinator", payload));
-  useRealtime("voice-question", (payload) => voiceAgent.ingestCoordinatorSignal("voice-question", payload));
-  // Native UI commands from the coordinator; the agent decides whether this
-  // window owns the call before anything runs through nativeUi.execute.
-  useRealtime("voice-ui-command", (payload) => void voiceAgent.ingestUiCommand(payload));
-  useRealtime("voice-ui-cancelled", (payload) => voiceAgent.ingestUiCancellation(payload));
-  // Ephemeral signals can be missed while the shared connection is down. The
-  // agent owns the recovery (it re-reads pending and revoked commands on every
-  // connected transition while a call is active); this only reports the
-  // transport. The native controller also stops any action still waiting on
-  // a route or composer, so a lost cancellation cannot land a draft later.
+  // Native UI waits must stop when the owning window loses its connection.
   const connection = useRealtimeConnectionState();
   useEffect(() => {
     const connected = connection === "connected";
     nativeUi.setTransportConnected(connected);
-    voiceAgent.setUiConnectionState(connected);
     return () => {
       nativeUi.setTransportConnected(false);
-      voiceAgent.setUiConnectionState(false);
     };
   }, [connection]);
 

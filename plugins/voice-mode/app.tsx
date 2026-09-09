@@ -15,7 +15,6 @@ import { voiceAgent } from "./voice-agent";
 import { VoiceComposerBinding, VoiceController } from "./voice-realtime";
 import { SessionsPanel } from "./sessions-panel";
 import { AudioSettings, BehaviorSettings, ModelsSettings, ShortcutsSettings } from "./settings-sections";
-import { CoordinatorSettings, VoiceQuestionInteraction } from "./coordinator-panel";
 import { cn } from "@/lib/utils";
 import { AUDIO_DEVICE_STORAGE_KEY } from "./audio-devices";
 import { useCallElapsed } from "./voice-chrome";
@@ -84,20 +83,12 @@ export default definePluginApp((app) => {
     title: "Prompts",
     component: BehaviorSettings,
   });
-  app.slots.settingsSection({
-    id: "coordinator",
-    title: "Coordinator model",
-    component: CoordinatorSettings,
-  });
   app.slots.settingsSection({id:"workers",title:"Workers",component:WorkerSettings});
   app.slots.settingsSection({
     id: "audio",
     title: "Audio",
     component: AudioSettings,
   });
-  // Coordinator questions are real pending interactions on the hidden thread;
-  // this renders their form wherever BB shows pending interactions.
-  app.slots.pendingInteraction({ id: "voice-question", component: VoiceQuestionInteraction });
   app.slots.settingsSection({
     id: "shortcuts",
     title: "Keyboard shortcuts",

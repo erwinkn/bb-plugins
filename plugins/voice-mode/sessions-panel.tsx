@@ -852,7 +852,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
                   if (next) setTab(next.id);
                 }}
                 className="min-h-11 max-w-full appearance-none rounded-md border border-border bg-background py-2 pl-3 pr-9 text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8 sm:py-1">
-                {SESSION_TABS.map(entry => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+                {SESSION_TABS.filter(entry => entry.id !== "coordinator" || current?.coordinatorThreadId).map(entry => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
               </select>
               <svg viewBox="0 0 24 24" className="pointer-events-none absolute right-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="m6 9 6 6 6-6" />
@@ -890,8 +890,8 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
                   <p className="break-words text-sm text-destructive">Could not load the session. {detailError}</p>
                   <Button type="button" variant="outline" size="sm" className="min-h-11 sm:min-h-8" onClick={() => refetchDetail(selected, true)}>Retry session</Button>
                 </div>
-              ) : tab === "coordinator" ? (
-                <CoordinatorCard conversationId={current && !current.legacy ? current.id : null} legacy={current?.legacy ?? false} />
+              ) : tab === "coordinator" && current?.coordinatorThreadId ? (
+                <CoordinatorCard threadId={current.coordinatorThreadId} />
               ) : detailLoading || !detail ? (
                 <p role="status" className="py-4 text-center text-sm text-muted-foreground">Loading session…</p>
               ) : tab === "conversation" ? (
@@ -1006,7 +1006,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
           <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2">
             {selected ? (
               <nav aria-label="Session views" className="flex w-full gap-1 rounded-lg bg-muted p-1">
-                {SESSION_TABS.map(entry => (
+                {SESSION_TABS.filter(entry => entry.id !== "coordinator" || current?.coordinatorThreadId).map(entry => (
                   <button key={entry.id} type="button" onClick={() => setTab(entry.id)} aria-current={tab === entry.id ? "page" : undefined}
                     className={cn("min-h-11 min-w-0 flex-1 rounded-md px-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8 sm:text-sm",
                       tab === entry.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>

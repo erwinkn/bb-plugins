@@ -1,8 +1,8 @@
 # Aide server runtime, step 2
 
-The new runtime is registered beside the existing coordinator. The client tool list,
-coordinator agent tools, and coordinator configuration have not changed. The client
-cutover must remove the old worker instruction injection before it uses these workers.
+The live client now uses the fourteen tools and the durable runtime. The retired
+coordinator is available only through historical session data. See
+[the current architecture](docs/architecture.md) for the complete client flow.
 
 ## Client contract
 
@@ -17,7 +17,7 @@ retains it on retries. It is not a model tool argument.
 | RPC | Input | Output |
 | --- | --- | --- |
 | `runTool` | `ToolInput` | Read data or `{operationId, status, asOf, ...receipt}`. Refusals have `{status:"failed", error, asOf}`. |
-| `beginClientEffect` | `ToolInput` for `prepare_draft` or `control_ui` | `{execute, operationId, receipt}` |
+| `beginClientEffect` | `ToolInput` for `prepare_draft` or `control_ui` | `{execute, operationId, receipt, action}` |
 | `finishClientEffect` | `{nonce, operationId, status, result}` | Stored receipt. Status is `succeeded`, `failed`, `cancelled`, or `unknown`. |
 | `nextUpdateBatch` | `{nonce}` | `{offerId, items, asOf}` or `null`. Up to three roots; each item can include child results and `offered_before`. |
 | `closeOffer` | `{nonce, offerId, outcome, responseId?}` | `{closed}`. Outcome is `delivered`, `not_delivered`, `deferred`, or `dismissed`. |
@@ -27,6 +27,7 @@ retains it on retries. It is not a model tool argument.
 | `listLiveSubscriptions` | `{nonce, conversationId}` | `{items, asOf}` with watch rows |
 | `listLiveTasks` | `{nonce, conversationId}` | `{items, asOf}` with task rows and bounded output tails |
 
+`action` is the validated native UI action, with a resolved environment for workspace previews.
 Apply a client effect only when `execute` is true. Check the nonce again immediately
 before the UI action. A retry returns the stored receipt, including an in-flight
 `accepted` receipt. A restart makes an unfinished client effect `unknown`; it must

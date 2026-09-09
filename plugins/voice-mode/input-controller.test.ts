@@ -251,3 +251,14 @@ test("raw activity does not become speech or erase a final snapshot, but still h
   f.advance(1999);await Promise.resolve();assert.equal(accepted,false);
   f.advance(1);await work;assert.equal(accepted,true);
 });
+
+test("utterance identities differ across calls and remain stable during a correction",()=>{
+  const first=fixture(),second=fixture();
+  for(const f of [first,second]){f.words("a","Send it");f.input.completed("a","Send it.");}
+  const id=first.input.snapshot()!.id;
+  assert.notEqual(id,second.input.snapshot()!.id,"the operation ledger spans calls in one conversation");
+  first.words("b","Only after review");first.input.completed("b","Only after review.");
+  assert.equal(first.input.snapshot()!.id,id);
+  assert.equal(first.input.snapshot()!.version,2);
+  first.input.dispose();second.input.dispose();
+});

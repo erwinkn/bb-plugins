@@ -11,12 +11,12 @@ import { WORKER_BASE_PROMPT } from "./worker-prompt.ts";
 import plugin from "./server.ts";
 import { legacyMigrations } from "./test-fixtures/legacy-migrations.ts";
 import { voiceFeatureMigrations } from "./migration-order.ts";
-import { COORDINATOR_MIGRATIONS, QUICK_ACTION_MIGRATIONS } from "./coordinator/store.ts";
-import { UI_COMMAND_MIGRATIONS } from "./ui-command-manager.ts";
-import { UTTERANCE_EFFECT_MIGRATIONS, LIVE_ACTION_MIGRATIONS } from "./live-action-store.ts";
+import { CONVERSATION_HISTORY_MIGRATIONS, QUICK_ACTION_MIGRATIONS } from "./legacy-migrations.ts";
+import { UI_COMMAND_MIGRATIONS } from "./legacy-migrations.ts";
+import { UTTERANCE_EFFECT_MIGRATIONS, LIVE_ACTION_MIGRATIONS } from "./legacy-migrations.ts";
 import { PROMPT_MIGRATIONS } from "./prompt-store.ts";
-import { SEQUENCE_MIGRATIONS } from "./sequence-manager.ts";
-import { MESSAGE_SEND_MIGRATIONS } from "./coordinator/store.ts";
+import { SEQUENCE_MIGRATIONS } from "./legacy-migrations.ts";
+import { MESSAGE_SEND_MIGRATIONS } from "./legacy-migrations.ts";
 
 type Any = any;
 async function fixture() {
@@ -360,7 +360,7 @@ test("append-only migration upgrades a database copy with old tables and a runni
       id TEXT NOT NULL,
       content TEXT NOT NULL,
       reason TEXT NOT NULL
-    )`, ...COORDINATOR_MIGRATIONS, ...UI_COMMAND_MIGRATIONS, ...QUICK_ACTION_MIGRATIONS];
+    )`, ...CONVERSATION_HISTORY_MIGRATIONS, ...UI_COMMAND_MIGRATIONS, ...QUICK_ACTION_MIGRATIONS];
   const old = [...common, ...SEQUENCE_MIGRATIONS, ...MESSAGE_SEND_MIGRATIONS, ...LIVE_ACTION_MIGRATIONS, ...UTTERANCE_EFFECT_MIGRATIONS, ...PROMPT_MIGRATIONS];
   bb.storage.migrate(source, old);
   source.prepare("INSERT INTO session_events(session_id, ts, kind, payload) VALUES ('old-call', 1, 'user', ?)").run(JSON.stringify({text:"Keep this"}));
@@ -531,4 +531,12 @@ test("client file previews resolve the thread workspace into a native UI action"
   const result=await h.runtime.beginClientEffect(h.input("control_ui",{action:"preview_file",thread_id:"build",source:"workspace",path:"README.md"})) as Any;
   assert.equal(result.execute,true);
   assert.deepEqual(result.action,{kind:"preview_file",target:{kind:"workspace",environmentId:"workspace",path:"README.md"}});
+});
+
+test("historical coordinator threads cannot be messaged or used as client effect targets",async t=>{
+  const h=await fixture();t.after(h.close);
+  h.db.exec("CREATE TABLE voice_conversations (id TEXT PRIMARY KEY, coordinator_thread_id TEXT); INSERT INTO voice_conversations VALUES ('history','build')");
+  const result=await h.run("message_thread",message);
+  assert.equal(result.status,"failed");assert.match(result.error,/historical agent threads/);assert.equal(h.world.sends.length,0);
+  await assert.rejects(h.runtime.beginClientEffect(h.input("prepare_draft",{thread_id:"build",text:"Run",mode:"append"})),/historical agent threads/);
 });

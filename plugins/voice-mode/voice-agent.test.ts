@@ -789,7 +789,7 @@ test("an effect waits two seconds and carries the frozen utterance and occurrenc
   f.tick(1);await settleVoice();
   const sent=f.rpcCalls.find(call=>call.method==="runTool")!.args;
   assert.equal(sent.tool,"message_thread");assert.equal(sent.responseOrigin,"user");assert.equal(sent.occurrence,0);
-  assert.deepEqual(sent.utterance,{id:"utterance_1",version:1,text:"Check this thread.",startedAt:sent.utterance.startedAt});
+  assert.deepEqual(sent.utterance,{id:(f.agent as any).input.snapshot().id,version:1,text:"Check this thread.",startedAt:sent.utterance.startedAt});
   assert.equal(typeof sent.utterance.startedAt,"number");
   assert.equal(sent.conversationId,"conv_test");assert.equal(sent.nonce,f.agent.getSessionId());
 });
@@ -900,5 +900,25 @@ test("a silent user exchange finishes once with no model continuation",async t=>
   const f=await sequencerFixture(t);const before=f.dc.responses().length;
   f.startResponse("silent",false);f.call("silent","quiet",0,"remain_silent",{});f.done("silent",[f.tool("quiet")]);await settleVoice();
   assert.equal(f.dc.responses().length,before);
+  assert.equal(f.rpcCalls.filter(call=>call.method==="finishUserExchange").length,1);
+});
+
+test("hangup closes an open offer before releasing call ownership",async t=>{
+  const f=await offeredFixture(t);
+  f.agent.stop();await settleVoice();
+  const close=f.rpcCalls.findIndex(call=>call.method==="closeOffer");
+  const release=f.rpcCalls.findIndex(call=>call.method==="publishPresence" && call.args.phase==="idle");
+  assert.ok(close>=0);assert.ok(release>close,"closeOffer needs the call nonce to remain current");
+  assert.equal(f.rpcCalls[close].args.outcome,"not_delivered");
+});
+
+test("an input-repair response completes its failed user exchange after drain",async t=>{
+  const f=await sequencerFixture(t);f.startResponse("old",false);
+  f.words("failed",false);f.dc.emit("response.done",{response:{id:"old",status:"cancelled",output:[]}});
+  f.dc.emit("conversation.item.input_audio_transcription.failed",{item_id:"failed",error:{message:"Unavailable"}});
+  f.dc.emit("response.created",{response:{id:"repair"}});
+  f.dc.emit("output_audio_buffer.started",{response_id:"repair"});f.done("repair",[f.speech]);await settleVoice();
+  assert.equal(f.rpcCalls.filter(call=>call.method==="finishUserExchange").length,0);
+  f.dc.emit("output_audio_buffer.stopped",{response_id:"repair"});await settleVoice();
   assert.equal(f.rpcCalls.filter(call=>call.method==="finishUserExchange").length,1);
 });
