@@ -178,7 +178,8 @@ export class CoordinatorBridge {
       handoff.status="failed";
       this.host.log("handoff.error",{requestId:handoff.requestId,error:String(error)});
       this.acknowledgments.delete(version);
-      this.enqueueLocalReply("I could not confirm the request result. I will not repeat it automatically.","failure",`local_unknown_${handoff.requestId}`);
+      // The sequencer returns this failure to the model and requests one reply.
+      // A separate bridge reply would repeat it after that response drains.
       return "The request result could not be confirmed. Do not resend it under a new ID.";
     } finally {this.host.changed();this.drain();}
   }

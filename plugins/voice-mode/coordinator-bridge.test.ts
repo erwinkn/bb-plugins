@@ -202,8 +202,10 @@ test("remain_silent returns no speech and end_call stops once the goodbye has pl
   dc.emit("response.created", { response: { id: "resp_1" } });
   dc.emit("response.function_call_arguments.done", { name: "remain_silent", call_id: "call_s", arguments: "{}" });
   await settle();
-  assert.equal(dc.toolOutputs().length, 1);
+  assert.equal(dc.toolOutputs().length, 0, "remain_silent waits for generation to finish");
   dc.emit("response.done", { response: { id: "resp_1", status: "completed", output: [{ type: "function_call" }] } });
+  await settle();
+  assert.equal(dc.toolOutputs().length, 1);
   assert.equal(dc.responses().length, 1, "no response.create after remain_silent");
   speak(dc, "bye_input");
   dc.emit("conversation.item.input_audio_transcription.completed", {item_id:"bye_input",transcript:"End this call."});
@@ -211,6 +213,7 @@ test("remain_silent returns no speech and end_call stops once the goodbye has pl
   dc.emit("response.function_call_arguments.done", { name: "end_call", call_id: "call_e", arguments: "{}" });
   await settle();
   dc.emit("response.done", { response: { id: "resp_2", status: "completed", output: [{ type: "function_call" }] } });
+  await settle();
   assert.equal(dc.responses().length, 3, "the model may say goodbye");
   dc.emit("response.created", { response: { id: "resp_bye" } });
   dc.emit("output_audio_buffer.started", { response_id: "resp_bye" });
@@ -364,9 +367,13 @@ test("realtime mutation names cannot bypass the coordinator", async t => {
   const { dc, calls } = await coordinatorFixture(t);
   speak(dc, "input-mutation");
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"input-mutation",transcript:"Do this action"});
-  dc.emit("response.created", { response: { id: "mutation" } });
   for (const name of ["start_thread", "focus_thread", "set_composer_text", "get_context"]) {
-    dc.emit("response.function_call_arguments.done", { response_id: "mutation", name, call_id: name, arguments: "{}" });
+    dc.emit("response.created", { response: { id: name } });
+    dc.emit("response.function_call_arguments.done", { response_id: name, name, call_id: name, arguments: "{}" });
+    await settle();
+    assert.equal(dc.toolOutputs().some(event => event.item.call_id === name), false);
+    dc.emit("response.done", { response: { id: name, status: "completed", output: [{ type: "function_call", name, call_id: name }] } });
+    await settle();
   }
   await settle();
   assert.equal(calls.some(call => call.method === "runTool" || call.method === "claimUiCommand"), false);
@@ -407,9 +414,9 @@ test("non-verbal fragments stay quiet while short commands keep their words", as
     speak(dc, item,text);
     dc.emit("conversation.item.input_audio_transcription.completed", {item_id: item, transcript: text});
     delegate(dc, item, `${item}_call`, {request: text});
+    dc.emit("response.done", {response: {id: item, status: "completed", output: [{type:"function_call"}]}});
     await settle();
     assert.equal(submits().at(-1).originalText, text);
-    dc.emit("response.done", {response: {id: item, status: "completed"}});
     const ack=dc.bridgeResponses().at(-1);
     if(ack){dc.emit("response.created",{response:{id:`ack_${item}`,metadata:ack.response.metadata}});dc.emit("response.done",{response:{id:`ack_${item}`,status:"completed"}});dc.emit("output_audio_buffer.started",{response_id:`ack_${item}`});dc.emit("output_audio_buffer.stopped",{response_id:`ack_${item}`});}
   }
@@ -478,10 +485,10 @@ test("consecutive provider failures ask once, then usable input restores normal 
   speak(dc, "valid");
   dc.emit("conversation.item.input_audio_transcription.completed", {item_id: "valid", transcript: "Check the active threads."});
   delegate(dc, "valid_response", "valid_tool", {request: "Check the active threads."});
+  dc.emit("response.done", { response: { id: "valid_response", status: "completed", output: [{ type: "function_call" }] } });
   await settle();
   assert.equal(submits().length, 1);
   assert.equal(submits()[0].originalText, "Check the active threads.");
-  dc.emit("response.done", {response: {id: "valid_response", status: "completed"}});
   speak(dc, "new_empty");
   dc.emit("response.created", {response: {id: "new_empty_response"}});
   dc.emit("conversation.item.input_audio_transcription.failed", {item_id: "new_empty", error: {message: "Transcription failed"}});
@@ -579,6 +586,7 @@ test("new speech cancels an in-flight quick action locally and on the server", a
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"quick_input",transcript:"Show Voice"});
   dc.emit("response.created",{response:{id:"quick_response"}});
   dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"quick_call",arguments:JSON.stringify({request:"Show Voice",action:{kind:"show_voice"}})});
+  dc.emit("response.done", { response: { id: "quick_response", status: "completed", output: [{ type: "function_call" }] } });
   await settle();
   const requestId=submits()[0].requestId;
   dc.emit("input_audio_buffer.speech_started", {item_id:"interrupt-quick"});
@@ -599,15 +607,24 @@ test("quick actions cannot bypass empty input or expose destructive action shape
 
 
 test("a lost quick-submit response never claims non-delivery or asks for an automatic retry", async t => {
-  const {dc,logs,tick}=await coordinatorFixture(t,{submit:async()=>{throw new Error("response lost");}});
+  const {dc,logs,tick,submits}=await coordinatorFixture(t,{submit:async()=>{throw new Error("response lost");}});
   speak(dc,"quick_rpc");
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"quick_rpc",transcript:"Show Voice"});
   dc.emit("response.created",{response:{id:"quick_rpc_response"}});
   dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"quick_rpc_call",arguments:JSON.stringify({request:"Show Voice",action:{kind:"show_voice"}})});
+  dc.emit("response.done", { response: { id: "quick_rpc_response", status: "completed", output: [{ type: "function_call" }] } });
   await settle();
-  dc.emit("response.done",{response:{id:"quick_rpc_response",status:"completed"}});
+  assert.equal(dc.toolOutputs().length,1);
+  assert.equal(dc.toolOutputs()[0].item.output,"The request result could not be confirmed. Do not resend it under a new ID.");
+  assert.equal(dc.responses().length,2,"one continuation returns the unknown result to the model");
+  dc.emit("response.created", {response: {id:"failure-continuation"}});
+  dc.emit("output_audio_buffer.started", {response_id:"failure-continuation"});
+  dc.emit("response.done", {response: {id:"failure-continuation",status:"completed",output:[{type:"message",content:[{type:"audio"}]}]}});
+  dc.emit("output_audio_buffer.stopped", {response_id:"failure-continuation"});
   tick(2500); await settle();
-  assert.ok(logs.some(event=>event.kind==="reply.speaking" && event.payload.text.includes("could not confirm")));
+  assert.equal(submits().length,1,"the unknown submission must not be retried");
+  assert.equal(dc.bridgeResponses().length,0,"the tool result owns the failure report");
+  assert.equal(dc.responses().length, 2, "the failed submission must not produce a second failure reply");
   assert.ok(!logs.some(event=>event.kind==="reply.speaking" && event.payload.text.includes("Please try again")));
 });
 
@@ -619,6 +636,7 @@ test("request context stays bound to speech start when navigation changes during
   current="thr_different";
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"context-item",transcript:"Ask this thread to investigate"});
   delegate(dc,"context-response","context-tool",{request:"Ask this thread to investigate"});
+  dc.emit("response.done", { response: { id: "context-response", status: "completed", output: [{ type: "function_call" }] } });
   await settle();
   assert.equal(submits()[0].view.threadId,"thr_original");
 });
@@ -629,9 +647,9 @@ test("direct worker creation carries interpretation and produces no extra starti
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"worker-item",transcript:"Start a thread to investigate that retry problem"});
   dc.emit("response.created",{response:{id:"worker-response"}});
   dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"worker-tool",arguments:JSON.stringify({request:"Start a thread to investigate that retry problem",interpretation:"The empty transcript retry issue just discussed",action:{kind:"start_thread",projectId:"proj_a",role:"investigate",title:"Retry issue"}})});
+  dc.emit("response.done", { response: { id: "worker-response", status: "completed", output: [{ type: "function_call" }] } });
   await settle();
   assert.equal(submits().length,1);assert.match(submits()[0].interpretation,/empty transcript/);
-  dc.emit("response.done",{response:{id:"worker-response",output:[]}});await settle();
   assert.equal(dc.bridgeResponses().length,0,"only an actual action result should be announced");
 });
 
@@ -743,6 +761,7 @@ test("speech-start context survives navigation before the first recognised word"
   dc.emit("input_audio_buffer.committed",{item_id:"spoken-reference"});
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"spoken-reference",transcript:"Ask this thread to inspect the logs."});
   delegate(dc,"context-response","context-tool",{request:"Ask this thread to inspect the logs."});
+  dc.emit("response.done", { response: { id: "context-response", status: "completed", output: [{ type: "function_call" }] } });
   await settle();
   assert.equal(submits()[0].view.threadId,"thr_original");
 });
@@ -757,7 +776,9 @@ test("only final input can create a conversational response and authorize a comp
   assert.ok(dc.sent.some(e=>e.type==="response.cancel" && e.response_id==="guessed"));
   dc.emit("response.done",{response:{id:"guessed",status:"cancelled"}});
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"complete",transcript:"Ask Build to inspect logs. Do not edit files."});
-  delegate(dc,"valid","valid-tool",{request:"Inspect logs",interpretation:"Build is the current workstream"});await settle();
+  delegate(dc,"valid","valid-tool",{request:"Inspect logs",interpretation:"Build is the current workstream"});
+  dc.emit("response.done", { response: { id: "valid", status: "completed", output: [{ type: "function_call" }] } });
+  await settle();
   assert.equal(submits().length,1);
   assert.equal(submits()[0].originalText,"Ask Build to inspect logs. Do not edit files.");
   assert.deepEqual(submits()[0].utteranceItemIds,["complete"]);
@@ -768,11 +789,15 @@ test("a continuation during the two-second window replaces unsent work and prese
   const {dc,submits,tick}=await coordinatorFixture(t,{settleInput:false});
   speak(dc,"first","Ask Build to change it");
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"first",transcript:"Ask Build to change it."});
-  delegate(dc,"first-response","first-tool",{request:"Change it"});await settle();assert.equal(submits().length,0);
+  delegate(dc,"first-response","first-tool",{request:"Change it"});
+  dc.emit("response.done", { response: { id: "first-response", status: "completed", output: [{ type: "function_call" }] } });
+  await settle();assert.equal(submits().length,0);
   speak(dc,"qualifier","Only if upstream did not fix it");
-  dc.emit("response.done",{response:{id:"first-response",status:"cancelled"}});await settle();
+  await settle();
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"qualifier",transcript:"Only if upstream did not fix it."});
-  delegate(dc,"corrected-response","corrected-tool",{request:"Check first"});await settle();
+  delegate(dc,"corrected-response","corrected-tool",{request:"Check first"});
+  dc.emit("response.done", { response: { id: "corrected-response", status: "completed", output: [{ type: "function_call" }] } });
+  await settle();
   tick(1999);await settle();assert.equal(submits().length,0);
   tick(1);await settle();assert.equal(submits().length,1);
   assert.equal(submits()[0].originalText,"Ask Build to change it. Only if upstream did not fix it.");
@@ -784,11 +809,26 @@ test("two distinct tools reuse one frozen utterance; duplicate provider calls re
   speak(dc,"both","Open Build and ask it to inspect logs");
   dc.emit("conversation.item.input_audio_transcription.completed",{item_id:"both",transcript:"Open Build and ask it to inspect logs."});
   dc.emit("response.created",{response:{id:"two-tools"}});
-  const emit=(id:string,action:Any)=>dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:id,arguments:JSON.stringify({request:"Open Build and ask it to inspect logs.",action})});
+  const speech={id:"preamble",type:"message",content:[{type:"audio",transcript:"I will open Build and send your request."}]};
+  dc.emit("response.output_item.added",{response_id:"two-tools",output_index:0,item:speech});
+  dc.emit("output_audio_buffer.started",{response_id:"two-tools"});
+  const emit=(id:string,action:Any)=>{
+    const outputIndex=id==="open" ? 1 : 2;
+    dc.emit("response.output_item.added",{response_id:"two-tools",output_index:outputIndex,item:{id,type:"function_call",call_id:id,name:"quick_action"}});
+    dc.emit("response.function_call_arguments.done",{item_id:id,output_index:outputIndex,name:"quick_action",call_id:id,arguments:JSON.stringify({request:"Open Build and ask it to inspect logs.",action})});
+  };
   emit("open",{kind:"open_thread",threadId:"build"});await settle();
   emit("message",{kind:"send_message",threadId:"build",purpose:"instruction"});await settle();
   emit("message",{kind:"send_message",threadId:"build",purpose:"instruction"});await settle();
+  assert.equal(submits().length,0, "both tools wait for generation to finish");
+  dc.emit("response.done", { response: { id: "two-tools", status: "completed", output: [speech, { type: "function_call" }, { type: "function_call" }] } });
+  await settle();
+  assert.equal(submits().length,0,"generation done does not release either tool while speech plays");
+  assert.equal(dc.toolOutputs().length,0);
+  dc.emit("output_audio_buffer.stopped",{response_id:"two-tools"});
+  await settle();
   assert.equal(submits().length,2);
+  assert.deepEqual(dc.toolOutputs().map(event => event.item.call_id), ["open", "message"]);
   assert.deepEqual(submits()[0].transcriptDelta,submits()[1].transcriptDelta);
   assert.equal(submits()[0].utteranceId,submits()[1].utteranceId);
 });
@@ -834,6 +874,7 @@ test("raw microphone activity cannot reject the pending navigation request",asyn
   dc.emit("response.created",{response:{id:"navigate"}});
   dc.emit("input_audio_buffer.speech_started",{item_id:"noise-without-words"});
   dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"open-editor",arguments:JSON.stringify({request:"Switch to the editor thread.",action:{kind:"open_thread",threadId:"editor"}})});
+  dc.emit("response.done", { response: { id: "navigate", status: "completed", output: [{ type: "function_call" }] } });
   await settle();
   assert.equal(submits().length,1);
   assert.equal(submits()[0].originalText,"Switch to the editor thread.");
@@ -849,6 +890,7 @@ test("noise after response creation was requested cannot cancel that response or
   dc.emit("input_audio_buffer.speech_started",{item_id:"noise"});
   dc.emit("response.created",{response:{id:"answer"}});
   dc.emit("response.function_call_arguments.done",{name:"quick_action",call_id:"open",arguments:JSON.stringify({request:"Open Build.",action:{kind:"open_thread",threadId:"build"}})});
+  dc.emit("response.done", { response: { id: "answer", status: "completed", output: [{ type: "function_call" }] } });
   await settle();
   assert.equal(dc.sent.filter(e=>e.type==="response.cancel").length,0);
   assert.equal(submits().length,1);
@@ -898,8 +940,11 @@ test("interrupting a pending read cannot revive an answer to the old request",as
   dc.emit("response.done",{response:{id:"old-read",status:"completed",output:[{type:"function_call"}]}});
   await settle();const before=dc.responses().length;
   speak(dc,"new","Wait, I have another question.");
-  finish({output:"Late old result"});await settle();
-  assert.equal(dc.responses().length,before);assert.match(dc.toolOutputs()[0].item.output,/earlier spoken turn/);
+  const result = {output:"Late old result", asOf:123};
+  finish(result);await settle();
+  assert.equal(dc.responses().length,before);
+  assert.equal(dc.toolOutputs().length,1);
+  assert.deepEqual(JSON.parse(dc.toolOutputs()[0].item.output),result);
 });
 
 test("an old handoff finishing cannot erase a newer user's pending response",async t=>{
