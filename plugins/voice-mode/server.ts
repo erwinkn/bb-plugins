@@ -1,6 +1,6 @@
-import { PromptStore, PROMPT_MIGRATIONS, promptDefault } from "./prompt-store.ts";
-import { UTTERANCE_EFFECT_MIGRATIONS } from "./live-action-store.ts";
+import { PromptStore, promptDefault } from "./prompt-store.ts";
 import { voiceFeatureMigrations } from "./migration-order.ts";
+import { LiveRuntime, liveRpcContract } from "./live-runtime.ts";
 import { loadWorkerCatalog, workerCatalogSchema } from "./provider-catalog.ts";
 import { readWorkerSettings, workerSettingsSchema, WORKER_PROFILE_KEY } from "./worker-profiles.ts";
 import { EMPTY_TRANSCRIPT, transcriptSnapshotSchema, type TranscriptSnapshot } from "./live-transcript.ts";
@@ -98,6 +98,7 @@ const requestReceiptSchema = z
   .strict();
 
 export const rpcContract = defineRpcContract({
+  ...liveRpcContract,
   sequence: {input:sequenceInputSchema, output:sequenceOutputSchema},
   listWorkerProviders: {input:z.object({hostId:z.string().min(1).max(128).optional()}).strict(),output:workerCatalogSchema},
   getWorkerSettings: { input:z.null(),output:workerSettingsSchema },
@@ -521,7 +522,7 @@ export default async function plugin(bb: BbPluginApi) {
     ...UI_COMMAND_MIGRATIONS,
     ...QUICK_ACTION_MIGRATIONS,
   ];
-  bb.storage.migrate(db, [...commonMigrations, ...voiceFeatureMigrations(db, commonMigrations.length), ...UTTERANCE_EFFECT_MIGRATIONS, ...PROMPT_MIGRATIONS]);
+  bb.storage.migrate(db, [...commonMigrations, ...voiceFeatureMigrations(db, commonMigrations.length)]);
   const prompts = new PromptStore(db);
 
   // Reject new event data at the quota; never silently delete saved transcripts.
@@ -545,6 +546,15 @@ export default async function plugin(bb: BbPluginApi) {
 
   let liveTranscript: TranscriptSnapshot = EMPTY_TRANSCRIPT;
   const currentCall = () => db.prepare("SELECT sequence, nonce FROM voice_call_control WHERE slot = 1").get() as { sequence: number; nonce: string | null };
+  const liveRuntime = new LiveRuntime(bb, () => {
+    const { nonce } = currentCall();
+    const link = nonce ? db.prepare("SELECT conversation_id FROM voice_conversation_calls WHERE call_id = ?").get(nonce) as { conversation_id: string } | undefined : undefined;
+    return { nonce, conversationId: link?.conversation_id };
+  });
+  for (const name of ["thread.active", "thread.idle", "thread.failed", "thread.archived", "interaction.pending", "message.dispatched"] as const) {
+    bb.events.on(name, payload => liveRuntime.watches.event(name, payload).catch(error => bb.log.warn(`Live runtime event failed: ${error instanceof Error ? error.message : String(error)}`)));
+  }
+  await liveRuntime.initialize();
   function forceStopCall(nonce: string, transferring = false) {
     sequences.pauseCall(nonce);
     uiCommands.cancelCall(nonce);
@@ -1137,6 +1147,16 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
+    runTool: input => liveRuntime.runTool(input),
+    beginClientEffect: input => liveRuntime.beginClientEffect(input),
+    finishClientEffect: input => liveRuntime.finishClientEffect(input),
+    nextUpdateBatch: input => liveRuntime.nextUpdateBatch(input),
+    closeOffer: input => liveRuntime.closeOffer(input),
+    reportDrain: input => liveRuntime.reportDrain(input),
+    finishUserExchange: input => liveRuntime.finishUserExchange(input),
+    callStartContext: input => liveRuntime.callStartContext(input),
+    listLiveSubscriptions: input => liveRuntime.listLiveSubscriptions(input),
+    listLiveTasks: input => liveRuntime.listLiveTasks(input),
     async listWorkerProviders({hostId}) { return loadWorkerCatalog(bb,hostId); },
     async getWorkerSettings() { return readWorkerSettings(bb); },
     async setWorkerSettings(settings) {

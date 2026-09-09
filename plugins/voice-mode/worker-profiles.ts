@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { DEFAULT_PROFILE_INSTRUCTIONS, WORKER_BASE_PROMPT } from "./worker-prompt.ts";
 
 export const WORKER_ROLES = ["investigate", "plan", "implement", "review"] as const;
 export type WorkerRole = typeof WORKER_ROLES[number];
@@ -17,6 +18,28 @@ export const workerSettingsSchema = z.object({
   maxActiveWorkers: z.number().int().min(1).max(64),
 }).strict();
 export type WorkerSettings = z.infer<typeof workerSettingsSchema>;
+
+export const NAMED_WORKER_PROFILE_KEY = "voice.worker-profiles.v2";
+export const namedWorkerProfileSchema = workerProfileSchema.extend({
+  name: z.string().min(1).max(64), instructions: z.string().min(1).max(16000),
+});
+export type NamedWorkerProfile = z.infer<typeof namedWorkerProfileSchema>;
+export const namedWorkerSettingsSchema = z.object({
+  profiles: z.array(namedWorkerProfileSchema).min(1).max(64),
+  defaultProfile: z.string().min(1).max(64),
+  maxActiveWorkers: z.number().int().min(1).max(64),
+  workerBasePrompt: z.string().min(1).max(32000),
+}).strict().refine(s => new Set(s.profiles.map(p => p.name)).size === s.profiles.length && s.profiles.some(p => p.name === s.defaultProfile), "Profile names must be unique and include the default profile");
+export type NamedWorkerSettings = z.infer<typeof namedWorkerSettingsSchema>;
+
+/** Read through to v1 without rewriting either saved value during this cutover. */
+export async function readNamedWorkerSettings(bb: BbPluginApi): Promise<NamedWorkerSettings> {
+  const saved = await bb.storage.kv.get<unknown>(NAMED_WORKER_PROFILE_KEY);
+  if (saved !== null && saved !== undefined) return namedWorkerSettingsSchema.parse(saved);
+  const old = await readWorkerSettings(bb);
+  return { profiles: WORKER_ROLES.map(name => ({ ...old.profiles[name], name, instructions: DEFAULT_PROFILE_INSTRUCTIONS[name] })),
+    defaultProfile: "implement", maxActiveWorkers: old.maxActiveWorkers, workerBasePrompt: WORKER_BASE_PROMPT };
+}
 
 export function defaultWorkerSettings(): WorkerSettings {
   const profile = (): WorkerProfile => ({ providerId: "codex", model: null, reasoningLevel: null, serviceTier: "default" });

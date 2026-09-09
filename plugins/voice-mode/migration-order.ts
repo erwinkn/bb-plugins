@@ -3,6 +3,9 @@ import type Database from "better-sqlite3";
 import { LIVE_ACTION_MIGRATIONS } from "./live-action-store.ts";
 import { MESSAGE_SEND_MIGRATIONS } from "./coordinator/store.ts";
 import { SEQUENCE_MIGRATIONS } from "./sequence-manager.ts";
+import { UTTERANCE_EFFECT_MIGRATIONS } from "./live-action-store.ts";
+import { PROMPT_MIGRATIONS } from "./prompt-store.ts";
+import { LIVE_RUNTIME_MIGRATIONS } from "./live-store.ts";
 
 /** Two versions extended the same migration prefix before their code was reconciled.
  * Keep the recorded prefix for either version; never rewrite migration history.
@@ -16,7 +19,8 @@ export function voiceFeatureMigrations(db: Database.Database, firstIndex: number
   const liveFirst = first?.statement_hash
     ? first.statement_hash === hash(LIVE_ACTION_MIGRATIONS[0])
     : exists("voice_action_groups") && !exists("voice_sequences");
-  return liveFirst
+  const prefix = liveFirst
     ? [...LIVE_ACTION_MIGRATIONS, ...SEQUENCE_MIGRATIONS, ...MESSAGE_SEND_MIGRATIONS]
     : [...SEQUENCE_MIGRATIONS, ...MESSAGE_SEND_MIGRATIONS, ...LIVE_ACTION_MIGRATIONS];
+  return [...prefix, ...UTTERANCE_EFFECT_MIGRATIONS, ...PROMPT_MIGRATIONS, ...LIVE_RUNTIME_MIGRATIONS];
 }
