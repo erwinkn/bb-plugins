@@ -22,7 +22,7 @@ import { matchShortcut } from "./shortcuts";
 import { MAC, SHORTCUT_STORAGE_KEY, shortcutStore } from "./shortcut-store";
 import "./app.css";
 
-/** Trailing accessory on the Aide sidebar row: a live indicator with duration. */
+/** Trailing accessory on the Ada sidebar row: a live indicator with duration. */
 function SidebarLiveIndicator() {
   const state = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getState);
   const elapsed = useCallElapsed();

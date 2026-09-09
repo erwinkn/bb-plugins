@@ -88,11 +88,14 @@ function maybeUnref(timer: ReturnType<typeof setInterval>) {
 }
 
 const REPLY_QUIET_MS = 2000;
+const REPAIR_INSTRUCTION = "Input transcription failed. Ask once for the complete request. Do not call effect tools.";
+const GREETING_INSTRUCTION = "The call just started; the system item before this is the call-start context. Speak first: follow the Call start section of your instructions for a new conversation. Do not call effect tools.";
+const RESUME_INSTRUCTION = "The call resumed an earlier conversation; the system item before this is the call-start context. Speak first: follow the Call start section of your instructions for a resumed conversation. Do not call effect tools.";
 const DISCONNECT_GRACE_MS = 10_000;
 /**
  * How long a call may hold with its mic suspended (mobile backgrounding) before
  * it ends on its own. A screen lock must not drop the call — the user walks with
- * the phone locked and expects Aide to resume on unlock — so this is generous.
+ * the phone locked and expects Ada to resume on unlock — so this is generous.
  * It is only a safety net for a mic that never returns while the WebRTC link
  * somehow stays up; a real connection drop ends the call far sooner on its own.
  */
@@ -172,7 +175,7 @@ export class VoiceAgent {
   private replyTimer: ReturnType<typeof setTimeout> | null = null;
   private get userSpeaking(){return this.input?.speaking ?? false;}
   /**
-   * True while Aide's audio is actually playing — tracked from the WebRTC
+   * True while Ada's audio is actually playing — tracked from the WebRTC
    * `output_audio_buffer.started/stopped/cleared` events, NOT `responseActive`
    * (which ends at generation done, well before playback finishes).
    */
@@ -197,7 +200,7 @@ export class VoiceAgent {
   /**
    * True while the OS has suspended the mic (typically iOS backgrounding the
    * owning realm). The uplink is dead until recovered — surfaced honestly rather
-   * than leaving the call looking "Connected" while Aide can't hear you.
+   * than leaving the call looking "Connected" while Ada can't hear you.
    */
   private micSuspended = false;
   /** The most recent meaningful event, for the dock's live activity ticker. */
@@ -220,7 +223,11 @@ export class VoiceAgent {
   private liveClient: LiveClient | null = null;
   private responseBinding: ResponseBinding | null = null;
   private pendingBinding: ResponseBinding | null = null;
-  private repairInstruction: string | null = null;
+  /**
+   * Per-response instructions for the next model turn that has no user utterance:
+   * a transcription repair, or the greeting at call start. Sent once, then cleared.
+   */
+  private responseInstruction: string | null = null;
   private openOffer: { id: string; nonce: string; responseId: string | null } | null = null;
   private batchPending = false;
   private reports: Promise<unknown> = Promise.resolve();
@@ -315,7 +322,7 @@ export class VoiceAgent {
 
   /**
    * Who is talking right now, from the data-channel signals we already track
-   * (VAD for the user, response lifecycle for Aide). Deliberately no audio
+   * (VAD for the user, response lifecycle for Ada). Deliberately no audio
    * analysis — it stays reliable and never touches the audio pipeline. The
    * user takes precedence so a barge-in reads as "you".
    */
@@ -328,7 +335,7 @@ export class VoiceAgent {
 
   /**
    * True when THIS realm owns a call whose mic the OS has suspended — the
-   * uplink is down (Aide can't hear you) until it comes back to the foreground
+   * uplink is down (Ada can't hear you) until it comes back to the foreground
    * and recovers. Only meaningful for the owner; mirrors don't hold the mic.
    */
   readonly getMicSuspended = (): boolean =>
@@ -492,7 +499,7 @@ export class VoiceAgent {
   private setState(next: VoiceState) {
     this.state = next;
     // Hold a screen wake lock for the life of the call so the phone does not
-    // idle-lock while Aide is live; release it the moment the call goes idle.
+    // idle-lock while Ada is live; release it the moment the call goes idle.
     if (next === "idle") this.releaseWakeLock();
     else void this.requestWakeLock();
     this.emitChange();
@@ -524,7 +531,7 @@ export class VoiceAgent {
   /**
    * Ask any realm that owns a live call to re-announce it now. A surface calls
    * this on mount so it catches up immediately instead of waiting up to a full
-   * heartbeat — the "briefly shows Talk to Aide over a live call" gap.
+   * heartbeat — the "briefly shows Talk to Ada over a live call" gap.
    */
   requestPresence() {
     const rpc = this.bindings?.rpc;
@@ -914,7 +921,7 @@ export class VoiceAgent {
    */
   private endBecauseSuspended() {
     const nonce = this.nonce;
-    toast.info("Aide: call ended — the microphone stayed off too long");
+    toast.info("Ada: call ended — the microphone stayed off too long");
     if (nonce) this.forceStop(nonce);
     this.stop();
   }
@@ -1059,12 +1066,25 @@ export class VoiceAgent {
    * Coalesce continuations until generation ends, audio drains or is cut,
    * and every held call has produced its output.
    */
+  /**
+   * Ask the model for a turn that no user utterance triggered: the greeting at
+   * call start or a transcription repair. Bound as a user-origin response with a
+   * null utterance, so the server refuses effects but allows reads.
+   */
+  private speakUnprompted(session: SessionHandle, instruction: string) {
+    if (this.session !== session || !session.dc) return;
+    this.responseInstruction = instruction;
+    this.responsePending = true;
+    this.pendingBinding = { origin: "user", utterance: null };
+    this.requestResponse(session.dc);
+  }
+
   private requestResponse(dc: RTCDataChannel, binding?: ResponseBinding) {
     const requested = binding ?? this.pendingBinding ?? { origin: "user", utterance: this.utterance() };
     this.pendingBinding = requested;
     if (dc.readyState !== "open") return;
     if (!this.sessionReady) return;
-    if (this.responseActive || this.pendingToolCalls > 0 || this.outputSequencer.playbackPending || this.userSpeaking || (requested.origin === "user" && !this.input?.snapshot() && !this.repairInstruction)) {
+    if (this.responseActive || this.pendingToolCalls > 0 || this.outputSequencer.playbackPending || this.userSpeaking || (requested.origin === "user" && !this.input?.snapshot() && !this.responseInstruction)) {
       this.responsePending = true;
       return;
     }
@@ -1078,9 +1098,9 @@ export class VoiceAgent {
       type: "response.create",
       response: { metadata: { bb_voice_origin: requested.origin,
         ...(this.openOffer ? { bb_offer_id: this.openOffer.id } : {}) },
-        ...(this.repairInstruction ? { instructions: "Input transcription failed. Ask once for the complete request. Do not call effect tools." } : {}) },
+        ...(this.responseInstruction ? { instructions: this.responseInstruction } : {}) },
     }));
-    this.repairInstruction = null;
+    this.responseInstruction = null;
   }
 
   stop() {
@@ -1103,7 +1123,7 @@ export class VoiceAgent {
     this.closeOffer("not_delivered");
     this.liveClient = null;
     this.batchPending = false;
-    this.responseBinding = null; this.pendingBinding = null; this.repairInstruction = null;
+    this.responseBinding = null; this.pendingBinding = null; this.responseInstruction = null;
     this.exchanges.clear();
     this.clearConnectWatchdog();
     if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
@@ -1415,7 +1435,7 @@ export class VoiceAgent {
         // The chosen mic is genuinely gone. Tell the user (not an error) and keep
         // their selection so they can see it and re-pick — do not silently wipe.
         const name = saved.inputLabel || "your selected microphone";
-        toast.info(`Aide: ${name} isn't available — using the system default. Pick one in Voice Mode settings.`);
+        toast.info(`Ada: ${name} isn't available — using the system default. Pick one in Voice Mode settings.`);
       }
 
       let stream: MediaStream;
@@ -1469,7 +1489,7 @@ export class VoiceAgent {
           if (item.utteranceId) this.exchanges.set(item.utteranceId, { version:item.version, finished:false });
           this.interruptSpeech("recognised-words");this.settleLiveOutputs();},
         draft:item=>{this.transcriptBuffer.update("user",item.id,item.text,item.startedAt,{userTurn:item.version,utteranceId:item.utteranceId!});this.streamChanged();},
-        final:(item,late)=>this.finishInput(item,late),repair:message=>{this.repairInstruction=message;this.responsePending=true;this.pendingBinding={origin:"user",utterance:null};if(session.dc)this.requestResponse(session.dc);},
+        final:(item,late)=>this.finishInput(item,late),repair:()=>this.speakUnprompted(session,REPAIR_INSTRUCTION),
         log:(kind,data)=>this.log(kind,data),
       });
       const stopMeter=await this.meterFactory(stream,rms=>{if(this.session===session && this.sessionReady)this.input?.sample(rms);});
@@ -1481,7 +1501,7 @@ export class VoiceAgent {
       this.connectTimer = setTimeout(() => {
         if (this.session?.pc === pc && this.state === "connecting") {
           this.logDiag("conn.timeout", { state: pc.connectionState });
-          toast.error("Aide: couldn't connect — please try again");
+          toast.error("Ada: couldn't connect — please try again");
           this.stop();
         }
       }, 15000);
@@ -1510,7 +1530,7 @@ export class VoiceAgent {
               return;
             }
             this.logDiag("audio.play.failed", { name });
-            toast.error("Aide: can't play audio. Check your system sound settings.");
+            toast.error("Ada: can't play audio. Check your system sound settings.");
           },
         );
       };
@@ -1520,21 +1540,21 @@ export class VoiceAgent {
         this.input?.setAvailable(pc.connectionState === "connected" && !this.micSuspended);
         if (pc.connectionState === "connected") {
           if (session.dc?.readyState === "closed" || session.dc?.readyState === "closing") {
-            toast.error("Aide: voice event connection closed");
+            toast.error("Ada: voice event connection closed");
             this.stop();
             return;
           }
           if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
           this.disconnectTimer = null;
         } else if (pc.connectionState === "failed") {
-          toast.error("Aide: voice connection lost");
+          toast.error("Ada: voice connection lost");
           this.stop();
         } else if (pc.connectionState === "disconnected" && !this.disconnectTimer) {
-          toast.info("Aide: connection interrupted — waiting to reconnect");
+          toast.info("Ada: connection interrupted — waiting to reconnect");
           this.disconnectTimer = setTimeout(() => {
             this.disconnectTimer = null;
             if (this.session?.pc === pc && pc.connectionState !== "connected") {
-              toast.error("Aide: voice connection lost");
+              toast.error("Ada: voice connection lost");
               this.stop();
             }
           }, DISCONNECT_GRACE_MS);
@@ -1561,7 +1581,11 @@ export class VoiceAgent {
           this.sessionReady=true;this.clearConnectWatchdog();
           for(const track of stream.getAudioTracks())track.enabled=true;
           this.setState("live");this.startPresenceHeartbeat();
-          this.log("session.live");this.inputChanged();this.scheduleReplyDrain();
+          this.log("session.live");this.inputChanged();
+          // Ada speaks first. A resumed conversation gets a short status instead of an introduction.
+          const resumed = Array.isArray((context as { recentTurns?: unknown[] } | null)?.recentTurns) && (context as { recentTurns: unknown[] }).recentTurns.length > 0;
+          this.speakUnprompted(session, resumed ? RESUME_INSTRUCTION : GREETING_INSTRUCTION);
+          this.scheduleReplyDrain();
         } catch(error) { if(this.session===session){this.log("session.contextFailed",{error:String(error)});this.stop();} }
       };
       dc.onopen = () => {
@@ -1572,7 +1596,7 @@ export class VoiceAgent {
       dc.onclose = () => {
         if (this.session !== session) return;
         this.logDiag("conn.dc.close");
-        toast.error("Aide: voice event connection closed");
+        toast.error("Ada: voice event connection closed");
         this.stop();
       };
       dc.onmessage = (message) => {
@@ -1753,7 +1777,7 @@ export class VoiceAgent {
             code: error?.code ?? null, type: error?.type ?? null, eventId: error?.event_id ?? null, ...cancellation});
           if (error?.event_id) this.cancellationEvents.delete(error.event_id);
           if (benign) return;
-          toast.error(`Aide: ${detail ?? "realtime error"}`);
+          toast.error(`Ada: ${detail ?? "realtime error"}`);
         }
       };
 
@@ -1778,7 +1802,7 @@ export class VoiceAgent {
       acquiredStream?.getTracks().forEach(track => track.stop());
       if (this.nonce !== nonce) return;
       this.stop();
-      toast.error(`Aide: ${error instanceof Error ? error.message : String(error)}`);
+      toast.error(`Ada: ${error instanceof Error ? error.message : String(error)}`);
       this.requestPresence();
     }
   }

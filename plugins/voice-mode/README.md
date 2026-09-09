@@ -1,6 +1,6 @@
 # Voice Mode
 
-Talk to BB while it works. Aide answers questions, reads thread results, sends
+Talk to BB while it works. Ada answers questions, reads thread results, sends
 instructions, starts background work, and controls BB's native workspace.
 
 Based on [bb-handsfree](https://github.com/swairshah/bb-handsfree) by swairshah,
@@ -16,9 +16,9 @@ Only the device that owns the call executes its tools.
 The default shortcuts are Cmd+Shift+H to start or stop, and Cmd+Shift+U to mute.
 Windows and Linux use Ctrl. Change them in Voice Mode's Keyboard shortcuts settings.
 
-## Work with Aide
+## Work with Ada
 
-Aide uses one live model and fifteen tools. It can find, read, and rename threads, deliver
+Ada uses one live model and fifteen tools. It can find, read, and rename threads, deliver
 messages, create visible threads or hidden workers, prepare unsent drafts, navigate,
 stop work, manage subscriptions, prepare and confirm archives, and answer native
 questions or approvals. Archive and approval actions require a later spoken
@@ -26,13 +26,13 @@ confirmation after their explanation has drained.
 
 Spoken names are approximate. Searches rank threads and projects with a match score,
 accept word stems and small mishearings, and always list the projects. When one
-search does not settle what you meant, Aide starts a worker to look instead of asking
+search does not settle what you meant, Ada starts a worker to look instead of asking
 for exact names or IDs. Workers run outside any project unless the task needs a
 repository; they can read every BB project and thread. A worker uses the default
-profile unless Aide picks one of the configured names.
+profile unless Ada picks one of the configured names.
 
 You can say "agent" instead of "thread". An agent is a root thread, and a sub-agent
-is a child thread of that root. Aide applies this mapping when it resolves what you
+is a child thread of that root. Ada applies this mapping when it resolves what you
 said and answers with the word you used. Thread targeting inside the runtime does not
 change.
 
@@ -42,9 +42,9 @@ results are not retried automatically. Drafts append by default and never submit
 A worker's turn ending is reported separately from whether its task is complete.
 
 Background updates wait for a quiet boundary and cannot navigate or act. Every
-thread Aide messages, starts, or stops reports back in the call when it finishes,
+thread Ada messages, starts, or stops reports back in the call when it finishes,
 fails, or asks a question, also after a reconnect. A send result is the receipt:
-sent and queued are both final delivery, and Aide says it will keep you informed
+sent and queued are both final delivery, and Ada says it will keep you informed
 rather than asking you to check later. Unsubscribing mutes updates without
 stopping the work; a later send does not re-enable a disabled watch.
 

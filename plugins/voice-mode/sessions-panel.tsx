@@ -87,7 +87,7 @@ function GearIcon() {
 
 /**
  * The call console — a bottom-center control that owns the entire call
- * lifecycle right on the Voice page. Idle: a "Talk to Aide" pill. Live: it
+ * lifecycle right on the Voice page. Idle: a "Talk to Ada" pill. Live: it
  * expands into a console (mute · who-has-the-floor + duration · jump to the live
  * transcript · stop). Same neutral-chrome + activity-color language as the
  * composer pill; color marks who's speaking, everything else stays neutral.
@@ -322,7 +322,7 @@ function SpeechRow({ row }: { row: Extract<Row, { kind: "speech" }> }) {
       </span>
       <div className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
-          <span className={cn("text-xs font-semibold", you ? "text-foreground" : "text-primary")}>{you ? "You" : "Aide"}</span>
+          <span className={cn("text-xs font-semibold", you ? "text-foreground" : "text-primary")}>{you ? "You" : "Ada"}</span>
           <span className="text-xs tabular-nums text-muted-foreground">{fmtTime(row.ts)}</span>
         </span>
         <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">{row.text}</p>
@@ -577,7 +577,7 @@ function MessageRow({ message }: { message: ConversationMessage }) {
       </span>
       <div className="min-w-0 flex-1">
         <span className="flex flex-wrap items-baseline gap-2">
-          <span className={cn("text-xs font-semibold", you ? "text-foreground" : "text-primary")}>{you ? "You" : "Aide"}</span>
+          <span className={cn("text-xs font-semibold", you ? "text-foreground" : "text-primary")}>{you ? "You" : "Ada"}</span>
           <span className="text-xs tabular-nums text-muted-foreground">{fmtTime(message.ts)}</span>
           <KindChip kind={message.kind} />
           {delivery ? <span className={cn("text-[10px]", message.delivery === "interrupted" ? "text-destructive" : "text-muted-foreground")} title={message.attributedByWindow ? "Playback state inferred from the reply that was being spoken" : undefined}>{delivery}</span> : null}

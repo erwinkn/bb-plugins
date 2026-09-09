@@ -199,7 +199,7 @@ File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 ### Voice questions and approvals
 
-Voice workers use native BB questions and approvals. Aide reads their IDs, subjects,
+Voice workers use native BB questions and approvals. Ada reads their IDs, subjects,
 and reasons, then uses `threads.interactions.respond` or `resolve` after a later
 spoken answer. Archive also requires a spoken preview and later confirmation.
 The earlier plugin-waiter workaround and proposed requestInput ID API are no longer
@@ -268,7 +268,7 @@ later. Remove an entry when the upstream fix ships.
 
 ### Voice operator isolation and managed workspace primitives
 
-Aide uses one live model and hidden root workers. It supports direct messaging,
+Ada uses one live model and hidden root workers. It supports direct messaging,
 worker creation, named profiles, and a Tasks view. SDK 0.4.47 can create a managed
 worktree through `threads.spawn`, but
 has no standalone environment/worktree creation API or hard read-only spawn

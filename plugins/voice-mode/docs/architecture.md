@@ -1,4 +1,4 @@
-# Aide live runtime
+# Ada live runtime
 
 One Realtime model speaks and calls fifteen tools. Hidden root threads run
 background tasks. No model coordinates those threads. Stored subscriptions,

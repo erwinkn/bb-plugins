@@ -207,11 +207,22 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
       else Reflect.deleteProperty(globalThis, name);
     }
   });
+  let greetings = 0;
   const start = async () => {
     agent.toggle();
     await settleVoice();
     assert.equal(agent.getState(), initialState);
-    return channels.at(-1)!;
+    const dc = channels.at(-1)!;
+    // Ada speaks first. Play that greeting to completion so each test starts after it,
+    // as a real call does; the greeting itself is asserted by its own test.
+    const greeting = dc.responses().at(-1);
+    if (initialState === "live" && greeting?.response?.instructions?.includes("Speak first")) {
+      greetings += 1; const id = `greeting-${greetings}`;
+      dc.emit("response.created", { response: { id, metadata: greeting.response.metadata } });
+      dc.emit("response.done", { response: { id, status: "completed", output: [] } });
+      await settleVoice();
+    }
+    return dc;
   };
   const dc = await start();
   return { agent, dc, start, peers, track, rpcCalls, tick: (ms: number) => t.mock.timers.tick(ms) };
@@ -996,4 +1007,18 @@ test("an offer stays open while a background continuation waits for another drai
   f.dc.emit("response.created",{response:{id:"continuation"}});
   f.done("continuation",[]);await settleVoice();
   assert.equal(f.rpcCalls.filter(call=>call.method==="closeOffer").length,1);
+});
+
+test("Ada speaks first: a new call requests a greeting turn bound to no utterance", async (t) => {
+  const { dc } = await liveVoiceFixture(t);
+  const greeting = dc.responses()[0];
+  assert.match(greeting.response.instructions, /call just started/);
+  assert.match(greeting.response.instructions, /Do not call effect tools/);
+  assert.equal(greeting.response.metadata.bb_voice_origin, "user");
+  assert.equal(dc.sent.filter(e => e.type === "conversation.item.create").length, 1, "the greeting follows the call-start context item");
+});
+
+test("a resumed conversation gets a status turn instead of an introduction", async (t) => {
+  const { dc } = await liveVoiceFixture(t, undefined, { callStartContext: () => ({ type: "call_start_context", tasks: [], recentTurns: [{ who: "you", text: "earlier" }] }) });
+  assert.match(dc.responses()[0].response.instructions, /resumed an earlier conversation/);
 });

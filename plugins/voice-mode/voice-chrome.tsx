@@ -89,7 +89,7 @@ export function LiveCallControls() {
   const activityColor = micSuspended
     ? "text-destructive" // uplink down (iOS backgrounded the mic)
     : speaking
-      ? "text-[color:var(--success,#6faf76)]" // Aide
+      ? "text-[color:var(--success,#6faf76)]" // Ada
       : listening
         ? "text-foreground" // you
         : "text-muted-foreground/70";
@@ -98,7 +98,7 @@ export function LiveCallControls() {
     : micSuspended
       ? "Mic paused"
       : speaking
-        ? "Aide speaking…"
+        ? "Ada speaking…"
         : listening
           ? "Listening…"
           : muted
@@ -109,7 +109,7 @@ export function LiveCallControls() {
     <div className="voice-call-controls flex h-11 max-w-full items-center overflow-hidden rounded-md border border-border bg-background">
       <button
         type="button"
-        aria-label={muted ? "Unmute Aide microphone" : "Mute Aide microphone"}
+        aria-label={muted ? "Unmute Ada microphone" : "Mute Ada microphone"}
         title={muted ? "Unmute" : "Mute"}
         aria-pressed={muted}
         disabled={connecting}
@@ -134,7 +134,7 @@ export function LiveCallControls() {
       <span className="h-5 w-px bg-border" />
       <button
         type="button"
-        aria-label="Stop Aide voice session"
+        aria-label="Stop Ada voice session"
         title="Stop"
         onClick={() => voiceAgent.stopFromSurface()}
         className="flex size-11 shrink-0 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"

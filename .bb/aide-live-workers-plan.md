@@ -1,8 +1,8 @@
-# Aide: one live model and background workers
+# Ada: one live model and background workers
 
 ## Result
 
-Aide is the BB voice assistant. One live Realtime model talks with the user and calls tools that act in BB. Hidden worker threads do background tasks. There is no coordinator model and no second speaker. Plugin code orders speech and tools, prevents duplicate actions, keeps subscriptions, and records what the user heard.
+Ada is the BB voice assistant. One live Realtime model talks with the user and calls tools that act in BB. Hidden worker threads do background tasks. There is no coordinator model and no second speaker. Plugin code orders speech and tools, prevents duplicate actions, keeps subscriptions, and records what the user heard.
 
 This plan replaces the coordinator architecture in PR #15. It keeps the input controller, call ownership, device switching, the native UI adapter, session history, prompt history, and every existing database migration.
 
@@ -17,7 +17,7 @@ Assume audio-only use. A spoken answer must carry the context the user needs to 
 - **Receipt.** The stored result of an effect: accepted, queued, running, succeeded, failed, cancelled, or unknown.
 - **Drain.** The API reports that a response's audio finished playing normally (`output_audio_buffer.stopped`). `output_audio_buffer.cleared` means the audio was cut. Cleared is never drain.
 - **Watch.** A stored subscription of one Voice conversation to one thread's updates.
-- **Task.** A worker or a visible thread that Aide created for this conversation.
+- **Task.** A worker or a visible thread that Ada created for this conversation.
 
 ## Components
 
@@ -54,9 +54,9 @@ voice_offers(id, conversation_id, call_nonce, response_id, item_ids_json,
 
 ### From speech to an effect
 
-The input controller keeps deciding when to commit audio, when text is final, and when speech interrupts Aide. Raw microphone energy never interrupts or cancels anything.
+The input controller keeps deciding when to commit audio, when text is final, and when speech interrupts Ada. Raw microphone energy never interrupts or cancels anything.
 
-An effect waits until every text item of its utterance is final. If one item fails transcription, no effect of that utterance runs, and Aide asks once for the missing part. Reads may run while text is still pending.
+An effect waits until every text item of its utterance is final. If one item fails transcription, no effect of that utterance runs, and Ada asks once for the missing part. Reads may run while text is still pending.
 
 Effects also wait 2 s after the last final item. If more speech joins the utterance in that window, the version increases. Every held effect bound to the old version is cancelled with the tool result "Not executed: the user continued speaking". The model handles the complete request in the next turn. Navigation and reads wait only for final text.
 
@@ -74,14 +74,14 @@ Use ordinary model speech and tool calls. The sequencer orders items by response
 | Tool call in a response without audio | Run it at `response.done`. Without this rule the hold never releases. |
 | Tool finished | Create the `function_call_output`. Send `response.create` only after every started response has drained or was cleared and no tool is held. Without this gate the API appends the next response's audio to the same buffer and the first response never reports its own drain. |
 | Speech passes the word checks, or `output_audio_buffer.cleared` arrives | Mark the response interrupted. Cancel its held calls with "Not executed: interrupted". Request no continuation for that turn. The next utterance drives the next response. In the probe, a continuation after a cancel made the model resume the old task for 20 s. |
-| Tool fails or returns unknown | Cancel the remaining held calls of that response with "Not executed: an earlier action failed". Return the failure. Aide decides what to say. |
+| Tool fails or returns unknown | Cancel the remaining held calls of that response with "Not executed: an earlier action failed". Return the failure. Ada decides what to say. |
 | Speech item after a tool call inside one response | Never observed in 22 probe responses. Log `ordering.violation` and keep the hold. WebRTC gives no per-item audio boundary, so the runtime cannot repair this shape. |
 
 Reads may run before drain. A read completed during an interruption still returns its data with its timestamp. Data never restarts an interrupted response.
 
 Latency. The hold plus the tool time is silence for the user. The probe measured 6.5 s of silence for a 2.7 s hold and a 3 s tool. The prompt asks for short speech before a tool call. The 2 s window rarely adds delay because the model's speech usually lasts longer.
 
-The runtime never writes speech. Tool results are compact JSON with names beside IDs, timestamps, and truncation flags. Aide alone decides what the user hears.
+The runtime never writes speech. Tool results are compact JSON with names beside IDs, timestamps, and truncation flags. Ada alone decides what the user hears.
 
 ### Effect identity and authority
 
@@ -93,7 +93,7 @@ An effect target must be an ID that appeared in this call's tool results or in t
 
 Delivery status. `threads.send` returns `sent`, or `queued` with a queued-message id. Store the id. `message.dispatched` for that id moves the operation to running. A thrown SDK error is `failed`. A timeout is `unknown`. Reconcile unknown by listing the target's queued messages and recent user-message events and comparing the stored body. Never retry an unknown effect through another tool.
 
-Recipient message format. The body Aide wrote, then one line: "Spoken request: <utterance text>". No JSON, IDs, or call metadata. People read these threads.
+Recipient message format. The body Ada wrote, then one line: "Spoken request: <utterance text>". No JSON, IDs, or call metadata. People read these threads.
 
 ### Watches, inbox, and offers
 
@@ -103,7 +103,7 @@ Root grouping. `root_thread_id` comes from walking `parentThreadId`. An event on
 
 Event handling. `thread.idle` with no queued messages: task `turn_ended`, inbox `result` with the tail of `lastAssistantText`. `thread.idle` with queued messages: inbox `milestone` if the text changed, task stays `running`. `thread.failed`: task `failed`, inbox `failed`. `interaction.pending`: inbox `question` or `approval` with the interaction id. `thread.archived`: inbox `archived`. Events for threads without an active watch are ignored.
 
-Correlation. For a `sent` message the thread was idle, so the next turn end answers it. For a `queued` message, a turn end before `message.dispatched` is "finished a turn while your message was still queued", and the first turn end after dispatch is "finished the turn that included your message". A steer joined the running turn. Aide speaks the weakest true statement. No text markers are written into the recipient thread.
+Correlation. For a `sent` message the thread was idle, so the next turn end answers it. For a `queued` message, a turn end before `message.dispatched` is "finished a turn while your message was still queued", and the first turn end after dispatch is "finished the turn that included your message". A steer joined the running turn. Ada speaks the weakest true statement. No text markers are written into the recipient thread.
 
 Recovery. On plugin start and on call start, reconcile every active watch with `threads.get` and `threads.events.list({afterSeq: cursor_seq})`. A task still `spawning` without a thread id becomes `unknown` and is never respawned. An open offer becomes `not_delivered` and its items return to `queued`.
 
@@ -124,15 +124,15 @@ Re-offer triggers: a newer event on the same root, the end of the next user exch
 
 ### Tasks
 
-`spawn_worker` and `create_thread` share one implementation: task row, watch, `threads.spawn`, receipt. A worker is hidden, receives the worker base prompt plus a profile, and is described as "I'm doing this in the background". A created thread is visible, receives the body as its prompt, and is named to the user. Both are root threads with an explicit machine. A created thread needs a project. A worker is an extension of Aide: without a project it runs in BB's personal project with a personal workspace, on the primary machine (the connected machine that hosts the most projects, or `host_id`), and looks across all of BB with the bb CLI. A project is given only when the task needs that repository's files. The worker cap stays configurable, default 8.
+`spawn_worker` and `create_thread` share one implementation: task row, watch, `threads.spawn`, receipt. A worker is hidden, receives the worker base prompt plus a profile, and is described as "I'm doing this in the background". A created thread is visible, receives the body as its prompt, and is named to the user. Both are root threads with an explicit machine. A created thread needs a project. A worker is an extension of Ada: without a project it runs in BB's personal project with a personal workspace, on the primary machine (the connected machine that hosts the most projects, or `host_id`), and looks across all of BB with the bb CLI. A project is given only when the task needs that repository's files. The worker cap stays configurable, default 8.
 
-Task status comes from lifecycle events only. Aide reads the last text and judges completion. The code never parses a Result section.
+Task status comes from lifecycle events only. Ada reads the last text and judges completion. The code never parses a Result section.
 
 `read_threads` on a task returns status, last text, pending interactions, receipts, and the age of the evidence. It works without a notification or an active watch and changes nothing.
 
 ### Archive
 
-`prepare_archive` lists the requested threads and every child, with status and queued work, and stores a preview bound to the current utterance and a scope hash. Aide explains that list aloud and asks once. If active work would stop, the question says so.
+`prepare_archive` lists the requested threads and every child, with status and queued work, and stores a preview bound to the current utterance and a scope hash. Ada explains that list aloud and asks once. If active work would stop, the question says so.
 
 `archive_threads` takes only the preview id. The code checks that the preview exists and is unused, that the response that spoke it drained, that the current utterance started after that drain, and that a fresh read still matches the scope hash. Any failed check returns "Not authorized" with the reason. The model judges whether the user's words were a yes. The code makes sure that judgment can apply only once, to a spoken preview the user heard, from a later utterance. Cleanup talk, task completion, silence, and an unrelated yes fail the utterance check because they do not follow a spoken preview.
 
@@ -140,19 +140,19 @@ Workers return archive proposals. BB has no pre-archive hook, so the plugin dete
 
 ### Questions and approvals
 
-Worker questions and permission approvals are BB interactions. The plugin stores no second copy. It records the interaction id in the inbox and whether Aide spoke it.
+Worker questions and permission approvals are BB interactions. The plugin stores no second copy. It records the interaction id in the inbox and whether Ada spoke it.
 
 `answer_interaction` resolves both kinds. For a `user_question` it calls `threads.interactions.respond` with the answer. For an `approval` it calls `threads.interactions.resolve` with `allow_once`, `allow_for_session`, or `deny`. Both are effects: they wait for the 2 s window and are refused from a background response.
 
 An approval uses the same checks as archive. The code verifies that the interaction is still pending in BB, that a response in this call spoke it and drained, and that the current utterance started after that drain. Any failed check returns "Not authorized" with the reason. The model judges whether the words were a yes, a no, or "always". The code makes sure that judgment applies only to an approval the user heard, from a later utterance. An earlier yes and an unrelated yes fail the utterance check.
 
-`read_threads` and the inbox item carry the approval subject: the command, file, or tool, and the thread's own reason text. Aide must say what the approval allows before asking. An approval item stays `offered` until BB reports it resolved, whether by voice or in the app.
+`read_threads` and the inbox item carry the approval subject: the command, file, or tool, and the thread's own reason text. Ada must say what the approval allows before asking. An approval item stays `offered` until BB reports it resolved, whether by voice or in the app.
 
 ### Call start and continuity
 
 The Realtime session has no memory across calls. At call start the client injects one system item: current view, active tasks by title, pending interactions on watched roots, the count of pending updates, and the last turns from session events, about 12 turns or 2,000 characters. During the call, only tool results and update batches are injected.
 
-The session log records what Aide said, which responses drained, and where playback was cut, from the drain and cleared events. Sentence-level delivery is not modeled.
+The session log records what Ada said, which responses drained, and where playback was cut, from the drain and cleared events. Sentence-level delivery is not modeled.
 
 ## Tools
 
@@ -186,7 +186,7 @@ Settings show the full live prompt, the worker base prompt, and the named profil
 
 ```text
 ## Identity
-You are Aide, the user's voice assistant in BB. Speak as one assistant, in the first
+You are Ada, the user's voice assistant in BB. Speak as one assistant, in the first
 person. Workers are how you do background work; they are part of you. Keep IDs,
 routing, and tool names out of speech unless the user asks for debugging. Be concise
 and natural.
@@ -195,6 +195,13 @@ context needed to understand each answer and each decision. Do not assume they r
 thread, a tool result, a file, or the screen. Before asking for a decision, say what
 it affects and what happens. Do not repeat what the user just dictated. Keep their
 topic, open questions, pace, and detail level.
+
+## Call start
+Speak first when a call starts, before the user says anything. In a new conversation,
+say hello and your name in one short sentence, then name what is in view or what is
+running, if anything, and stop. In a resumed conversation, skip the introduction: say
+in one sentence what is still running or pending, or that nothing is. The call-start
+context is information only; never start work from it.
 
 ## Intent
 Act on clear requests. Resolve approximate references such as "the latest editor
@@ -288,7 +295,7 @@ never resolves a blocker, question, or approval.
 
 ```text
 ## Role
-You do one background task for Aide, the user's voice assistant in BB. You are part
+You do one background task for Ada, the user's voice assistant in BB. You are part
 of the same assistant. Use your normal tools, project instructions, permissions, and
 approval policy. Being hidden grants no extra permission.
 The task gives the user's original words, context, a task description, constraints,
@@ -298,7 +305,7 @@ question.
 Work in the stated project and environment. Unless the task names a project, you
 run outside any project and can look across all of BB: use the bb CLI (bb thread
 list, bb thread search, bb thread show, bb project list) to find and read projects
-and threads, and report their IDs and titles so Aide can open or message them. Do
+and threads, and report their IDs and titles so Ada can open or message them. Do
 not change model, permissions, workspace, or what may be published without
 authorization. Do not archive threads through tools or shell; propose it in your
 result.
@@ -313,7 +320,7 @@ invent answers or approve your own actions.
 End your final message with a section titled Result. State whether the task is
 complete, partial, or blocked; what changed; what was checked; remaining uncertainty;
 decisions needed; links to artifacts. A plan or draft is not a completed
-implementation. BB events return this to Aide; send no extra message. End the turn
+implementation. BB events return this to Ada; send no extra message. End the turn
 without starting unrequested work.
 ```
 
@@ -348,7 +355,7 @@ Initial profiles. Users can add, rename, and edit them.
 | "Stop updates from that thread." | Watch disabled, pending items deleted, work continues. A later send does not re-enable it. |
 | "How is the slowdown investigation going?" | Read the worker's status and last text. Report progress or the lack of new evidence and its age. |
 | "Archive these completed threads." | Preview spoken with children and active work. One question. Archive only on a later utterance, once, if the scope is unchanged. |
-| Worker asks permission to run a shell command | At the quiet boundary Aide says which thread asks, what command, and why. "Yes, once" resolves it with allow_once. A yes spoken before the explanation fails the check. |
+| Worker asks permission to run a shell command | At the quiet boundary Ada says which thread asks, what command, and why. "Yes, once" resolves it with allow_once. A yes spoken before the explanation fails the check. |
 
 ## Cutover and data
 
@@ -388,7 +395,7 @@ Server tests:
 Live and physical:
 
 16. Rerun the probe scenarios shapes-a, shapes-b, shapes-d, hold-slow, interrupt-held, and overlap-create against the plugin runtime. No tool starts before its response's drain. Exactly one `stopped` per audible response.
-17. Desktop and phone microphone and speaker: noise during Aide's speech runs no effect and discards no read; a real sentence interrupts; "Send this to the editor... no wait" runs nothing; a device switch mid-call duplicates nothing.
+17. Desktop and phone microphone and speaker: noise during Ada's speech runs no effect and discards no read; a real sentence interrupts; "Send this to the editor... no wait" runs nothing; a device switch mid-call duplicates nothing.
 18. Transcript checks over a session: no `thr_` string in assistant speech; send confirmations contain no body; "started" never becomes "finished" without a result.
 
 Measure the delay from final transcript to acknowledgment, to worker launch, and to spoken result. Count repeated summaries, lost updates, wrong destinations, and duplicate effects. Run typecheck, focused and full tests, both entry-point builds, and the build check. Assert that no coordinator model is called. Keep the work in PR #15. Do not merge. Reload for testing only while no call is active.
@@ -404,8 +411,8 @@ Measure the delay from final transcript to acknowledgment, to worker launch, and
 
 Driven by the live session on 2026-09-09 20:00 (issues #29 and #30 in erwinkn/bb-plugins). The session navigated and messaged threads from imprecise descriptions without error. The remaining failures were about what happens after an effect.
 
-- Receipts carry the follow-up contract. A send result said `status: running, delivery: sent`, and a spawn said `visibility: hidden`, so Aide reported delivery as "in progress", offered to check for a receipt later, and told the user hidden workers need a later status check. Every watch-creating receipt now says `updates: automatic`, and a send says `delivered: true`. The meaning of both, and of hidden, is stated in the tool descriptions and the prompt.
-- The live prompt states the update contract in the positive. It had only the cautions (launch is not completion, do not infer progress from silence, use receipts for delivery questions), so Aide rated updates as "not a promise". A Follow-up section now says every messaged, started, or stopped thread reports back in this call, that Aide should say it will keep the user informed, and that it must never offer to check later or tell the user to ask for updates.
+- Receipts carry the follow-up contract. A send result said `status: running, delivery: sent`, and a spawn said `visibility: hidden`, so Ada reported delivery as "in progress", offered to check for a receipt later, and told the user hidden workers need a later status check. Every watch-creating receipt now says `updates: automatic`, and a send says `delivered: true`. The meaning of both, and of hidden, is stated in the tool descriptions and the prompt.
+- The live prompt states the update contract in the positive. It had only the cautions (launch is not completion, do not infer progress from silence, use receipts for delivery questions), so Ada rated updates as "not a promise". A Follow-up section now says every messaged, started, or stopped thread reports back in this call, that Ada should say it will keep the user informed, and that it must never offer to check later or tell the user to ask for updates.
 - `read_threads` receipts are documented as recovery after an interruption, not delivery confirmation.
 
 ## Changes in version 3
@@ -422,6 +429,8 @@ Driven by the second live session on 2026-09-09 (issues #31 and #32).
 
 - Call state survives a plugin reload. The runtime rebuilds its in-memory call state from the store when the owner record still matches, and it persists every target ID the model was shown in `voice_call_targets`, so a reload mid-call no longer fails every tool with "fetch call-start context first".
 - `rename_thread` sets a thread title on explicit intent and reports the previous and new title. The tool count is fifteen.
+- The assistant is named Ada; "Ada" was hard to say in English. The stored prompt role stays `aide`.
+- Ada speaks first. After the call-start context, the client requests one response with a greeting instruction (or a status instruction on resume); it is bound to no utterance, so effects are refused.
 
 ## Changes in version 2
 
@@ -431,7 +440,7 @@ Driven by the second live session on 2026-09-09 (issues #31 and #32).
 ## Changes from version 3 of the previous plan
 
 - Dropped the agent-only text marker and the search of stored `item/started` events. Correlation uses the send result and `message.dispatched`, which the SDK provides today. This removes an unverified BB dependency and keeps metadata out of recipient threads.
-- Task status comes from lifecycle events only. The code no longer parses a Result section into completed or blocked states. Aide judges completion from the text.
+- Task status comes from lifecycle events only. The code no longer parses a Result section into completed or blocked states. Ada judges completion from the text.
 - Offer outcomes reduced from seven to five. Interrupted, no-audio, hangup, and reload are one outcome: not delivered.
 - Dropped the one-shot watch. A send already watches its target until the user unsubscribes.
 - Added call-start context. The Realtime session has no memory across calls, and version 3 did not say what the model receives at resume.

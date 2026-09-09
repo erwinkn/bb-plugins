@@ -77,8 +77,8 @@ test("global call controls appear during a call, stay out of the composer's way,
     assert.ok(region.className.includes("fixed"));
     assert.ok(region.className.includes("pointer-events-none"), "the wrapper never blocks clicks beneath it");
     assert.match(region.style.top, /safe-area-inset-top/);
-    assert.ok(ui.getByRole("button", { name: "Mute Aide microphone" }));
-    assert.ok(ui.getByRole("button", { name: "Stop Aide voice session" }));
+    assert.ok(ui.getByRole("button", { name: "Mute Ada microphone" }));
+    assert.ok(ui.getByRole("button", { name: "Stop Ada voice session" }));
     // The Voice page draws its own console.
     act(() => { dom.window.history.pushState({}, "", "/plugins/voice-mode/sessions"); dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate")); });
     assert.equal(ui.queryByRole("region", { name: "Voice call" }), null);
@@ -130,7 +130,7 @@ test("a mirrored call offers transfer instead of local microphone controls", asy
     await slot.behavior.emitRealtime("voice-presence",{nonce:"desktop-call",phase:"live",startedAt:Date.now(),client:"other-device"});
     const ui=within(slot.container);
     assert.ok(ui.getByText("Call on another device"));
-    assert.equal(ui.queryByLabelText("Mute Aide microphone"),null);
+    assert.equal(ui.queryByLabelText("Mute Ada microphone"),null);
     assert.equal(ui.queryByText("Connected"),null);
     await act(async()=>ui.getByRole("button",{name:"Switch voice call to this device"}).click());
     assert.equal(transfer.mock.callCount(),1);

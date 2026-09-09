@@ -1,4 +1,4 @@
-# Aide server runtime, step 2
+# Ada server runtime, step 2
 
 The live client now uses the fifteen tools and the durable runtime. The retired
 coordinator is available only through historical session data. See

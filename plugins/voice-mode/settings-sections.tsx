@@ -137,7 +137,7 @@ interface CredentialStatus {
 }
 
 /**
- * Shows which credential Aide is using, and — only when both an API key and a
+ * Shows which credential Ada is using, and — only when both an API key and a
  * ChatGPT subscription are available — lets the user pick between them.
  */
 function CredentialCard() {
@@ -192,7 +192,7 @@ function CredentialCard() {
     }
   }
 
-  // Both credentials present: pick which one Aide uses. The dropdown speaks for
+  // Both credentials present: pick which one Ada uses. The dropdown speaks for
   // itself, so no hint.
   if (canChoose) {
     return (
@@ -296,7 +296,7 @@ export function ModelsSettings() {
 }
 
 // ---------------------------------------------------------------------------
-// Behavior: the prompt (how Aide acts).
+// Behavior: the prompt (how Ada acts).
 // ---------------------------------------------------------------------------
 
 export function BehaviorSettings() {
@@ -522,7 +522,7 @@ export function AudioSettings() {
         {labelsHidden ? (
           <p className="text-xs text-muted-foreground">Allow mic access to see device names and test it.</p>
         ) : savedMicMissing ? (
-          <p className="text-xs text-muted-foreground">This mic isn't connected, so Aide falls back to your default.</p>
+          <p className="text-xs text-muted-foreground">This mic isn't connected, so Ada falls back to your default.</p>
         ) : null}
         {deviceError ? <p className="text-xs text-destructive">{deviceError}</p> : null}
       </Group>

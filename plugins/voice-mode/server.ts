@@ -10,7 +10,7 @@ import { loadWorkerCatalog, workerCatalogSchema } from "./provider-catalog.ts";
 import { readNamedWorkerSettings, namedWorkerSettingsSchema, NAMED_WORKER_PROFILE_KEY, migrateWorkerSettings, validateNamedWorkerSettings } from "./worker-profiles.ts";
 import { EMPTY_TRANSCRIPT, transcriptSnapshotSchema, type TranscriptSnapshot } from "./live-transcript.ts";
 import { VoiceSessions, voiceSessionSchema } from "./voice-sessions.ts";
-// bb-plugin-voice-mode — Aide: a realtime voice operator for bb.
+// bb-plugin-voice-mode — Ada: a realtime voice operator for bb.
 //
 // The frontend (app.tsx) captures mic audio over WebRTC directly in the bb
 // app; this backend holds the OpenAI API key, performs the SDP exchange with
@@ -638,7 +638,7 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "live", summary: "List live threads: running now plus recently finished (last 30 min), like the sidebar. Add --json for machine output.", usage: "bb voice-mode live [--json]" },
       { name: "read", summary: "Read a thread's status and latest assistant output.", usage: "bb voice-mode read <thread-id>" },
       { name: "usage", summary: "Voice-session token usage and estimated cost, grouped per day. Add --json for machine output, --days N to limit the window.", usage: "bb voice-mode usage [--days N] [--json]" },
-      { name: "stop", summary: "Stop any active Aide voice session in any bb window.", usage: "bb voice-mode stop" },
+      { name: "stop", summary: "Stop any active Ada voice session in any bb window.", usage: "bb voice-mode stop" },
       { name: "mute", summary: "Mute the active voice session's microphone (call stays up).", usage: "bb voice-mode mute" },
       { name: "unmute", summary: "Unmute the active voice session's microphone.", usage: "bb voice-mode unmute" },
     ],
