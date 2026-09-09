@@ -7,6 +7,7 @@
 // step so a command from another device or a hung-up call never moves this
 // window. It never navigates on its own: every action here is one the user
 // asked for by voice, and a draft is only ever prepared, never sent.
+import { applySpace, currentSpace, readSpaces, resolveSpace } from "./spaces-bridge.ts";
 import type {
   BbNavigate,
   ComposerView,
@@ -193,6 +194,7 @@ export class NativeUi {
         case "prepare_draft": return await this.prepareDraft(app, action, isCurrent);
         case "preview_file": return this.previewFile(app, action);
         case "show_voice": return await this.showVoice(app, isCurrent);
+        case "switch_space": return this.switchSpace(action.space);
       }
     } catch (cause) {
       return failed(cause instanceof Error ? cause.message : String(cause));
@@ -382,6 +384,29 @@ export class NativeUi {
    * the panel with the `conversation` sub-path and wait for it to mount, then
    * ask it. Success means the panel confirmed the selection, not just the URL.
    */
+  /**
+   * Switch the Threads sidebar to a saved space of the activity plugin. Spaces come
+   * from that plugin's cached catalog in this browser; the selection is written the
+   * way the plugin writes it and the plugin's store is told in this window. Nothing
+   * is fetched, and a name that does not resolve changes nothing.
+   */
+  private switchSpace(spoken: string): UiActionResult {
+    const storage = typeof window === "undefined" ? null : window.localStorage;
+    if (!storage) return failed("This surface has no browser storage, so spaces are unavailable.");
+    const spaces = readSpaces(storage);
+    const { choice, candidates } = resolveSpace(spoken, spaces);
+    if (!choice) {
+      const names = candidates.map(c => c.name).join(", ");
+      return failed(spaces.length ? `No saved space matches "${spoken}". Saved spaces: ${names}.` : "There are no saved spaces yet. Spaces are created on the Threads page.");
+    }
+    const before = currentSpace(storage);
+    if (before.id === choice.id) return succeeded(`The Threads sidebar already shows ${choice.name}.`);
+    applySpace(storage, choice, event => window.dispatchEvent(new Event(event)));
+    const after = currentSpace(storage);
+    if (after.id !== choice.id) return failed(`Could not switch to ${choice.name}: the selection did not stick.`);
+    return succeeded(choice.id ? `The Threads sidebar now shows the ${choice.name} space${choice.projectCount === null ? "" : ` (${choice.projectCount} project${choice.projectCount === 1 ? "" : "s"})`}.` : "The Threads sidebar now shows all projects.");
+  }
+
   private async showVoice(app: NativeUiAppBinding, isCurrent: () => boolean): Promise<UiActionResult> {
     const startThread = app.context().threadId;
     const mounted = this.voicePanel();

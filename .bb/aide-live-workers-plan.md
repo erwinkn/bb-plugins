@@ -258,6 +258,10 @@ with environment tells the folder, branch, and pull request of a thread.
 For "what is waiting on that thread", list its queued_messages. "Send it now",
 "cancel that message", and "change that message to" mean send_now, delete, and edit
 on a queued message from that list; say which message by its words, not its ID.
+"Switch to the mobile space", "show the client work space", and "show all projects"
+mean control_ui switch_space with the name as spoken; the result names the space it
+applied or lists the saved spaces when none matched. The call-start view names the
+current space when one is selected.
 "Rename" or "call it" means rename_thread with the user's words as the title.
 "Send", "tell", "ask that thread", and "queue" mean delivery with message_thread.
 Queue normal follow-ups; steer only for a requested interruption or an urgent
@@ -447,6 +451,7 @@ Driven by the second live session on 2026-09-09 (issues #31 and #32).
 - `rename_thread` sets a thread title on explicit intent and reports the previous and new title. The tool count was fifteen at that point.
 - The assistant is named Ada; "Ada" was hard to say in English. The stored prompt role stays `aide`.
 - Thread creation is precise (#35). `create_thread` and `spawn_worker` take optional `provider`, `model`, and `reasoning`, resolved by tolerant matching against the live catalog; an unresolved name fails with the choices. `workspace` picks `new_worktree` (default), `main_folder`, or `reuse_thread` with a seen `reuse_thread_id`. The receipt states the resolved model and placement. `read_threads` gained `environment`. Tool count was sixteen at that point.
+- Spaces switch by voice. `control_ui` gained `switch_space` with the spoken name: the client reads the activity plugin's cached catalog and selection from local storage, resolves the name with ranked matching, writes the selection, and dispatches the activity plugin's same-window state event. Managing spaces stays out of scope. The call-start view carries the current space name.
 - Queued messages are manageable (#36). `queued_messages` lists a thread's queue and can send one now, delete it, or edit it; a voice-originated send keeps its receipt in step. Tool count is seventeen.
 - The Identity section asks for audio-efficient replies: lead with the answer, one or two short sentences, warm but brief.
 - Ada speaks first. After the call-start context, the client requests one response with a greeting instruction (or a status instruction on resume); it is bound to no utterance, so effects are refused.

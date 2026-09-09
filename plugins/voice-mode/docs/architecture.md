@@ -53,6 +53,13 @@ returns path, branch, base branch, kind, and pull request.
 each ID; `send_now` (steer), `delete`, and `edit` (optimistic `expectedUpdatedAt`)
 are effects on a remembered ID. When the item came from this conversation, the
 matching operation moves to running, cancelled, or a new body.
+`spaces-bridge.ts` switches the Threads sidebar of the erwin-activity plugin:
+it reads that plugin's cached space catalog and client state from local storage,
+resolves a spoken name with the same ranked matching, writes `spaceId` the way the
+plugin does, and dispatches the plugin's same-window state event so its store
+re-reads. `control_ui` `switch_space` is a client effect; nothing is fetched, and a
+name that does not resolve changes nothing. A test pins the keys and the event
+name to the activity plugin's exports.
 Workers default to BB's personal project and the primary machine; `server.ts` builds
 the call's tool schemas from the configured profiles so the model sees valid names.
 The runtime keeps call state in memory but persists the owner record and every

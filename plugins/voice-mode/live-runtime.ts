@@ -63,7 +63,7 @@ export const liveRpcContract = {
   closeOffer: { input: nonceInput.extend({ offerId: z.string().min(1), outcome: z.enum(["delivered", "not_delivered", "deferred", "dismissed"]), responseId: z.string().min(1).optional() }), output: z.object({ closed: z.boolean() }).strict() },
   reportDrain: { input: nonceInput.extend({ responseId: z.string().min(1), at: z.number().finite().nonnegative() }), output: z.object({ ok: z.literal(true) }).strict() },
   finishUserExchange: { input: nonceInput.extend({ utteranceId: z.string().min(1) }), output: z.object({ ok: z.literal(true) }).strict() },
-  callStartContext: { input: conversationInput.extend({ view: z.object({ threadId: z.string().nullable().optional(), projectId: z.string().nullable().optional() }).strict().optional() }), output: z.json() },
+  callStartContext: { input: conversationInput.extend({ view: z.object({ threadId: z.string().nullable().optional(), projectId: z.string().nullable().optional(), space: z.string().max(120).nullable().optional() }).strict().optional() }), output: z.json() },
   listLiveSubscriptions: { input: conversationInput, output: z.json() },
   listLiveTasks: { input: conversationInput, output: z.json() },
 };
@@ -172,10 +172,11 @@ export class LiveRuntime {
         .filter(item => item.interaction_id && item.status !== "resolved" && activeRoots.has(item.root_thread_id))
         .map(item => ({ threadId: item.thread_id, ...JSON.parse(item.detail) }));
       pending.forEach(item => this.remember(call, item.threadId, item.id));
-      let view: Record<string, unknown> = {};
+      // The space is a client-side sidebar scope; the client reports its name and the server only echoes it.
+      let view: Record<string, unknown> = input.view?.space ? { space: input.view.space } : {};
       if (input.view?.threadId) {
         const thread = await this.bb.sdk.threads.get({ threadId: input.view.threadId });
-        this.remember(call, thread.id, thread.projectId); view = { threadId: thread.id, title: threadName(thread), projectId: thread.projectId };
+        this.remember(call, thread.id, thread.projectId); view = { ...view, threadId: thread.id, title: threadName(thread), projectId: thread.projectId };
       }
       if (input.view?.projectId) {
         const project = (await this.bb.sdk.projects.list({ includePersonal: true })).find(p => p.id === input.view!.projectId);
@@ -609,7 +610,7 @@ export class LiveRuntime {
       if (!!draft.thread_id === !!draft.project_id) throw new Error("Choose exactly one composer target");
     } else {
       const ui = liveToolArgs.control_ui.parse(args);
-      if ((ui.action === "open_thread" && !ui.thread_id) || (ui.action === "open_project" && !ui.project_id) || (ui.action === "preview_file" && (!ui.path || !ui.thread_id))) throw new Error("The UI action is missing its target");
+      if ((ui.action === "open_thread" && !ui.thread_id) || (ui.action === "open_project" && !ui.project_id) || (ui.action === "preview_file" && (!ui.path || !ui.thread_id)) || (ui.action === "switch_space" && !ui.space)) throw new Error("The UI action is missing its target");
     }
     let action: UiAction;
     if (input.tool === "prepare_draft") {
@@ -626,6 +627,7 @@ export class LiveRuntime {
         }
       } else if (ui.action === "open_thread") action = { kind: "open_thread", threadId: ui.thread_id!, split: false };
       else if (ui.action === "open_project") action = { kind: "open_project", projectId: ui.project_id! };
+      else if (ui.action === "switch_space") action = { kind: "switch_space", space: ui.space! };
       else action = { kind: "show_voice" };
     }
     this.authorize(input, args);

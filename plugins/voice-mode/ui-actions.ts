@@ -16,6 +16,7 @@ export const navigationActionSchemas = [
   z.object({ kind: z.literal("open_project"), projectId: id }).strict(),
   z.object({ kind: z.literal("preview_file"), target: UiFileTargetSchema, location: UiFileLocationSchema.nullable().optional() }).strict(),
   z.object({ kind: z.literal("show_voice") }).strict(),
+  z.object({ kind: z.literal("switch_space"), space: z.string().min(1).max(120) }).strict(),
 ] as const;
 export const UiActionSchema = z.discriminatedUnion("kind", [
   ...navigationActionSchemas,

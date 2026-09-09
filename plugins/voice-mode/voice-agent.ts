@@ -21,6 +21,12 @@ import {
 } from "./audio-devices.ts";
 import { actionStatus } from "./session-events.ts";
 import { nativeUi } from "./native-ui.ts";
+import { currentSpace } from "./spaces-bridge.ts";
+
+/** The saved space the Threads sidebar shows on this device, or null for all projects or no storage. */
+function currentSpaceName(): string | null {
+  try { return typeof window === "undefined" ? null : currentSpace(window.localStorage).id ? currentSpace(window.localStorage).name : null; } catch { return null; }
+}
 import { clientId, realmId, identityTag, clientDescriptor, deviceSummary } from "./client-identity.ts";
 
 export type VoiceState = "idle" | "connecting" | "live" | "muted";
@@ -1599,7 +1605,7 @@ export class VoiceAgent {
         try {
           const view = nativeUi.snapshot();
           const context = await this.rpc("callStartContext", { nonce, conversationId: callConversationId,
-            view: { threadId:view.threadId, projectId:view.projectId } });
+            view: { threadId:view.threadId, projectId:view.projectId, space: currentSpaceName() } });
           if(this.session!==session || this.nonce!==nonce || dc.readyState!=="open")return;
           dc.send(JSON.stringify({type:"conversation.item.create",item:{type:"message",role:"system",content:[{type:"input_text",text:JSON.stringify(context)}]}}));
           this.liveClient=new LiveClient((method,input)=>this.rpc(method,input),()=>this.session===session && this.nonce===nonce,this.input!,nonce,callConversationId);

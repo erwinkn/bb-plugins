@@ -8,7 +8,7 @@ const NEUTRAL = new Set(["the", "a", "an", "to", "of", "in", "on", "for", "and",
   "one", "some", "any", "all", "at", "by", "as", "so", "up", "out", "from", "into", "about", "like", "than", "then", "too", "very", "also", "here", "there",
   "we", "you", "it", "me", "us", "them", "they", "he", "she", "him", "her", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
   "do", "did", "does", "can", "could", "would", "should", "will", "what", "which", "who", "when", "where", "how", "please",
-  "thread", "threads", "project", "projects", "repo", "repository", "worker", "workers", "task", "tasks", "session", "call",
+  "thread", "threads", "project", "projects", "repo", "repository", "worker", "workers", "task", "tasks", "session", "call", "space", "spaces",
   "latest", "recent", "recently", "newest", "new", "last", "current", "just", "now", "child", "children", "parent", "sub", "main"]);
 
 export function tokenize(text: string | null | undefined): string[] {

@@ -982,3 +982,13 @@ test("queued message changes need an ID from a list in this call and refuse a lo
   assert.match(locked.error, /cannot be edited now/);
   assert.equal(h.world.queueUpdates.length, 0);
 });
+
+test("control_ui switch_space becomes a client action carrying the spoken name, and call start echoes the current space", async t => {
+  const h = await fixture(); t.after(h.close);
+  const begun = await h.runtime.beginClientEffect(h.input("control_ui", { action: "switch_space", space: "the mobile space" })) as Any;
+  assert.deepEqual(begun.action, { kind: "switch_space", space: "the mobile space" });
+  const missing = await h.runtime.beginClientEffect(h.input("control_ui", { action: "switch_space" }, { utterance: { id: "u2", version: 1, text: "switch", startedAt: h.now() } })).catch((e: Error) => e.message);
+  assert.match(String(missing), /missing its target/);
+  const context = await h.runtime.callStartContext({ nonce: "call", conversationId: "conversation", view: { threadId: "build", projectId: "app", space: "Mobile" } }) as Any;
+  assert.equal(context.view.space, "Mobile");
+});
