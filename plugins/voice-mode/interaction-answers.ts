@@ -6,7 +6,6 @@
  */
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
 import { queryTokens, rank, resolveName, tokenize } from "./target-matching.ts";
 import type { Interaction } from "./watches.ts";
 
@@ -175,7 +174,7 @@ export async function submitAnswers(bb: Bb, spec: InteractionSpec, answers: Reso
     if (saved.outcome !== "saved") throw new Error(`"${answer.question.prompt}" changed in the app while you answered. Say the answer again.`);
     items.push({ questionId: answer.question.id, expectedVersion: saved.state.version });
   }
-  const result = await bb.sdk.plugins.callRpc({ pluginId: QUESTIONS_PLUGIN_ID, method: "questions_submit", input: { threadId: spec.threadId, submissionId: randomUUID(), items }, outputSchema: submitSchema });
+  const result = await bb.sdk.plugins.callRpc({ pluginId: QUESTIONS_PLUGIN_ID, method: "questions_submit", input: { threadId: spec.threadId, submissionId: globalThis.crypto.randomUUID(), items }, outputSchema: submitSchema });
   if (result.outcome !== "submitted") throw new Error(result.outcome === "conflict" ? "The round changed in the app while you answered. Say the answers again." : `The Questions plugin did not accept the answers: ${"reason" in result ? String(result.reason) : result.outcome}.`);
   return { kind: "round" as const, submissionId: (result as { submission: { id: string } }).submission.id };
 }
