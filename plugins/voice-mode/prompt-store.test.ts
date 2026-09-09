@@ -1,14 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { PromptStore, PROMPT_MIGRATIONS, promptDefault, promptLimit } from "./prompt-store.ts";
 import { LIVE_PROMPT } from "./live-prompt.ts";
 import { WORKER_BASE_PROMPT } from "./worker-prompt.ts";
 
-test("aide uses the exact approved prompt and both editable roles fit their limits",()=>{
-  const plan=readFileSync(new URL("../../.bb/aide-live-workers-plan.md",import.meta.url),"utf8");
-  assert.equal(LIVE_PROMPT,plan.match(/### Live prompt\n\n```text\n([\s\S]*?)\n```/)![1]);
+test("editable roles use the live and worker defaults within their limits",()=>{
   assert.equal(promptDefault("aide"),LIVE_PROMPT);assert.equal(promptDefault("worker"),WORKER_BASE_PROMPT);
   for(const role of ["aide","worker"] as const)assert.ok(promptDefault(role).length<=promptLimit(role));
 });

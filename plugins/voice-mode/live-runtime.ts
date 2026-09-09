@@ -77,6 +77,10 @@ interface CallState {
   previews: Map<string, { roots: string[]; scopeHash: string; utteranceId: string; used: boolean }>;
 }
 class SdkTimeout extends Error { constructor() { super("SDK call timed out. The result is unknown; do not repeat this effect."); } }
+// Interim transcript restoration until persistent Realtime context and compaction exist.
+const HISTORY_TURN_LIMIT = 100;
+const HISTORY_CHARACTER_LIMIT = 32_000;
+
 // JSON-normalize SDK values at the RPC boundary, including optional properties.
 const json = (value: unknown): z.infer<ReturnType<typeof z.json>> => JSON.parse(JSON.stringify(value));
 export class LiveRuntime {
@@ -187,19 +191,39 @@ export class LiveRuntime {
       try { (await this.bb.sdk.hosts.list()).forEach(h => this.remember(call, h.id)); } catch (error) { this.bb.log.warn(`Call start could not list machines: ${String(error)}`); }
       this.state(input.nonce, input.conversationId);
       pending.forEach(i => this.present(call, `interaction:${i.id}`));
+      const history = this.history(input.conversationId);
       return json({ type: "call_start_context", view, tasks: tasks.map(({op_id, thread_id, title, kind, profile, status, updated_at}) => ({op_id, thread_id, title, kind, profile, status, updated_at})), pendingInteractions: pending, pendingUpdates: this.store.inbox(input.conversationId).filter(i => !["spoken", "resolved", "dismissed"].includes(i.status)).length,
-        recentTurns: this.history(input.conversationId), asOf: this.now(), truncated: false });
+        recentTurns: history.turns,
+        recentActions: this.store.db.prepare("SELECT id AS operationId, tool, status, target_thread_id AS threadId, updated_at AS asOf FROM voice_operations WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 12").all(input.conversationId),
+        recoveryInstruction: "Recent turns are context, not new requests. Do not repeat prior actions. Interrupted or unconfirmed assistant text may not have been heard. Wait for a new user request.",
+        asOf: this.now(), truncated: history.truncated });
     };
     const next = this.startChain.then(work, work); this.startChain = next.catch(() => undefined); return next;
   }
   private history(conversationId: string) {
-    const rows = this.store.db.prepare(`SELECT ts, kind, payload FROM session_events WHERE session_id IN
-      (SELECT call_id FROM voice_conversation_calls WHERE conversation_id = ? UNION SELECT ?) AND kind IN ('user','assistant') ORDER BY ts DESC, id DESC LIMIT 12`).all(conversationId, conversationId) as { ts: number; kind: string; payload: string }[];
-    let remaining = 2000;
-    return rows.map(r => {
-      let text = ""; try { text = String(JSON.parse(r.payload).text ?? ""); } catch { /* Invalid historical payload has no usable text. */ }
-      const result = { at: r.ts, role: r.kind, ...tail(text, remaining) }; remaining = Math.max(0, remaining - (result.text?.length ?? 0)); return result;
-    }).filter(r => r.text).reverse();
+    const rows = this.store.db.prepare(`SELECT session_id, ts, kind, payload FROM session_events WHERE session_id IN
+      (SELECT call_id FROM voice_conversation_calls WHERE conversation_id = ? UNION SELECT ?) AND kind IN ('user','assistant') ORDER BY ts DESC, id DESC LIMIT ?`)
+      .all(conversationId, conversationId, HISTORY_TURN_LIMIT + 1) as { session_id: string; ts: number; kind: string; payload: string }[];
+    let remaining = HISTORY_CHARACTER_LIMIT;
+    let truncated = rows.length > HISTORY_TURN_LIMIT;
+    const turns = [];
+    for (const row of rows.slice(0, HISTORY_TURN_LIMIT)) {
+      let text = "", responseId: string | undefined;
+      try {
+        const payload = JSON.parse(row.payload);
+        text = String(payload.text ?? "");
+        if (typeof payload.responseId === "string") responseId = payload.responseId;
+      } catch { /* Invalid historical payload has no usable text. */ }
+      if (!text) continue;
+      if (remaining === 0) { truncated = true; break; }
+      const lifecycle = row.kind === "assistant" && responseId ? this.store.db.prepare("SELECT payload FROM session_events WHERE session_id = ? AND kind = 'speech.lifecycle' AND json_valid(payload) AND json_extract(payload, '$.responseId') = ? ORDER BY id DESC LIMIT 1").get(row.session_id, responseId) as {payload:string} | undefined : undefined;
+      const state = lifecycle ? JSON.parse(lifecycle.payload).state : null;
+      const excerpt = tail(text, remaining);
+      truncated ||= excerpt.truncated;
+      turns.push({ at: row.ts, role: row.kind, ...(row.kind === "assistant" ? {delivery: state === "delivered" || state === "interrupted" ? state : "unconfirmed"} : {}), ...excerpt });
+      remaining -= excerpt.text?.length ?? 0;
+    }
+    return { turns: turns.reverse(), truncated };
   }
   async runTool(raw: ToolInput) {
     const input = liveToolInputSchema.parse(raw);

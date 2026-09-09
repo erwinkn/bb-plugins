@@ -22,7 +22,7 @@ const { VoiceComposerBinding, VoiceController } = await import("./voice-realtime
 after(() => dom.window.close());
 
 function callControl(t: TestContext) {
-  const call = voiceAgent as unknown as { state: "idle" | "connecting" | "live" | "muted"; emitChange(): void };
+  const call = voiceAgent as unknown as { state: "idle" | "connecting" | "reconnecting" | "live" | "muted"; emitChange(): void };
   const setState = (state: typeof call.state) => { call.state = state; call.emitChange(); };
   t.after(() => setState("idle"));
   return { setState };
@@ -79,6 +79,10 @@ test("global call controls appear during a call, stay out of the composer's way,
     assert.match(region.style.top, /safe-area-inset-top/);
     assert.ok(ui.getByRole("button", { name: "Mute Ada microphone" }));
     assert.ok(ui.getByRole("button", { name: "Stop Ada voice session" }));
+    act(() => setState("reconnecting"));
+    assert.ok(ui.getByText("Reconnecting…"));
+    assert.equal((ui.getByRole("button", {name:"Mute Ada microphone"}) as HTMLButtonElement).disabled, true);
+    assert.equal((ui.getByRole("button", {name:"Stop Ada voice session"}) as HTMLButtonElement).disabled, false);
     // The Voice page draws its own console.
     act(() => { dom.window.history.pushState({}, "", "/plugins/voice-mode/sessions"); dom.window.dispatchEvent(new dom.window.PopStateEvent("popstate")); });
     assert.equal(ui.queryByRole("region", { name: "Voice call" }), null);

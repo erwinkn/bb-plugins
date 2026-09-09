@@ -29,7 +29,7 @@ function currentSpaceName(): string | null {
 }
 import { clientId, realmId, identityTag, clientDescriptor, deviceSummary } from "./client-identity.ts";
 
-export type VoiceState = "idle" | "connecting" | "live" | "muted";
+export type VoiceState = "idle" | "connecting" | "reconnecting" | "live" | "muted";
 /** Who currently has the floor during a live call, for the "listening" UI. */
 export type VoiceActivity = "you" | "aide" | "idle";
 /** A control intent relayed from a non-owning surface to the owning realm. */
@@ -83,6 +83,19 @@ interface SessionHandle {
   disposeLifecycle?: () => void;
 }
 
+interface Recovery {
+  fromNonce: string;
+  nonce: string;
+  muted: boolean;
+  stream: MediaStream;
+  audio: HTMLAudioElement;
+  attempt: number;
+  deadlineAt: number;
+  deadline?: ReturnType<typeof setTimeout>;
+  retry?: ReturnType<typeof setTimeout>;
+  dispose?: () => void;
+}
+
 /**
  * Detach a timer from the event loop where the runtime supports it (Node's
  * `unref`). No-op in the browser (timer ids have no `unref`), where it isn't
@@ -99,6 +112,8 @@ const REPAIR_INSTRUCTION = "Input transcription failed. Ask once for the complet
 const GREETING_INSTRUCTION = "The call just started; the system item before this is the call-start context. Speak first: follow the Call start section of your instructions for a new conversation. Do not call effect tools.";
 const RESUME_INSTRUCTION = "The call resumed an earlier conversation; the system item before this is the call-start context. Speak first: follow the Call start section of your instructions for a resumed conversation. Do not call effect tools.";
 const DISCONNECT_GRACE_MS = 10_000;
+const RECOVERY_WINDOW_MS = 60_000;
+const RECOVERY_ATTEMPT_MS = 15_000;
 /**
  * How long a call may hold with its mic suspended (mobile backgrounding) before
  * it ends on its own. A screen lock must not drop the call — the user walks with
@@ -192,6 +207,9 @@ export class VoiceAgent {
   /** Aborts a session that never reaches "live", so it can't hang connecting. */
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private recovery: Recovery | null = null;
+  private connectionAttempt = 0;
+  private disconnectedMuted = false;
   /**
    * Ends a call whose mic has stayed suspended past the deadline (mobile
    * backgrounding). Armed on a hidden mic-mute, cleared the moment the mic
@@ -294,7 +312,7 @@ export class VoiceAgent {
     if (!remote) return;
     this.nextConversationId = undefined;
     this.startNewConversation = false;
-    void this.start(remote.nonce);
+    void this.start(remote.nonce, undefined, remote.phase === "muted");
   }
 
   /** Epoch ms when the call went live, or null when not in a live/muted call. */
@@ -440,11 +458,11 @@ export class VoiceAgent {
       if (this.userTurn === exchange.version) this.input?.answered(exchange.version);
       if (this.nonce) this.report("finishUserExchange", { nonce: this.nonce, utteranceId: id });
     }
-    if (this.endCallAfterResponse && !this.responseActive && !this.pendingToolCalls && !this.outputSequencer.playbackPending) this.stop();
+    if (this.endCallAfterResponse && !this.responseActive && !this.pendingToolCalls && !this.outputSequencer.playbackPending) this.stop("end-call");
   }
 
   private quietForUpdates() {
-    return this.sessionReady && !this.userSpeaking && !this.input?.unresolved && !this.responseActive &&
+    return this.sessionReady && this.state !== "reconnecting" && !this.userSpeaking && !this.input?.unresolved && !this.responseActive &&
       !this.responsePending && !this.pendingToolCalls && !this.outputSequencer.playbackPending &&
       !this.openOffer && Date.now() - this.conversationChangedAt >= REPLY_QUIET_MS;
   }
@@ -592,7 +610,7 @@ export class VoiceAgent {
       }
       return;
     }
-    if (phase !== "connecting" && phase !== "live" && phase !== "muted") return;
+    if (phase !== "connecting" && phase !== "reconnecting" && phase !== "live" && phase !== "muted") return;
     const startedAt = typeof p?.startedAt === "number" ? p.startedAt : null;
     const ownerClient = typeof p?.client === "string" ? p.client : undefined;
     const ownerRealm = typeof p?.realm === "string" ? p.realm : undefined;
@@ -658,7 +676,7 @@ export class VoiceAgent {
     const nonce = typeof p?.nonce === "string" ? p.nonce : null;
     if (!nonce || nonce !== this.nonce || !this.hasLocalCall()) return;
     const action = p?.action;
-    if (action === "stop") this.stop();
+    if (action === "stop") this.stop("remote-stop");
     else if (action === "mute") this.setMuted(true);
     else if (action === "unmute") this.setMuted(false);
   }
@@ -834,7 +852,7 @@ export class VoiceAgent {
   }
 
   private writeEvent(rpc: RpcClient, sessionId: string, kind: string, payload: Record<string, unknown>) {
-    const event = { sessionId, kind, payload: { ...payload, _id: identityTag() } };
+    const event = { sessionId, kind, payload: { ...payload, clientTs: Date.now(), monotonicMs: performance.now(), _id: identityTag() } };
     const send = () => rpc.call("logEvent", event);
     // Preserve call/result ordering while letting the realtime audio proceed.
     const pending = (this.logQueue ? this.logQueue.then(send) : Promise.resolve().then(send))
@@ -932,7 +950,7 @@ export class VoiceAgent {
     const nonce = this.nonce;
     toast.info("Ada: call ended — the microphone stayed off too long");
     if (nonce) this.forceStop(nonce);
-    this.stop();
+    this.stop("microphone-suspended");
   }
 
   /**
@@ -997,8 +1015,24 @@ export class VoiceAgent {
         void this.recoverMicIfNeeded(session);
       }
     };
+    const onNetwork = () => {
+      if (this.session !== session) return;
+      this.logDiag("connection.network", { online: navigator.onLine ?? null,
+        connection: session.pc.connectionState, ice: session.pc.iceConnectionState ?? null,
+        dataChannel: session.dc?.readyState ?? null, visibility: document.visibilityState });
+    };
     document.addEventListener("visibilitychange", onVisibility);
-    session.disposeLifecycle = () => document.removeEventListener("visibilitychange", onVisibility);
+    if (typeof window !== "undefined") {
+      window.addEventListener?.("online", onNetwork);
+      window.addEventListener?.("offline", onNetwork);
+    }
+    session.disposeLifecycle = () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (typeof window !== "undefined") {
+        window.removeEventListener?.("online", onNetwork);
+        window.removeEventListener?.("offline", onNetwork);
+      }
+    };
   }
 
   /**
@@ -1052,6 +1086,12 @@ export class VoiceAgent {
 
   /** Mute = mic track sends silence; the call and playback stay up. */
   setMuted(muted: boolean) {
+    if (this.state === "reconnecting") {
+      this.disconnectedMuted = muted;
+      if (this.recovery) this.recovery.muted = muted;
+      for (const track of (this.recovery?.stream ?? this.session?.stream)?.getAudioTracks() ?? []) track.enabled = false;
+      return;
+    }
     const session = this.session;
     if (!session || (this.state !== "live" && this.state !== "muted")) return;
     // Prefer the tracked mic track — recovery may have replaced it with one that
@@ -1089,7 +1129,7 @@ export class VoiceAgent {
       }
       if (sequence <= this.callSequence) return;
     }
-    this.stop();
+    this.stop("replaced");
   }
 
   /**
@@ -1133,14 +1173,31 @@ export class VoiceAgent {
     this.responseInstruction = null;
   }
 
-  stop() {
+  stop(reason = "user-stop") {
+    const recovery = this.recovery;
+    this.recovery = null;
+    this.clearRecovery(recovery);
+    this.connectionAttempt++;
+    this.teardown(reason);
+    if (recovery) {
+      for (const track of recovery.stream.getTracks()) track.stop();
+      recovery.audio.srcObject = null;
+      recovery.audio.remove();
+      // A claim response may have been lost. Release both possible owners;
+      // forceStop only changes ownership when the nonce still matches.
+      this.forceStop(recovery.fromNonce);
+      this.forceStop(recovery.nonce);
+    }
+  }
+
+  private teardown(reason: string, recovering = false) {
     const endedNonce = this.nonce;
     if (endedNonce) {
       for (const item of this.transcriptBuffer.unfinished()) {
         if (hasSpokenWords(item.payload.text)) this.log(item.kind, { ...item.payload, partial: false, unfinished: true });
       }
-      if (this.playbackResponseId) this.log("speech.lifecycle", {responseId:this.playbackResponseId,state:"interrupted",...this.responseIdentity.get(this.playbackResponseId),reason:"hangup"});
-      this.log("session.stopped");
+      if (this.playbackResponseId) this.log("speech.lifecycle", {responseId:this.playbackResponseId,state:"interrupted",...this.responseIdentity.get(this.playbackResponseId),reason});
+      this.log("session.stopped", { reason });
     }
     if (this.transcriptTimer) clearTimeout(this.transcriptTimer);
     this.transcriptTimer = null;
@@ -1163,7 +1220,7 @@ export class VoiceAgent {
     this.suspendDeadline = null;
     this.releaseWakeLock();
     this.stopPresenceHeartbeat();
-    this.liveStartedAt = null;
+    if (!recovering) this.liveStartedAt = null;
     const session = this.session;
     this.session = null;
     this.nonce = null;
@@ -1183,19 +1240,96 @@ export class VoiceAgent {
       session.disposeLifecycle?.();
       session.dc?.close();
       session.pc.close();
-      for (const track of session.stream.getTracks()) track.stop();
-      session.micTrack?.stop(); // a recovered track lives outside stream
+      if (session.micTrack) {
+        session.micTrack.onmute = null;
+        session.micTrack.onunmute = null;
+        session.micTrack.onended = null;
+      }
+      if (!recovering || session.stream !== this.recovery?.stream) {
+        for (const track of session.stream.getTracks()) track.stop();
+        session.micTrack?.stop();
+      } else for (const track of session.stream.getTracks()) track.enabled = false;
       session.audio.srcObject = null;
-      session.audio.remove();
+      if (!recovering) session.audio.remove();
     }
-    this.setState("idle");
+    this.setState(recovering ? "reconnecting" : "idle");
     // Clear every mirror now that the call is over. Done after nulling nonce so
     // setState's own broadcast is skipped and this is the single idle announce.
     // Terminal offer reports must reach the server before presence releases the nonce.
-    if (endedNonce) {
+    if (endedNonce && !recovering) {
       if (this.pendingReports) void this.reports.then(() => this.broadcastPresence("idle", endedNonce));
       else this.broadcastPresence("idle", endedNonce);
     }
+  }
+
+  private clearRecovery(recovery: Recovery | null) {
+    if (!recovery) return;
+    if (recovery.deadline) clearTimeout(recovery.deadline);
+    if (recovery.retry) clearTimeout(recovery.retry);
+    recovery.dispose?.();
+  }
+
+  private recoverConnection(reason: string) {
+    if (this.recovery) { this.retryConnection(reason); return; }
+    const session = this.session;
+    if (!session || !this.nonce || !this.sessionReady || this.endCallAfterResponse) {
+      this.stop(reason);
+      return;
+    }
+    const recovery: Recovery = {
+      fromNonce: this.nonce, nonce: crypto.randomUUID(),
+      muted: this.state === "reconnecting" ? this.disconnectedMuted : this.state === "muted",
+      stream: session.stream, audio: session.audio, attempt: 0,
+      deadlineAt: Date.now() + RECOVERY_WINDOW_MS,
+    };
+    this.recovery = recovery;
+    this.logDiag("connection.recovery.started", { reason, replacementNonce: recovery.nonce });
+    this.teardown(reason, true);
+    this.nonce = recovery.nonce;
+    recovery.deadline = setTimeout(() => {
+      if (this.recovery !== recovery) return;
+      this.logDiag("connection.recovery.exhausted", { attempts: recovery.attempt });
+      this.stop("network-timeout");
+      toast.error("Ada: connection could not be restored. Resume the session to try again.");
+    }, RECOVERY_WINDOW_MS);
+    const wake = () => {
+      if (this.recovery !== recovery) return;
+      this.logDiag("connection.network", { online: navigator.onLine ?? null, visibility: typeof document === "undefined" ? null : document.visibilityState });
+      if (!this.session && !this.connectTimer) this.tryConnection(recovery);
+    };
+    if (typeof window !== "undefined") window.addEventListener?.("online", wake);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", wake);
+    recovery.dispose = () => {
+      if (typeof window !== "undefined") window.removeEventListener?.("online", wake);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", wake);
+    };
+    this.tryConnection(recovery);
+  }
+
+  private tryConnection(recovery: Recovery) {
+    if (this.recovery !== recovery) return;
+    if (Date.now() >= recovery.deadlineAt) { this.stop("network-timeout"); return; }
+    if (recovery.retry) clearTimeout(recovery.retry);
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      recovery.retry = setTimeout(() => this.tryConnection(recovery), 1000);
+      return;
+    }
+    recovery.attempt++;
+    this.logDiag("connection.recovery.attempt", { attempt: recovery.attempt });
+    this.clearConnectWatchdog();
+    this.connectTimer = setTimeout(() => this.retryConnection("connect-timeout"), RECOVERY_ATTEMPT_MS);
+    void this.start(recovery.fromNonce, recovery);
+  }
+
+  private retryConnection(reason: string) {
+    const recovery = this.recovery;
+    if (!recovery) return;
+    this.logDiag("connection.recovery.failed", { reason, attempt: recovery.attempt });
+    this.connectionAttempt++;
+    this.teardown(reason, true);
+    this.nonce = recovery.nonce;
+    const delay = Math.min(8000, 1000 * 2 ** Math.min(recovery.attempt - 1, 3));
+    recovery.retry = setTimeout(() => this.tryConnection(recovery), delay);
   }
 
   private async handleToolCall(dc: RTCDataChannel, event: Record<string, unknown>) {
@@ -1381,16 +1515,18 @@ export class VoiceAgent {
     this.log("response.cancelRequested", {responseId, eventId, reason});
   }
 
-  private async start(transferFromNonce?: string) {
+  private async start(transferFromNonce?: string, recovery?: Recovery, muted = false) {
     const bindings = this.bindings;
     if (!bindings) return;
     // Assign the nonce before entering "connecting" so that state's presence
     // broadcast already carries our identity.
-    const nonce = crypto.randomUUID();
+    const nonce = recovery?.nonce ?? crypto.randomUUID();
+    const attempt = ++this.connectionAttempt;
+    const current = () => this.nonce === nonce && this.connectionAttempt === attempt;
     this.nonce = nonce;
     this.callSequence = null;
     this.newerClaim = null;
-    this.setState("connecting");
+    this.setState(recovery ? "reconnecting" : "connecting");
     this.log("session.started", { ...bindings.context, device: deviceSummary() });
     let acquiredStream: MediaStream | null = null;
     try {
@@ -1408,7 +1544,7 @@ export class VoiceAgent {
       this.startNewConversation = false;
       let conversationId: string | null = null;
       const claimOwnership = async (): Promise<boolean> => {
-        const claim = await bindings.rpc.call("claimCall", {
+        const claim = recovery ? await bindings.rpc.call("reconnectCall", { nonce, previousNonce: recovery.fromNonce }) : await bindings.rpc.call("claimCall", {
           nonce,
           newConversation,
           ...(transferFromNonce ? {transferFromNonce} : {}),
@@ -1416,11 +1552,12 @@ export class VoiceAgent {
           threadId: bindings.context.threadId,
           projectId: bindings.context.projectId,
         });
-        const { sequence } = claim;
-        if (this.nonce !== nonce) {
-          void bindings.rpc.call("forceStop", { nonce }).catch(() => undefined);
+        if (!current()) {
+          if (this.nonce !== nonce) void bindings.rpc.call("forceStop", { nonce }).catch(() => undefined);
           return false;
         }
+        if (!claim) { this.stop("replaced"); return false; }
+        const { sequence } = claim;
         this.callSequence = sequence;
         this.remotePresence = null;
         this.disarmRemoteExpiry();
@@ -1431,21 +1568,22 @@ export class VoiceAgent {
         if (conversationId) this.log("voice.conversation", { conversationId, resumed: claim.resumed, newConversation });
         const newerClaim = this.newerClaim as { nonce: string; sequence: number } | null;
         if (newerClaim) this.onCallStarted(newerClaim.nonce, newerClaim.sequence);
-        if (this.nonce !== nonce) return false;
-        this.broadcastPresence("connecting", nonce);
+        if (!current()) return false;
+        this.broadcastPresence(recovery ? "reconnecting" : "connecting", nonce);
+        if (recovery) this.startPresenceHeartbeat();
         return true;
       };
       // Keep the other device's call alive while this device asks for microphone access.
-      if (!transferFromNonce && !await claimOwnership()) return;
+      if ((!transferFromNonce || recovery) && !await claimOwnership()) return;
       // Deterministic acquisition: enumerate what is actually present, resolve
       // the saved ids against it (a saved id whose salt rotated across restarts
       // simply resolves to the system default), then acquire. No "try an exact
       // id, catch, retry" dance — every branch is decided up front and logged.
       const devices = await this.enumerateDevices();
-      if (this.nonce !== nonce) return;
+      if (!current()) return;
       const support = describeAudioSupport(devices, this.audioPreferences);
       const micPermission = await queryMicPermission(navigator.permissions);
-      if (this.nonce !== nonce) return;
+      if (!current()) return;
       const saved = this.audioPreferences;
       const inputMatch = resolveDevice(devices, "audioinput", saved.inputDeviceId, saved.inputLabel);
       const inputId = inputMatch.deviceId;
@@ -1471,10 +1609,12 @@ export class VoiceAgent {
 
       let stream: MediaStream;
       try {
-        stream = await this.acquireMic(inputId);
+        stream = recovery && recovery.stream.getAudioTracks().some(track => track.readyState !== "ended")
+          ? recovery.stream : await this.acquireMic(inputId);
+        if (recovery && current()) recovery.stream = stream;
         acquiredStream = stream;
-        if (this.nonce !== nonce) {
-          stream.getTracks().forEach(track => track.stop());
+        if (!current()) {
+          if (this.recovery?.stream !== stream && this.session?.stream !== stream) stream.getTracks().forEach(track => track.stop());
           return;
         }
       } catch (error) {
@@ -1492,10 +1632,10 @@ export class VoiceAgent {
       for(const track of stream.getAudioTracks())track.enabled=false;
       const micSettings = micTrack?.getSettings?.();
       this.logDiag("audio.getUserMedia.ok", { deviceId: inputId || "default",
-        settings: micSettings ? {sampleRate: micSettings.sampleRate, channelCount: micSettings.channelCount,
-          echoCancellation: micSettings.echoCancellation, noiseSuppression: micSettings.noiseSuppression,
-          autoGainControl: micSettings.autoGainControl} : null });
-      if (transferFromNonce && !await claimOwnership()) {
+        settings: micSettings ? {sampleRate: micSettings.sampleRate ?? null, channelCount: micSettings.channelCount ?? null,
+          echoCancellation: micSettings.echoCancellation ?? null, noiseSuppression: micSettings.noiseSuppression ?? null,
+          autoGainControl: micSettings.autoGainControl ?? null} : null });
+      if (transferFromNonce && !recovery && !await claimOwnership()) {
         stream.getTracks().forEach(track => track.stop());
         return;
       }
@@ -1504,7 +1644,7 @@ export class VoiceAgent {
 
 
       const pc = new RTCPeerConnection();
-      const audio = new Audio();
+      const audio = recovery?.audio ?? new Audio();
       audio.autoplay = true;
       // iOS plays inline (not fullscreen) and is far more reliable across
       // navigation/backgrounding when the element is actually in the DOM — a
@@ -1528,14 +1668,16 @@ export class VoiceAgent {
 
       // Never stay "connecting" forever: if the data channel hasn't opened in
       // time, tear the attempt down and let the user retry cleanly.
-      this.clearConnectWatchdog();
-      this.connectTimer = setTimeout(() => {
-        if (this.session?.pc === pc && this.state === "connecting") {
-          this.logDiag("conn.timeout", { state: pc.connectionState });
-          toast.error("Ada: couldn't connect — please try again");
-          this.stop();
-        }
-      }, 15000);
+      if (!recovery) {
+        this.clearConnectWatchdog();
+        this.connectTimer = setTimeout(() => {
+          if (this.session?.pc === pc && !this.sessionReady) {
+            this.logDiag("conn.timeout", { state: pc.connectionState });
+            toast.error("Ada: could not connect. Please try again.");
+            this.stop("connect-timeout");
+          }
+        }, RECOVERY_ATTEMPT_MS);
+      }
       if (this.session?.pc !== pc) return;
 
       for (const track of stream.getTracks()) pc.addTrack(track, stream);
@@ -1571,28 +1713,33 @@ export class VoiceAgent {
         this.input?.setAvailable(pc.connectionState === "connected" && !this.micSuspended);
         if (pc.connectionState === "connected") {
           if (session.dc?.readyState === "closed" || session.dc?.readyState === "closing") {
-            toast.error("Ada: voice event connection closed");
-            this.stop();
+            this.recoverConnection("data-channel-closed");
             return;
           }
           if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
           this.disconnectTimer = null;
+          if (this.state === "reconnecting" && !this.recovery) {
+            for (const track of session.stream.getAudioTracks()) track.enabled = !this.disconnectedMuted;
+            this.setState(this.disconnectedMuted ? "muted" : "live");
+          }
         } else if (pc.connectionState === "failed") {
-          toast.error("Ada: voice connection lost");
-          this.stop();
+          this.recoverConnection("connection-failed");
         } else if (pc.connectionState === "disconnected" && !this.disconnectTimer) {
-          toast.info("Ada: connection interrupted — waiting to reconnect");
+          if (!this.sessionReady) { this.recoverConnection("connect-interrupted"); return; }
+          this.disconnectedMuted = this.state === "muted";
+          for (const track of session.stream.getAudioTracks()) track.enabled = false;
+          this.setState("reconnecting");
           this.disconnectTimer = setTimeout(() => {
             this.disconnectTimer = null;
             if (this.session?.pc === pc && pc.connectionState !== "connected") {
-              toast.error("Ada: voice connection lost");
-              this.stop();
+              this.recoverConnection("disconnect-timeout");
             }
           }, DISCONNECT_GRACE_MS);
           maybeUnref(this.disconnectTimer);
         }
       };
       pc.oniceconnectionstatechange = () => {
+        if (this.session !== session) return;
         this.logDiag("conn.ice", { state: pc.iceConnectionState });
       };
 
@@ -1608,16 +1755,24 @@ export class VoiceAgent {
             view: { threadId:view.threadId, projectId:view.projectId, space: currentSpaceName() } });
           if(this.session!==session || this.nonce!==nonce || dc.readyState!=="open")return;
           dc.send(JSON.stringify({type:"conversation.item.create",item:{type:"message",role:"system",content:[{type:"input_text",text:JSON.stringify(context)}]}}));
-          this.liveClient=new LiveClient((method,input)=>this.rpc(method,input),()=>this.session===session && this.nonce===nonce,this.input!,nonce,callConversationId);
+          this.liveClient=new LiveClient((method,input)=>this.rpc(method,input),()=>this.session===session && this.nonce===nonce && this.state!=="reconnecting",this.input!,nonce,callConversationId);
           this.sessionReady=true;this.clearConnectWatchdog();
-          for(const track of stream.getAudioTracks())track.enabled=true;
-          this.setState("live");this.startPresenceHeartbeat();this.startHealthLog(session);
+          for(const track of stream.getAudioTracks())track.enabled=!(recovery?.muted ?? muted);
+          if (recovery) {
+            this.logDiag("connection.recovery.succeeded", { attempts: recovery.attempt });
+            this.clearRecovery(recovery); this.recovery = null;
+          }
+          this.setState((recovery?.muted ?? muted) ? "muted" : "live");this.startPresenceHeartbeat();this.startHealthLog(session);
+          if (session.micTrack?.muted) {
+            this.holdSuspended();
+            void this.recoverMicIfNeeded(session);
+          }
           this.log("session.live");this.inputChanged();
-          // Ada speaks first. A resumed conversation gets a short status instead of an introduction.
+          // A deliberate resume gets a status. Transfers and network recovery stay silent.
           const resumed = Array.isArray((context as { recentTurns?: unknown[] } | null)?.recentTurns) && (context as { recentTurns: unknown[] }).recentTurns.length > 0;
-          this.speakUnprompted(session, resumed ? RESUME_INSTRUCTION : GREETING_INSTRUCTION);
+          if (!transferFromNonce) this.speakUnprompted(session, resumed ? RESUME_INSTRUCTION : GREETING_INSTRUCTION);
           this.scheduleReplyDrain();
-        } catch(error) { if(this.session===session){this.log("session.contextFailed",{error:String(error)});this.stop();} }
+        } catch(error) { if(this.session===session){this.log("session.contextFailed",{error:String(error)});if(this.recovery)this.retryConnection("context-failed");else this.stop("context-failed");} }
       };
       dc.onopen = () => {
         if(this.session!==session)return;
@@ -1627,11 +1782,10 @@ export class VoiceAgent {
       dc.onclose = () => {
         if (this.session !== session) return;
         this.logDiag("conn.dc.close");
-        toast.error("Ada: voice event connection closed");
-        this.stop();
+        this.recoverConnection("data-channel-closed");
       };
       dc.onmessage = (message) => {
-        if (this.session !== session || this.nonce !== nonce) return;
+        if (this.session !== session || !current()) return;
         let event: Record<string, unknown>;
         try {
           event = JSON.parse(String(message.data));
@@ -1643,7 +1797,7 @@ export class VoiceAgent {
           const config=event.session as {audio?:{input?:{turn_detection?:unknown;transcription?:{model?:string}}}}|undefined;
           this.log("session.configuration",{eventType:type,input:config?.audio?.input??null});
           if(config?.audio?.input?.turn_detection===null && config.audio.input.transcription?.model==="gpt-realtime-whisper")acceptSession();
-          else if(this.sessionReady && type==="session.updated"){this.stop();toast.error("Voice input settings changed. Reconnect to restore word-based interruption.");}
+          else if(this.sessionReady && type==="session.updated"){this.stop("configuration-changed");toast.error("Voice input settings changed. Reconnect to restore word-based interruption.");}
           return;
         }
         if(!this.sessionReady && type!=="error")return;
@@ -1715,7 +1869,7 @@ export class VoiceAgent {
             if (!interrupted) this.completedPlayback.add(id);
             this.playbackResponseId = null;
             this.setAssistantSpeaking(false);
-            if (this.endCallAfterResponse && !this.responseActive) { this.stop(); return; }
+            if (this.endCallAfterResponse && !this.responseActive) { this.stop("end-call"); return; }
           }
           if (!cleared) {
             this.releaseOutput(dc, session);
@@ -1778,7 +1932,7 @@ export class VoiceAgent {
             this.activeResponseId = null;
             this.setResponseActive(false);
             this.settleLiveOutputs();
-            if (this.endCallAfterResponse && !hasToolCalls && !this.assistantSpeaking) { this.stop(); return; }
+            if (this.endCallAfterResponse && !hasToolCalls && !this.assistantSpeaking) { this.stop("end-call"); return; }
             if (this.responsePending) {
               this.requestResponse(dc);
             }
@@ -1813,11 +1967,11 @@ export class VoiceAgent {
       };
 
       const offer = await pc.createOffer();
-      if (this.nonce !== nonce) return;
+      if (!current()) return;
       await pc.setLocalDescription(offer);
-      if (this.nonce !== nonce) return;
+      if (!current()) return;
       await waitForIceGathering(pc);
-      if (this.nonce !== nonce) return;
+      if (!current()) return;
       const localSdp = pc.localDescription?.sdp;
       if (!localSdp) throw new Error("No local SDP offer");
 
@@ -1830,9 +1984,10 @@ export class VoiceAgent {
       if (this.session?.pc !== pc) return; // stopped while exchanging
       await pc.setRemoteDescription({ type: "answer", sdp });
     } catch (error) {
-      acquiredStream?.getTracks().forEach(track => track.stop());
-      if (this.nonce !== nonce) return;
-      this.stop();
+      if (acquiredStream && this.recovery?.stream !== acquiredStream && this.session?.stream !== acquiredStream) acquiredStream.getTracks().forEach(track => track.stop());
+      if (!current()) return;
+      if (recovery && this.recovery === recovery) { this.retryConnection(String(error)); return; }
+      this.stop("connect-failed");
       toast.error(`Ada: ${error instanceof Error ? error.message : String(error)}`);
       this.requestPresence();
     }

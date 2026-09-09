@@ -28,11 +28,11 @@ function SidebarLiveIndicator() {
   const elapsed = useCallElapsed();
   if (state === "idle") return null;
   const muted = state === "muted";
-  const connecting = state === "connecting";
+  const connecting = state === "connecting" || state === "reconnecting";
   return (
     <span
       className="flex items-center gap-1.5 text-xs tabular-nums text-muted-foreground"
-      title={muted ? "Muted" : connecting ? "Connecting" : "Live"}
+      title={muted ? "Muted" : state === "reconnecting" ? "Reconnecting" : connecting ? "Connecting" : "Live"}
     >
       {/* The timer stays one neutral color (it's just call duration, not an
           error). The dot carries the state: pulsing = connecting (in progress),

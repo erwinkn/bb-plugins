@@ -73,6 +73,10 @@ export const rpcContract = defineRpcContract({
       })
       .strict(),
   },
+  reconnectCall: {
+    input: z.object({ nonce: z.string().min(1).max(256), previousNonce: z.string().min(1).max(256) }).strict(),
+    output: z.object({ sequence: z.number(), conversationId: z.string(), voiceSessionId: z.string(), resumed: z.boolean() }).strict().nullable(),
+  },
   /** Exchange a WebRTC SDP offer with OpenAI Realtime. Returns the answer. */
   createCall: {
     input: z
@@ -210,7 +214,7 @@ export const rpcContract = defineRpcContract({
     input: z
       .object({
         nonce: z.string().min(1),
-        phase: z.enum(["connecting", "live", "muted", "idle"]),
+        phase: z.enum(["connecting", "reconnecting", "live", "muted", "idle"]),
         startedAt: z.number().nullable(),
         /** Which client/realm owns this call (observability; see client-identity). */
         client: z.string().optional(),
@@ -777,6 +781,23 @@ export default async function plugin(bb: BbPluginApi) {
       voiceSessions.link(nonce, started.conversationId);
       return { sequence, conversationId: started.conversationId, voiceSessionId: started.conversationId, resumed: started.resumed };
     },
+    async reconnectCall({ nonce, previousNonce }) {
+      const current = currentCall();
+      // Retry the same claim after a lost RPC reply, but never replace another owner.
+      if (current.nonce !== previousNonce && current.nonce !== nonce) return null;
+      const link = db.prepare("SELECT conversation_id FROM voice_conversation_calls WHERE call_id = ?")
+        .get(current.nonce) as { conversation_id: string } | undefined;
+      if (!link) return null;
+      if (current.nonce !== nonce) {
+        forceStopCall(previousNonce, true);
+        db.prepare("UPDATE voice_call_control SET sequence = sequence + 1, nonce = ? WHERE slot = 1").run(nonce);
+        const { sequence } = currentCall();
+        conversations.startCall({ nonce, sequence, view: {threadId:null,projectId:null}, newConversation: false, conversationId: link.conversation_id });
+        voiceSessions.link(nonce, link.conversation_id);
+        bb.realtime.publish("voice-call", { nonce, sequence });
+      }
+      return { sequence: currentCall().sequence, conversationId: link.conversation_id, voiceSessionId: link.conversation_id, resumed: true };
+    },
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       const key = await apiKey();
@@ -805,6 +826,7 @@ export default async function plugin(bb: BbPluginApi) {
       form.set("session", JSON.stringify(session));
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       const response = await fetch(REALTIME_ENDPOINT, {
+        signal: AbortSignal.timeout(12_000),
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
         body: form,

@@ -732,7 +732,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
 
   // A call started from this page: select its session as soon as it is known.
   useEffect(() => {
-    if ((!startRequested.current && selected !== null) || !activeSession || callState === "idle" || callState === "connecting") return;
+    if ((!startRequested.current && selected !== null) || !activeSession || callState === "idle" || callState === "connecting" || callState === "reconnecting") return;
     startRequested.current = false;
     setSelected(activeSession);
     refreshNewest();
@@ -939,7 +939,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
                   className="min-h-11 sm:min-h-8"
                 >
                   <WaveformIcon live={false} />
-                  {callState === "idle" ? "New session" : callState === "connecting" ? "Connecting…" : "Session in progress"}
+                  {callState === "idle" ? "New session" : callState === "connecting" ? "Connecting…" : callState === "reconnecting" ? "Reconnecting…" : "Session in progress"}
                 </Button>
               </div>
             </div>

@@ -70,7 +70,7 @@ export function LiveCallControls() {
   const micSuspended = useSyncExternalStore(voiceAgent.subscribe, voiceAgent.getMicSuspended);
   const elapsed = useCallElapsed();
   const muted = state === "muted";
-  const connecting = state === "connecting";
+  const connecting = state === "connecting" || state === "reconnecting";
   if (state === "idle") return null;
   if (remoteLabel) return (
     <div className="voice-call-controls flex min-h-11 max-w-full items-center gap-2 rounded-md border border-border bg-background px-3">
@@ -93,7 +93,7 @@ export function LiveCallControls() {
       : listening
         ? "text-foreground" // you
         : "text-muted-foreground/70";
-  const label = connecting
+  const label = state === "reconnecting" ? "Reconnecting…" : connecting
     ? "Connecting…"
     : micSuspended
       ? "Mic paused"

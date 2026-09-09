@@ -196,7 +196,7 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
     rpc: { call: (async (method: string, args: any) => {
       rpcCalls.push({method,args});
       if (overrides[method]) return overrides[method](args);
-      return method === "claimCall" ? { sequence: 1, conversationId: "conv_test" } : method === "createCall" ? { sdp: "answer" } : method === "runTool" ? runTool() : method === "callStartContext" ? {type:"call_start_context",tasks:[],recentTurns:[]} : { ok: true };
+      return (method === "claimCall" || method === "reconnectCall") ? { sequence: 1, conversationId: "conv_test" } : method === "createCall" ? { sdp: "answer" } : method === "runTool" ? runTool() : method === "callStartContext" ? {type:"call_start_context",tasks:[],recentTurns:[]} : { ok: true };
     }) as never },
     context: { threadId: null, projectId: null, onNewThreadScreen: false },
   });
@@ -436,21 +436,33 @@ test("presence queries and rebinds cannot announce a call before its claim compl
 });
 
 
-test("transient disconnection recovers, but a prolonged disconnect or failure ends the call", async (t) => {
-  const { agent, peers, tick, start } = await liveVoiceFixture(t);
-  const change = (state: string) => { const peer = peers.at(-1)!; peer.connectionState = state; peer.onconnectionstatechange?.(); };
-  change("disconnected");
+test("a brief disconnection recovers on the same peer without a greeting", async (t) => {
+  const { agent, peers, dc, tick } = await liveVoiceFixture(t);
+  agent.setMuted(true);
+  const requests = dc.responses().length;
+  peers[0].connectionState = "disconnected";
+  peers[0].onconnectionstatechange?.();
   tick(5000);
-  assert.equal(agent.getState(), "live");
-  change("connected");
+  assert.equal(agent.getState(), "reconnecting");
+  peers[0].connectionState = "connected";
+  peers[0].onconnectionstatechange?.();
   tick(11000);
-  assert.equal(agent.getState(), "live");
-  change("disconnected");
-  tick(11000);
-  assert.equal(agent.getState(), "idle");
-  await start();
-  change("failed");
-  assert.equal(agent.getState(), "idle");
+  assert.equal(agent.getState(), "muted");
+  assert.equal(peers.length, 1);
+  assert.equal(dc.responses().length, requests);
+});
+
+test("a prolonged disconnect replaces the peer, preserves mute and stays silent", async t => {
+  const f = await liveVoiceFixture(t);
+  f.agent.setMuted(true);
+  f.peers[0].connectionState = "disconnected";
+  f.peers[0].onconnectionstatechange?.();
+  f.tick(10000); await settleVoice();
+  assert.equal(f.peers.length, 2);
+  assert.equal(f.agent.getState(), "muted");
+  assert.equal(f.track.enabled, false);
+  assert.equal(f.peers[1].dc.responses().length, 0);
+  assert.equal(f.rpcCalls.filter(c => c.method === "reconnectCall").length, 1);
 });
 
 /**
@@ -514,7 +526,7 @@ test("a stopped call's disconnect timer cannot stop a replacement call", async (
 
 
 for (const closeEventFirst of [true, false]) {
-  test(`a closed event channel ends recovery when close event arrives ${closeEventFirst ? "first" : "last"}`, async (t) => {
+  test(`a closed event channel replaces the peer when close event arrives ${closeEventFirst ? "first" : "last"}`, async (t) => {
     const { agent, dc, peers, tick, start } = await liveVoiceFixture(t);
     const peer = peers.at(-1)!;
     peer.connectionState = "disconnected";
@@ -523,19 +535,21 @@ for (const closeEventFirst of [true, false]) {
     if (closeEventFirst) dc.onclose?.();
     peer.connectionState = "connected";
     peer.onconnectionstatechange?.();
-    assert.equal(agent.getState(), "idle");
-    await start();
+    assert.equal(agent.getState(), "reconnecting");
+    await settleVoice();
     dc.onclose?.();
     tick(11000);
     assert.equal(agent.getState(), "live");
   });
 }
 
-test("event-channel closure ends an otherwise connected call", async (t) => {
+test("event-channel closure reconnects an otherwise connected call", async (t) => {
   const { agent, dc } = await liveVoiceFixture(t);
   dc.readyState = "closed";
   dc.onclose?.();
-  assert.equal(agent.getState(), "idle");
+  assert.equal(agent.getState(), "reconnecting");
+  await settleVoice();
+  assert.equal(agent.getState(), "live");
 });
 
 
@@ -1035,4 +1049,106 @@ test("a live call logs an input health heartbeat with meter and connection state
   agent.stop();
   tick(60_000); await settleVoice();
   assert.equal(health().length, 1, "no heartbeat after hangup");
+});
+
+test("device transfer stays silent and preserves a muted microphone", async t => {
+  const f = await liveVoiceFixture(t, undefined, {callStartContext: () => ({recentTurns:[{role:"user",text:"Earlier request"}]})});
+  f.agent.stop();
+  f.agent.ingestPresence({nonce:"desktop",phase:"muted",startedAt:1000,client:"desktop-client"});
+  f.agent.switchToThisDevice(); await settleVoice();
+  assert.equal(f.agent.getState(), "muted");
+  assert.equal(f.track.enabled, false);
+  assert.equal(f.peers.at(-1)!.dc.responses().length, 0);
+});
+
+test("recovery retries a lost claim reply with the same nonce and keeps the mic", async t => {
+  let attempts = 0;
+  const f = await liveVoiceFixture(t, undefined, {reconnectCall: () => {
+    if (++attempts === 1) throw new Error("Network unavailable");
+    return {sequence:2,conversationId:"conv_test"};
+  }});
+  const capture = t.mock.method(navigator.mediaDevices, "getUserMedia");
+  f.peers[0].connectionState = "failed"; f.peers[0].onconnectionstatechange?.();
+  await settleVoice(); assert.equal(f.agent.getState(), "reconnecting");
+  f.tick(1000); await settleVoice();
+  assert.equal(f.agent.getState(), "live");
+  const claims = f.rpcCalls.filter(c => c.method === "reconnectCall");
+  assert.equal(claims.length, 2); assert.deepEqual(claims[0].args, claims[1].args);
+  assert.equal(capture.mock.callCount(), 0);
+  assert.equal(f.peers.at(-1)!.dc.responses().length, 0);
+});
+
+test("a stop during a pending recovery claim cannot restart the call", async t => {
+  let grant!: (value: unknown) => void;
+  const f = await liveVoiceFixture(t, undefined, {reconnectCall: () => new Promise(resolve => {grant = resolve;})});
+  f.peers[0].connectionState = "failed"; f.peers[0].onconnectionstatechange?.();
+  await settleVoice(); f.agent.stop();
+  grant({sequence:2,conversationId:"conv_test"}); await settleVoice();
+  f.tick(61000); await settleVoice();
+  assert.equal(f.agent.getState(), "idle");
+  assert.equal(f.peers.length, 1);
+  assert.ok(f.rpcCalls.some(c => c.method === "forceStop"));
+});
+
+test("recovery stops if another device owns the call", async t => {
+  const f = await liveVoiceFixture(t, undefined, {reconnectCall: () => null});
+  f.peers[0].connectionState = "failed"; f.peers[0].onconnectionstatechange?.();
+  await settleVoice(); f.tick(61000);
+  assert.equal(f.agent.getState(), "idle");
+  assert.equal(f.rpcCalls.filter(c => c.method === "reconnectCall").length, 1);
+});
+
+test("offline recovery has a deadline and releases the microphone", async t => {
+  const f = await liveVoiceFixture(t);
+  const stopped = t.mock.method(f.track, "stop");
+  Object.defineProperty(navigator, "onLine", {configurable:true,value:false});
+  f.peers[0].connectionState = "failed"; f.peers[0].onconnectionstatechange?.();
+  assert.equal(f.agent.getState(), "reconnecting");
+  f.tick(60000); await settleVoice();
+  assert.equal(f.agent.getState(), "idle");
+  assert.ok(stopped.mock.callCount() > 0);
+  assert.equal(f.rpcCalls.filter(c => c.method === "reconnectCall").length, 0);
+});
+
+test("late SDP failure cannot stop the microphone of a successful retry", async t => {
+  let calls = 0, rejectOld!: (error: Error) => void;
+  const f = await liveVoiceFixture(t, undefined, {createCall: () => {
+    if (++calls === 2) return new Promise((_, reject) => {rejectOld = reject;});
+    return {sdp:"answer"};
+  }});
+  const stopped = t.mock.method(f.track, "stop");
+  f.peers[0].connectionState = "failed"; f.peers[0].onconnectionstatechange?.();
+  await settleVoice(); f.tick(15000); await settleVoice();
+  f.tick(1000); await settleVoice();
+  assert.equal(f.agent.getState(), "live");
+  rejectOld(new Error("Old request timed out")); await settleVoice();
+  assert.equal(f.agent.getState(), "live");
+  assert.equal(stopped.mock.callCount(), 0);
+  assert.equal(f.peers.at(-1)!.dc.responses().length, 0);
+});
+
+test("recovery never replays a tool whose result arrives after the connection failed", async t => {
+  let resolve!: (result: unknown) => void, requests = 0;
+  const f = await sequencerFixture(t, () => {requests++; return new Promise(r => {resolve = r;});}, undefined, {rpc:{
+    reconnectCall: () => ({sequence:2,conversationId:"conv_test"}),
+    createCall: () => ({sdp:"answer"}), callStartContext: () => ({recentTurns:[]}),
+  }});
+  f.startResponse("before-loss",false); f.addItem("before-loss",0,f.tool("one")); f.call("before-loss","one",0);
+  f.done("before-loss",[f.tool("one")]); await settleVoice();
+  assert.equal(requests,1);
+  f.peers[0].connectionState = "failed"; f.peers[0].onconnectionstatechange?.(); await settleVoice();
+  resolve({threads:[]}); await settleVoice();
+  assert.equal(requests,1);
+  assert.equal(f.agent.getState(),"live");
+  assert.equal(f.peers.at(-1)!.dc.responses().length,0);
+});
+
+test("a retained microphone that the OS muted stays marked paused after recovery", async t => {
+  const f = await liveVoiceFixture(t);
+  Object.defineProperty(f.track,"muted",{value:true,configurable:true});
+  f.peers[0].connectionState="failed"; f.peers[0].onconnectionstatechange?.();
+  await settleVoice();
+  assert.equal(f.agent.getState(),"live");
+  assert.equal(f.agent.getMicSuspended(),true);
+  assert.equal(f.peers.at(-1)!.dc.responses().length,0);
 });

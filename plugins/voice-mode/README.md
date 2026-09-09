@@ -11,7 +11,21 @@ originally copied at commit `79d5083`.
 Open **Voice** in BB's sidebar. Start a new session or continue an earlier one,
 allow microphone access, and speak. The call controls remain available on other
 pages. **Switch here** transfers a call after checking the new device's microphone.
-Only the device that owns the call executes its tools.
+Only the device that owns the call executes its tools. Switching devices keeps Ada
+silent and preserves mute. Resuming an ended session still gives a spoken status.
+
+After a connection loss, Voice shows **Reconnecting**. It allows ten seconds for
+the existing connection to recover, then retries with a new connection for up to
+one minute. A failed connection or closed event channel starts those retries
+immediately. Recovery keeps the conversation and mute state, without a greeting
+or repeating prior actions. Stop or a transfer to another device cancels recovery.
+If the network stays unavailable, resume the session when it returns.
+
+A new connection restores up to 100 saved turns and 32,000 characters of recent
+transcript, plus recent action statuses and pending work. Shorter conversations
+keep their full saved transcript. Longer ones keep the newest text and report
+that earlier history was omitted. This is an interim text restoration; full
+Realtime context continuity and compaction remain separate work.
 
 The default shortcuts are Cmd+Shift+H to start or stop, and Cmd+Shift+U to mute.
 Windows and Linux use Ctrl. Change them in Voice Mode's Keyboard shortcuts settings.
@@ -88,7 +102,6 @@ subscriptions. Open a task row to view its thread. Diagnostics shows session eve
 Sessions that used a coordinator also have Coordinator history, a read-only timeline.
 
 See [the architecture](docs/architecture.md) and [the RPC contract](live-runtime-notes.md).
-Earlier design documents are in [docs/history](docs/history).
 
 ## Check changes
 

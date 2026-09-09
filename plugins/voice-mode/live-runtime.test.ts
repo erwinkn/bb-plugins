@@ -428,7 +428,10 @@ test("call start returns bounded history and does not overwrite old worker setti
   const next = await readNamedWorkerSettings(h.bb); assert.equal(next.profiles.find(p => p.name === "review")!.model, "custom"); assert.equal(next.defaultProfile, "implement");
   assert.deepEqual(await h.bb.storage.kv.get(WORKER_PROFILE_KEY), old); assert.equal(await h.bb.storage.kv.get(NAMED_WORKER_PROFILE_KEY), undefined);
   for (let i = 0; i < 15; i++) h.db.prepare("INSERT INTO session_events(session_id,ts,kind,payload) VALUES ('conversation',?,'user',?)").run(i, JSON.stringify({ text: "x".repeat(500) }));
-  const context = await h.start() as Any; assert.ok(context.recentTurns.length <= 12); assert.ok(context.recentTurns.reduce((n: number, r: Any) => n + r.text.length, 0) <= 2000);
+  const context = await h.start() as Any;
+  assert.equal(context.recentTurns.length, 15);
+  assert.equal(context.recentTurns.reduce((n: number, r: Any) => n + r.text.length, 0), 7500);
+  assert.equal(context.truncated, false);
 });
 
 
@@ -1038,4 +1041,39 @@ test("control_ui switch_space becomes a client action carrying the spoken name, 
   assert.match(String(missing), /missing its target/);
   const context = await h.runtime.callStartContext({ nonce: "call", conversationId: "conversation", view: { threadId: "build", projectId: "app", space: "Mobile" } }) as Any;
   assert.equal(context.view.space, "Mobile");
+});
+
+test("recovery context separates interrupted speech from completed actions", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.db.prepare("INSERT INTO session_events(session_id,ts,kind,payload) VALUES ('conversation',1,'assistant',?)")
+    .run(JSON.stringify({text:"I sent the message.",responseId:"reply"}));
+  h.db.prepare("INSERT INTO session_events(session_id,ts,kind,payload) VALUES ('conversation',2,'speech.lifecycle',?)")
+    .run(JSON.stringify({responseId:"reply",state:"interrupted"}));
+  const input = {nonce:"call",conversationId:"conversation",utterance:{id:"u",version:1,text:"Send this",startedAt:0},responseOrigin:"user" as const,tool:"message_thread",args:{},occurrence:0};
+  const operation = h.runtime.operations.begin(input);
+  h.runtime.operations.finish(operation.row.id,"succeeded");
+  const context = await h.start() as Any;
+  assert.equal(context.recentTurns[0].delivery,"interrupted");
+  assert.equal(context.recentActions[0].operationId,operation.row.id);
+  assert.equal(context.recentActions[0].status,"succeeded");
+  assert.match(context.recoveryInstruction,/Do not repeat prior actions/);
+});
+
+
+test("restored transcript keeps the newest text and reports omitted history", async t => {
+  const h = await fixture(); t.after(h.close);
+  const insert = h.db.prepare("INSERT INTO session_events(session_id,ts,kind,payload) VALUES ('conversation',?,'user',?)");
+  for (let i = 0; i < 120; i++) insert.run(i, JSON.stringify({text: String(i)}));
+  let context = await h.start() as Any;
+  assert.equal(context.recentTurns.length, 100);
+  assert.equal(context.recentTurns[0].text, "20");
+  assert.equal(context.recentTurns.at(-1).text, "119");
+  assert.equal(context.truncated, true);
+  insert.run(121, JSON.stringify({text:"x".repeat(40000) + "most recent words"}));
+  context = await h.start() as Any;
+  assert.equal(context.recentTurns.length, 1);
+  assert.equal(context.recentTurns[0].text.length, 32000);
+  assert.ok(context.recentTurns[0].text.endsWith("most recent words"));
+  assert.equal(context.truncated, true);
+  assert.equal(context.recentTurns[0].truncated, true);
 });

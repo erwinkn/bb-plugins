@@ -270,3 +270,20 @@ test("createCall uses aide prompts while old live rows remain read-only for roll
   assert.deepEqual(db.prepare("SELECT content FROM voice_role_prompts WHERE role='live'").all(),[{content:"Old tools prompt"}]);
   assert.equal((await harness.behavior.callRpc("getPrompt",{role:"live"}) as any).content,"Old tools prompt");
 });
+
+test("recovery claims are idempotent and cannot take a stopped or transferred call", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
+  try {
+    await plugin(bb);
+    const first = await harness.behavior.callRpc("claimCall", {nonce:"wifi"}) as any;
+    const request = {nonce:"cellular",previousNonce:"wifi"};
+    const recovered = await harness.behavior.callRpc("reconnectCall",request) as any;
+    assert.equal(recovered.conversationId,first.conversationId);
+    assert.equal(recovered.sequence,first.sequence+1);
+    assert.deepEqual(await harness.behavior.callRpc("reconnectCall",request),recovered);
+    await harness.behavior.callRpc("claimCall",{nonce:"other-device"});
+    assert.equal(await harness.behavior.callRpc("reconnectCall",request),null);
+    await harness.behavior.callRpc("forceStop",{nonce:"other-device"});
+    assert.equal(await harness.behavior.callRpc("reconnectCall",{nonce:"late",previousNonce:"other-device"}),null);
+  } finally { await harness.lifecycle.dispose(); }
+});
