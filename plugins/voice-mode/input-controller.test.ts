@@ -11,7 +11,8 @@ function fixture() {
     interruptions: any[] = [],
     finals: any[] = [],
     repairs: string[] = [],
-    drafts: any[] = [];
+    drafts: any[] = [],
+    logs: { kind: string; data: any }[] = [];
   let view = {
     threadId: "build" as string | null,
     projectId: "app" as string | null,
@@ -29,7 +30,7 @@ function fixture() {
     draft: (item) => drafts.push({ ...item }),
     final: (item, late) => finals.push({ ...item, late }),
     repair: (text) => repairs.push(text),
-    log: () => {},
+    log: (kind, data) => logs.push({ kind, data }),
   });
   const advance = (ms: number) => {
     now += ms;
@@ -51,6 +52,7 @@ function fixture() {
     finals,
     repairs,
     drafts,
+    logs,
     words,
     advance,
     setView: (id: string) => {
@@ -261,4 +263,29 @@ test("utterance identities differ across calls and remain stable during a correc
   assert.equal(first.input.snapshot()!.id,id);
   assert.equal(first.input.snapshot()!.version,2);
   first.input.dispose();second.input.dispose();
+});
+
+test("words that arrive while the meter hears nothing are recorded once per item, and health counts both signals", () => {
+  const f = fixture();
+  // A dead AudioContext: the server keeps transcribing, the meter reads zeros.
+  f.advance(1000);
+  f.input.delta("silent", "Can you hear");
+  f.input.delta("silent", " me now?");
+  f.advance(6000);
+  const unsupported = f.logs.filter((l) => l.kind === "input.deltaUnsupported");
+  assert.equal(unsupported.length, 1, "one diagnostic per item, not per delta");
+  assert.equal(unsupported[0].data.itemId, "silent");
+  assert.equal(f.sent.length, 0, "the diagnostic changes nothing: still no commit without audio evidence");
+  const health = f.input.healthReport();
+  assert.equal(health.deltas, 2);
+  assert.equal(health.unsupportedItems, 1);
+  assert.equal(health.unconfirmedItems, 1);
+  assert.equal(health.peakRms, 0);
+  assert.ok(health.samples > 0);
+  // A normal turn afterwards reports energy and no unsupported items, and the counters reset.
+  f.words("ok", "Yes, go ahead.");
+  const next = f.input.healthReport();
+  assert.equal(next.unsupportedItems, 0);
+  assert.ok(next.peakRms >= 0.02);
+  assert.equal(f.logs.filter((l) => l.kind === "input.deltaUnsupported").length, 1);
 });

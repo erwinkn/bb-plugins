@@ -67,6 +67,8 @@ export class InputController {
   private supportedUntil = -Infinity;
   private supportedSince = Infinity;
   private detectedView: InputView | null = null;
+  /** Counters since the last health report. They only describe; they never gate. */
+  private health = { samples: 0, peakRms: 0, deltas: 0, unsupported: new Set<string>() };
   private waiters = new Set<{
     version: number;
     effect: boolean;
@@ -110,6 +112,8 @@ export class InputController {
   /** Meter activity schedules commits; only words can trigger interruption. */
   sample(rms: number) {
     if (this.disposed || !this.available) return;
+    this.health.samples += 1;
+    if (rms > this.health.peakRms) this.health.peakRms = rms;
     const now = this.host.now();
     const threshold = this.energySince === null ? 0.004 : 0.0025;
     if (rms >= threshold) {
@@ -170,9 +174,17 @@ export class InputController {
       }
     }
     if (item.state === "final" || item.state === "failed") return;
+    this.health.deltas += 1;
     item.text = (item.text + text).slice(0, 16000);
     item.endedAt = this.host.now();
     if (item.state === "open") this.confirm(item);
+    // Words arrived but the meter heard nothing: the server can hear the user and
+    // the local AudioContext cannot. Say so once per item; this is the one event
+    // that separates a dead meter from a silent uplink (see issue #33).
+    if (!item.confirmed && hasSpokenWords(item.text) && this.host.now() > this.supportedUntil && !this.health.unsupported.has(id)) {
+      this.health.unsupported.add(id);
+      this.host.log("input.deltaUnsupported", { itemId: id, characters: item.text.length, sinceEnergyMs: this.energyAt === -Infinity ? null : this.host.now() - this.energyAt });
+    }
     if (item.confirmed) this.host.draft(item);
     this.changed();
   }
@@ -383,6 +395,21 @@ export class InputController {
       }
     }
     this.changed();
+  }
+  /** Snapshot and reset the health counters. The caller adds meter and connection state. */
+  healthReport() {
+    const open = [...this.items.values()].filter((item) => item.state === "open");
+    const report = {
+      samples: this.health.samples,
+      peakRms: Math.round(this.health.peakRms * 10000) / 10000,
+      deltas: this.health.deltas,
+      unsupportedItems: this.health.unsupported.size,
+      openItems: open.length,
+      unconfirmedItems: open.filter((item) => !item.confirmed).length,
+      available: this.available,
+    };
+    this.health = { samples: 0, peakRms: 0, deltas: 0, unsupported: new Set() };
+    return report;
   }
   /** A lost microphone or connection invalidates unsent work; reconnect cannot replay it. */
   setAvailable(value: boolean) {

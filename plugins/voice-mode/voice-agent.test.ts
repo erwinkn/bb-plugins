@@ -1022,3 +1022,17 @@ test("a resumed conversation gets a status turn instead of an introduction", asy
   const { dc } = await liveVoiceFixture(t, undefined, { callStartContext: () => ({ type: "call_start_context", tasks: [], recentTurns: [{ who: "you", text: "earlier" }] }) });
   assert.match(dc.responses()[0].response.instructions, /resumed an earlier conversation/);
 });
+
+test("a live call logs an input health heartbeat with meter and connection state", async (t) => {
+  const { agent, rpcCalls, tick } = await liveVoiceFixture(t);
+  const health = () => rpcCalls.filter(c => c.method === "logEvent" && c.args?.kind === "input.health").map(c => c.args.payload);
+  assert.equal(health().length, 0);
+  tick(30_000); await settleVoice();
+  assert.equal(health().length, 1);
+  assert.equal(health()[0].connection, "connected");
+  assert.equal(health()[0].suspended, false);
+  assert.equal(typeof health()[0].deltas, "number");
+  agent.stop();
+  tick(60_000); await settleVoice();
+  assert.equal(health().length, 1, "no heartbeat after hangup");
+});

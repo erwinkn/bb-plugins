@@ -1,7 +1,7 @@
 import { LiveClient, continuedSpeaking, type ResponseBinding, type ToolUtterance } from "./live-client.ts";
 import { OutputSequencer, type HeldCall } from "./output-sequencer.ts";
 import { InputController, type InputItem } from "./input-controller.ts";
-import { startMicrophoneMeter } from "./microphone-meter.ts";
+import { startMicrophoneMeter, type MeterHandle } from "./microphone-meter.ts";
 import { TranscriptBuffer } from "./live-transcript.ts";
 // Voice session singleton for one loaded plugin module. Web slots share it;
 // separate windows/native webviews have separate instances. Presence and call
@@ -88,6 +88,7 @@ function maybeUnref(timer: ReturnType<typeof setInterval>) {
 }
 
 const REPLY_QUIET_MS = 2000;
+const HEALTH_LOG_MS = 30_000;
 const REPAIR_INSTRUCTION = "Input transcription failed. Ask once for the complete request. Do not call effect tools.";
 const GREETING_INSTRUCTION = "The call just started; the system item before this is the call-start context. Speak first: follow the Call start section of your instructions for a new conversation. Do not call effect tools.";
 const RESUME_INSTRUCTION = "The call resumed an earlier conversation; the system item before this is the call-start context. Speak first: follow the Call start section of your instructions for a resumed conversation. Do not call effect tools.";
@@ -164,7 +165,9 @@ export class VoiceAgent {
   /** Only known conversational responses may dispatch tools; notice responses never may. */
   private toolResponseIds = new Set<string>();
   private input: InputController | null = null;
-  private meterStop: (()=>void) | null = null;
+  private meterStop: MeterHandle | null = null;
+  /** Throttled input health log while live, so a silent call leaves evidence (issue #33). */
+  private healthTimer: ReturnType<typeof setInterval> | null = null;
   private sessionReady = false;
   private inputState = "";
   private responseRequestVersion: number | null = null;
@@ -954,6 +957,27 @@ export class VoiceAgent {
     void lock?.release().catch(() => undefined);
   }
 
+  /** Meter state changes are logged: a suspended AudioContext reads silence and blocks every commit. */
+  private meterEvents(session: SessionHandle) {
+    return { state: (state: string, resumed: boolean) => { if (this.session === session) this.logDiag(resumed ? "meter.resumed" : "meter.suspended", { state }); } };
+  }
+
+  /**
+   * Every 30 seconds while live, record what the input path saw: meter samples
+   * and peak level, transcription deltas, unconfirmed items, and the meter and
+   * connection state. A call that hears nothing then leaves a trace of which
+   * half went quiet, instead of an empty log (issue #33).
+   */
+  private startHealthLog(session: SessionHandle) {
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = setInterval(() => {
+      if (this.session !== session || !this.input) return;
+      this.logDiag("input.health", { ...this.input.healthReport(), meter: this.meterStop?.state?.() ?? "unknown",
+        connection: session.pc.connectionState, micMuted: session.micTrack?.muted ?? null, micState: session.micTrack?.readyState ?? null, suspended: this.micSuspended });
+    }, HEALTH_LOG_MS);
+    maybeUnref(this.healthTimer);
+  }
+
   /** On returning to the foreground, try to revive a suspended mic. */
   private attachPageLifecycle(session: SessionHandle) {
     if (typeof document === "undefined") return;
@@ -1007,7 +1031,7 @@ export class VoiceAgent {
         session.micTrack.onended = null;
         session.micTrack.stop();
       }
-      const stopMeter=await this.meterFactory(fresh,rms=>{if(this.session===session && this.sessionReady)this.input?.sample(rms);});
+      const stopMeter=await this.meterFactory(fresh,rms=>{if(this.session===session && this.sessionReady)this.input?.sample(rms);},this.meterEvents(session));
       if(this.session!==session){stopMeter();newTrack.stop();return;}
       this.meterStop?.();this.meterStop=stopMeter;
       session.stream=fresh;
@@ -1118,6 +1142,7 @@ export class VoiceAgent {
     this.transcriptBuffer.reset();
     this.input?.dispose();this.input=null;
     this.meterStop?.();this.meterStop=null;
+    if (this.healthTimer) clearInterval(this.healthTimer); this.healthTimer = null;
     this.sessionReady=false;this.inputState="";this.responseRequestVersion=null;
     this.endCallAfterResponse = false;
     this.closeOffer("not_delivered");
@@ -1492,7 +1517,7 @@ export class VoiceAgent {
         final:(item,late)=>this.finishInput(item,late),repair:()=>this.speakUnprompted(session,REPAIR_INSTRUCTION),
         log:(kind,data)=>this.log(kind,data),
       });
-      const stopMeter=await this.meterFactory(stream,rms=>{if(this.session===session && this.sessionReady)this.input?.sample(rms);});
+      const stopMeter=await this.meterFactory(stream,rms=>{if(this.session===session && this.sessionReady)this.input?.sample(rms);},this.meterEvents(session));
       if(this.session!==session){stopMeter();return;}this.meterStop=stopMeter;
 
       // Never stay "connecting" forever: if the data channel hasn't opened in
@@ -1580,7 +1605,7 @@ export class VoiceAgent {
           this.liveClient=new LiveClient((method,input)=>this.rpc(method,input),()=>this.session===session && this.nonce===nonce,this.input!,nonce,callConversationId);
           this.sessionReady=true;this.clearConnectWatchdog();
           for(const track of stream.getAudioTracks())track.enabled=true;
-          this.setState("live");this.startPresenceHeartbeat();
+          this.setState("live");this.startPresenceHeartbeat();this.startHealthLog(session);
           this.log("session.live");this.inputChanged();
           // Ada speaks first. A resumed conversation gets a short status instead of an introduction.
           const resumed = Array.isArray((context as { recentTurns?: unknown[] } | null)?.recentTurns) && (context as { recentTurns: unknown[] }).recentTurns.length > 0;

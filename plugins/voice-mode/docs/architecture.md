@@ -8,6 +8,12 @@ receipts, native BB events, and the client sequencer supply the control flow.
 It fetches `callStartContext` before enabling the microphone and injects one system
 item. During the call it injects only tool results and `background_updates` batches.
 `input-controller.ts` keeps word-checked interruption and the correction window.
+A commit needs two signals: meter energy from the local AudioContext and
+transcription deltas from the server. While live, `input.health` is logged every
+thirty seconds with samples, peak level, deltas, unconfirmed items, and the meter
+and connection state; `input.deltaUnsupported` is logged once per item when words
+arrive with no meter energy; `meter.suspended` and `meter.resumed` record the
+AudioContext state, and a suspended context is resumed. These only describe.
 
 When the phone screen locks, iOS mutes the microphone track while the page is
 hidden. The agent holds the call instead of hanging up: it marks the microphone
