@@ -30,6 +30,22 @@ import { Watches, interactionData, tail, threadName, type Thread } from "./watch
 import { readNamedWorkerSettings, resolveWorkerModel, type NamedWorkerSettings } from "./worker-profiles.ts";
 import { assembleWorkerPrompt } from "./worker-prompt.ts";
 import { queryTokens, rank, resolveName } from "./target-matching.ts";
+import type { WorkerProfile } from "./worker-profiles.ts";
+
+interface ModelChoice { id: string; name: string; isDefault: boolean; reasoning: string[]; fast: boolean }
+/** The subset of a thread's environment record that voice reports. */
+interface EnvironmentInfo {
+  path: string; branchName: string | null; baseBranch: string | null; defaultBranch: string | null; isWorktree: boolean; managed: boolean;
+  workspaceProvisionType: string; status: string; hostId: string;
+  pullRequest?: { status: string; pullRequest?: { number: number; title: string; url: string; state: string } | null } | null;
+}
+function environmentData(environment: EnvironmentInfo | null | undefined) {
+  if (!environment) return null;
+  const pr = environment.pullRequest?.pullRequest;
+  return { path: environment.path, branch: environment.branchName, baseBranch: environment.baseBranch, defaultBranch: environment.defaultBranch,
+    isWorktree: environment.isWorktree, kind: environment.workspaceProvisionType, status: environment.status, hostId: environment.hostId,
+    pullRequest: pr ? { number: pr.number, title: pr.title, url: pr.url, state: pr.state } : null };
+}
 
 const nonceInput = z.object({ nonce: z.string().min(1).max(256) }).strict();
 const conversationInput = nonceInput.extend({ conversationId: z.string().min(1).max(256) });
@@ -315,13 +331,70 @@ export class LiveRuntime {
     if (!host) throw new Error(project.kind === "personal" ? "No connected machine can run the worker" : hostId ? "That machine is not connected or does not host this project" : `Choose one connected machine that hosts this project: ${candidates.map(h => h.name).join(", ")}`);
     return { project, host };
   }
+  /** Providers on a machine with each one's models, for list_models and spoken overrides. */
+  private async catalog(hostId: string, providerId?: string) {
+    const providers = (await this.bb.sdk.providers.list({ hostId })).filter(p => !providerId || p.id === providerId);
+    return Promise.all(providers.map(async provider => {
+      if (!provider.available) return { id: provider.id, name: provider.displayName, available: false, models: [] as ModelChoice[] };
+      try {
+        const result = await this.bb.sdk.providers.models({ hostId, providerId: provider.id });
+        const fast = !!result.providers?.find(p => p.id === provider.id)?.serviceTiers?.some(t => t.id === "fast");
+        const models: ModelChoice[] = result.models.filter(m => !m.routeProviderId || m.routeProviderId === provider.id)
+          .map(m => ({ id: m.model, name: m.displayName, isDefault: m.isDefault, reasoning: (m.supportedReasoningEfforts ?? []).map(e => e.reasoningEffort), fast }));
+        return { id: provider.id, name: provider.displayName, available: true, models, ...(result.modelLoadError ? { error: result.modelLoadError.code } : {}) };
+      } catch (error) { return { id: provider.id, name: provider.displayName, available: true, models: [] as ModelChoice[], error: errorMessage(error) }; }
+    }));
+  }
+  /**
+   * Apply spoken provider, model, and reasoning overrides to the profile's execution.
+   * Names are approximate: "astra" resolves to gpt-6-astra. An unresolved name fails
+   * with the available choices instead of silently launching the profile's model.
+   */
+  private async execution(hostId: string, profile: NamedWorkerSettings["profiles"][number], spoken: { provider?: string; model?: string; reasoning?: string }) {
+    if (!spoken.provider && !spoken.model && !spoken.reasoning) return resolveWorkerModel(this.bb, hostId, profile);
+    const catalog = await this.catalog(hostId);
+    const available = catalog.filter(p => p.available);
+    let provider = available.find(p => p.id === profile.providerId);
+    if (spoken.provider) {
+      provider = resolveName(spoken.provider, available, p => `${p.id} ${p.name}`) ?? undefined;
+      if (!provider) throw new Error(`No available provider matches "${spoken.provider}". Providers: ${available.map(p => p.name).join(", ")}.`);
+    }
+    if (spoken.model && !spoken.provider) {
+      // A model name can pick the provider: "opus" belongs to one provider only.
+      const owners = available.filter(p => resolveName(spoken.model!, p.models, m => `${m.id} ${m.name}`));
+      if (owners.length === 1) provider = owners[0];
+      else if (owners.length > 1) throw new Error(`"${spoken.model}" exists on several providers: ${owners.map(p => p.name).join(", ")}. Say which one.`);
+    }
+    if (!provider) throw new Error(`Provider ${profile.providerId} is unavailable on the selected machine.`);
+    const model = spoken.model ? resolveName(spoken.model, provider.models, m => `${m.id} ${m.name}`) : provider.models.find(m => m.id === profile.model) ?? provider.models.find(m => m.isDefault);
+    if (!model) throw new Error(spoken.model ? `No ${provider.name} model matches "${spoken.model}". Models: ${provider.models.map(m => m.name).join(", ")}.` : `Provider ${provider.name} has no default model.`);
+    const reasoning = spoken.reasoning ?? (provider.id === profile.providerId && model.id === profile.model ? profile.reasoningLevel : null);
+    if (reasoning && !model.reasoning.includes(reasoning)) throw new Error(`${model.name} does not support ${reasoning} reasoning. Levels: ${model.reasoning.join(", ")}.`);
+    return { providerId: provider.id, model: model.id, ...(reasoning ? { reasoningLevel: reasoning as WorkerProfile["reasoningLevel"] & string } : {}), serviceTier: profile.serviceTier };
+  }
+  /** Where a new thread runs. Reuse needs a thread this call has seen; the main folder is the project's own checkout. */
+  private async workspace(call: CallState, project: { kind: string }, spoken: { workspace?: string; reuse_thread_id?: string }) {
+    if (project.kind === "personal") return { environment: { type: "personal" as const }, workspace: "personal" };
+    const choice = spoken.workspace ?? "new_worktree";
+    if (choice === "reuse_thread") {
+      if (!spoken.reuse_thread_id) throw new Error("workspace reuse_thread needs reuse_thread_id");
+      if (!call.allowed.has(spoken.reuse_thread_id)) throw new Error(`Not authorized: unknown target ID ${spoken.reuse_thread_id}. Resolve it with find_targets or read_threads first.`);
+      const thread = await this.bb.sdk.threads.get({ threadId: spoken.reuse_thread_id, include: "environment" });
+      const environment = (thread as { environment?: EnvironmentInfo | null }).environment;
+      if (!thread.environmentId || !environment) throw new Error("That thread has no environment to reuse.");
+      return { environment: { type: "reuse" as const, environmentId: thread.environmentId }, workspace: "reuse_thread", reusedThreadId: thread.id, branch: environment.branchName, path: environment.path };
+    }
+    if (choice === "main_folder") return { environment: { type: "unmanaged" as const, path: null }, workspace: "main_folder" };
+    return { environment: { type: "managed-worktree" as const, baseBranch: { kind: "default" as const } }, workspace: "new_worktree" };
+  }
   private async spawn(input: ToolInput, row: OperationRow, spoken: string, call: CallState) {
     const worker = input.tool === "spawn_worker";
     const args = worker ? liveToolArgs.spawn_worker.parse(input.args) : liveToolArgs.create_thread.parse(input.args);
     const settings = await readNamedWorkerSettings(this.bb);
     const profile = this.profileFor(settings, "profile" in args ? args.profile : undefined);
     const { project, host } = await this.destination(args.project_id, args.host_id);
-    const execution = await resolveWorkerModel(this.bb, host.id, profile);
+    const execution = await this.execution(host.id, profile, args);
+    const placement = await this.workspace(call, project, args);
     const reserve = this.creationChain.then(async () => {
       await this.refreshWorkerQuota();
       this.state(input.nonce, input.conversationId);
@@ -334,14 +407,16 @@ export class LiveRuntime {
     let thread: Thread;
     try {
       thread = await this.sdkEffect(input, () => this.bb.sdk.threads.spawn({ projectId: project.id, title: args.title, prompt,
-        environment: { type: "host", hostId: host.id, workspace: project.kind === "personal" ? { type: "personal" } : { type: "managed-worktree", baseBranch: { kind: "default" } } },
+        environment: placement.environment.type === "reuse" ? placement.environment : { type: "host", hostId: host.id, workspace: placement.environment },
         ...execution, permissionMode: profile.permissionMode, visibility: worker ? "hidden" : "visible" }));
     } catch (error) {
       this.store.db.prepare("UPDATE voice_tasks SET status = ?, updated_at = ? WHERE op_id = ?").run(isTimeout(error) ? "unknown" : "failed", this.now(), row.id); throw error;
     }
     this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(thread.id, row.id);
     this.remember(call, thread.id, project.id, host.id);
-    this.operations.finish(row.id, "running", { threadId: thread.id, title: threadName(thread), profile: profile.name, projectId: project.id, projectName: project.name, outsideProject: project.kind === "personal", hostId: host.id, hostName: host.name, visibility: worker ? "hidden" : "visible", launchAccepted: true, ...this.followUp({ state: "active" }) });
+    const { environment: _environment, ...placed } = placement;
+    this.operations.finish(row.id, "running", { threadId: thread.id, title: threadName(thread), profile: profile.name, projectId: project.id, projectName: project.name, outsideProject: project.kind === "personal", hostId: host.id, hostName: host.name,
+      provider: execution.providerId, model: execution.model, reasoning: execution.reasoningLevel ?? null, ...placed, visibility: worker ? "hidden" : "visible", launchAccepted: true, ...this.followUp({ state: "active" }) });
     try { await this.watches.spawned(row.id, thread); }
     catch (error) { this.operations.finish(row.id, "running", { recoveryNeeded: true, error: errorMessage(error) }); }
     return this.operations.receipt(this.operations.get(row.id)!);
@@ -364,6 +439,15 @@ export class LiveRuntime {
   }
   private async read(input: ToolInput, call: CallState): Promise<unknown> {
     switch (input.tool) {
+      case "list_models": {
+        const args = liveToolArgs.list_models.parse(input.args);
+        const { host } = await this.destination(undefined, args.host_id);
+        const all = await this.catalog(host.id);
+        const providers = args.provider ? [resolveName(args.provider, all, p => `${p.id} ${p.name}`)].filter((p): p is typeof all[number] => !!p) : all;
+        this.state(input.nonce, input.conversationId);
+        this.remember(call, host.id);
+        return { hostId: host.id, hostName: host.name, providers, asOf: this.now() };
+      }
       case "find_targets": {
         const args = liveToolArgs.find_targets.parse(input.args), tokens = queryTokens(args.query);
         const [projects, hosts] = await Promise.all([this.bb.sdk.projects.list({ includePersonal: true }), this.bb.sdk.hosts.list()]);
@@ -413,7 +497,7 @@ export class LiveRuntime {
         const args = liveToolArgs.read_threads.parse(input.args);
         const threads = await Promise.all(args.thread_ids.map(async threadId => {
           try {
-            const [thread, output, interactions] = await Promise.all([this.bb.sdk.threads.get({ threadId }), this.bb.sdk.threads.output({ threadId }), this.bb.sdk.threads.interactions.list({ threadId })]);
+            const [thread, output, interactions] = await Promise.all([this.bb.sdk.threads.get({ threadId, ...(args.what === "environment" ? { include: "environment" } : {}) }), this.bb.sdk.threads.output({ threadId }), this.bb.sdk.threads.interactions.list({ threadId })]);
             this.remember(call, thread.id, thread.projectId, thread.parentThreadId);
             const pending = interactions.filter(i => i.status === "pending");
             pending.forEach(i => this.remember(call, i.id));
@@ -422,7 +506,9 @@ export class LiveRuntime {
               const root = await this.watches.root(thread); this.watches.trigger(input.conversationId, "ask", root);
               updates = this.store.inbox(input.conversationId).filter(i => i.root_thread_id === root && i.status !== "resolved");
             }
-            return { threadId, title: threadName(thread), status: thread.status, projectId: thread.projectId, parentThreadId: thread.parentThreadId,
+            const environment = args.what === "environment" ? environmentData((thread as { environment?: EnvironmentInfo | null }).environment) : undefined;
+            return { threadId, title: threadName(thread), status: thread.status, projectId: thread.projectId, parentThreadId: thread.parentThreadId, environmentId: thread.environmentId,
+              ...(environment !== undefined ? { environment } : {}),
               output: tail(output.output), receipts: this.operations.forThread(input.conversationId, threadId),
               pendingInteractions: pending.map(interactionData), ...(updates ? { updates } : {}), task: this.taskData(input.conversationId, threadId),
               asOf: this.now(), evidenceAt: thread.updatedAt, ageMs: Math.max(0, this.now() - thread.updatedAt), source: "BB thread and latest output" };

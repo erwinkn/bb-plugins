@@ -18,7 +18,7 @@ Windows and Linux use Ctrl. Change them in Voice Mode's Keyboard shortcuts setti
 
 ## Work with Ada
 
-Ada uses one live model and fifteen tools. It can find, read, and rename threads, deliver
+Ada uses one live model and sixteen tools. It can find, read, and rename threads, deliver
 messages, create visible threads or hidden workers, prepare unsent drafts, navigate,
 stop work, manage subscriptions, prepare and confirm archives, and answer native
 questions or approvals. Archive and approval actions require a later spoken
@@ -30,6 +30,12 @@ search does not settle what you meant, Ada starts a worker to look instead of as
 for exact names or IDs. Workers run outside any project unless the task needs a
 repository; they can read every BB project and thread. A worker uses the default
 profile unless Ada picks one of the configured names.
+
+Name a provider, model, or reasoning level when you ask for new work and Ada uses
+it, then confirms the model it resolved; ask "what models are there" for the list.
+Say "in the main folder" or "alongside that thread" to choose where the work runs;
+otherwise it gets a new worktree. Ask for a thread's environment to hear its folder,
+branch, and pull request.
 
 You can say "agent" instead of "thread". An agent is a root thread, and a sub-agent
 is a child thread of that root. Ada applies this mapping when it resolves what you

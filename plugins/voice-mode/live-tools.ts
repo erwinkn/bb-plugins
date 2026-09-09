@@ -2,12 +2,24 @@ import { z } from "zod";
 
 const id = z.string().min(1).max(256);
 const ids = z.array(id).min(1).max(30);
+/** Spoken overrides of the execution setup. Names are approximate and resolved against the live catalog. */
+const execution = {
+  provider: z.string().min(1).max(64).optional().describe("Provider name as spoken, for example codex or claude. Omit to keep the profile's provider."),
+  model: z.string().min(1).max(128).optional().describe("Model name as spoken, for example astra or opus. Resolved against the provider's catalog; the receipt states the resolved model."),
+  reasoning: z.enum(["none", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]).optional().describe("Reasoning level. Omit to keep the profile's level."),
+};
+/** Where a new thread runs. Omit for a new worktree from the default branch. */
+const workspace = {
+  workspace: z.enum(["new_worktree", "main_folder", "reuse_thread"]).optional().describe("new_worktree (default): a fresh worktree from the default branch. main_folder: the project's own folder. reuse_thread: the environment of the thread in reuse_thread_id."),
+  reuse_thread_id: id.optional().describe("With workspace reuse_thread: a thread seen in this call whose worktree the new thread joins."),
+};
 export const liveToolArgs = {
+  list_models: z.object({ host_id: id.optional().describe("Omit for the primary machine."), provider: z.string().min(1).max(64).optional().describe("Only this provider, as spoken.") }).strict(),
   find_targets: z.object({ query: z.string().max(200), include_children: z.boolean().optional(), include_archived: z.boolean().optional(), parent_id: id.optional().describe("List the children of this thread, newest first, filtered by query.") }).strict(),
-  read_threads: z.object({ thread_ids: ids, what: z.enum(["status", "output", "receipts", "updates"]) }).strict(),
+  read_threads: z.object({ thread_ids: ids, what: z.enum(["status", "output", "receipts", "updates", "environment"]) }).strict(),
   message_thread: z.object({ thread_id: id, body: z.string().min(1).max(16000), mode: z.enum(["normal", "steer"]) }).strict(),
-  spawn_worker: z.object({ profile: z.string().min(1).max(64).optional().describe("A configured profile name. Omit for the default profile."), title: z.string().min(1).max(200), task: z.string().min(1).max(24000).describe("Task, context, constraints, and expected result."), project_id: id.optional().describe("Only when the task needs that repository's files. Omit to run outside any project."), host_id: id.optional() }).strict(),
-  create_thread: z.object({ project_id: id, title: z.string().min(1).max(200), body: z.string().min(1).max(24000), host_id: id.optional() }).strict(),
+  spawn_worker: z.object({ profile: z.string().min(1).max(64).optional().describe("A configured profile name. Omit for the default profile."), title: z.string().min(1).max(200), task: z.string().min(1).max(24000).describe("Task, context, constraints, and expected result."), project_id: id.optional().describe("Only when the task needs that repository's files. Omit to run outside any project."), host_id: id.optional(), ...execution, ...workspace }).strict(),
+  create_thread: z.object({ project_id: id, title: z.string().min(1).max(200), body: z.string().min(1).max(24000), host_id: id.optional(), ...execution, ...workspace }).strict(),
   prepare_draft: z.object({ thread_id: id.optional(), project_id: id.optional(), text: z.string().max(24000), mode: z.enum(["append", "replace"]) }).strict(),
   control_ui: z.object({ action: z.enum(["open_thread", "open_project", "preview_file", "show_voice"]), thread_id: id.optional(), project_id: id.optional(), path: z.string().min(1).max(4096).optional(), source: z.enum(["workspace", "thread-storage"]).optional() }).strict(),
   stop_thread: z.object({ thread_id: id }).strict(),
@@ -22,11 +34,12 @@ export const liveToolArgs = {
 export type LiveTool = keyof typeof liveToolArgs;
 export const LIVE_EFFECTS = new Set<LiveTool>(["message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "rename_thread", "archive_threads", "answer_interaction"]);
 const descriptions: Record<LiveTool, string> = {
+  list_models: "List the providers available on a machine and each provider's models with their reasoning levels and Fast support. Use it before create_thread or spawn_worker when the user names a model, or when asked what models exist.",
   find_targets: "Find threads and projects from an approximate spoken description. Results are ranked with a match score from 0 to 1; all projects are returned ranked. Defaults to non-archived parents; include_children for child threads, parent_id for the children of one thread. Includes this conversation's tasks. Resolve names before acting.",
-  read_threads: "Read status, output tail, receipts, pending interactions, or updates for several threads. Evidence has timestamps and truncation flags. receipts are the stored results of this call's earlier actions, for recovery after an interruption; a send result that already returned needs no confirmation.",
+  read_threads: "Read status, output tail, receipts, pending interactions, updates, or environment (folder, branch, worktree, pull request) for several threads. Evidence has timestamps and truncation flags. receipts are the stored results of this call's earlier actions, for recovery after an interruption; a send result that already returned needs no confirmation.",
   message_thread: "Deliver a message now. Normal queues if active; steer joins the active turn. The result is the receipt: sent and queued are both final delivery, and status running means the thread is working on it. The thread's reply, failure, or question is reported to you automatically in this call. Sending at a future time is unsupported and returns an error.",
-  spawn_worker: "Start a hidden background worker. It runs outside any project on the primary machine by default and can inspect every BB project and thread; give project_id only when the task needs that repository's files. Supply context, constraints, and expected result in task. Returns launch status, not completion; the result, failure, or question is reported to you automatically in this call. Hidden only means it is not listed in the sidebar.",
-  create_thread: "Create a visible root thread with the given body as its prompt. Returns launch status; the result, failure, or question is reported to you automatically in this call.",
+  spawn_worker: "Start a hidden background worker. It runs outside any project on the primary machine by default and can inspect every BB project and thread; give project_id only when the task needs that repository's files. A spoken provider, model, or reasoning level overrides the profile; workspace picks a new worktree, the main folder, or another thread's worktree. Supply context, constraints, and expected result in task. Returns launch status, not completion; the result, failure, or question is reported to you automatically in this call. Hidden only means it is not listed in the sidebar.",
+  create_thread: "Create a visible root thread with the given body as its prompt. A spoken provider, model, or reasoning level overrides the default profile; workspace picks a new worktree (default), the main folder, or another thread's worktree. The receipt states the resolved model and workspace. Returns launch status; the result, failure, or question is reported to you automatically in this call.",
   prepare_draft: "Write to the exact thread or project composer on the call owner device. Never submit. Append unless replacement was requested.",
   control_ui: "Navigate on the call owner device. Open a thread or project, preview a file, or show Voice. Background updates cannot navigate.",
   stop_thread: "Request a stop on explicit user intent. Acceptance does not prove every process exited. The outcome is reported to you automatically in this call.",

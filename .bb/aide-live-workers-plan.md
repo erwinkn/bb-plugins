@@ -170,6 +170,7 @@ Follow-up field. Every receipt for work that continues in the background (send, 
 | `prepare_draft` | thread_id or project_id, text, mode: append, replace | yes, on the client | Writes to the exact composer. Never submits. |
 | `control_ui` | action: open_thread, open_project, preview_file, show_voice, and its target | screen | Runs on the owner device through the native UI adapter. Reports what the UI did. |
 | `stop_thread` | thread_id | yes | Stop on explicit intent. Acceptance is not proof that every process exited. Carries `updates`. |
+| `list_models` | host_id?, provider? | no | Providers on a machine with each one's models, reasoning levels, and Fast support. |
 | `rename_thread` | thread_id, title | yes | Set a new title on explicit intent. The receipt carries the previous and the new title. |
 | `subscriptions` | op: list, subscribe, unsubscribe; thread_id? | no | subscribe re-enables a disabled watch. |
 | `prepare_archive` | thread_ids[] | no | Preview with children and active work. Returns a preview id. |
@@ -246,6 +247,13 @@ profile for the default, or pick a listed one. Reuse existing work for follow-up
 Acknowledge longer work once. After launch, say it runs in the background and that
 you will report when it finishes, then stay available. Hidden means only that a worker
 is not in the sidebar. Do not claim a launch or a completion before its result.
+When the user names a provider, a model, or a reasoning level for new work, pass
+it through as spoken; the receipt states the resolved model, so confirm that name
+and never a guess. Use list_models when they ask what models exist or when a name
+did not resolve. When they say to work "in", "inside", or "alongside" a thread, use
+workspace reuse_thread with that thread; "in the main folder" means main_folder. Say
+nothing about worktrees unless asked; a new worktree is the default. read_threads
+with environment tells the folder, branch, and pull request of a thread.
 "Rename" or "call it" means rename_thread with the user's words as the title.
 "Send", "tell", "ask that thread", and "queue" mean delivery with message_thread.
 Queue normal follow-ups; steer only for a requested interruption or an urgent
@@ -432,8 +440,9 @@ Driven by the first live session on 2026-09-09 (issues #23 to #27 in erwinkn/bb-
 Driven by the second live session on 2026-09-09 (issues #31 and #32).
 
 - Call state survives a plugin reload. The runtime rebuilds its in-memory call state from the store when the owner record still matches, and it persists every target ID the model was shown in `voice_call_targets`, so a reload mid-call no longer fails every tool with "fetch call-start context first".
-- `rename_thread` sets a thread title on explicit intent and reports the previous and new title. The tool count is fifteen.
+- `rename_thread` sets a thread title on explicit intent and reports the previous and new title. The tool count was fifteen at that point.
 - The assistant is named Ada; "Ada" was hard to say in English. The stored prompt role stays `aide`.
+- Thread creation is precise (#35). `create_thread` and `spawn_worker` take optional `provider`, `model`, and `reasoning`, resolved by tolerant matching against the live catalog; an unresolved name fails with the choices. `workspace` picks `new_worktree` (default), `main_folder`, or `reuse_thread` with a seen `reuse_thread_id`. The receipt states the resolved model and placement. `read_threads` gained `environment`. Tool count is sixteen.
 - The Identity section asks for audio-efficient replies: lead with the answer, one or two short sentences, warm but brief.
 - Ada speaks first. After the call-start context, the client requests one response with a greeting instruction (or a status instruction on resume); it is bound to no utterance, so effects are refused.
 

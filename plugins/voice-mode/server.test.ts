@@ -46,7 +46,7 @@ test("session history and plugin logs preserve the same actions and error detail
 });
 
 test("realtime tools expose bounded quick actions without destructive or arbitrary tools", () => {
-  assert.deepEqual(liveToolSchemas().map(tool => tool.name), ["find_targets", "read_threads", "message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "rename_thread", "subscriptions", "prepare_archive", "archive_threads", "answer_interaction", "remain_silent", "end_call"]);
+  assert.deepEqual(liveToolSchemas().map(tool => tool.name), ["list_models", "find_targets", "read_threads", "message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "rename_thread", "subscriptions", "prepare_archive", "archive_threads", "answer_interaction", "remain_silent", "end_call"]);
 });
 
 test("obsolete view preferences are ignored without changing other saved settings", async () => {

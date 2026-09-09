@@ -31,7 +31,12 @@ async function fixture() {
   const sdk: Any = {
     projects: { list: async () => [{ id: "proj_personal", name: "Personal", kind: "personal", sources: [] }, { id: "app", name: "BB Plugins", kind: "standard", sources: [{ hostId: "mac" }] }, { id: "docs", name: "docs-site", kind: "standard", sources: [{ hostId: "mac" }] }] },
     hosts: { list: async () => [{ id: "laptop", name: "Laptop", status: "connected" }, { id: "mac", name: "Desktop", status: "connected" }, { id: "away", name: "Away", status: "disconnected" }] },
-    providers: { list: async () => [{ id: "codex", available: true }], models: async () => ({ models: [{ id: "worker", model: "worker", isDefault: true }], modelLoadError: null }) },
+    providers: {
+      list: async () => [{ id: "codex", displayName: "Codex", available: true }, { id: "claude-code", displayName: "Claude Code", available: true }, { id: "cursor", displayName: "Cursor", available: false }],
+      models: async ({ providerId }: Any) => providerId === "codex"
+        ? { models: [{ id: "worker", model: "worker", displayName: "Worker", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "medium" }, { reasoningEffort: "high" }] }, { id: "gpt-6-astra", model: "gpt-6-astra", displayName: "GPT-6 Astra", isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: "high" }, { reasoningEffort: "xhigh" }] }], providers: [{ id: "codex", serviceTiers: [{ id: "fast" }] }], modelLoadError: null }
+        : { models: [{ id: "claude-opus-5", model: "claude-opus-5", displayName: "Opus 5", isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: "high" }] }], modelLoadError: null },
+    },
     threads: {
       search: async () => ({}),
       get: async (args: Any) => { if (world.get) return world.get(args); const t = world.threads.get(args.threadId); if (!t) throw new Error("Missing thread"); return t; },
@@ -104,8 +109,8 @@ test("worker spawn passes each configured profile permission mode to BB", async 
   assert.equal(h.world.spawns.length, 3);
 });
 
-test("live tools expose all fifteen strict argument schemas", () => {
-  const schemas = liveToolSchemas(); assert.equal(schemas.length, 15); assert.equal(new Set(schemas.map(s => s.name)).size, 15);
+test("live tools expose all sixteen strict argument schemas", () => {
+  const schemas = liveToolSchemas(); assert.equal(schemas.length, 16); assert.equal(new Set(schemas.map(s => s.name)).size, 16);
   for (const s of schemas) assert.equal(s.parameters.additionalProperties, false);
   assert.equal(canonical({ z: 2, a: { b: 1 } }), '{"a":{"b":1},"z":2}');
   assert.equal(hash({ a: 1, b: 2 }), hash({ b: 2, a: 1 }));
@@ -881,4 +886,61 @@ test("a plugin reload during a live call keeps its authorizations without a new 
   assert.equal(renamed.status, "succeeded", "a target found by search before the reload is still authorized");
   // A stopped or replaced call is still refused: the owner check comes first.
   assert.match((await h.run("find_targets", { query: "x" }, { nonce: "stale" })).error, /stopped or replaced/);
+});
+
+const brainstorm = { project_id: "app", title: "Brainstorm", body: "Think about the plan." };
+
+test("a spoken model overrides the profile and the receipt states what was resolved", async t => {
+  const h = await fixture(); t.after(h.close);
+  const receipt = await h.run("create_thread", { ...brainstorm, model: "astra", reasoning: "xhigh" });
+  assert.equal(receipt.status, "running"); assert.equal(receipt.provider, "codex"); assert.equal(receipt.model, "gpt-6-astra"); assert.equal(receipt.reasoning, "xhigh"); assert.equal(receipt.workspace, "new_worktree");
+  assert.equal(h.world.spawns.at(-1).model, "gpt-6-astra"); assert.equal(h.world.spawns.at(-1).reasoningLevel, "xhigh");
+  assert.deepEqual(h.world.spawns.at(-1).environment, { type: "host", hostId: "mac", workspace: { type: "managed-worktree", baseBranch: { kind: "default" } } });
+  // A model name alone can pick its provider.
+  const opus = await h.run("create_thread", { ...brainstorm, title: "Opus brainstorm", model: "opus" }, { utterance: { id: "u2", version: 1, text: "use opus", startedAt: h.now() } });
+  assert.equal(opus.provider, "claude-code"); assert.equal(opus.model, "claude-opus-5");
+  // Nothing spoken keeps the profile's execution.
+  const plain = await h.run("create_thread", { ...brainstorm, title: "Plain" }, { utterance: { id: "u3", version: 1, text: "plain", startedAt: h.now() } });
+  assert.equal(plain.model, "worker");
+});
+
+test("an unknown model or an unsupported reasoning level fails with the choices instead of launching", async t => {
+  const h = await fixture(); t.after(h.close);
+  const missing = await h.run("create_thread", { ...brainstorm, model: "gemini" });
+  assert.match(missing.error, /No Codex model matches "gemini"/); assert.match(missing.error, /Worker, GPT-6 Astra/);
+  const level = await h.run("create_thread", { ...brainstorm, model: "astra", reasoning: "low" }, { utterance: { id: "u2", version: 1, text: "low", startedAt: h.now() } });
+  assert.match(level.error, /does not support low reasoning/);
+  const provider = await h.run("create_thread", { ...brainstorm, provider: "cursor" }, { utterance: { id: "u3", version: 1, text: "cursor", startedAt: h.now() } });
+  assert.match(provider.error, /No available provider matches "cursor"/);
+  assert.equal(h.world.spawns.length, 0, "no thread was launched with the wrong setup");
+});
+
+test("workspace can be the main folder or another thread's worktree, which must be a seen target", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.world.threads.get("build").environmentId = "env_build";
+  h.world.threads.get("build").environment = { path: "/repo/.worktrees/build", branchName: "bb/build", baseBranch: "origin/main", defaultBranch: "main", isWorktree: true, managed: true, workspaceProvisionType: "managed-worktree", status: "ready", hostId: "mac", pullRequest: null };
+  const main = await h.run("create_thread", { ...brainstorm, workspace: "main_folder" });
+  assert.equal(main.workspace, "main_folder");
+  assert.deepEqual(h.world.spawns.at(-1).environment, { type: "host", hostId: "mac", workspace: { type: "unmanaged", path: null } });
+  const reused = await h.run("create_thread", { ...brainstorm, title: "Alongside", workspace: "reuse_thread", reuse_thread_id: "build" }, { utterance: { id: "u2", version: 1, text: "alongside build", startedAt: h.now() } });
+  assert.equal(reused.workspace, "reuse_thread"); assert.equal(reused.reusedThreadId, "build"); assert.equal(reused.branch, "bb/build");
+  assert.deepEqual(h.world.spawns.at(-1).environment, { type: "reuse", environmentId: "env_build" });
+  const unseen = await h.run("create_thread", { ...brainstorm, title: "Nope", workspace: "reuse_thread", reuse_thread_id: "ghost" }, { utterance: { id: "u3", version: 1, text: "ghost", startedAt: h.now() } });
+  assert.match(unseen.error, /unknown target ID ghost/);
+});
+
+test("list_models reports providers and models on the primary machine, and read_threads shows a thread's environment", async t => {
+  const h = await fixture(); t.after(h.close);
+  const listed = await h.run("list_models", {});
+  assert.equal(listed.hostId, "mac");
+  assert.deepEqual(listed.providers.map((p: Any) => [p.id, p.available, p.models.map((m: Any) => m.id)]), [["codex", true, ["worker", "gpt-6-astra"]], ["claude-code", true, ["claude-opus-5"]], ["cursor", false, []]]);
+  assert.deepEqual(listed.providers[0].models[1].reasoning, ["high", "xhigh"]); assert.equal(listed.providers[0].models[1].fast, true);
+  const one = await h.run("list_models", { provider: "claude" });
+  assert.deepEqual(one.providers.map((p: Any) => p.id), ["claude-code"]);
+  h.world.threads.get("build").environmentId = "env_build";
+  h.world.threads.get("build").environment = { path: "/repo/.worktrees/build", branchName: "bb/build", baseBranch: "origin/main", defaultBranch: "main", isWorktree: true, managed: true, workspaceProvisionType: "managed-worktree", status: "ready", hostId: "mac", pullRequest: { status: "available", pullRequest: { number: 7, title: "Build fix", url: "https://example/pr/7", state: "open" } } };
+  const read = await h.run("read_threads", { thread_ids: ["build"], what: "environment" });
+  assert.deepEqual(read.threads[0].environment, { path: "/repo/.worktrees/build", branch: "bb/build", baseBranch: "origin/main", defaultBranch: "main", isWorktree: true, kind: "managed-worktree", status: "ready", hostId: "mac", pullRequest: { number: 7, title: "Build fix", url: "https://example/pr/7", state: "open" } });
+  const status = await h.run("read_threads", { thread_ids: ["build"], what: "status" });
+  assert.equal("environment" in status.threads[0], false, "environment is only read when asked");
 });
