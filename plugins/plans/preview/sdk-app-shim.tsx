@@ -27,6 +27,7 @@ import type {
   PluginAppSetup,
   PluginRealtimeConnectionState,
   PluginRpcClient,
+  PluginSidebarThreadsState,
   PluginRpcContract,
 } from "@get-bb/plugin-sdk/app";
 
@@ -40,7 +41,7 @@ export function emitRealtime(channel: string, payload: unknown): void {
 }
 
 const MUTATIONS = new Set([
-  "create", "revise", "addComment", "updateComment", "removeComment", "remove", "submitReview",
+  "create", "addAnnotation", "updateAnnotation", "withdrawAnnotation", "replyToAnnotation", "resolveAnnotation", "setDeliveryMode", "remove", "approve",
 ]);
 
 /* ---------- rpc over the preview middleware ---------- */
@@ -62,7 +63,7 @@ async function callRpc(method: string, input: unknown): Promise<unknown> {
   }
   if (MUTATIONS.has(method)) {
     emitRealtime("plans-changed", { method });
-    if ((method === "create" || method === "revise") && typeof body === "object" && body !== null) {
+    if (method === "create" && typeof body === "object" && body !== null) {
       const plan = body as { id?: unknown; threadId?: unknown };
       if (typeof plan.id === "string" && typeof plan.threadId === "string") {
         emitRealtime("plan-submitted", { id: plan.id, threadId: plan.threadId });
@@ -112,6 +113,23 @@ export interface PreviewShellState {
 const ShellContext = createContext<PreviewShellState | null>(null);
 
 export function PreviewShellProvider({ value, children }: { value: PreviewShellState; children: ReactNode }) {
+  useEffect(() => {
+    let cursor = 0;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/preview/events?after=${cursor}`);
+        const update = await response.json();
+        if (stopped) return;
+        cursor = update.cursor;
+        for (const signal of update.signals) emitRealtime(signal.channel, signal.payload);
+        emitRealtime("preview-status", { working: update.working, pending: update.pending });
+      } finally { if (!stopped) timer = setTimeout(() => void poll().catch(() => {}), 400); }
+    };
+    void poll().catch(() => {});
+    return () => { stopped = true; clearTimeout(timer); };
+  }, []);
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;
 }
 
@@ -225,4 +243,13 @@ export function useCapturedRegistrations(): CapturedRegistrations {
     },
     () => captured,
   );
+}
+
+export function experimental_useSidebarThreads(): PluginSidebarThreadsState {
+  const [status, setStatus] = useState({ working: false, pending: false });
+  useRealtime("preview-status", (value) => setStatus(value as typeof status));
+  return { status: "ready", projects: [], threads: [{
+    id: "preview-thread-1", hasPendingInteraction: status.pending,
+    indicator: status.working ? "runtime" : status.pending ? "waiting-for-input" : "none",
+  } as PluginSidebarThreadsState["threads"][number]] };
 }

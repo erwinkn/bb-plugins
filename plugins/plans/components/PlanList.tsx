@@ -1,3 +1,4 @@
+import { useLiveStatus } from "../hooks/useLiveStatus";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
@@ -63,8 +64,9 @@ export function PlanList({
 }
 
 function PlanRow({ plan, onSelect }: { plan: Plan; onSelect: () => void }) {
+  const liveStatus = useLiveStatus(plan.threadId);
   const latest = latestVersion(plan);
-  const open = plan.comments.filter((comment) => comment.kind !== "looksGood").length;
+  const open = plan.comments.filter((comment) => comment.state === "open").length;
   return (
     <button
       type="button"
@@ -83,7 +85,7 @@ function PlanRow({ plan, onSelect }: { plan: Plan; onSelect: () => void }) {
         ) : null}
       </span>
       <span className="flex min-w-0 items-center gap-1.5 pl-3.5 text-xs text-muted-foreground">
-        <span className="truncate">{plan.projectName ?? STATUS_LABEL[plan.status]}</span>
+        <span className="truncate">{plan.status === "approved" ? "Approved" : liveStatus ?? STATUS_LABEL[plan.status]}</span>
         <span aria-hidden>·</span>
         {latest ? <span className="shrink-0">v{latest.number}</span> : null}
         {open > 0 ? (

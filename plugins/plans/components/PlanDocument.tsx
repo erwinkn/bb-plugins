@@ -25,6 +25,7 @@ import {
   supportsHighlights,
   type HighlightEntry,
 } from "../lib/highlight-registry";
+import { stateLabel } from "../lib/plan-model";
 import { KindBadge, kindOf } from "./CommentKind";
 import {
   definedContext,
@@ -41,6 +42,7 @@ export type AnchorMap = Record<string, QuoteMatch>;
 
 interface PlanDocumentProps {
   markdown: string;
+  versionId?: string;
   /** Tab visibility controls interaction, never the lifetime of the text index. */
   visible?: boolean;
   comments: PlanComment[];
@@ -51,6 +53,7 @@ interface PlanDocumentProps {
   canComment: boolean;
   /** Quote being composed; its match is reported so the composer can warn. */
   pendingQuote: string | null;
+  pendingKind?: "comment" | "ask";
   /** Where the pending quote was selected, for a passage that repeats. */
   pendingContext?: QuoteContext;
   onPendingMatch: (match: QuoteMatch | null) => void;
@@ -60,7 +63,7 @@ interface PlanDocumentProps {
    */
   composer?: ReactNode;
   /** The user asked to comment on the current selection. */
-  onQuote: (quote: string, context: QuoteContext) => void;
+  onQuote: (quote: string, context: QuoteContext, kind?: "comment" | "ask") => void;
   onAnnotate?: (quote: string, kind: "redline" | "looksGood", context: QuoteContext) => Promise<void>;
   onActivateComment: (commentId: string | null) => void;
   /** Where each comment's quote was found; lets cards explain missing anchors. */
@@ -68,8 +71,8 @@ interface PlanDocumentProps {
   className?: string;
 }
 
-// Menu height (4 rows of 32px, gaps, separator, padding, border ≈ 149px) plus a gap.
-const FLOATING_OFFSET = 156;
+// Five rows plus gaps, separator, padding, border, and space above the quote.
+const FLOATING_OFFSET = 190;
 const FLOATING_EDGE = 90;
 const COMPOSER_WIDTH = 320;
 const COMPOSER_MARGIN = 8;
@@ -88,6 +91,7 @@ function clamp(value: number, min: number, max: number): number {
  */
 export function PlanDocument({
   markdown,
+  versionId,
   visible = true,
   comments,
   activeCommentId,
@@ -95,6 +99,7 @@ export function PlanDocument({
   onHoverComment,
   canComment,
   pendingQuote,
+  pendingKind = "comment",
   pendingContext,
   onPendingMatch,
   composer,
@@ -123,7 +128,11 @@ export function PlanDocument({
     const anchors: AnchorMap = {};
     const ranges = new Map<string, Range>();
     for (const comment of comments) {
-      const match = matchQuote(index.text, comment.quote, comment);
+      if (comment.state === "withdrawn") continue;
+      const match = matchQuote(index.text, comment.quote, {
+        prefix: comment.prefix, suffix: comment.suffix,
+        ...(comment.versionId === versionId ? { position: comment.position } : {}),
+      });
       anchors[comment.id] = match;
       if (match.kind === "unique") {
         const range = rangeForMatch(index, match.start, match.end);
@@ -148,7 +157,7 @@ export function PlanDocument({
       anchorsRef.current = anchors;
       onAnchorsChange(anchors);
     }
-  }, [comments, onAnchorsChange, onPendingMatch, pendingQuote, pendingContext?.prefix, pendingContext?.suffix, pendingContext?.position]);
+  }, [comments, versionId, onAnchorsChange, onPendingMatch, pendingQuote, pendingContext?.prefix, pendingContext?.suffix, pendingContext?.position]);
 
   useLayoutEffect(() => {
     anchor();
@@ -187,6 +196,7 @@ export function PlanDocument({
     if (!supportsHighlights()) return;
     const entries: HighlightEntry[] = [];
     for (const comment of comments) {
+      if (comment.state === "withdrawn") continue;
       const range = rangesRef.current.get(comment.id);
       if (range === undefined) continue;
       entries.push({
@@ -195,7 +205,7 @@ export function PlanDocument({
         emphasized: comment.id === activeCommentId || comment.id === hoveredCommentId,
       });
     }
-    if (pendingRangeRef.current !== null) entries.push({ range: pendingRangeRef.current, kind: "comment", emphasized: true });
+    if (pendingRangeRef.current !== null) entries.push({ range: pendingRangeRef.current, kind: pendingKind, emphasized: true });
     setHighlightRanges(ownerId, entries);
     return () => clearHighlightRanges(ownerId);
   });
@@ -269,15 +279,16 @@ export function PlanDocument({
 
   // Commit on pointerdown: on touch devices the selection collapses before
   // click fires, and the grace period in the hook covers the rest.
-  const commitQuote = (kind?: "redline" | "looksGood") => {
+  const commitQuote = (kind?: "ask" | "redline" | "looksGood") => {
     const recent = takeRecent();
     if (recent === null) return;
     const context = definedContext(recent);
-    if (kind && onAnnotate) void onAnnotate(recent.quote, kind, context);
+    if (kind && kind !== "ask" && onAnnotate) void onAnnotate(recent.quote, kind, context);
+    else if (kind === "ask") onQuote(recent.quote, context, "ask");
     else onQuote(recent.quote, context);
     clearDocumentSelection(contentRef.current);
   };
-  const commitProps = (kind?: "redline" | "looksGood") => ({
+  const commitProps = (kind?: "ask" | "redline" | "looksGood") => ({
     onPointerDown: (event: React.PointerEvent) => {
       event.preventDefault();
       commitQuote(kind);
@@ -319,6 +330,7 @@ export function PlanDocument({
   interface SelectionAction { label: string; icon: IconName; key: string; className: string; props: typeof copyProps }
   const actions: SelectionAction[] = [
     { label: "Comment", icon: "MessageSquarePlus", key: "C", className: "", props: commitProps() },
+    { label: "Ask", icon: "MessageSquare", key: "A", className: "text-primary", props: commitProps("ask") },
     ...(onAnnotate
       ? [
           { label: "Redline", icon: "Strikethrough", key: "D", className: "text-destructive", props: commitProps("redline") } satisfies SelectionAction,
@@ -348,7 +360,7 @@ export function PlanDocument({
   // actions dock along the bottom edge of the document as a toolbar. Copy is
   // left to the callout, which already offers it.
   const barButton = (label: string, icon: IconName, className: string, props: typeof copyProps) => (
-    <button key={label} type="button" className={cn("flex h-11 min-w-0 items-center justify-center gap-1 px-1 text-xs leading-none active:bg-state-active", className)} {...props}>
+    <button key={label} type="button" className={cn("flex h-12 min-w-0 flex-col items-center justify-center gap-1 px-1 text-xs leading-none active:bg-state-active", className)} {...props}>
       <Icon name={icon} className="size-4 shrink-0" aria-hidden />
       <span className="truncate">{label}</span>
     </button>
@@ -367,7 +379,7 @@ export function PlanDocument({
     const doc = content.ownerDocument;
     const onKeyDown = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
-      if (!["c", "d", "g"].includes(key) || (key !== "c" && !onAnnotate)) return;
+      if (!["c", "a", "d", "g"].includes(key) || (key !== "c" && key !== "a" && !onAnnotate)) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
@@ -375,7 +387,7 @@ export function PlanDocument({
       if (!live || live.isCollapsed || live.rangeCount === 0) return;
       if (!content.contains(live.getRangeAt(0).commonAncestorContainer)) return;
       event.preventDefault();
-      commitQuote(key === "d" ? "redline" : key === "g" ? "looksGood" : undefined);
+      commitQuote(key === "a" ? "ask" : key === "d" ? "redline" : key === "g" ? "looksGood" : undefined);
     };
     doc.addEventListener("keydown", onKeyDown);
     return () => doc.removeEventListener("keydown", onKeyDown);
@@ -436,7 +448,7 @@ export function PlanDocument({
           <div
             ref={composerRef}
             role="dialog"
-            aria-label="New comment"
+            aria-label={pendingKind === "ask" ? "New ask" : "New comment"}
             className="absolute z-20 animate-in fade-in-0 zoom-in-95 duration-150"
             style={{ top: composerPosition.top, left: composerPosition.left, width: COMPOSER_WIDTH }}
           >
@@ -473,7 +485,7 @@ export function PlanDocument({
         <div
           ref={composerRef}
           role="dialog"
-          aria-label="New comment"
+          aria-label={pendingKind === "ask" ? "New ask" : "New comment"}
           className="absolute inset-x-0 top-2 z-20 mx-auto animate-in fade-in-0 zoom-in-95 duration-150"
           style={{ width: COMPOSER_WIDTH, maxWidth: "calc(100% - 16px)" }}
         >
@@ -515,7 +527,7 @@ function CommentTooltip({ comment, position }: { comment: PlanComment; position:
       <div className="space-y-1 rounded-md border border-border bg-popover px-3 py-2 text-xs text-popover-foreground shadow-md">
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <KindBadge kind={kind} />
-          {kind === "comment" || comment.body ? <span>{comment.sentAt === null ? "Draft" : "Sent"}</span> : null}
+          {kind === "comment" || comment.body ? <span>{stateLabel(comment)}</span> : null}
         </div>
         {comment.body ? <p className="whitespace-pre-wrap break-words leading-5">{comment.body}</p> : null}
       </div>

@@ -1,3 +1,4 @@
+import { useLiveStatus } from "../hooks/useLiveStatus";
 import { toast } from "sonner";
 import { useBbNavigate, useRealtime, type PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,7 @@ function submittedPayload(payload: unknown): { id: string; threadId: string } | 
  * opens it without being asked. Other threads are never navigated.
  */
 export function ThreadPlanHeaderButton({ threadId, isCompactViewport }: PluginThreadHeaderActionProps) {
+  const liveStatus = useLiveStatus(threadId);
   const navigate = useBbNavigate();
   const list = usePlanList(threadId);
   const plan = list.plans?.[0] ?? null;
@@ -45,7 +47,7 @@ export function ThreadPlanHeaderButton({ threadId, isCompactViewport }: PluginTh
   });
 
   if (plan === null) return null;
-  const label = `Plan: ${STATUS_LABEL[plan.status]}`;
+  const label = `Plan: ${plan.status === "approved" ? "Approved" : liveStatus ?? STATUS_LABEL[plan.status]}`;
   return (
     <Button
       type="button"
@@ -65,7 +67,7 @@ export function ThreadPlanHeaderButton({ threadId, isCompactViewport }: PluginTh
       ) : (
         <>
           <StatusDot status={plan.status} />
-          Plan
+          Plan · {plan.status === "approved" ? "Approved" : liveStatus ?? "Open"}
         </>
       )}
     </Button>

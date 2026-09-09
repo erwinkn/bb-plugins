@@ -30,6 +30,7 @@ export const EXTENDED_ICON_NAMES = [
   "Cloud",
   "CloudOff",
   "Coffee",
+  "Comment",
   "Columns2",
   "CornerDownLeft",
   "CornerDownRight",

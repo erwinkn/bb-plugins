@@ -10,7 +10,7 @@
 export const HIGHLIGHT_NAME = "plans-comment";
 export const ACTIVE_HIGHLIGHT_NAME = "plans-comment-active";
 
-export type HighlightKind = "comment" | "redline" | "looksGood";
+export type HighlightKind = "comment" | "ask" | "redline" | "looksGood";
 
 export interface HighlightEntry {
   range: Range;
@@ -21,6 +21,7 @@ export interface HighlightEntry {
 
 const NAMES: Record<HighlightKind, { rest: string; emphasis: string }> = {
   comment: { rest: HIGHLIGHT_NAME, emphasis: ACTIVE_HIGHLIGHT_NAME },
+  ask: { rest: "plans-ask", emphasis: "plans-ask-active" },
   redline: { rest: "plans-redline", emphasis: "plans-redline-active" },
   looksGood: { rest: "plans-looks-good", emphasis: "plans-looks-good-active" },
 };

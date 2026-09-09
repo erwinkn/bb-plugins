@@ -26,7 +26,7 @@ export default definePluginApp((app) => {
   });
 
   // Shown in place of the composer while an agent blocks on a review. The id
-  // must match REVIEW_INTERACTION_RENDERER in service.ts.
+  // must match the "plan-review" renderer in server/session.ts.
   app.slots.pendingInteraction({
     id: "plan-review",
     component: PlanReviewPrompt,

@@ -18,7 +18,7 @@ export interface ReviewDraftState {
   reset: () => void;
 }
 
-/** localStorage-backed draft for one plan version, written on a short debounce. */
+/** Save a pending annotation for one plan, with a short debounce. */
 export function useReviewDraft(planId: string, versionId: string): ReviewDraftState {
   const [draft, setDraft] = useState<ReviewDraft>(() => readDraft(planId, versionId));
   const [persistFailed, setPersistFailed] = useState(false);
@@ -46,19 +46,24 @@ export function useReviewDraft(planId: string, versionId: string): ReviewDraftSt
     keyRef.current = { planId, versionId };
     setDraft(readDraft(planId, versionId));
     setPersistFailed(false);
-  }, [flush, planId, versionId]);
+  }, [flush, planId]);
+
+  useEffect(() => { flush(); }, [flush, versionId]);
 
   const update = useCallback<ReviewDraftState["update"]>(
     (patch) => {
       setDraft((current) => {
         const next = typeof patch === "function" ? patch(current) : { ...current, ...patch };
+        if (next.pendingComment && !next.pendingComment.versionId) {
+          next.pendingComment = { ...next.pendingComment, versionId };
+        }
         pendingRef.current = { ...keyRef.current, draft: next };
         if (timerRef.current !== null) clearTimeout(timerRef.current);
         timerRef.current = setTimeout(flush, SAVE_DELAY_MS);
         return next;
       });
     },
-    [flush],
+    [flush, versionId],
   );
 
   const reset = useCallback(() => {

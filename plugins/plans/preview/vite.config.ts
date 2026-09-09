@@ -19,6 +19,7 @@ function previewBackend(): Plugin {
       const backend = await server.ssrLoadModule(`${root}rpc-backend.ts`) as {
         handleRpc(method: string, input: unknown): Promise<unknown>;
         getPreviewMessages(): unknown[];
+        getPreviewEvents(after: number): unknown;
         disposePreview(): Promise<void>;
       };
       server.httpServer?.once("close", () => {
@@ -29,6 +30,12 @@ function previewBackend(): Plugin {
         if (req.method === "GET" && url === "/preview/messages") {
           res.setHeader("content-type", "application/json");
           res.end(JSON.stringify(backend.getPreviewMessages()));
+          return;
+        }
+        if (req.method === "GET" && url.startsWith("/preview/events?")) {
+          res.setHeader("content-type", "application/json");
+          const after = Number(new URL(url, "http://preview").searchParams.get("after")) || 0;
+          res.end(JSON.stringify(backend.getPreviewEvents(after)));
           return;
         }
         const match = url.match(/^\/preview\/rpc\/([A-Za-z0-9_]+)$/);

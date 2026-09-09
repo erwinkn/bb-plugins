@@ -9,7 +9,8 @@ export const KIND_STYLE: Record<
   CommentKind,
   { border: string; text: string; icon: "X" | "Check" | null; label: string | null }
 > = {
-  comment: { border: "border-warning", text: "", icon: null, label: null },
+  comment: { border: "border-warning", text: "", icon: null, label: "Comment" },
+  ask: { border: "border-primary", text: "text-primary", icon: null, label: "Ask" },
   redline: { border: "border-destructive", text: "text-destructive", icon: "X", label: "Redline" },
   looksGood: { border: "border-success", text: "text-success", icon: "Check", label: "Looks good" },
 };
@@ -34,10 +35,10 @@ export function Quote({ text, kind }: { text: string; kind: CommentKind }) {
 
 export function KindBadge({ kind }: { kind: CommentKind }) {
   const style = KIND_STYLE[kind];
-  if (style.label === null || style.icon === null) return null;
+  if (style.label === null) return null;
   return (
     <span className={cn("inline-flex items-center gap-1 font-medium", style.text)}>
-      <Icon name={style.icon} className="size-3" aria-hidden />
+      {style.icon ? <Icon name={style.icon} className="size-3" aria-hidden /> : null}
       {style.label}
     </span>
   );

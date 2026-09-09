@@ -5,6 +5,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
@@ -34,9 +37,10 @@ interface PlanHeaderProps {
   showCommentsTab: boolean;
   commentCount: number;
   onBack?: () => void;
-  onRevise: () => void;
+  onDeliveryModeChange: (mode: Plan["deliveryMode"]) => void;
   onDelete: () => void;
   onDiagnostics: () => void;
+  onShortcuts: () => void;
 }
 
 export function PlanHeader({
@@ -48,9 +52,10 @@ export function PlanHeader({
   showCommentsTab,
   commentCount,
   onBack,
-  onRevise,
+  onDeliveryModeChange,
   onDelete,
   onDiagnostics,
+  onShortcuts,
 }: PlanHeaderProps) {
   const versions = sortedVersions(plan);
   const latest = latestVersion(plan);
@@ -106,7 +111,7 @@ export function PlanHeader({
             title="Switch view"
             className="h-8 w-auto min-w-0 shrink-0 gap-1 border-transparent bg-transparent px-1.5 text-muted-foreground hover:text-foreground"
           >
-            <SelectValue><Icon name={view === "document" ? "ListTodo" : view === "changes" ? "Code" : "MessageSquare"} className="size-4" aria-hidden /></SelectValue>
+            <SelectValue><Icon name={view === "document" ? "ListTodo" : view === "changes" ? "Code" : "Comment"} className="size-4" aria-hidden /></SelectValue>
           </SelectTrigger>
           <SelectContent align="end">
             {views.map((item) => (
@@ -146,13 +151,19 @@ export function PlanHeader({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onRevise}>
-              <Icon name="Plus" className="size-4" aria-hidden />
-              {plan.sample ? "Add revision" : "Import revision"}
-            </DropdownMenuItem>
+            <DropdownMenuLabel>Delivery</DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={plan.deliveryMode} onValueChange={(mode) => onDeliveryModeChange(mode as Plan["deliveryMode"])}>
+              <DropdownMenuRadioItem disabled={plan.status === "approved"} value="queue-if-active">Queue after the current turn</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem disabled={plan.status === "approved"} value="steer-if-active">Steer into the running turn</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => void copyMarkdown()}>
               <Icon name="Copy" className="size-4" aria-hidden />
               Copy Markdown
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onShortcuts}>
+              <Icon name="Keyboard" className="size-4" aria-hidden />
+              Keyboard shortcuts
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onDiagnostics}>
               <Icon name="Info" className="size-4" aria-hidden />

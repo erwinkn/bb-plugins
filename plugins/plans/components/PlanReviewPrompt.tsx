@@ -23,7 +23,7 @@ function readPayload(payload: unknown): PromptPayload | null {
 }
 
 /**
- * Replaces the composer while an agent waits on a plan review. The decision
+ * Sits with the usable composer while the plan waits for feedback. The decision
  * itself happens in the Plans panel; this only opens it or lets the
  * user release the agent without deciding.
  */
@@ -48,7 +48,7 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
       <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-warning/15 text-warning">
         <Icon name="ListTodo" className="size-4" aria-hidden />
       </span>
-      <p className="min-w-0 flex-[1_1_12rem] text-sm text-foreground">The agent is waiting for your review.</p>
+      <p className="min-w-0 flex-[1_1_12rem] text-sm text-foreground">Plan ready for your review.</p>
       <div className="ml-auto flex items-center gap-2">
         <Button
           type="button"
