@@ -1,3 +1,4 @@
+import { OutputSequencer, type HeldCall } from "./output-sequencer.ts";
 import { InputController, type InputItem } from "./input-controller.ts";
 import { startMicrophoneMeter } from "./microphone-meter.ts";
 import { TranscriptBuffer } from "./live-transcript.ts";
@@ -89,6 +90,11 @@ function maybeUnref(timer: ReturnType<typeof setInterval>) {
 
 const REPLY_QUIET_MS = 2000;
 const DISCONNECT_GRACE_MS = 10_000;
+
+/** The unchanged bridge reports failed and unknown submissions as text. */
+function bridgeOutputFailed(output: string): boolean {
+  return /^(Request \S+ was not executed:|The request result could not be confirmed\.)/.test(output);
+}
 
 function browserStorage(): Storage | null {
   try {
@@ -301,7 +307,8 @@ export class VoiceAgent {
   private responseRequestVersion: number | null = null;
   private get userTurn(){return this.input?.version ?? 0;}
   private get userTurnPending(){return this.input?.pending ?? false;}
-  private pendingToolCalls = 0;
+  private outputSequencer = new OutputSequencer();
+  private get pendingToolCalls() { return this.outputSequencer.pendingCalls; }
   private replyTimer: ReturnType<typeof setTimeout> | null = null;
   private get userSpeaking(){return this.input?.speaking ?? false;}
   /**
@@ -1063,16 +1070,13 @@ export class VoiceAgent {
   }
 
   /**
-   * Ask the model to continue — at most one response.create in flight.
-   * The realtime API rejects response.create while a response is being
-   * generated (e.g. two tool calls in one response would send two), so an
-   * active response or unfinished tool batch defers one coalesced create until
-   * generation has ended and every tool result is in the conversation.
+   * Coalesce continuations until generation ends, audio drains or is cut,
+   * and every held call has produced its output.
    */
   private requestResponse(dc: RTCDataChannel) {
     if (dc.readyState !== "open") return;
     if (!this.sessionReady) return;
-    if (this.responseActive || this.pendingToolCalls > 0 || this.userSpeaking || !this.input?.snapshot()) {
+    if (this.responseActive || this.pendingToolCalls > 0 || this.outputSequencer.playbackPending || this.userSpeaking || !this.input?.snapshot()) {
       this.responsePending = true;
       return;
     }
@@ -1132,7 +1136,7 @@ export class VoiceAgent {
     this.activeResponseId = null;
     this.toolResponseIds.clear();
     this.responseUserTurn = null;
-    this.pendingToolCalls = 0;
+    this.outputSequencer.reset();
     if (this.replyTimer) clearTimeout(this.replyTimer);
     this.replyTimer = null;
     this.setMicSuspended(false);
@@ -1174,25 +1178,15 @@ export class VoiceAgent {
         throw new Error("No bb surface is bound right now.");
       } else if (!this.bridge) {
         throw new Error("The coordinator conversation is unavailable.");
-      } else if (this.interruptedResponses.has(String(event.response_id))) {
+      } else if (name !== "read_thread" && name !== "lookup_targets" && this.interruptedResponses.has(String(event.response_id))) {
         requestResponseAfter = false;
         throw new Error("Held: this response was interrupted. Wait for the user's next complete request.");
       } else if (name === "read_thread") {
-        const origin = this.responseIdentity.get(String(event.response_id));
         const result = await bindings.rpc.call("readVoiceThread",{nonce:toolSessionId,threadId:typeof args.threadId === "string" ? args.threadId : ""});
-        if (origin?.userTurn !== this.userTurn || this.interruptedResponses.has(String(event.response_id))) {
-          requestResponseAfter = false;
-          throw new Error("This read belongs to an earlier spoken turn.");
-        }
         output = JSON.stringify(result);
         status = "success";
       } else if (name === "lookup_targets") {
-        const origin = this.responseIdentity.get(String(event.response_id));
         const result = await bindings.rpc.call("lookupVoiceTargets", {nonce:toolSessionId,query:typeof args.query === "string" ? args.query : "",includeChildren:args.includeChildren === true,includeArchived:args.includeArchived === true});
-        if (origin?.userTurn !== this.userTurn || this.interruptedResponses.has(String(event.response_id))) {
-          requestResponseAfter = false;
-          throw new Error("The lookup belongs to an earlier spoken turn.");
-        }
         output = JSON.stringify(result);
         status = "success";
       } else if (name === "delegate_to_coordinator" || name === "quick_action") {
@@ -1216,7 +1210,7 @@ export class VoiceAgent {
         const result = await this.bridge.controlSequence(args);
         output = result.message;
         requestResponseAfter = result.status !== "accepted";
-        status = "success";
+        status = result.status === "failed" ? "error" : "success";
       } else if (name === "remain_silent") {
         output = this.bridge.remainSilent();
         this.responsePending = false;
@@ -1234,6 +1228,10 @@ export class VoiceAgent {
       status = "error";
       output = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
     }
+    // A read's thread status is data, not the outcome of the read operation.
+    const failed = status === "error" ||
+      ((name === "delegate_to_coordinator" || name === "quick_action") && bridgeOutputFailed(output));
+    if (failed) { status = "error"; label = undefined; }
     // Use the captured session: a stopped call's late result must not land in a new one.
     if (toolSessionId && bindings) this.writeEvent(bindings.rpc, toolSessionId, "tool.result", {
       name, callId, output: output.slice(0, 4000), status: status ?? actionStatus({ output }),
@@ -1247,8 +1245,49 @@ export class VoiceAgent {
         item: { type: "function_call_output", call_id: callId, output },
       }),
     );
-    if (requestResponseAfter) this.requestResponse(dc);
+    if (failed) requestResponseAfter = true;
+    const origin = this.responseIdentity.get(String(event.response_id));
+    if (requestResponseAfter && origin?.userTurn === this.userTurn && !this.interruptedResponses.has(String(event.response_id))) this.requestResponse(dc);
     else this.scheduleReplyDrain();
+    return failed;
+  }
+
+  private cancelHeldCalls(dc: RTCDataChannel, calls: HeldCall[], output: string) {
+    for (const call of calls) {
+      const callId = String(call.event.call_id ?? "");
+      this.log("tool.result", { name: call.event.name, callId, responseId: call.event.response_id, output, status: "error" });
+      if (dc.readyState === "open") dc.send(JSON.stringify({
+        type: "conversation.item.create", item: { type: "function_call_output", call_id: callId, output },
+      }));
+    }
+  }
+
+  private interruptOutput(responseId: string) {
+    this.interruptedResponses.add(responseId);
+    this.toolResponseIds.delete(responseId);
+    if (this.responseIdentity.get(responseId)?.userTurn === this.userTurn) this.responsePending = false;
+    const calls = this.outputSequencer.interrupted(responseId);
+    if (this.session?.dc) this.cancelHeldCalls(this.session.dc, calls, "Not executed: interrupted.");
+  }
+
+  private releaseOutput(dc: RTCDataChannel, session: SessionHandle) {
+    this.toolChain = this.toolChain.then(async () => {
+      while (this.session === session) {
+        const call = this.outputSequencer.next();
+        if (!call) break;
+        try {
+          const failed = await this.handleToolCall(dc, call.event);
+          if (this.session !== session) return;
+          if (failed) this.cancelHeldCalls(dc, this.outputSequencer.failed(String(call.event.response_id)), "Not executed: an earlier action failed.");
+        } finally {
+          if (this.session === session) this.outputSequencer.finished(call);
+        }
+        if (this.responsePending) this.requestResponse(dc);
+        this.settleDelegatedTurn();
+        this.markConversationChange();
+        this.scheduleReplyDrain();
+      }
+    }).catch(error => this.log("tool.dispatchFailed", { error: String(error) }));
   }
 
   /** Publish bounded, replaceable drafts; durable logs contain final text only. */
@@ -1293,6 +1332,9 @@ export class VoiceAgent {
   /** One owner stops local playback and sends at most one clear per response. */
   private interruptSpeech(reason:string) {
     const generation=this.activeResponseId,playback=this.playbackResponseId;
+    for (const id of new Set([generation, playback, ...this.outputSequencer.unsettledResponseIds()])) {
+      if (id) this.interruptOutput(id);
+    }
     if(this.session)this.session.audio.muted=true;
     if(generation){this.interruptedResponses.add(generation);this.toolResponseIds.delete(generation);this.cancelResponse(generation,reason);}
     if(playback){
@@ -1645,10 +1687,11 @@ export class VoiceAgent {
           const response = event.response as Record<string, unknown> | undefined;
           const metadata = response?.metadata as Record<string, unknown> | undefined;
           this.activeResponseId = typeof response?.id === "string" ? response.id : null;
+          if (this.activeResponseId) this.outputSequencer.created(this.activeResponseId);
           const bridgeOwned = !!bridge && bridge.ownsResponse(this.activeResponseId, metadata);
           if (bridge && metadata?.bb_voice_source === "coordinator_reply" && !bridge.speechIdentity(this.activeResponseId)) {
             const staleId = this.activeResponseId;
-            if (staleId) this.interruptedResponses.add(staleId);
+            if (staleId) this.interruptOutput(staleId);
             if (staleId) this.cancelResponse(staleId, "reply-superseded");
             this.log("response.ignored", {responseId:staleId,replyId:metadata.bb_reply_id,reason:"reply was interrupted or replaced before generation started"});
             // Keep the generation slot until response.done, including cancellation races.
@@ -1670,12 +1713,20 @@ export class VoiceAgent {
           this.responseUserTurn = !background ? this.responseRequestVersion : null;
           this.setResponseActive(true);
           if (!background && (this.responseRequestVersion!==this.userTurn || !this.input?.snapshot())) {
-            if(this.activeResponseId){this.interruptedResponses.add(this.activeResponseId);this.toolResponseIds.delete(this.activeResponseId);this.cancelResponse(this.activeResponseId,"input-not-eligible");}
+            if(this.activeResponseId){this.interruptOutput(this.activeResponseId);this.cancelResponse(this.activeResponseId,"input-not-eligible");}
           }
           this.responseRequestVersion=null;
           this.scheduleReplyDrain();
+        } else if (type === "response.output_item.added" || type === "response.output_item.done") {
+          const item = event.item as Record<string, unknown> | undefined;
+          if (eventResponseId && item && typeof event.output_index === "number") {
+            if (this.outputSequencer.item(eventResponseId, {
+              outputIndex: event.output_index, itemId: String(item.id ?? event.item_id ?? ""), type: String(item.type ?? ""),
+            })) this.log("ordering.violation", { responseId: eventResponseId, outputIndex: event.output_index, itemId: item.id });
+          }
         } else if (type === "output_audio_buffer.started") {
           const id = eventResponseId ?? this.activeResponseId;
+          if (id) this.outputSequencer.started(id);
           if (id && this.interruptedResponses.has(id)) {
             // Ignoring the UI event does not stop the audio. Clear late playback,
             // but never clear a different response that has since taken its place.
@@ -1698,14 +1749,23 @@ export class VoiceAgent {
           this.scheduleReplyDrain();
         } else if (type === "output_audio_buffer.stopped" || type === "output_audio_buffer.cleared") {
           const id = eventResponseId ?? this.playbackResponseId;
-          if (!id || id !== this.playbackResponseId) return;
-          this.log("speech.lifecycle", {responseId:id,state:type.endsWith("stopped") ? "delivered" : "interrupted",...this.responseIdentity.get(id),monotonicMs:performance.now()});
-          if (type.endsWith("cleared")) this.interruptedResponses.add(id);
-          else this.completedPlayback.add(id);
-          this.playbackResponseId = null;
-          this.setAssistantSpeaking(false);
-          if (type.endsWith("stopped")) bridge?.onAudioStopped(id); else bridge?.onAudioCleared(id);
-          if (this.endCallAfterResponse && !this.responseActive) { this.stop(); return; }
+          if (!id) return;
+          const cleared = type.endsWith("cleared");
+          if (cleared) this.interruptOutput(id);
+          else this.outputSequencer.stopped(id);
+          if (id === this.playbackResponseId) {
+            const interrupted = this.interruptedResponses.has(id);
+            this.log("speech.lifecycle", {responseId:id,state:interrupted ? "interrupted" : "delivered",...this.responseIdentity.get(id),monotonicMs:performance.now()});
+            if (!interrupted) this.completedPlayback.add(id);
+            this.playbackResponseId = null;
+            this.setAssistantSpeaking(false);
+            if (cleared) bridge?.onAudioCleared(id); else if (!interrupted) bridge?.onAudioStopped(id);
+            if (this.endCallAfterResponse && !this.responseActive) { this.stop(); return; }
+          }
+          if (!cleared) {
+            this.releaseOutput(dc, session);
+            if (this.responsePending) this.requestResponse(dc);
+          }
           this.scheduleReplyDrain();
         } else if (type === "input_audio_buffer.committed") {
           this.input?.committed(String(event.item_id??""));
@@ -1719,27 +1779,16 @@ export class VoiceAgent {
             // Close a known rejected conversational call without executing it or
             // requesting another answer. A dangling tool call poisons later turns.
             if (typeof event.response_id === "string" && this.responseIdentity.get(event.response_id)?.source === "realtime" &&
-                this.interruptedResponses.has(event.response_id) && typeof event.call_id === "string" && !this.rejectedToolCalls.has(event.call_id)) {
+                this.interruptedResponses.has(event.response_id) && typeof event.call_id === "string" &&
+                !this.outputSequencer.hasCall(event.response_id, event.call_id) && !this.rejectedToolCalls.has(event.call_id)) {
               this.rejectedToolCalls.add(event.call_id);
               if (this.rejectedToolCalls.size > 300) this.rejectedToolCalls.delete(this.rejectedToolCalls.values().next().value!);
               dc.send(JSON.stringify({type: "conversation.item.create", item: {type: "function_call_output", call_id: event.call_id,
-                output: "Not executed: this response was interrupted or its input could not be transcribed. Wait silently for the user's next instruction."}}));
+                output: "Not executed: interrupted."}}));
             }
             return;
           }
-          this.pendingToolCalls += 1;
-          this.markConversationChange();
-          this.toolChain = this.toolChain
-            .then(() => this.session === session ? this.handleToolCall(dc, event) : undefined)
-            .catch(() => undefined)
-            .finally(() => {
-              if (this.session !== session) return;
-              this.pendingToolCalls -= 1;
-              if (this.pendingToolCalls === 0 && this.responsePending) this.requestResponse(dc);
-              this.settleDelegatedTurn();
-              this.markConversationChange();
-              this.scheduleReplyDrain();
-            });
+          if (this.outputSequencer.hold(event.response_id, event)) this.markConversationChange();
         } else if (type === "conversation.item.input_audio_transcription.completed") {
           this.input?.completed(String(event.item_id ?? ""), String(event.transcript ?? "").trim());
         } else if (type === "response.output_audio_transcript.delta" || type === "response.audio_transcript.delta") {
@@ -1763,6 +1812,8 @@ export class VoiceAgent {
         } else if (type === "response.done") {
           const response = event.response as Record<string, unknown> | undefined;
           if (typeof response?.id === "string") {
+            this.outputSequencer.done(response.id, response.output);
+            this.releaseOutput(dc, session);
             this.toolResponseIds.delete(response.id);
             this.completedResponses.add(response.id);
             if (this.completedResponses.size > 300) this.completedResponses.delete(this.completedResponses.values().next().value!);
