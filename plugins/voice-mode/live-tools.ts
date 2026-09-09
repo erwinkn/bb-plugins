@@ -23,6 +23,11 @@ export const liveToolArgs = {
   prepare_draft: z.object({ thread_id: id.optional(), project_id: id.optional(), text: z.string().max(24000), mode: z.enum(["append", "replace"]) }).strict(),
   control_ui: z.object({ action: z.enum(["open_thread", "open_project", "preview_file", "show_voice"]), thread_id: id.optional(), project_id: id.optional(), path: z.string().min(1).max(4096).optional(), source: z.enum(["workspace", "thread-storage"]).optional() }).strict(),
   stop_thread: z.object({ thread_id: id }).strict(),
+  queued_messages: z.object({
+    op: z.enum(["list", "send_now", "delete", "edit"]).describe("list reads the queue; send_now, delete, and edit change one queued message and need queued_message_id from a list in this call."),
+    thread_id: id, queued_message_id: id.optional(),
+    text: z.string().min(1).max(16000).optional().describe("With edit: the full replacement text."),
+  }).strict(),
   rename_thread: z.object({ thread_id: id, title: z.string().trim().min(1).max(200).describe("The new title, in the user's words.") }).strict(),
   subscriptions: z.object({ op: z.enum(["list", "subscribe", "unsubscribe"]), thread_id: id.optional() }).strict(),
   prepare_archive: z.object({ thread_ids: ids }).strict(),
@@ -32,7 +37,7 @@ export const liveToolArgs = {
   end_call: z.object({}).strict(),
 };
 export type LiveTool = keyof typeof liveToolArgs;
-export const LIVE_EFFECTS = new Set<LiveTool>(["message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "rename_thread", "archive_threads", "answer_interaction"]);
+export const LIVE_EFFECTS = new Set<LiveTool>(["message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "queued_messages", "rename_thread", "archive_threads", "answer_interaction"]);
 const descriptions: Record<LiveTool, string> = {
   list_models: "List the providers available on a machine and each provider's models with their reasoning levels and Fast support. Use it before create_thread or spawn_worker when the user names a model, or when asked what models exist.",
   find_targets: "Find threads and projects from an approximate spoken description. Results are ranked with a match score from 0 to 1; all projects are returned ranked. Defaults to non-archived parents; include_children for child threads, parent_id for the children of one thread. Includes this conversation's tasks. Resolve names before acting.",
@@ -43,6 +48,7 @@ const descriptions: Record<LiveTool, string> = {
   prepare_draft: "Write to the exact thread or project composer on the call owner device. Never submit. Append unless replacement was requested.",
   control_ui: "Navigate on the call owner device. Open a thread or project, preview a file, or show Voice. Background updates cannot navigate.",
   stop_thread: "Request a stop on explicit user intent. Acceptance does not prove every process exited. The outcome is reported to you automatically in this call.",
+  queued_messages: "See and manage a thread's queued messages. list shows each item with its text and whether it came from this conversation. send_now steers it into the active turn at once; delete removes it before it runs; edit replaces its text. Changes need an ID from a list in this call and explicit user intent.",
   rename_thread: "Give a thread a new title on explicit user intent. Use the user's words. The receipt carries the previous and the new title.",
   subscriptions: "List watches, explicitly subscribe or re-enable one, or disable updates without stopping work. A later send does not re-enable updates.",
   prepare_archive: "Preview the requested threads, all children, active work, and queued messages. Explain the list aloud and ask once before archive_threads.",

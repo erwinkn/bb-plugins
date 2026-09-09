@@ -1,6 +1,6 @@
 # Ada server runtime, step 2
 
-The live client now uses the sixteen tools and the durable runtime. The retired
+The live client now uses the seventeen tools and the durable runtime. The retired
 coordinator is available only through historical session data. See
 [the current architecture](docs/architecture.md) for the complete client flow.
 

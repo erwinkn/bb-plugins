@@ -39,6 +39,7 @@ interface EnvironmentInfo {
   workspaceProvisionType: string; status: string; hostId: string;
   pullRequest?: { status: string; pullRequest?: { number: number; title: string; url: string; state: string } | null } | null;
 }
+function queuedText(q: { content: { type: string; text?: string }[] }) { return q.content.filter(p => p.type === "text").map(p => p.text ?? "").join("\n"); }
 function environmentData(environment: EnvironmentInfo | null | undefined) {
   if (!environment) return null;
   const pr = environment.pullRequest?.pullRequest;
@@ -120,7 +121,7 @@ export class LiveRuntime {
     const activeRoots = new Set(this.store.watches(call.conversationId).filter(watch => watch.state === "active").map(watch => watch.root_thread_id));
     for (const item of this.store.inbox(call.conversationId)) if (item.interaction_id && item.status !== "resolved" && activeRoots.has(item.root_thread_id)) this.remember(call, item.thread_id, item.interaction_id);
   }
-  private authorize(input: ToolInput, args: Record<string, unknown>, effect = LIVE_EFFECTS.has(input.tool)) {
+  private authorize(input: ToolInput, args: Record<string, unknown>, effect = LIVE_EFFECTS.has(input.tool) && !(input.tool === "queued_messages" && args.op === "list")) {
     const call = this.state(input.nonce, input.conversationId);
     if (effect && input.responseOrigin === "background") throw new Error("Not authorized: background updates cannot act");
     if (effect && typeof args.thread_id === "string" && isHistoricalAgentThread(this.store.db,args.thread_id)) throw new Error("Not authorized: historical agent threads cannot run new work");
@@ -128,7 +129,7 @@ export class LiveRuntime {
     if (effect && input.utterance && this.store.db.prepare(`SELECT 1 FROM voice_operations WHERE conversation_id = ? AND utterance_id = ? AND utterance_version = ? AND status = 'unknown'
       AND (tool != ? OR args_hash != ? OR occurrence != ?)`).get(input.conversationId, input.utterance.id, input.utterance.version, input.tool, hash(args), input.occurrence))
       throw new Error("Not authorized: this utterance has an unknown effect. Read its receipt; do not try another tool.");
-    if (effect) for (const key of ["thread_id", "project_id", "host_id", "interaction_id"]) {
+    if (effect) for (const key of ["thread_id", "project_id", "host_id", "interaction_id", "queued_message_id"]) {
       const id = args[key];
       if (typeof id === "string" && !call.allowed.has(id)) throw new Error(`Not authorized: unknown target ID ${id}. Resolve it with find_targets or read_threads first.`);
     }
@@ -204,7 +205,8 @@ export class LiveRuntime {
       this.state(input.nonce, input.conversationId);
       const args = this.parse(input); const call = this.authorize(input, args);
       if (["prepare_draft", "control_ui"].includes(input.tool)) throw new Error("Use beginClientEffect for this client tool");
-      if (!LIVE_EFFECTS.has(input.tool)) { const result = await this.read(input, call); this.state(input.nonce, input.conversationId); return json(result); }
+      const readOnly = !LIVE_EFFECTS.has(input.tool) || (input.tool === "queued_messages" && (args as { op?: string }).op === "list");
+      if (readOnly) { const result = await this.read(input, call); this.state(input.nonce, input.conversationId); return json(result); }
       const begin = this.operations.begin({ ...input, args });
       if (!begin.execute) { this.rememberReceipt(call, begin.row); return json(this.operations.receipt(begin.row)); }
       try {
@@ -257,6 +259,33 @@ export class LiveRuntime {
         this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(thread_id, row.id);
         await this.sdkEffect(input, () => this.bb.sdk.threads.stop({ threadId: thread_id }));
         return this.operations.finish(row.id, "succeeded", { threadId: thread_id, title: watch.title, stopRequested: true, processesExited: null, updatesMuted: watch.state === "disabled", ...this.followUp(watch) });
+      }
+      case "queued_messages": {
+        const args = liveToolArgs.queued_messages.parse(input.args);
+        if (args.op === "list") throw new Error("queued_messages list is a read");
+        if (!args.queued_message_id) throw new Error(`queued_messages ${args.op} needs queued_message_id from a list in this call`);
+        const target = { threadId: args.thread_id, queuedMessageId: args.queued_message_id };
+        const before = (await this.bb.sdk.threads.queuedMessages.list({ threadId: args.thread_id })).find(q => q.id === args.queued_message_id);
+        if (!before) throw new Error("That queued message is gone: it was sent or deleted already.");
+        this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(args.thread_id, row.id);
+        const own = this.store.db.prepare("SELECT id FROM voice_operations WHERE queued_message_id = ? AND target_thread_id = ? AND completed_at IS NULL AND status = 'queued'").get(args.queued_message_id, args.thread_id) as { id: string } | undefined;
+        const watch = await this.watches.watch(input.conversationId, args.thread_id);
+        if (args.op === "send_now") {
+          await this.sdkEffect(input, () => this.bb.sdk.threads.queuedMessages.send({ ...target, mode: "steer" }));
+          if (own) { this.store.db.prepare("UPDATE voice_operations SET dispatched_at = ? WHERE id = ?").run(this.now(), own.id); this.operations.finish(own.id, "running", { delivery: "sent", sentNow: true }); }
+          return this.operations.finish(row.id, "succeeded", { threadId: args.thread_id, title: watch.title, queuedMessageId: args.queued_message_id, sentNow: true, text: queuedText(before), ...this.followUp(watch) });
+        }
+        if (args.op === "delete") {
+          await this.sdkEffect(input, () => this.bb.sdk.threads.queuedMessages.delete(target));
+          if (own) { this.store.db.prepare("UPDATE voice_operations SET completed_at = ? WHERE id = ?").run(this.now(), own.id); this.operations.finish(own.id, "cancelled", { deletedFromQueue: true }); }
+          return this.operations.finish(row.id, "succeeded", { threadId: args.thread_id, title: watch.title, queuedMessageId: args.queued_message_id, deleted: true, text: queuedText(before) });
+        }
+        if (!args.text) throw new Error("queued_messages edit needs text");
+        if (!before.editable) throw new Error("That queued message cannot be edited now; delete it and send a new one.");
+        const previousText = queuedText(before);
+        const updated = await this.sdkEffect(input, () => this.bb.sdk.threads.queuedMessages.update({ ...target, expectedUpdatedAt: before.updatedAt, input: [{ type: "text", text: args.text!, mentions: [] }] }));
+        if (own) this.store.db.prepare("UPDATE voice_operations SET body = ? WHERE id = ?").run(args.text, own.id);
+        return this.operations.finish(row.id, "succeeded", { threadId: args.thread_id, title: watch.title, queuedMessageId: updated.id, edited: true, previousText, text: args.text });
       }
       case "rename_thread": {
         const { thread_id, title } = liveToolArgs.rename_thread.parse(input.args);
@@ -439,6 +468,18 @@ export class LiveRuntime {
   }
   private async read(input: ToolInput, call: CallState): Promise<unknown> {
     switch (input.tool) {
+      case "queued_messages": {
+        const args = liveToolArgs.queued_messages.parse(input.args);
+        if (args.op !== "list") throw new Error("queued_messages changes are effects");
+        if (!call.allowed.has(args.thread_id)) throw new Error(`Not authorized: unknown target ID ${args.thread_id}. Resolve it with find_targets or read_threads first.`);
+        const queued = await this.bb.sdk.threads.queuedMessages.list({ threadId: args.thread_id });
+        this.state(input.nonce, input.conversationId);
+        const own = new Map((this.store.db.prepare("SELECT id, queued_message_id FROM voice_operations WHERE conversation_id = ? AND target_thread_id = ? AND queued_message_id IS NOT NULL").all(input.conversationId, args.thread_id) as { id: string; queued_message_id: string }[]).map(r => [r.queued_message_id, r.id]));
+        const items = queued.map((q, position) => ({ id: q.id, position: position + 1, text: queuedText(q), createdAt: q.createdAt, editable: q.editable, sendAt: q.sendAt,
+          waitingOn: q.waitingOn?.kind ?? null, failureReason: q.failureReason, fromThisConversation: own.has(q.id), ...(own.has(q.id) ? { operationId: own.get(q.id) } : {}) }));
+        items.forEach(q => this.remember(call, q.id));
+        return { threadId: args.thread_id, queued: items, asOf: this.now() };
+      }
       case "list_models": {
         const args = liveToolArgs.list_models.parse(input.args);
         const { host } = await this.destination(undefined, args.host_id);

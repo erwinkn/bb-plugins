@@ -1,6 +1,6 @@
 # Ada live runtime
 
-One Realtime model speaks and calls sixteen tools. Hidden root threads run
+One Realtime model speaks and calls seventeen tools. Hidden root threads run
 background tasks. No model coordinates those threads. Stored subscriptions,
 receipts, native BB events, and the client sequencer supply the control flow.
 
@@ -49,6 +49,10 @@ with the choices. `workspace` maps to the SDK environment: a managed worktree fr
 the default branch, the unmanaged main folder, or `reuse` of a seen thread's
 environment. `list_models` reads the catalog; `read_threads` with `environment`
 returns path, branch, base branch, kind, and pull request.
+`queued_messages` reads a thread's queue through `queuedMessages.list` and remembers
+each ID; `send_now` (steer), `delete`, and `edit` (optimistic `expectedUpdatedAt`)
+are effects on a remembered ID. When the item came from this conversation, the
+matching operation moves to running, cancelled, or a new body.
 Workers default to BB's personal project and the primary machine; `server.ts` builds
 the call's tool schemas from the configured profiles so the model sees valid names.
 The runtime keeps call state in memory but persists the owner record and every

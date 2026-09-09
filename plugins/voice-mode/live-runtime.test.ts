@@ -25,7 +25,7 @@ async function fixture() {
     threads: new Map<string, Any>([["build", makeThreadResponse({ id: "build", projectId: "app", title: "Build Fix", status: "active", updatedAt: 9000 })]]),
     outputs: new Map<string, string>(), events: new Map<string, Any[]>(), interactions: new Map<string, Any[]>(), queue: new Map<string, Any[]>(),
     list: null as null | ((args: Any) => Promise<Any[]>), interactionReads: 0,
-    sends: [] as Any[], spawns: [] as Any[], archives: [] as string[], resolutions: [] as Any[], answers: [] as Any[], stops: [] as string[], updates: [] as Any[],
+    sends: [] as Any[], spawns: [] as Any[], archives: [] as string[], resolutions: [] as Any[], answers: [] as Any[], stops: [] as string[], updates: [] as Any[], queueSends: [] as Any[], queueDeletes: [] as Any[], queueUpdates: [] as Any[],
     send: null as null | ((args: Any) => Promise<Any>), spawn: null as null | ((args: Any) => Promise<Any>), get: null as null | ((args: Any) => Promise<Any>),
   };
   const sdk: Any = {
@@ -46,7 +46,12 @@ async function fixture() {
         const events = (world.events.get(threadId) ?? []).filter(e => (!afterSeq || e.seq > +afterSeq) && (!beforeSeq || e.seq < +beforeSeq));
         return (order === "desc" ? [...events].reverse() : events).slice(0, +(limit ?? 100));
       } },
-      queuedMessages: { list: async ({ threadId }: Any) => world.queue.get(threadId) ?? [] },
+      queuedMessages: {
+        list: async ({ threadId }: Any) => world.queue.get(threadId) ?? [],
+        send: async (args: Any) => { world.queueSends.push(args); world.queue.set(args.threadId, (world.queue.get(args.threadId) ?? []).filter((q: Any) => q.id !== args.queuedMessageId)); return { delivery: "sent" }; },
+        delete: async (args: Any) => { world.queueDeletes.push(args); world.queue.set(args.threadId, (world.queue.get(args.threadId) ?? []).filter((q: Any) => q.id !== args.queuedMessageId)); return { ok: true }; },
+        update: async (args: Any) => { world.queueUpdates.push(args); const q = (world.queue.get(args.threadId) ?? []).find((q: Any) => q.id === args.queuedMessageId); q.content = args.input; q.updatedAt = at; return q; },
+      },
       send: async (args: Any) => { world.sends.push(args); if (world.send) return world.send(args); return { delivery: "sent", ok: true }; },
       spawn: async (args: Any) => {
         world.spawns.push(args); if (world.spawn) return world.spawn(args);
@@ -109,8 +114,8 @@ test("worker spawn passes each configured profile permission mode to BB", async 
   assert.equal(h.world.spawns.length, 3);
 });
 
-test("live tools expose all sixteen strict argument schemas", () => {
-  const schemas = liveToolSchemas(); assert.equal(schemas.length, 16); assert.equal(new Set(schemas.map(s => s.name)).size, 16);
+test("live tools expose all seventeen strict argument schemas", () => {
+  const schemas = liveToolSchemas(); assert.equal(schemas.length, 17); assert.equal(new Set(schemas.map(s => s.name)).size, 17);
   for (const s of schemas) assert.equal(s.parameters.additionalProperties, false);
   assert.equal(canonical({ z: 2, a: { b: 1 } }), '{"a":{"b":1},"z":2}');
   assert.equal(hash({ a: 1, b: 2 }), hash({ b: 2, a: 1 }));
@@ -158,7 +163,7 @@ test("new utterance, version, and occurrence each permit an intentional repeat",
 test("background effects and navigation are refused before any SDK effect", async t => {
   const h = await fixture(); t.after(h.close);
   for (const tool of LIVE_EFFECTS) {
-    const args: Any = { message_thread: message, spawn_worker: worker, create_thread: { project_id: "app", title: "Work", body: "Do it" }, prepare_draft: { thread_id: "build", text: "Draft", mode: "append" }, control_ui: { action: "show_voice" }, stop_thread: { thread_id: "build" }, rename_thread: { thread_id: "build", title: "Renamed" }, archive_threads: { preview_id: "fake" }, answer_interaction: { thread_id: "build", interaction_id: "fake", decision: "deny" } };
+    const args: Any = { message_thread: message, spawn_worker: worker, create_thread: { project_id: "app", title: "Work", body: "Do it" }, prepare_draft: { thread_id: "build", text: "Draft", mode: "append" }, control_ui: { action: "show_voice" }, stop_thread: { thread_id: "build" }, queued_messages: { op: "delete", thread_id: "build", queued_message_id: "q1" }, rename_thread: { thread_id: "build", title: "Renamed" }, archive_threads: { preview_id: "fake" }, answer_interaction: { thread_id: "build", interaction_id: "fake", decision: "deny" } };
     assert.match((await h.run(tool, args[tool], { responseOrigin: "background", utterance: null })).error, /Not authorized: background updates cannot act/);
   }
   assert.equal((h.db.prepare("SELECT count(*) n FROM voice_operations").get() as {n:number}).n, 0);
@@ -943,4 +948,37 @@ test("list_models reports providers and models on the primary machine, and read_
   assert.deepEqual(read.threads[0].environment, { path: "/repo/.worktrees/build", branch: "bb/build", baseBranch: "origin/main", defaultBranch: "main", isWorktree: true, kind: "managed-worktree", status: "ready", hostId: "mac", pullRequest: { number: 7, title: "Build fix", url: "https://example/pr/7", state: "open" } });
   const status = await h.run("read_threads", { thread_ids: ["build"], what: "status" });
   assert.equal("environment" in status.threads[0], false, "environment is only read when asked");
+});
+
+const queuedItem = (id: string, text: string, extra: Any = {}) => ({ id, threadId: "build", content: [{ type: "text", text }], createdAt: 9500, updatedAt: 9600, editable: true, sendAt: null, waitingOn: { kind: "thread" }, failureReason: null, ...extra });
+
+test("queued messages can be listed, sent now, edited, and deleted, with voice's own send kept in step", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.world.send = async () => ({ delivery: "queued", queuedMessage: { id: "q-voice" } });
+  const sent = await h.run("message_thread", message);
+  assert.equal(sent.status, "queued");
+  h.world.queue.set("build", [queuedItem("q-user", "From the app"), queuedItem("q-voice", `${message.body}\nSpoken request: Please check the build`)]);
+  const listed = await h.run("queued_messages", { op: "list", thread_id: "build" });
+  assert.deepEqual(listed.queued.map((q: Any) => [q.position, q.id, q.fromThisConversation]), [[1, "q-user", false], [2, "q-voice", true]]);
+  assert.equal(listed.queued[1].operationId, sent.operationId);
+  const edited = await h.run("queued_messages", { op: "edit", thread_id: "build", queued_message_id: "q-user", text: "From the app, revised" }, { utterance: { id: "u2", version: 1, text: "change it", startedAt: h.now() } });
+  assert.equal(edited.edited, true); assert.equal(edited.previousText, "From the app"); assert.equal(h.world.queueUpdates.at(-1).expectedUpdatedAt, 9600);
+  const now = await h.run("queued_messages", { op: "send_now", thread_id: "build", queued_message_id: "q-voice" }, { utterance: { id: "u3", version: 1, text: "send it now", startedAt: h.now() } });
+  assert.equal(now.sentNow, true); assert.equal(h.world.queueSends.at(-1).mode, "steer");
+  assert.equal(h.runtime.operations.get(sent.operationId)!.status, "running", "voice's queued send is now running");
+  const gone = await h.run("queued_messages", { op: "delete", thread_id: "build", queued_message_id: "q-user" }, { utterance: { id: "u4", version: 1, text: "delete it", startedAt: h.now() } });
+  assert.equal(gone.deleted, true); assert.deepEqual(h.world.queue.get("build"), []);
+  const missing = await h.run("queued_messages", { op: "delete", thread_id: "build", queued_message_id: "q-user" }, { utterance: { id: "u5", version: 1, text: "again", startedAt: h.now() } });
+  assert.match(missing.error, /gone/);
+});
+
+test("queued message changes need an ID from a list in this call and refuse a locked edit", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.world.queue.set("build", [queuedItem("q-locked", "Locked", { editable: false })]);
+  const unseen = await h.run("queued_messages", { op: "send_now", thread_id: "build", queued_message_id: "q-locked" });
+  assert.match(unseen.error, /unknown target ID q-locked/);
+  await h.run("queued_messages", { op: "list", thread_id: "build" });
+  const locked = await h.run("queued_messages", { op: "edit", thread_id: "build", queued_message_id: "q-locked", text: "New" }, { utterance: { id: "u2", version: 1, text: "edit", startedAt: h.now() } });
+  assert.match(locked.error, /cannot be edited now/);
+  assert.equal(h.world.queueUpdates.length, 0);
 });

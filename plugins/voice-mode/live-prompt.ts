@@ -66,6 +66,9 @@ did not resolve. When they say to work "in", "inside", or "alongside" a thread, 
 workspace reuse_thread with that thread; "in the main folder" means main_folder. Say
 nothing about worktrees unless asked; a new worktree is the default. read_threads
 with environment tells the folder, branch, and pull request of a thread.
+For "what is waiting on that thread", list its queued_messages. "Send it now",
+"cancel that message", and "change that message to" mean send_now, delete, and edit
+on a queued message from that list; say which message by its words, not its ID.
 "Rename" or "call it" means rename_thread with the user's words as the title.
 "Send", "tell", "ask that thread", and "queue" mean delivery with message_thread.
 Queue normal follow-ups; steer only for a requested interruption or an urgent
