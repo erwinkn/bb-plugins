@@ -28,6 +28,7 @@ import { CommentComposer, CommentRail } from "../components/CommentRail";
 import { DiagnosticsDialog } from "../components/DiagnosticsDialog";
 import { PlanDocument, type AnchorMap } from "../components/PlanDocument";
 import { ReviewFooter } from "../components/ReviewFooter";
+import { ShortcutCheatSheet, detectApplePlatform, submitShortcutKeys } from "../components/ShortcutCheatSheet";
 import { useReviewDraft } from "../hooks/useReviewDraft";
 import { collectDiagnostics, formatDiagnostics } from "../lib/diagnostics";
 
@@ -782,4 +783,26 @@ it("returns focus to Approve after cancelling its dialog", async () => {
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   expect(document.activeElement).toBe(approve);
+});
+
+describe("shortcut cheat sheet platform labels", () => {
+  it("shows the modifier for the detected platform and both forms when unknown", () => {
+    expect(detectApplePlatform({ userAgent: "", userAgentData: { platform: "macOS" } })).toBe(true);
+    expect(detectApplePlatform({ userAgent: "", userAgentData: { platform: "Windows" } })).toBe(false);
+    expect(detectApplePlatform({ userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) Safari/605.1.15" })).toBe(true);
+    expect(detectApplePlatform({ userAgent: "Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0" })).toBe(false);
+    expect(detectApplePlatform({ userAgent: "" })).toBeNull();
+    expect(detectApplePlatform(undefined)).toBeNull();
+    expect(submitShortcutKeys(true)).toEqual(["⌘ Enter"]);
+    expect(submitShortcutKeys(false)).toEqual(["Ctrl Enter"]);
+    expect(submitShortcutKeys(null)).toEqual(["⌘ Enter", "Ctrl Enter"]);
+  });
+
+  it("renders the selection and composer tables", () => {
+    render(<ShortcutCheatSheet open onOpenChange={vi.fn()} canAnnotate />);
+    const dialog = within(screen.getByRole("dialog", { name: "Keyboard shortcuts" }));
+    expect(dialog.getAllByRole("row")).toHaveLength(7);
+    expect(dialog.getByText("Open this cheat sheet")).toBeTruthy();
+    expect(dialog.getByText("Cancel and close the composer")).toBeTruthy();
+  });
 });

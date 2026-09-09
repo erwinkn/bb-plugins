@@ -36,6 +36,7 @@ import {
 import { definedContext, type QuoteMatch } from "../lib/quote-anchor";
 import { CommentComposer, CommentRail, type CommentActions, type PendingComment } from "./CommentRail";
 import { DiagnosticsDialog } from "./DiagnosticsDialog";
+import { ShortcutCheatSheet } from "./ShortcutCheatSheet";
 import { PlanChanges } from "./PlanChanges";
 import { PlanDocument, type AnchorMap } from "./PlanDocument";
 import { PlanHeader, type ReviewView } from "./PlanHeader";
@@ -88,6 +89,7 @@ export function PlanReview({
   const [anchors, setAnchors] = useState<AnchorMap>({});
   const [pendingMatch, setPendingMatch] = useState<QuoteMatch | null>(null);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [submitting, setSubmitting] = useState<ReviewAction | null>(null);
@@ -111,6 +113,22 @@ export function PlanReview({
   useEffect(() => {
     if (isWide && view === "comments") setView("document");
   }, [isWide, view]);
+
+  // ? opens the cheat sheet unless the reviewer is typing.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (root === null) return;
+    const doc = root.ownerDocument;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "?" || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+      event.preventDefault();
+      setShortcutsOpen(true);
+    };
+    doc.addEventListener("keydown", onKeyDown);
+    return () => doc.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const draftState = useReviewDraft(plan.id, version?.id ?? "none");
   const { draft, update: updateDraft, reset: resetDraft, persistFailed } = draftState;
@@ -267,6 +285,7 @@ export function PlanReview({
         }}
         onDelete={() => setDeleteOpen(true)}
         onDiagnostics={() => setDiagnosticsOpen(true)}
+        onShortcuts={() => setShortcutsOpen(true)}
       />
       {!isLatest ? (
         <div className="flex items-center gap-2 border-b border-border bg-muted/60 px-4 py-1.5 text-xs text-muted-foreground">
@@ -419,6 +438,7 @@ export function PlanReview({
       ) : null}
 
       <DiagnosticsDialog open={diagnosticsOpen} onOpenChange={setDiagnosticsOpen} root={rootRef.current} anchors={anchors} />
+      <ShortcutCheatSheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} canAnnotate={canEdit} />
 
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>

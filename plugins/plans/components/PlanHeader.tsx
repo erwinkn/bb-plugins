@@ -40,6 +40,7 @@ interface PlanHeaderProps {
   onDeliveryModeChange: (mode: Plan["deliveryMode"]) => void;
   onDelete: () => void;
   onDiagnostics: () => void;
+  onShortcuts: () => void;
 }
 
 export function PlanHeader({
@@ -54,6 +55,7 @@ export function PlanHeader({
   onDeliveryModeChange,
   onDelete,
   onDiagnostics,
+  onShortcuts,
 }: PlanHeaderProps) {
   const versions = sortedVersions(plan);
   const latest = latestVersion(plan);
@@ -158,6 +160,10 @@ export function PlanHeader({
             <DropdownMenuItem onSelect={() => void copyMarkdown()}>
               <Icon name="Copy" className="size-4" aria-hidden />
               Copy Markdown
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={onShortcuts}>
+              <Icon name="Keyboard" className="size-4" aria-hidden />
+              Keyboard shortcuts
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onDiagnostics}>
               <Icon name="Info" className="size-4" aria-hidden />

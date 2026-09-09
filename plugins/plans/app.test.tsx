@@ -637,3 +637,41 @@ it("explains that plan deletion also removes queued feedback", async () => {
   fireEvent.click(await within(document.body).findByRole("menuitem", { hidden: true, name: /Delete/ }));
   await slot.findByText("This removes all 1 versions and 1 annotations, and any queued feedback message. The thread's history stays.");
 });
+
+describe("keyboard shortcut cheat sheet", () => {
+  it("lists the review and composer shortcuts from the actions menu", async () => {
+    const backend = fakeBackend([makePlan()]);
+    slot = render(threadAction, { threadId: "thr_1", params: null }, { rpc: backend.rpc });
+    fireEvent.keyDown(await slot.findByRole("button", { name: "Plan actions" }), { key: "Enter" });
+    fireEvent.click(await within(document.body).findByRole("menuitem", { hidden: true, name: "Keyboard shortcuts" }));
+    const dialog = within(await within(document.body).findByRole("dialog", { name: "Keyboard shortcuts" }));
+    for (const key of ["C", "A", "D", "G", "?", "Esc"]) expect(dialog.getByText(key, { selector: "kbd" })).toBeTruthy();
+    expect(dialog.getByText("Redline the selection (saves directly)")).toBeTruthy();
+    expect(dialog.getByText("Submit the text")).toBeTruthy();
+    expect(dialog.getAllByText(/Enter$/, { selector: "kbd" }).length).toBeGreaterThan(0);
+  });
+
+  it("hides the direct-save rows on an approved plan", async () => {
+    const backend = fakeBackend([makePlan({ status: "approved" })]);
+    slot = render(threadAction, { threadId: "thr_1", params: null }, { rpc: backend.rpc });
+    fireEvent.keyDown(await slot.findByRole("button", { name: "Plan actions" }), { key: "Enter" });
+    fireEvent.click(await within(document.body).findByRole("menuitem", { hidden: true, name: "Keyboard shortcuts" }));
+    const dialog = within(await within(document.body).findByRole("dialog", { name: "Keyboard shortcuts" }));
+    expect(dialog.getByText("C", { selector: "kbd" })).toBeTruthy();
+    expect(dialog.queryByText("D", { selector: "kbd" })).toBeNull();
+    expect(dialog.queryByText("G", { selector: "kbd" })).toBeNull();
+  });
+
+  it("opens with the ? key unless the reviewer is typing", async () => {
+    const backend = fakeBackend([makePlan()]);
+    slot = render(threadAction, { threadId: "thr_1", params: null }, { rpc: backend.rpc });
+    await slot.findByRole("button", { name: "Plan actions" });
+    const input = document.createElement("textarea");
+    document.body.appendChild(input);
+    fireEvent.keyDown(input, { key: "?", shiftKey: true });
+    expect(within(document.body).queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
+    input.remove();
+    fireEvent.keyDown(document.body, { key: "?", shiftKey: true });
+    expect(await within(document.body).findByRole("dialog", { name: "Keyboard shortcuts" })).toBeTruthy();
+  });
+});

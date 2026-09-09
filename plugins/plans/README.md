@@ -267,3 +267,29 @@ A looks good needs no change unless it settles an open question.
 The agent then folds that answer into the text.
 Annotation cards show their number, kind, state, and replies.
 Use the reply field to continue the discussion.
+
+## Keyboard shortcuts
+
+Open **Keyboard shortcuts** from the plan actions menu, or press `?` while the focus is not in a text field.
+The cheat sheet lists the keys that the panel binds.
+
+With text selected in the plan:
+
+| Key | Action |
+| --- | --- |
+| C | Add a comment on the selection (opens the composer) |
+| A | Ask about the selection (opens the composer) |
+| D | Redline the selection (saves directly) |
+| G | Looks good for the selection (saves directly) |
+| ? | Open the cheat sheet |
+
+In the composer:
+
+| Key | Action |
+| --- | --- |
+| Cmd+Enter on macOS, Ctrl+Enter elsewhere | Submit the text |
+| Escape | Cancel and close the composer |
+
+The submit row shows the modifier for the detected platform.
+When the browser does not identify the platform, the row shows both forms.
+The D and G rows are hidden when the plan is approved or an older version is shown, because those keys do not save then.
