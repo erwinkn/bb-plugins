@@ -119,3 +119,13 @@ step.
 
 I stand behind this server implementation within these stated limits. The client
 cutover and physical playback checks remain separate work.
+
+
+## Settings and UI update
+
+The named-profile migration, prompt history editor, and Tasks view are now built.
+Startup migrates v1 settings to v2 once and retains v1. The active live prompt now
+uses role `aide`; roles `live` and `coordinator` are read-only history for rollback.
+See [Settings and Tasks handoff](docs/settings-and-tasks.md) for the changed settings
+RPC shape, stored work snapshots, and validation. The earlier server-step audit
+above records the choices at that step; this update supersedes its deferred UI work.

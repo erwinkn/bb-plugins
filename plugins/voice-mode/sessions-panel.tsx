@@ -15,6 +15,8 @@ import { VOICE_CONVERSATION_SUBPATH, nativeUi } from "./native-ui";
 import { LiveCallControls, MicIcon, WaveformIcon } from "./voice-chrome";
 import { actionStatus, pairToolEvents } from "./session-events";
 import { CoordinatorCard } from "./coordinator-panel";
+import { TasksView } from "./tasks-view.tsx";
+import type { ConversationWork } from "./conversation-work.ts";
 import { activeConversationId, resolveSession, sessionApi, startConversation, type VoiceSessionRow } from "./session-api";
 import { describeDelivery, projectConversation, type ConversationMessage } from "./session-projection";
 import { toast } from "sonner";
@@ -549,11 +551,12 @@ export function SessionsPanel({ subPath = "" }: Partial<PluginNavPanelProps>) {
   );
 }
 
-type SessionTab = "conversation" | "coordinator" | "diagnostics";
+type SessionTab = "conversation" | "tasks" | "coordinator" | "diagnostics";
 
 const SESSION_TABS: { id: SessionTab; label: string }[] = [
   { id: "conversation", label: "Conversation" },
-  { id: "coordinator", label: "Coordinator" },
+  { id: "tasks", label: "Tasks" },
+  { id: "coordinator", label: "Coordinator history" },
   { id: "diagnostics", label: "Diagnostics" },
 ];
 
@@ -622,7 +625,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
   }, [selected]);
   const backToSessions = useCallback(() => setSelected(null), []);
   useEscapeToClose(selected ? backToSessions : undefined, active);
-  const [detail, setDetail] = useState<{ session: VoiceSessionRow; events: EventRow[] } | null>(null);
+  const [detail, setDetail] = useState<{ session: VoiceSessionRow; events: EventRow[]; work?: ConversationWork } | null>(null);
   const [liveTranscript, setLiveTranscript] = useState<TranscriptSnapshot>(EMPTY_TRANSCRIPT);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -800,7 +803,10 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
     if (!selected || typeof callId !== "string") return;
     if (selected === callId || current?.callIds.includes(callId) || (activeCallId === callId && isSelectedLive)) refetchDetail(selected);
   });
-  useRealtime("voice-coordinator", () => refreshNewest());
+  useRealtime("voice-presence", () => {
+    refreshNewest();
+    if (selected) refetchDetail(selected);
+  });
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -835,7 +841,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
     session.currentCallNonce !== null || (callState !== "idle" && session.id === activeSession) || (activeCallId !== null && (session.callIds.includes(activeCallId) || session.id === activeCallId));
 
   return (
-    <div className="voice-sessions flex h-full min-h-0 flex-col">
+    <div className="voice-sessions @container flex h-full min-h-0 min-w-0 flex-col">
       {selected ? (
         <nav aria-label="Session navigation" className="shrink-0 border-b border-border bg-background px-4 py-2 sm:py-3 md:px-6">
           <div className="mx-auto flex w-full min-w-0 max-w-3xl items-center gap-2">
@@ -896,6 +902,8 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
                 <p role="status" className="py-4 text-center text-sm text-muted-foreground">Loading session…</p>
               ) : tab === "conversation" ? (
                 <ConversationView events={conversationEvents} live={isSelectedLive} />
+              ) : tab === "tasks" ? (
+                <TasksView key={detail.session.id} conversationId={detail.session.id} nonce={isSelectedLive ? activeCallId ?? detail.session.currentCallNonce : null} initialWork={detail.work} />
               ) : (
                 <div className="space-y-2">
                   <FilterBar value={filter} onChange={setFilter} />
@@ -1005,7 +1013,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
         <section aria-label="Voice session controls" className="shrink-0 border-t border-border bg-background px-4 py-3">
           <div className="mx-auto flex w-full max-w-3xl flex-col items-center gap-2">
             {selected ? (
-              <nav aria-label="Session views" className="flex w-full gap-1 rounded-lg bg-muted p-1">
+              <nav aria-label="Session views" className="grid w-full min-w-0 grid-cols-2 gap-1 rounded-lg bg-muted p-1 @lg:flex">
                 {SESSION_TABS.filter(entry => entry.id !== "coordinator" || current?.coordinatorThreadId).map(entry => (
                   <button key={entry.id} type="button" onClick={() => setTab(entry.id)} aria-current={tab === entry.id ? "page" : undefined}
                     className={cn("min-h-11 min-w-0 flex-1 rounded-md px-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-8 sm:text-sm",

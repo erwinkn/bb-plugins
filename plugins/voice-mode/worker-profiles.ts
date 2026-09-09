@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { DEFAULT_PROFILE_INSTRUCTIONS, WORKER_BASE_PROMPT } from "./worker-prompt.ts";
+import { loadWorkerCatalog } from "./provider-catalog.ts";
 
 export const WORKER_ROLES = ["investigate", "plan", "implement", "review"] as const;
 export type WorkerRole = typeof WORKER_ROLES[number];
@@ -21,7 +22,7 @@ export type WorkerSettings = z.infer<typeof workerSettingsSchema>;
 
 export const NAMED_WORKER_PROFILE_KEY = "voice.worker-profiles.v2";
 export const namedWorkerProfileSchema = workerProfileSchema.extend({
-  name: z.string().min(1).max(64), instructions: z.string().min(1).max(16000),
+  name: z.string().trim().min(1).max(64), instructions: z.string().min(1).max(16000).refine(value => !!value.trim(), "Instructions cannot be empty"),
 });
 export type NamedWorkerProfile = z.infer<typeof namedWorkerProfileSchema>;
 export const namedWorkerSettingsSchema = z.object({
@@ -32,13 +33,38 @@ export const namedWorkerSettingsSchema = z.object({
 }).strict().refine(s => new Set(s.profiles.map(p => p.name)).size === s.profiles.length && s.profiles.some(p => p.name === s.defaultProfile), "Profile names must be unique and include the default profile");
 export type NamedWorkerSettings = z.infer<typeof namedWorkerSettingsSchema>;
 
-/** Read through to v1 without rewriting either saved value during this cutover. */
+/** Old settings remain readable for rollback. Migration writes only the new key. */
+export async function migrateWorkerSettings(bb: BbPluginApi): Promise<void> {
+  if (await bb.storage.kv.get(NAMED_WORKER_PROFILE_KEY) != null) return;
+  const old = await bb.storage.kv.get(WORKER_PROFILE_KEY);
+  if (old == null) return;
+  await bb.storage.kv.set(NAMED_WORKER_PROFILE_KEY, namedSettingsFromLegacy(workerSettingsSchema.parse(old)));
+}
+
+export function namedSettingsFromLegacy(old: WorkerSettings): NamedWorkerSettings {
+  return { profiles: WORKER_ROLES.map(name => ({ ...old.profiles[name], name, instructions: DEFAULT_PROFILE_INSTRUCTIONS[name] })),
+    defaultProfile: "implement", maxActiveWorkers: old.maxActiveWorkers, workerBasePrompt: WORKER_BASE_PROMPT };
+}
+
+/** Validate the complete draft on the selected machine without changing model choices. */
+export async function validateNamedWorkerSettings(bb: BbPluginApi, settings: NamedWorkerSettings, hostId: string) {
+  const parsed = namedWorkerSettingsSchema.parse(settings);
+  const catalog = await loadWorkerCatalog(bb, hostId);
+  for (const profile of parsed.profiles) {
+    const provider = catalog.providers.find(p => p.id === profile.providerId && p.available);
+    const models = catalog.models.filter(m => m.providerId === profile.providerId);
+    const model = profile.model ? models.find(m => m.model === profile.model || m.id === profile.model) : models.find(m => m.isDefault);
+    if (!provider || !model) throw new Error(`Profile ${profile.name}: the selected provider or model is unavailable on this machine.`);
+    if (profile.reasoningLevel && !model.reasoningLevels.some(level => level.id === profile.reasoningLevel)) throw new Error(`Profile ${profile.name}: this model does not support ${profile.reasoningLevel} reasoning.`);
+    if (profile.serviceTier === "fast" && !provider.serviceTiers.some(tier => tier.id === "fast")) throw new Error(`Profile ${profile.name}: this provider does not support Fast on this machine.`);
+  }
+  return parsed;
+}
+
 export async function readNamedWorkerSettings(bb: BbPluginApi): Promise<NamedWorkerSettings> {
   const saved = await bb.storage.kv.get<unknown>(NAMED_WORKER_PROFILE_KEY);
   if (saved !== null && saved !== undefined) return namedWorkerSettingsSchema.parse(saved);
-  const old = await readWorkerSettings(bb);
-  return { profiles: WORKER_ROLES.map(name => ({ ...old.profiles[name], name, instructions: DEFAULT_PROFILE_INSTRUCTIONS[name] })),
-    defaultProfile: "implement", maxActiveWorkers: old.maxActiveWorkers, workerBasePrompt: WORKER_BASE_PROMPT };
+  return namedSettingsFromLegacy(await readWorkerSettings(bb));
 }
 
 export function defaultWorkerSettings(): WorkerSettings {

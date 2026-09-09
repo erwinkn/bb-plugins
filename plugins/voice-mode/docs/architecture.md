@@ -38,12 +38,22 @@ store under `coordinator/` reads historical rows only. Historical thread views u
 BB's timeline presentation without a composer. The old executors, registrations,
 schedulers, event handlers, and write RPCs are removed.
 
-The prompt roles are `live`, `worker`, and historical `coordinator`. The approved
-live default activates once, with earlier edits retained in prompt history.
-Later user edits remain active. Worker launches use the current worker prompt.
-Named worker profiles use `voice.worker-profiles.v2`; absent that key, the runtime
-adapts the old role settings in memory. The future Tasks and profiles UI should
-use `listLiveTasks` and `listLiveSubscriptions` with `{nonce, conversationId}`.
+The editable prompt roles are `aide` and `worker`. The UI labels `aide` as Live
+prompt. With no saved row, it reads the approved default directly. Earlier `live`
+and `coordinator` rows remain read-only history. New calls never read or write
+`live`, which preserves that role for rollback. Worker launches use the saved
+worker prompt. Both editors show defaults and version history.
+
+Named worker profiles use `voice.worker-profiles.v2`. Startup converts an existing
+v1 value once and keeps the original. A fresh installation reads defaults without
+writing either key. The profile editor validates names, the default selection,
+and provider capabilities on the selected machine before saving the full draft.
+
+The Tasks view uses `listLiveTasks` and `listLiveSubscriptions` with the active
+nonce and conversation ID. Ended sessions read stored work through `getVoiceSession`.
+This history read does not claim a call or change subscriptions. The view refreshes
+on session events and every ten seconds while visible. Task rows use the native
+open action when clicked. Historical coordinator timelines have no composer.
 
 `legacy-migrations.ts` retains shipped statements. Tests compare both deployed
 orders against the literal snapshots captured before this removal. The old tables

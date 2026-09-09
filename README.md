@@ -11,8 +11,8 @@ help, executable setting, account usage, and live ACP model catalog. It preserve
 ID `acp-devin`. See [Devin provider](plugins/devin/README.md) for configuration,
 verification, and migration from a custom ACP entry.
 
-`voice-mode` adds real-time voice calls, session history, and spoken thread
-updates. See [Voice Mode](plugins/voice-mode/README.md).
+`voice-mode` adds one live voice model, background workers, task and subscription
+views, session history, and spoken thread updates. See [Voice Mode](plugins/voice-mode/README.md).
 
 `erwin-provider-usage` supplies the compact usage popup. See [Provider usage
 compact](plugins/provider-usage/README.md) for installation and rollback.
@@ -165,41 +165,21 @@ Status: recorded here; no upstream issue filed.
 Suggested issue title: `Add Stop and send to voice dictation`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
-### Plugin interactions: expose the pending row id
+### Voice questions and approvals
 
-Voice Mode asks questions through `bb.ui.requestInput`. In SDK 0.4.47 this
-returns the answer promise but does not expose the pending interaction id.
-The plugin currently looks up its own payload with `threads.interactions.list`.
-An API that exposes the id before the answer arrives would remove that lookup.
+Voice workers use native BB questions and approvals. Aide reads their IDs, subjects,
+and reasons, then uses `threads.interactions.respond` or `resolve` after a later
+spoken answer. Archive also requires a spoken preview and later confirmation.
+The earlier plugin-waiter workaround and proposed requestInput ID API are no longer
+needed for this path.
 
-Correction to the earlier note: the SDK does expose `threads.interactions.respond`
-and `threads.interactions.resolve`. We have not established which plugin-owned
-and native interaction kinds accept these calls in the live runtime. The current
-spoken-answer path resolves the plugin waiter and cancels the native row; that
-workaround is an implementation choice, not proof that BB has no response API.
-Validate those existing methods before requesting an additional answer API.
+### Voice background updates
 
-Status: recorded here; no upstream issue filed.
-Suggested issue title: `Plugin interactions: expose the pending requestInput row id`.
-File the request in [BB issues](https://github.com/get-bb/bb/issues).
-
-### Quiet handling of plugin-owned background messages
-
-Voice Mode coalesces watched-thread events in its own inbox. Native messages
-sent to its hidden thread still pass through BB dispatch. SDK 0.4.47 exposes
-`message.dispatch` with proceed, wait, and reject decisions. Waiting creates a
-queued row; rejection shows its message to the user. The SDK explicitly has
-no handled-by-plugin decision and no message amendment.
-
-A scoped consume-and-coalesce option for plugin-owned background messages
-would let Voice retain material results without a new agent turn, a pending
-queue row, or a visible rejection. It must preserve direct user messages and
-explicit Send-now actions. This is a proposed BB capability; Voice does not
-currently intercept native messages.
-
-Status: recorded here; no upstream issue filed.
-Suggested issue title: `Allow quiet coalescing of plugin-owned background messages`.
-File the request in [BB issues](https://github.com/get-bb/bb/issues).
+Voice records native worker events in its inbox and groups updates by watched root.
+The live model receives them at a quiet boundary. Critical questions, approvals,
+and failures stay pending until resolved. There is no hidden coordinator receiving
+background messages, so the earlier consume-and-coalesce dispatch proposal is no
+longer needed by Voice.
 
 ### Native UI command results for plugins
 
@@ -256,8 +236,9 @@ later. Remove an entry when the upstream fix ships.
 
 ### Voice operator isolation and managed workspace primitives
 
-The three-tier Voice operator now supports direct live messaging and worker
-creation. SDK 0.4.47 can create a managed worktree through `threads.spawn`, but
+Aide uses one live model and hidden root workers. It supports direct messaging,
+worker creation, named profiles, and a Tasks view. SDK 0.4.47 can create a managed
+worktree through `threads.spawn`, but
 has no standalone environment/worktree creation API or hard read-only spawn
 mode. Plugin tool selection also does not revoke native coding-agent tools.
 
@@ -266,7 +247,7 @@ results; capability-scoped agent execution (including enforced read-only roles);
 and cancellation/idempotency support for thread sends and creation. Until these
 exist, role instructions are not a sandbox, unknown sends/creates are not
 automatically retried, and worktree creation is coupled to a worker thread.
-See [Voice operator architecture](plugins/voice-mode/docs/live-operator.md).
+See [Voice architecture](plugins/voice-mode/docs/architecture.md).
 
 Status: recorded here; no upstream issue filed. Suggested issue title:
 `Expose scoped worker capabilities and durable managed-workspace operations`.

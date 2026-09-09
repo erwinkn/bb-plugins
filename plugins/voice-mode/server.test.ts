@@ -162,7 +162,10 @@ test("upgrade from the original five migrations preserves saved prompts and adds
     await plugin(bb);
     const prompt=await harness.behavior.callRpc("getPrompt", null) as any;
     assert.equal(prompt.content, LIVE_PROMPT);
-    assert.ok(prompt.versions.some((version:any)=>version.content.endsWith("Keep my prompt")));
+    assert.deepEqual(prompt.versions,[]);
+    const previous=await harness.behavior.callRpc("getPrompt",{role:"live"}) as any;
+    assert.ok(previous.content.endsWith("Keep my prompt"));
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM voice_role_prompts").get() as any).n,0);
     assert.equal((db.prepare("SELECT content FROM prompt_versions ORDER BY id DESC LIMIT 1").get() as any).content,"Keep my prompt");
     const history = await harness.behavior.callRpc("getVoiceSession", { sessionId: "old-call" }) as any;
     assert.equal(history.session.legacy, true);
@@ -248,4 +251,22 @@ test("resuming historical conversations never wakes or messages their old coordi
     for(const method of ["submitRequest","retryRequest","reserveUpdateBatch","reportReplyDelivery","pendingReplies","getCoordinatorStatus","answerQuestion","setWatch","sequence","pendingUiCommands","claimUiCommand","reportUiCommandResult","cancelQuickRequest","listCoordinatorProviders"])
       await assert.rejects(harness.behavior.callRpc(method as never,{} as never));
   }finally{await harness.lifecycle.dispose();}
+});
+
+test("createCall uses aide prompts while old live rows remain read-only for rollback",async t=>{
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode",settings:{openaiApiKey:"test-only-key"}});t.after(()=>harness.lifecycle.dispose());
+  await plugin(bb);const db=bb.storage.database();
+  db.prepare("INSERT INTO voice_role_prompts(role,ts,source,content) VALUES ('live',1,'user','Old tools prompt')").run();
+  db.prepare("UPDATE voice_call_control SET nonce='test-call' WHERE slot=1").run();
+  const sessions:any[]=[];
+  t.mock.method(globalThis,"fetch",async(_url:unknown,options?:RequestInit)=>{sessions.push(JSON.parse((options!.body as FormData).get("session") as string));return new Response("test SDP");});
+  await harness.behavior.callRpc("createCall",{nonce:"test-call",sdp:"test offer",threadId:null,projectId:null});
+  assert.equal(sessions[0].instructions,LIVE_PROMPT);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM voice_role_prompts WHERE role='aide'").get() as any).n,0);
+  await harness.behavior.callRpc("setPrompt",{role:"aide",content:"Saved aide edit",source:"user",note:null});
+  await harness.behavior.callRpc("createCall",{nonce:"test-call",sdp:"test offer",threadId:null,projectId:null});
+  assert.equal(sessions[1].instructions,"Saved aide edit");
+  await assert.rejects(harness.behavior.callRpc("setPrompt",{role:"live",content:"Not allowed",source:"user",note:null}),/read only/);
+  assert.deepEqual(db.prepare("SELECT content FROM voice_role_prompts WHERE role='live'").all(),[{content:"Old tools prompt"}]);
+  assert.equal((await harness.behavior.callRpc("getPrompt",{role:"live"}) as any).content,"Old tools prompt");
 });

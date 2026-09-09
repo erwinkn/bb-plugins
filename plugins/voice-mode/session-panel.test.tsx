@@ -2,6 +2,7 @@
 // scoped live refresh, and the Diagnostics view over raw events.
 import test, { after, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import type { ConversationWork } from "./conversation-work.ts";
 import { JSDOM } from "jsdom";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost", pretendToBeVisual: true });
@@ -109,8 +110,8 @@ test("older physical call ids still open their session, and a legacy call has no
     fireEvent.click(await ui.findByRole("button", { name: /Session old/ }));
     await ui.findByText("Words in old");
     assert.ok(ui.getByText("single call", { exact: false }));
-    assert.equal(ui.queryByRole("option",{name:"Coordinator"}),null);
-    assert.equal(ui.queryByRole("button",{name:"Coordinator"}),null);
+    assert.equal(ui.queryByRole("option",{name:"Coordinator history"}),null);
+    assert.equal(ui.queryByRole("button",{name:"Coordinator history"}),null);
     assert.equal(ui.queryByTestId("bb-thread-chat"), null);
   } finally { slot.lifecycle.unmount(); }
 });
@@ -133,7 +134,7 @@ test("Diagnostics shows raw events with call boundaries; live log signals refres
     assert.equal(ui.queryByText(/internal words/), null, "the conversation hides handoffs");
     const nav = within(ui.getByRole("navigation", { name: "Session navigation" }));
     assert.ok(nav.getByRole("button", { name: "All sessions" }).querySelector("svg"));
-    assert.deepEqual(nav.getAllByRole("option").map(option => option.textContent), ["Conversation", "Coordinator", "Diagnostics"]);
+    assert.deepEqual(nav.getAllByRole("option").map(option => option.textContent), ["Conversation", "Tasks", "Coordinator history", "Diagnostics"]);
     assert.equal(nav.queryByRole("tablist"), null);
     const controls = within(ui.getByRole("region", { name: "Voice session controls" }));
     fireEvent.click(controls.getByRole("button", { name: "Diagnostics" }));
@@ -165,7 +166,7 @@ test("the Voice page shows only a read-only coordinator history with no work con
     await ui.findByText("Words in call_a_1");
     assert.equal(ui.queryByRole("group", { name: "Voice area" }), null, "no Session/Threads switcher");
     fireEvent.change(ui.getByRole("combobox", { name: "Session view" }), { target: { value: "coordinator" } });
-    const coordinator = within(await ui.findByRole("region", { name: "Voice coordinator" }));
+    const coordinator = within(await ui.findByRole("region", { name: "Coordinator history" }));
     assert.equal(coordinator.queryAllByRole("button").length,0);
     assert.deepEqual(slot.inspection.sidebarActionCalls,[]);
     assert.equal(slot.inspection.rpcCalls.some(call=>call.method==="getCoordinatorStatus"),false);
@@ -256,4 +257,79 @@ test("live transcript text grows in place and a durable final replaces it withou
     assert.equal(slot.container.querySelectorAll("[data-message-id]").length,1);
     assert.equal(slot.container.querySelectorAll('[aria-label="Streaming"]').length,0);
   } finally {slot.lifecycle.unmount();}
+});
+
+const taskWork = (): ConversationWork => ({tasks:[
+  {op_id:"op-review",thread_id:"work-review",title:"Review mobile layout",kind:"worker",profile:"review",status:"turn_ended",last_text:"Checked the narrow layout.",updated_at:2000,truncated:false},
+  {op_id:"op-spawn",thread_id:null,title:"Prepare release notes",kind:"thread",profile:null,status:"spawning",last_text:null,updated_at:3000},
+],subscriptions:[{thread_id:"work-review",root_thread_id:"work-review",state:"disabled",updated_at:2000},{thread_id:"other-watch",root_thread_id:"other-watch",state:"active",updated_at:2000}],asOf:4000});
+
+test("Tasks view renders live RPC rows, opens a thread, and refreshes only while mounted",async t=>{
+  const {setState}=callControl(t);t.mock.method(voiceAgent,"getSessionId",()=>"live-call");
+  const open=t.mock.method(nativeUi,"execute",async()=>({status:"succeeded" as const,detail:"Opened"}));
+  let work=taskWork(),reads=0;const {rpc}=baseRpc([sessionRow("live",{callIds:["live-call"],currentCallNonce:"live-call",coordinatorThreadId:null})]);
+  setState("live","live");
+  const slot=renderSlot({component:SessionsPanel},{},{rpc:{...rpc,
+    listLiveTasks:(input:unknown)=>{assert.deepEqual(input,{nonce:"live-call",conversationId:"live"});reads++;return {items:work.tasks,asOf:work.asOf};},
+    listLiveSubscriptions:()=>({items:work.subscriptions,asOf:work.asOf}),
+  }});const ui=within(slot.container);
+  try{
+    await ui.findByText("Words in live-call");fireEvent.change(ui.getByRole("combobox",{name:"Session view"}),{target:{value:"tasks"}});
+    await ui.findByRole("button",{name:"Open Review mobile layout"});assert.ok(ui.getByText("Turn ended"));assert.ok(ui.getByText("Muted"));assert.ok(ui.getByText("Active"));
+    assert.equal((ui.getByRole("button",{name:"Open Prepare release notes"}) as HTMLButtonElement).disabled,true);
+    fireEvent.click(ui.getByRole("button",{name:"Open Review mobile layout"}));await act(async()=>{await Promise.resolve();});
+    assert.deepEqual(open.mock.calls[0].arguments[0],{kind:"open_thread",threadId:"work-review",split:false});
+    work={...work,tasks:work.tasks.map(task=>({...task,last_text:"Fresh result"}))};
+    await slot.behavior.emitRealtime("aide-log",{sessionId:"live-call"});await ui.findAllByText("Fresh result");assert.ok(reads>=2);
+    fireEvent.change(ui.getByRole("combobox",{name:"Session view"}),{target:{value:"diagnostics"}});
+    const before=reads;await slot.behavior.emitRealtime("aide-log",{sessionId:"live-call"});assert.equal(reads,before);
+    assert.equal(ui.queryByRole("option",{name:"Coordinator history"}),null);
+  }finally{slot.lifecycle.unmount();}
+});
+
+test("ended sessions show saved tasks without using a call nonce or starting a call",async t=>{
+  const start=t.mock.method(voiceAgent,"startConversation",()=>{});const {rpc}=baseRpc([sessionRow("ended",{coordinatorThreadId:null})]);
+  const slot=renderSlot({component:SessionsPanel},{},{rpc:{...rpc,getVoiceSession:(input:unknown)=>({...rpc.getVoiceSession(input),work:taskWork()})}});const ui=within(slot.container);
+  try{fireEvent.click(await ui.findByRole("button",{name:/Session ended/}));await ui.findByText("Words in call_ended_1");fireEvent.click(ui.getByRole("button",{name:"Tasks"}));
+    await ui.findByText("Checked the narrow layout.");assert.equal(start.mock.callCount(),0);assert.equal(slot.inspection.rpcCalls.some(call=>call.method==="listLiveTasks"),false);
+  }finally{slot.lifecycle.unmount();}
+});
+
+for(const width of [390,1200])test(`Tasks layout constrains long content at ${width}px`,async()=>{
+  const {rpc}=baseRpc([sessionRow("narrow",{coordinatorThreadId:null})]);const work=taskWork();work.tasks[0].title="Long".repeat(120);work.tasks[0].last_text="unbroken".repeat(1000);
+  const slot=renderSlot({component:SessionsPanel},{},{rpc:{...rpc,getVoiceSession:(input:unknown)=>({...rpc.getVoiceSession(input),work})}});slot.container.style.width=`${width}px`;const ui=within(slot.container);
+  try{fireEvent.click(await ui.findByRole("button",{name:/Session narrow/}));await ui.findByText("Words in call_narrow_1");fireEvent.click(ui.getByRole("button",{name:"Tasks"}));
+    const tasks=await ui.findByRole("region",{name:"Conversation tasks"});assert.ok(tasks.classList.contains("min-w-0"));
+    const title=ui.getByRole("button",{name:`Open ${work.tasks[0].title}`});assert.ok(title.classList.contains("[overflow-wrap:anywhere]"));
+    const output=tasks.querySelector("pre")!;assert.ok(output.classList.contains("whitespace-pre-wrap"));assert.ok(output.textContent!.length<=6000);
+    assert.ok(ui.getByRole("navigation",{name:"Session views"}).classList.contains("grid-cols-2"));assert.ok(ui.getByRole("navigation",{name:"Session views"}).classList.contains("@lg:flex"));
+  }finally{slot.lifecycle.unmount();}
+});
+
+test("Tasks polling runs every ten seconds only while the view and document are visible",async t=>{
+  const {TasksView}=await import("./tasks-view.tsx");t.mock.timers.enable({apis:["setInterval"]});
+  let reads=0;const work=taskWork();const slot=renderSlot({component:TasksView},{conversationId:"poll",nonce:"call"},{rpc:{
+    listLiveTasks:()=>{reads++;return {items:work.tasks,asOf:work.asOf};},listLiveSubscriptions:()=>({items:work.subscriptions,asOf:work.asOf}),
+  }});const ui=within(slot.container);
+  try{
+    await ui.findByText("Checked the narrow layout.");assert.equal(reads,1);
+    await act(async()=>{t.mock.timers.tick(10000);await Promise.resolve();});assert.equal(reads,2);
+    Object.defineProperty(document,"visibilityState",{value:"hidden",configurable:true});
+    await act(async()=>{t.mock.timers.tick(10000);await Promise.resolve();});assert.equal(reads,2);
+    Object.defineProperty(document,"visibilityState",{value:"visible",configurable:true});
+    await act(async()=>{document.dispatchEvent(new dom.window.Event("visibilitychange"));await Promise.resolve();});assert.equal(reads,3);
+  }finally{slot.lifecycle.unmount();delete (document as any).visibilityState;}
+  await act(async()=>{t.mock.timers.tick(10000);await Promise.resolve();});assert.equal(reads,3);
+});
+
+test("call-end presence switches Tasks from live RPCs to saved session state",async t=>{
+  const {setState}=callControl(t);let nonce:string|null="closing-call";t.mock.method(voiceAgent,"getSessionId",()=>nonce);
+  const session=sessionRow("closing",{callIds:["closing-call"],currentCallNonce:nonce,coordinatorThreadId:null});const {rpc}=baseRpc([session]);let reads=0;const work=taskWork();setState("live","closing");
+  const slot=renderSlot({component:SessionsPanel},{},{rpc:{...rpc,getVoiceSession:(input:unknown)=>({...rpc.getVoiceSession(input),work}),
+    listLiveTasks:()=>{reads++;return {items:work.tasks,asOf:work.asOf};},listLiveSubscriptions:()=>({items:work.subscriptions,asOf:work.asOf}),
+  }});const ui=within(slot.container);
+  try{await ui.findByText("Words in closing-call");fireEvent.click(ui.getByRole("button",{name:"Tasks"}));await ui.findByText("Checked the narrow layout.");
+    const before=reads;session.currentCallNonce=null;nonce=null;act(()=>setState("idle",null));await slot.behavior.emitRealtime("voice-presence",{nonce:"closing-call",phase:"idle"});
+    await ui.findByText(/Saved state checked/);assert.equal(reads,before);assert.equal(ui.queryByRole("alert"),null);
+  }finally{slot.lifecycle.unmount();}
 });

@@ -300,10 +300,15 @@ export function ModelsSettings() {
 // ---------------------------------------------------------------------------
 
 export function BehaviorSettings() {
+  const [historyOpen, setHistoryOpen] = useState(false);
   return (
-    <div className="space-y-5">
-      <PromptEditor role="live" />
+    <div className="min-w-0 space-y-5">
+      <PromptEditor role="aide" />
       <PromptEditor role="worker" />
+      <details className="min-w-0 space-y-3" onToggle={event => setHistoryOpen(event.currentTarget.open)}>
+        <summary className="cursor-pointer text-sm font-medium">Previous prompts</summary>
+        {historyOpen ? <><PromptEditor role="live" /><PromptEditor role="coordinator" /></> : null}
+      </details>
     </div>
   );
 }

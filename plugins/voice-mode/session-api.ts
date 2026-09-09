@@ -2,6 +2,7 @@
 // session controls. Calls use the server contract directly; there is no
 // fallback that could continue a different session.
 import type { SessionEvent } from "./session-projection.ts";
+import type { ConversationWork } from "./conversation-work.ts";
 import { voiceAgent } from "./voice-agent";
 
 export interface VoiceSessionRow {
@@ -24,6 +25,7 @@ export interface ListVoiceSessionsResult {
 export interface VoiceSessionDetail {
   session: VoiceSessionRow;
   events: (SessionEvent & { callId: string })[];
+  work: ConversationWork;
 }
 
 /** Typed directly against the server contract; selection never falls back to another call. */

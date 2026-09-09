@@ -1,102 +1,146 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server.ts";
-import { WORKER_ROLES, workerProfileSchema, workerSettingsSchema, type WorkerRole, type WorkerProfile, type WorkerSettings as Settings } from "./worker-profiles.ts";
+import { namedWorkerSettingsSchema, workerProfileSchema, type NamedWorkerProfile, type NamedWorkerSettings as Settings } from "./worker-profiles.ts";
 import type { WorkerCatalog } from "./provider-catalog.ts";
 import { Button } from "./components/ui/button";
 
-const names: Record<WorkerRole,string> = {investigate:"Investigation",plan:"Planning",implement:"Implementation",review:"Review"};
-const inputClass = "block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
+const inputClass = "block w-full min-w-0 max-w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground disabled:opacity-60";
 
 export function WorkerSettings() {
   const rpc = useRpc<typeof rpcContract>();
-  const [settings,setSettings] = useState<Settings|null>(null);
-  const [catalog,setCatalog] = useState<WorkerCatalog|null>(null);
-  const [hostId,setHostId] = useState<string|undefined>();
-  const [busy,setBusy] = useState(false);
-  const [loading,setLoading] = useState(true);
-  const [error,setError] = useState<string|null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [saved, setSaved] = useState<Settings | null>(null);
+  const [catalog, setCatalog] = useState<WorkerCatalog | null>(null);
+  const [hostId, setHostId] = useState<string | undefined>();
+  const [busy, setBusy] = useState(false);
+  const [loadingCatalog, setLoadingCatalog] = useState(true);
+  const [catalogRevision, setCatalogRevision] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const generation = useRef(0);
+  const current = useRef({ dirty: false });
+  const dirty = JSON.stringify(settings) !== JSON.stringify(saved);
+  current.current.dirty = dirty;
   const refresh = useCallback(() => {
     const request = ++generation.current;
-    setLoading(true);
-    Promise.all([rpc.call("getWorkerSettings",null),rpc.call("listWorkerProviders",hostId ? {hostId} : {})]).then(([next,options])=>{
+    void rpc.call("getWorkerSettings", null).then(next => {
       if (request !== generation.current) return;
-      setSettings(next);setCatalog(options);setError(null);setLoading(false);
-    },cause=>{if(request === generation.current){setError(cause instanceof Error ? cause.message : String(cause));setLoading(false);}});
-  },[rpc,hostId]);
-  useEffect(()=>{refresh();return()=>{generation.current++;};},[refresh]);
-  useRealtime("worker-profiles-changed",refresh);
-  const save = async(next: Settings)=>{
-    setBusy(true);
-    // Retire an older settings fetch, so it cannot overwrite the save result.
-    generation.current++;
-    try {setSettings(await rpc.call("setWorkerSettings",workerSettingsSchema.parse(next)));setError(null);}
-    catch(cause){setError(cause instanceof Error ? cause.message : String(cause));}
-    finally {setBusy(false);setLoading(false);}
+      setSaved(next);
+      if (!current.current.dirty) setSettings(next);
+    }, cause => { if (request === generation.current) setError(String(cause)); });
+  }, [rpc]);
+  useEffect(() => { refresh(); return () => { generation.current++; }; }, [refresh]);
+  useRealtime("worker-profiles-changed", refresh);
+  useEffect(() => {
+    let active = true;
+    setLoadingCatalog(true);
+    void rpc.call("listWorkerProviders", hostId ? { hostId } : {}).then(next => {
+      if (active) { setCatalog(next); setLoadingCatalog(false); setError(null); }
+    }, cause => { if (active) { setCatalog(previous => previous ? { ...previous, hostId: null, providers: [], models: [] } : null); setError(String(cause)); setLoadingCatalog(false); } });
+    return () => { active = false; };
+  }, [rpc, hostId, catalogRevision]);
+
+  const edit = (next: Settings) => { setSettings(next); setNotice(null); setError(null); };
+  const update = (index: number, patch: Partial<NamedWorkerProfile>) => {
+    if (!settings) return;
+    const old = settings.profiles[index];
+    edit({ ...settings, defaultProfile: patch.name !== undefined && settings.defaultProfile === old.name ? patch.name : settings.defaultProfile,
+      profiles: settings.profiles.map((profile, i) => i === index ? { ...profile, ...patch } : profile) });
   };
-  const update = (role:WorkerRole|"default",patch:Partial<WorkerProfile>)=>{
-    if(!settings)return;
-    if(role!=="default"){void save({...settings,profiles:{...settings.profiles,[role]:{...settings.profiles[role],...patch}}});return;}
-    const previous=settings.defaultProfile ?? settings.profiles.implement;
-    const next={...previous,...patch};
-    const profiles={...settings.profiles};
-    for(const name of WORKER_ROLES)if(JSON.stringify(profiles[name])===JSON.stringify(previous))profiles[name]={...next};
-    void save({...settings,defaultProfile:next,profiles});
+  const add = () => {
+    if (!settings) return;
+    let n = 1;
+    while (settings.profiles.some(profile => profile.name === `profile-${n}`)) n++;
+    const template = settings.profiles.find(profile => profile.name === settings.defaultProfile) ?? settings.profiles[0];
+    edit({ ...settings, profiles: [...settings.profiles, { ...template, name: `profile-${n}` }] });
   };
-  const disabled=!settings || !catalog || !catalog.hostId || busy || loading;
-  const renderProfile = (role:WorkerRole|"default") => {
-      const profile=role==="default" ? settings?.defaultProfile ?? settings?.profiles.implement : settings?.profiles[role];
-      const providers=catalog?.providers ?? [];
-      const provider=providers.find(provider=>provider.id === profile?.providerId);
-      const models=catalog?.models.filter(model=>model.providerId === profile?.providerId) ?? [];
-      const model=profile?.model ? models.find(model=>model.model === profile.model || model.id === profile.model) : models.find(model=>model.isDefault);
-      const prefix=role==="default" ? "Default worker" : names[role];
-      return <fieldset key={role} className="space-y-3 border-t border-border pt-4" disabled={disabled}>
-        <legend className="px-1 text-sm font-medium">{prefix}</legend>
-        <label className="block space-y-1 text-sm">Provider
-          <select aria-label={`${prefix} provider`} className={inputClass} value={profile?.providerId ?? ""} onChange={event=>update(role,{providerId:event.target.value,model:null,reasoningLevel:null,serviceTier:"default"})}>
-            {profile && !provider ? <option value={profile.providerId}>{profile.providerId} (unavailable)</option> : null}
-            {providers.map(provider=><option key={provider.id} value={provider.id} disabled={!provider.available}>{provider.displayName}{provider.available ? "" : " (unavailable)"}</option>)}
-          </select>
-        </label>
-        <label className="block space-y-1 text-sm">Model
-          <select aria-label={`${prefix} model`} className={inputClass} value={profile?.model ?? ""} onChange={event=>update(role,{model:event.target.value || null,reasoningLevel:null})}>
-            <option value="">Provider default model</option>
-            {profile?.model && !model ? <option value={profile.model}>{profile.model} (unavailable)</option> : null}
-            {models.map(model=><option key={model.id} value={model.model}>{model.displayName}</option>)}
-          </select>
-        </label>
-        {model?.reasoningLevels.length || profile?.reasoningLevel ? <label className="block space-y-1 text-sm">Reasoning effort
-          <select aria-label={`${prefix} reasoning effort`} className={inputClass} value={profile?.reasoningLevel ?? ""} onChange={event=>update(role,{reasoningLevel:event.target.value ? workerProfileSchema.shape.reasoningLevel.parse(event.target.value) : null})}>
-            <option value="">Model default</option>
-            {profile?.reasoningLevel && !model?.reasoningLevels.some(level=>level.id === profile.reasoningLevel) ? <option value={profile.reasoningLevel}>{profile.reasoningLevel} (unsupported)</option> : null}
-            {model?.reasoningLevels.map(level=><option key={level.id} value={level.id}>{level.label}</option>)}
-          </select>
-        </label> : null}
-        {provider?.serviceTiers.some(tier=>tier.id === "fast") || profile?.serviceTier === "fast" ? <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" aria-label={`${prefix} Fast`} checked={profile?.serviceTier === "fast"} onChange={event=>update(role,{serviceTier:event.target.checked ? "fast" : "default"})}/>Fast{!provider?.serviceTiers.some(tier=>tier.id === "fast") ? " (unsupported here; disable or choose another provider)" : ""}
-        </label> : null}
-      </fieldset>;
-  };
-  return <div className="space-y-5">
-    <p className="text-xs text-muted-foreground">Voice workers run in hidden threads and stay out of the regular thread list. The default model applies to new workers; role-specific changes remain separate. Existing work keeps its model.</p>
-    <p className="text-xs text-muted-foreground">Workers use BB’s accept-edits permission mode. Investigation and review are task instructions, not read-only sandboxes. Voice does not grant new permissions.</p>
-    {error ? <div role="alert" className="space-y-2 text-sm text-destructive">{error}<Button variant="outline" onClick={refresh}>Retry worker settings</Button></div> : null}
-    <label className="block space-y-1 text-sm">Preview models on machine
-      <select aria-label="Worker catalog machine" className={inputClass} disabled={busy || loading || !catalog?.hosts.length} value={hostId ?? catalog?.hostId ?? ""} onChange={event=>setHostId(event.target.value || undefined)}>
+  async function save() {
+    if (!settings || !catalog?.hostId || busy) return;
+    setBusy(true); generation.current++;
+    try {
+      const next = await rpc.call("setWorkerSettings", { settings: namedWorkerSettingsSchema.parse(settings), hostId: catalog.hostId });
+      setSaved(next); setSettings(next); setError(null); setNotice("Profiles saved");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(false); }
+  }
+  const validation = settings ? namedWorkerSettingsSchema.safeParse(settings) : null;
+  const disabled = !settings || busy;
+  return <div className="@container min-w-0 space-y-5" aria-label="Worker profiles" aria-busy={!settings || busy}>
+    <p className="text-sm text-muted-foreground">Choose a profile for each background task. Each profile has its own model and instructions. Existing work keeps its model.</p>
+    <label className="block min-w-0 space-y-1 text-sm">Preview models on machine
+      <select aria-label="Worker catalog machine" className={inputClass} disabled={busy || loadingCatalog} value={hostId ?? catalog?.hostId ?? ""} onChange={event => setHostId(event.target.value || undefined)}>
         {!catalog?.hosts.length ? <option value="">No connected machine</option> : null}
-        {catalog?.hosts.map(host=><option key={host.id} value={host.id}>{host.name}</option>)}
+        {catalog?.hosts.map(host => <option key={host.id} value={host.id}>{host.name}</option>)}
       </select>
     </label>
-    <p className="text-xs text-muted-foreground">This selector previews availability; it does not choose a task’s machine. Profiles are checked again on the actual destination, with no silent model substitution.</p>
-    {renderProfile("default")}
-    <details className="space-y-3"><summary className="cursor-pointer text-sm font-medium">Role-specific models</summary>{WORKER_ROLES.map(renderProfile)}</details>
-    <label className="block space-y-1 text-sm">Maximum active or unconfirmed Voice workers
-      <input type="number" aria-label="Maximum Voice workers" min={1} max={64} className={inputClass} disabled={disabled} value={settings?.maxActiveWorkers ?? 8} onChange={event=>{
-        const n=Number(event.target.value);if(settings && Number.isInteger(n) && n>=1 && n<=64) void save({...settings,maxActiveWorkers:n});
-      }}/>
-    </label>
-    <p className="text-xs text-muted-foreground">Unconfirmed creation keeps its slot and is never retried automatically. Inspect the Voice diagnostics and BB threads before attempting new work.</p>
+    <p className="text-xs text-muted-foreground">Save checks every profile on this machine. This does not choose where a task runs. The destination machine is checked again at launch.</p>
+    {error ? <div role="alert" className="break-words text-sm text-destructive">{error} <Button variant="outline" size="sm" onClick={() => { refresh(); setCatalogRevision(value => value + 1); }} disabled={busy}>Reload settings</Button></div> : null}
+    {!settings ? <p role="status" className="text-sm text-muted-foreground">Loading profiles...</p> : <>
+      <label className="block min-w-0 space-y-1 text-sm">Default profile
+        <select aria-label="Default profile" className={inputClass} disabled={disabled} value={settings.defaultProfile} onChange={event => edit({ ...settings, defaultProfile: event.target.value })}>
+          {settings.profiles.map((profile, index) => <option key={index} value={profile.name}>{profile.name || "Unnamed profile"}</option>)}
+        </select>
+      </label>
+      <div className="min-w-0 space-y-4">
+        {settings.profiles.map((profile, index) => {
+          const prefix = profile.name || `Profile ${index + 1}`;
+          const provider = catalog?.providers.find(p => p.id === profile.providerId);
+          const models = catalog?.models.filter(m => m.providerId === profile.providerId) ?? [];
+          const model = profile.model ? models.find(m => m.model === profile.model || m.id === profile.model) : models.find(m => m.isDefault);
+          const isDefault = settings.defaultProfile === profile.name;
+          return <fieldset key={index} aria-label={`Profile ${prefix}`} disabled={disabled} className="min-w-0 space-y-3 rounded-lg border border-border bg-card p-4">
+            <legend className="max-w-full break-words px-1 text-sm font-medium">{prefix}{isDefault ? " · Default" : ""}</legend>
+            <div className="grid min-w-0 grid-cols-1 gap-3 @lg:grid-cols-2">
+              <label className="block min-w-0 space-y-1 text-sm">Name
+                <input aria-label={`${prefix} name`} className={inputClass} maxLength={64} value={profile.name} onChange={event => update(index, { name: event.target.value })} />
+              </label>
+              <label className="block min-w-0 space-y-1 text-sm">Provider
+                <select aria-label={`${prefix} provider`} className={inputClass} disabled={loadingCatalog || !catalog?.hostId} value={profile.providerId} onChange={event => update(index, { providerId: event.target.value, model: null, reasoningLevel: null, serviceTier: "default" })}>
+                  {!provider ? <option value={profile.providerId} disabled>{profile.providerId} (unavailable)</option> : null}
+                  {catalog?.providers.map(p => <option key={p.id} value={p.id} disabled={!p.available}>{p.displayName}{p.available ? "" : " (unavailable)"}</option>)}
+                </select>
+              </label>
+              <label className="block min-w-0 space-y-1 text-sm">Model
+                <select aria-label={`${prefix} model`} className={inputClass} disabled={loadingCatalog || !provider?.available} value={profile.model ?? ""} onChange={event => update(index, { model: event.target.value || null, reasoningLevel: null })}>
+                  <option value="" disabled={!models.some(m => m.isDefault)}>Provider default model</option>
+                  {profile.model && !model ? <option value={profile.model} disabled>{profile.model} (unavailable)</option> : null}
+                  {models.map(m => <option key={m.id} value={m.model}>{m.displayName}</option>)}
+                </select>
+              </label>
+              <label className="block min-w-0 space-y-1 text-sm">Reasoning level
+                <select aria-label={`${prefix} reasoning level`} className={inputClass} disabled={loadingCatalog || !model} value={profile.reasoningLevel ?? ""} onChange={event => update(index, { reasoningLevel: event.target.value ? workerProfileSchema.shape.reasoningLevel.parse(event.target.value) : null })}>
+                  <option value="">Model default</option>
+                  {profile.reasoningLevel && !model?.reasoningLevels.some(level => level.id === profile.reasoningLevel) ? <option value={profile.reasoningLevel} disabled>{profile.reasoningLevel} (unsupported)</option> : null}
+                  {model?.reasoningLevels.map(level => <option key={level.id} value={level.id}>{level.label}</option>)}
+                </select>
+              </label>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" aria-label={`${prefix} Fast`} checked={profile.serviceTier === "fast"} disabled={loadingCatalog || (!provider?.serviceTiers.some(t => t.id === "fast") && profile.serviceTier !== "fast")} onChange={event => update(index, { serviceTier: event.target.checked ? "fast" : "default" })} />Fast
+              {!provider?.serviceTiers.some(t => t.id === "fast") ? <span className="text-xs text-muted-foreground">Unavailable on this machine</span> : null}
+            </label>
+            <label className="block min-w-0 space-y-1 text-sm">Instructions
+              <textarea aria-label={`${prefix} instructions`} className={`${inputClass} resize-y leading-relaxed`} rows={4} maxLength={16000} value={profile.instructions} onChange={event => update(index, { instructions: event.target.value })} />
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" aria-label={`Delete ${prefix}`} disabled={isDefault} onClick={() => edit({ ...settings, profiles: settings.profiles.filter((_, i) => i !== index) })}>Delete profile</Button>
+              {isDefault ? <p className="text-xs text-muted-foreground">Choose another default before deleting this profile.</p> : null}
+            </div>
+          </fieldset>;
+        })}
+      </div>
+      <Button variant="outline" disabled={disabled || settings.profiles.length >= 64} onClick={add}>Add profile</Button>
+      <label className="block min-w-0 space-y-1 text-sm">Maximum active or unconfirmed workers
+        <input type="number" aria-label="Maximum Voice workers" min={1} max={64} className={inputClass} disabled={disabled} value={settings.maxActiveWorkers} onChange={event => edit({ ...settings, maxActiveWorkers: Number(event.target.value) })} />
+      </label>
+      <p className="text-xs text-muted-foreground">Workers use BB's accept-edits permissions. Profile instructions do not grant new permissions. An unconfirmed launch keeps its worker slot.</p>
+      {dirty && validation && !validation.success ? <p role="alert" className="break-words text-sm text-destructive">{validation.error.issues[0].message}</p> : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button disabled={disabled || loadingCatalog || !catalog?.hostId || !dirty || !validation?.success} onClick={() => void save()}>{busy ? "Saving..." : "Save profiles"}</Button>
+        <Button variant="outline" disabled={disabled || !dirty} onClick={() => { setSettings(saved); setError(null); setNotice(null); }}>Cancel</Button>
+        {notice ? <span role="status" className="text-xs text-muted-foreground">{notice}</span> : null}
+      </div>
+    </>}
   </div>;
 }

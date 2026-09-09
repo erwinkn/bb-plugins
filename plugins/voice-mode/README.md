@@ -35,14 +35,21 @@ stopping the work; a later send does not re-enable a disabled watch.
 
 ## Settings and history
 
-Settings expose the live and worker prompts. Prompt edits retain version history.
-The existing worker settings remain available while the Tasks and named-profile
-editor are developed. Runtime profiles use `voice.worker-profiles.v2` and fall back
-to the earlier settings when that key is absent.
+Settings let you add, rename, and edit named worker profiles. Each profile has a
+provider, model, reasoning level, Fast option, and instructions. Choose a default
+profile and a worker cap. Saving checks every profile on the selected machine;
+launch checks the actual destination again.
 
-Each Voice session is a logical conversation across calls. The default view shows
-what was said. Diagnostics remain available. Sessions that used a coordinator can
-show its read-only timeline; new sessions have no coordinator view or runtime.
+The Live prompt and Worker prompt editors show their full defaults and saved
+versions. Previous live and coordinator prompts remain read-only under Previous
+prompts. The new live prompt uses the separate `aide` role, so rollback still reads
+the old `live` rows. Existing v1 worker settings convert to v2 once; the old value
+stays in place.
+
+Each Voice session is a conversation across calls. Conversation shows what was
+said. Tasks shows workers, created threads, their latest text, and active or muted
+subscriptions. Open a task row to view its thread. Diagnostics shows session events.
+Sessions that used a coordinator also have Coordinator history, a read-only timeline.
 
 See [the architecture](docs/architecture.md) and [the RPC contract](live-runtime-notes.md).
 Earlier design documents are in [docs/history](docs/history).

@@ -4,8 +4,9 @@ import { liveToolSchemas } from "./live-tools.ts";
 import { PromptStore, promptDefault } from "./prompt-store.ts";
 import { voiceFeatureMigrations } from "./migration-order.ts";
 import { LiveRuntime, liveRpcContract } from "./live-runtime.ts";
+import { conversationWorkSchema, readConversationWork } from "./conversation-work.ts";
 import { loadWorkerCatalog, workerCatalogSchema } from "./provider-catalog.ts";
-import { readWorkerSettings, workerSettingsSchema, WORKER_PROFILE_KEY } from "./worker-profiles.ts";
+import { readNamedWorkerSettings, namedWorkerSettingsSchema, NAMED_WORKER_PROFILE_KEY, migrateWorkerSettings, validateNamedWorkerSettings } from "./worker-profiles.ts";
 import { EMPTY_TRANSCRIPT, transcriptSnapshotSchema, type TranscriptSnapshot } from "./live-transcript.ts";
 import { VoiceSessions, voiceSessionSchema } from "./voice-sessions.ts";
 // bb-plugin-voice-mode — Aide: a realtime voice operator for bb.
@@ -47,8 +48,8 @@ const shortcutsSchema = z
 export const rpcContract = defineRpcContract({
   ...liveRpcContract,
   listWorkerProviders: {input:z.object({hostId:z.string().min(1).max(128).optional()}).strict(),output:workerCatalogSchema},
-  getWorkerSettings: { input:z.null(),output:workerSettingsSchema },
-  setWorkerSettings: { input:workerSettingsSchema,output:workerSettingsSchema },
+  getWorkerSettings: { input:z.null(),output:namedWorkerSettingsSchema },
+  setWorkerSettings: { input:z.object({settings:namedWorkerSettingsSchema,hostId:z.string().min(1).max(128)}).strict(),output:namedWorkerSettingsSchema },
   claimCall: {
     input: z
       .object({
@@ -102,7 +103,7 @@ export const rpcContract = defineRpcContract({
   },
   /** Active prompt, the built-in default, and version history. */
   getPrompt: {
-    input: z.object({role:z.enum(["live","worker","coordinator"])}).strict().nullable(),
+    input: z.object({role:z.enum(["aide","live","worker","coordinator"])}).strict().nullable(),
     output: z
       .object({
         content: z.string(),
@@ -126,7 +127,7 @@ export const rpcContract = defineRpcContract({
   setPrompt: {
     input: z
       .object({
-        role:z.enum(["live","worker","coordinator"]).optional(),
+        role:z.enum(["aide","live","worker","coordinator"]).optional(),
         content: z.string().min(1).max(32000),
         source: z.literal("user"),
         proposalId: z.string().optional(),
@@ -257,7 +258,7 @@ export const rpcContract = defineRpcContract({
   },
   /** List logical voice conversations, newest first, including historical calls. */
   listVoiceSessions: { input: z.object({before: z.object({updatedAt:z.number(),id:z.string()}).strict().optional()}).strict().nullable(), output: z.object({sessions:z.array(voiceSessionSchema),hasMore:z.boolean()}).strict() },
-  getVoiceSession: { input:z.object({sessionId:z.string()}).strict(), output:z.object({session:voiceSessionSchema,events:z.array(z.object({id:z.number(),ts:z.number(),kind:z.string(),payload:z.string(),callId:z.string()}).strict())}).strict() },
+  getVoiceSession: { input:z.object({sessionId:z.string()}).strict(), output:z.object({session:voiceSessionSchema,events:z.array(z.object({id:z.number(),ts:z.number(),kind:z.string(),payload:z.string(),callId:z.string()}).strict()),work:conversationWorkSchema}).strict() },
 
 });
 
@@ -349,8 +350,8 @@ export default async function plugin(bb: BbPluginApi) {
     ...QUICK_ACTION_MIGRATIONS,
   ];
   bb.storage.migrate(db, [...commonMigrations, ...voiceFeatureMigrations(db, commonMigrations.length)]);
+  await migrateWorkerSettings(bb);
   const prompts = new PromptStore(db);
-  prompts.activateLiveDefault();
 
   // Reject new event data at the quota; never silently delete saved transcripts.
   const EVENT_STORAGE_LIMIT = 128 * 1024 * 1024;
@@ -745,11 +746,12 @@ export default async function plugin(bb: BbPluginApi) {
     listLiveSubscriptions: input => liveRuntime.listLiveSubscriptions(input),
     listLiveTasks: input => liveRuntime.listLiveTasks(input),
     async listWorkerProviders({hostId}) { return loadWorkerCatalog(bb,hostId); },
-    async getWorkerSettings() { return readWorkerSettings(bb); },
-    async setWorkerSettings(settings) {
-      await bb.storage.kv.set(WORKER_PROFILE_KEY,settings);
+    async getWorkerSettings() { return readNamedWorkerSettings(bb); },
+    async setWorkerSettings({settings,hostId}) {
+      const validated = await validateNamedWorkerSettings(bb, settings, hostId);
+      await bb.storage.kv.set(NAMED_WORKER_PROFILE_KEY,validated);
       bb.realtime.publish("worker-profiles-changed",{});
-      return settings;
+      return validated;
     },
     async claimCall({ nonce, newConversation = false, conversationId, transferFromNonce, threadId = null, projectId = null }) {
       if (transferFromNonce) {
@@ -779,7 +781,7 @@ export default async function plugin(bb: BbPluginApi) {
       const session = {
         type: "realtime",
         model,
-        instructions: prompts.read("live"),
+        instructions: prompts.read("aide"),
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
@@ -809,10 +811,11 @@ export default async function plugin(bb: BbPluginApi) {
       return { sdp: text };
     },
     async getPrompt(input) {
-      const role=input?.role ?? "live";
+      const role=input?.role ?? "aide";
       return {content:prompts.read(role),defaultContent:promptDefault(role),versions:prompts.versions(role),proposal:null};
     },
-    async setPrompt({role="live",content,note}) {
+    async setPrompt({role="aide",content,note}) {
+      if (role === "coordinator" || role === "live") throw new Error("Previous prompts are read only.");
       prompts.save(role,content,note);
       bb.realtime.publish("prompt-changed",{role});
       return {ok:true as const};
@@ -896,7 +899,10 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true as const };
     },
     async listVoiceSessions(input) { return voiceSessions.list(input?.before); },
-    async getVoiceSession({sessionId}) { return voiceSessions.get(sessionId); },
+    async getVoiceSession({sessionId}) {
+      const detail = voiceSessions.get(sessionId);
+      return { ...detail, work: readConversationWork(db, detail.session.id) };
+    },
     async recordUsage({ model, sessionId, usage }) {
       const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
       const inDetails = (usage.input_token_details ?? {}) as Record<string, unknown>;
