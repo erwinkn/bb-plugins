@@ -11,6 +11,7 @@ export const liveToolArgs = {
   prepare_draft: z.object({ thread_id: id.optional(), project_id: id.optional(), text: z.string().max(24000), mode: z.enum(["append", "replace"]) }).strict(),
   control_ui: z.object({ action: z.enum(["open_thread", "open_project", "preview_file", "show_voice"]), thread_id: id.optional(), project_id: id.optional(), path: z.string().min(1).max(4096).optional(), source: z.enum(["workspace", "thread-storage"]).optional() }).strict(),
   stop_thread: z.object({ thread_id: id }).strict(),
+  rename_thread: z.object({ thread_id: id, title: z.string().trim().min(1).max(200).describe("The new title, in the user's words.") }).strict(),
   subscriptions: z.object({ op: z.enum(["list", "subscribe", "unsubscribe"]), thread_id: id.optional() }).strict(),
   prepare_archive: z.object({ thread_ids: ids }).strict(),
   archive_threads: z.object({ preview_id: id }).strict(),
@@ -19,7 +20,7 @@ export const liveToolArgs = {
   end_call: z.object({}).strict(),
 };
 export type LiveTool = keyof typeof liveToolArgs;
-export const LIVE_EFFECTS = new Set<LiveTool>(["message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "archive_threads", "answer_interaction"]);
+export const LIVE_EFFECTS = new Set<LiveTool>(["message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "rename_thread", "archive_threads", "answer_interaction"]);
 const descriptions: Record<LiveTool, string> = {
   find_targets: "Find threads and projects from an approximate spoken description. Results are ranked with a match score from 0 to 1; all projects are returned ranked. Defaults to non-archived parents; include_children for child threads, parent_id for the children of one thread. Includes this conversation's tasks. Resolve names before acting.",
   read_threads: "Read status, output tail, receipts, pending interactions, or updates for several threads. Evidence has timestamps and truncation flags. receipts are the stored results of this call's earlier actions, for recovery after an interruption; a send result that already returned needs no confirmation.",
@@ -29,6 +30,7 @@ const descriptions: Record<LiveTool, string> = {
   prepare_draft: "Write to the exact thread or project composer on the call owner device. Never submit. Append unless replacement was requested.",
   control_ui: "Navigate on the call owner device. Open a thread or project, preview a file, or show Voice. Background updates cannot navigate.",
   stop_thread: "Request a stop on explicit user intent. Acceptance does not prove every process exited. The outcome is reported to you automatically in this call.",
+  rename_thread: "Give a thread a new title on explicit user intent. Use the user's words. The receipt carries the previous and the new title.",
   subscriptions: "List watches, explicitly subscribe or re-enable one, or disable updates without stopping work. A later send does not re-enable updates.",
   prepare_archive: "Preview the requested threads, all children, active work, and queued messages. Explain the list aloud and ask once before archive_threads.",
   archive_threads: "Archive only the unused preview after it was spoken and drained and a later utterance confirms it. Changed scope requires a fresh preview.",

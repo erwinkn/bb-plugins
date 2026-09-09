@@ -1,6 +1,6 @@
 # Aide server runtime, step 2
 
-The live client now uses the fourteen tools and the durable runtime. The retired
+The live client now uses the fifteen tools and the durable runtime. The retired
 coordinator is available only through historical session data. See
 [the current architecture](docs/architecture.md) for the complete client flow.
 

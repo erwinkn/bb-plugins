@@ -80,8 +80,29 @@ export class LiveRuntime {
   }
   private state(nonce: string, conversationId?: string) {
     this.assertOwner(nonce, conversationId);
-    if (!this.call || this.call.nonce !== nonce || (conversationId && this.call.conversationId !== conversationId)) throw new Error("Not authorized: fetch call-start context first");
+    if (!this.call || this.call.nonce !== nonce || (conversationId && this.call.conversationId !== conversationId)) {
+      // The owner record and the client call both outlive this process. After a plugin
+      // reload the in-memory state is gone while the call is still live, so rebuild it
+      // from the store instead of failing every tool until hangup.
+      const owned = conversationId ?? this.owner().conversationId;
+      if (!owned) throw new Error("Not authorized: fetch call-start context first");
+      this.bb.log.warn(`Rebuilding call state for ${nonce} after a restart`);
+      this.call = this.rehydrate(nonce, owned);
+    }
     return this.call;
+  }
+  /** A fresh call state that already holds every target this call was shown before the restart. */
+  private rehydrate(nonce: string, conversationId: string): CallState {
+    const call: CallState = { nonce, conversationId, allowed: new Set(), drains: new Map(), presented: new Map(), exchanges: new Set(), deferredAfter: new Map(), previews: new Map() };
+    for (const row of this.store.db.prepare("SELECT id FROM voice_call_targets WHERE call_nonce = ?").all(nonce) as { id: string }[]) call.allowed.add(row.id);
+    this.rememberConversationTargets(call);
+    return call;
+  }
+  /** Targets every call in this conversation may act on: its running tasks and pending interactions. */
+  private rememberConversationTargets(call: CallState) {
+    for (const task of this.store.tasks(call.conversationId)) if (["spawning", "running", "unknown"].includes(task.status)) this.remember(call, task.thread_id);
+    const activeRoots = new Set(this.store.watches(call.conversationId).filter(watch => watch.state === "active").map(watch => watch.root_thread_id));
+    for (const item of this.store.inbox(call.conversationId)) if (item.interaction_id && item.status !== "resolved" && activeRoots.has(item.root_thread_id)) this.remember(call, item.thread_id, item.interaction_id);
   }
   private authorize(input: ToolInput, args: Record<string, unknown>, effect = LIVE_EFFECTS.has(input.tool)) {
     const call = this.state(input.nonce, input.conversationId);
@@ -97,7 +118,10 @@ export class LiveRuntime {
     }
     return call;
   }
-  private remember(call: CallState, ...ids: (string | null | undefined)[]) { for (const id of ids) if (id) call.allowed.add(id); }
+  private remember(call: CallState, ...ids: (string | null | undefined)[]) {
+    const insert = this.store.db.prepare("INSERT OR IGNORE INTO voice_call_targets (call_nonce, id) VALUES (?, ?)");
+    for (const id of ids) if (id && !call.allowed.has(id)) { call.allowed.add(id); insert.run(call.nonce, id); }
+  }
   private present(call: CallState, key: string) {
     // An already heard interaction stays heard. A later read must not move its confirmation gate.
     if (!call.presented.has(key)) call.presented.set(key, { returnedAt: this.now(), spokenAt: null });
@@ -217,6 +241,13 @@ export class LiveRuntime {
         this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(thread_id, row.id);
         await this.sdkEffect(input, () => this.bb.sdk.threads.stop({ threadId: thread_id }));
         return this.operations.finish(row.id, "succeeded", { threadId: thread_id, title: watch.title, stopRequested: true, processesExited: null, updatesMuted: watch.state === "disabled", ...this.followUp(watch) });
+      }
+      case "rename_thread": {
+        const { thread_id, title } = liveToolArgs.rename_thread.parse(input.args);
+        const previousTitle = threadName(await this.bb.sdk.threads.get({ threadId: thread_id }));
+        this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(thread_id, row.id);
+        await this.sdkEffect(input, () => this.bb.sdk.threads.update({ threadId: thread_id, title }));
+        return this.operations.finish(row.id, "succeeded", { threadId: thread_id, previousTitle, title });
       }
       case "archive_threads": {
         const { preview_id } = liveToolArgs.archive_threads.parse(input.args);

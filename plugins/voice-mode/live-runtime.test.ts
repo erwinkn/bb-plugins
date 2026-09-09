@@ -25,7 +25,7 @@ async function fixture() {
     threads: new Map<string, Any>([["build", makeThreadResponse({ id: "build", projectId: "app", title: "Build Fix", status: "active", updatedAt: 9000 })]]),
     outputs: new Map<string, string>(), events: new Map<string, Any[]>(), interactions: new Map<string, Any[]>(), queue: new Map<string, Any[]>(),
     list: null as null | ((args: Any) => Promise<Any[]>), interactionReads: 0,
-    sends: [] as Any[], spawns: [] as Any[], archives: [] as string[], resolutions: [] as Any[], answers: [] as Any[], stops: [] as string[],
+    sends: [] as Any[], spawns: [] as Any[], archives: [] as string[], resolutions: [] as Any[], answers: [] as Any[], stops: [] as string[], updates: [] as Any[],
     send: null as null | ((args: Any) => Promise<Any>), spawn: null as null | ((args: Any) => Promise<Any>), get: null as null | ((args: Any) => Promise<Any>),
   };
   const sdk: Any = {
@@ -48,6 +48,7 @@ async function fixture() {
         const t = makeThreadResponse({ id: `worker-${world.spawns.length}`, title: args.title, projectId: args.projectId, visibility: args.visibility, status: "active", parentThreadId: null, updatedAt: at }); world.threads.set(t.id, t); return t;
       },
       stop: async ({ threadId }: Any) => { world.stops.push(threadId); return { ok: true }; },
+      update: async (args: Any) => { world.updates.push(args); const t = world.threads.get(args.threadId); if (args.title !== undefined) t.title = args.title; return { ok: true }; },
       archive: async ({ threadId }: Any) => { world.archives.push(threadId); const t = world.threads.get(threadId); t.archivedAt = at; return { ok: true, archivedThreadIds: [threadId] }; },
       interactions: {
         list: async ({ threadId }: Any) => (world.interactions.get(threadId) ?? []).filter(i => i.status === "pending"),
@@ -83,6 +84,8 @@ async function fixture() {
     get runtime() { return runtime; }, tick: (ms = 10) => at += ms, now: () => at,
     switch: async () => { nonce = "new-call"; await start(); },
     restart: async () => { runtime = makeRuntime(); await runtime.initialize(); await start(); },
+    // A plugin reload while the call stays live: the process restarts, the client never fetches call-start context again.
+    reload: async () => { runtime = makeRuntime(); await runtime.initialize(); },
     close: async () => { await runtime.watches.serial(async () => {}); await harness.lifecycle.dispose(); } };
 }
 const message = { thread_id: "build", body: "Check the build", mode: "normal" };
@@ -101,8 +104,8 @@ test("worker spawn passes each configured profile permission mode to BB", async 
   assert.equal(h.world.spawns.length, 3);
 });
 
-test("live tools expose all fourteen strict argument schemas", () => {
-  const schemas = liveToolSchemas(); assert.equal(schemas.length, 14); assert.equal(new Set(schemas.map(s => s.name)).size, 14);
+test("live tools expose all fifteen strict argument schemas", () => {
+  const schemas = liveToolSchemas(); assert.equal(schemas.length, 15); assert.equal(new Set(schemas.map(s => s.name)).size, 15);
   for (const s of schemas) assert.equal(s.parameters.additionalProperties, false);
   assert.equal(canonical({ z: 2, a: { b: 1 } }), '{"a":{"b":1},"z":2}');
   assert.equal(hash({ a: 1, b: 2 }), hash({ b: 2, a: 1 }));
@@ -150,7 +153,7 @@ test("new utterance, version, and occurrence each permit an intentional repeat",
 test("background effects and navigation are refused before any SDK effect", async t => {
   const h = await fixture(); t.after(h.close);
   for (const tool of LIVE_EFFECTS) {
-    const args: Any = { message_thread: message, spawn_worker: worker, create_thread: { project_id: "app", title: "Work", body: "Do it" }, prepare_draft: { thread_id: "build", text: "Draft", mode: "append" }, control_ui: { action: "show_voice" }, stop_thread: { thread_id: "build" }, archive_threads: { preview_id: "fake" }, answer_interaction: { thread_id: "build", interaction_id: "fake", decision: "deny" } };
+    const args: Any = { message_thread: message, spawn_worker: worker, create_thread: { project_id: "app", title: "Work", body: "Do it" }, prepare_draft: { thread_id: "build", text: "Draft", mode: "append" }, control_ui: { action: "show_voice" }, stop_thread: { thread_id: "build" }, rename_thread: { thread_id: "build", title: "Renamed" }, archive_threads: { preview_id: "fake" }, answer_interaction: { thread_id: "build", interaction_id: "fake", decision: "deny" } };
     assert.match((await h.run(tool, args[tool], { responseOrigin: "background", utterance: null })).error, /Not authorized: background updates cannot act/);
   }
   assert.equal((h.db.prepare("SELECT count(*) n FROM voice_operations").get() as {n:number}).n, 0);
@@ -854,4 +857,28 @@ test("call resume preserves historical state and omits retired update counts",as
   assert.deepEqual(record.startCall({nonce:"new",sequence:2,view:{threadId:"new-view",projectId:"app"},newConversation:false,conversationId:"conversation"}),{conversationId:"conversation",resumed:true});
   assert.equal((h.db.prepare("SELECT state_json FROM voice_conversations WHERE id='conversation'").get() as Any).state_json,state);
   assert.equal(record.getConversation("conversation")!.currentCallNonce,"new");
+});
+
+test("rename_thread updates the title and reports both titles", async t => {
+  const h = await fixture(); t.after(h.close);
+  const receipt = await h.run("rename_thread", { thread_id: "build", title: "Nightly build" });
+  assert.equal(receipt.status, "succeeded"); assert.equal(receipt.previousTitle, "Build Fix"); assert.equal(receipt.title, "Nightly build");
+  assert.deepEqual(h.world.updates.at(-1), { threadId: "build", title: "Nightly build" });
+  assert.match((await h.run("rename_thread", { thread_id: "unseen", title: "X" }, { utterance: { id: "u9", version: 1, text: "rename", startedAt: h.now() } })).error, /unknown target ID/);
+});
+
+test("a plugin reload during a live call keeps its authorizations without a new call-start fetch", async t => {
+  const h = await fixture(); t.after(h.close);
+  // The model saw this thread only through a search before the reload.
+  h.world.threads.set("notes", makeThreadResponse({ id: "notes", projectId: "app", title: "Notes cleanup", status: "idle", updatedAt: 9000 }));
+  await h.run("find_targets", { query: "notes" });
+  await h.reload();
+  const found = await h.run("find_targets", { query: "build" });
+  assert.ok(found.threads.length > 0, "reads work again without call-start context");
+  const sent = await h.run("message_thread", message, { utterance: { id: "u5", version: 1, text: "message the build", startedAt: h.now() } });
+  assert.equal(sent.delivered, true, "a target seen before the reload is still authorized");
+  const renamed = await h.run("rename_thread", { thread_id: "notes", title: "Notes archive" }, { utterance: { id: "u6", version: 1, text: "rename notes", startedAt: h.now() } });
+  assert.equal(renamed.status, "succeeded", "a target found by search before the reload is still authorized");
+  // A stopped or replaced call is still refused: the owner check comes first.
+  assert.match((await h.run("find_targets", { query: "x" }, { nonce: "stale" })).error, /stopped or replaced/);
 });

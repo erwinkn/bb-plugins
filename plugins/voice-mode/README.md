@@ -18,7 +18,7 @@ Windows and Linux use Ctrl. Change them in Voice Mode's Keyboard shortcuts setti
 
 ## Work with Aide
 
-Aide uses one live model and fourteen tools. It can find and read threads, deliver
+Aide uses one live model and fifteen tools. It can find, read, and rename threads, deliver
 messages, create visible threads or hidden workers, prepare unsent drafts, navigate,
 stop work, manage subscriptions, prepare and confirm archives, and answer native
 questions or approvals. Archive and approval actions require a later spoken

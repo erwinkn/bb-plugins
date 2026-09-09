@@ -1,6 +1,6 @@
 # Aide live runtime
 
-One Realtime model speaks and calls fourteen tools. Hidden root threads run
+One Realtime model speaks and calls fifteen tools. Hidden root threads run
 background tasks. No model coordinates those threads. Stored subscriptions,
 receipts, native BB events, and the client sequencer supply the control flow.
 
@@ -38,6 +38,10 @@ The live prompt maps the spoken word "agent" to a root thread and "sub-agent" to
 child thread; the tools and the runtime keep their thread targeting unchanged.
 Workers default to BB's personal project and the primary machine; `server.ts` builds
 the call's tool schemas from the configured profiles so the model sees valid names.
+The runtime keeps call state in memory but persists the owner record and every
+target ID shown to the model in `voice_call_targets`. When the owner still matches
+and the in-memory state is missing, as after a plugin reload mid-call, the runtime
+rebuilds the state from the store instead of refusing every tool.
 Background responses cannot authorize effects. Historical agent thread IDs are
 readable but cannot receive new effects through the runtime.
 

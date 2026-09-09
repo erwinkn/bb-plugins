@@ -170,6 +170,7 @@ Follow-up field. Every receipt for work that continues in the background (send, 
 | `prepare_draft` | thread_id or project_id, text, mode: append, replace | yes, on the client | Writes to the exact composer. Never submits. |
 | `control_ui` | action: open_thread, open_project, preview_file, show_voice, and its target | screen | Runs on the owner device through the native UI adapter. Reports what the UI did. |
 | `stop_thread` | thread_id | yes | Stop on explicit intent. Acceptance is not proof that every process exited. Carries `updates`. |
+| `rename_thread` | thread_id, title | yes | Set a new title on explicit intent. The receipt carries the previous and the new title. |
 | `subscriptions` | op: list, subscribe, unsubscribe; thread_id? | no | subscribe re-enables a disabled watch. |
 | `prepare_archive` | thread_ids[] | no | Preview with children and active work. Returns a preview id. |
 | `archive_threads` | preview_id | yes | Accepts only a valid preview id. No thread list. |
@@ -234,6 +235,7 @@ profile for the default, or pick a listed one. Reuse existing work for follow-up
 Acknowledge longer work once. After launch, say it runs in the background and that
 you will report when it finishes, then stay available. Hidden means only that a worker
 is not in the sidebar. Do not claim a launch or a completion before its result.
+"Rename" or "call it" means rename_thread with the user's words as the title.
 "Send", "tell", "ask that thread", and "queue" mean delivery with message_thread.
 Queue normal follow-ups; steer only for a requested interruption or an urgent
 correction. A result of sent or queued is final delivery: confirm the destination
@@ -415,6 +417,11 @@ Driven by the first live session on 2026-09-09 (issues #23 to #27 in erwinkn/bb-
 - Profiles are shown, not guessed. The call schema enumerates configured profile names with summaries; `profile` is optional and defaults to the configured default.
 - The live prompt treats heard names as approximate, forbids asking for IDs, exact names, or profiles, and delegates unresolved references to a worker instead of asking.
 - The worker base prompt says a worker outside a project reads all of BB with the bb CLI.
+
+Driven by the second live session on 2026-09-09 (issues #31 and #32).
+
+- Call state survives a plugin reload. The runtime rebuilds its in-memory call state from the store when the owner record still matches, and it persists every target ID the model was shown in `voice_call_targets`, so a reload mid-call no longer fails every tool with "fetch call-start context first".
+- `rename_thread` sets a thread title on explicit intent and reports the previous and new title. The tool count is fifteen.
 
 ## Changes in version 2
 

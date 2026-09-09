@@ -14,7 +14,8 @@
     "CREATE TABLE voice_tasks (\n    op_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, thread_id TEXT, kind TEXT NOT NULL CHECK(kind IN ('worker','thread')),\n    profile TEXT, title TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('spawning','running','turn_ended','failed','stopped','unknown')),\n    last_text TEXT, follow_ups_queued INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL\n  )",
     "CREATE TABLE voice_inbox (\n    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, thread_id TEXT NOT NULL, root_thread_id TEXT NOT NULL,\n    kind TEXT NOT NULL CHECK(kind IN ('result','milestone','question','approval','failed','archived')),\n    interaction_id TEXT, summary TEXT NOT NULL, detail TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('queued','offered','deferred','dismissed','spoken','resolved')),\n    offer_count INTEGER NOT NULL DEFAULT 0, eligible INTEGER NOT NULL DEFAULT 1, event_key TEXT NOT NULL,\n    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,\n    UNIQUE(conversation_id, thread_id, event_key)\n  )",
     "CREATE TABLE voice_offers (\n    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, call_nonce TEXT NOT NULL, response_id TEXT,\n    item_ids_json TEXT NOT NULL,\n    outcome TEXT NOT NULL CHECK(outcome IN ('pending','delivered','not_delivered','deferred','dismissed')),\n    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL\n  )",
-    "CREATE UNIQUE INDEX voice_open_offer ON voice_offers(conversation_id) WHERE outcome = 'pending'"
+    "CREATE UNIQUE INDEX voice_open_offer ON voice_offers(conversation_id) WHERE outcome = 'pending'",
+    "CREATE TABLE voice_call_targets (call_nonce TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(call_nonce, id))"
   ],
   "actions": [
     "CREATE TABLE IF NOT EXISTS voice_action_groups (request_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, actor TEXT NOT NULL, actions_json TEXT NOT NULL, created_at INTEGER NOT NULL)",
@@ -31,6 +32,7 @@
     "CREATE TABLE voice_tasks (\n    op_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, thread_id TEXT, kind TEXT NOT NULL CHECK(kind IN ('worker','thread')),\n    profile TEXT, title TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('spawning','running','turn_ended','failed','stopped','unknown')),\n    last_text TEXT, follow_ups_queued INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL\n  )",
     "CREATE TABLE voice_inbox (\n    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, thread_id TEXT NOT NULL, root_thread_id TEXT NOT NULL,\n    kind TEXT NOT NULL CHECK(kind IN ('result','milestone','question','approval','failed','archived')),\n    interaction_id TEXT, summary TEXT NOT NULL, detail TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('queued','offered','deferred','dismissed','spoken','resolved')),\n    offer_count INTEGER NOT NULL DEFAULT 0, eligible INTEGER NOT NULL DEFAULT 1, event_key TEXT NOT NULL,\n    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,\n    UNIQUE(conversation_id, thread_id, event_key)\n  )",
     "CREATE TABLE voice_offers (\n    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, call_nonce TEXT NOT NULL, response_id TEXT,\n    item_ids_json TEXT NOT NULL,\n    outcome TEXT NOT NULL CHECK(outcome IN ('pending','delivered','not_delivered','deferred','dismissed')),\n    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL\n  )",
-    "CREATE UNIQUE INDEX voice_open_offer ON voice_offers(conversation_id) WHERE outcome = 'pending'"
+    "CREATE UNIQUE INDEX voice_open_offer ON voice_offers(conversation_id) WHERE outcome = 'pending'",
+    "CREATE TABLE voice_call_targets (call_nonce TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(call_nonce, id))"
   ]
 }

@@ -42,6 +42,8 @@ export const LIVE_RUNTIME_MIGRATIONS = [
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
   )`,
   `CREATE UNIQUE INDEX voice_open_offer ON voice_offers(conversation_id) WHERE outcome = 'pending'`,
+  // Target IDs the model saw in a call. Persisted so a plugin reload mid-call keeps its authorizations.
+  `CREATE TABLE voice_call_targets (call_nonce TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(call_nonce, id))`,
 ];
 
 export type OperationStatus = "accepted" | "queued" | "running" | "succeeded" | "failed" | "cancelled" | "unknown";
