@@ -1,10 +1,21 @@
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { REALTIME_CHANNEL, rpcContract, expiryDaysSchema } from "./lib/model";
+import {
+  REALTIME_CHANNEL, expiryDaysSchema, threadArg, statusSchema, shareSchema,
+  createSchema, updateSchema, shareRefSchema,
+} from "./lib/model";
 import { ShareStore, MIGRATIONS } from "./server/store";
 import { ShareService, baseUrlSchema, configuration } from "./server/service";
 import type { AccessVerifier } from "./server/access-jwt";
 import { registerCli } from "./server/cli";
+
+export const rpcContract = defineRpcContract({
+  share_status: { input: z.object({}), output: statusSchema },
+  share_list: { input: threadArg, output: z.object({ shares: z.array(shareSchema) }) },
+  share_create: { input: createSchema, output: z.object({ share: shareSchema }) },
+  share_update: { input: updateSchema, output: z.object({ share: shareSchema }) },
+  share_revoke: { input: shareRefSchema, output: z.object({ share: shareSchema }) },
+});
 
 export default async function plugin(bb: BbPluginApi, options: { verifyAccess?: AccessVerifier; now?: () => number } = {}) {
   const settings = bb.settings.define({

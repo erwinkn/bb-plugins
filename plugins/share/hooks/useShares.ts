@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcCallArgs, PluginRpcValidationIssue } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import { REALTIME_CHANNEL, type rpcContract, type Share, type Status } from "../lib/model";
+import { REALTIME_CHANNEL, type Share, type Status } from "../lib/model";
+import type { rpcContract } from "../server";
 
 type CreateInput = Omit<PluginRpcCallArgs<typeof rpcContract.share_create>[0], "threadId">;
 export type SharePatch = Omit<PluginRpcCallArgs<typeof rpcContract.share_update>[0], "threadId" | "shareId">;

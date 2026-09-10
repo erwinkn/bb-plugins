@@ -1,5 +1,5 @@
-// Shared wire contract for the backend and the Phase 2 frontend.
-import { defineRpcContract } from "@get-bb/plugin-sdk";
+// Shared schemas and types for the backend and frontend. Keep runtime imports
+// browser-safe; the RPC contract is defined in server.ts.
 import { z } from "zod";
 import { normalizeEntry } from "./allow";
 
@@ -16,7 +16,7 @@ export const allowEntrySchema = z.string().transform((input, ctx) => {
   }
 });
 const allowedEmailsSchema = z.array(allowEntrySchema).max(1000);
-const threadArg = z.object({ threadId: z.string().min(1).max(256) });
+export const threadArg = z.object({ threadId: z.string().min(1).max(256) });
 export const shareRefSchema = threadArg.extend({ shareId: z.string().min(1).max(256) });
 export const createSchema = threadArg.extend({
   visibility: visibilitySchema,
@@ -42,13 +42,6 @@ export const statusSchema = z.object({
   defaultExpiryDays: expiryDaysSchema, publicBaseUrl: z.string().nullable(), missing: z.array(z.string()),
 });
 export type Status = z.infer<typeof statusSchema>;
-export const rpcContract = defineRpcContract({
-  share_status: { input: z.object({}), output: statusSchema },
-  share_list: { input: threadArg, output: z.object({ shares: z.array(shareSchema) }) },
-  share_create: { input: createSchema, output: z.object({ share: shareSchema }) },
-  share_update: { input: updateSchema, output: z.object({ share: shareSchema }) },
-  share_revoke: { input: shareRefSchema, output: z.object({ share: shareSchema }) },
-});
 
 export function buildShareUrl(baseUrl: string, visibility: Visibility, slug: string): string {
   return `${baseUrl}/api/v1/plugins/share/http/${visibility === "access" ? "s" : "p"}?k=${slug}`;

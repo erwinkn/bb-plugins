@@ -4,7 +4,8 @@ import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { loadPluginApp, renderSlot, type PluginRpcTestHandlers } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginRpcError, PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
-import { rpcContract, type Share, type Status } from "../lib/model";
+import type { Share, Status } from "../lib/model";
+import type { rpcContract } from "../server";
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 vi.mock("sonner", () => ({ toast: toasts }));
