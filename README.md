@@ -2,12 +2,13 @@
 
 A private GitHub collection of BB plugins.
 
-`bb-mcp` exposes authenticated MCP tools for creating, managing, and monitoring
-BB coding threads through Executor or a direct client. It uses explicit
-project/host scope, isolated worktrees, bounded results, and durable request
-records. Child threads, handoffs and execution controls are supported. See
-[BB MCP](plugins/bb-mcp/README.md) for setup and the
-[product parity inventory](plugins/bb-mcp/PARITY.md) for the remaining roadmap.
+`bb-mcp` exposes thread management through Executor, Grok Bot or a direct MCP
+client: every project and thread, queue controls, questions and permission
+approvals. General SDK/CLI access, direct filesystem/terminal tools, permanent
+deletion, Git/PR writes and BB administration are deliberately excluded.
+There are no plugin-imposed project allowlists, quotas or output clipping.
+See [BB MCP](plugins/bb-mcp/README.md) and its
+[scope and boundary inventory](plugins/bb-mcp/PARITY.md).
 
 `plans` provides plan review with a per-thread
 review panel, comments, revision history, and feedback to the original agent. See
@@ -218,20 +219,26 @@ host/parent ceilings, without sending a dummy message or restarting work.
 The MCP supports those fields on create/send and reports the standalone gap.
 Tracked in [BB #3401](https://github.com/get-bb/bb/issues/3401).
 
-### Potential MCP parity API gaps to validate locally
+### Thread-focused MCP boundary
 
-The [parity inventory](plugins/bb-mcp/PARITY.md) identifies three additional
-contracts to verify while implementing the remaining adapters:
+The MCP deliberately excludes general administration, direct file/terminal
+access and permanent deletion. These are scope choices, not missing upstream
+APIs. All-project visibility, queue management, question/form answers and
+permission approvals use existing public SDK methods. Remaining native
+boundaries are documented in [the inventory](plugins/bb-mcp/PARITY.md), notably
+the standalone permission/service-tier update and atomic idempotency requests
+above and below. No new upstream issue is needed for the scope change.
 
-- Complete tool-output retrieval when event history retains only a preview.
-  A bounded, paginated output API should distinguish truncation from missing data.
-- Attachment inventory and removal: the current public SDK exposes upload,
-  read and copy, but no matching list/delete operations.
-- Provider goal controls: establish a typed contract for create/update,
-  pause/resume and budget changes instead of synthesizing private events.
+### Follow-ups before a scheduled thread's first run
 
-These are local candidates, not filed requests. Confirm the exact missing
-contract against the installed SDK before preparing an issue later.
+BB 0.42.1 accepts a scheduled first instruction but rejects a follow-up without
+an explicit model before that first turn initializes: `no stored execution
+model`. Specifying the creation model on the follow-up succeeds (verified in
+`pulse-ui`). Core should resolve the model from the queued initial execution
+options or normal defaults. The MCP documents the explicit-model workaround.
+No upstream issue filed yet; suggested title: `Resolve execution defaults for
+follow-ups before a scheduled thread starts` in
+[BB issues](https://github.com/get-bb/bb/issues).
 
 ### Durable idempotency for thread creation and messaging
 

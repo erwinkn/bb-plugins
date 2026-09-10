@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-bb-mcp",
-  "version": "0.2.1",
+  "version": "0.3.1",
   "type": "module",
   "private": true,
   "engines": {
@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "BB MCP",
-    "description": "Create, manage, and monitor BB threads from remote MCP clients and Executor.",
+    "description": "Manage BB threads across every project, including queues, questions and permission approvals, from MCP clients.",
     "branding": {
       "icon": "Network"
     },
