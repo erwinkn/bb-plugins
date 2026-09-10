@@ -49,6 +49,14 @@ with the choices. `workspace` maps to the SDK environment: a managed worktree fr
 the default branch, the unmanaged main folder, or `reuse` of a seen thread's
 environment. `list_models` reads the catalog; `read_threads` with `environment`
 returns path, branch, base branch, kind, and pull request.
+`permission_mode` is an explicit per-launch override. The normal resolution is
+caller override, then a named worker profile's explicit mode, then BB's
+destination-project default. Fresh profiles inherit BB by omitting
+`permissionMode` from `threads.spawn`; BB uses its product fallback when the
+project has no configured default. A `full` per-launch override is rejected
+unless `permission_confirmed` is true after an explicit user authorization; full
+access bypasses sandbox and approval controls. Existing saved profiles remain
+explicit; new inheritance does not migrate their stored permission modes.
 `queued_messages` reads a thread's queue through `queuedMessages.list` and remembers
 each ID; `send_now` (steer), `delete`, and `edit` (optimistic `expectedUpdatedAt`)
 are effects on a remembered ID. When the item came from this conversation, the
@@ -94,8 +102,11 @@ worker prompt. Both editors show defaults and version history.
 
 Named worker profiles use `voice.worker-profiles.v2`. Startup converts an existing
 v1 value once and keeps the original. A fresh installation reads defaults without
-writing either key. The profile editor validates names, the default selection,
-and provider capabilities on the selected machine before saving the full draft.
+writing either key and gives its profiles the `inherit` permission choice. Stored
+v2 profiles that omit the field still read as `accept-edits`, preserving the
+previous release's behavior. The profile editor validates names, the default
+selection, and provider capabilities on the selected machine before saving the
+full draft.
 
 The Tasks view uses `listLiveTasks` and `listLiveSubscriptions` with the active
 nonce and conversation ID. Ended sessions read stored work through `getVoiceSession`.
