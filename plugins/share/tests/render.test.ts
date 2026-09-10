@@ -32,7 +32,7 @@ describe("safe rendering", () => {
   it("redacts title, command, detail, status, and output before truncation", () => {
     const secret = "sk-abcdefghijklmnop";
     const html = renderPage({ title: secret, mode: "public", unverified: true, truncated: true, generatedAt: NOW,
-      items: [{ kind: "tool", title: secret, detail: secret, status: secret, output: "x".repeat(19_999) + secret + "y".repeat(30), at: NOW }] });
+      items: [{ kind: "tool", title: secret, detail: secret, status: secret, output: ".".repeat(19_999) + secret + ".".repeat(30), at: NOW }] });
     expect(html).not.toContain(secret);
     expect(html).toContain("Unverified mode: Access JWT check is disabled");
     expect(html).toContain("This thread is truncated");

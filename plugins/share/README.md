@@ -41,11 +41,16 @@ a guarantee that arbitrary sensitive text will be removed. Pages contain no
 scripts or external resources, disallow raw HTML and unsafe Markdown links,
 and send a strict CSP, `no-store`, `noindex, nofollow`, and `no-referrer` headers.
 
-The reader pages backward through the full timeline, retaining at most 5000
-source rows and noting truncation. With tools enabled, collapsed turns expand
-through `timelineTurnSummaryDetails`; supplied nested conversation rows are
-kept in either mode. SDK output previews are marked as incomplete. Each tool's
-rendered output is capped at 20000 characters after redaction.
+The reader pages backward through the full timeline, flattens and orders all
+rows, then keeps the newest 5000 source rows and notes truncation. With tools
+enabled, collapsed turns expand through `timelineTurnSummaryDetails`; supplied nested conversation rows are
+kept in either mode. SDK 0.4.47 exposes `outputPreview.totalChars` on command and
+tool rows, but no direct API to retrieve a work row's complete output. Raw event
+history would require reconstructing output, so incomplete previews are omitted
+entirely, with the line “Output omitted: BB stored only a preview of this output.”
+The tool title, detail, and status remain visible. Complete output is redacted
+before the renderer caps it at 20000 characters. Redaction also removes partial
+PEM blocks and runs of at least 200 base64 characters, including wrapped lines.
 
 ## Settings
 

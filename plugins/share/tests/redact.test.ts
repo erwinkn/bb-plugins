@@ -3,6 +3,9 @@ import { REDACTION_PATTERNS, redact } from "../lib/redact";
 
 const fixtures: Record<string, string> = {
   pem: "-----BEGIN RSA PRIVATE KEY-----\nprivate\nbytes\n-----END RSA PRIVATE KEY-----",
+  "pem-without-footer": "-----BEGIN RSA PRIVATE KEY-----\nprivate\nbytes",
+  "pem-without-header": "private\nbytes\n-----END RSA PRIVATE KEY-----",
+  base64: "Ab0+/".repeat(40),
   openai: "sk-abcdefghijklmnop_123", github: "ghp_abcdefghijklmnopqrst", "github-pat": "github_pat_abcdefghijklmnopqrst_123",
   aws: "AKIA1234567890ABCDEF", slack: "xoxb-1234567890-abcdefgh", bearer: "Bearer abcdefghijklmnop==", assignment: "API_KEY=abcdefghijklmnop",
 };
@@ -21,5 +24,24 @@ describe("redaction", () => {
   it("redacts repeated values and multiple PEM blocks independently", () => {
     expect(redact(`${fixtures.pem}\nkeep\n${fixtures.pem}`)).toBe("[redacted]\nkeep\n[redacted]");
     expect(redact(`${fixtures.openai} ${fixtures.openai}`)).toBe("[redacted] [redacted]");
+  });
+  it("redacts partial PEM blocks to the text boundaries, preserving text outside them", () => {
+    expect(redact(`Before.\n${fixtures["pem-without-footer"]}\nAnything after the header.`)).toBe("Before.\n[redacted]");
+    expect(redact(`Anything before the footer.\n${fixtures["pem-without-header"]}\nAfter.`)).toBe("[redacted]\nAfter.");
+    expect(redact(`${fixtures["pem-without-header"]}\nkeep\n${fixtures["pem-without-footer"]}`)).toBe("[redacted]\nkeep\n[redacted]");
+    expect(redact(`${fixtures["pem-without-header"]}\n${fixtures["pem-without-header"]}\nAfter.`)).toBe("[redacted]\nAfter.");
+  });
+  it.each(["\n", "\r\n"])("counts base64 characters across %j line breaks, including padding", (newline) => {
+    const wrapped = Array.from({ length: 4 }, () => "Ab0+/".repeat(10)).join(newline) + "==";
+    expect(redact(`Before. ${wrapped} After.`)).toBe("Before. [redacted] After.");
+    expect(redact("A".repeat(198) + "==")).toBe("[redacted]");
+    expect(redact("A".repeat(199))).toBe("A".repeat(199));
+    expect(redact(Array.from({ length: 199 }, () => "A").join(newline))).toBe(Array.from({ length: 199 }, () => "A").join(newline));
+  });
+  it("redacts tokens before overlapping base64 runs can consume their prefixes", () => {
+    expect(redact("A".repeat(200) + fixtures.openai)).toBe("[redacted][redacted]");
+  });
+  it("redacts large base64 output without exhausting the regexp stack", () => {
+    expect(redact("A".repeat(10_000_000))).toBe("[redacted]");
   });
 });

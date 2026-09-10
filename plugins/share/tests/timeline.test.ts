@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { MAX_ROWS, readTimeline, type TimelineRow } from "../server/timeline";
-import { base, command, message, page, rows } from "./fixtures";
+import { MAX_ROWS, OUTPUT_PREVIEW_OMITTED, readTimeline, rowToItem, type TimelineRow } from "../server/timeline";
+import { renderPage } from "../lib/render";
+import { base, command, message, NOW, page, rows } from "./fixtures";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 afterEach(async () => { for (const host of hosts.splice(0)) await host.harness.lifecycle.dispose(); });
@@ -43,6 +44,18 @@ describe("timeline reading", () => {
     expect((await readTimeline(h.bb.sdk.threads, "t", false)).truncated).toBe(true);
     expect(h.harness.inspection.sdk.callsTo("threads.timeline")).toHaveLength(2);
   });
+  it.each(["nested", "expanded", "older page"])("keeps newer children of an early turn after collecting %s rows", async (source) => {
+    const h = setup();
+    const turn: TimelineRow = { ...base("early-turn", 1), sourceSeqEnd: 20, kind: "turn", status: "completed", summaryCount: 1, completedAt: NOW + 20, children: source === "expanded" ? null : [message(20)], turnId: "turn_1" };
+    h.harness.sdk.stub("threads.timeline", async (args: { beforeAnchorId?: string }) => source === "older page"
+      ? args.beforeAnchorId ? page([turn]) : page([message(10)], { anchorId: "older", anchorSeq: 1 })
+      : page([message(10), turn]));
+    h.harness.sdk.stub("threads.timelineTurnSummaryDetails", async () => ({ rows: [message(20)] }));
+    const result = await readTimeline(h.bb.sdk.threads, "t", true, 1);
+    expect(result.items).toEqual([{ kind: "message", role: "assistant", text: "Message 20", at: NOW + 20 }]);
+    expect(result.truncated).toBe(true);
+    expect(h.harness.inspection.sdk.callsTo("threads.timeline")).toHaveLength(source === "older page" ? 2 : 1);
+  });
   it("drops system-initiated messages and image work; notes SDK output previews", async () => {
     const h = setup(); const user = rows[0]!;
     h.harness.sdk.stub("threads.timeline", async () => page([
@@ -51,6 +64,31 @@ describe("timeline reading", () => {
       { ...command, output: "partial", outputPreview: { totalChars: 1000 } },
     ]));
     const result = await readTimeline(h.bb.sdk.threads, "t", true);
-    expect(result.items).toHaveLength(1); expect(result.items[0]).toMatchObject({ title: "npm test", output: "partial" }); expect(result.truncated).toBe(true);
+    expect(result.items).toHaveLength(1); expect(result.items[0]).toMatchObject({ title: "npm test", output: OUTPUT_PREVIEW_OMITTED }); expect(result.truncated).toBe(true);
+  });
+  it.each(["command", "tool"] as const)("omits incomplete %s output before it reaches rendered HTML", async (workKind) => {
+    const h = setup();
+    // BB retains the first 2000 and last 1000 characters. The missing middle
+    // includes the footer, and also contains text that no redaction rule knows.
+    const full = `-----BEGIN PRIVATE KEY-----\n${"Ab0+/".repeat(450)}\n-----END PRIVATE KEY-----\n${"private words. ".repeat(100)}`;
+    const output = full.slice(0, 2000) + full.slice(-1000);
+    const row = { ...command, workKind, toolName: "run_tests", toolArgs: { cwd: "/workspace" }, output, outputPreview: { totalChars: full.length } } satisfies TimelineRow;
+    h.harness.sdk.stub("threads.timeline", async () => page([row]));
+    const result = await readTimeline(h.bb.sdk.threads, "t", true);
+    expect(result.truncated).toBe(true);
+    expect(result.items).toEqual([{ kind: "tool", title: workKind === "command" ? "npm test" : "run_tests", detail: "/workspace", status: "completed", output: OUTPUT_PREVIEW_OMITTED, at: command.createdAt }]);
+    const html = renderPage({ ...result, mode: "public", unverified: false, generatedAt: NOW });
+    expect(html).toContain(OUTPUT_PREVIEW_OMITTED);
+    expect(html).toContain("/workspace"); expect(html).toContain("completed");
+    expect(html).not.toMatch(/BEGIN PRIVATE|Ab0\+\/|private words/);
+    expect(rowToItem({ ...row, output: "", outputPreview: { totalChars: 1 } }, true)).toMatchObject({ output: OUTPUT_PREVIEW_OMITTED });
+  });
+  it("keeps complete output, including previews whose character count matches", async () => {
+    const h = setup();
+    h.harness.sdk.stub("threads.timeline", async () => page([{ ...command, outputPreview: { totalChars: command.output.length } }]));
+    const result = await readTimeline(h.bb.sdk.threads, "t", true);
+    expect(result.items[0]).toMatchObject({ output: command.output });
+    expect(result.truncated).toBe(false);
+    expect(rowToItem(command, true)).toMatchObject({ output: command.output });
   });
 });
