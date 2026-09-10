@@ -4,7 +4,7 @@ Create, manage, and monitor BB coding threads from Executor or another remote
 MCP client. BB owns execution and conversations; this headless plugin exposes a
 scoped interface over the public BB SDK.
 
-Version 0.2 adds real child threads, the product's source-reference handoff,
+Version 0.2.1 adds full-scope defaults on top of real child threads, the product's source-reference handoff,
 execution controls, and thread updates. See the [product parity audit and
 delivery plan](PARITY.md), or call `bb_get_capabilities`, for what is shipped,
 planned, blocked upstream, or intentionally interactive.
@@ -18,27 +18,30 @@ modern calls return JSON. There is no session database or background MCP task.
 
 ```sh
 bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin bb-mcp --yes
-bb plugin config bb-mcp set projectIds 'proj_first,proj_second'
-bb plugin config bb-mcp set hostIds 'host_linux'
-bb plugin config bb-mcp set defaultHostId host_linux
+# projectIds and hostIds are optional narrowing filters; empty means all.
+# defaultHostId is optional; empty selects a connected host automatically.
 bb plugin config bb-mcp set appUrl https://your-bb.example.com
 bb plugin config bb-mcp set endpointUrl https://your-mcp.example.com/mcp
 bb mcp status
 ```
 
 Find IDs with `bb project list --json` and `bb machine list --json`. Project
-and host lists are explicit allowlists; an empty list denies operations. Read
-and write tools check scope even when a caller supplies a known thread or
-environment ID. Threads that have not yet received an environment can be read
-when the plugin has a recorded host for their creation.
+and host lists are optional narrowing filters; an empty list covers every
+ordinary and personal project or every enrolled host, respectively. The
+provider list follows the same rule. `defaultHostId` may be left empty; new
+worktrees then prefer a connected host with a source for the target project.
+Read and write tools check the effective scope even when a caller supplies a
+known thread or environment ID. Threads that have not yet received an
+environment can be read when the plugin has a recorded host for their
+creation.
 
 Settings:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `projectIds` | empty | Comma/space-separated project IDs |
-| `hostIds` | empty | Comma/space-separated host IDs |
-| `defaultHostId` | empty | Default host for new worktrees |
+| `projectIds` | empty | Optional comma/space-separated project scope; empty means all ordinary and personal projects |
+| `hostIds` | empty | Optional comma/space-separated host scope; empty means all enrolled hosts |
+| `defaultHostId` | empty | Host for new worktrees; empty chooses a connected host automatically |
 | `providerIds` | empty | Optional provider allowlist; empty permits installed providers |
 | `appUrl` | empty | HTTPS BB URL used for thread links |
 | `endpointUrl` | empty | HTTPS MCP URL accepted by the HTTP host/origin checks |
@@ -54,6 +57,28 @@ fails; omitted modes resolve to an allowed supported default. It cannot change
 the operator's ceiling or configure the plugin. Discover
 providers before choosing one and pass `providerId` to discover its models.
 Pass `environmentId` when the provider needs a workspace-specific catalog.
+
+The MCP endpoint uses one BB-managed service token. It does not distinguish
+Grok, Executor, or another client after authentication, so every client using
+that token receives the same project, host, provider, and execution scope.
+Use separate plugin installations/tokens if callers need different access.
+
+Important current limits:
+
+- `bb_list_threads` is scoped to one project per call and paginated; there is
+  no single all-project thread search yet.
+- HTTP requests are limited to 120 per minute and 16 concurrent requests. A
+  request is capped at 64 KiB and a tool result at 60 KB; page size is capped
+  at 50 and prompts at 24,000 characters.
+- New creates and handoffs share a default limit of 20 per hour and four
+  concurrent dispatches. The durable operation ledger caps at 10,000 records.
+- Creation means accepted/provisioning, not completed. Poll status/events and
+  inspect result provenance; pending questions, approvals, and plugin forms
+  still require the user in BB, and there are no completion callbacks.
+- The configured permission ceiling is currently `auto`. Grok exposes
+  `accept-edits` and `full`, so its default effective mode is `accept-edits`.
+  Raising the ceiling to `full` applies to every client using this token and
+  still cannot exceed the selected host's ceiling.
 
 ## HTTPS and authentication
 
@@ -106,7 +131,7 @@ bounded `{ "error": { "code", "message" } }` text block.
 | `bb_list_projects` | Allowed projects and default execution host |
 | `bb_get_capabilities` | Implemented features, limits and parity roadmap |
 | `bb_list_runtimes` | Allowed hosts/providers and paginated provider models |
-| `bb_list_threads` | Paginated project scan with title/tree/archived/hidden filters |
+| `bb_list_threads` | Paginated project scan with title/tree/archived/hidden filters; hidden threads are included by default |
 | `bb_get_thread` | Runtime, execution options, queue and pending prompts |
 | `bb_get_events` | Incremental event summaries with an exclusive sequence cursor |
 | `bb_create_thread` | Root/child creation, workspace choice and execution options |
@@ -142,7 +167,8 @@ Add `parentThreadId` to create a child in BB's tree. Reusing `environmentId`
 alone creates no parent relationship. Child visibility inherits the parent
 unless supplied explicitly. Thread summaries expose `parentThreadId`,
 `sourceThreadId`, `originKind` and `visibility`; listing can filter by parent,
-native source relationship, `hasParent`, `archived` and `includeHidden`.
+native source relationship, `hasParent`, `archived` and `includeHidden`. Hidden
+threads are included unless `includeHidden: false` is supplied.
 
 For a handoff, call `bb_handoff_thread`:
 

@@ -5,19 +5,23 @@ against BB 0.42.1 / Plugin SDK 0.4.47 on 2026-09-10. Remote clients can inspect
 the summary through `bb_get_capabilities`. A planned row is not an available
 tool. Full product parity is an ongoing target, not a claim about this release.
 
+Version 0.2.1 makes empty project, host, and provider scopes permissive by
+default. Explicit IDs remain narrowing filters, and the personal project is
+included in discovery.
+
 The audit covers every public SDK area, the core thread UI/CLI workflow, and
 the installed collaboration, sharing, voice, automation, and provider plugins.
 Arbitrary third-party plugins can add new product features; their APIs need
 separate versioned adapters. This inventory does not imply that a shared MCP
 token should automatically gain all owner or administration privileges.
 
-## Shipped in 0.2.0
+## Shipped in 0.2.0 and 0.2.1
 
 | Product feature | MCP surface | Contract and limits |
 | --- | --- | --- |
-| Project discovery | `bb_list_projects` | Explicit allowed projects; project creation/admin is below. |
+| Project discovery | `bb_list_projects` | All ordinary and personal projects by default; explicit project IDs can narrow the connection. Project creation/admin is below. |
 | Hosts, providers, models and execution capabilities | `bb_list_runtimes` | Host permission ceiling; provider permissions, service tiers, capabilities and composer actions; model reasoning levels/default. Catalogs are host/environment-specific. |
-| Find threads and inspect tree relationships | `bb_list_threads`, `bb_get_thread` | Project/title scan, parent/source filters, roots/children filter, archived and hidden filters. Responses include parent/source IDs and visibility. A source filter selects BB-native source relationships such as forks, not handoff mentions. |
+| Find threads and inspect tree relationships | `bb_list_threads`, `bb_get_thread` | Project/title scan, parent/source filters, roots/children filter, archived and hidden filters; hidden threads are included by default. Responses include parent/source IDs and visibility. A source filter selects BB-native source relationships such as forks, not handoff mentions. |
 | Create root or child thread | `bb_create_thread` | Explicit `parentThreadId` creates the BB tree edge. Environment reuse is independent. Parent and target project/host must all be allowed. BB still enforces its parent ceiling. |
 | Workspace choice | Create/handoff `environmentId`, `hostId`, `baseBranch` | New tasks default to managed worktrees. Reuse checks project/host ownership. Personal/unmanaged workspace creation is planned below. |
 | Handoff | `bb_handoff_thread` | Matches the UI: fresh conversation containing a structured source-thread mention, with source environment reuse by default. `reuseSourceEnvironment: false` selects a fresh worktree. Provider can differ. Source history is resolved by BB's normal mention mechanism; the provider session is not cloned and the source is not automatically stopped or archived. |
