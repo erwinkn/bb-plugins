@@ -1,0 +1,15 @@
+# Set DNS first; change the hostname and BB loopback port for your server.
+# Set BB MCP's endpointUrl to https://your-mcp.example.com/mcp.
+your-mcp.example.com {
+	request_body {
+		max_size 64KB
+	}
+	@mcp path /mcp
+	handle @mcp {
+		rewrite * /api/v1/plugins/bb-mcp/http/mcp
+		reverse_proxy 127.0.0.1:38886
+	}
+	handle {
+		respond "Not found" 404
+	}
+}
