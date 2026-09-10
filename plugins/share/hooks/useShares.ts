@@ -1,12 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
-import type { PluginRpcCallArgs } from "@get-bb/plugin-sdk/app";
+import type { PluginRpcCallArgs, PluginRpcValidationIssue } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { REALTIME_CHANNEL, type rpcContract, type Share, type Status } from "../lib/model";
 
 type CreateInput = Omit<PluginRpcCallArgs<typeof rpcContract.share_create>[0], "threadId">;
 export type SharePatch = Omit<PluginRpcCallArgs<typeof rpcContract.share_update>[0], "threadId" | "shareId">;
-const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
+const FIELD_LABELS: Record<string, string> = {
+  allowedEmails: "Allowed people", includeTools: "Include tool output",
+  expiresAt: "Expiry", expiresInDays: "New link expiry", visibility: "Link visibility",
+  threadId: "Thread", shareId: "Link",
+};
+function messageOf(error: unknown): string {
+  if (typeof error === "object" && error !== null && "issues" in error && Array.isArray(error.issues)) {
+    const details = error.issues.filter((issue): issue is PluginRpcValidationIssue =>
+      typeof issue === "object" && issue !== null && typeof issue.message === "string",
+    ).map(({ message, path }) => {
+      if (!Array.isArray(path) || path.length === 0) return message;
+      const [field, ...rest] = path;
+      const label = FIELD_LABELS[String(field)] ?? String(field);
+      const suffix = field === "allowedEmails" && typeof rest[0] === "number"
+        ? ` (entry ${rest[0] + 1})` : rest.length ? `.${rest.join(".")}` : "";
+      return `${label}${suffix}: ${message}`;
+    });
+    if (details.length) return details.join("; ");
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+type ListRefresh = { promise: Promise<void>; trailing: Promise<void>; queued: boolean };
 
 /** One mounted header owns this state. Old requests cannot update a new pane. */
 export function useShares(threadId: string) {
@@ -20,19 +42,41 @@ export function useShares(threadId: string) {
   const mutating = useRef(false);
   const listSequence = useRef(0);
   const statusSequence = useRef(0);
+  const listRefresh = useRef<ListRefresh | null>(null);
+  const realtimeTimer = useRef<number | null>(null);
 
-  const refreshList = useCallback(async () => {
-    const sequence = ++listSequence.current;
-    try {
-      const result = await rpc.call("share_list", { threadId });
-      if (!mounted.current || sequence !== listSequence.current) return;
-      setShares(result.shares);
-      setListError(null);
-    } catch (error) {
-      if (!mounted.current || sequence !== listSequence.current) return;
-      setListError(messageOf(error));
-      toast.error(messageOf(error));
+  const refreshList = useCallback(function refreshList(): Promise<void> {
+    if (!mounted.current) return Promise.resolve();
+    if (realtimeTimer.current !== null) {
+      window.clearTimeout(realtimeTimer.current);
+      realtimeTimer.current = null;
     }
+    const running = listRefresh.current;
+    if (running) {
+      running.queued = true;
+      // Wait for the requested trailing read, not an unbounded stream of views.
+      return running.promise.then(() => running.trailing);
+    }
+    const request: ListRefresh = { promise: Promise.resolve(), trailing: Promise.resolve(), queued: false };
+    listRefresh.current = request;
+    const sequence = ++listSequence.current;
+    request.promise = (async () => {
+      try {
+        const result = await rpc.call("share_list", { threadId });
+        if (!mounted.current || sequence !== listSequence.current) return;
+        setShares(result.shares);
+        setListError(null);
+      } catch (error) {
+        if (!mounted.current || sequence !== listSequence.current) return;
+        setListError(messageOf(error));
+        toast.error(messageOf(error));
+      }
+    })().finally(() => {
+      if (listRefresh.current !== request) return;
+      listRefresh.current = null;
+      if (request.queued && mounted.current) request.trailing = refreshList();
+    });
+    return request.promise;
   }, [rpc, threadId]);
 
   const refreshStatus = useCallback(async () => {
@@ -55,6 +99,9 @@ export function useShares(threadId: string) {
     void refresh();
     return () => {
       mounted.current = false;
+      listRefresh.current = null;
+      if (realtimeTimer.current !== null) window.clearTimeout(realtimeTimer.current);
+      realtimeTimer.current = null;
       ++listSequence.current;
       ++statusSequence.current;
     };
@@ -62,7 +109,13 @@ export function useShares(threadId: string) {
 
   useRealtime(REALTIME_CHANNEL, (payload) => {
     if (typeof payload === "object" && payload !== null && "threadId" in payload && payload.threadId === threadId) {
-      void refreshList();
+      if (listRefresh.current) {
+        listRefresh.current.queued = true;
+      } else if (realtimeTimer.current === null) {
+        // The fixed contract has no count-only read for the closed header.
+        // Batch views for 250 ms without postponing updates indefinitely.
+        realtimeTimer.current = window.setTimeout(() => void refreshList(), 250);
+      }
     }
   });
   const connection = useRealtimeConnectionState();

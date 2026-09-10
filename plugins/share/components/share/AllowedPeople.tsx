@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { normalizeEntries } from "../../lib/allow";
 
 export function AllowedPeople({ entries, disabled, save }: {
@@ -9,7 +9,9 @@ export function AllowedPeople({ entries, disabled, save }: {
   const id = useId();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const draftVersion = useRef(0);
   const commit = async (text: string) => {
+    if (disabled) return;
     const parts = text.split(",").map((part) => part.trim()).filter(Boolean);
     if (parts.length === 0) return;
     let next: string[];
@@ -21,7 +23,10 @@ export function AllowedPeople({ entries, disabled, save }: {
       return;
     }
     setError(null);
-    if (next.length === entries.length || await save(next)) setDraft("");
+    const version = draftVersion.current;
+    setDraft("");
+    // Leave room for the next entry while saving; a late result must not erase it.
+    if (next.length !== entries.length && !await save(next) && draftVersion.current === version) setDraft(text);
   };
 
   return (
@@ -35,20 +40,21 @@ export function AllowedPeople({ entries, disabled, save }: {
               className="shrink-0 cursor-pointer rounded px-1 hover:bg-[var(--state-hover)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50">×</button>
           </span>
         ))}
-        <input id={id} value={draft} disabled={disabled} autoComplete="off" autoCapitalize="none" spellCheck={false}
+        <input id={id} value={draft} aria-busy={disabled} autoComplete="off" autoCapitalize="none" spellCheck={false}
           aria-invalid={!!error} aria-describedby={`${id}-hint${error ? ` ${id}-error` : ""}`}
           placeholder={entries.length === 0 ? "Anyone who can sign in" : "Email or @domain"}
           className="min-w-0 basis-40 grow border-0 bg-transparent px-0.5 py-1 text-[16px] outline-none placeholder:text-muted-foreground sm:text-[13px] [@media(pointer:coarse)]:text-[16px]"
           onChange={(event) => {
             const value = event.target.value;
+            ++draftVersion.current;
             setDraft(value); setError(null);
             // Mobile keyboards may insert a comma without a keydown event.
             if (value.endsWith(",")) void commit(value);
           }}
           onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing || disabled) return;
+            if (event.nativeEvent.isComposing) return;
             if (event.key === "Enter" || event.key === ",") { event.preventDefault(); void commit(draft); }
-            if (event.key === "Backspace" && draft === "" && entries.length > 0) {
+            if (!disabled && event.key === "Backspace" && draft === "" && entries.length > 0) {
               event.preventDefault(); void save(entries.slice(0, -1));
             }
           }}

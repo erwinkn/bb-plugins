@@ -6,6 +6,9 @@ A private GitHub collection of BB plugins.
 review panel, comments, revision history, and feedback to the original agent. See
 [Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
 
+`share` provides read-only thread sharing through Access-gated or public links,
+managed from the thread header or CLI. See [Share](plugins/share/README.md).
+
 `erwin-activity` adds a status-first thread list: Needs Attention, Unread,
 Working, Draft, and Done. It also supports project grouping and spaces, named
 project selections shared by every client. See
@@ -267,6 +270,10 @@ This belongs upstream in BB's authentication, thread permissions, and Connect
 support. Verified against BB 0.42.1: `bb connect` describes shared ports as
 owner-session-only. The [BB configuration documentation](https://github.com/get-bb/bb/blob/main/docs/configuration.md)
 also requires the owner's account session; these URLs are not guest links.
+
+The [Share plugin](plugins/share/README.md) in this repository now covers the
+read-only case with Access-gated and public links. The upstream request remains
+for native guest identity and guest messaging.
 
 Status: recorded here; no upstream issue filed.
 Suggested issue title: `Thread-scoped guest sharing with read-only links and optional messaging`.

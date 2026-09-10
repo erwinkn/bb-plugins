@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { loadPluginApp, renderSlot, type PluginRpcTestHandlers } from "@get-bb/plugin-sdk/testing/app";
-import type { PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
+import type { PluginRpcError, PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
 import { rpcContract, type Share, type Status } from "../lib/model";
 
 const toasts = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
@@ -13,6 +14,13 @@ const DAY = 86_400_000;
 const NOW = Date.now();
 const slots: ReturnType<typeof renderSlot>[] = [];
 const clipboard = vi.fn(async (_value: string) => {});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
 
 function share(overrides: Partial<Share> = {}): Share {
   return {
@@ -87,7 +95,7 @@ afterEach(() => {
 });
 
 describe("Share header and popover", () => {
-  it("registers one header control and shows an active dot at wide and compact widths", async () => {
+  it("registers one header control with a wide label and an accessible icon-only compact button", async () => {
     expect(app.threadHeaderActions.map(({ id, title }) => ({ id, title }))).toEqual([{ id: "share", title: "Share" }]);
     const wide = mount(backend([share()]));
     await within(wide.container).findByRole("img", { name: "Active share links" });
@@ -95,16 +103,18 @@ describe("Share header and popover", () => {
     const compact = mount(backend([share()]), { isCompactViewport: true });
     await within(compact.container).findByRole("img", { name: "Active share links" });
     expect(within(compact.container).getByRole("button", { name: "Share" }).textContent).toBe("");
+    // jsdom has no layout engine; assert the compact content and accessible name.
+    expect(within(compact.container).getByRole("button", { name: "Share" }).querySelector('svg[aria-hidden="true"]')).toBeTruthy();
   });
 
   it("shows loading and an empty list without a dot", async () => {
     const server = backend();
-    let release!: (result: { shares: Share[] }) => void;
-    server.handlers.share_list = () => new Promise((resolve) => { release = resolve; });
+    const pending = deferred<{ shares: Share[] }>();
+    server.handlers.share_list = () => pending.promise;
     const slot = mount(server);
     fireEvent.click(slot.getByRole("button", { name: "Share" }));
     await slot.findByRole("status", { name: "Loading share links" });
-    await act(async () => release({ shares: [] }));
+    await act(async () => pending.resolve({ shares: [] }));
     await slot.findByText("No links yet");
     expect(slot.queryByRole("img", { name: "Active share links" })).toBeNull();
   });
@@ -142,6 +152,24 @@ describe("Share header and popover", () => {
     fireEvent.click(dialog.getByRole("button", { name: "Create link" }));
     await dialog.findByRole("listitem", { name: "Sign-in link, active" });
     expect(calls(slot, "share_create")[0]?.input).toMatchObject({ threadId: THREAD, visibility: "access", expiresInDays: 30, includeTools: false });
+  });
+
+  it("requires a separate keyboard activation to confirm a public link", async () => {
+    const user = userEvent.setup();
+    const slot = mount(); const dialog = await open(slot);
+    dialog.getByRole("button", { name: "Public" }).focus();
+    await user.keyboard("{Enter}");
+    expect(calls(slot, "share_create")).toHaveLength(0);
+    expect(dialog.getByText("Anyone with the link can read this thread.")).toBeTruthy();
+    // Tab past the expiry select to the newly rendered confirmation button.
+    await user.tab();
+    expect(document.activeElement).toBe(dialog.getByLabelText("New link expiry"));
+    await user.tab();
+    expect(document.activeElement).toBe(dialog.getByRole("button", { name: "Create public link" }));
+    await user.keyboard("{Enter}");
+    await idle(slot);
+    expect(calls(slot, "share_create")).toHaveLength(1);
+    expect(calls(slot, "share_create")[0]?.input).toMatchObject({ visibility: "public" });
   });
 
   it("keeps unavailable modes disabled with an accessible explanation", async () => {
@@ -197,6 +225,49 @@ describe("Share header and popover", () => {
     fireEvent.change(input, { target: { value: "good@example.net,broken," } });
     expect(dialog.getByRole("alert")).toBeTruthy();
     expect(calls(slot, "share_update")).toHaveLength(1);
+  });
+
+  it("keeps the chip input focused and preserves the next entry typed during a save", async () => {
+    const user = userEvent.setup();
+    const server = backend([share()]);
+    const pending = deferred<void>();
+    const update = server.handlers.share_update;
+    server.handlers.share_update = async (input) => { await pending.promise; return update(input); };
+    const slot = mount(server); const dialog = await open(slot);
+    const input = dialog.getByLabelText("Allowed people") as HTMLInputElement;
+    input.focus();
+    await user.keyboard("first@example.com{Enter}");
+    expect(calls(slot, "share_update")).toHaveLength(1);
+    expect(input.disabled).toBe(false);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("");
+    await user.keyboard("second@example.com");
+    await act(async () => pending.resolve());
+    await idle(slot);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe("second@example.com");
+    await user.keyboard("{Enter}");
+    await idle(slot);
+    expect(document.activeElement).toBe(input);
+    expect(calls(slot, "share_update")[1]?.input).toMatchObject({ allowedEmails: ["first@example.com", "second@example.com"] });
+    expect(input.value).toBe("");
+  });
+
+  it.each([false, true])("preserves editable chip drafts after a failed save (edited while pending: %s)", async (edit) => {
+    const user = userEvent.setup();
+    const pending = deferred<{ share: Share }>();
+    const server = backend([share()]);
+    server.handlers.share_update = () => pending.promise;
+    const slot = mount(server); const dialog = await open(slot);
+    const input = dialog.getByLabelText("Allowed people") as HTMLInputElement;
+    input.focus();
+    await user.keyboard("first@example.com{Enter}");
+    if (edit) await user.keyboard("second@example.com");
+    await act(async () => pending.reject(new Error("Save failed")));
+    await idle(slot);
+    expect(input.disabled).toBe(false);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe(edit ? "second@example.com" : "first@example.com");
   });
 
   it("updates tool output and shows its warning", async () => {
@@ -285,18 +356,106 @@ describe("Share header and popover", () => {
     expect(calls(outage, "share_list")).toHaveLength(2);
   });
 
-  it("keeps split panes isolated and ignores older list replies", async () => {
+  it.each([false, true])("debounces realtime bursts and runs one trailing refresh (popover open: %s)", async (isOpen) => {
+    const server = backend(); const slot = mount(server);
+    await act(async () => {});
+    if (isOpen) await open(slot);
+    vi.useFakeTimers();
+    const before = calls(slot, "share_list").length;
+    const pending = deferred<{ shares: Share[] }>();
+    server.handlers.share_list = vi.fn().mockImplementationOnce(() => pending.promise).mockResolvedValue({ shares: [share()] });
+    const burst = async () => {
+      for (let i = 0; i < 25; i++) await slot.behavior.emitRealtime("share:changed", { threadId: THREAD });
+    };
+    await burst();
+    await act(async () => { await vi.advanceTimersByTimeAsync(249); });
+    expect(calls(slot, "share_list")).toHaveLength(before);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(calls(slot, "share_list")).toHaveLength(before + 1);
+    await burst();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(calls(slot, "share_list")).toHaveLength(before + 1);
+    await act(async () => pending.resolve({ shares: [] }));
+    expect(calls(slot, "share_list")).toHaveLength(before + 2);
+    expect(slot.getByRole("img", { name: "Active share links" })).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(calls(slot, "share_list")).toHaveLength(before + 2);
+  });
+
+  it("runs the queued refresh after a failed list request", async () => {
+    vi.useFakeTimers();
+    const server = backend();
+    const pending = deferred<{ shares: Share[] }>();
+    server.handlers.share_list = vi.fn().mockImplementationOnce(() => pending.promise).mockResolvedValue({ shares: [share()] });
+    const slot = mount(server);
+    for (let i = 0; i < 10; i++) await slot.behavior.emitRealtime("share:changed", { threadId: THREAD });
+    expect(calls(slot, "share_list")).toHaveLength(1);
+    await act(async () => pending.reject(new Error("Temporary list failure")));
+    expect(toasts.error).toHaveBeenCalledWith("Temporary list failure");
+    expect(calls(slot, "share_list")).toHaveLength(2);
+    expect(slot.getByRole("img", { name: "Active share links" })).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(calls(slot, "share_list")).toHaveLength(2);
+  });
+
+  it("keeps split panes isolated while coalescing list replies", async () => {
     const server = backend([share(), share({ id: "other", threadId: "other", state: "revoked" })]);
     const first = mount(server); const other = mount(server, { threadId: "other" });
     await within(first.container).findByRole("img", { name: "Active share links" });
     expect(within(other.container).queryByRole("img")).toBeNull();
+    vi.useFakeTimers();
     const pending: ((result: { shares: Share[] }) => void)[] = [];
     server.handlers.share_list = () => new Promise((resolve) => pending.push(resolve));
     await first.behavior.emitRealtime("share:changed", { threadId: THREAD });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
     await first.behavior.emitRealtime("share:changed", { threadId: THREAD });
-    await act(async () => pending[1]!({ shares: [] }));
+    expect(pending).toHaveLength(1);
     await act(async () => pending[0]!({ shares: [share()] }));
+    expect(pending).toHaveLength(2);
+    await act(async () => pending[1]!({ shares: [] }));
     expect(within(first.container).queryByRole("img")).toBeNull();
+    expect(calls(other, "share_list")).toHaveLength(1);
+  });
+
+  it("shows structured RPC validation issues with field labels, entry numbers, and server reasons", async () => {
+    const server = backend([share()]);
+    server.handlers.share_update = async () => {
+      throw Object.assign(new Error("rpc input validation failed"), {
+        code: "invalid_input", message: "rpc input validation failed",
+        issues: [
+          { path: ["allowedEmails", 0], message: "not an email or @domain: foo" },
+          { path: ["expiresAt"], message: "Must be in the supported range" },
+          { message: "Update rejected" },
+        ],
+      } satisfies PluginRpcError);
+    };
+    const slot = mount(server); const dialog = await open(slot);
+    fireEvent.change(dialog.getByLabelText("Allowed people"), { target: { value: "person@example.com" } });
+    fireEvent.keyDown(dialog.getByLabelText("Allowed people"), { key: "Enter" });
+    await idle(slot);
+    expect(toasts.error).toHaveBeenCalledWith("Allowed people (entry 1): not an email or @domain: foo; Expiry: Must be in the supported range; Update rejected");
+    expect(toasts.error).not.toHaveBeenCalledWith("rpc input validation failed");
+  });
+
+  it("ignores a pre-mutation list reply and refreshes once with the saved state", async () => {
+    const server = backend([share()]);
+    const slot = mount(server); const dialog = await open(slot);
+    vi.useFakeTimers();
+    const before = calls(slot, "share_list").length;
+    const pending = deferred<{ shares: Share[] }>();
+    const list = server.handlers.share_list;
+    server.handlers.share_list = vi.fn().mockImplementationOnce(() => pending.promise).mockImplementation(list);
+    await slot.behavior.emitRealtime("share:changed", { threadId: THREAD });
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const control = dialog.getByRole("switch", { name: "Include tool output" });
+    fireEvent.click(control);
+    await act(async () => {});
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    expect(calls(slot, "share_list")).toHaveLength(before + 1);
+    await act(async () => pending.resolve({ shares: [share()] }));
+    expect(control.getAttribute("aria-checked")).toBe("true");
+    expect(calls(slot, "share_list")).toHaveLength(before + 2);
+    expect((dialog.getByRole("button", { name: "Create link" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("shows server mutation errors, refreshes, and prevents duplicate clicks while saving", async () => {
@@ -321,6 +480,8 @@ describe("Share header and popover", () => {
     server.handlers.share_list = ({ threadId }) => threadId === THREAD
       ? new Promise((resolve) => { release = resolve; }) : { shares: [] };
     await slot.behavior.emitRealtime("share:changed", { threadId: THREAD });
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    await slot.behavior.emitRealtime("share:changed", { threadId: THREAD });
     const Header = app.threadHeaderActions[0]!.component;
     slot.lifecycle.rerender(<Header threadId="other" projectId="proj" isCompactViewport={false} />);
     await act(async () => release({ shares: [share()] }));
@@ -330,6 +491,16 @@ describe("Share header and popover", () => {
     expect(next.getByText("No links yet")).toBeTruthy();
     expect(next.queryByDisplayValue("unsent@example.com")).toBeNull();
     expect(calls(slot, "share_list").at(-1)?.input).toEqual({ threadId: "other" });
+  });
+
+  it("cancels a pending realtime debounce when a header unmounts", async () => {
+    const slot = mount();
+    await act(async () => {});
+    vi.useFakeTimers();
+    await slot.behavior.emitRealtime("share:changed", { threadId: THREAD });
+    slot.lifecycle.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(calls(slot, "share_list")).toHaveLength(1);
   });
 
   it("clears the active dot at expiry even without a realtime event", async () => {

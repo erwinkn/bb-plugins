@@ -198,7 +198,7 @@ describe("RPC and lifecycle", () => {
       allow: [
         /^(?:jose|marked|better-sqlite3|react|sonner|clsx|tailwind-merge|class-variance-authority)$/,
         /^@radix-ui\/react-(?:slot|popover|tooltip)$/,
-        /^@testing-library\/react$/,
+        /^@testing-library\/(react|user-event)$/,
         /^vitest(?:\/.*)?$/,
       ],
     });
