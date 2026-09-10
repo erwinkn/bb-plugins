@@ -70,7 +70,7 @@ export function WorkerSettings() {
     <p className="text-sm text-muted-foreground">Choose a profile for each background task. Each profile has its own model and instructions. Existing work keeps its model.</p>
     <label className="block min-w-0 space-y-1 text-sm">Preview models on machine
       <select aria-label="Worker catalog machine" className={inputClass} disabled={busy || loadingCatalog} value={hostId ?? catalog?.hostId ?? ""} onChange={event => setHostId(event.target.value || undefined)}>
-        {!catalog?.hosts.length ? <option value="">No connected machine</option> : null}
+        {!catalog?.hostId ? <option value="">{catalog?.hosts.length ? "Choose a connected machine" : "No connected machine"}</option> : null}
         {catalog?.hosts.map(host => <option key={host.id} value={host.id}>{host.name}</option>)}
       </select>
     </label>

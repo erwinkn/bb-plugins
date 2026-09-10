@@ -32,7 +32,7 @@ Windows and Linux use Ctrl. Change them in Voice Mode's Keyboard shortcuts setti
 
 ## Work with Ada
 
-Ada uses one live model and seventeen tools. It can find, read, and rename threads, deliver
+Ada uses one live model and eighteen tools. It can list machines, find, read, and rename threads, deliver
 messages, create visible threads or hidden workers, prepare unsent drafts, navigate,
 stop work, manage subscriptions, prepare and confirm archives, and answer native
 questions or approvals. Archive and approval actions require a later spoken
@@ -44,6 +44,15 @@ search does not settle what you meant, Ada starts a worker to look instead of as
 for exact names or IDs. Workers run outside any project unless the task needs a
 repository; they can read every BB project and thread. A worker uses the default
 profile unless Ada picks one of the configured names.
+
+Workers default to BB's primary machine. Name a connected machine to run a worker
+there instead; workers stay out of the sidebar on every machine. For a task that
+needs computer use on your device, Ada starts a Codex worker on the machine you
+identify. That worker uses its existing tools and permissions.
+
+Ada receives the call owner's platform and browser as context. BB does not yet
+map a browser client to an enrolled machine, so Ada asks which machine when the
+target is unclear. A call from a phone can still direct a worker on your Mac.
 
 Name a provider, model, or reasoning level when you ask for new work and Ada uses
 it, then confirms the model it resolved; ask "what models are there" for the list.

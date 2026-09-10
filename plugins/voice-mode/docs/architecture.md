@@ -1,6 +1,6 @@
 # Ada live runtime
 
-One Realtime model speaks and calls seventeen tools. Hidden root threads run
+One Realtime model speaks and calls eighteen tools. Hidden root threads run
 background tasks. No model coordinates those threads. Stored subscriptions,
 receipts, native BB events, and the client sequencer supply the control flow.
 
@@ -76,6 +76,15 @@ name that does not resolve changes nothing. A test pins the keys and the event
 name to the activity plugin's exports.
 Workers default to BB's personal project and the primary machine; `server.ts` builds
 the call's tool schemas from the configured profiles so the model sees valid names.
+`machines.ts` reads `bb.sdk.system.config().primaryHostId` for deterministic
+default routing. `list_machines` returns current machine names, connection status,
+and the default host; `spawn_worker.host_id` optionally selects another machine.
+The worker's provider and model are validated on that destination. An unavailable
+default or explicit host fails instead of silently moving work elsewhere.
+Call-start context includes the machine inventory and a bounded client-reported
+device descriptor. Its `hostId` is explicitly null: the SDK cannot map the call
+owner's browser to a host. The live prompt directs device computer-use requests
+to hidden Codex workers on the machine the user identifies.
 The runtime keeps call state in memory but persists the owner record and every
 target ID shown to the model in `voice_call_targets`. When the owner still matches
 and the in-memory state is missing, as after a plugin reload mid-call, the runtime
