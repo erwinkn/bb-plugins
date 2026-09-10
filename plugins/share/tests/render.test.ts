@@ -29,14 +29,32 @@ describe("safe rendering", () => {
   it.each(["http://example.com", "https://example.com/a?x=1&y=2", "mailto:person@example.com"])("allows %s with protective rel", (url) => {
     expect(render(`[Link](${url})`)).toContain('rel="noopener noreferrer nofollow"');
   });
+  it("drops nested image URLs in rejected link labels", () => {
+    const html = render("[![alt](https://host/private.png?sig=token)](./report)");
+    expect(html).not.toContain("https://host/private.png?sig=token");
+    expect(html).not.toMatch(/private\.png|sig=token|<img|<a /);
+  });
+  it.each(["./report", "javascript:evil", "https://["])("preserves emphasis and code in rejected link %s", (href) => {
+    const html = render(`[**bold** and *emphasis* and \`<code>\`](${href})`);
+    expect(html).toContain("<strong>bold</strong> and <em>emphasis</em> and <code>&lt;code&gt;</code>");
+    expect(html).not.toContain("<a ");
+  });
   it("redacts title, command, detail, status, and output before truncation", () => {
     const secret = "sk-abcdefghijklmnop";
     const html = renderPage({ title: secret, mode: "public", unverified: true, truncated: true, generatedAt: NOW,
-      items: [{ kind: "tool", title: secret, detail: secret, status: secret, output: ".".repeat(19_999) + secret + ".".repeat(30), at: NOW }] });
+      items: [{ kind: "tool", title: secret, detail: secret, status: secret, output: ".".repeat(99_999) + secret + ".".repeat(30), at: NOW }] });
     expect(html).not.toContain(secret);
     expect(html).toContain("Unverified mode: Access JWT check is disabled");
     expect(html).toContain("This thread is truncated");
-    expect(html).toContain("Tool output truncated at 20000 characters");
+    expect(html).toContain("Tool output truncated at 100000 characters; 39 characters omitted.");
+    expect(html.match(/<pre>(.*?)<\/pre>/s)?.[1]).toHaveLength(100_000);
+  });
+  it.each([99_999, 100_000, 100_001])("caps complete tool output of %i characters at the boundary", (length) => {
+    const html = renderPage({ title: "Tool output", mode: "public", unverified: false, truncated: false, generatedAt: NOW,
+      items: [{ kind: "tool", title: "command", detail: null, status: "done", output: ".".repeat(length), at: NOW }] });
+    expect(html.match(/<pre>(.*?)<\/pre>/s)?.[1]).toHaveLength(Math.min(length, 100_000));
+    if (length > 100_000) expect(html).toContain("1 characters omitted.");
+    else expect(html).not.toContain("Tool output truncated");
   });
   it("escapes the forbidden email and gives a content-free sign-in page", () => {
     expect(renderStatusPage("forbidden", { email: '<img src=x>@example.com' })).not.toContain("<img");

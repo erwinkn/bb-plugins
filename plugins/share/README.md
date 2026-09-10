@@ -49,7 +49,8 @@ tool rows, but no direct API to retrieve a work row's complete output. Raw event
 history would require reconstructing output, so incomplete previews are omitted
 entirely, with the line “Output omitted: BB stored only a preview of this output.”
 The tool title, detail, and status remain visible. Complete output is redacted
-before the renderer caps it at 20000 characters. Redaction also removes partial
+before the renderer caps it at 100,000 characters per tool output and reports how
+many characters were omitted. Redaction also removes partial
 PEM blocks and runs of at least 200 base64 characters, including wrapped lines.
 
 ## Settings
@@ -144,15 +145,26 @@ Recorded in the plugin README as a runbook. Nothing here is committed with real 
 ```yaml
 ingress:
   - hostname: bb.erwinkn.com
-    path: ^/api/v1/plugins/share/http/(s|p)(\?.*)?$
+    path: ^/api/v1/plugins/share/http/[sp]$
     service: http://127.0.0.1:38886
   - service: http_status:404
 ```
+
+cloudflared matches only the decoded request path, never the query string, so
+the rule must be exact.
 
 3. Run `cloudflared` as a launchd service on the BB server machine.
 4. In Zero Trust, create a self-hosted Access application for `bb.erwinkn.com` with the path `/api/v1/plugins/share/http/s`, so it covers only the gated route. Add one Allow policy that includes Everyone, and enable the login methods guests should have: one-time PIN by email, plus Google and GitHub if wanted. Access still requires sign-in for an Everyone policy. Per-thread narrowing happens in the plugin. Copy the AUD tag. The `/p` path stays outside the application, so public links open without login.
 5. Fill the plugin settings.
 6. Verify from a browser without a BB session: a gated link shows the login page, then the share page. A public link opens at once in a private window. A request to `/api/v1/threads` on the same hostname returns 404.
+7. From outside the BB server, request both traversal paths below and confirm
+   each returns the tunnel's 404, with no BB content. Use `--path-as-is` so curl
+   sends the literal traversal instead of normalizing it locally:
+
+```sh
+curl --path-as-is -i 'https://bb.erwinkn.com/api/v1/plugins/share/http/p%3F/%2e%2e/%2e%2e/%2e%2e/%2e%2e/threads'
+curl --path-as-is -i 'https://bb.erwinkn.com/api/v1/plugins/share/http/p/../../../../threads'
+```
 
 Existing Cloudflare Access credentials for `equisafe.cloudflareaccess.com` are present on this machine, so a Zero Trust org already exists. The Access application for `bb.erwinkn.com` can live in that org or in a new one for the `erwinkn.com` account. The `accessTeamDomain` setting follows that choice.
 
@@ -165,3 +177,10 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+The current `bb plugin types` sync adds all host runtime type dependencies to
+frontend plugins, including `@pierre/diffs`, `vaul`, and unused Radix families.
+Keep those declarations so repeated syncs stay clean. Removing them durably
+needs an upstream BB CLI change: sync only packages imported by the plugin,
+while retaining the SDK test harness dependencies (file under `get-bb/bb`,
+`bb plugin types` dependency syncing).

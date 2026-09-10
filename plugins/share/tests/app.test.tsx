@@ -195,6 +195,50 @@ describe("Share header and popover", () => {
     expect(input.selectionEnd).toBe(item.url.length);
   });
 
+  it.each([false, true])("disables existing public links while keeping revoke available (compact: %s)", async (isCompactViewport) => {
+    const server = backend([share({ visibility: "public" })], { publicLinksEnabled: false });
+    const slot = mount(server, { isCompactViewport }); const dialog = await open(slot);
+    const row = within(dialog.getByRole("listitem", { name: "Public link, disabled by settings" }));
+    expect(row.getByText("Disabled by settings")).toBeTruthy();
+    expect(row.queryByText("Active")).toBeNull();
+    expect(row.queryByRole("button", { name: "Copy" })).toBeNull();
+    expect(slot.queryByRole("img", { name: "Active share links" })).toBeNull();
+    fireEvent.click(row.getByRole("button", { name: "Revoke" }));
+    fireEvent.click(row.getByRole("button", { name: "Revoke link" }));
+    await dialog.findByText("Revoked");
+    expect(calls(slot, "share_revoke")[0]?.input).toEqual({ threadId: THREAD, shareId: "shr_1" });
+    expect(clipboard).not.toHaveBeenCalled();
+  });
+
+  it("keeps sign-in links active when public links are disabled", async () => {
+    const slot = mount(backend([share()], { publicLinksEnabled: false })); const dialog = await open(slot);
+    expect(dialog.getByText("Active")).toBeTruthy();
+    expect(dialog.getByRole("button", { name: "Copy" })).toBeTruthy();
+    expect(slot.getByRole("img", { name: "Active share links" })).toBeTruthy();
+  });
+
+  it("updates the public row, copy fallback, and header dot when settings are refreshed", async () => {
+    const server = backend([share({ visibility: "public" })]);
+    const slot = mount(server); let dialog = await open(slot);
+    expect(slot.getByRole("img", { name: "Active share links" })).toBeTruthy();
+    clipboard.mockRejectedValueOnce(new Error("denied"));
+    fireEvent.click(dialog.getByRole("button", { name: "Copy" }));
+    await dialog.findByLabelText("Copy this link");
+    server.state.status.publicLinksEnabled = false;
+    await slot.behavior.setRealtimeConnectionState("reconnecting");
+    await slot.behavior.setRealtimeConnectionState("connected");
+    await dialog.findByText("Disabled by settings");
+    expect(dialog.queryByLabelText("Copy this link")).toBeNull();
+    expect(dialog.queryByRole("button", { name: "Copy" })).toBeNull();
+    expect(slot.queryByRole("img", { name: "Active share links" })).toBeNull();
+    server.state.status.publicLinksEnabled = true;
+    fireEvent.click(dialog.getByRole("button", { name: "Close share popover" }));
+    dialog = await open(slot);
+    expect(dialog.getByText("Active")).toBeTruthy();
+    expect(dialog.getByRole("button", { name: "Copy" })).toBeTruthy();
+    expect(slot.getByRole("img", { name: "Active share links" })).toBeTruthy();
+  });
+
   it("commits and removes validated chips, and rejects malformed entries without an RPC", async () => {
     const slot = mount(backend([share()])); const dialog = await open(slot);
     const input = dialog.getByLabelText("Allowed people");

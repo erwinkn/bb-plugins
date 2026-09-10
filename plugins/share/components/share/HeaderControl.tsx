@@ -49,7 +49,7 @@ function ThreadShareControl({ threadId, isCompactViewport }: PluginThreadHeaderA
   const controller = useShares(threadId);
   const [open, setOpen] = useState(false);
   const id = useId();
-  const active = controller.shares?.some((share) => share.state === "active") ?? false;
+  const active = controller.shares?.some((share) => share.state === "active" && (share.visibility === "access" || controller.status?.publicLinksEnabled === true)) ?? false;
   return <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) void controller.refresh(); }}>
     <PopoverTrigger asChild>
       <button type="button" aria-label="Share" title="Share" aria-describedby={active ? `${id}-active` : undefined}

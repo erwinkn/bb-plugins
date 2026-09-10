@@ -11,14 +11,16 @@ const markdown = new Marked({
   renderer: {
     html({ text }) { return escapeHtml(text); },
     image() { return ""; },
-    link({ href, tokens, text }) {
+    link({ href, tokens }) {
+      // Even rejected links must render nested tokens so images are dropped.
+      const label = this.parser.parseInline(tokens);
       // Validate the literal scheme before any HTML entity decoding can occur.
-      if (!/^(?:https?:|mailto:)/i.test(href) || /[\u0000-\u0020\u007f]/.test(href)) return escapeHtml(text);
+      if (!/^(?:https?:|mailto:)/i.test(href) || /[\u0000-\u0020\u007f]/.test(href)) return label;
       try {
         const url = new URL(href);
-        if (!["http:", "https:", "mailto:"].includes(url.protocol)) return escapeHtml(text);
-      } catch { return escapeHtml(text); }
-      return `<a href="${escapeHtml(href)}" rel="noopener noreferrer nofollow">${this.parser.parseInline(tokens)}</a>`;
+        if (!["http:", "https:", "mailto:"].includes(url.protocol)) return label;
+      } catch { return label; }
+      return `<a href="${escapeHtml(href)}" rel="noopener noreferrer nofollow">${label}</a>`;
     },
   },
 });
@@ -37,7 +39,8 @@ export function renderPage(input: {
       return `<article class="message ${item.role}"><div class="role">${item.role === "user" ? "User" : "Assistant"}</div>${markdown.parse(redact(item.text))}</article>`;
     }
     const output = redact(item.output ?? "");
-    return `<details><summary>${safeText(item.title)} <span class="label">${safeText(item.status)}</span></summary>${item.detail ? `<p class="detail">${safeText(item.detail)}</p>` : ""}${output ? `<pre>${escapeHtml(output.slice(0, 20_000))}</pre>${output.length > 20_000 ? '<p class="detail">Tool output truncated at 20000 characters.</p>' : ""}` : ""}</details>`;
+    const limit = 100_000;
+    return `<details><summary>${safeText(item.title)} <span class="label">${safeText(item.status)}</span></summary>${item.detail ? `<p class="detail">${safeText(item.detail)}</p>` : ""}${output ? `<pre>${escapeHtml(output.slice(0, limit))}</pre>${output.length > limit ? `<p class="detail">Tool output truncated at ${limit} characters; ${output.length - limit} characters omitted.</p>` : ""}` : ""}</details>`;
   }).join("\n");
   return document(input.title, `<header><p class="label">${input.mode === "access" ? "Shared with sign-in" : "Public link"}</p><h1>${safeText(input.title)}</h1></header>${input.unverified ? '<p class="notice">Unverified mode: Access JWT check is disabled</p>' : ""}${input.truncated ? '<p class="notice">This thread is truncated; some older rows or tool details are omitted.</p>' : ""}${items}<footer>Read-only thread · Generated ${safeText(new Date(input.generatedAt).toISOString())} · Refresh to see new messages.</footer>`);
 }

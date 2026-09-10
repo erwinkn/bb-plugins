@@ -22,6 +22,8 @@ export function ShareRow({ share, controller }: { share: Share; controller: Shar
   const [showUrl, setShowUrl] = useState(false);
   const [confirmRevoke, setConfirmRevoke] = useState(false);
   const active = share.state === "active";
+  const disabledBySettings = share.visibility === "public" && controller.status?.publicLinksEnabled === false;
+  const stateLabel = active ? disabledBySettings ? "Disabled by settings" : "Active" : share.state === "revoked" ? "Revoked" : "Expired";
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(share.url);
@@ -30,12 +32,12 @@ export function ShareRow({ share, controller }: { share: Share; controller: Shar
     } catch { setShowUrl(true); }
   };
   return (
-    <li aria-label={`${share.visibility === "public" ? "Public" : "Sign-in"} link, ${share.state}`} className="space-y-3 border-b border-border p-3 last:border-b-0">
+    <li aria-label={`${share.visibility === "public" ? "Public" : "Sign-in"} link, ${stateLabel.toLowerCase()}`} className="space-y-3 border-b border-border p-3 last:border-b-0">
       <div className="flex flex-wrap items-center gap-2">
         <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", share.visibility === "public" ? "bg-[var(--warning)]/10 text-[var(--warning-text)]" : "bg-muted text-muted-foreground")}>
           {share.visibility === "public" ? "Public" : "Sign-in"}
         </span>
-        <span className={cn("text-[12px]", active ? "text-foreground" : "text-muted-foreground")}>{active ? "Active" : share.state === "revoked" ? "Revoked" : "Expired"}</span>
+        <span className={cn("text-[12px]", active && !disabledBySettings ? "text-foreground" : "text-muted-foreground")}>{stateLabel}</span>
         <time className="ml-auto text-[11px] text-muted-foreground" dateTime={new Date(share.createdAt).toISOString()} title={new Date(share.createdAt).toLocaleString()}>Created {relativeDate(share.createdAt)}</time>
       </div>
       {active && <>
@@ -43,9 +45,9 @@ export function ShareRow({ share, controller }: { share: Share; controller: Shar
           <p className="text-[11px] text-muted-foreground">
             {share.viewCount} {share.viewCount === 1 ? "view" : "views"} · {share.lastViewedAt === null ? "Never viewed" : <>Last viewed <time dateTime={new Date(share.lastViewedAt).toISOString()} title={new Date(share.lastViewedAt).toLocaleString()}>{relativeDate(share.lastViewedAt)}</time></>}
           </p>
-          <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[12px]" onClick={() => void copy()}>Copy</Button>
+          {!disabledBySettings && <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[12px]" onClick={() => void copy()}>Copy</Button>}
         </div>
-        {showUrl && <div className="space-y-1">
+        {showUrl && !disabledBySettings && <div className="space-y-1">
           <label htmlFor={`${id}-url`} className="text-[11px] text-muted-foreground">Copy this link</label>
           <input id={`${id}-url`} readOnly value={share.url} autoFocus onFocus={(event) => event.currentTarget.select()}
             className="w-full min-w-0 rounded-md border border-input bg-transparent p-2 text-[16px] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:text-[12px]" />
