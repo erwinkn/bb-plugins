@@ -4,6 +4,11 @@ Create, manage, and monitor BB coding threads from Executor or another remote
 MCP client. BB owns execution and conversations; this headless plugin exposes a
 scoped interface over the public BB SDK.
 
+Version 0.2 adds real child threads, the product's source-reference handoff,
+execution controls, and thread updates. See the [product parity audit and
+delivery plan](PARITY.md), or call `bb_get_capabilities`, for what is shipped,
+planned, blocked upstream, or intentionally interactive.
+
 Requires BB 0.42.1 / Plugin SDK 0.4.47 and a connected execution host. MCP SDK
 2.0.0 serves modern `2026-07-28` requests and stateless 2025 initialization on
 the same Streamable HTTP endpoint. Legacy calls use finite SSE responses;
@@ -43,7 +48,10 @@ Settings:
 | `maxPendingOperations` | 4 | Concurrent create/send dispatch limit |
 
 The host's native permission ceiling and BB's concurrency controls also apply.
-The MCP caller cannot set permission mode or configure the plugin. Discover
+The MCP caller can request a permission mode within the configured ceiling,
+host ceiling, and any parent ceiling. An explicit unsupported/excessive mode
+fails; omitted modes resolve to an allowed supported default. It cannot change
+the operator's ceiling or configure the plugin. Discover
 providers before choosing one and pass `providerId` to discover its models.
 Pass `environmentId` when the provider needs a workspace-specific catalog.
 
@@ -96,17 +104,20 @@ bounded `{ "error": { "code", "message" } }` text block.
 | Tool | Purpose |
 | --- | --- |
 | `bb_list_projects` | Allowed projects and default execution host |
+| `bb_get_capabilities` | Implemented features, limits and parity roadmap |
 | `bb_list_runtimes` | Allowed hosts/providers and paginated provider models |
-| `bb_list_threads` | Paginated project thread scan with optional title filter |
+| `bb_list_threads` | Paginated project scan with title/tree/archived/hidden filters |
 | `bb_get_thread` | Runtime, execution options, queue and pending prompts |
 | `bb_get_events` | Incremental event summaries with an exclusive sequence cursor |
-| `bb_create_thread` | Visible thread in a new worktree or explicit allowed environment |
-| `bb_send_message` | Follow-up with explicit `queue` or `steer` mode |
+| `bb_create_thread` | Root/child creation, workspace choice and execution options |
+| `bb_handoff_thread` | New conversation with source-thread context reference |
+| `bb_send_message` | Queue/steer follow-up with execution options and optional schedule |
 | `bb_stop_thread` | Release current runtime; queued instructions remain separate |
 | `bb_rename_thread` | Update a thread title |
+| `bb_update_thread` | Title, parent, visibility and sticky model/reasoning updates |
 | `bb_get_result` | Latest root assistant message with turn provenance/freshness |
 | `bb_get_changes` | Page changed files/PR metadata and request bounded patches |
-| `bb_get_operation` | Read a stored create/send outcome |
+| `bb_get_operation` | Read a stored create/handoff/send outcome |
 
 Example create arguments:
 
@@ -126,6 +137,43 @@ its resolved execution and environment; the stored receipt is historical.
 New tasks use isolated managed worktrees by default and do not navigate the
 user's open BB panes. Explicit environment reuse shares that environment's
 working files. Its project/host must be allowed.
+
+Add `parentThreadId` to create a child in BB's tree. Reusing `environmentId`
+alone creates no parent relationship. Child visibility inherits the parent
+unless supplied explicitly. Thread summaries expose `parentThreadId`,
+`sourceThreadId`, `originKind` and `visibility`; listing can filter by parent,
+native source relationship, `hasParent`, `archived` and `includeHidden`.
+
+For a handoff, call `bb_handoff_thread`:
+
+```json
+{
+  "sourceThreadId": "thr_previous",
+  "prompt": "Continue with the remaining tests using the prior thread's context.",
+  "providerId": "claude-code",
+  "idempotencyKey": "ticket-42-handoff"
+}
+```
+
+This matches BB's UI handoff: a new conversation with a rich source-thread
+mention, using BB's context resolution. It reuses the source environment by
+default; set `reuseSourceEnvironment: false` for a new worktree or pass an
+explicit allowed `environmentId`. It does not clone a provider session, create
+a parent edge unless requested, or stop/archive the source. Both source and
+target scope are checked, including receipt reads after scope revocation.
+
+Create, handoff and send accept `model`, `reasoningLevel`, `permissionMode`
+and `serviceTier` (`default`/`fast`, provider-dependent). Create and handoff
+also accept `providerId`. Catalog discovery reports provider capabilities and
+model defaults. `sendAt` schedules a first or follow-up instruction using a
+future Unix timestamp in milliseconds.
+
+Use `bb_update_thread` to set title, parent (`null` clears it), visibility,
+model or reasoning without dispatching work. Model/reasoning updates stay
+within the current provider and apply to next/later turns. Standalone
+permission/service-tier updates need [BB #3401](https://github.com/get-bb/bb/issues/3401);
+until then, set those fields on the next `bb_send_message`. The plugin does
+not simulate an update with a hidden prompt or plugin-only sticky settings.
 
 `bb_send_message` returns BB's actual `delivery` and, when queued, the queued
 message ID and wait reason. A queued outcome is successful acceptance, not a
@@ -162,10 +210,15 @@ individual result data cap at 60 KB before MCP's text/structured duplication.
 
 ## Retry and recovery
 
-Use one stable idempotency key per create/send instruction. Same key and same
+Use one stable idempotency key per create/handoff/send instruction. Same key and same
 arguments returns the stored operation. Reusing it for different arguments is
 an `idempotency_conflict`. Keys are stored as hashes, and prompts are not copied
 into the operation ledger. HTTP disconnect does not stop accepted coding work.
+
+Handoffs share creation admission limits with ordinary threads. Replays use
+the original supplied arguments rather than newly resolved defaults, including
+after a scheduled time passes. Stored 0.1 create/send receipts remain valid.
+After upgrading, refresh Executor's discovered tools to load the added schemas.
 
 BB may commit a request before the plugin records its response. SDK failures
 at that boundary and pending requests recovered after reload are retained as

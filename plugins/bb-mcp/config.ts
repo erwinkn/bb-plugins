@@ -39,10 +39,10 @@ export function assertScope(c: Config, projectId: string, hostId?: string) {
 export function threadUrl(c: Config, projectId: string, threadId: string) {
   return c.appUrl ? new URL(`/projects/${encodeURIComponent(projectId)}/threads/${encodeURIComponent(threadId)}`, c.appUrl).href : null;
 }
-export function executionPermission(allowed: string[], ceiling: string, hostCeiling = "full") {
+export function executionPermission(allowed: string[], ceiling: string, hostCeiling = "full", parentCeiling = "full") {
   const modes = ["accept-edits", "auto", "full"] as const;
   const rank = (v: string) => modes.findIndex(m => m === v);
-  const maximum = Math.min(rank(ceiling), rank(hostCeiling));
+  const maximum = Math.min(rank(ceiling), rank(hostCeiling), rank(parentCeiling));
   const mode = [...modes].reverse().find(m => rank(m) <= maximum && allowed.includes(m));
   if (!mode) throw new ToolError("unsupported_permissions", "The provider does not support a permission mode within the configured limits.");
   return mode;

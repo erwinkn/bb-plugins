@@ -3,8 +3,9 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { ToolError } from "./config";
 
 export type Operation = {
-  id: string; keyHash: string; payloadHash: string; kind: "create" | "send";
+  id: string; keyHash: string; payloadHash: string; kind: "create" | "send" | "handoff";
   projectId: string; hostId: string; threadId: string | null;
+  related?: { threadId: string; projectId: string; hostId: string }[];
   state: "pending" | "accepted" | "outcome_unknown";
   createdAt: number; updatedAt: number; response: Record<string, unknown> | null;
 };
@@ -45,7 +46,7 @@ export function createStore(bb: BbPluginApi) {
         throw new ToolError("operation_storage_full", "Operation history is full. Export and reconcile it in BB before accepting new requests.");
       if (count("SELECT count(*) n FROM operations WHERE json_extract(body, '$.state') = 'pending'") >= maxPending)
         throw new ToolError("capacity_limited", "Too many requests are dispatching. Retry later with the same key.");
-      if (input.kind === "create" && count("SELECT count(*) n FROM operations WHERE json_extract(body, '$.kind') = 'create' AND json_extract(body, '$.createdAt') > ?", Date.now() - 3600000) >= createsPerHour)
+      if (input.kind !== "send" && count("SELECT count(*) n FROM operations WHERE json_extract(body, '$.kind') IN ('create', 'handoff') AND json_extract(body, '$.createdAt') > ?", Date.now() - 3600000) >= createsPerHour)
         throw new ToolError("rate_limited", "The configured hourly new-thread limit has been reached.");
       const op: Operation = { ...input, id: `op_${randomUUID()}`, keyHash, payloadHash, state: "pending", createdAt: Date.now(), updatedAt: Date.now(), response: null };
       db.prepare("INSERT INTO operations (id, key_hash, body) VALUES (?, ?, ?)").run(op.id, keyHash, JSON.stringify(op));

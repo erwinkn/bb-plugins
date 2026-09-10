@@ -3,9 +3,12 @@ type ThreadResponse = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["spawn"]>
 import { assertScope, executionPermission, ids, requireConfigured, threadUrl, ToolError, type Config, type Settings } from "./config";
 import { clip, eventView, type ThreadEventRow } from "./presentation";
 import { operationView, type Store, type Operation } from "./store";
+import { selectExecution, selectInheritedSend, type ExecutionInput } from "./execution";
 
-export type CreateInput = { projectId: string; prompt: string; idempotencyKey: string; title?: string; hostId?: string; environmentId?: string; baseBranch?: string; providerId?: string; model?: string; reasoningLevel?: string };
-export type SendInput = { threadId: string; message: string; idempotencyKey: string; mode: "queue" | "steer" };
+export type CreateInput = ExecutionInput & { projectId: string; prompt: string; idempotencyKey: string; title?: string; hostId?: string; environmentId?: string; baseBranch?: string; providerId?: string; parentThreadId?: string; visibility?: "visible" | "hidden"; sendAt?: number };
+export type HandoffInput = Omit<CreateInput, "projectId"> & { sourceThreadId: string; projectId?: string; reuseSourceEnvironment?: boolean };
+export type SendInput = ExecutionInput & { threadId: string; message: string; idempotencyKey: string; mode: "queue" | "steer"; sendAt?: number };
+export type UpdateInput = { threadId: string; title?: string; model?: string; reasoningLevel?: ExecutionInput["reasoningLevel"]; parentThreadId?: string | null; visibility?: "visible" | "hidden" };
 export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store) {
   const config = async () => { const c = await settings.get(); requireConfigured(c); return c; };
   const unwrap = (t: Awaited<ReturnType<typeof bb.sdk.threads.get>>): ThreadResponse => t;
@@ -19,7 +22,7 @@ export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store)
     return { t, env, hostId };
   }
   function summary(t: ThreadResponse, hostId: string, c: Config) {
-    return { threadId: t.id, projectId: t.projectId, environmentId: t.environmentId, hostId, title: clip(t.title ?? t.titleFallback ?? "", 500).text, providerId: t.providerId, status: t.status, runtime: t.runtime, queuedMessageCount: t.queuedMessageCount, archived: t.archivedAt !== null, updatedAt: t.updatedAt, url: threadUrl(c, t.projectId, t.id) };
+    return { threadId: t.id, projectId: t.projectId, environmentId: t.environmentId, hostId, parentThreadId: t.parentThreadId, sourceThreadId: t.sourceThreadId, originKind: t.originKind, visibility: t.visibility, title: clip(t.title ?? t.titleFallback ?? "", 500).text, providerId: t.providerId, status: t.status, runtime: t.runtime, queuedMessageCount: t.queuedMessageCount, archived: t.archivedAt !== null, updatedAt: t.updatedAt, url: threadUrl(c, t.projectId, t.id) };
   }
   async function state(threadId: string, c: Config) {
     const { t, env, hostId } = await context(threadId, c);
@@ -39,24 +42,52 @@ export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store)
       pendingInteractions, interactionCount: interactions.length, queued, queueCount: queue.length,
       lastTurn: terminal[0] ? eventView(terminal[0]) : null, observedAt: Date.now(), taskCompletion: "not_inferred", suggestedPollSeconds: 15 };
   }
-  function checkOperation(op: Operation, c: Config) { assertScope(c, op.projectId, op.hostId); return operationView(op); }
-  async function runtime(projectId: string, hostId: string, providerId: string | undefined, model: string | undefined, reasoningLevel: string | undefined, environmentId: string | undefined, c: Config) {
-    assertScope(c, projectId, hostId);
-    const hosts = await bb.sdk.hosts.list();
-    if (hosts.find(h => h.id === hostId)?.status !== "connected") throw new ToolError("host_offline", "The selected execution host is offline.");
-    const routing = environmentId ? { environmentId } : { hostId };
-    const providers = (await bb.sdk.providers.list(routing)).filter(p => p.available && (!ids(c.providerIds).length || ids(c.providerIds).includes(p.id)));
-    const defaults = await bb.sdk.projects.defaultExecutionOptions({ projectId });
-    const provider = providers.find(p => p.id === (providerId ?? defaults?.providerId)) ?? (!providerId ? providers[0] : undefined);
-    if (!provider) throw new ToolError("invalid_provider", "Choose an available provider from bb_list_runtimes.");
-    const catalog = await bb.sdk.providers.models({ ...routing, providerId: provider.id });
-    if (catalog.modelLoadError) throw new ToolError("catalog_unavailable", `Model catalog unavailable (${catalog.modelLoadError.code}).`);
-    const selected = model ?? (defaults?.providerId === provider.id ? defaults.model : undefined);
-    const entry = catalog.models.find(m => m.model === selected || m.id === selected) ?? (!model ? catalog.models.find(m => m.isDefault) ?? catalog.models[0] : undefined);
-    if (!entry) throw new ToolError("invalid_model", "Choose a model from bb_list_runtimes.");
-    if (reasoningLevel && !entry.supportedReasoningEfforts.some(e => e.reasoningEffort === reasoningLevel)) throw new ToolError("invalid_reasoning", "The selected model does not support this reasoning level.");
-    const permissionMode = executionPermission(provider.capabilities.permissionModes, c.permissionMode, hosts.find(h => h.id === hostId)?.maxPermissionMode);
-    return { providerId: provider.id, model: entry.model, reasoningLevel: (reasoningLevel ?? entry.defaultReasoningEffort) as typeof entry.defaultReasoningEffort, permissionMode };
+  function checkOperation(op: Operation, c: Config) {
+    assertScope(c, op.projectId, op.hostId);
+    for (const related of op.related ?? []) assertScope(c, related.projectId, related.hostId);
+    return operationView(op);
+  }
+  const reference = (ctx: Awaited<ReturnType<typeof context>>) => ({ threadId: ctx.t.id, projectId: ctx.t.projectId, hostId: ctx.hostId });
+  function checkSendAt(sendAt: number | undefined) {
+    if (sendAt !== undefined && sendAt <= Date.now()) throw new ToolError("invalid_schedule", "sendAt must be a future Unix timestamp in milliseconds.");
+  }
+  async function parentContext(parentThreadId: string | null | undefined, c: Config) {
+    if (!parentThreadId) return null;
+    const ctx = await context(parentThreadId, c);
+    const execution = await bb.sdk.threads.defaultExecutionOptions({ threadId: parentThreadId });
+    return { ...ctx, execution };
+  }
+  async function create(args: CreateInput | HandoffInput, kind: "create" | "handoff") {
+    const c = await config();
+    const old = store.find(args.idempotencyKey, kind, args);
+    if (old) return checkOperation(old, c);
+    const source = "sourceThreadId" in args ? await context(args.sourceThreadId, c) : null;
+    const projectId = args.projectId ?? source!.t.projectId;
+    assertScope(c, projectId);
+    const parent = await parentContext(args.parentThreadId, c);
+    const reuseSource = source && "sourceThreadId" in args && args.reuseSourceEnvironment !== false && !args.environmentId;
+    if (reuseSource && !source.env) throw new ToolError("not_ready", "The source environment is still provisioning; wait or set reuseSourceEnvironment to false.");
+    const environmentId = args.environmentId ?? (reuseSource ? source!.env!.id : undefined);
+    const env = environmentId ? await bb.sdk.environments.get({ environmentId }) : null;
+    if (env && env.projectId !== projectId) throw new ToolError("not_found", "Environment unavailable in the target project. Choose an allowed environment or a new worktree.");
+    const hostId = env?.hostId ?? args.hostId ?? c.defaultHostId;
+    if (env && args.hostId && args.hostId !== env.hostId) throw new ToolError("invalid_host", "The environment belongs to a different host.");
+    if (env && args.baseBranch) throw new ToolError("invalid_arguments", "baseBranch cannot be combined with environment reuse.");
+    checkSendAt(args.sendAt);
+    const execution = await selectExecution(bb, c, { ...args, projectId, hostId, environmentId, defaults: parent?.execution ? { ...parent.execution, providerId: parent.t.providerId } : undefined, parentCeiling: parent?.execution?.permissionMode });
+    const related = [parent, source].filter((x): x is NonNullable<typeof x> => !!x).map(reference);
+    const input = source ? handoffInput(source.t, args.prompt) : [{ type: "text" as const, text: args.prompt, mentions: [] }];
+    const op = await store.run({ kind, projectId, hostId, threadId: null, ...(related.length ? { related } : {}) }, args.idempotencyKey, args, c.maxPendingOperations, c.createsPerHour, async () => {
+      const current = await config(); assertScope(current, projectId, hostId);
+      executionPermission([execution.permissionMode], current.permissionMode);
+      for (const ref of related) await context(ref.threadId, current);
+      const t = await bb.sdk.threads.spawn({ projectId, input, title: args.title, ...execution, parentThreadId: args.parentThreadId,
+        visibility: args.visibility ?? parent?.t.visibility ?? "visible", sendAt: args.sendAt,
+        environment: env ? { type: "reuse", environmentId: env.id } : { type: "host", hostId, workspace: { type: "managed-worktree", baseBranch: args.baseBranch ? { kind: "named", name: args.baseBranch } : { kind: "default" } } } });
+      return { ...summary(t, hostId, c), requestedExecution: execution, accepted: true, suggestedPollSeconds: 15,
+        ...(source ? { handoff: { sourceThreadId: source.t.id, contextTransfer: "bb_thread_mention", reusedSourceEnvironment: env?.id === source.env?.id } } : {}) };
+    });
+    return checkOperation(op, await config());
   }
   return {
     async listProjects() {
@@ -76,15 +107,18 @@ export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store)
       const allowed = providers.filter(p => !ids(c.providerIds).length || ids(c.providerIds).includes(p.id));
       if (args.providerId && !allowed.some(p => p.id === args.providerId)) throw new ToolError("invalid_provider", "Provider unavailable in this connection.");
       const catalog = args.providerId ? await bb.sdk.providers.models({ ...routing, providerId: args.providerId }) : null;
-      return { hostId, hosts: hosts.filter(h => ids(c.hostIds).includes(h.id)).map(h => ({ id: h.id, name: h.name, status: h.status })),
-        providers: allowed.map(p => ({ id: p.id, name: p.displayName, available: p.available, permissions: p.capabilities.permissionModes })),
-        permissionMode: c.permissionMode, models: catalog?.models.slice(args.offset, args.offset + args.limit).map(m => ({ id: m.model, name: m.displayName, isDefault: m.isDefault, reasoningLevels: m.supportedReasoningEfforts.map(e => e.reasoningEffort) })) ?? [],
+      return { hostId, hosts: hosts.filter(h => ids(c.hostIds).includes(h.id)).map(h => ({ id: h.id, name: h.name, status: h.status, maxPermissionMode: h.maxPermissionMode })),
+        providers: allowed.map(p => ({ id: p.id, name: p.displayName, available: p.available, permissions: p.capabilities.permissionModes, serviceTiers: p.serviceTiers ?? [], capabilities: p.capabilities, composerActions: p.composerActions })),
+        permissionMode: c.permissionMode, models: catalog?.models.slice(args.offset, args.offset + args.limit).map(m => ({ id: m.model, name: m.displayName, isDefault: m.isDefault, defaultReasoningLevel: m.defaultReasoningEffort, reasoningLevels: m.supportedReasoningEfforts.map(e => e.reasoningEffort) })) ?? [],
         modelLoadError: catalog?.modelLoadError ?? null, nextOffset: catalog && args.offset + args.limit < catalog.models.length ? args.offset + args.limit : null };
     },
-    async listThreads(args: { projectId: string; query?: string; offset: number; limit: number }) {
+    async listThreads(args: { projectId: string; query?: string; parentThreadId?: string; sourceThreadId?: string; hasParent?: boolean; archived?: boolean; includeHidden?: boolean; offset: number; limit: number }) {
       const c = await config(); assertScope(c, args.projectId);
+      if (args.parentThreadId) await context(args.parentThreadId, c);
+      if (args.sourceThreadId) await context(args.sourceThreadId, c);
       // Offset advances through scanned BB rows, including rows excluded by host/title.
-      const rows = await bb.sdk.threads.list({ projectId: args.projectId, offset: args.offset, limit: args.limit });
+      const { query: _query, ...filters } = args;
+      const rows = await bb.sdk.threads.list(filters);
       const results = [];
       for (const t of rows) {
         if (args.query && !(t.title ?? t.titleFallback ?? "").toLowerCase().includes(args.query.toLowerCase())) continue;
@@ -101,38 +135,41 @@ export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store)
       for (const row of rows) { const view = eventView(row); const bytes = Buffer.byteLength(JSON.stringify(view)); if (size + bytes > 40000 && events.length) break; events.push(view); size += bytes; }
       return { events, nextAfterSeq: events.at(-1)?.seq ?? args.afterSeq, mayHaveMore: events.length < rows.length || rows.length === args.limit };
     },
-    async createThread(args: CreateInput) {
-      const c = await config(); assertScope(c, args.projectId);
-      const old = store.find(args.idempotencyKey, "create", args); if (old) return checkOperation(old, c);
-      const env = args.environmentId ? await bb.sdk.environments.get({ environmentId: args.environmentId }) : null;
-      if (env && env.projectId !== args.projectId) throw new ToolError("not_found", "Environment unavailable in this project.");
-      const hostId = env?.hostId ?? args.hostId ?? c.defaultHostId;
-      if (env && args.hostId && args.hostId !== env.hostId) throw new ToolError("invalid_host", "The environment belongs to a different host.");
-      if (env && args.baseBranch) throw new ToolError("invalid_arguments", "baseBranch cannot be combined with environment reuse.");
-      const execution = await runtime(args.projectId, hostId, args.providerId, args.model, args.reasoningLevel, env?.id, c);
-      const op = await store.run({ kind: "create", projectId: args.projectId, hostId, threadId: null }, args.idempotencyKey, args, c.maxPendingOperations, c.createsPerHour, async () => {
-        assertScope(await config(), args.projectId, hostId);
-        const t = await bb.sdk.threads.spawn({ projectId: args.projectId, prompt: args.prompt, title: args.title, ...execution, visibility: "visible",
-          environment: env ? { type: "reuse", environmentId: env.id } : { type: "host", hostId, workspace: { type: "managed-worktree", baseBranch: args.baseBranch ? { kind: "named", name: args.baseBranch } : { kind: "default" } } } });
-        // Record the acceptance before any follow-up reads can fail.
-        return { ...summary(t, hostId, c), requestedExecution: execution, accepted: true, suggestedPollSeconds: 15 };
-      });
-      return checkOperation(op, c);
-    },
+    async createThread(args: CreateInput) { return create(args, "create"); },
+    async handoffThread(args: HandoffInput) { return create(args, "handoff"); },
     async sendMessage(args: SendInput) {
       const c = await config(); const { t, hostId } = await context(args.threadId, c);
       const old = store.find(args.idempotencyKey, "send", args); if (old) return checkOperation(old, c);
-      const providers = await bb.sdk.providers.list(t.environmentId ? { environmentId: t.environmentId } : { hostId });
-      const provider = providers.find(p => p.id === t.providerId && (!ids(c.providerIds).length || ids(c.providerIds).includes(p.id)));
-      if (!provider) throw new ToolError("invalid_provider", "This thread's provider is outside the configured execution scope.");
-      const permissionMode = executionPermission(provider.capabilities.permissionModes, c.permissionMode);
+      checkSendAt(args.sendAt);
+      const defaults = await bb.sdk.threads.defaultExecutionOptions({ threadId: t.id });
+      const parent = await parentContext(t.parentThreadId, c);
+      const select = args.model !== undefined || args.reasoningLevel !== undefined || args.serviceTier !== undefined ? selectExecution : selectInheritedSend;
+      const execution = await select(bb, c, { ...args, projectId: t.projectId, hostId, environmentId: t.environmentId ?? undefined,
+        providerId: t.providerId, defaults: defaults ? { ...defaults, providerId: t.providerId } : undefined, parentCeiling: parent?.execution?.permissionMode });
       const before = await bb.sdk.threads.events.list({ threadId: t.id, order: "desc", limit: "1" });
-      const op = await store.run({ kind: "send", projectId: t.projectId, hostId, threadId: t.id }, args.idempotencyKey, args, c.maxPendingOperations, c.createsPerHour, async () => {
-        await context(t.id, await config());
-        const sent = await bb.sdk.threads.send({ threadId: t.id, mode: args.mode === "queue" ? "queue-if-active" : "steer-if-active", input: [{ type: "text", text: args.message, mentions: [] }], permissionMode });
-        return { threadId: t.id, delivery: sent.delivery, afterSeq: before[0]?.seq ?? 0, ...(sent.delivery === "queued" ? { queuedMessage: { id: sent.queuedMessage.id, waitingOn: sent.queuedMessage.waitingOn, sendAt: sent.queuedMessage.sendAt } } : {}), url: threadUrl(c, t.projectId, t.id) };
+      const op = await store.run({ kind: "send", projectId: t.projectId, hostId, threadId: t.id, ...(parent ? { related: [reference(parent)] } : {}) }, args.idempotencyKey, args, c.maxPendingOperations, c.createsPerHour, async () => {
+        const current = await config(); await context(t.id, current);
+        executionPermission([execution.permissionMode], current.permissionMode);
+        const { providerId: _provider, ...options } = execution;
+        const sent = await bb.sdk.threads.send({ threadId: t.id, mode: args.mode === "queue" ? "queue-if-active" : "steer-if-active", input: [{ type: "text", text: args.message, mentions: [] }], ...options, sendAt: args.sendAt });
+        return { threadId: t.id, delivery: sent.delivery, requestedExecution: execution, afterSeq: before[0]?.seq ?? 0,
+          ...(sent.delivery === "queued" ? { queuedMessage: { id: sent.queuedMessage.id, waitingOn: sent.queuedMessage.waitingOn, sendAt: sent.queuedMessage.sendAt } } : {}), url: threadUrl(c, t.projectId, t.id) };
       });
-      return checkOperation(op, c);
+      return checkOperation(op, await config());
+    },
+    async updateThread(args: UpdateInput) {
+      const c = await config(); const { t, hostId } = await context(args.threadId, c);
+      if (Object.keys(args).every(k => k === "threadId")) throw new ToolError("invalid_arguments", "Provide at least one field to update.");
+      if (args.parentThreadId === t.id) throw new ToolError("invalid_parent", "A thread cannot be its own parent.");
+      if (args.parentThreadId) await context(args.parentThreadId, c);
+      if (args.model !== undefined || args.reasoningLevel !== undefined) {
+        const defaults = await bb.sdk.threads.defaultExecutionOptions({ threadId: t.id });
+        await selectExecution(bb, c, { ...args, projectId: t.projectId, hostId, environmentId: t.environmentId ?? undefined,
+          providerId: t.providerId, defaults: defaults ? { ...defaults, providerId: t.providerId } : undefined });
+      }
+      const updated = await bb.sdk.threads.update(args);
+      const { threadId: _id, ...requestedChanges } = args;
+      return { ...summary(updated, hostId, c), updatedFields: Object.keys(requestedChanges), requestedChanges, executionApplies: "next_and_later_turns", activeTurnRestarted: false };
     },
     async stopThread({ threadId }: { threadId: string }) {
       const c = await config(); await context(threadId, c); await bb.sdk.threads.stop({ threadId });
@@ -181,4 +218,16 @@ export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store)
       return operationView(store.reconcile(operationId, threadId));
     },
   };
+}
+
+// This is BB's UI handoff contract: reuse the workspace and create a fresh
+// conversation with a rich source-thread mention. BB owns context resolution.
+function handoffInput(source: ThreadResponse, prompt: string) {
+  const mention = `@thread:${source.id}`;
+  const text = `Continue from ${mention}\n\n${prompt}`;
+  const start = text.indexOf(mention);
+  return [{ type: "text" as const, text, mentions: [{
+    start, end: start + mention.length,
+    resource: { kind: "thread" as const, projectId: source.projectId, threadId: source.id, label: source.title ?? source.titleFallback ?? source.id },
+  }] }];
 }

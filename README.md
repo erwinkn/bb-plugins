@@ -5,7 +5,9 @@ A private GitHub collection of BB plugins.
 `bb-mcp` exposes authenticated MCP tools for creating, managing, and monitoring
 BB coding threads through Executor or a direct client. It uses explicit
 project/host scope, isolated worktrees, bounded results, and durable request
-records. See [BB MCP](plugins/bb-mcp/README.md) for configuration and recovery.
+records. Child threads, handoffs and execution controls are supported. See
+[BB MCP](plugins/bb-mcp/README.md) for setup and the
+[product parity inventory](plugins/bb-mcp/PARITY.md) for the remaining roadmap.
 
 `plans` provides plan review with a per-thread
 review panel, comments, revision history, and feedback to the original agent. See
@@ -182,6 +184,33 @@ a guarantee; the export is the safety net.
 
 
 ## Desired upstream changes
+
+Record potential BB issues here for later review and filing. Do not open new
+issues in the BB repository as part of plugin implementation.
+
+### Update thread permissions and service tier without dispatch
+
+BB 0.42.1 / SDK 0.4.47 accepts model and reasoning overrides in
+`threads.update`, but permission mode and service tier only on create/send.
+Expose sticky next-turn updates for both, with provider validation and native
+host/parent ceilings, without sending a dummy message or restarting work.
+The MCP supports those fields on create/send and reports the standalone gap.
+Tracked in [BB #3401](https://github.com/get-bb/bb/issues/3401).
+
+### Potential MCP parity API gaps to validate locally
+
+The [parity inventory](plugins/bb-mcp/PARITY.md) identifies three additional
+contracts to verify while implementing the remaining adapters:
+
+- Complete tool-output retrieval when event history retains only a preview.
+  A bounded, paginated output API should distinguish truncation from missing data.
+- Attachment inventory and removal: the current public SDK exposes upload,
+  read and copy, but no matching list/delete operations.
+- Provider goal controls: establish a typed contract for create/update,
+  pause/resume and budget changes instead of synthesizing private events.
+
+These are local candidates, not filed requests. Confirm the exact missing
+contract against the installed SDK before preparing an issue later.
 
 ### Durable idempotency for thread creation and messaging
 

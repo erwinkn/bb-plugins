@@ -18,8 +18,8 @@ function host() {
     projects: { list: async () => [{ id: "proj_allowed", name: "Allowed" }, { id: "proj_private", name: "Private" }], defaultExecutionOptions: async () => null },
     hosts: { list: async () => [{ id: "host_linux", name: "Linux", status: "connected" }] },
     environments: { get: async () => env },
-    providers: { list: async () => [{ id: "codex", available: true, displayName: "Codex", capabilities: { permissionModes: ["auto"] } }], models: async () => ({ models: [model], modelLoadError: null }) },
-    threads: { get: async () => t, spawn: async () => t, list: async () => [t], defaultExecutionOptions: async () => null,
+    providers: { list: async () => [{ id: "codex", available: true, displayName: "Codex", capabilities: { permissionModes: ["accept-edits", "auto", "full"], supportsServiceTier: true }, serviceTiers: [{ id: "default", label: "Default" }, { id: "fast", label: "Fast" }] }], models: async () => ({ models: [model], modelLoadError: null }) },
+    threads: { get: async () => t, spawn: async () => t, update: async () => t, list: async () => [t], defaultExecutionOptions: async () => null,
       events: { list: async () => [] }, interactions: { list: async () => [] }, queuedMessages: { list: async () => [] }, send: async () => ({ delivery: "sent", ok: true }) },
   } });
   cleanup.push(() => h.harness.lifecycle.dispose()); return h;
@@ -147,6 +147,135 @@ describe("BB boundary", () => {
   });
 });
 
+describe("product parity", () => {
+  it("creates a real child and inherits parent visibility and execution limits", async () => {
+    const { adapter, harness } = adapterHost();
+    harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ ...t, id: "thr_parent", visibility: "hidden" }));
+    harness.inspection.sdk.stub("threads.defaultExecutionOptions", async () => ({ model: model.model, reasoningLevel: "low", permissionMode: "accept-edits", serviceTier: "default" }));
+    await adapter.createThread({ ...create, parentThreadId: "thr_parent" });
+    expect(harness.inspection.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({ parentThreadId: "thr_parent", permissionMode: "accept-edits", visibility: "hidden" });
+    await expect(adapter.createThread({ ...create, idempotencyKey: "excessive-child", parentThreadId: "thr_parent", permissionMode: "auto" })).rejects.toMatchObject({ code: "unsupported_permissions" });
+    expect(harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+  });
+  it("checks a parent independently from the target project and environment", async () => {
+    const { adapter, harness } = adapterHost();
+    harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ ...t, projectId: "proj_private" }));
+    await expect(adapter.createThread({ ...create, parentThreadId: "thr_private" })).rejects.toMatchObject({ code: "not_found" });
+    expect(harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+  });
+  it("enforces operator and host permission ceilings before creation", async () => {
+    const { adapter, harness } = adapterHost();
+    await expect(adapter.createThread({ ...create, permissionMode: "full" })).rejects.toMatchObject({ code: "unsupported_permissions" });
+    await harness.behavior.setSettings({ permissionMode: "full" });
+    harness.inspection.sdk.stub("hosts.list", async () => [{ id: "host_linux", status: "connected", maxPermissionMode: "accept-edits" }]);
+    await expect(adapter.createThread({ ...create, permissionMode: "auto" })).rejects.toMatchObject({ code: "unsupported_permissions" });
+    expect(harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+  });
+  it("passes create-time execution options and rejects unsupported service tiers", async () => {
+    const { adapter, harness } = adapterHost();
+    await adapter.createThread({ ...create, model: model.model, reasoningLevel: "low", permissionMode: "accept-edits", serviceTier: "fast" });
+    expect(harness.inspection.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({ model: model.model, reasoningLevel: "low", permissionMode: "accept-edits", serviceTier: "fast" });
+    harness.inspection.sdk.stub("providers.list", async () => [{ id: "codex", available: true, capabilities: { permissionModes: ["auto"], supportsServiceTier: false } }]);
+    await expect(adapter.createThread({ ...create, idempotencyKey: "no-fast-tier", serviceTier: "fast" })).rejects.toMatchObject({ code: "invalid_service_tier" });
+  });
+  it("implements handoff with BB's rich source mention and environment reuse", async () => {
+    const { adapter, harness } = adapterHost();
+    const op = await adapter.handoffThread({ sourceThreadId: t.id, prompt: "Continue the task", idempotencyKey: "handoff-one" });
+    const call = harness.inspection.sdk.callsTo("threads.spawn")[0]?.[0];
+    expect(call).toMatchObject({ projectId: t.projectId, environment: { type: "reuse", environmentId: env.id }, input: [{ type: "text", text: "Continue from @thread:thr_test\n\nContinue the task", mentions: [{ start: 14, end: 30, resource: { kind: "thread", threadId: t.id, projectId: t.projectId } }] }] });
+    expect(call).not.toHaveProperty("sourceThreadId");
+    expect(call).not.toHaveProperty("originKind", "fork");
+    expect(op).toMatchObject({ kind: "handoff", related: [{ threadId: t.id }], response: { handoff: { sourceThreadId: t.id, contextTransfer: "bb_thread_mention", reusedSourceEnvironment: true } } });
+  });
+  it("can hand off into a fresh worktree and choose a new harness", async () => {
+    const { adapter, harness } = adapterHost();
+    harness.inspection.sdk.stub("providers.list", async () => [{ id: "claude-code", available: true, capabilities: { permissionModes: ["auto"], supportsServiceTier: false } }]);
+    await adapter.handoffThread({ sourceThreadId: t.id, prompt: "Continue", idempotencyKey: "handoff-new", reuseSourceEnvironment: false, providerId: "claude-code" });
+    expect(harness.inspection.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({ providerId: "claude-code", environment: { type: "host", workspace: { type: "managed-worktree" } } });
+  });
+  it("deduplicates handoffs and applies the shared new-thread limit", async () => {
+    const { adapter, harness } = adapterHost();
+    const args = { sourceThreadId: t.id, prompt: "Continue", idempotencyKey: "handoff-retry" };
+    const [one, two] = await Promise.all([adapter.handoffThread(args), adapter.handoffThread(args)]);
+    expect(one.id).toBe(two.id); expect(harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+    expect((await adapter.handoffThread(args)).id).toBe(one.id);
+    await expect(adapter.handoffThread({ ...args, prompt: "Different" })).rejects.toMatchObject({ code: "idempotency_conflict" });
+    await harness.behavior.setSettings({ createsPerHour: 1 });
+    await expect(adapter.createThread(create)).rejects.toMatchObject({ code: "rate_limited" });
+  });
+  it("denies handoff source scope and hides receipts after source-scope revocation", async () => {
+    const { adapter, harness } = adapterHost();
+    harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ ...t, projectId: "proj_source" }));
+    harness.inspection.sdk.stub("environments.get", async () => ({ ...env, projectId: "proj_source" }));
+    const args = { sourceThreadId: t.id, projectId: "proj_allowed", reuseSourceEnvironment: false, prompt: "Continue", idempotencyKey: "handoff-scopes" };
+    await expect(adapter.handoffThread(args)).rejects.toMatchObject({ code: "not_found" });
+    await harness.behavior.setSettings({ projectIds: "proj_source,proj_allowed" });
+    const op = await adapter.handoffThread(args);
+    await harness.behavior.setSettings({ projectIds: "proj_allowed" });
+    await expect(adapter.getOperation({ operationId: op.id })).rejects.toMatchObject({ code: "not_found" });
+    await expect(adapter.handoffThread(args)).rejects.toMatchObject({ code: "not_found" });
+  });
+  it("updates sticky model/reasoning and metadata without dispatching work", async () => {
+    const { adapter, harness } = adapterHost();
+    const args = { threadId: t.id, title: "Updated", model: model.model, reasoningLevel: "low" as const, parentThreadId: null, visibility: "hidden" as const };
+    expect(await adapter.updateThread(args)).toMatchObject({ executionApplies: "next_and_later_turns", activeTurnRestarted: false });
+    expect(harness.inspection.sdk.callsTo("threads.update")[0]?.[0]).toEqual(args);
+    expect(harness.inspection.sdk.callsTo("threads.send")).toHaveLength(0);
+    expect(harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+  });
+  it("rejects invalid updates before changing any metadata", async () => {
+    const { adapter, harness } = adapterHost();
+    await expect(adapter.updateThread({ threadId: t.id, title: "Should not change", model: "unknown" })).rejects.toMatchObject({ code: "invalid_model" });
+    await expect(adapter.updateThread({ threadId: t.id, reasoningLevel: "max" })).rejects.toMatchObject({ code: "invalid_reasoning" });
+    await expect(adapter.updateThread({ threadId: t.id, parentThreadId: t.id })).rejects.toMatchObject({ code: "invalid_parent" });
+    await expect(adapter.updateThread({ threadId: t.id })).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(harness.inspection.sdk.callsTo("threads.update")).toHaveLength(0);
+  });
+  it("sends requested execution settings and replays schedules after their time passes", async () => {
+    const { adapter, harness } = adapterHost();
+    const args = { threadId: t.id, message: "Next turn", mode: "queue" as const, idempotencyKey: "scheduled-send", permissionMode: "accept-edits" as const, serviceTier: "fast" as const, sendAt: Date.now() + 60000 };
+    const first = await adapter.sendMessage(args);
+    expect(harness.inspection.sdk.callsTo("threads.send")[0]?.[0]).toMatchObject({ permissionMode: "accept-edits", serviceTier: "fast", sendAt: args.sendAt });
+    const now = vi.spyOn(Date, "now").mockReturnValue(args.sendAt + 1);
+    try { expect((await adapter.sendMessage(args)).id).toBe(first.id); }
+    finally { now.mockRestore(); }
+    expect(harness.inspection.sdk.callsTo("threads.send")).toHaveLength(1);
+  });
+  it("keeps inherited permissions on follow-ups and refuses excessive requests", async () => {
+    const { adapter, harness } = adapterHost();
+    harness.inspection.sdk.stub("threads.defaultExecutionOptions", async () => ({ model: model.model, permissionMode: "accept-edits", serviceTier: "default", reasoningLevel: "low" }));
+    await adapter.sendMessage({ threadId: t.id, message: "Continue", mode: "queue", idempotencyKey: "inherit-mode" });
+    expect(harness.inspection.sdk.callsTo("threads.send")[0]?.[0]).toMatchObject({ permissionMode: "accept-edits" });
+    await expect(adapter.sendMessage({ threadId: t.id, message: "Continue", mode: "queue", idempotencyKey: "raise-mode", permissionMode: "full" })).rejects.toMatchObject({ code: "unsupported_permissions" });
+  });
+  it("keeps ordinary offline-host queue delivery independent of model catalog loading", async () => {
+    const { adapter, harness } = adapterHost();
+    harness.inspection.sdk.stub("hosts.list", async () => [{ id: "host_linux", status: "disconnected", maxPermissionMode: "auto" }]);
+    harness.inspection.sdk.stub("providers.models", async () => { throw new Error("offline catalog"); });
+    harness.inspection.sdk.stub("threads.send", async () => ({ ok: true, delivery: "queued", queuedMessage: makeQueueEntry({ waitingOn: { kind: "host-offline", hostName: "Linux" } }) }));
+    const op = await adapter.sendMessage({ threadId: t.id, message: "Continue later", mode: "queue", idempotencyKey: "offline-send" });
+    expect(op.response).toMatchObject({ delivery: "queued", queuedMessage: { waitingOn: { kind: "host-offline" } } });
+    expect(harness.inspection.sdk.callsTo("providers.models")).toHaveLength(0);
+  });
+  it("keeps an uncertain handoff unknown without spawning it again", async () => {
+    const { adapter, harness } = adapterHost();
+    harness.inspection.sdk.stub("threads.spawn", async () => { throw new Error("lost response"); });
+    const args = { sourceThreadId: t.id, prompt: "Continue", idempotencyKey: "lost-handoff" };
+    const op = await adapter.handoffThread(args);
+    expect(op.state).toBe("outcome_unknown");
+    expect((await adapter.handoffThread(args)).id).toBe(op.id);
+    expect(harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(1);
+  });
+  it("passes tree and visibility filters to BB and reports relationships", async () => {
+    const { adapter, harness } = adapterHost();
+    const args = { projectId: t.projectId, parentThreadId: t.id, includeHidden: true, archived: true, offset: 0, limit: 20 };
+    const result = await adapter.listThreads(args);
+    expect(harness.inspection.sdk.callsTo("threads.list")[0]?.[0]).toEqual(args);
+    expect(result.threads[0]).toHaveProperty("parentThreadId", null);
+    expect(result.threads[0]).toHaveProperty("visibility", "visible");
+  });
+});
+
 describe("MCP transport", () => {
   for (const mode of ["legacy", "auto"] as const) it(`discovers and calls tools using ${mode} negotiation`, async () => {
     const { bb, harness } = host(); plugin(bb);
@@ -156,11 +285,15 @@ describe("MCP transport", () => {
       fetch: async (_url, init) => harness.behavior.fetchHttp(init?.method ?? "GET", "/mcp", init),
     });
     cleanup.push(() => client.close()); await client.connect(transport);
-    const tools = await client.listTools(); expect(tools.tools).toHaveLength(12);
+    const tools = await client.listTools(); expect(tools.tools).toHaveLength(15);
     const result = await client.callTool({ name: "bb_list_projects", arguments: {} });
     expect(result.isError).toBeFalsy(); expect(result.structuredContent).toEqual({ data: { projects: [{ id: "proj_allowed", name: "Allowed" }], defaultHostId: "host_linux" } });
     const invalid = await client.callTool({ name: "bb_create_thread", arguments: { ...create, permissionMode: "full" } });
     expect(invalid.isError).toBe(true);
+    const unsupportedUpdate = await client.callTool({ name: "bb_update_thread", arguments: { threadId: t.id, permissionMode: "auto" } });
+    expect(unsupportedUpdate.isError).toBe(true);
+    const capabilities = await client.callTool({ name: "bb_get_capabilities", arguments: {} });
+    expect(capabilities.structuredContent).toMatchObject({ data: { version: "0.2.0", updateExecutionFields: ["model", "reasoningLevel"] } });
   });
   it("requires header auth and rejects foreign origins, hosts, and oversized bodies", async () => {
     const { bb, harness } = host(); plugin(bb);
