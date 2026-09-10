@@ -9,7 +9,7 @@ allows anyone who can sign in. Each link has tool-output and expiry controls.
 Shares can also be managed with the CLI or the local-auth RPC contract.
 
 ```sh
-bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --subdirectory plugins/share
+bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin share
 ```
 
 The package must be present on `main` before that install command is usable.
