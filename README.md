@@ -2,6 +2,11 @@
 
 A private GitHub collection of BB plugins.
 
+`bb-mcp` exposes authenticated MCP tools for creating, managing, and monitoring
+BB coding threads through Executor or a direct client. It uses explicit
+project/host scope, isolated worktrees, bounded results, and durable request
+records. See [BB MCP](plugins/bb-mcp/README.md) for configuration and recovery.
+
 `plans` provides plan review with a per-thread
 review panel, comments, revision history, and feedback to the original agent. See
 [Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
@@ -177,6 +182,22 @@ a guarantee; the export is the safety net.
 
 
 ## Desired upstream changes
+
+### Durable idempotency for thread creation and messaging
+
+BB 0.42.1 / SDK 0.4.47 does not accept caller idempotency keys on public
+`threads.spawn` or `threads.send`. BB can commit before a plugin records the
+response, leaving an ambiguous crash/reload boundary. Core should atomically
+deduplicate requests and expose durable request lookup. The MCP plugin retains
+`outcome_unknown` records and requires reconciliation instead of redispatch.
+Tracked in [BB #3396](https://github.com/get-bb/bb/issues/3396).
+
+MCP monitoring also reconciles pending plugin prompts through the interactions
+API while [BB #3397](https://github.com/get-bb/bb/issues/3397) is outstanding.
+Data-preserving source changes remain necessary for this populated plugin;
+the related source-rebind request is
+[BB #2297](https://github.com/get-bb/bb/issues/2297). Follow the stable-clone
+fallback above until a managed Git/path switch exists.
 
 ### Hide the options button on plugin sidebar rows
 
@@ -767,6 +788,5 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
 - **Fix:** call `emitPluginInteractionPending(thread, interaction)` in
   `requestPluginInteraction` after the row is created, and consider bumping
   `latestAttentionAt` when a pending interaction is created on an idle thread.
-- **Status:** not filed yet. Suggested issue title: `Plugin interactions
-  (bb.ui.requestInput) do not trigger push notifications`. File in
-  [BB issues](https://github.com/get-bb/bb/issues).
+- **Status:** filed as [BB #3397](https://github.com/get-bb/bb/issues/3397),
+  `Plugin prompts created with bb.ui.requestInput do not emit interaction.pending`.
