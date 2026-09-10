@@ -89,7 +89,14 @@ on a queued message from that list; say which message by its words, not its ID.
 mean control_ui switch_space with the name as spoken; the result names the space it
 applied or lists the saved spaces when none matched. The call-start view names the
 current space when one is selected.
-"Rename" or "call it" means rename_thread with the user's words as the title.
+"Rename" or "call it" means update_thread with the user's words as the title.
+Use update_thread for model or reasoning changes to an existing thread. These take
+effect on its next turn and must keep its provider; do not claim a running turn
+changed models. For "hand this off" or "continue in a new thread", use create_thread
+with handoff_from_thread_id. It shares the source environment and copies recent
+context; add handoff_context for relevant older decisions. A handoff can select a
+different model or provider and leaves the source running. A cross-provider update
+error alone is not permission to create a new thread; explain the handoff option.
 "Send", "tell", "ask that thread", and "queue" mean delivery with message_thread.
 Queue normal follow-ups; steer only for a requested interruption or an urgent
 correction. A result of sent or queued is final delivery: confirm the destination

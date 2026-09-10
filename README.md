@@ -188,6 +188,25 @@ a guarantee; the export is the safety net.
 Record potential BB issues here for later review and filing. Do not open new
 issues in the BB repository as part of plugin implementation.
 
+### Provider-independent thread handoffs
+
+Expose a native handoff operation that atomically reuses the source environment,
+records the source thread and context boundary, and permits selecting a new
+provider/model with a bounded context seed. The source should keep running unless
+stopping it is requested separately. Validate project, host, permissions, and
+source availability at creation time.
+
+Verified against BB 0.42.1 / SDK 0.4.47: `threads.update` supports same-provider
+model/reasoning overrides, but `threads.spawn.sourceThreadId` requires an
+`originKind`, whose only supported value is `fork`. Forks require a cloneable
+session on the same provider. Voice Mode therefore stores handoff provenance in
+its operation receipts and seeds a new root thread with recent messages; the
+native sidebar cannot display that relationship.
+
+Status: plugin fallback implemented here; no upstream issue filed.
+Suggested issue title: `Add provider-independent thread handoffs with source provenance`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Update thread permissions and service tier without dispatch
 
 BB 0.42.1 / SDK 0.4.47 accepts model and reasoning overrides in

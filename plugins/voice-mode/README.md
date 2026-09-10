@@ -32,7 +32,7 @@ Windows and Linux use Ctrl. Change them in Voice Mode's Keyboard shortcuts setti
 
 ## Work with Ada
 
-Ada uses one live model and eighteen tools. It can list machines, find, read, and rename threads, deliver
+Ada uses one live model and nineteen tools. It can list machines, find, read, and rename threads, deliver
 messages, create visible threads or hidden workers, prepare unsent drafts, navigate,
 stop work, manage subscriptions, prepare and confirm archives, and answer native
 questions or approvals. Archive and approval actions require a later spoken
@@ -59,6 +59,34 @@ it, then confirms the model it resolved; ask "what models are there" for the lis
 Say "in the main folder" or "alongside that thread" to choose where the work runs;
 otherwise it gets a new worktree. Ask for a thread's environment to hear its folder,
 branch, and pull request.
+
+Say "rename that thread" or "use Astra with high reasoning on that thread" to
+update its title or execution. `update_thread` accepts `thread_id`, optional
+`title`, `model`, and `reasoning`; `provider` can assert the existing provider.
+Model and reasoning changes apply on the next turn. They require a ready
+environment and a model from the thread's existing provider. An unsupported
+model or reasoning level fails before any title change. Changing only the title
+does not require model discovery. `rename_thread` remains available for existing calls.
+
+Say "hand this off to a new thread using Opus" to use `create_thread` with
+`handoff_from_thread_id`, `title`, and `body`. Project and machine default to the
+source; if supplied, they must match it. Omit `workspace` and `reuse_thread_id`.
+The new visible root thread shares the source environment, including uncommitted
+files. It inherits the source provider/model/reasoning unless overridden, and
+can choose another provider. Unless explicitly overridden for this launch, its permission mode stays within
+the source mode and any explicit profile limit. Profiles set to inherit keep
+the source mode. The source keeps running; a handoff does not stop it.
+
+Handoffs copy recent root user/assistant messages as agent-only context, capped
+at 40 request/completed-item events, 4,000 characters per message, and 12,000
+characters total. Tool payloads, reasoning, child-agent output, agent-only input,
+system requests, and attachments are omitted.
+Optional `handoff_context` adds up to 8,000 characters of older decisions or
+constraints. The receipt records `handoff.sourceThreadId`, the snapshot's
+`sourceSeqEnd`, message count, and truncation; `read_threads` also returns this
+relationship after reconnects. This is a text snapshot, not a full provider
+session clone. BB 0.42.1 has no native handoff origin, so the relationship is
+stored in Voice's operation history rather than BB's native source-thread field.
 
 Ask what is waiting on a thread to hear its queued messages. Then say "send it now"
 to steer one into the active turn, "cancel that message" to delete it, or "change
