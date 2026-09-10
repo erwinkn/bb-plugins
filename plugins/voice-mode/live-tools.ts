@@ -31,7 +31,14 @@ export const liveToolArgs = {
   read_threads: z.object({ thread_ids: ids, what: z.enum(["status", "output", "receipts", "updates", "environment"]) }).strict(),
   message_thread: z.object({ thread_id: id, body: z.string().min(1).max(16000), mode: z.enum(["normal", "steer"]) }).strict(),
   spawn_worker: launchArgs({ profile: z.string().min(1).max(64).optional().describe("A configured profile name. Omit for the default profile."), title: z.string().min(1).max(200), task: z.string().min(1).max(24000).describe("Task, context, constraints, and expected result."), project_id: id.optional().describe("Only when the task needs that repository's files. Omit to run outside any project."), host_id: id.optional() }),
-  create_thread: launchArgs({ project_id: id, title: z.string().min(1).max(200), body: z.string().min(1).max(24000), host_id: id.optional() }),
+  create_thread: launchArgs({ project_id: id.optional(), title: z.string().min(1).max(200), body: z.string().min(1).max(24000), host_id: id.optional(),
+    handoff_from_thread_id: id.optional().describe("Create a handoff from a thread seen in this call. Reuse its environment and copy recent conversation context. Project and machine default to the source. Omit workspace and reuse_thread_id."),
+    handoff_context: z.string().trim().min(1).max(8000).optional().describe("Optional summary of older decisions and constraints to supplement recent source messages. Requires handoff_from_thread_id."),
+  }).superRefine((args, ctx) => {
+    if (!args.project_id && !args.handoff_from_thread_id) ctx.addIssue({ code: "custom", message: "create_thread needs project_id or handoff_from_thread_id." });
+    if (args.handoff_from_thread_id && (args.workspace !== undefined || args.reuse_thread_id !== undefined)) ctx.addIssue({ code: "custom", message: "A handoff reuses the source environment; omit workspace and reuse_thread_id." });
+    if (args.handoff_context && !args.handoff_from_thread_id) ctx.addIssue({ code: "custom", message: "handoff_context requires handoff_from_thread_id." });
+  }),
   prepare_draft: z.object({ thread_id: id.optional(), project_id: id.optional(), text: z.string().max(24000), mode: z.enum(["append", "replace"]) }).strict(),
   control_ui: z.object({ action: z.enum(["open_thread", "open_project", "preview_file", "show_voice", "switch_space"]), thread_id: id.optional(), project_id: id.optional(), path: z.string().min(1).max(4096).optional(), source: z.enum(["workspace", "thread-storage"]).optional(),
     space: z.string().min(1).max(120).optional().describe("With switch_space: the space name as spoken, or \"all projects\".") }).strict(),
@@ -42,6 +49,13 @@ export const liveToolArgs = {
     text: z.string().min(1).max(16000).optional().describe("With edit: the full replacement text."),
   }).strict(),
   rename_thread: z.object({ thread_id: id, title: z.string().trim().min(1).max(200).describe("The new title, in the user's words.") }).strict(),
+  update_thread: z.object({ thread_id: id, title: z.string().trim().min(1).max(200).optional(),
+    ...execution,
+    provider: execution.provider.describe("Optional assertion of the thread's existing provider. Changing provider requires a new handoff thread."),
+    model: execution.model.describe("Model name as spoken. Must resolve within the thread's existing provider."),
+    reasoning: execution.reasoning.describe("Reasoning level for the existing or newly selected model; applies on the next turn."),
+  }).strict().refine(args => args.title !== undefined || args.model !== undefined || args.reasoning !== undefined,
+    "Provide a title, model, or reasoning level. The provider can only confirm the thread's existing provider."),
   subscriptions: z.object({ op: z.enum(["list", "subscribe", "unsubscribe"]), thread_id: id.optional() }).strict(),
   prepare_archive: z.object({ thread_ids: ids }).strict(),
   archive_threads: z.object({ preview_id: id }).strict(),
@@ -53,19 +67,20 @@ export const liveToolArgs = {
   end_call: z.object({}).strict(),
 };
 export type LiveTool = keyof typeof liveToolArgs;
-export const LIVE_EFFECTS = new Set<LiveTool>(["message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "queued_messages", "rename_thread", "archive_threads", "answer_interaction"]);
+export const LIVE_EFFECTS = new Set<LiveTool>(["message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "queued_messages", "rename_thread", "update_thread", "archive_threads", "answer_interaction"]);
 const descriptions: Record<LiveTool, string> = {
   list_models: "List the providers available on a machine and each provider's models with their reasoning levels and Fast support. Use it before create_thread or spawn_worker when the user names a model, or when asked what models exist.",
   find_targets: "Find threads and projects from an approximate spoken description. Results are ranked with a match score from 0 to 1; all projects are returned ranked. Defaults to non-archived parents; include_children for child threads, parent_id for the children of one thread. Includes this conversation's tasks. Resolve names before acting.",
   read_threads: "Read status, output tail, receipts, pending interactions, updates, or environment (folder, branch, worktree, pull request) for several threads. Evidence has timestamps and truncation flags. receipts are the stored results of this call's earlier actions, for recovery after an interruption; a send result that already returned needs no confirmation.",
   message_thread: "Deliver a message now. Normal queues if active; steer joins the active turn. The result is the receipt: sent and queued are both final delivery, and status running means the thread is working on it. The thread's reply, failure, or question is reported to you automatically in this call. Sending at a future time is unsupported and returns an error.",
   spawn_worker: "Start a hidden background worker. It runs outside any project on the primary machine by default and can inspect every BB project and thread; give project_id only when the task needs that repository's files. A spoken provider, model, or reasoning level overrides the profile; workspace picks a new worktree, the main folder, or another thread's worktree. It uses the configured Voice Mode permission default unless permission_mode is explicitly requested; full needs permission_confirmed after explicit user authorization. Supply context, constraints, and expected result in task. Returns launch status, not completion; the result, failure, or question is reported to you automatically in this call. Hidden only means it is not listed in the sidebar.",
-  create_thread: "Create a visible root thread with the given body as its prompt. A spoken provider, model, reasoning level, or permission_mode overrides the configured default; use a permission override only on explicit user instruction, and set permission_confirmed true for full access. workspace picks a new worktree (default), the main folder, or another thread's worktree. The receipt states the resolved model and workspace. Returns launch status; the result, failure, or question is reported to you automatically in this call.",
+  create_thread: "Create a visible root thread with body as its prompt. For new work, provider/model/reasoning override the default profile and workspace defaults to a new worktree. For a handoff, set handoff_from_thread_id: reuse its environment, inherit execution unless overridden, and copy bounded recent messages plus optional handoff_context. A permission_mode override requires explicit user instruction; full requires permission_confirmed. Handoffs can select a different provider; the source keeps running. The receipt records the relationship, context limits, resolved model and workspace. Returns launch status; results, failures and questions are reported automatically.",
   prepare_draft: "Write to the exact thread or project composer on the call owner device. Never submit. Append unless replacement was requested.",
   control_ui: "Navigate on the call owner device. Open a thread or project, preview a file, show Voice, or switch_space to change the Threads sidebar to a saved space by its spoken name (or all projects). The result names the space that was applied, or lists the saved spaces when none matched. Background updates cannot navigate.",
   stop_thread: "Request a stop on explicit user intent. Acceptance does not prove every process exited. The outcome is reported to you automatically in this call.",
   queued_messages: "See and manage a thread's queued messages. list shows each item with its text and whether it came from this conversation. send_now steers it into the active turn at once; delete removes it before it runs; edit replaces its text. Changes need an ID from a list in this call and explicit user intent.",
   rename_thread: "Give a thread a new title on explicit user intent. Use the user's words. The receipt carries the previous and the new title.",
+  update_thread: "Rename a thread and/or change its model or reasoning on explicit user intent. Model and reasoning changes apply on the next turn and must stay on its existing provider. Spoken model names resolve within that provider; cross-provider changes fail with a handoff suggestion. Rename-only works without model discovery. The receipt states the previous title and requested execution changes.",
   subscriptions: "List watches, explicitly subscribe or re-enable one, or disable updates without stopping work. A later send does not re-enable updates.",
   prepare_archive: "Preview the requested threads, all children, active work, and queued messages. Explain the list aloud and ask once before archive_threads.",
   archive_threads: "Archive only the unused preview after it was spoken and drained and a later utterance confirms it. Changed scope requires a fresh preview.",

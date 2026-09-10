@@ -33,6 +33,7 @@ import { assembleWorkerPrompt } from "./worker-prompt.ts";
 import { queryTokens, rank, resolveName } from "./target-matching.ts";
 import { describeInteraction, resolveAnswers, submitAnswers } from "./interaction-answers.ts";
 import type { WorkerProfile } from "./worker-profiles.ts";
+import { threadUpdate, threadHandoffContext } from "./thread-management.ts";
 
 interface ModelChoice { id: string; name: string; isDefault: boolean; reasoning: string[]; fast: boolean }
 /** The subset of a thread's environment record that voice reports. */
@@ -135,7 +136,7 @@ export class LiveRuntime {
     if (effect && input.utterance && this.store.db.prepare(`SELECT 1 FROM voice_operations WHERE conversation_id = ? AND utterance_id = ? AND utterance_version = ? AND status = 'unknown'
       AND (tool != ? OR args_hash != ? OR occurrence != ?)`).get(input.conversationId, input.utterance.id, input.utterance.version, input.tool, hash(args), input.occurrence))
       throw new Error("Not authorized: this utterance has an unknown effect. Read its receipt; do not try another tool.");
-    if (effect) for (const key of ["thread_id", "project_id", "host_id", "interaction_id", "queued_message_id"]) {
+    if (effect) for (const key of ["thread_id", "project_id", "host_id", "interaction_id", "queued_message_id", "handoff_from_thread_id"]) {
       const id = args[key];
       if (typeof id === "string" && !call.allowed.has(id)) throw new Error(`Not authorized: unknown target ID ${id}. Resolve it with find_targets or read_threads first.`);
     }
@@ -314,12 +315,12 @@ export class LiveRuntime {
         if (own) this.store.db.prepare("UPDATE voice_operations SET body = ? WHERE id = ?").run(args.text, own.id);
         return this.operations.finish(row.id, "succeeded", { threadId: args.thread_id, title: watch.title, queuedMessageId: updated.id, edited: true, previousText, text: args.text });
       }
-      case "rename_thread": {
-        const { thread_id, title } = liveToolArgs.rename_thread.parse(input.args);
-        const previousTitle = threadName(await this.bb.sdk.threads.get({ threadId: thread_id }));
-        this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(thread_id, row.id);
-        await this.sdkEffect(input, () => this.bb.sdk.threads.update({ threadId: thread_id, title }));
-        return this.operations.finish(row.id, "succeeded", { threadId: thread_id, previousTitle, title });
+      case "rename_thread": case "update_thread": {
+        const args = input.tool === "rename_thread" ? liveToolArgs.rename_thread.parse(input.args) : liveToolArgs.update_thread.parse(input.args);
+        const { patch, receipt } = await threadUpdate(this.bb, args);
+        this.store.db.prepare("UPDATE voice_operations SET target_thread_id = ? WHERE id = ?").run(args.thread_id, row.id);
+        await this.sdkEffect(input, () => this.bb.sdk.threads.update(patch));
+        return this.operations.finish(row.id, "succeeded", receipt);
       }
       case "archive_threads": {
         const { preview_id } = liveToolArgs.archive_threads.parse(input.args);
@@ -394,12 +395,13 @@ export class LiveRuntime {
     return { project, host };
   }
   /** Providers on a machine with each one's models, for list_models and spoken overrides. */
-  private async catalog(hostId: string, providerId?: string) {
-    const providers = (await this.bb.sdk.providers.list({ hostId })).filter(p => !providerId || p.id === providerId);
+  private async catalog(hostId: string, providerId?: string, environmentId?: string) {
+    const routing = environmentId ? { environmentId } : { hostId };
+    const providers = (await this.bb.sdk.providers.list(routing)).filter(p => !providerId || p.id === providerId);
     return Promise.all(providers.map(async provider => {
       if (!provider.available) return { id: provider.id, name: provider.displayName, available: false, models: [] as ModelChoice[] };
       try {
-        const result = await this.bb.sdk.providers.models({ hostId, providerId: provider.id });
+        const result = await this.bb.sdk.providers.models({ ...routing, providerId: provider.id });
         const fast = !!result.providers?.find(p => p.id === provider.id)?.serviceTiers?.some(t => t.id === "fast");
         const models: ModelChoice[] = result.models.filter(m => !m.routeProviderId || m.routeProviderId === provider.id)
           .map(m => ({ id: m.model, name: m.displayName, isDefault: m.isDefault, reasoning: (m.supportedReasoningEfforts ?? []).map(e => e.reasoningEffort), fast }));
@@ -412,9 +414,9 @@ export class LiveRuntime {
    * Names are approximate: "astra" resolves to gpt-6-astra. An unresolved name fails
    * with the available choices instead of silently launching the profile's model.
    */
-  private async execution(hostId: string, profile: NamedWorkerSettings["profiles"][number], spoken: { provider?: string; model?: string; reasoning?: string }) {
-    if (!spoken.provider && !spoken.model && !spoken.reasoning) return resolveWorkerModel(this.bb, hostId, profile);
-    const catalog = await this.catalog(hostId);
+  private async execution(hostId: string, profile: NamedWorkerSettings["profiles"][number], spoken: { provider?: string; model?: string; reasoning?: string }, environmentId?: string) {
+    if (!spoken.provider && !spoken.model && !spoken.reasoning) return resolveWorkerModel(this.bb, hostId, profile, environmentId);
+    const catalog = await this.catalog(hostId, undefined, environmentId);
     const available = catalog.filter(p => p.available);
     let provider = available.find(p => p.id === profile.providerId);
     if (spoken.provider) {
@@ -428,6 +430,7 @@ export class LiveRuntime {
       else if (owners.length > 1) throw new Error(`"${spoken.model}" exists on several providers: ${owners.map(p => p.name).join(", ")}. Say which one.`);
     }
     if (!provider) throw new Error(`Provider ${profile.providerId} is unavailable on the selected machine.`);
+    if (provider.error) throw new Error(`The ${provider.name} model catalog could not load: ${provider.error}.`);
     const model = spoken.model ? resolveName(spoken.model, provider.models, m => `${m.id} ${m.name}`) : provider.models.find(m => m.id === profile.model) ?? provider.models.find(m => m.isDefault);
     if (!model) throw new Error(spoken.model ? `No ${provider.name} model matches "${spoken.model}". Models: ${provider.models.map(m => m.name).join(", ")}.` : `Provider ${provider.name} has no default model.`);
     const reasoning = spoken.reasoning ?? (provider.id === profile.providerId && model.id === profile.model ? profile.reasoningLevel : null);
@@ -453,11 +456,32 @@ export class LiveRuntime {
     const worker = input.tool === "spawn_worker";
     const args = worker ? liveToolArgs.spawn_worker.parse(input.args) : liveToolArgs.create_thread.parse(input.args);
     const settings = await readNamedWorkerSettings(this.bb);
-    const profile = this.profileFor(settings, "profile" in args ? args.profile : undefined);
-    const permissionMode = resolvePermissionMode(profile.permissionMode, args.permission_mode);
-    const { project, host } = await this.destination(args.project_id, args.host_id);
-    const execution = await this.execution(host.id, profile, args);
-    const placement = await this.workspace(call, project, args);
+    let profile = this.profileFor(settings, "profile" in args ? args.profile : undefined);
+    let permissionMode = resolvePermissionMode(profile.permissionMode, args.permission_mode);
+    const sourceId = "handoff_from_thread_id" in args ? args.handoff_from_thread_id : undefined;
+    const source = sourceId ? await this.bb.sdk.threads.get({ threadId: sourceId, include: "environment" }) : null;
+    const sourceEnvironment = (source as { environment?: EnvironmentInfo | null } | null)?.environment;
+    if (source) {
+      if (source.archivedAt || source.deletedAt) throw new Error("A handoff needs an existing, unarchived source thread.");
+      if (!source.environmentId || !sourceEnvironment || sourceEnvironment.status !== "ready" || !sourceEnvironment.path) throw new Error("The source thread needs a ready environment before creating a handoff.");
+      if (args.project_id && args.project_id !== source.projectId) throw new Error("A handoff must stay in the source thread's project.");
+      if (args.host_id && args.host_id !== sourceEnvironment.hostId) throw new Error("A handoff must use the source thread's machine and environment.");
+      const previous = await this.bb.sdk.threads.defaultExecutionOptions({ threadId: source.id });
+      if (!previous) throw new Error("The source thread's execution settings are not available yet. Retry the handoff after its first turn starts.");
+      const permissions = ["accept-edits", "auto", "full"] as const;
+      if (!args.permission_mode) permissionMode = permissionMode
+        ? permissions[Math.min(permissions.indexOf(permissionMode), permissions.indexOf(previous.permissionMode))]
+        : previous.permissionMode;
+      profile = { ...profile, providerId: source.providerId, model: previous.model, reasoningLevel: previous.reasoningLevel,
+        serviceTier: previous.serviceTier ?? "default" };
+    }
+    const { project, host } = await this.destination(source?.projectId ?? args.project_id, sourceEnvironment?.hostId ?? args.host_id);
+    const execution = await this.execution(host.id, profile, args, source?.environmentId ?? undefined);
+    // Cross-provider handoffs do not inherit a service tier that may not exist there.
+    if (source && execution.providerId !== source.providerId) execution.serviceTier = "default";
+    const placement = source && sourceEnvironment ? { environment: { type: "reuse" as const, environmentId: source.environmentId! }, workspace: "handoff", reusedThreadId: source.id, branch: sourceEnvironment.branchName, path: sourceEnvironment.path }
+      : await this.workspace(call, project, args);
+    const context = source ? await threadHandoffContext(this.bb, source.id, threadName(source), "handoff_context" in args ? args.handoff_context : undefined) : null;
     const reserve = this.creationChain.then(async () => {
       await this.refreshWorkerQuota();
       this.state(input.nonce, input.conversationId);
@@ -469,7 +493,13 @@ export class LiveRuntime {
     const prompt = "task" in args ? assembleWorkerPrompt(this.workerPrompt?.() ?? settings.workerBasePrompt, profile, args.title, args.task, spoken) : args.body;
     let thread: Thread;
     try {
-      thread = await this.sdkEffect(input, () => this.bb.sdk.threads.spawn({ projectId: project.id, title: args.title, prompt,
+      if (source) {
+        const latest = await this.bb.sdk.threads.get({ threadId: source.id });
+        if (latest.deletedAt || latest.archivedAt || latest.environmentId !== source.environmentId || latest.projectId !== source.projectId) throw new Error("The handoff source changed while preparing context. Read the source again before creating a handoff.");
+      }
+      if (context) this.operations.finish(row.id, "accepted", { handoff: context.handoff });
+      thread = await this.sdkEffect(input, () => this.bb.sdk.threads.spawn({ projectId: project.id, title: args.title,
+        ...(context ? { input: [context.input, { type: "text", text: prompt, mentions: [] }] } : { prompt }),
         environment: placement.environment.type === "reuse" ? placement.environment : { type: "host", hostId: host.id, workspace: placement.environment },
         ...execution, ...(permissionMode ? { permissionMode } : {}), visibility: worker ? "hidden" : "visible" }));
     } catch (error) {
@@ -584,7 +614,7 @@ export class LiveRuntime {
             const environment = args.what === "environment" ? environmentData((thread as { environment?: EnvironmentInfo | null }).environment) : undefined;
             return { threadId, title: threadName(thread), status: thread.status, projectId: thread.projectId, parentThreadId: thread.parentThreadId, environmentId: thread.environmentId,
               ...(environment !== undefined ? { environment } : {}),
-              output: tail(output.output), receipts: this.operations.forThread(input.conversationId, threadId),
+              output: tail(output.output), receipts: this.operations.forThread(input.conversationId, threadId), handoff: this.operations.handoffForThread(threadId),
               pendingInteractions: await Promise.all(pending.map(i => describeInteraction(this.bb, i))), ...(updates ? { updates } : {}), task: this.taskData(input.conversationId, threadId),
               asOf: this.now(), evidenceAt: thread.updatedAt, ageMs: Math.max(0, this.now() - thread.updatedAt), source: "BB thread and latest output" };
           } catch (error) { return { threadId, missing: true, error: errorMessage(error), asOf: this.now() }; }

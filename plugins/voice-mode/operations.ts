@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { LiveStore, type OperationRow, type OperationStatus } from "./live-store.ts";
+import type { ThreadHandoff } from "./thread-management.ts";
 
 export interface Utterance { id: string; version: number; text: string; startedAt: number }
 export interface EffectInput {
@@ -41,6 +42,11 @@ export class Operations {
   }
   forThread(conversationId: string, threadId: string) {
     return (this.store.db.prepare("SELECT * FROM voice_operations WHERE conversation_id = ? AND target_thread_id = ? ORDER BY created_at DESC LIMIT 30").all(conversationId, threadId) as OperationRow[]).map(row => this.receipt(row));
+  }
+  /** Handoff provenance outlives a call and remains available after later messages. */
+  handoffForThread(threadId: string): ThreadHandoff | null {
+    const row = this.store.db.prepare("SELECT receipt_json FROM voice_operations WHERE tool = 'create_thread' AND target_thread_id = ? AND json_type(receipt_json, '$.handoff') = 'object' ORDER BY created_at DESC LIMIT 1").get(threadId) as { receipt_json: string } | undefined;
+    return row ? JSON.parse(row.receipt_json).handoff : null;
   }
   recover() {
     for (const row of this.store.db.prepare("SELECT * FROM voice_operations WHERE status IN ('accepted','running') AND tool IN ('prepare_draft','control_ui') OR status = 'accepted'").all() as OperationRow[])

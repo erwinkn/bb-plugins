@@ -93,10 +93,11 @@ export async function readWorkerSettings(bb: BbPluginApi): Promise<WorkerSetting
 }
 
 /** Validate on the actual destination machine; never substitute an unavailable model. */
-export async function resolveWorkerModel(bb: BbPluginApi, hostId: string, profile: WorkerProfile) {
-  const providers = await bb.sdk.providers.list({ hostId });
+export async function resolveWorkerModel(bb: BbPluginApi, hostId: string, profile: WorkerProfile, environmentId?: string) {
+  const routing = environmentId ? { environmentId } : { hostId };
+  const providers = await bb.sdk.providers.list(routing);
   if (!providers.some(p => p.id === profile.providerId && p.available)) throw new Error(`Worker provider ${profile.providerId} is unavailable on the selected machine.`);
-  const catalog = await bb.sdk.providers.models({ hostId, providerId: profile.providerId });
+  const catalog = await bb.sdk.providers.models({ ...routing, providerId: profile.providerId });
   if (catalog.modelLoadError) throw new Error(`Worker model catalog could not load: ${catalog.modelLoadError.code}.`);
   const candidates = catalog.models.filter(m => !m.routeProviderId || m.routeProviderId === profile.providerId);
   const model = profile.model ? candidates.find(m => m.id === profile.model || m.model === profile.model) : candidates.find(m => m.isDefault);

@@ -1,6 +1,6 @@
 # Ada live runtime
 
-One Realtime model speaks and calls seventeen tools. Hidden root threads run
+One Realtime model speaks and calls eighteen tools. Hidden root threads run
 background tasks. No model coordinates those threads. Stored subscriptions,
 receipts, native BB events, and the client sequencer supply the control flow.
 
@@ -57,6 +57,27 @@ project has no configured default. A `full` per-launch override is rejected
 unless `permission_confirmed` is true after an explicit user authorization; full
 access bypasses sandbox and approval controls. Existing saved profiles remain
 explicit; new inheritance does not migrate their stored permission modes.
+
+`update_thread` validates the entire patch in `thread-management.ts` before one
+`threads.update` call. It resolves model names only within the existing provider's
+environment catalog, rejects routed models from other providers, and validates
+reasoning against the selected model. Model-only edits clear an unsupported
+sticky reasoning override. Receipts say execution changes apply on the next
+turn; the current turn continues. Rename-only skips execution discovery, and
+the earlier `rename_thread` tool uses the same implementation.
+
+`create_thread.handoff_from_thread_id` requires a remembered source with a ready
+environment. It derives project, host, and execution from that source, keeps the
+lower of source/explicit-profile permissions unless a per-launch permission
+override was explicitly requested, and validates the target catalog in the
+source environment. The new root gets agent-only recent conversation context
+and its separate visible prompt through `threads.spawn.input`. Source provenance
+and truncation metadata are saved in the operation receipt before dispatch and
+remain attached after acceptance, recovery, and later messages. No migration is
+needed: `receipt_json` stores the typed `ThreadHandoff` record. Source history is
+bounded, and concurrent source work can continue after the snapshot. BB's native
+fork API cannot provide a provider-independent handoff relationship; Voice owns
+that metadata until an upstream handoff API exists.
 `queued_messages` reads a thread's queue through `queuedMessages.list` and remembers
 each ID; `send_now` (steer), `delete`, and `edit` (optimistic `expectedUpdatedAt`)
 are effects on a remembered ID. When the item came from this conversation, the

@@ -23,7 +23,7 @@ async function fixture() {
   let at = 10000, nonce = "call";
   const world = {
     threads: new Map<string, Any>([["build", makeThreadResponse({ id: "build", projectId: "app", title: "Build Fix", status: "active", updatedAt: 9000 })]]),
-    outputs: new Map<string, string>(), events: new Map<string, Any[]>(), interactions: new Map<string, Any[]>(), queue: new Map<string, Any[]>(),
+    outputs: new Map<string, string>(), events: new Map<string, Any[]>(), interactions: new Map<string, Any[]>(), queue: new Map<string, Any[]>(), executions: new Map<string, Any>(),
     list: null as null | ((args: Any) => Promise<Any[]>), interactionReads: 0,
     sends: [] as Any[], spawns: [] as Any[], archives: [] as string[], resolutions: [] as Any[], answers: [] as Any[], stops: [] as string[], updates: [] as Any[], queueSends: [] as Any[], queueDeletes: [] as Any[], queueUpdates: [] as Any[], pluginCalls: [] as Any[], rounds: new Map<string, Any>(),
     send: null as null | ((args: Any) => Promise<Any>), spawn: null as null | ((args: Any) => Promise<Any>), get: null as null | ((args: Any) => Promise<Any>),
@@ -47,11 +47,12 @@ async function fixture() {
     } },
     threads: {
       search: async () => ({}),
+      defaultExecutionOptions: async ({ threadId }: Any) => world.executions.get(threadId) ?? { providerId: "codex", model: "worker", reasoningLevel: "medium", serviceTier: "default", permissionMode: "accept-edits" },
       get: async (args: Any) => { if (world.get) return world.get(args); const t = world.threads.get(args.threadId); if (!t) throw new Error("Missing thread"); return t; },
       output: async ({ threadId }: Any) => ({ output: world.outputs.get(threadId) ?? null }),
       list: async (args: Any) => world.list ? world.list(args) : [...world.threads.values()].filter(t => (!args.parentThreadId || t.parentThreadId === args.parentThreadId) && (args.hasParent !== false || !t.parentThreadId) && !!t.archivedAt === !!args.archived && (args.includeHidden || t.visibility !== "hidden")).slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 100)),
-      events: { list: async ({ threadId, afterSeq, order, limit, beforeSeq }: Any) => {
-        const events = (world.events.get(threadId) ?? []).filter(e => (!afterSeq || e.seq > +afterSeq) && (!beforeSeq || e.seq < +beforeSeq));
+      events: { list: async ({ threadId, afterSeq, order, limit, beforeSeq, types }: Any) => {
+        const events = (world.events.get(threadId) ?? []).filter(e => (!afterSeq || e.seq > +afterSeq) && (!beforeSeq || e.seq < +beforeSeq) && (!types || types.includes(e.type)));
         return (order === "desc" ? [...events].reverse() : events).slice(0, +(limit ?? 100));
       } },
       queuedMessages: {
@@ -143,8 +144,8 @@ test("full per-launch overrides require explicit confirmation", async t => {
   assert.equal(h.world.spawns[0].permissionMode, "full");
 });
 
-test("live tools expose all seventeen strict argument schemas", () => {
-  const schemas = liveToolSchemas(); assert.equal(schemas.length, 17); assert.equal(new Set(schemas.map(s => s.name)).size, 17);
+test("live tools expose all eighteen strict argument schemas", () => {
+  const schemas = liveToolSchemas(); assert.equal(schemas.length, 18); assert.equal(new Set(schemas.map(s => s.name)).size, 18);
   for (const s of schemas) assert.equal(s.parameters.additionalProperties, false);
   assert.equal(canonical({ z: 2, a: { b: 1 } }), '{"a":{"b":1},"z":2}');
   assert.equal(hash({ a: 1, b: 2 }), hash({ b: 2, a: 1 }));
@@ -192,7 +193,7 @@ test("new utterance, version, and occurrence each permit an intentional repeat",
 test("background effects and navigation are refused before any SDK effect", async t => {
   const h = await fixture(); t.after(h.close);
   for (const tool of LIVE_EFFECTS) {
-    const args: Any = { message_thread: message, spawn_worker: worker, create_thread: { project_id: "app", title: "Work", body: "Do it" }, prepare_draft: { thread_id: "build", text: "Draft", mode: "append" }, control_ui: { action: "show_voice" }, stop_thread: { thread_id: "build" }, queued_messages: { op: "delete", thread_id: "build", queued_message_id: "q1" }, rename_thread: { thread_id: "build", title: "Renamed" }, archive_threads: { preview_id: "fake" }, answer_interaction: { thread_id: "build", interaction_id: "fake", decision: "deny" } };
+    const args: Any = { message_thread: message, spawn_worker: worker, create_thread: { project_id: "app", title: "Work", body: "Do it" }, prepare_draft: { thread_id: "build", text: "Draft", mode: "append" }, control_ui: { action: "show_voice" }, stop_thread: { thread_id: "build" }, queued_messages: { op: "delete", thread_id: "build", queued_message_id: "q1" }, rename_thread: { thread_id: "build", title: "Renamed" }, update_thread: { thread_id: "build", title: "Renamed" }, archive_threads: { preview_id: "fake" }, answer_interaction: { thread_id: "build", interaction_id: "fake", decision: "deny" } };
     assert.match((await h.run(tool, args[tool], { responseOrigin: "background", utterance: null })).error, /Not authorized: background updates cannot act/);
   }
   assert.equal((h.db.prepare("SELECT count(*) n FROM voice_operations").get() as {n:number}).n, 0);
@@ -1097,4 +1098,128 @@ test("restored transcript keeps the newest text and reports omitted history", as
   assert.ok(context.recentTurns[0].text.endsWith("most recent words"));
   assert.equal(context.truncated, true);
   assert.equal(context.recentTurns[0].truncated, true);
+});
+
+function sourceEnvironment(h: Awaited<ReturnType<typeof fixture>>, overrides: Any = {}) {
+  const source = h.world.threads.get("build");
+  source.providerId = "codex";
+  source.environmentId = "env_build";
+  source.environment = { path: "/repo/.worktrees/build", branchName: "bb/build", baseBranch: "origin/main", defaultBranch: "main", isWorktree: true, managed: true, workspaceProvisionType: "managed-worktree", status: "ready", hostId: "mac", ...overrides };
+  return source;
+}
+const sourceMessage = (seq: number, item: Any) => ({ id: `e${seq}`, threadId: "build", seq, createdAt: seq, type: "item/completed", scope: { kind: "thread" }, data: { item: { id: `i${seq}`, ...item } } });
+const handoffRequest = { handoff_from_thread_id: "build", title: "Continue build", body: "Continue the approved implementation." };
+
+test("update_thread rename-only needs no environment, profile, or provider catalog and is replayed once", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.harness.inspection.sdk.stub("providers.list", async () => { throw new Error("offline"); });
+  const args = { thread_id: "build", title: "Nightly build" };
+  const result = await h.run("update_thread", args);
+  assert.equal(result.status, "succeeded"); assert.equal(result.previousTitle, "Build Fix"); assert.equal(result.title, "Nightly build");
+  assert.deepEqual(h.world.updates, [{ threadId: "build", title: "Nightly build" }]);
+  await h.reload(); assert.deepEqual(await h.run("update_thread", args), result); assert.equal(h.world.updates.length, 1);
+});
+
+test("update_thread can rename and select a same-provider model and reasoning for the next turn", async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  const result = await h.run("update_thread", { thread_id: "build", title: "Astra build", provider: "Codex", model: "astra", reasoning: "xhigh" });
+  assert.equal(result.status, "succeeded"); assert.equal(result.provider, "codex"); assert.equal(result.model, "gpt-6-astra"); assert.equal(result.reasoning, "xhigh"); assert.equal(result.executionApplies, "next_turn");
+  assert.deepEqual(h.world.updates, [{ threadId: "build", title: "Astra build", model: "gpt-6-astra", reasoningLevel: "xhigh" }]);
+  assert.equal(h.world.threads.get("build").status, "active");
+  assert.deepEqual(h.harness.inspection.sdk.callsTo("providers.models")[0][0], { environmentId: "env_build", providerId: "codex" });
+});
+
+test("reasoning-only uses the thread's execution, and model-only clears unsupported sticky reasoning", async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  const reasoning = await h.run("update_thread", { thread_id: "build", reasoning: "high" });
+  assert.equal(reasoning.model, "worker"); assert.deepEqual(h.world.updates[0], { threadId: "build", reasoningLevel: "high" });
+  const model = await h.run("update_thread", { thread_id: "build", model: "astra" }, h.later());
+  assert.equal(model.status, "succeeded"); assert.equal(model.reasoningReset, true);
+  assert.deepEqual(h.world.updates[1], { threadId: "build", model: "gpt-6-astra", reasoningLevel: null });
+});
+
+for (const args of [{ provider: "claude", model: "opus" }, { model: "opus" }]) test(`cross-provider update is rejected before renaming: ${JSON.stringify(args)}`, async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  const result = await h.run("update_thread", { thread_id: "build", title: "Must not rename", ...args });
+  assert.equal(result.status, "failed"); assert.match(result.error, /cannot switch providers/); assert.match(result.error, /handoff/);
+  assert.equal(h.world.updates.length, 0); assert.equal(h.world.threads.get("build").title, "Build Fix"); assert.equal(h.world.spawns.length, 0);
+});
+
+test("invalid, unavailable and cross-routed execution updates do not mutate the title", async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  for (const [i, args] of [{}, { model: "invented" }, { model: "astra", reasoning: "low", title: "No" }].entries()) {
+    assert.equal((await h.run("update_thread", { thread_id: "build", ...args }, h.later(`invalid${i}`))).status, "failed");
+  }
+  h.harness.inspection.sdk.stub("providers.models", async () => ({ models: [{ id: "opus", model: "opus", displayName: "Opus", routeProviderId: "claude-code", supportedReasoningEfforts: [] }], modelLoadError: null }));
+  assert.match((await h.run("update_thread", { thread_id: "build", model: "opus", title: "No" }, h.later("routed"))).error, /cannot switch providers/);
+  h.harness.inspection.sdk.stub("providers.models", async () => ({ models: [], modelLoadError: { code: "offline" } }));
+  assert.match((await h.run("update_thread", { thread_id: "build", model: "astra", title: "No" }, h.later("offline"))).error, /catalog could not load/);
+  assert.equal(h.world.updates.length, 0);
+});
+
+test("handoff copies bounded root conversation context, reuses the worktree and persists its relationship", async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  h.world.events.set("build", [sourceMessage(1, { type: "userMessage", content: [{ type: "text", text: "Keep the existing API." }] }),
+    sourceMessage(2, { type: "agentMessage", text: "The parser is ready." }),
+    sourceMessage(3, { type: "commandExecution", command: "private tool data" }),
+    sourceMessage(4, { type: "agentMessage", parentToolCallId: "child", text: "Private child message" })]);
+  const args = { ...handoffRequest, model: "astra", reasoning: "xhigh", handoff_context: "The user approved implementation only." };
+  const result = await h.run("create_thread", args);
+  assert.equal(result.status, "running"); assert.equal(result.workspace, "handoff"); assert.equal(result.model, "gpt-6-astra");
+  assert.deepEqual(result.handoff, { sourceThreadId: "build", sourceTitle: "Build Fix", sourceSeqEnd: 4, contextMode: "recent_messages", messageCount: 2, truncated: false, hasSuppliedContext: true });
+  const spawn = h.world.spawns[0]; assert.equal(spawn.prompt, undefined); assert.equal(spawn.parentThreadId, undefined); assert.equal(spawn.originKind, undefined);
+  assert.deepEqual(spawn.environment, { type: "reuse", environmentId: "env_build" });
+  assert.equal(spawn.input[0].visibility, "agent-only"); assert.match(spawn.input[0].text, /Keep the existing API/); assert.match(spawn.input[0].text, /The parser is ready/); assert.match(spawn.input[0].text, /approved implementation only/);
+  assert.doesNotMatch(spawn.input[0].text, /private tool data|Private child message/);
+  assert.deepEqual(spawn.input[1], { type: "text", text: handoffRequest.body, mentions: [] });
+  assert.equal(h.world.stops.length, 0); assert.equal(spawn.visibility, "visible"); assert.equal(result.updates, "automatic");
+  await h.reload(); assert.deepEqual(await h.run("create_thread", args), result); assert.equal(h.world.spawns.length, 1);
+  const read = await h.run("read_threads", { thread_ids: [result.threadId], what: "status" });
+  assert.deepEqual(read.threads[0].handoff, result.handoff);
+});
+
+test("handoff defaults to the source execution and machine and permits selecting a new provider", async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h, { hostId: "laptop" });
+  h.harness.inspection.sdk.stub("projects.list", async () => [{ id: "proj_personal", kind: "personal", sources: [] }, { id: "app", name: "App", kind: "standard", sources: [{ hostId: "mac" }, { hostId: "laptop" }] }]);
+  h.world.executions.set("build", { model: "gpt-6-astra", reasoningLevel: "xhigh", serviceTier: "fast", permissionMode: "accept-edits" });
+  const inherited = await h.run("create_thread", handoffRequest);
+  assert.equal(inherited.hostId, "laptop"); assert.equal(inherited.model, "gpt-6-astra"); assert.equal(inherited.reasoning, "xhigh");
+  assert.equal(h.world.spawns[0].permissionMode, "accept-edits");
+  assert.deepEqual(h.harness.inspection.sdk.callsTo("providers.models")[0][0], { environmentId: "env_build", providerId: "codex" });
+  const switched = await h.run("create_thread", { ...handoffRequest, model: "opus", reasoning: "high" }, h.later());
+  assert.equal(switched.provider, "claude-code"); assert.equal(switched.model, "claude-opus-5");
+  assert.equal(h.world.spawns[1].serviceTier, "default"); assert.equal(h.world.spawns[1].permissionMode, "accept-edits");
+});
+
+for (const [extra, expected] of [
+  [{ handoff_from_thread_id: "unseen" }, /unknown target ID/],
+  [{ project_id: "docs" }, /source thread's project/],
+  [{ workspace: "new_worktree" }, /omit workspace/],
+  [{ reuse_thread_id: "build" }, /omit workspace/],
+] as const) test(`handoff rejects invalid placement: ${JSON.stringify(extra)}`, async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  await h.run("find_targets", { query: "" });
+  const result = await h.run("create_thread", { ...handoffRequest, ...extra });
+  assert.match(result.error, expected); assert.equal(h.world.spawns.length, 0);
+});
+
+test("handoff refuses an unavailable source and a conflicting machine before launch", async t => {
+  const h = await fixture(); t.after(h.close); const source = sourceEnvironment(h);
+  await h.run("find_targets", { query: "" });
+  assert.match((await h.run("create_thread", { ...handoffRequest, host_id: "laptop" })).error, /source thread's machine/);
+  source.environment.status = "pending";
+  assert.match((await h.run("create_thread", handoffRequest, h.later())).error, /ready environment/);
+  source.environment.status = "ready"; source.archivedAt = 1;
+  assert.match((await h.run("create_thread", handoffRequest, h.later("archived"))).error, /unarchived/);
+  assert.equal(h.world.spawns.length, 0);
+});
+
+test("handoff reports truncation and never retries an uncertain creation", async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  h.world.events.set("build", Array.from({ length: 50 }, (_, n) => sourceMessage(n + 1, { type: "agentMessage", text: `${n}: ${"x".repeat(5000)}` })));
+  h.world.spawn = async () => new Promise(() => {});
+  const result = await h.run("create_thread", handoffRequest);
+  assert.equal(result.status, "unknown"); assert.equal(result.handoff.truncated, true); assert.equal(result.handoff.sourceSeqEnd, 50);
+  assert.ok(h.world.spawns[0].input[0].text.length < 14000);
+  await h.reload(); assert.equal((await h.run("create_thread", handoffRequest)).status, "unknown"); assert.equal(h.world.spawns.length, 1);
 });
