@@ -848,6 +848,9 @@ test("call-start context is injected once before the microphone and first respon
   for(let i=0;i<2;i++) f.dc.emit("session.updated",{session:{audio:{input:{turn_detection:null,transcription:{model:"gpt-realtime-whisper"}}}}});
   await settleVoice();
   assert.equal(f.rpcCalls.filter(call=>call.method==="callStartContext").length,1);
+  const device = f.rpcCalls.find(call => call.method === "callStartContext")!.args.device;
+  assert.deepEqual(Object.keys(device).sort(), ["browser", "mobile", "platform", "runtime"]);
+  assert.equal(typeof device.mobile, "boolean");
   assert.equal(f.dc.sent.filter(event=>event.item?.role==="system").length,1);
 });
 

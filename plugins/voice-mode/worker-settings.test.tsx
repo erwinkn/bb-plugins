@@ -85,6 +85,25 @@ test("unavailable configured choices remain visible and cannot be selected as a 
   finally{slot.lifecycle.unmount();}
 });
 
+for (const width of [390, 1200]) test(`an unavailable default leaves another machine selectable at ${width}px`, async () => {
+  const slot = renderSlot({ component: WorkerSettings }, {}, { rpc: {
+    getWorkerSettings: () => namedSettingsFromLegacy(defaultWorkerSettings()),
+    listWorkerProviders: (input: any) => input.hostId ? { ...catalog, hostId: input.hostId } : { ...catalog, hostId: null, providers: [], models: [] },
+  } });
+  slot.container.style.width = `${width}px`;
+  const ui = within(slot.container);
+  try {
+    await ui.findByRole("option", { name: "Choose a connected machine" });
+    const select = ui.getByRole("combobox", { name: "Worker catalog machine" }) as HTMLSelectElement;
+    assert.equal(select.value, "");
+    assert.equal(select.disabled, false);
+    assert.equal((ui.getByRole("combobox", { name: "implement provider" }) as HTMLSelectElement).disabled, true);
+    fireEvent.change(select, { target: { value: "desktop" } });
+    await waitFor(() => assert.equal((ui.getByRole("combobox", { name: "implement provider" }) as HTMLSelectElement).disabled, false));
+    assert.equal(select.value, "desktop");
+  } finally { slot.lifecycle.unmount(); }
+});
+
 for(const width of [390,1200]) test(`worker profile form retains width constraints at ${width}px`,async()=>{
   const h=fixture();h.slot.container.style.width=`${width}px`;
   try{await h.ui.findByRole("textbox",{name:"review name"});

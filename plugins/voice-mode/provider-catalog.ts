@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { resolveMachine } from "./machines.ts";
 
 export const providerCatalogSchema = z.object({
   providers:z.array(z.object({id:z.string(),displayName:z.string(),available:z.boolean(),serviceTiers:z.array(z.object({id:z.string(),label:z.string()}).strict())}).strict()),
@@ -12,12 +13,17 @@ export type WorkerCatalog = z.infer<typeof workerCatalogSchema>;
 
 /** Model availability is machine-specific; this is a settings preview, not execution authorization. */
 export async function loadWorkerCatalog(bb: BbPluginApi, requestedHostId?: string): Promise<WorkerCatalog> {
-  const hosts = (await bb.sdk.hosts.list()).filter(host=>host.status === "connected").map(host=>({id:host.id,name:host.name}));
-  const host = requestedHostId ? hosts.find(host=>host.id === requestedHostId) : hosts[0];
-  if (!host) {
+  const allHosts = await bb.sdk.hosts.list();
+  const hosts = allHosts.filter(host=>host.status === "connected").map(host=>({id:host.id,name:host.name}));
+  if (!hosts.length) {
     if (requestedHostId) throw new Error("The selected worker machine is no longer connected.");
     return {hostId:null,hosts,providers:[],models:[]};
   }
+  const selectedHostId = requestedHostId ?? (await bb.sdk.system.config()).primaryHostId;
+  // Keep the machine selector usable when the default is offline, without
+  // previewing another machine's models as though it were the default.
+  if (!requestedHostId && !hosts.some(host => host.id === selectedHostId)) return {hostId:null,hosts,providers:[],models:[]};
+  const host = await resolveMachine(bb, allHosts, selectedHostId ?? undefined);
   const providers = await bb.sdk.providers.list({hostId:host.id});
   const catalogs = await Promise.all(providers.map(async provider => {
     const catalog = provider.available ? await bb.sdk.providers.models({providerId:provider.id,hostId:host.id}) : null;

@@ -2,7 +2,7 @@ import test from "node:test";
 import Database from "better-sqlite3";
 import assert from "node:assert/strict";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import { LiveRuntime } from "./live-runtime.ts";
+import { LiveRuntime, liveRpcContract } from "./live-runtime.ts";
 import { LIVE_RUNTIME_MIGRATIONS } from "./live-store.ts";
 import { hash, canonical } from "./operations.ts";
 import { liveToolArgs, liveToolSchemas, LIVE_EFFECTS } from "./live-tools.ts";
@@ -29,6 +29,7 @@ async function fixture() {
     send: null as null | ((args: Any) => Promise<Any>), spawn: null as null | ((args: Any) => Promise<Any>), get: null as null | ((args: Any) => Promise<Any>),
   };
   const sdk: Any = {
+    system: { config: async () => ({ primaryHostId: "mac" }) },
     projects: { list: async () => [{ id: "proj_personal", name: "Personal", kind: "personal", sources: [] }, { id: "app", name: "BB Plugins", kind: "standard", sources: [{ hostId: "mac" }] }, { id: "docs", name: "docs-site", kind: "standard", sources: [{ hostId: "mac" }] }] },
     hosts: { list: async () => [{ id: "laptop", name: "Laptop", status: "connected" }, { id: "mac", name: "Desktop", status: "connected" }, { id: "away", name: "Away", status: "disconnected" }] },
     providers: {
@@ -101,7 +102,8 @@ async function fixture() {
   return { bb, harness, db, world, input, run, idle, watch, drain, approval, later, start,
     get runtime() { return runtime; }, tick: (ms = 10) => at += ms, now: () => at,
     switch: async () => { nonce = "new-call"; await start(); },
-    restart: async () => { runtime = makeRuntime(); await runtime.initialize(); await start(); },
+    // Let call-start's background recovery finish before tests mutate the SDK world.
+    restart: async () => { runtime = makeRuntime(); await runtime.initialize(); await start(); await runtime.watches.serial(async () => {}); },
     // A plugin reload while the call stays live: the process restarts, the client never fetches call-start context again.
     reload: async () => { runtime = makeRuntime(); await runtime.initialize(); },
     close: async () => { await runtime.watches.serial(async () => {}); await harness.lifecycle.dispose(); } };
@@ -143,8 +145,8 @@ test("full per-launch overrides require explicit confirmation", async t => {
   assert.equal(h.world.spawns[0].permissionMode, "full");
 });
 
-test("live tools expose all seventeen strict argument schemas", () => {
-  const schemas = liveToolSchemas(); assert.equal(schemas.length, 17); assert.equal(new Set(schemas.map(s => s.name)).size, 17);
+test("live tools expose all eighteen strict argument schemas", () => {
+  const schemas = liveToolSchemas(); assert.equal(schemas.length, 18); assert.equal(new Set(schemas.map(s => s.name)).size, 18);
   for (const s of schemas) assert.equal(s.parameters.additionalProperties, false);
   assert.equal(canonical({ z: 2, a: { b: 1 } }), '{"a":{"b":1},"z":2}');
   assert.equal(hash({ a: 1, b: 2 }), hash({ b: 2, a: 1 }));
@@ -677,6 +679,71 @@ test("workers run outside any project on the primary machine unless a project is
   assert.match(created.error,/project_id/);
 });
 
+test("machine discovery refreshes targets and omitted worker hosts use BB's primary rather than project counts", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.harness.inspection.sdk.stub("system.config", async () => ({ primaryHostId: "laptop" }) as any);
+  h.harness.inspection.sdk.stub("hosts.list", async () => [
+    { id: "mac", name: "Desktop with repositories", status: "connected" },
+    { id: "laptop", name: "Main server", status: "connected" },
+    { id: "new-mac", name: "New Mac", status: "connected" },
+    { id: "away", name: "Offline Mac", status: "disconnected" },
+  ] as any);
+  const machines = await h.run("list_machines", {});
+  assert.equal(machines.defaultHostId, "laptop");
+  assert.deepEqual(machines.machines.map((m: Any) => [m.id, m.status, m.isDefault]), [
+    ["mac", "connected", false], ["laptop", "connected", true], ["new-mac", "connected", false], ["away", "disconnected", false],
+  ]);
+  const local = await h.run("spawn_worker", { title: "Default", task: "Check status." });
+  assert.equal(local.hostId, "laptop");
+  assert.deepEqual(h.world.spawns.at(-1).environment, { type: "host", hostId: "laptop", workspace: { type: "personal" } });
+  assert.equal(h.world.spawns.at(-1).visibility, "hidden");
+  const remote = await h.run("spawn_worker", { title: "On the Mac", task: "Inspect the requested app.", host_id: "new-mac", provider: "codex" }, h.later());
+  assert.equal(remote.hostId, "new-mac");
+  assert.equal(remote.provider, "codex");
+  assert.equal(remote.visibility, "hidden");
+  assert.deepEqual(h.world.spawns.at(-1).environment, { type: "host", hostId: "new-mac", workspace: { type: "personal" } });
+  assert.equal((h.harness.inspection.sdk.callsTo("providers.models").at(-1)![0] as Any).hostId, "new-mac");
+  const models = await h.run("list_models", {});
+  assert.equal(models.hostId, "laptop");
+});
+
+test("worker targeting refuses unknown and disconnected machines without falling back", async t => {
+  const h = await fixture(); t.after(h.close);
+  const unknown = await h.run("spawn_worker", { title: "Unknown", task: "Inspect.", host_id: "not-enrolled" });
+  assert.match(unknown.error, /list_machines/);
+  const offline = await h.run("spawn_worker", { title: "Offline", task: "Inspect.", host_id: "away" }, h.later());
+  assert.match(offline.error, /not connected/);
+  h.harness.inspection.sdk.stub("system.config", async () => ({ primaryHostId: "away" }) as any);
+  const defaultOffline = await h.run("spawn_worker", { title: "Default offline", task: "Inspect." }, h.later("u3"));
+  assert.match(defaultOffline.error, /primary.*not connected/);
+  h.harness.inspection.sdk.stub("system.config", async () => ({ primaryHostId: null }) as any);
+  const noDefault = await h.run("spawn_worker", { title: "No default", task: "Inspect." }, h.later("u4"));
+  assert.match(noDefault.error, /no primary machine/);
+  assert.equal(h.world.spawns.length, 0);
+  const explicit = await h.run("spawn_worker", { title: "Explicit", task: "Inspect.", host_id: "laptop" }, h.later("u5"));
+  assert.equal(explicit.hostId, "laptop", "an explicit host does not require a configured primary");
+});
+
+test("call context exposes machines and the current device without inventing a host mapping", async t => {
+  const h = await fixture(); t.after(h.close);
+  const device = { platform: "macOS", mobile: false, browser: "Safari", runtime: "browser" };
+  const context = await h.runtime.callStartContext({ nonce: "call", conversationId: "conversation", device, view: { threadId: "build", projectId: "app" } }) as Any;
+  assert.deepEqual(context.callOwnerDevice, { ...device, source: "client_reported", hostId: null });
+  assert.equal(context.defaultHostId, "mac");
+  assert.equal(context.machines.length, 3);
+  const phone = { platform: "iOS", mobile: true, browser: "Safari", runtime: "pwa" };
+  const switched = await h.runtime.callStartContext({ nonce: "call", conversationId: "conversation", device: phone }) as Any;
+  assert.deepEqual(switched.callOwnerDevice, { ...phone, source: "client_reported", hostId: null });
+  const olderClient = await h.runtime.callStartContext({ nonce: "call", conversationId: "conversation" }) as Any;
+  assert.equal(olderClient.callOwnerDevice, null, "never reuse a previous client's device descriptor");
+  assert.equal(liveRpcContract.callStartContext.input.safeParse({ nonce: "call", conversationId: "conversation", device: { ...device, hostId: "mac" } }).success, false);
+  h.harness.inspection.sdk.stub("system.config", async () => { throw new Error("Temporarily unavailable"); });
+  const unavailable = await h.runtime.callStartContext({ nonce: "call", conversationId: "conversation", device }) as Any;
+  assert.deepEqual(unavailable.machines, []);
+  assert.match(unavailable.error, /list_machines/);
+  assert.equal(unavailable.callOwnerDevice.hostId, null);
+});
+
 test("worker profiles resolve leniently and unknown names list the configured choices",async t=>{
   const h=await fixture();t.after(h.close);
   const first=await h.run("spawn_worker",{...worker,profile:"default"});assert.equal(first.profile,"implement");
@@ -1003,6 +1070,13 @@ test("workspace can be the main folder or another thread's worktree, which must 
   assert.deepEqual(h.world.spawns.at(-1).environment, { type: "reuse", environmentId: "env_build" });
   const unseen = await h.run("create_thread", { ...brainstorm, title: "Nope", workspace: "reuse_thread", reuse_thread_id: "ghost" }, { utterance: { id: "u3", version: 1, text: "ghost", startedAt: h.now() } });
   assert.match(unseen.error, /unknown target ID ghost/);
+  h.world.threads.get("build").environment.hostId = "laptop";
+  const wrongMachine = await h.run("spawn_worker", { ...worker, title: "Wrong machine", host_id: "mac", workspace: "reuse_thread", reuse_thread_id: "build" }, h.later("u4"));
+  assert.match(wrongMachine.error, /different machine/);
+  h.world.threads.get("build").projectId = "docs";
+  const wrongProject = await h.run("spawn_worker", { ...worker, title: "Wrong project", workspace: "reuse_thread", reuse_thread_id: "build" }, h.later("u5"));
+  assert.match(wrongProject.error, /different project/);
+  assert.equal(h.world.spawns.length, 2, "reusing a workspace cannot bypass the selected destination");
 });
 
 test("list_models reports providers and models on the primary machine, and read_threads shows a thread's environment", async t => {

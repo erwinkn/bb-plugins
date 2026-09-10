@@ -1752,6 +1752,7 @@ export class VoiceAgent {
         try {
           const view = nativeUi.snapshot();
           const context = await this.rpc("callStartContext", { nonce, conversationId: callConversationId,
+            device: { platform: clientDescriptor.platform, mobile: clientDescriptor.mobile, browser: clientDescriptor.browser, runtime: clientDescriptor.runtime },
             view: { threadId:view.threadId, projectId:view.projectId, space: currentSpaceName() } });
           if(this.session!==session || this.nonce!==nonce || dc.readyState!=="open")return;
           dc.send(JSON.stringify({type:"conversation.item.create",item:{type:"message",role:"system",content:[{type:"input_text",text:JSON.stringify(context)}]}}));
