@@ -1,6 +1,7 @@
 // A discoverable contract for remote clients; the detailed audit is in PARITY.md.
 export const parity = [
-  { feature: "thread_discovery_and_tree", status: "covered", tools: ["bb_list_threads", "bb_get_thread"], detail: "Parent/source IDs, parent filters, archived/hidden filters, runtime and attention state." },
+  { feature: "default_full_scope", status: "covered", tools: ["bb_list_projects", "bb_list_threads", "bb_create_thread"], detail: "Empty project, host, and provider scopes cover all available entries, including the personal project; explicit lists narrow access. Hidden threads are included by default." },
+  { feature: "thread_discovery_and_tree", status: "covered", tools: ["bb_list_threads", "bb_get_thread"], detail: "Parent/source IDs, parent filters, archived/hidden filters, runtime and attention state; hidden threads are included unless excluded explicitly." },
   { feature: "create_children", status: "covered", tools: ["bb_create_thread", "bb_update_thread"], detail: "Explicit parentThreadId; both threads must be in scope. BB enforces the parent permission ceiling." },
   { feature: "handoff", status: "covered", tools: ["bb_handoff_thread"], detail: "Fresh conversation with BB's structured source-thread mention; reuses the source environment by default. This does not clone the provider session." },
   { feature: "execution_options", status: "covered", tools: ["bb_create_thread", "bb_handoff_thread", "bb_send_message", "bb_list_runtimes"], detail: "Model, reasoningLevel, permissionMode and serviceTier. Explicit unsupported or excessive requests fail. Provider selection is create-time only." },

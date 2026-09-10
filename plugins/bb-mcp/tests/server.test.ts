@@ -95,6 +95,19 @@ describe("BB boundary", () => {
     expect(harness.inspection.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({ environment: { type: "host", hostId: "host_linux", workspace: { type: "managed-worktree" } }, visibility: "visible", model: "test-model", permissionMode: "auto" });
     expect(harness.inspection.sdk.callsTo("threads.open")).toHaveLength(0);
   });
+  it("treats empty project and host scopes as unrestricted and selects a connected host", async () => {
+    const { adapter, harness } = adapterHost();
+    await harness.behavior.setSettings({ projectIds: "", hostIds: "", defaultHostId: "" });
+    expect(await adapter.listProjects()).toMatchObject({
+      projects: [{ id: "proj_allowed", name: "Allowed" }, { id: "proj_private", name: "Private" }],
+      defaultHostId: "host_linux",
+    });
+    const response = await adapter.createThread({ ...create, projectId: "proj_private", idempotencyKey: "unrestricted-scope" });
+    expect(response.state).toBe("accepted");
+    expect(harness.inspection.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({ environment: { type: "host", hostId: "host_linux" } });
+    harness.inspection.sdk.stub("environments.get", async () => ({ ...env, hostId: "host_other" }));
+    expect(await adapter.getThread({ threadId: t.id })).toMatchObject({ hostId: "host_other" });
+  });
   it("denies projects, foreign environments and direct thread IDs", async () => {
     const { adapter, harness } = adapterHost();
     await expect(adapter.createThread({ ...create, projectId: "proj_private" })).rejects.toMatchObject({ code: "not_found" });
@@ -274,6 +287,13 @@ describe("product parity", () => {
     expect(result.threads[0]).toHaveProperty("parentThreadId", null);
     expect(result.threads[0]).toHaveProperty("visibility", "visible");
   });
+  it("includes hidden threads when no visibility filter is supplied", async () => {
+    const { adapter, harness } = adapterHost();
+    await adapter.listThreads({ projectId: t.projectId, offset: 0, limit: 20 });
+    expect(harness.inspection.sdk.callsTo("threads.list")[0]?.[0]).toMatchObject({ includeHidden: true });
+    await adapter.listThreads({ projectId: t.projectId, includeHidden: false, offset: 0, limit: 20 });
+    expect(harness.inspection.sdk.callsTo("threads.list")[1]?.[0]).toMatchObject({ includeHidden: false });
+  });
 });
 
 describe("MCP transport", () => {
@@ -293,7 +313,7 @@ describe("MCP transport", () => {
     const unsupportedUpdate = await client.callTool({ name: "bb_update_thread", arguments: { threadId: t.id, permissionMode: "auto" } });
     expect(unsupportedUpdate.isError).toBe(true);
     const capabilities = await client.callTool({ name: "bb_get_capabilities", arguments: {} });
-    expect(capabilities.structuredContent).toMatchObject({ data: { version: "0.2.0", updateExecutionFields: ["model", "reasoningLevel"] } });
+    expect(capabilities.structuredContent).toMatchObject({ data: { version: "0.2.1", updateExecutionFields: ["model", "reasoningLevel"] } });
   });
   it("requires header auth and rejects foreign origins, hosts, and oversized bodies", async () => {
     const { bb, harness } = host(); plugin(bb);

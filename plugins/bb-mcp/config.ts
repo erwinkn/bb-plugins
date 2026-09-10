@@ -2,13 +2,17 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 export const ids = (value: string) => [...new Set(value.split(/[\s,]+/).filter(Boolean))];
+export const isInScope = (list: string, id: string) => {
+  const values = ids(list);
+  return values.length === 0 || values.includes(id);
+};
 const idList = z.string().max(8192).refine(v => ids(v).every(id => /^[a-zA-Z0-9_-]+$/.test(id)), "Use comma-separated BB IDs.");
 const positive = (max: number) => z.number().int().min(1).max(max);
 export function defineSettings(bb: BbPluginApi) {
   return bb.settings.define({
-    projectIds: { type: "string", label: "Allowed project IDs", default: "", experimental_schema: idList },
-    hostIds: { type: "string", label: "Allowed host IDs", default: "", experimental_schema: idList },
-    defaultHostId: { type: "string", label: "Default execution host ID", default: "" },
+    projectIds: { type: "string", label: "Project scope (empty: all)", default: "", experimental_schema: idList },
+    hostIds: { type: "string", label: "Host scope (empty: all)", default: "", experimental_schema: idList },
+    defaultHostId: { type: "string", label: "Default execution host ID (empty: auto)", default: "" },
     providerIds: { type: "string", label: "Allowed providers (empty: all installed)", default: "", experimental_schema: idList },
     appUrl: { type: "string", label: "BB public app URL", default: "", experimental_schema: z.string().refine(v => !v || validUrl(v), "Use an HTTPS URL without credentials or a query.") },
     endpointUrl: { type: "string", label: "Public MCP endpoint URL", default: "", experimental_schema: z.string().refine(v => !v || validUrl(v), "Use an HTTPS URL without credentials or a query.") },
@@ -28,12 +32,12 @@ export class ToolError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
 export function requireConfigured(c: Config) {
-  if (!ids(c.projectIds).length || !ids(c.hostIds).includes(c.defaultHostId))
-    throw new ToolError("not_configured", "Configure allowed project IDs, host IDs, and a default host in BB MCP settings.");
+  if (c.defaultHostId && !isInScope(c.hostIds, c.defaultHostId))
+    throw new ToolError("not_configured", "defaultHostId must be empty or included in the host scope.");
 }
 export function assertScope(c: Config, projectId: string, hostId?: string) {
   requireConfigured(c);
-  if (!ids(c.projectIds).includes(projectId) || (hostId !== undefined && !ids(c.hostIds).includes(hostId)))
+  if (!isInScope(c.projectIds, projectId) || (hostId !== undefined && !isInScope(c.hostIds, hostId)))
     throw new ToolError("not_found", "The requested resource is unavailable in this connection's scope.");
 }
 export function threadUrl(c: Config, projectId: string, threadId: string) {

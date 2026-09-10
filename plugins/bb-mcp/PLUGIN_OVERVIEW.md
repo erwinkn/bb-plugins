@@ -10,6 +10,6 @@ Create, handoff and send tools require stable idempotency keys. Recorded request
 
 ## Requirements
 
-Requires BB 0.42.1 or later with compatible Plugin SDK 0.4.47 APIs, configured coding providers, and an authenticated HTTPS endpoint reachable by your MCP client. Provider usage and infrastructure retain their normal costs. Executor is optional. Configure explicit project and host access in BB settings and keep the connection token in your client's secret storage.
+Requires BB 0.42.1 or later with compatible Plugin SDK 0.4.47 APIs, configured coding providers, and an authenticated HTTPS endpoint reachable by your MCP client. Provider usage and infrastructure retain their normal costs. Executor is optional. Empty project, host, and provider scopes cover all available entries; configure explicit lists only when narrowing access, and keep the connection token in your client's secret storage.
 
 Use `bb mcp status` for configuration and `bb mcp operations` for recent request outcomes. Call `bb_get_capabilities` for coverage and the remaining parity roadmap. Standalone permission/service-tier updates, automatic completion callbacks and remote permission approvals are not included in this release.

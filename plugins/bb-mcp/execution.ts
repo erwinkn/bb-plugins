@@ -1,5 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { assertScope, executionPermission, ids, ToolError, type Config } from "./config";
+import { assertScope, executionPermission, isInScope, ToolError, type Config } from "./config";
 
 type Spawn = Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0];
 export type ExecutionInput = Pick<Spawn, "model" | "reasoningLevel" | "permissionMode" | "serviceTier">;
@@ -14,7 +14,7 @@ export async function selectInheritedSend(bb: BbPluginApi, c: Config, args: Sele
   // model/reasoning defaults instead of requiring a fresh model-catalog RPC.
   const routing = args.environmentId ? { environmentId: args.environmentId } : { hostId: args.hostId };
   const [hosts, providers] = await Promise.all([bb.sdk.hosts.list(), bb.sdk.providers.list(routing)]);
-  const provider = providers.find(p => p.id === args.providerId && (!ids(c.providerIds).length || ids(c.providerIds).includes(p.id)));
+  const provider = providers.find(p => p.id === args.providerId && isInScope(c.providerIds, p.id));
   if (!provider) throw new ToolError("invalid_provider", "This thread's provider is outside the configured execution scope.");
   const maximum = executionPermission(provider.capabilities.permissionModes, c.permissionMode, hosts.find(h => h.id === args.hostId)?.maxPermissionMode, args.parentCeiling);
   const permissionMode = args.permissionMode === undefined
@@ -29,7 +29,7 @@ export async function selectExecution(bb: BbPluginApi, c: Config, args: Selectio
   const host = (await bb.sdk.hosts.list()).find(h => h.id === args.hostId);
   if (host?.status !== "connected") throw new ToolError("host_offline", "The selected execution host is offline.");
   const routing = args.environmentId ? { environmentId: args.environmentId } : { hostId: args.hostId };
-  const providers = (await bb.sdk.providers.list(routing)).filter(p => p.available && (!ids(c.providerIds).length || ids(c.providerIds).includes(p.id)));
+  const providers = (await bb.sdk.providers.list(routing)).filter(p => p.available && isInScope(c.providerIds, p.id));
   const defaults = args.defaults ?? await bb.sdk.projects.defaultExecutionOptions({ projectId: args.projectId });
   const provider = providers.find(p => p.id === (args.providerId ?? defaults?.providerId)) ?? (!args.providerId ? providers[0] : undefined);
   if (!provider) throw new ToolError("invalid_provider", "Choose an available provider from bb_list_runtimes.");

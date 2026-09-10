@@ -1,6 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 type ThreadResponse = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["spawn"]>>;
-import { assertScope, executionPermission, ids, requireConfigured, threadUrl, ToolError, type Config, type Settings } from "./config";
+import { assertScope, executionPermission, isInScope, requireConfigured, threadUrl, ToolError, type Config, type Settings } from "./config";
 import { clip, eventView, type ThreadEventRow } from "./presentation";
 import { operationView, type Store, type Operation } from "./store";
 import { selectExecution, selectInheritedSend, type ExecutionInput } from "./execution";
@@ -12,6 +12,21 @@ export type UpdateInput = { threadId: string; title?: string; model?: string; re
 export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store) {
   const config = async () => { const c = await settings.get(); requireConfigured(c); return c; };
   const unwrap = (t: Awaited<ReturnType<typeof bb.sdk.threads.get>>): ThreadResponse => t;
+  async function resolveDefaultHost(c: Config, projectId?: string, required?: true): Promise<string>;
+  async function resolveDefaultHost(c: Config, projectId: string | undefined, required: false): Promise<string | null>;
+  async function resolveDefaultHost(c: Config, projectId?: string, required = true): Promise<string | null> {
+    if (c.defaultHostId) return c.defaultHostId;
+    const hosts = await bb.sdk.hosts.list();
+    const candidates = hosts.filter(h => isInScope(c.hostIds, h.id) && h.status === "connected");
+    let sourceHostIds = new Set<string>();
+    if (projectId) {
+      const project = (await bb.sdk.projects.list({ includePersonal: true })).find(p => p.id === projectId);
+      sourceHostIds = new Set(project?.sources?.map(source => source.hostId) ?? []);
+    }
+    const selected = candidates.find(h => sourceHostIds.has(h.id)) ?? candidates[0];
+    if (!selected && required) throw new ToolError("no_host_available", "No connected execution host is available in this connection's scope.");
+    return selected?.id ?? null;
+  }
   async function context(threadId: string, c: Config) {
     const t = unwrap(await bb.sdk.threads.get({ threadId }));
     assertScope(c, t.projectId);
@@ -70,7 +85,7 @@ export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store)
     const environmentId = args.environmentId ?? (reuseSource ? source!.env!.id : undefined);
     const env = environmentId ? await bb.sdk.environments.get({ environmentId }) : null;
     if (env && env.projectId !== projectId) throw new ToolError("not_found", "Environment unavailable in the target project. Choose an allowed environment or a new worktree.");
-    const hostId = env?.hostId ?? args.hostId ?? c.defaultHostId;
+    const hostId = env?.hostId ?? args.hostId ?? await resolveDefaultHost(c, projectId);
     if (env && args.hostId && args.hostId !== env.hostId) throw new ToolError("invalid_host", "The environment belongs to a different host.");
     if (env && args.baseBranch) throw new ToolError("invalid_arguments", "baseBranch cannot be combined with environment reuse.");
     checkSendAt(args.sendAt);
@@ -92,22 +107,22 @@ export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store)
   return {
     async listProjects() {
       const c = await config();
-      const projects = await bb.sdk.projects.list();
-      return { projects: projects.filter(p => ids(c.projectIds).includes(p.id)).map(p => ({ id: p.id, name: p.name })), defaultHostId: c.defaultHostId };
+      const projects = await bb.sdk.projects.list({ includePersonal: true });
+      return { projects: projects.filter(p => isInScope(c.projectIds, p.id)).map(p => ({ id: p.id, name: p.name })), defaultHostId: await resolveDefaultHost(c, undefined, false) };
     },
     async listRuntimes(args: { projectId: string; hostId?: string; environmentId?: string; providerId?: string; offset: number; limit: number }) {
       const c = await config();
       assertScope(c, args.projectId);
       const env = args.environmentId ? await bb.sdk.environments.get({ environmentId: args.environmentId }) : null;
       if (env && env.projectId !== args.projectId) throw new ToolError("not_found", "Environment unavailable in this project.");
-      const hostId = env?.hostId ?? args.hostId ?? c.defaultHostId;
+      const hostId = env?.hostId ?? args.hostId ?? await resolveDefaultHost(c, args.projectId);
       assertScope(c, args.projectId, hostId);
       const routing = env ? { environmentId: env.id } : { hostId };
       const [hosts, providers] = await Promise.all([bb.sdk.hosts.list(), bb.sdk.providers.list(routing)]);
-      const allowed = providers.filter(p => !ids(c.providerIds).length || ids(c.providerIds).includes(p.id));
+      const allowed = providers.filter(p => isInScope(c.providerIds, p.id));
       if (args.providerId && !allowed.some(p => p.id === args.providerId)) throw new ToolError("invalid_provider", "Provider unavailable in this connection.");
       const catalog = args.providerId ? await bb.sdk.providers.models({ ...routing, providerId: args.providerId }) : null;
-      return { hostId, hosts: hosts.filter(h => ids(c.hostIds).includes(h.id)).map(h => ({ id: h.id, name: h.name, status: h.status, maxPermissionMode: h.maxPermissionMode })),
+      return { hostId, hosts: hosts.filter(h => isInScope(c.hostIds, h.id)).map(h => ({ id: h.id, name: h.name, status: h.status, maxPermissionMode: h.maxPermissionMode })),
         providers: allowed.map(p => ({ id: p.id, name: p.displayName, available: p.available, permissions: p.capabilities.permissionModes, serviceTiers: p.serviceTiers ?? [], capabilities: p.capabilities, composerActions: p.composerActions })),
         permissionMode: c.permissionMode, models: catalog?.models.slice(args.offset, args.offset + args.limit).map(m => ({ id: m.model, name: m.displayName, isDefault: m.isDefault, defaultReasoningLevel: m.defaultReasoningEffort, reasoningLevels: m.supportedReasoningEfforts.map(e => e.reasoningEffort) })) ?? [],
         modelLoadError: catalog?.modelLoadError ?? null, nextOffset: catalog && args.offset + args.limit < catalog.models.length ? args.offset + args.limit : null };
@@ -118,7 +133,7 @@ export function createAdapter(bb: BbPluginApi, settings: Settings, store: Store)
       if (args.sourceThreadId) await context(args.sourceThreadId, c);
       // Offset advances through scanned BB rows, including rows excluded by host/title.
       const { query: _query, ...filters } = args;
-      const rows = await bb.sdk.threads.list(filters);
+      const rows = await bb.sdk.threads.list({ ...filters, includeHidden: args.includeHidden ?? true });
       const results = [];
       for (const t of rows) {
         if (args.query && !(t.title ?? t.titleFallback ?? "").toLowerCase().includes(args.query.toLowerCase())) continue;
