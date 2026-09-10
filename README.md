@@ -20,8 +20,8 @@ help, executable setting, account usage, and live ACP model catalog. It preserve
 ID `acp-devin`. See [Devin provider](plugins/devin/README.md) for configuration,
 verification, and migration from a custom ACP entry.
 
-`voice-mode` adds real-time voice calls, session history, and spoken thread
-updates. See [Voice Mode](plugins/voice-mode/README.md).
+`voice-mode` adds one live voice model, background workers, task and subscription
+views, session history, and spoken thread updates. See [Voice Mode](plugins/voice-mode/README.md).
 
 `erwin-provider-usage` supplies the compact usage popup. See [Provider usage
 compact](plugins/provider-usage/README.md) for installation and rollback.
@@ -481,6 +481,38 @@ No upstream issue filed.
 Suggested issue title: `Allow hiding individual providers from selection menus`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Plugin SDK: identify the machine that runs the BB server
+
+Voice Mode starts workers outside any project. BB's personal project has no
+sources, so the plugin cannot read a machine from it, and the SDK's `Host` has no
+flag for the machine that runs the server. The plugin picks the connected machine
+that hosts the most projects, which is a heuristic.
+
+Expose the server's own host ID to plugins, for example `bb.hosts.current()` or an
+`isServer` flag on `Host`, so project-less work has a deterministic destination.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Plugin SDK: expose the host that runs the BB server`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
+### Mobile: keep an active voice call alive when the screen locks
+
+The plugin no longer hangs up when the phone screen locks: it holds the call,
+marks the microphone suspended, and revives it when the app returns to the
+foreground. A screen wake lock keeps the phone awake while the call runs. But the
+plugin cannot capture or play audio while the BB app is in the background, because
+the iOS webview pauses media capture and playback when it hides. A held call
+therefore goes quiet under a lock and only resumes on unlock.
+
+For true hands-free use while walking, the BB iOS app should let an active voice
+call keep audio in the background, for example with a `voip` or `audio` background
+mode and an audio session that stays active. Then a locked phone can still hear
+and answer.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Mobile: allow background audio for an active voice call`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Mobile: choose Steer or Queue from the Send button
 
 When Steer is the default send action, desktop users can press Command+Enter
@@ -517,6 +549,44 @@ scheduled sending only.
 
 Status: recorded here; no upstream issue filed.
 Suggested issue title: `Add Stop and send to voice dictation`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
+### Voice questions and approvals
+
+Voice workers use native BB questions and approvals. Ada reads their IDs, subjects,
+and reasons, then uses `threads.interactions.respond` or `resolve` after a later
+spoken answer. Archive also requires a spoken preview and later confirmation.
+The earlier plugin-waiter workaround and proposed requestInput ID API are no longer
+needed for this path.
+
+### Voice background updates
+
+Voice records native worker events in its inbox and groups updates by watched root.
+The live model receives them at a quiet boundary. Critical questions, approvals,
+and failures stay pending until resolved. There is no hidden coordinator receiving
+background messages, so the earlier consume-and-coalesce dispatch proposal is no
+longer needed by Voice.
+
+### Native UI command results for plugins
+
+Voice Mode now uses local SDK navigation, composer bindings, and file previews.
+In SDK 0.4.47, `toThread`, `toProject`, and sidebar `open` return no result.
+Sidebar `open` ignores unknown IDs and may fall back from a split to ordinary
+navigation. File preview returns an acceptance boolean, not rendering status.
+It also depends on the calling surface: BB 0.42.1 gives the app overlay a
+default handler that returns false, while page-level surfaces supply a preview
+handler. Voice binds the active page capability instead.
+Voice can observe route and composer state, but cannot derive every native
+placement or preview outcome from these return values.
+
+A request-scoped result from native UI methods could report the resolved target,
+actual placement, and an unavailable or cancelled outcome. File preview could
+separately report accepted and loaded. This would remove plugin-specific waits
+and avoid claims based only on dispatch. It should remain local to the calling
+client and preserve BB's native permission and navigation rules.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Return scoped outcomes from native plugin UI actions`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 ### Long-running plugin tool calls: heartbeat Cursor and abort orphaned calls
@@ -626,6 +696,25 @@ later. Remove an entry when the upstream fix ships.
 - **Status:** not filed yet. Direct confirmation against a real Devin turn is
   still open; the reproduction used the SDK bridge with a scripted ACP peer.
 
+
+### Voice operator isolation and managed workspace primitives
+
+Ada uses one live model and hidden root workers. It supports direct messaging,
+worker creation, named profiles, and a Tasks view. SDK 0.4.47 can create a managed
+worktree through `threads.spawn`, but
+has no standalone environment/worktree creation API or hard read-only spawn
+mode. Plugin tool selection also does not revoke native coding-agent tools.
+
+Desired upstream additions: standalone managed-workspace creation with typed
+results; capability-scoped agent execution (including enforced read-only roles);
+and cancellation/idempotency support for thread sends and creation. Until these
+exist, role instructions are not a sandbox, unknown sends/creates are not
+automatically retried, and worktree creation is coupled to a worker thread.
+See [Voice architecture](plugins/voice-mode/docs/architecture.md).
+
+Status: recorded here; no upstream issue filed. Suggested issue title:
+`Expose scoped worker capabilities and durable managed-workspace operations`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
 ### `bb plugin dev` does not rebuild on source changes
 
 - **Where:** `bb plugin dev .` in `plugins/plans`, bb 0.42.1, plugin installed

@@ -1,0 +1,34 @@
+name: Voice Mode
+
+on:
+  push:
+    branches: [bb/retrieve-latest-voice-transcript-thr_5pn749uenj]
+    paths: ['plugins/voice-mode/**', '.github/workflows/voice-mode.yml']
+  pull_request:
+    paths: ['plugins/voice-mode/**', '.github/workflows/voice-mode.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-mode-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/voice-mode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: plugins/voice-mode/package-lock.json
+      - run: npm ci --include=dev
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:check

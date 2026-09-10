@@ -1,22 +1,16 @@
+import { PromptEditor } from "./prompt-editor";
+export { PromptEditor } from "./prompt-editor";
 // bb-plugin-voice-mode — polished settings sections.
 //
 // The host renders a single declarative field (the secret OpenAI API key) and
 // then these custom sections below it. Everything the user tunes day-to-day —
-// which model and voice to use, whether Aide announces thread events, the
-// microphone, and the keyboard shortcuts — lives here as curated sections
+// which model and voice to use, the prompts, the microphone,
+// and the keyboard shortcuts — lives here as curated sections
 // instead of a flat auto-form.
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "./server";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import {
   DEFAULT_MODEL,
@@ -52,9 +46,6 @@ type CredentialPreference = "auto" | "apiKey" | "subscription";
 interface VoiceConfig {
   model: RealtimeModel;
   voice: Voice;
-  notifications: boolean;
-  mobileViewBehavior: "reuse" | "new";
-  pluginCommands: string;
   credentialPreference: CredentialPreference;
   shortcuts: Shortcuts;
 }
@@ -102,6 +93,8 @@ function voiceLabel(voice: Voice): string {
   return voice.charAt(0).toUpperCase() + voice.slice(1);
 }
 
+const linkClass = "text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline";
+
 const selectClass =
   "block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
 
@@ -144,7 +137,7 @@ interface CredentialStatus {
 }
 
 /**
- * Shows which credential Aide is using, and — only when both an API key and a
+ * Shows which credential Ada is using, and — only when both an API key and a
  * ChatGPT subscription are available — lets the user pick between them.
  */
 function CredentialCard() {
@@ -199,7 +192,7 @@ function CredentialCard() {
     }
   }
 
-  // Both credentials present: pick which one Aide uses. The dropdown speaks for
+  // Both credentials present: pick which one Ada uses. The dropdown speaks for
   // itself, so no hint.
   if (canChoose) {
     return (
@@ -263,7 +256,7 @@ export function ModelsSettings() {
     <div className="space-y-4">
       <CredentialCard />
       <label className="block space-y-1">
-        <span className="text-sm font-medium text-foreground">Model</span>
+        <span className="text-sm font-medium text-foreground">Live model</span>
         <select
           value={model}
           disabled={loading}
@@ -303,381 +296,29 @@ export function ModelsSettings() {
 }
 
 // ---------------------------------------------------------------------------
-// Behavior: the prompt (how Aide acts), thread announcements, and which
-// plugins it may use.
+// Behavior: the prompt (how Ada acts).
 // ---------------------------------------------------------------------------
 
 export function BehaviorSettings() {
-  const { config, update } = useVoiceConfig();
-  const loading = config === null;
-  const notifications = config?.notifications ?? true;
-  const pluginCommands = (config?.pluginCommands ?? "all").trim();
-
-  const exposure: "all" | "none" | "custom" =
-    pluginCommands.toLowerCase() === "all" || pluginCommands === ""
-      ? "all"
-      : pluginCommands.toLowerCase() === "none"
-        ? "none"
-        : "custom";
-  // "custom" with an empty selection reads back as "none", so a local flag
-  // keeps the picker open while the user has chosen nothing yet.
-  const [customMode, setCustomMode] = useState(false);
-  const showCustom = customMode || exposure === "custom";
-
+  const [historyOpen, setHistoryOpen] = useState(false);
   return (
-    <div className="space-y-5">
-      <PromptEditor />
-
-      <Group label="Mobile thread drawer" hint="On mobile, show threads without leaving the call. Desktop still navigates directly to threads.">
-        <label htmlFor="voice-mode-view-behavior" className="mb-2 block text-sm">When showing a thread on mobile</label>
-        <select id="voice-mode-view-behavior" className={selectClass} disabled={loading} value={config?.mobileViewBehavior ?? "reuse"}
-          onChange={event => void update({ mobileViewBehavior: event.target.value as VoiceConfig["mobileViewBehavior"] })}>
-          <option value="reuse">Replace the shown thread</option>
-          <option value="new">Keep threads in the drawer switcher</option>
-        </select>
-      </Group>
-
-      <Group label="Announcements">
-        <label className="flex items-center justify-between gap-3">
-          <span className="text-sm text-foreground">When a thread finishes or fails</span>
-          <input
-            type="checkbox"
-            checked={notifications}
-            disabled={loading}
-            onChange={(event) => void update({ notifications: event.target.checked })}
-            className="size-4 shrink-0 accent-primary"
-          />
-        </label>
-      </Group>
-
-      <Group label="Plugins" hint="Aide always has its built-in tools for driving bb by voice; plugins let it also run your other installed plugins.">
-        <select
-          value={showCustom ? "custom" : exposure}
-          disabled={loading}
-          onChange={(event) => {
-            const next = event.target.value;
-            if (next === "all") {
-              setCustomMode(false);
-              void update({ pluginCommands: "all" });
-            } else if (next === "none") {
-              setCustomMode(false);
-              void update({ pluginCommands: "none" });
-            } else {
-              // Entering custom: start from a clean slate unless a real list
-              // was already saved, then let the picker turn plugins on.
-              setCustomMode(true);
-              if (exposure !== "custom") void update({ pluginCommands: "none" });
-            }
-          }}
-          className={selectClass}
-        >
-          <option value="all">Built-in tools + all plugins</option>
-          <option value="none">Built-in tools only</option>
-          <option value="custom">Built-in tools + chosen plugins…</option>
-        </select>
-        {showCustom ? (
-          <PluginPicker
-            value={pluginCommands}
-            disabled={loading}
-            onChange={(csv) => void update({ pluginCommands: csv || "none" })}
-          />
-        ) : null}
-        <BuiltInToolsLink />
-      </Group>
-    </div>
-  );
-}
-
-const linkClass =
-  "text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline";
-
-/** A small link that opens a read-only list of Aide's built-in tools. */
-function BuiltInToolsLink() {
-  const rpc = useRpc<typeof rpcContract>();
-  const [open, setOpen] = useState(false);
-  const [tools, setTools] = useState<{ name: string; description: string }[] | null>(null);
-
-  useEffect(() => {
-    if (!open || tools) return;
-    rpc.call("getTools", null).then(
-      (result) => setTools(result.tools.filter((tool) => tool.name !== "run_plugin_command")),
-      () => setTools([]),
-    );
-  }, [open, tools, rpc]);
-
-  return (
-    <>
-      <button type="button" className={linkClass} onClick={() => setOpen(true)}>
-        View built-in tools
-      </button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Built-in tools</DialogTitle>
-          </DialogHeader>
-          <p className="text-xs text-muted-foreground">
-            These are always available — Aide uses them to navigate bb, start and steer threads, read
-            output, and show diffs by voice.
-          </p>
-          <div className="max-h-80 divide-y divide-border/50 overflow-auto rounded-md border border-border/70">
-            {tools === null ? (
-              <p className="px-3 py-3 text-sm text-muted-foreground">Loading…</p>
-            ) : (
-              tools.map((tool) => (
-                <div key={tool.name} className="px-3 py-2">
-                  <code className="text-xs font-medium text-foreground">{tool.name}</code>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{tool.description}</p>
-                </div>
-              ))
-            )}
-          </div>
-          <DialogFooter>
-            <Button type="button" onClick={() => setOpen(false)}>
-              Done
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-interface PluginInfo {
-  id: string;
-  name: string;
-  summary: string;
-  iconUrl: string | null;
-}
-
-/** A modal checklist of installed plugins; the selection is stored as a csv. */
-function PluginPicker({
-  value,
-  onChange,
-  disabled,
-}: {
-  value: string;
-  onChange: (csv: string) => void;
-  disabled?: boolean;
-}) {
-  const rpc = useRpc<typeof rpcContract>();
-  const [open, setOpen] = useState(false);
-  const [plugins, setPlugins] = useState<PluginInfo[] | null>(null);
-
-  useEffect(() => {
-    if (!open || plugins) return;
-    rpc.call("listPlugins", null).then((result) => setPlugins(result.plugins), () => setPlugins([]));
-  }, [open, plugins, rpc]);
-
-  const selected = new Set(
-    value
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter((entry) => entry && entry !== "all" && entry !== "none"),
-  );
-
-  function toggle(id: string, on: boolean) {
-    const next = new Set(selected);
-    if (on) next.add(id);
-    else next.delete(id);
-    onChange(Array.from(next).join(","));
-  }
-
-  const summary =
-    selected.size === 0
-      ? "No plugins chosen yet."
-      : Array.from(selected)
-          .map((id) => plugins?.find((plugin) => plugin.id === id)?.name ?? id)
-          .join(", ");
-
-  return (
-    <div className="space-y-1.5 pt-1">
-      <div className="flex items-center gap-2">
-        <Button type="button" variant="outline" size="sm" disabled={disabled} onClick={() => setOpen(true)}>
-          Choose plugins
-        </Button>
-        <span className="text-xs text-muted-foreground">{selected.size} selected</span>
-      </div>
-      <p className="truncate text-xs text-muted-foreground">{summary}</p>
-
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Plugins Aide can use</DialogTitle>
-          </DialogHeader>
-          <div className="max-h-80 space-y-0.5 overflow-auto">
-            {plugins === null ? (
-              <p className="px-2 py-3 text-sm text-muted-foreground">Loading…</p>
-            ) : plugins.length === 0 ? (
-              <p className="px-2 py-3 text-sm text-muted-foreground">
-                No other installed plugins expose a command.
-              </p>
-            ) : (
-              plugins.map((plugin) => (
-                <label
-                  key={plugin.id}
-                  className="flex cursor-pointer items-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-state-hover"
-                >
-                  <Checkbox
-                    checked={selected.has(plugin.id)}
-                    onCheckedChange={(checked) => toggle(plugin.id, checked === true)}
-                    className="mt-0.5"
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-sm text-foreground">{plugin.name}</span>
-                    {plugin.summary ? (
-                      <span className="block truncate text-xs text-muted-foreground">{plugin.summary}</span>
-                    ) : null}
-                  </span>
-                </label>
-              ))
-            )}
-          </div>
-          <DialogFooter>
-            <Button type="button" onClick={() => setOpen(false)}>
-              Done
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+    <div className="min-w-0 space-y-5">
+      <PromptEditor role="aide" />
+      <PromptEditor role="worker" />
+      <details className="min-w-0 space-y-3" onToggle={event => setHistoryOpen(event.currentTarget.open)}>
+        <summary className="cursor-pointer text-sm font-medium">Previous prompts</summary>
+        {historyOpen ? <><PromptEditor role="live" /><PromptEditor role="coordinator" /></> : null}
+      </details>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Prompt editor — used inside Behavior. View / preview the prompt, edit and
-// save your own, or reset to the default.
+// Prompt editor — edit and save your own prompt, or reset to the default.
 // ---------------------------------------------------------------------------
 
-export function PromptEditor() {
-  const rpc = useRpc<typeof rpcContract>();
-  const [active, setActive] = useState("");
-  const [defaultContent, setDefaultContent] = useState("");
-  const [proposal, setProposal] = useState<{ id: string; content: string; reason: string } | null>(null);
-  const [reviewedProposalId, setReviewedProposalId] = useState<string | undefined>();
-  const [mode, setMode] = useState<"view" | "preview" | "edit">("view");
-  const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const refetch = useCallback(() => {
-    rpc.call("getPrompt", null).then((result) => {
-      setActive(result.content);
-      setDefaultContent(result.defaultContent);
-      setProposal(result.proposal);
-    }, () => undefined);
-  }, [rpc]);
-  useEffect(refetch, [refetch]);
-  useRealtime("prompt-changed", refetch);
-
-  const isCustom = active.trim() !== defaultContent.trim();
-
-  async function save(content: string, note: string) {
-    if (content.trim().length === 0) return;
-    setBusy(true);
-    try {
-      await rpc.call("setPrompt", { content, source: "user", note, proposalId: reviewedProposalId });
-      setReviewedProposalId(undefined);
-      setMode("view");
-      toast.success("Prompt saved");
-    } catch (cause) {
-      toast.error(`Could not save prompt: ${cause instanceof Error ? cause.message : String(cause)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const changed = draft.trim() !== active.trim();
-  const stateText = isCustom ? "Currently using a custom prompt" : "Currently using the default prompt";
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium text-foreground">Prompt</span>
-        {mode === "edit" ? null : (
-          <span className="flex shrink-0 items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setMode((prev) => (prev === "preview" ? "view" : "preview"))}
-            >
-              {mode === "preview" ? "Hide" : "Preview"}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setReviewedProposalId(undefined);
-                setDraft(active);
-                setMode("edit");
-              }}
-            >
-              Edit
-            </Button>
-          </span>
-        )}
-      </div>
-
-      {proposal && mode !== "edit" ? (
-        <div className="space-y-2 rounded-md border border-border p-3">
-          <p className="text-sm">Aide suggested a prompt change. It is not active.</p>
-          <p className="text-xs text-muted-foreground">{proposal.reason}</p>
-          <Button type="button" variant="outline" size="sm" onClick={() => {
-            setDraft(proposal.content);
-            setReviewedProposalId(proposal.id);
-            setMode("edit");
-          }}>Review suggestion</Button>
-        </div>
-      ) : null}
-      {mode === "edit" ? (
-        <div className="space-y-2">
-          <textarea
-            value={draft}
-            aria-label="Voice instructions"
-            autoFocus
-            spellCheck={false}
-            rows={16}
-            onChange={(event) => setDraft(event.target.value)}
-            className="w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-xs leading-relaxed text-foreground"
-          />
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              disabled={busy || !changed || draft.trim().length === 0}
-              onClick={() => void save(draft, "edited in settings")}
-            >
-              Save
-            </Button>
-            <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setMode("view")}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>{stateText}</span>
-            {isCustom ? (
-              <button type="button" className={linkClass} disabled={busy} onClick={() => void save(defaultContent, "reset to built-in default")}>
-                Reset to default
-              </button>
-            ) : null}
-          </div>
-          {mode === "preview" ? (
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-3 font-mono text-xs leading-relaxed text-foreground">
-              {active}
-            </pre>
-          ) : null}
-        </>
-      )}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Audio: microphone picker + a live level meter to test it, and a read-only
-// view of the system-default speaker (output is never routed in-app).
+// Audio: microphone picker and a live level meter to test it.
 // ---------------------------------------------------------------------------
 
 /** Live RMS of the selected mic, 0..1, while `active`. Cleans up fully on stop. */
@@ -799,19 +440,10 @@ export function AudioSettings() {
   }, [refresh]);
 
   const inputs = devices.filter((device) => device.kind === "audioinput" && device.deviceId);
-  const outputs = devices.filter((device) => device.kind === "audiooutput" && device.deviceId);
   const labelsHidden = inputs.length > 0 && inputs.every((device) => !device.label);
   const savedMicMissing =
     !!preferences.inputDeviceId &&
     !inputs.some((device) => device.deviceId === preferences.inputDeviceId);
-
-  // Best-effort system-default output: the entry whose id is "default", else
-  // the first output. Its label reads e.g. "Default - MacBook Pro Speakers".
-  const defaultOutput =
-    outputs.find((device) => device.deviceId === "default") ?? outputs[0] ?? null;
-  const speakerName = defaultOutput?.label
-    ? defaultOutput.label.replace(/^Default\s*-\s*/i, "")
-    : null;
 
   async function allowAccess() {
     try {
@@ -890,18 +522,9 @@ export function AudioSettings() {
         {labelsHidden ? (
           <p className="text-xs text-muted-foreground">Allow mic access to see device names and test it.</p>
         ) : savedMicMissing ? (
-          <p className="text-xs text-muted-foreground">This mic isn't connected, so Aide falls back to your default.</p>
+          <p className="text-xs text-muted-foreground">This mic isn't connected, so Ada falls back to your default.</p>
         ) : null}
         {deviceError ? <p className="text-xs text-destructive">{deviceError}</p> : null}
-      </Group>
-
-      <Group label="Speaker">
-        <div className="cursor-not-allowed rounded-md border border-border bg-muted/40 px-2 py-1.5 text-sm text-muted-foreground">
-          {labelsHidden || !speakerName ? "System default" : speakerName}
-        </div>
-        <p className="text-xs italic text-muted-foreground">
-          Switching speakers in the app isn't supported yet — change your output in your system sound settings.
-        </p>
       </Group>
     </div>
   );

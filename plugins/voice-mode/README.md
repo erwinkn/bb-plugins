@@ -1,233 +1,109 @@
 # Voice Mode
 
-Based on [bb-handsfree](https://github.com/swairshah/bb-handsfree) by
-swairshah (copied at commit `79d5083`). Renamed, with the sidebar voice bar
-removed; the composer button, the **Voice** sidebar page, and the keyboard
-shortcuts remain.
+Talk to BB while it works. Ada answers questions, reads thread results, sends
+instructions, starts background work, and controls BB's native workspace.
 
-**Talk to bb.** Voice Mode adds a voice agent to [bb](https://getbb.app): click
-the little waveform button in the composer, start talking, and an assistant
-with real control over bb does the work — finds threads, puts them on screen,
-messages your coding agents, kicks off new work, and reads results back to
-you.
+Based on [bb-handsfree](https://github.com/swairshah/bb-handsfree) by swairshah,
+originally copied at commit `79d5083`.
 
-## Quick start
+## Use Voice
 
-1. Install and configure:
+Open **Voice** in BB's sidebar. Start a new session or continue an earlier one,
+allow microphone access, and speak. The call controls remain available on other
+pages. **Switch here** transfers a call after checking the new device's microphone.
+Only the device that owns the call executes its tools. Switching devices keeps Ada
+silent and preserves mute. Resuming an ended session still gives a spoken status.
 
-   ```sh
-   cd plugins/voice-mode
-   npm ci --include=dev
-   bb plugin install . --yes
-   # Optional: skip this when `codex login` is done on the bb server machine.
-   bb plugin config voice-mode set openaiApiKey <your-openai-key>
-   bb plugin reload voice-mode
-   ```
+After a connection loss, Voice shows **Reconnecting**. It allows ten seconds for
+the existing connection to recover, then retries with a new connection for up to
+one minute. A failed connection or closed event channel starts those retries
+immediately. Recovery keeps the conversation and mute state, without a greeting
+or repeating prior actions. Stop or a transfer to another device cancels recovery.
+If the network stays unavailable, resume the session when it returns.
 
-2. Open any thread (or the New thread screen) in bb. Next to the mic button
-   in the composer you'll see a **circle with a waveform**.
+A new connection restores up to 100 saved turns and 32,000 characters of recent
+transcript, plus recent action statuses and pending work. Shorter conversations
+keep their full saved transcript. Longer ones keep the newest text and report
+that earlier history was omitted. This is an interim text restoration; full
+Realtime context continuity and compaction remain separate work.
 
-3. Click it. Allow microphone access the first time. When the bars start
-   dancing, you're live — just talk. Click again to hang up.
+The default shortcuts are Cmd+Shift+H to start or stop, and Cmd+Shift+U to mute.
+Windows and Linux use Ctrl. Change them in Voice Mode's Keyboard shortcuts settings.
 
-The button has three states:
+## Work with Ada
 
-| Button | Meaning |
-|---|---|
-| Still bars | Idle — click to start |
-| Pulsing outline | Connecting |
-| Animated bars | Live — it's listening; click to stop |
+Ada uses one live model and seventeen tools. It can find, read, and rename threads, deliver
+messages, create visible threads or hidden workers, prepare unsent drafts, navigate,
+stop work, manage subscriptions, prepare and confirm archives, and answer native
+questions or approvals. Archive and approval actions require a later spoken
+confirmation after their explanation has drained.
 
-Keyboard: **Cmd+Shift+H** (Ctrl+Shift+H on Windows/Linux) starts or stops a
-call from anywhere in bb; **Cmd+Shift+U** mutes/unmutes during a call. Both are
-also in the quick palette (Cmd+Shift+P) under Voice Mode. To rebind them, open
-Settings → Plugins → Voice Mode → **Keyboard shortcuts**, click **Change**, and
-press the new combination.
+Spoken names are approximate. Searches rank threads and projects with a match score,
+accept word stems and small mishearings, and always list the projects. When one
+search does not settle what you meant, Ada starts a worker to look instead of asking
+for exact names or IDs. Workers run outside any project unless the task needs a
+repository; they can read every BB project and thread. A worker uses the default
+profile unless Ada picks one of the configured names.
 
-## Things you can say
+Name a provider, model, or reasoning level when you ask for new work and Ada uses
+it, then confirms the model it resolved; ask "what models are there" for the list.
+Say "in the main folder" or "alongside that thread" to choose where the work runs;
+otherwise it gets a new worktree. Ask for a thread's environment to hear its folder,
+branch, and pull request.
 
-- *"What's running right now?"* — lists your live threads
-- *"Find the thread about the flaky login test and put it on screen"*
-- *"Spotlight that pane"* / *"maximize it"* / *"restore it"*
-- *"What did the agent say?"* — summarizes the latest output aloud
-- *"Tell it to also add tests for the error path"* — messages the thread's agent
-- *"Start a new thread in the replay project: fix the CI timeout"*
-- *"Show me the diff for that thread"*
-- *"Stop that thread"* / *"archive it"* / *"rename it to 'CI fix'"*
-- *"Type a prompt for me: refactor the session store to…"* — writes into
-  your composer so you can review and hit send yourself
-- *"What automations do I have?"* — runs other installed plugins' `bb`
-  commands (curate which with the `pluginCommands` setting)
+Ask what is waiting on a thread to hear its queued messages. Then say "send it now"
+to steer one into the active turn, "cancel that message" to delete it, or "change
+that message to" followed by the new text.
 
-The agent always knows which thread and project you're looking at — even as
-you navigate mid-conversation — so "this thread" just works. If a project
-lives on several machines, it checks which and asks before starting work.
+With the Threads plugin's spaces, say "switch to the mobile space" or "show all
+projects" to change the sidebar scope on the device that owns the call. Ada names
+the space it applied, or lists the saved spaces when the name did not match.
+Creating or editing spaces stays on the Threads page.
 
-A voice session is shared across all your bb windows and devices: the **Voice**
-sidebar entry shows a live indicator with the call duration, and any window
-can pick it up or stop it.
+You can say "agent" instead of "thread". An agent is a root thread, and a sub-agent
+is a child thread of that root. Ada applies this mapping when it resolves what you
+said and answers with the word you used. Thread targeting inside the runtime does not
+change.
 
-Background thread announcements wait until the conversation is quiet. Each
-announcement uses a separate response with tools disabled. Thread titles and
-results stay out of the main conversation. If a result is missing, Voice reports
-the status and says that details are unavailable; ask for details to read the thread.
+Calls wait for preceding speech to finish playing. Effects also wait two seconds
+after the final user text, so a correction can cancel work before dispatch. Unknown
+results are not retried automatically. Drafts append by default and never submit.
+A worker's turn ending is reported separately from whether its task is complete.
 
-A disconnected network connection gets up to 10 seconds to recover. Voice
-shows a reconnecting notice during this period. A failed connection ends the
-call immediately. A closed event channel also ends the call because it cannot
-resume speech events or tool responses.
+Ada reads a pending question with its options and answers it from what you say:
+"the second one", the option's words, or free text. Questions from the Questions
+plugin work the same way, one round at a time. A word that matches no option is
+refused with the options, so nothing is answered by guess. Prompts from other plugins
+must be answered in the app.
 
-## Mobile views beside the call
+Background updates wait for a quiet boundary and cannot navigate or act. Every
+thread Ada messages, starts, or stops reports back in the call when it finishes,
+fails, or asks a question, also after a reconnect. A send result is the receipt:
+sent and queued are both final delivery, and Ada says it will keep you informed
+rather than asking you to check later. Unsubscribing mutes updates without
+stopping the work; a later send does not re-enable a disabled watch.
 
-On mobile, “show that thread” opens a drawer without leaving the voice call.
-“Show all my running threads” keeps them in the drawer's thread switcher.
-These are views inside one drawer, not separate native bb tabs. Closing a view
-does not stop its thread or the call. To start a thread during a mobile call,
-dictate its prompt. A request without a prompt asks for one and keeps the call
-on screen.
+## Settings and history
 
-Behavior → Mobile thread drawer controls whether a new thread replaces the
-shown one or joins the switcher. “Always keep threads in the mobile drawer”
-saves that preference; an explicit request can override it. The collection lasts
-for the current app session. Supported destinations are the Voice page and
-existing thread panels; unsupported mobile surfaces report the limitation.
+Settings let you add, rename, and edit named worker profiles. Each profile has a
+provider, model, reasoning level, Fast option, permission mode, and instructions. Choose a default
+profile and a worker cap. Saving checks every profile on the selected machine;
+launch checks the actual destination again.
 
-Desktop `focus_thread` continues navigating to the requested thread from both
-the composer and Voice page. Mobile settings do not change that behavior.
-Per-entry-point desktop navigation/side-panel settings and native multi-tab
-behavior are a [separate design](docs/desktop-navigation-plan.md).
+The Live prompt and Worker prompt editors show their full defaults and saved
+versions. Previous live and coordinator prompts remain read-only under Previous
+prompts. The new live prompt uses the separate `aide` role, so rollback still reads
+the old `live` rows. Existing v1 worker settings convert to v2 once; the old value
+stays in place.
 
-See [the mobile design and device checklist](docs/thread-views.md) for SDK limits
-and the shared session/plugin logging behavior.
+Each Voice session is a conversation across calls. Conversation shows what was
+said. Tasks shows workers, created threads, their latest text, and active or muted
+subscriptions. Open a task row to view its thread. Diagnostics shows session events.
+Sessions that used a coordinator also have Coordinator history, a read-only timeline.
 
-## Inspecting live threads from the terminal
+See [the architecture](docs/architecture.md) and [the RPC contract](live-runtime-notes.md).
 
-The same "Live threads" view from the sidebar is available as a CLI, for you
-and for your coding agents:
+## Check changes
 
-```sh
-bb voice-mode live            # who's running right now
-bb voice-mode live --json     # machine-readable
-bb voice-mode read thr_xxxxx  # a thread's status + latest assistant output
-bb voice-mode usage           # what your voice sessions cost, per day (estimated)
-bb voice-mode stop            # stop an active voice session in any bb window
-```
-
-Agents discover these commands automatically through bb's plugin-commands
-skill.
-
-## Settings
-
-Open the Voice Mode plugin settings for curated sections:
-
-- **Models & voice** — the OpenAI Realtime model, the assistant voice (marin
-  and cedar are the highest-quality options), and a badge showing which
-  credential Aide will use.
-- **Behavior** — whether Aide announces thread events, and which installed
-  plugins' `bb` commands it may run (all / none / a specific list).
-- **Audio** — pick and test the microphone with a live input-level meter. The
-  chosen mic is stored in the current browser and applies to the next voice
-  session; if it disconnects, Voice Mode falls back to the system default.
-  Playback always uses your system-default speaker (change it in your OS Sound
-  settings).
-- **Keyboard shortcuts** — rebind the start/stop and mute keys: click
-  **Change** and press the new combination (Esc keeps the current one). A
-  binding needs ⌘/Ctrl or Alt, or a function key, so it can't fire while you
-  type, and bb's own Cmd+Shift+P / Cmd+Shift+M are refused. Bindings are
-  shared across your devices.
-
-The only credential is the **OpenAI API key**, a secret stored in bb's plugin
-secret store (0600 file, never in the db or frontend). It's optional: leave it
-blank to use your ChatGPT subscription (`codex login`), or set `OPENAI_API_KEY`
-in the bb server's environment. Set it in the settings field, or via the CLI:
-
-```
-bb plugin config voice-mode set openaiApiKey <your-openai-key>
-```
-
-Model, voice, and behavior are configured from the settings sections above (no
-longer via `bb plugin config`).
-
-## Troubleshooting
-
-- **No button?** Composer actions hide in bb's compact layout — widen the
-  window. Also check `bb plugin list` shows `voice-mode … running`.
-- **"needs-configuration"** — set the API key (Quick start step 1).
-- **Connects then drops** — check `bb plugin logs voice-mode -f` while clicking;
-  the SDP exchange error (bad key, model name) is logged there.
-- **No audio out** — the first click must come from you (browser autoplay
-  rules); if you started it and hear nothing, check system output device.
-
-Your audio goes directly from the bb app to OpenAI over WebRTC; the API key
-never leaves the bb server, and no audio is stored by the plugin.
-
----
-
-## For developers
-
-Architecture: bb's plugin frontend runs in a real browser context, so mic
-capture and playback live in `app.tsx` (getUserMedia + RTCPeerConnection +
-data channel) with no native helper.
-
-```text
-app.tsx            composer button + Voice sidebar page registration
-voice-agent.ts     WebRTC session, data channel, tool dispatch
-voice-chrome.tsx   waveform button + session UI; sessions-panel.tsx sessions view
-server.ts          API key + SDP exchange, bb tools via bb.sdk, `bb voice-mode` CLI
-```
-
-More detail: [architecture](docs/handsfree-voice-architecture.md)
-and [docs/voice-scenarios.md](docs/voice-scenarios.md).
-
-Tool-call flow: model → data channel → `app.tsx` → plugin RPC `runTool` →
-`bb.sdk` → output back over the data channel (function_call_output +
-response.create).
-
-Voice tools: `get_context`, `list_projects`, `list_machines`,
-`list_live_threads`, `list_threads`, `search_threads`, `read_thread`,
-`focus_thread`, `set_pane`, `send_to_thread`, `start_thread`, `stop_thread`,
-`archive_thread`, `rename_thread`, `show_diff`, `update_instructions`,
-`run_plugin_cli`, plus frontend-local `set_composer_text` /
-`append_composer_text`.
-
-Dev loop:
-
-```sh
-bb plugin dev          # rebuild + reload on save
-bb plugin logs voice-mode -f # tool traffic and errors
-```
-
-Mobile calls additionally expose `focus_threads`, `manage_views`, and
-`set_view_behavior` for the drawer. Desktop retains its navigation tool set.
-
-## Call controls and saved data
-
-An app-wide controller keeps RPC and realtime controls active while settings
-or another plugin page is open. Composer and Voice page bindings take priority
-for tool context. This requires BB 0.42 and Plugin SDK 0.4.47 or later.
-
-The server assigns a sequence number before microphone acquisition. The newest
-call claim replaces the previous claim across windows. CLI Stop records an end
-marker and stops a frozen owner when it reconnects. A failed or cancelled start
-also records an end marker.
-
-Agent requests to change standing instructions create a suggestion. Review the
-suggestion in Voice Mode settings and press Save to activate it for later calls.
-The agent cannot activate the suggestion through its tools.
-
-Event payloads are limited to 64 KiB. Event storage stops accepting new entries
-at 100,000 events or 128 MiB of event text. Existing transcripts are retained;
-logging reports a warning when full, and Stop continues to work. These limits
-cover session events, not token-usage accounting or the complete SQLite file.
-There is no automatic deletion or retention policy.
-
-BB controls access to plugin RPCs. Connected clients of the same BB installation
-share session history and the configured plugin-command access. Session IDs and
-call claims are routing data, not per-user access credentials. The host's plugin
-RPC route checks browser origin and JSON content type. Voice Mode does not add
-a separate multi-user permission system.
-
-The sidebar options button is hidden by a content script scoped to BB 0.42 row
-markup. Reloading or disabling the plugin removes that style. Check the selector
-when upgrading BB. Physical mobile and native desktop audio validation remains
-separate from browser and simulated-event tests.
+Run `npm run typecheck`, `npm test`, and `npm run build:check` in this directory.
+The build check compiles both entry points without installing or reloading BB.

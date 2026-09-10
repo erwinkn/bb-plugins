@@ -1,25 +1,28 @@
+import { LIVE_PROMPT } from "./live-prompt.ts";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
-import plugin, { toolSchemas, threadViewInstructions } from "./server.ts";
+import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import plugin from "./server.ts";
+import { liveToolSchemas } from "./live-tools.ts";
 import { legacyMigrations } from "./test-fixtures/legacy-migrations";
 
-test("audio diagnostics stay readable but never appear as voice sessions", async () => {
+test("audio diagnostics remain stored but never appear as voice sessions", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
   try {
     await plugin(bb);
     await harness.behavior.callRpc("logEvent", { sessionId: "audio-diagnostics", kind: "client.hello", payload: {} });
-    const empty = await harness.behavior.callRpc("listSessions", null) as { sessions: { id: string }[]; hasMore: boolean };
+    const empty = await harness.behavior.callRpc("listVoiceSessions", null) as { sessions: { id: string }[]; hasMore: boolean };
     assert.deepEqual(empty, { sessions: [], hasMore: false });
     await harness.behavior.callRpc("logEvent", { sessionId: "real-call", kind: "session.started", payload: {} });
-    const result = await harness.behavior.callRpc("listSessions", null) as { sessions: { id: string }[] };
+    const result = await harness.behavior.callRpc("listVoiceSessions", null) as { sessions: { id: string }[] };
     assert.deepEqual(result.sessions.map(session => session.id), ["real-call"]);
-    const diagnostic = await harness.behavior.callRpc("getSessionEvents", { sessionId: "audio-diagnostics" }) as { events: unknown[] };
-    assert.equal(diagnostic.events.length, 1);
+    await assert.rejects(harness.behavior.callRpc("getVoiceSession", { sessionId: "audio-diagnostics" }), /not found/);
+    const diagnostic = bb.storage.database().prepare("SELECT kind, payload FROM session_events WHERE session_id = 'audio-diagnostics'").all();
+    assert.deepEqual(diagnostic, [{ kind: "client.hello", payload: "{}" }], "diagnostics remain stored without becoming sessions");
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("session history and plugin logs describe the same stored action, and failed tools mark sessions", async () => {
+test("session history and plugin logs preserve the same actions and error details", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
   try {
     await plugin(bb);
@@ -28,134 +31,58 @@ test("session history and plugin logs describe the same stored action, and faile
       payload: { name: "focus_thread", callId: "tool-1", _id: { client: "phone", realm: "page" },
         ...(kind === "tool.result" ? { status: "error", output: "Could not open" } : { args: { thread_id: "a" } }) },
     });
-    const { events } = await harness.behavior.callRpc("getSessionEvents", { sessionId: "phone-call" }) as { events: { id: number; ts: number; kind: string; payload: string }[] };
+    const { events } = await harness.behavior.callRpc("getVoiceSession", { sessionId: "phone-call" }) as { events: { id: number; ts: number; kind: string; payload: string; callId: string }[] };
     const logs = harness.inspection.logEntries.filter(log => log.message.includes('"sessionId":"phone-call"'));
     assert.equal(logs.length, 2);
-    events.forEach((event, index) => assert.deepEqual(JSON.parse(logs[index].message), {
-      ...event, sessionId: "phone-call", payload: JSON.parse(event.payload),
-    }));
+    events.forEach(({ callId, ...event }, index) => {
+      assert.equal(callId, "phone-call");
+      assert.deepEqual(JSON.parse(logs[index].message), { ...event, sessionId: callId, payload: JSON.parse(event.payload) });
+    });
     assert.equal(logs[1].level, "error");
-    const { sessions } = await harness.behavior.callRpc("listSessions", null) as { sessions: { id: string; hasError: boolean }[] };
-    assert.equal(sessions.find(session => session.id === "phone-call")?.hasError, true);
+    const { sessions } = await harness.behavior.callRpc("listVoiceSessions", null) as { sessions: { id: string; callIds: string[] }[] };
+    assert.deepEqual(sessions.find(session => session.id === "phone-call")?.callIds, ["phone-call"]);
+    assert.equal(JSON.parse(events.find(event => event.kind === "tool.result")!.payload).status, "error");
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("thread metadata is resolved once per ID and the saved preference applies immediately", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode", sdk: {
-    threads: { get: async ({ threadId }) => makeThreadResponse({ id: threadId, title: `Title ${threadId}`, projectId: "project" }) },
-  } });
-  try {
-    await plugin(bb);
-    let result = await harness.behavior.callRpc("resolveThreadViews", { threadIds: ["a", "b", "a"] }) as any;
-    assert.equal(result.preference, "reuse");
-    assert.deepEqual(result.views.map((view: any) => view.id), ["thread:a", "thread:b"]);
-    assert.equal(harness.inspection.sdk.callsTo("threads.get").length, 2);
-    const saved = await harness.behavior.callRpc("runTool", {
-      name: "set_view_behavior", args: { behavior: "new" }, threadId: null, projectId: null,
-    }) as any;
-    assert.equal(saved.status, "success");
-    result = await harness.behavior.callRpc("resolveThreadViews", { threadIds: ["a"] }) as any;
-    assert.equal(result.preference, "new");
-    assert.ok(harness.inspection.realtimeSignals.some(signal => signal.channel === "config-changed"));
-    await assert.rejects(harness.behavior.callRpc("resolveThreadViews", { threadIds: [] }));
-  } finally { await harness.lifecycle.dispose(); }
+test("realtime tools expose bounded quick actions without destructive or arbitrary tools", () => {
+  assert.deepEqual(liveToolSchemas().map(tool => tool.name), ["list_models", "find_targets", "read_threads", "message_thread", "spawn_worker", "create_thread", "prepare_draft", "control_ui", "stop_thread", "queued_messages", "rename_thread", "subscriptions", "prepare_archive", "archive_threads", "answer_interaction", "remain_silent", "end_call"]);
 });
 
-test("server tool failures carry explicit status and do not create a separate server-only action log", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode", sdk: {
-    threads: { get: async () => { throw new Error("Thread was deleted"); } },
-  } });
-  try {
-    await plugin(bb);
-    await assert.rejects(harness.behavior.callRpc("resolveThreadViews", { threadIds: ["deleted"] }), /deleted/);
-    const result = await harness.behavior.callRpc("runTool", { name: "read_thread", args: { thread_id: "deleted" }, threadId: null, projectId: null }) as any;
-    assert.equal(result.status, "error");
-    assert.match(result.output, /deleted/);
-    assert.equal(harness.inspection.logEntries.some(log => log.message.includes("voice tool")), false);
-    const unknown = await harness.behavior.callRpc("runTool", { name: "not-a-tool", args: {}, threadId: null, projectId: null }) as any;
-    assert.equal(unknown.status, "error");
-  } finally { await harness.lifecycle.dispose(); }
-});
-
-test("desktop calls retain the original focus tool and exclude mobile-only controls", () => {
-  const desktop = toolSchemas([], false);
-  const mobile = toolSchemas([], true);
-  for (const name of ["focus_threads", "manage_views", "set_view_behavior"]) {
-    assert.equal(desktop.some(tool => tool.name === name), false);
-    assert.equal(mobile.some(tool => tool.name === name), true);
-  }
-  const focusDesktop = desktop.find(tool => tool.name === "focus_thread") as any;
-  const focusMobile = mobile.find(tool => tool.name === "focus_thread") as any;
-  assert.equal("disposition" in focusDesktop.parameters.properties, false);
-  assert.equal("disposition" in focusMobile.parameters.properties, true);
-  assert.match(threadViewInstructions(false), /navigates to the requested thread/);
-  assert.match(threadViewInstructions(true), /do not navigate away/);
-  assert.deepEqual(toolSchemas(), desktop);
-});
-
-test("mobile settings never replace desktop navigation and migrate the prototype preference", async () => {
+test("obsolete view preferences are ignored without changing other saved settings", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
   try {
-    await bb.storage.kv.set("config", { viewBehavior: "new" });
+    await bb.storage.kv.set("config", { viewBehavior: "reuse", mobileViewBehavior: "reuse", notifications: false, voice: "cedar" });
     await plugin(bb);
     const current = await harness.behavior.callRpc("getConfig", null) as any;
-    assert.equal(current.mobileViewBehavior, "new");
+    assert.equal("mobileViewBehavior" in current, false);
     assert.equal("viewBehavior" in current, false);
-    const saved = await harness.behavior.callRpc("setConfig", { mobileViewBehavior: "reuse" }) as any;
-    assert.equal(saved.mobileViewBehavior, "reuse");
-    await assert.rejects(harness.behavior.callRpc("setConfig", { mobileViewBehavior: "auto" }));
+    assert.equal("notifications" in current, false);
+    assert.equal(current.voice, "cedar");
   } finally { await harness.lifecycle.dispose(); }
 });
-
-test("desktop focus still opens the real bb thread through the original SDK operation", async () => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode", sdk: {
-    threads: { open: async () => ({ delivered: 1 }) },
-  } });
-  try {
-    await plugin(bb);
-    const result = await harness.behavior.callRpc("runTool", {
-      name: "focus_thread", args: { thread_id: "target" }, threadId: "source", projectId: "project",
-    }) as any;
-    assert.deepEqual(result, { output: "Focused.", status: "success" });
-    assert.equal(harness.inspection.sdk.callsTo("threads.open").length, 1);
-  } finally { await harness.lifecycle.dispose(); }
-});
-
 
 test("concurrent settings patches preserve both changes", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
   try {
     await plugin(bb);
     await Promise.all([
-      harness.behavior.callRpc("setConfig", { notifications: false }),
-      harness.behavior.callRpc("setConfig", { mobileViewBehavior: "new" }),
+      harness.behavior.callRpc("setConfig", { voice: "cedar" }),
+      harness.behavior.callRpc("setConfig", { credentialPreference: "subscription" }),
     ]);
     const config = await harness.behavior.callRpc("getConfig", null) as any;
-    assert.equal(config.notifications, false);
-    assert.equal(config.mobileViewBehavior, "new");
+    assert.equal(config.voice, "cedar");
+    assert.equal(config.credentialPreference, "subscription");
   } finally { await harness.lifecycle.dispose(); }
 });
 
-test("agent prompt proposals do not change active instructions until the user saves", async () => {
+test("legacy voice tools cannot propose prompt changes; explicit settings edits still save", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
   try {
     await plugin(bb);
-    const before = await harness.behavior.callRpc("getPrompt", null) as any;
-    const suggest = (instructions: string) => harness.behavior.callRpc("runTool", {
-      name: "update_instructions", args: { instructions, reason: "User asked for short replies" }, threadId: null, projectId: null,
-    });
-    await suggest("Keep replies short.");
-    const pending = await harness.behavior.callRpc("getPrompt", null) as any;
-    assert.equal(pending.content, before.content);
-    assert.equal(pending.versions.length, before.versions.length);
-    assert.equal(pending.proposal.content, "Keep replies short.");
-    await suggest("Ask before starting work.");
-    await harness.behavior.callRpc("setPrompt", { content: pending.proposal.content, source: "user", note: "reviewed", proposalId: pending.proposal.id });
-    const after = await harness.behavior.callRpc("getPrompt", null) as any;
-    assert.equal(after.content, "Keep replies short.");
-    assert.equal(after.proposal.content, "Ask before starting work.", "a newer suggestion survives saving an older one");
-    await harness.behavior.callRpc("setPrompt", { content: after.proposal.content, source: "user", note: "reviewed", proposalId: after.proposal.id });
-    assert.equal((await harness.behavior.callRpc("getPrompt", null) as any).proposal, null);
+    await assert.rejects(harness.behavior.callRpc("runTool", { name: "update_instructions", args: {} }));
+    await harness.behavior.callRpc("setPrompt",{content:"Keep replies short.",source:"user",note:"edited in settings"});
+    assert.equal((await harness.behavior.callRpc("getPrompt",null) as any).content,"Keep replies short.");
   } finally { await harness.lifecycle.dispose(); }
 });
 
@@ -166,12 +93,12 @@ test("session cursors retain older history when new sessions arrive, including t
     const db = bb.storage.database();
     const insert = db.prepare("INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, 'session.started', '{}')");
     for (let i = 0; i < 65; i++) insert.run(`session-${String(i).padStart(3, "0")}`, 1000);
-    const first = await harness.behavior.callRpc("listSessions", null) as any;
+    const first = await harness.behavior.callRpc("listVoiceSessions", null) as any;
     insert.run("new-session", 2000);
     const before = first.sessions.at(-1);
-    const second = await harness.behavior.callRpc("listSessions", { before: { startedAt: before.startedAt, id: before.id } }) as any;
+    const second = await harness.behavior.callRpc("listVoiceSessions", { before: { updatedAt: before.updatedAt, id: before.id } }) as any;
     const last = second.sessions.at(-1);
-    const third = await harness.behavior.callRpc("listSessions", { before: { startedAt: last.startedAt, id: last.id } }) as any;
+    const third = await harness.behavior.callRpc("listVoiceSessions", { before: { updatedAt: last.updatedAt, id: last.id } }) as any;
     assert.equal(new Set([...first.sessions, ...second.sessions, ...third.sessions].map((row: any) => row.id)).size, 65);
     assert.equal(third.hasMore, false);
   } finally { await harness.lifecycle.dispose(); }
@@ -182,7 +109,7 @@ test("event logging rejects oversized payloads", async () => {
   try {
     await plugin(bb);
     await assert.rejects(harness.behavior.callRpc("logEvent", { sessionId: "call", kind: "user", payload: { text: "x".repeat(65536) } }), /input validation/);
-    assert.deepEqual((await harness.behavior.callRpc("listSessions", null) as any).sessions, []);
+    assert.deepEqual((await harness.behavior.callRpc("listVoiceSessions", null) as any).sessions, []);
   } finally { await harness.lifecycle.dispose(); }
 });
 
@@ -211,7 +138,7 @@ test("newest call claim wins and CLI stop remains authoritative for a frozen own
     await assert.rejects(harness.behavior.callRpc("createCall", { nonce: "a", sdp: "offer", threadId: null, projectId: null }), /stopped or replaced/);
     const stopped = await harness.behavior.runCli(["stop"]);
     assert.equal(stopped.exitCode, 0);
-    const history = await harness.behavior.callRpc("getSessionEvents", { sessionId: "b" }) as any;
+    const history = await harness.behavior.callRpc("getVoiceSession", { sessionId: "b" }) as any;
     assert.ok(history.events.some((event: any) => event.kind === "session.stopped"));
     await assert.rejects(harness.behavior.callRpc("createCall", { nonce: "b", sdp: "offer", threadId: null, projectId: null }), /stopped or replaced/);
     const startSignals = harness.inspection.realtimeSignals.length;
@@ -230,8 +157,133 @@ test("upgrade from the original five migrations preserves saved prompts and adds
     const db = bb.storage.database();
     bb.storage.migrate(db, legacyMigrations);
     db.prepare("INSERT INTO prompt_versions (ts, source, content) VALUES (1, 'user', 'Keep my prompt')").run();
+    const historicalPayload = JSON.stringify({ text: "Original voice words", detail: "preserve exactly" });
+    db.prepare("INSERT INTO session_events (session_id, ts, kind, payload) VALUES ('old-call', 10, 'user', ?)").run(historicalPayload);
     await plugin(bb);
-    assert.equal((await harness.behavior.callRpc("getPrompt", null) as any).content, "Keep my prompt");
+    const prompt=await harness.behavior.callRpc("getPrompt", null) as any;
+    assert.equal(prompt.content, LIVE_PROMPT);
+    assert.deepEqual(prompt.versions,[]);
+    const previous=await harness.behavior.callRpc("getPrompt",{role:"live"}) as any;
+    assert.ok(previous.content.endsWith("Keep my prompt"));
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM voice_role_prompts").get() as any).n,0);
+    assert.equal((db.prepare("SELECT content FROM prompt_versions ORDER BY id DESC LIMIT 1").get() as any).content,"Keep my prompt");
+    const history = await harness.behavior.callRpc("getVoiceSession", { sessionId: "old-call" }) as any;
+    assert.equal(history.session.legacy, true);
+    assert.equal(history.session.title, "Original voice words");
+    assert.equal(history.events[0].payload, historicalPayload);
+    assert.equal(history.events[0].callId, "old-call");
     assert.equal((await harness.behavior.callRpc("claimCall", { nonce: "new" }) as any).sequence, 1);
+  } finally { await harness.lifecycle.dispose(); }
+});
+
+test("historical coordinator settings remain stored but are absent from active config",async()=>{
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+  try {
+    const historical={providerId:"codex",model:"old",reasoningLevel:null,serviceTier:"fast"};
+    await bb.storage.kv.set("config",{coordinator:historical});await plugin(bb);
+    assert.equal("coordinator" in (await harness.behavior.callRpc("getConfig",null) as any),false);
+    await harness.behavior.callRpc("setConfig",{voice:"cedar"});
+    assert.deepEqual((await bb.storage.kv.get("config") as any).coordinator,historical);
+  }finally{await harness.lifecycle.dispose();}
+});
+
+test("live transcripts coalesce without durable token logs and reject stale calls or revisions", async t => {
+  const {bb,harness} = createFakePluginHost({pluginId:"voice-mode"});
+  t.after(() => harness.lifecycle.dispose()); await plugin(bb);
+  await harness.behavior.callRpc("claimCall", {nonce:"stream-call"});
+  const before = (bb.storage.database().prepare("SELECT count(*) n FROM session_events").get() as any).n;
+  const snapshot = {callNonce:"stream-call",revision:2,items:[{key:"user:u",kind:"user",ts:10,payload:{itemId:"u",text:"Check the build",partial:true}}]};
+  assert.deepEqual(await harness.behavior.callRpc("publishTranscript", snapshot),{ok:true});
+  assert.deepEqual(await harness.behavior.callRpc("publishTranscript", {...snapshot,revision:1,items:[]}),{ok:false});
+  assert.deepEqual(await harness.behavior.callRpc("getLiveTranscript", null),snapshot);
+  assert.equal((bb.storage.database().prepare("SELECT count(*) n FROM session_events").get() as any).n,before);
+  await harness.behavior.callRpc("claimCall", {nonce:"other-device"});
+  assert.deepEqual(await harness.behavior.callRpc("publishTranscript", {...snapshot,revision:3}),{ok:false});
+  assert.deepEqual(await harness.behavior.callRpc("getLiveTranscript", null),{callNonce:null,revision:0,items:[]});
+});
+
+test("call configuration leaves interruption and response creation to validated words", async t => {
+  const {bb,harness} = createFakePluginHost({pluginId:"voice-mode",settings:{openaiApiKey:"sk-test"}});
+  t.after(() => harness.lifecycle.dispose()); await plugin(bb);
+  await harness.behavior.callRpc("claimCall", {nonce:"config-call"});
+  let config: any;
+  t.mock.method(globalThis,"fetch", async (_url: unknown, init?: RequestInit) => {config=JSON.parse((init!.body as FormData).get("session") as string);return new Response("answer");});
+  await harness.behavior.callRpc("createCall", {nonce:"config-call",sdp:"offer",threadId:null,projectId:null});
+  assert.equal(config.audio.input.turn_detection,null);
+  assert.deepEqual(config.audio.input.transcription,{model:"gpt-realtime-whisper",delay:"minimal"});
+});
+
+
+test("assistant drafts with request and playback identity cross the strict live transcript RPC", async t => {
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+  t.after(()=>harness.lifecycle.dispose());await plugin(bb);
+  await harness.behavior.callRpc("claimCall",{nonce:"assistant-draft"});
+  const snapshot={callNonce:"assistant-draft",revision:1,items:[{key:"assistant:item",ts:1,kind:"assistant",payload:{itemId:"item",text:"The build",partial:true,responseId:"response",requestId:"request",replyId:null,userTurn:1,source:"realtime"}}]};
+  assert.deepEqual(await harness.behavior.callRpc("publishTranscript",snapshot),{ok:true});
+  assert.deepEqual(await harness.behavior.callRpc("getLiveTranscript",null),snapshot);
+});
+
+test("live cutover registers no agent tools or worker instruction injection",async()=>{
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+  try{
+    const tools:string[]=[];let configurations=0;
+    const register=bb.agents.registerTool;const configure=bb.agents.configure;
+    bb.agents.registerTool=((tool:any)=>{tools.push(tool.name);return register(tool);}) as typeof register;
+    bb.agents.configure=((...args:Parameters<typeof configure>)=>{configurations++;return configure(...args);}) as typeof configure;
+    await plugin(bb);
+    assert.deepEqual(tools,[]);assert.equal(configurations,0);
+  }finally{await harness.lifecycle.dispose();}
+});
+
+test("resuming historical conversations never wakes or messages their old coordinator",async()=>{
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});
+  try {
+    await plugin(bb);const db=bb.storage.database();
+    db.prepare("INSERT INTO voice_conversations(id,created_at,updated_at,status,coordinator_thread_id,state_json) VALUES ('history',1,1,'released','retired-thread','{}')").run();
+    db.prepare("INSERT INTO voice_requests(id,conversation_id,call_nonce,call_sequence,seq,status,envelope_json,created_at,updated_at) VALUES ('old-request','history','old',1,1,'accepted','{}',1,1)").run();
+    db.prepare("INSERT INTO voice_questions(id,conversation_id,coordinator_thread_id,question,status,created_at,updated_at) VALUES ('old-question','history','retired-thread','Proceed?','submitted',1,1)").run();
+    const requests=db.prepare("SELECT * FROM voice_requests").all(),questions=db.prepare("SELECT * FROM voice_questions").all();
+    await harness.behavior.callRpc("claimCall",{nonce:"new",conversationId:"history"});
+    assert.equal(harness.inspection.sdk.callsTo("threads.spawn").length,0);
+    assert.equal(harness.inspection.sdk.callsTo("threads.send").length,0);
+    assert.deepEqual(db.prepare("SELECT * FROM voice_requests").all(),requests);
+    assert.deepEqual(db.prepare("SELECT * FROM voice_questions").all(),questions);
+    for(const method of ["submitRequest","retryRequest","reserveUpdateBatch","reportReplyDelivery","pendingReplies","getCoordinatorStatus","answerQuestion","setWatch","sequence","pendingUiCommands","claimUiCommand","reportUiCommandResult","cancelQuickRequest","listCoordinatorProviders"])
+      await assert.rejects(harness.behavior.callRpc(method as never,{} as never));
+  }finally{await harness.lifecycle.dispose();}
+});
+
+test("createCall uses aide prompts while old live rows remain read-only for rollback",async t=>{
+  const {bb,harness}=createFakePluginHost({pluginId:"voice-mode",settings:{openaiApiKey:"test-only-key"}});t.after(()=>harness.lifecycle.dispose());
+  await plugin(bb);const db=bb.storage.database();
+  db.prepare("INSERT INTO voice_role_prompts(role,ts,source,content) VALUES ('live',1,'user','Old tools prompt')").run();
+  db.prepare("UPDATE voice_call_control SET nonce='test-call' WHERE slot=1").run();
+  const sessions:any[]=[];
+  t.mock.method(globalThis,"fetch",async(_url:unknown,options?:RequestInit)=>{sessions.push(JSON.parse((options!.body as FormData).get("session") as string));return new Response("test SDP");});
+  await harness.behavior.callRpc("createCall",{nonce:"test-call",sdp:"test offer",threadId:null,projectId:null});
+  assert.equal(sessions[0].instructions,LIVE_PROMPT);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM voice_role_prompts WHERE role='aide'").get() as any).n,0);
+  await harness.behavior.callRpc("setPrompt",{role:"aide",content:"Saved aide edit",source:"user",note:null});
+  await harness.behavior.callRpc("createCall",{nonce:"test-call",sdp:"test offer",threadId:null,projectId:null});
+  assert.equal(sessions[1].instructions,"Saved aide edit");
+  await assert.rejects(harness.behavior.callRpc("setPrompt",{role:"live",content:"Not allowed",source:"user",note:null}),/read only/);
+  assert.deepEqual(db.prepare("SELECT content FROM voice_role_prompts WHERE role='live'").all(),[{content:"Old tools prompt"}]);
+  assert.equal((await harness.behavior.callRpc("getPrompt",{role:"live"}) as any).content,"Old tools prompt");
+});
+
+test("recovery claims are idempotent and cannot take a stopped or transferred call", async () => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode" });
+  try {
+    await plugin(bb);
+    const first = await harness.behavior.callRpc("claimCall", {nonce:"wifi"}) as any;
+    const request = {nonce:"cellular",previousNonce:"wifi"};
+    const recovered = await harness.behavior.callRpc("reconnectCall",request) as any;
+    assert.equal(recovered.conversationId,first.conversationId);
+    assert.equal(recovered.sequence,first.sequence+1);
+    assert.deepEqual(await harness.behavior.callRpc("reconnectCall",request),recovered);
+    await harness.behavior.callRpc("claimCall",{nonce:"other-device"});
+    assert.equal(await harness.behavior.callRpc("reconnectCall",request),null);
+    await harness.behavior.callRpc("forceStop",{nonce:"other-device"});
+    assert.equal(await harness.behavior.callRpc("reconnectCall",{nonce:"late",previousNonce:"other-device"}),null);
   } finally { await harness.lifecycle.dispose(); }
 });

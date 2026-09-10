@@ -198,6 +198,10 @@ link so it works like any other BB page.
 - In the by-project grouping, right-click or long-press a project header for
   **New thread**, **Spaces ›**, **Rename…** and **Remove…** (inline forms under
   the header), and **Manage spaces…**.
+- Another plugin in the same page may switch the selected space: it writes
+  `spaceId` in this client's stored state and dispatches the plugin's
+  `bb-plugin-erwin-activity:state` window event, after which the Threads list
+  re-reads the state. Voice Mode uses this for "switch to the mobile space".
 - Space definitions are shared by every client of one BB server and stored in
   the plugin's key-value store as one document with a revision. A save that
   races another client's save fails with an error, and the form keeps your
