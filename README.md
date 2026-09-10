@@ -715,6 +715,7 @@ See [Voice architecture](plugins/voice-mode/docs/architecture.md).
 Status: recorded here; no upstream issue filed. Suggested issue title:
 `Expose scoped worker capabilities and durable managed-workspace operations`.
 File in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### `bb plugin dev` does not rebuild on source changes
 
 - **Where:** `bb plugin dev .` in `plugins/plans`, bb 0.42.1, plugin installed

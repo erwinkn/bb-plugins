@@ -380,6 +380,14 @@ export default async function plugin(bb: BbPluginApi) {
   const conversations = new ConversationRecord(db);
   const voiceSessions = new VoiceSessions(db);
   const currentCall = () => db.prepare("SELECT sequence, nonce FROM voice_call_control WHERE slot = 1").get() as { sequence: number; nonce: string | null };
+  const settings = bb.settings.define({
+    openaiApiKey: {
+      type: "string",
+      label: "OpenAI API key (optional)",
+      secret: true,
+      description: "Leave blank to use your ChatGPT subscription instead (run `codex login`).",
+    },
+  });
   const liveRuntime = new LiveRuntime(bb, () => {
     const { nonce } = currentCall();
     const link = nonce ? db.prepare("SELECT conversation_id FROM voice_conversation_calls WHERE call_id = ?").get(nonce) as { conversation_id: string } | undefined : undefined;
@@ -402,20 +410,6 @@ export default async function plugin(bb: BbPluginApi) {
     bb.realtime.publish("voice-command", { nonce, action: "stop" });
     bb.realtime.publish("aide-log", { sessionId: nonce });
   }
-
-  // The API key is the ONE declarative setting: secrets must live here to get
-  // 0600-file storage that never touches the db or the frontend. Everything
-  // else the user configures — model, voice, behavior — is kv-backed below and
-  // rendered by our own polished settings sections, so the host's auto-form
-  // stays a single clean field instead of a flat dump.
-  const settings = bb.settings.define({
-    openaiApiKey: {
-      type: "string",
-      label: "OpenAI API key (optional)",
-      secret: true,
-      description: "Leave blank to use your ChatGPT subscription instead (run `codex login`).",
-    },
-  });
 
   // ---- kv-backed voice-session config (model / voice / behavior) ----
   // "auto" keeps the historical precedence (key → env → subscription); the

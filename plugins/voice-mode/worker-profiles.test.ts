@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server.ts";
-import { defaultWorkerSettings, namedSettingsFromLegacy, readNamedWorkerSettings, NAMED_WORKER_PROFILE_KEY, WORKER_PROFILE_KEY } from "./worker-profiles.ts";
+import { defaultNamedWorkerSettings, defaultWorkerSettings, namedSettingsFromLegacy, readNamedWorkerSettings, NAMED_WORKER_PROFILE_KEY, WORKER_PROFILE_KEY } from "./worker-profiles.ts";
 import { WORKER_BASE_PROMPT, DEFAULT_PROFILE_INSTRUCTIONS } from "./worker-prompt.ts";
 
 const sdk = {
@@ -27,9 +27,9 @@ test("plugin startup migrates v1 to named profiles once and preserves both old s
   assert.deepEqual(reloaded.bb.storage.database().prepare("SELECT * FROM voice_role_prompts").all(),before);
 });
 
-test("a fresh installation reads defaults without writing either profile key", async t => {
+test("a fresh installation inherits the project/BB permission default without writing either profile key", async t => {
   const {bb,harness}=createFakePluginHost({pluginId:"voice-mode"});t.after(()=>harness.lifecycle.dispose());await plugin(bb);
-  assert.deepEqual(await harness.behavior.callRpc("getWorkerSettings",null),namedSettingsFromLegacy(defaultWorkerSettings()));
+  assert.deepEqual(await harness.behavior.callRpc("getWorkerSettings",null),defaultNamedWorkerSettings());
   assert.equal(await bb.storage.kv.get(WORKER_PROFILE_KEY),undefined);assert.equal(await bb.storage.kv.get(NAMED_WORKER_PROFILE_KEY),undefined);
 });
 

@@ -26,6 +26,7 @@ import { z } from "zod";
 import { LiveStore, type OperationRow, type InboxRow } from "./live-store.ts";
 import { Operations, hash, type EffectInput } from "./operations.ts";
 import { LIVE_EFFECTS, liveToolArgs, type LiveTool } from "./live-tools.ts";
+import { resolvePermissionMode } from "./permission-mode.ts";
 import { Watches, interactionData, tail, threadName, type Thread } from "./watches.ts";
 import { readNamedWorkerSettings, resolveWorkerModel, type NamedWorkerSettings } from "./worker-profiles.ts";
 import { assembleWorkerPrompt } from "./worker-prompt.ts";
@@ -453,6 +454,7 @@ export class LiveRuntime {
     const args = worker ? liveToolArgs.spawn_worker.parse(input.args) : liveToolArgs.create_thread.parse(input.args);
     const settings = await readNamedWorkerSettings(this.bb);
     const profile = this.profileFor(settings, "profile" in args ? args.profile : undefined);
+    const permissionMode = resolvePermissionMode(profile.permissionMode, args.permission_mode);
     const { project, host } = await this.destination(args.project_id, args.host_id);
     const execution = await this.execution(host.id, profile, args);
     const placement = await this.workspace(call, project, args);
@@ -469,7 +471,7 @@ export class LiveRuntime {
     try {
       thread = await this.sdkEffect(input, () => this.bb.sdk.threads.spawn({ projectId: project.id, title: args.title, prompt,
         environment: placement.environment.type === "reuse" ? placement.environment : { type: "host", hostId: host.id, workspace: placement.environment },
-        ...execution, permissionMode: profile.permissionMode, visibility: worker ? "hidden" : "visible" }));
+        ...execution, ...(permissionMode ? { permissionMode } : {}), visibility: worker ? "hidden" : "visible" }));
     } catch (error) {
       this.store.db.prepare("UPDATE voice_tasks SET status = ?, updated_at = ? WHERE op_id = ?").run(isTimeout(error) ? "unknown" : "failed", this.now(), row.id); throw error;
     }
@@ -477,7 +479,7 @@ export class LiveRuntime {
     this.remember(call, thread.id, project.id, host.id);
     const { environment: _environment, ...placed } = placement;
     this.operations.finish(row.id, "running", { threadId: thread.id, title: threadName(thread), profile: profile.name, projectId: project.id, projectName: project.name, outsideProject: project.kind === "personal", hostId: host.id, hostName: host.name,
-      provider: execution.providerId, model: execution.model, reasoning: execution.reasoningLevel ?? null, ...placed, visibility: worker ? "hidden" : "visible", launchAccepted: true, ...this.followUp({ state: "active" }) });
+      provider: execution.providerId, model: execution.model, reasoning: execution.reasoningLevel ?? null, permissionMode: permissionMode ?? "project-default", ...placed, visibility: worker ? "hidden" : "visible", launchAccepted: true, ...this.followUp({ state: "active" }) });
     try { await this.watches.spawned(row.id, thread); }
     catch (error) { this.operations.finish(row.id, "running", { recoveryNeeded: true, error: errorMessage(error) }); }
     return this.operations.receipt(this.operations.get(row.id)!);

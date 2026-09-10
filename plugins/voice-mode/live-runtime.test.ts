@@ -5,7 +5,7 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import { LiveRuntime } from "./live-runtime.ts";
 import { LIVE_RUNTIME_MIGRATIONS } from "./live-store.ts";
 import { hash, canonical } from "./operations.ts";
-import { liveToolSchemas, LIVE_EFFECTS } from "./live-tools.ts";
+import { liveToolArgs, liveToolSchemas, LIVE_EFFECTS } from "./live-tools.ts";
 import { defaultWorkerSettings, WORKER_PROFILE_KEY, readNamedWorkerSettings, NAMED_WORKER_PROFILE_KEY } from "./worker-profiles.ts";
 import { WORKER_BASE_PROMPT } from "./worker-prompt.ts";
 import plugin from "./server.ts";
@@ -120,6 +120,27 @@ test("worker spawn passes each configured profile permission mode to BB", async 
     assert.equal(h.world.spawns.at(-1).permissionMode, mode);
   }
   assert.equal(h.world.spawns.length, 3);
+});
+
+test("fresh workers and visible threads defer to their destination project default", async t => {
+  const h = await fixture(); t.after(h.close);
+  await h.run("spawn_worker", worker);
+  await h.run("create_thread", { project_id: "app", title: "Visible", body: "Check tests" });
+  assert.equal("permissionMode" in h.world.spawns[0], false);
+  assert.equal("permissionMode" in h.world.spawns[1], false);
+});
+
+test("callers can override the project default at creation time", async t => {
+  const h = await fixture(); t.after(h.close);
+  await h.run("create_thread", { project_id: "app", title: "Restricted", body: "Check tests", permission_mode: "accept-edits" });
+  assert.equal(h.world.spawns[0].permissionMode, "accept-edits");
+});
+
+test("full per-launch overrides require explicit confirmation", async t => {
+  assert.throws(() => liveToolArgs.create_thread.parse({ project_id: "app", title: "Full", body: "Check tests", permission_mode: "full" }), /explicit confirmation/);
+  const h = await fixture(); t.after(h.close);
+  await h.run("create_thread", { project_id: "app", title: "Full", body: "Check tests", permission_mode: "full", permission_confirmed: true });
+  assert.equal(h.world.spawns[0].permissionMode, "full");
 });
 
 test("live tools expose all seventeen strict argument schemas", () => {

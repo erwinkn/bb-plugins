@@ -90,6 +90,19 @@ provider, model, reasoning level, Fast option, permission mode, and instructions
 profile and a worker cap. Saving checks every profile on the selected machine;
 launch checks the actual destination again.
 
+**Permission defaults.** Voice Mode does not add a plugin-wide permission
+default. New visible threads and workers whose profile says **Use project/BB
+default** omit `permissionMode` from `threads.spawn`; BB applies the destination
+project's configured default, or its product fallback when the project has none.
+
+A voice `create_thread` or `spawn_worker` call can explicitly override this with
+`permission_mode`. `full` requires `permission_confirmed: true` after the user
+explicitly authorizes that one launch, because it bypasses BB's sandbox and
+approval protections. Existing saved profile modes remain explicit and continue
+to override the project default; nothing is automatically migrated. BB still
+enforces the destination machine and provider limits, which can clamp or refuse
+a requested mode.
+
 The Live prompt and Worker prompt editors show their full defaults and saved
 versions. Previous live and coordinator prompts remain read-only under Previous
 prompts. The new live prompt uses the separate `aide` role, so rollback still reads

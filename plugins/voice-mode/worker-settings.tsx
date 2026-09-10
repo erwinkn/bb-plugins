@@ -118,11 +118,12 @@ export function WorkerSettings() {
             </div>
             <label className="block min-w-0 space-y-1 text-sm">Permission mode
               <select aria-label={`${prefix} permission mode`} className={inputClass} value={profile.permissionMode} onChange={event => update(index, { permissionMode: namedWorkerProfileSchema.shape.permissionMode.parse(event.target.value) })}>
+                <option value="inherit">Use project/BB default</option>
                 <option value="accept-edits">Accept edits</option>
-                <option value="auto">Auto</option>
-                <option value="full">Full</option>
+                <option value="auto">Approve for me</option>
+                <option value="full">Full access</option>
               </select>
-              <span className="block text-xs text-muted-foreground">Investigate and review profiles usually keep accept-edits.</span>
+              <span className="block text-xs text-muted-foreground">Use the destination project's BB default for inherited profiles. Full access bypasses BB's sandbox and approval protections; use it only for an explicitly authorized task.</span>
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" aria-label={`${prefix} Fast`} checked={profile.serviceTier === "fast"} disabled={loadingCatalog || (!provider?.serviceTiers.some(t => t.id === "fast") && profile.serviceTier !== "fast")} onChange={event => update(index, { serviceTier: event.target.checked ? "fast" : "default" })} />Fast
@@ -142,7 +143,7 @@ export function WorkerSettings() {
       <label className="block min-w-0 space-y-1 text-sm">Maximum active or unconfirmed workers
         <input type="number" aria-label="Maximum Voice workers" min={1} max={64} className={inputClass} disabled={disabled} value={settings.maxActiveWorkers} onChange={event => edit({ ...settings, maxActiveWorkers: Number(event.target.value) })} />
       </label>
-      <p className="text-xs text-muted-foreground">BB applies the selected permission mode. An unconfirmed launch keeps its worker slot.</p>
+      <p className="text-xs text-muted-foreground">BB resolves the selected mode and may clamp it to the destination machine or provider. An unconfirmed launch keeps its worker slot.</p>
       {dirty && validation && !validation.success ? <p role="alert" className="break-words text-sm text-destructive">{validation.error.issues[0].message}</p> : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button disabled={disabled || loadingCatalog || !catalog?.hostId || !dirty || !validation?.success} onClick={() => void save()}>{busy ? "Saving..." : "Save profiles"}</Button>

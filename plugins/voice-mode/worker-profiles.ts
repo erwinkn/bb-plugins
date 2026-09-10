@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { DEFAULT_PROFILE_INSTRUCTIONS, WORKER_BASE_PROMPT } from "./worker-prompt.ts";
 import { loadWorkerCatalog } from "./provider-catalog.ts";
+import { workerPermissionModeSchema } from "./permission-mode.ts";
 
 export const WORKER_ROLES = ["investigate", "plan", "implement", "review"] as const;
 export type WorkerRole = typeof WORKER_ROLES[number];
@@ -23,7 +24,8 @@ export type WorkerSettings = z.infer<typeof workerSettingsSchema>;
 export const NAMED_WORKER_PROFILE_KEY = "voice.worker-profiles.v2";
 export const namedWorkerProfileSchema = workerProfileSchema.extend({
   name: z.string().trim().min(1).max(64), instructions: z.string().min(1).max(16000).refine(value => !!value.trim(), "Instructions cannot be empty"),
-  permissionMode: z.enum(["accept-edits", "auto", "full"]).default("accept-edits"),
+  // Omitted historical v2 profiles keep their documented accept-edits behavior.
+  permissionMode: workerPermissionModeSchema.default("accept-edits"),
 });
 export type NamedWorkerProfile = z.infer<typeof namedWorkerProfileSchema>;
 export const namedWorkerSettingsSchema = z.object({
@@ -47,6 +49,12 @@ export function namedSettingsFromLegacy(old: WorkerSettings): NamedWorkerSetting
     defaultProfile: "implement", maxActiveWorkers: old.maxActiveWorkers, workerBasePrompt: WORKER_BASE_PROMPT };
 }
 
+/** Fresh profiles deliberately inherit the plugin-wide safe default. */
+export function defaultNamedWorkerSettings(): NamedWorkerSettings {
+  const profile = (name: WorkerRole): NamedWorkerProfile => ({ providerId: "codex", model: null, reasoningLevel: null, serviceTier: "default", name, instructions: DEFAULT_PROFILE_INSTRUCTIONS[name], permissionMode: "inherit" });
+  return { profiles: WORKER_ROLES.map(profile), defaultProfile: "implement", maxActiveWorkers: 8, workerBasePrompt: WORKER_BASE_PROMPT };
+}
+
 /** Validate the complete draft on the selected machine without changing model choices. */
 export async function validateNamedWorkerSettings(bb: BbPluginApi, settings: NamedWorkerSettings, hostId: string) {
   const parsed = namedWorkerSettingsSchema.parse(settings);
@@ -65,7 +73,9 @@ export async function validateNamedWorkerSettings(bb: BbPluginApi, settings: Nam
 export async function readNamedWorkerSettings(bb: BbPluginApi): Promise<NamedWorkerSettings> {
   const saved = await bb.storage.kv.get<unknown>(NAMED_WORKER_PROFILE_KEY);
   if (saved !== null && saved !== undefined) return namedWorkerSettingsSchema.parse(saved);
-  return namedSettingsFromLegacy(await readWorkerSettings(bb));
+  const legacy = await bb.storage.kv.get<unknown>(WORKER_PROFILE_KEY);
+  if (legacy !== null && legacy !== undefined) return namedSettingsFromLegacy(workerSettingsSchema.parse(legacy));
+  return defaultNamedWorkerSettings();
 }
 
 export function defaultWorkerSettings(): WorkerSettings {
