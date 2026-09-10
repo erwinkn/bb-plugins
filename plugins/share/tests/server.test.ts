@@ -194,7 +194,14 @@ describe("RPC and lifecycle", () => {
     expect(shareSchema.parse(listed.shares[0]).state).toBe("revoked");
   });
   it("uses only public SDK imports", () => {
-    const scan = experimental_scanPublicSdkOnly(new URL("..", import.meta.url).pathname, { allow: [/^(?:jose|marked|better-sqlite3)$/, /^vitest(?:\/.*)?$/] });
+    const scan = experimental_scanPublicSdkOnly(new URL("..", import.meta.url).pathname, {
+      allow: [
+        /^(?:jose|marked|better-sqlite3|react|sonner|clsx|tailwind-merge|class-variance-authority)$/,
+        /^@radix-ui\/react-(?:slot|popover|tooltip)$/,
+        /^@testing-library\/react$/,
+        /^vitest(?:\/.*)?$/,
+      ],
+    });
     expect(scan.violations).toEqual([]); expect(scan.privateDependencies).toEqual([]);
   });
 });

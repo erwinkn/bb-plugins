@@ -1,8 +1,12 @@
 # Share
 
 Share a BB thread as a read-only HTML page. Pages read the live conversation on
-refresh; links can expire or be revoked. Phase 2 adds the thread header control.
-For now, manage shares with the CLI or the local-auth RPC contract.
+refresh; links can expire or be revoked. The thread header's Share control shows
+an active-link dot and opens a popover to create, copy, configure, and revoke
+links. Public links require an explicit confirmation before creation. Sign-in
+links have an Allowed people field for email or `@domain` chips; an empty list
+allows anyone who can sign in. Each link has tool-output and expiry controls.
+Shares can also be managed with the CLI or the local-auth RPC contract.
 
 ```sh
 bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --subdirectory plugins/share

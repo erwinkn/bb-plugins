@@ -1,5 +1,10 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
+import { HeaderControl } from "./components/share/HeaderControl";
 
-export default definePluginApp(() => {
-  // Phase 2 adds the thread header action and share controls.
+export default definePluginApp((app) => {
+  app.slots.experimental_threadHeaderAction({
+    id: "share",
+    title: "Share",
+    component: HeaderControl,
+  });
 });
