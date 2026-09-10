@@ -50,26 +50,33 @@ export async function threadUpdate(bb: BbPluginApi, args: UpdateArgs) {
   else if (args.model && previous?.reasoningLevel && !levels.includes(previous.reasoningLevel)) patch.reasoningLevel = null;
   return { patch, receipt: { ...receipt, provider: thread.providerId, model: model.model,
     previousModel: previous?.model ?? null, previousReasoning: previous?.reasoningLevel ?? null,
-    reasoning: args.reasoning ?? (patch.reasoningLevel === null ? model.defaultReasoningEffort ?? null : previous?.reasoningLevel ?? null),
+    reasoning: args.reasoning ?? (patch.reasoningLevel === null ? null : previous?.reasoningLevel ?? null),
     executionApplies: "next_turn", ...(patch.reasoningLevel === null ? { reasoningReset: true } : {}) } };
 }
 
 /** A provider-independent text snapshot, passed as agent-only context on creation. */
 export async function threadHandoffContext(bb: BbPluginApi, sourceThreadId: string, sourceTitle: string, suppliedContext?: string) {
   sourceTitle = sourceTitle.slice(0, 200);
-  const rows = await bb.sdk.threads.events.list({ threadId: sourceThreadId, order: "desc", limit: "41", types: ["item/completed"] });
+  const rows = await bb.sdk.threads.events.list({ threadId: sourceThreadId, order: "desc", limit: "41", types: ["client/turn/requested", "item/completed"] });
+  const inputText = (parts: { type: string; text?: string; visibility?: string }[]) => parts.filter(p => p.type === "text" && p.visibility !== "agent-only").map(p => p.text ?? "").join("\n");
+  // BB's canonical user input is a request event. Some providers also echo a
+  // userMessage item; retain historical imports without duplicating those echoes.
+  const requestedText = new Set(rows.flatMap(row => row.type === "client/turn/requested" && row.data.initiator === "user" ? [inputText(row.data.input)] : []));
   const messages: { seq: number; role: string; text: string }[] = [];
   let remaining = 12000, truncated = rows.length > 40;
   for (const row of rows.slice(0, 40)) {
-    if (row.type !== "item/completed" || row.data.item.parentToolCallId) continue;
-    const item = row.data.item;
-    const text = item.type === "agentMessage" ? item.text : item.type === "userMessage"
-      ? item.content.filter(p => p.type === "text").map(p => p.text).join("\n") : null;
+    let text: string | null = null, role = "user";
+    if (row.type === "client/turn/requested" && row.data.initiator === "user") text = inputText(row.data.input);
+    if (row.type === "item/completed" && !row.data.item.parentToolCallId) {
+      const item = row.data.item;
+      if (item.type === "agentMessage") { text = item.text; role = "assistant"; }
+      if (item.type === "userMessage") { const value = inputText(item.content); if (!requestedText.has(value)) text = value; }
+    }
     if (!text) continue;
     if (!remaining) { truncated = true; break; }
     const excerpt = tail(text, Math.min(4000, remaining));
     truncated ||= excerpt.truncated;
-    messages.push({ seq: row.seq, role: item.type === "userMessage" ? "user" : "assistant", text: excerpt.text! });
+    messages.push({ seq: row.seq, role, text: excerpt.text! });
     remaining -= excerpt.text!.length;
   }
   const handoff: ThreadHandoff = { sourceThreadId, sourceTitle, sourceSeqEnd: rows[0]?.seq ?? 0, contextMode: "recent_messages", messageCount: messages.length, truncated, hasSuppliedContext: suppliedContext !== undefined };

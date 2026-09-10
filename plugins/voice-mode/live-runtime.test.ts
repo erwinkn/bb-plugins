@@ -1223,3 +1223,22 @@ test("handoff reports truncation and never retries an uncertain creation", async
   assert.ok(h.world.spawns[0].input[0].text.length < 14000);
   await h.reload(); assert.equal((await h.run("create_thread", handoffRequest)).status, "unknown"); assert.equal(h.world.spawns.length, 1);
 });
+
+test("handoff includes canonical user requests without provider echoes or agent-only and system input", async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  const request = { id: "request", seq: 1, type: "client/turn/requested", scope: { kind: "thread" }, data: { initiator: "user", input: [{ type: "text", text: "Preserve the original API." }, { type: "text", text: "private seed", visibility: "agent-only" }, { type: "localFile", path: "/private" }] } };
+  h.world.events.set("build", [request, sourceMessage(2, { type: "userMessage", content: [{ type: "text", text: "Preserve the original API." }] }), sourceMessage(3, { type: "agentMessage", text: "ACK" }), { ...request, id: "system", seq: 4, data: { initiator: "system", input: [{ type: "text", text: "private system request" }] } }]);
+  const result = await h.run("create_thread", handoffRequest);
+  assert.equal(result.status, "running"); assert.equal(result.handoff.messageCount, 2);
+  const context = h.world.spawns[0].input[0].text;
+  assert.equal(context.match(/Preserve the original API/g).length, 1);
+  assert.doesNotMatch(context, /private seed|private system request|\/private/);
+});
+
+test("handoff refuses a source that moves environments during context preparation", async t => {
+  const h = await fixture(); t.after(h.close); const source = sourceEnvironment(h);
+  let reads = 0;
+  h.world.get = async ({ threadId }) => { const thread = h.world.threads.get(threadId); return threadId === source.id && ++reads > 1 ? { ...thread, environmentId: "env_other" } : thread; };
+  const result = await h.run("create_thread", handoffRequest);
+  assert.match(result.error, /source changed/); assert.equal(h.world.spawns.length, 0);
+});

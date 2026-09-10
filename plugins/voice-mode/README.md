@@ -68,8 +68,9 @@ can choose another provider. Its permission mode cannot exceed either the source
 or the configured profile. The source keeps running; a handoff does not stop it.
 
 Handoffs copy recent root user/assistant messages as agent-only context, capped
-at 40 completed items, 4,000 characters per message, and 12,000 characters total.
-Tool payloads, reasoning, child-agent output, and attachments are omitted.
+at 40 request/completed-item events, 4,000 characters per message, and 12,000
+characters total. Tool payloads, reasoning, child-agent output, agent-only input,
+system requests, and attachments are omitted.
 Optional `handoff_context` adds up to 8,000 characters of older decisions or
 constraints. The receipt records `handoff.sourceThreadId`, the snapshot's
 `sourceSeqEnd`, message count, and truncation; `read_threads` also returns this
