@@ -48,9 +48,30 @@ test("v2 save validates names, default, model, reasoning, Fast, permissions, and
     {...settings,profiles:settings.profiles.map((p,i)=>i===0?{...p,permissionMode:"invalid"}:p)},
   ];
   for(const value of invalid) await assert.rejects(harness.behavior.callRpc("setWorkerSettings",{hostId:"desktop",settings:value}));
-  await assert.rejects(harness.behavior.callRpc("setWorkerSettings",{hostId:"offline",settings}),/no longer connected/);
+  await assert.rejects(harness.behavior.callRpc("setWorkerSettings",{hostId:"offline",settings}),/not connected/);
   assert.deepEqual(await bb.storage.kv.get(NAMED_WORKER_PROFILE_KEY),settings);
   assert.ok(harness.inspection.sdk.callsTo("providers.models").every(call=>(call[0] as any).hostId==="desktop"));
+});
+
+test("worker catalog preview defaults to BB's primary machine rather than the first host", async t => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "voice-mode", sdk: {
+    ...sdk,
+    system: { config: async () => ({ primaryHostId: "server" }) },
+    hosts: { list: async () => [{ id: "desktop", name: "Mac", status: "connected" }, { id: "server", name: "Server", status: "connected" }] },
+  } as any });
+  t.after(() => harness.lifecycle.dispose()); await plugin(bb);
+  const catalog = await harness.behavior.callRpc("listWorkerProviders", {}) as any;
+  assert.equal(catalog.hostId, "server");
+  assert.ok(harness.inspection.sdk.callsTo("providers.models").every(call => (call[0] as any).hostId === "server"));
+  const explicit = await harness.behavior.callRpc("listWorkerProviders", { hostId: "desktop" }) as any;
+  assert.equal(explicit.hostId, "desktop");
+  harness.inspection.sdk.stub("system.config", async () => ({ primaryHostId: "offline" }) as any);
+  const unavailable = await harness.behavior.callRpc("listWorkerProviders", {}) as any;
+  assert.equal(unavailable.hostId, null);
+  assert.deepEqual(unavailable.providers, []);
+  assert.deepEqual(unavailable.models, []);
+  assert.deepEqual(unavailable.hosts, catalog.hosts, "keep available machines selectable without silently choosing one");
+  assert.equal((await harness.behavior.callRpc("listWorkerProviders", { hostId: "desktop" }) as any).hostId, "desktop");
 });
 
 test("existing v2 profiles without a permission mode read as accept-edits without rewriting storage", async t => {

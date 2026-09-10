@@ -500,18 +500,27 @@ No upstream issue filed.
 Suggested issue title: `Allow hiding individual providers from selection menus`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
-### Plugin SDK: identify the machine that runs the BB server
+### Plugin SDK: map the call owner's client to an enrolled machine
 
-Voice Mode starts workers outside any project. BB's personal project has no
-sources, so the plugin cannot read a machine from it, and the SDK's `Host` has no
-flag for the machine that runs the server. The plugin picks the connected machine
-that hosts the most projects, which is a heuristic.
+Voice Mode exposes machine discovery and optional host selection for hidden
+workers. The existing `bb.sdk.system.config().primaryHostId` supplies the default
+machine; this replaces the earlier project-count heuristic and resolves the
+previous request to expose the primary host.
 
-Expose the server's own host ID to plugins, for example `bb.hosts.current()` or an
-`isServer` flag on `Host`, so project-less work has a deterministic destination.
+The remaining gap is caller identity: the frontend SDK does not identify which
+enrolled machine, if any, owns a browser or desktop client. Platform and browser
+information cannot distinguish two Macs, and the viewed thread's environment
+may be on another machine. Expose a host-resolved client identity with an optional
+enrolled host ID and documented behavior for remote browsers and unbound devices.
+Keep this distinct from authorization to control that machine.
 
-Status: recorded here; no upstream issue filed.
-Suggested issue title: `Plugin SDK: expose the host that runs the BB server`.
+Voice currently supplies a bounded client-reported device descriptor and leaves
+its host ID unknown. For computer use, the assistant uses the machine named by
+the user or asks which machine to target. This belongs upstream in BB's client
+identity and plugin context APIs.
+
+Status: verified against BB 0.42.1 / SDK 0.4.47; no upstream issue filed.
+Suggested issue title: `Plugin SDK: expose caller client identity and optional enrolled host`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
 ### Mobile: keep an active voice call alive when the screen locks

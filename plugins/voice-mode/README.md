@@ -32,7 +32,7 @@ Windows and Linux use Ctrl. Change them in Voice Mode's Keyboard shortcuts setti
 
 ## Work with Ada
 
-Ada uses one live model and eighteen tools. It can find, read, and rename threads, deliver
+Ada uses one live model and nineteen tools. It can list machines, find, read, and rename threads, deliver
 messages, create visible threads or hidden workers, prepare unsent drafts, navigate,
 stop work, manage subscriptions, prepare and confirm archives, and answer native
 questions or approvals. Archive and approval actions require a later spoken
@@ -44,6 +44,15 @@ search does not settle what you meant, Ada starts a worker to look instead of as
 for exact names or IDs. Workers run outside any project unless the task needs a
 repository; they can read every BB project and thread. A worker uses the default
 profile unless Ada picks one of the configured names.
+
+Workers default to BB's primary machine. Name a connected machine to run a worker
+there instead; workers stay out of the sidebar on every machine. For a task that
+needs computer use on your device, Ada starts a Codex worker on the machine you
+identify. That worker uses its existing tools and permissions.
+
+Ada receives the call owner's platform and browser as context. BB does not yet
+map a browser client to an enrolled machine, so Ada asks which machine when the
+target is unclear. A call from a phone can still direct a worker on your Mac.
 
 Name a provider, model, or reasoning level when you ask for new work and Ada uses
 it, then confirms the model it resolved; ask "what models are there" for the list.
@@ -64,8 +73,9 @@ Say "hand this off to a new thread using Opus" to use `create_thread` with
 source; if supplied, they must match it. Omit `workspace` and `reuse_thread_id`.
 The new visible root thread shares the source environment, including uncommitted
 files. It inherits the source provider/model/reasoning unless overridden, and
-can choose another provider. Unless explicitly overridden for this launch, its permission mode cannot exceed either the source
-or the configured profile. The source keeps running; a handoff does not stop it.
+can choose another provider. Unless explicitly overridden for this launch, its permission mode stays within
+the source mode and any explicit profile limit. Profiles set to inherit keep
+the source mode. The source keeps running; a handoff does not stop it.
 
 Handoffs copy recent root user/assistant messages as agent-only context, capped
 at 40 request/completed-item events, 4,000 characters per message, and 12,000
