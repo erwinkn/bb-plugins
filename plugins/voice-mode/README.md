@@ -64,7 +64,7 @@ Say "hand this off to a new thread using Opus" to use `create_thread` with
 source; if supplied, they must match it. Omit `workspace` and `reuse_thread_id`.
 The new visible root thread shares the source environment, including uncommitted
 files. It inherits the source provider/model/reasoning unless overridden, and
-can choose another provider. Its permission mode cannot exceed either the source
+can choose another provider. Unless explicitly overridden for this launch, its permission mode cannot exceed either the source
 or the configured profile. The source keeps running; a handoff does not stop it.
 
 Handoffs copy recent root user/assistant messages as agent-only context, capped

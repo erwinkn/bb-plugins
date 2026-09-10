@@ -1191,6 +1191,31 @@ test("handoff defaults to the source execution and machine and permits selecting
   assert.equal(h.world.spawns[1].serviceTier, "default"); assert.equal(h.world.spawns[1].permissionMode, "accept-edits");
 });
 
+for (const [sourceMode, profileMode, override, expected] of [
+  ["auto", "inherit", undefined, "auto"],
+  ["full", "accept-edits", undefined, "accept-edits"],
+  ["accept-edits", "full", undefined, "accept-edits"],
+  ["full", "inherit", "auto", "auto"],
+  ["accept-edits", "inherit", "full", "full"],
+] as const) test(`handoff permissions: source ${sourceMode}, profile ${profileMode}, override ${override}`, async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  const settings = await readNamedWorkerSettings(h.bb);
+  settings.profiles.find(p => p.name === settings.defaultProfile)!.permissionMode = profileMode;
+  await h.bb.storage.kv.set(NAMED_WORKER_PROFILE_KEY, settings);
+  h.world.executions.set("build", { model: "worker", reasoningLevel: "medium", serviceTier: "default", permissionMode: sourceMode });
+  const result = await h.run("create_thread", { ...handoffRequest, ...(override ? { permission_mode: override, permission_confirmed: override === "full" } : {}) });
+  assert.equal(result.status, "running");
+  assert.equal(h.world.spawns[0].permissionMode, expected);
+  assert.equal(result.permissionMode, expected);
+});
+
+test("handoffs require confirmation before a full permission override", async t => {
+  const h = await fixture(); t.after(h.close); sourceEnvironment(h);
+  const result = await h.run("create_thread", { ...handoffRequest, permission_mode: "full" });
+  assert.match(result.error, /explicit confirmation/);
+  assert.equal(h.world.spawns.length, 0);
+});
+
 for (const [extra, expected] of [
   [{ handoff_from_thread_id: "unseen" }, /unknown target ID/],
   [{ project_id: "docs" }, /source thread's project/],
