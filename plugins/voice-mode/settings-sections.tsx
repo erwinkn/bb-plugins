@@ -13,12 +13,21 @@ import { toast } from "sonner";
 import type { rpcContract } from "./server";
 import { Button } from "@/components/ui/button";
 import {
+  DEFAULT_LIVE_BACKEND,
+  DEFAULT_LIVE_VOICE,
   DEFAULT_MODEL,
   DEFAULT_VOICE,
+  LIVE_BACKEND_OPTIONS,
+  LIVE_VOICE_OPTIONS,
   MODEL_OPTIONS,
   VOICE_OPTIONS,
+  engineForModel,
+  isLiveBackend,
+  isLiveVoice,
   isModel,
   isVoice,
+  type LiveBackend,
+  type LiveVoice,
   type RealtimeModel,
   type Voice,
 } from "./models";
@@ -46,6 +55,8 @@ type CredentialPreference = "auto" | "apiKey" | "subscription";
 interface VoiceConfig {
   model: RealtimeModel;
   voice: Voice;
+  liveVoice: LiveVoice;
+  liveBackend: LiveBackend;
   credentialPreference: CredentialPreference;
   shortcuts: Shortcuts;
 }
@@ -89,7 +100,7 @@ function useVoiceConfig() {
   return { config, update };
 }
 
-function voiceLabel(voice: Voice): string {
+function voiceLabel(voice: Voice | LiveVoice): string {
   return voice.charAt(0).toUpperCase() + voice.slice(1);
 }
 
@@ -250,7 +261,10 @@ export function ModelsSettings() {
   const { config, update } = useVoiceConfig();
   const model = config?.model ?? DEFAULT_MODEL;
   const voice = config?.voice ?? DEFAULT_VOICE;
+  const liveVoice = config?.liveVoice ?? DEFAULT_LIVE_VOICE;
+  const liveBackend = config?.liveBackend ?? DEFAULT_LIVE_BACKEND;
   const loading = config === null;
+  const live = engineForModel(model) === "live";
 
   return (
     <div className="space-y-4">
@@ -273,24 +287,68 @@ export function ModelsSettings() {
           ))}
         </select>
       </label>
-      <label className="block space-y-1">
-        <span className="text-sm font-medium text-foreground">Voice</span>
-        <select
-          value={voice}
-          disabled={loading}
-          onChange={(event) => {
-            const next = event.target.value;
-            if (isVoice(next)) void update({ voice: next });
-          }}
-          className={selectClass}
-        >
-          {VOICE_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {voiceLabel(option)}
-            </option>
-          ))}
-        </select>
-      </label>
+      {live ? (
+        <>
+          <label className="block space-y-1">
+            <span className="text-sm font-medium text-foreground">Backend model</span>
+            <select
+              value={liveBackend}
+              disabled={loading}
+              onChange={(event) => {
+                const next = event.target.value;
+                if (isLiveBackend(next)) void update({ liveBackend: next });
+              }}
+              className={selectClass}
+            >
+              {LIVE_BACKEND_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <span className="block text-xs text-muted-foreground">
+              The delegated model that reasons and calls tools for gpt-live-1.
+            </span>
+          </label>
+          <label className="block space-y-1">
+            <span className="text-sm font-medium text-foreground">Voice</span>
+            <select
+              value={liveVoice}
+              disabled={loading}
+              onChange={(event) => {
+                const next = event.target.value;
+                if (isLiveVoice(next)) void update({ liveVoice: next });
+              }}
+              className={selectClass}
+            >
+              {LIVE_VOICE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {voiceLabel(option)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </>
+      ) : (
+        <label className="block space-y-1">
+          <span className="text-sm font-medium text-foreground">Voice</span>
+          <select
+            value={voice}
+            disabled={loading}
+            onChange={(event) => {
+              const next = event.target.value;
+              if (isVoice(next)) void update({ voice: next });
+            }}
+            className={selectClass}
+          >
+            {VOICE_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {voiceLabel(option)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
     </div>
   );
 }

@@ -4,6 +4,22 @@ One Realtime model speaks and calls eighteen tools. Hidden root threads run
 background tasks. No model coordinates those threads. Stored subscriptions,
 receipts, native BB events, and the client sequencer supply the control flow.
 
+Two voice engines are supported, selected by the configured model. The realtime
+engine (`gpt-realtime-2.1`, `gpt-realtime-2.1-mini`) is described throughout this
+document. The live engine (`gpt-live-1`) is a full-duplex voice layer that owns
+listening, speaking, and interruption itself and delegates every tool call to a
+configured Responses backend (`liveBackend`, default `gpt-5.6-terra`): the
+delegated model runs the aide prompt and the same tool schemas, while function
+calls arrive as nested `response.event` envelopes, execute through the same
+`liveClient` authorization path, and return via `response.item.create` plus
+`response.create`. Live transcript fragments carry no item identity or commit
+signal, so `voice-agent.ts` synthesizes input items per speech run and completes
+them locally at commit time; `callStartContext` and background updates reach the
+session as `session.thinking.append`/`session.commentary.append` chunks, and
+`session.close` ends the call after the spoken goodbye drains. Duration usage
+arrives as `session.usage.updated` (logged); delegated backend tokens are
+recorded per nested `response.completed`.
+
 `voice-agent.ts` owns the call, microphone, WebRTC events, and output sequencing.
 It fetches `callStartContext` before enabling the microphone and injects one system
 item. During the call it injects only tool results and `background_updates` batches.

@@ -316,6 +316,21 @@ export class InputController {
     this.requested = this.version;
     return true;
   }
+  /**
+   * The open utterance before it fully settles. Live-engine delegations bind to
+   * this: the backend may act while the caller is still finishing a sentence,
+   * and waitFor() then decides whether the request still stands.
+   */
+  currentUtterance(): { id: string; version: number; text: string; startedAt: number } | null {
+    const current = this.current;
+    if (!current || !current.items.length) return null;
+    return {
+      id: current.id,
+      version: current.version,
+      text: current.items.map(item => item.final ?? item.text).join(" ").trim(),
+      startedAt: current.items[0].startedAt,
+    };
+  }
   answered(version: number) {
     if (this.current?.version === version) this.current.closed = true;
     this.changed();
