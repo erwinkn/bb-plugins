@@ -863,7 +863,17 @@ export default async function plugin(bb: BbPluginApi) {
         const text = await response.text();
         if (!response.ok) {
           bb.log.error(`OpenAI live call failed: ${response.status} ${text.slice(0, 500)}`);
-          throw new Error(`OpenAI live call failed: ${response.status} ${response.statusText}`);
+          // A ChatGPT-subscription token authenticates on the Live endpoint but
+          // is denied at session creation ("Voice session access denied") —
+          // only a platform API key is entitled. Say so when we sent one.
+          const { openaiApiKey } = await settings.get();
+          const { credentialPreference } = await readConfig();
+          const codex = !!(await codexToken());
+          const usedSubscription = credentialPreference === "subscription" ? codex : !(openaiApiKey || process.env.OPENAI_API_KEY) && codex;
+          const hint = response.status === 403 && usedSubscription
+            ? " The ChatGPT subscription token is not entitled to gpt-live-1 sessions; set an OpenAI API key in Voice Mode settings."
+            : "";
+          throw new Error(`OpenAI live call failed: ${response.status} ${response.statusText}.${hint}`);
         }
         if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
         let result: { session?: { id?: unknown }; transport?: { sdp?: unknown } };

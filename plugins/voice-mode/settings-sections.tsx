@@ -151,7 +151,7 @@ interface CredentialStatus {
  * Shows which credential Ada is using, and — only when both an API key and a
  * ChatGPT subscription are available — lets the user pick between them.
  */
-function CredentialCard() {
+function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
   const rpc = useRpc<typeof rpcContract>();
   const [status, setStatus] = useState<CredentialStatus | null>(null);
 
@@ -203,6 +203,13 @@ function CredentialCard() {
     }
   }
 
+  // gpt-live-1 sessions are not covered by the ChatGPT subscription token
+  // (OpenAI answers 403 "Voice session access denied"); it needs an API key.
+  const liveKeyWarning =
+    liveEngine && status?.effective === "subscription"
+      ? "gpt-live-1 requires an OpenAI API key — the ChatGPT subscription only covers realtime sessions."
+      : null;
+
   // Both credentials present: pick which one Ada uses. The dropdown speaks for
   // itself, so no hint.
   if (canChoose) {
@@ -222,6 +229,7 @@ function CredentialCard() {
             Remove API key
           </Button>
         </div>
+        {liveKeyWarning ? <p className="text-xs italic text-amber-600 dark:text-amber-500">{liveKeyWarning}</p> : null}
       </div>
     );
   }
@@ -253,6 +261,7 @@ function CredentialCard() {
         ) : null}
       </div>
       {helper ? <p className="text-xs italic text-muted-foreground">{helper}</p> : null}
+      {liveKeyWarning ? <p className="text-xs italic text-amber-600 dark:text-amber-500">{liveKeyWarning}</p> : null}
     </div>
   );
 }
@@ -268,7 +277,7 @@ export function ModelsSettings() {
 
   return (
     <div className="space-y-4">
-      <CredentialCard />
+      <CredentialCard liveEngine={live} />
       <label className="block space-y-1">
         <span className="text-sm font-medium text-foreground">Live model</span>
         <select
