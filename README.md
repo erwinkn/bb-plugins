@@ -185,8 +185,10 @@ a guarantee; the export is the safety net.
 
 ## Desired upstream changes
 
-Record potential BB issues here for later review and filing. Do not open new
-issues in the BB repository as part of plugin implementation.
+Record potential BB issues here for later review and filing. Never open
+issues, PRs, or comments on the BB repository or any other repo without the
+user's explicit request or approval in the current conversation — see
+AGENTS.md.
 
 ### Provider-independent thread handoffs
 
@@ -771,8 +773,9 @@ later. Remove an entry when the upstream fix ships.
   this: its wrappers see only runtime-to-bridge lines, and the SDK's `fs`
   client capabilities are fixed to `true`. Optionally report the docs example
   to the ACP project.
-- **Status:** not filed yet. Direct confirmation against a real Devin turn is
-  still open; the reproduction used the SDK bridge with a scripted ACP peer.
+- **Status:** filed as [BB #3453](https://github.com/get-bb/bb/issues/3453) on
+  2026-09-11, including live confirmation from Devin threads. The earlier
+  reproduction used the SDK bridge with a scripted ACP peer.
 
 
 ### Voice operator isolation and managed workspace primitives

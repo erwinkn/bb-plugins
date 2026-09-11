@@ -8,6 +8,13 @@ upstream in BB, or in another project. If it belongs elsewhere, tell me why
 and suggest where and how to file an issue or feature request. Record desired
 upstream changes in README.md, with their issue links when available.
 
+Never file issues, feature requests, pull requests, or comments on any external
+repository (including get-bb/bb) without my explicit request or approval in the
+current conversation. This applies to every task, not just plugin
+implementation: a recorded README entry, a suggested issue title, or a past
+filing is not authorization. Record candidates in README.md and propose them to
+me instead.
+
 ## Plugin update workflow
 
 Keep normal plugin installations on Git `main`. Use this sequence for updates:
