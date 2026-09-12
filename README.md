@@ -182,6 +182,31 @@ Observed on BB 0.42.1: `bb plugin remove` left `plugin_kv` rows and
 documented scope (settings, secrets, schedules). Treat that as a courtesy, not
 a guarantee; the export is the safety net.
 
+### The daily loop
+
+Normal state: each plugin installs from the main checkout's path —
+`path:~/Code/bb-plugins/plugins/<name>` — not a `git:` ref. The running plugin
+tracks whatever the checkout contains; `git pull` + `bb plugin build <path>` +
+`bb plugin reload <name>` picks up landed changes.
+
+For a change:
+
+1. Work in a worktree (`git worktree add`), run `bb plugin dev <path>` there
+   for live rebuild+reload while iterating.
+2. Point the running install at the worktree in place:
+   `bb plugin install path:<worktree>/plugins/<name> --yes`. A path→path move
+   retains the plugin ID, settings, secrets, schedules, and stored data.
+3. Test, commit, push, open a draft PR. Keep the worktree until the install
+   moves off it — deleting the source path breaks a path install.
+4. After merge: `git -C ~/Code/bb-plugins pull`, rebuild if needed, and move
+   the install back with `bb plugin install path:~/Code/bb-plugins/plugins/<name> --yes`.
+
+Why not `git:`: a `git:` source cannot move in place — switching between
+`git:` and `path:` needs a remove/install cycle, which deletes settings and
+secrets (`data.db` survives only by courtesy; back it up). Tracking the
+checkout path keeps every feature iteration a single in-place move and keeps
+`bb plugin dev` available at all times.
+
 
 ## Desired upstream changes
 
