@@ -128,7 +128,7 @@ test("create refuses parent traversal and setSetting refuses unknown keys", asyn
   await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "wordWrap", value: "yes" }));
 });
 
-test("tree lists one deferred level locally and search scans the file index", async (t) => {
+test("tree lists one level locally, prefetches the next, and search scans the file index", async (t) => {
   const storage = mkdtempSync(path.join(tmpdir(), "editor-storage-"));
   t.after(() => rmSync(storage, { recursive: true, force: true }));
   process.env.BB_THREAD_STORAGE = storage;
@@ -144,14 +144,19 @@ test("tree lists one deferred level locally and search scans the file index", as
   await plugin(bb);
   const source = { kind: "thread-storage", threadId: "thr_x", environmentId: null, projectId: null };
   const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  // The level below the root resolved ahead of its expand: `src` is no
+  // longer deferred and its rows are already here. `src/deep` stays lazy.
   assert.deepEqual(listing.entries, [
     { path: "readme.md", kind: "file" },
-    { path: "src", kind: "directory", deferred: true },
+    { path: "src", kind: "directory" },
+    { path: "src/deep", kind: "directory", deferred: true },
+    { path: "src/index.ts", kind: "file" },
   ]);
   const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
   assert.deepEqual(inner.entries, [
-    { path: "src/deep", kind: "directory", deferred: true },
+    { path: "src/deep", kind: "directory" },
     { path: "src/index.ts", kind: "file" },
+    { path: "src/deep/nested.ts", kind: "file" },
   ]);
   // Search sees files in directories the tree never listed.
   const found = rpcContract.search.output.parse(await harness.behavior.callRpc("search", { source, query: "nested" }));
@@ -196,10 +201,13 @@ test("tree and search go through the daemon for another host's workspace", async
   await plugin(bb);
   const source = { kind: "workspace", threadId: null, environmentId: null, projectId: "proj_x" };
   const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  // The root call prefetched `src`'s level in the same request.
   assert.deepEqual(listing.entries, [
-    { path: "src", kind: "directory", deferred: true },
+    { path: "src", kind: "directory" },
     { path: "README.md", kind: "file" },
+    { path: "src/a.ts", kind: "file" },
   ]);
+  assert.deepEqual(dirCalls, ["/remote/work", "/remote/work/src"]);
   const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
   assert.deepEqual(inner.entries, [{ path: "src/a.ts", kind: "file" }]);
   // A re-expand is served from the listing cache, not another host round trip.

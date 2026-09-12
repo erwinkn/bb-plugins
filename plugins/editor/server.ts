@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { listLocalFiles, listLocalTree } from "./lib/local-tree.js";
-import { fuzzyScore } from "./lib/file-tree.js";
+import { fuzzyScore, type FlatEntry } from "./lib/file-tree.js";
 import { CODE_THEME_CHOICES, codeThemeId, codeThemeLabel } from "./lib/themes.js";
 import { diffEntrySchema, diffTargetSchema, hasConflictMarkers, isWorkingTreeTarget, type DiffTarget } from "./lib/diff-contract.js";
 import { FILES_CHANGED_CHANNEL, watchContract, watchSignals, type FilesChangedSignal } from "./lib/watch-contract.js";
@@ -139,11 +139,12 @@ export const rpcContract = defineRpcContract({
     ]),
   },
   /**
-   * The entries directly inside one workspace directory (paths stay
-   * workspace-relative). Listings are a single level, the way code editors
-   * resolve them: every directory comes back `deferred` and lists with
-   * `subpath` when the user expands it, so no listing is ever capped by
-   * workspace size.
+   * The entries inside one workspace directory (paths stay
+   * workspace-relative). Listings resolve a level at a time, the way code
+   * editors do: directories the user has not reached come back `deferred`
+   * and list with `subpath` on expand, so no listing is ever capped by
+   * workspace size. Modest child directories resolve one level ahead, so an
+   * expand usually has its rows already.
    */
   tree: {
     input: z.object({ source: sourceSchema, subpath: z.string().optional() }).strict(),
@@ -442,6 +443,38 @@ export default async function plugin(bb: BbPluginApi) {
       const rest = key.slice(prefix.length);
       if (key.startsWith(prefix) && (rest === "" || rest.startsWith("/") || rest.startsWith("\\"))) dirListings.delete(key);
     }
+  }
+
+  /**
+   * Resolves the listed directories' own levels ahead of their expands.
+   * Remote listings pay a round trip per level, so an open feels instant only
+   * when its rows are already here. Bounds keep a big workspace cheap: a
+   * directory with more than PREFETCH_MAX_DIRS children stays fully lazy,
+   * one oversized child keeps its `deferred` marker, and the response as a
+   * whole stays under PREFETCH_ENTRY_BUDGET added rows. Children beyond the
+   * bounds still land in the listing cache when they were fetched, so their
+   * expands stay quick.
+   */
+  const PREFETCH_MAX_DIRS = 64;
+  const PREFETCH_DIR_MAX_ENTRIES = 500;
+  const PREFETCH_ENTRY_BUDGET = 4000;
+  async function prefetchLevels(
+    entries: FlatEntry[],
+    listLevel: (relative: string) => Promise<FlatEntry[]>,
+  ): Promise<FlatEntry[]> {
+    const dirs = entries.filter((entry) => entry.deferred === true);
+    if (dirs.length === 0 || dirs.length > PREFETCH_MAX_DIRS) return entries;
+    const levels = await Promise.all(dirs.map((dir) => listLevel(dir.path).catch(() => null)));
+    const out = [...entries];
+    let budget = PREFETCH_ENTRY_BUDGET;
+    dirs.forEach((dir, index) => {
+      const level = levels[index];
+      if (level === null || level.length > PREFETCH_DIR_MAX_ENTRIES || level.length > budget) return;
+      out[out.indexOf(dir)] = { path: dir.path, kind: "directory" };
+      out.push(...level);
+      budget -= level.length;
+    });
+    return out;
   }
 
   // Every open page gets every signal, and a page may hold two subscribers;
@@ -810,8 +843,11 @@ export default async function plugin(bb: BbPluginApi) {
       const target = await resolveTarget(source, ".");
       const clean = subpath.replace(/^\/+|\/+$/g, "");
       if (await isLocalWorkspace(target)) {
-        const listing = await listLocalTree(target.rootPath, clean);
-        return { root: target.rootPath, ...listing };
+        const entries = await prefetchLevels(
+          (await listLocalTree(target.rootPath, clean)).entries,
+          (relative) => listLocalTree(target.rootPath, relative).then((listing) => listing.entries),
+        );
+        return { root: target.rootPath, entries };
       }
       // Another host: the daemon lists one level, the way the local lister
       // does. It sees hidden entries, node_modules, and symlinks, which
@@ -819,20 +855,20 @@ export default async function plugin(bb: BbPluginApi) {
       const hostId = await hostOf(target);
       if (hostId === null) throw new Error("This workspace's host is not available");
       const api = pathApiFor(target.rootPath);
-      const listing = await remoteDirectory(
-        hostId,
-        clean === "" ? target.rootPath : api.join(target.rootPath, clean),
-        clean === "",
-      );
-      const prefix = clean === "" ? "" : `${clean}/`;
-      return {
-        root: target.rootPath,
-        entries: listing.entries.map((entry) => ({
+      const listLevel = async (relative: string): Promise<FlatEntry[]> => {
+        const listing = await remoteDirectory(
+          hostId,
+          relative === "" ? target.rootPath : api.join(target.rootPath, relative),
+          relative === "",
+        );
+        const prefix = relative === "" ? "" : `${relative}/`;
+        return listing.entries.map((entry) => ({
           path: `${prefix}${entry.name}`,
           kind: entry.kind,
           ...(entry.kind === "directory" ? { deferred: true as const } : {}),
-        })),
+        }));
       };
+      return { root: target.rootPath, entries: await prefetchLevels(await listLevel(clean), listLevel) };
     },
 
     async search({ source, query, limit = 50 }) {
