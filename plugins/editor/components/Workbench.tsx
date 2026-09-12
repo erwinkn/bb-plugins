@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { toast } from "sonner";
 import { experimental_useCodeTheme, useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
@@ -45,12 +45,11 @@ export interface WorkbenchProps {
 interface TreeState {
   entries: readonly FlatEntry[];
   root: string;
-  truncated: boolean;
   isLoading: boolean;
   error: string | null;
 }
 
-const EMPTY_TREE: TreeState = { entries: [], root: "", truncated: false, isLoading: false, error: null };
+const EMPTY_TREE: TreeState = { entries: [], root: "", isLoading: false, error: null };
 
 /** A file to show, and how it reaches history: recorded as new, or reached by Back/Forward at `historyIndex`. */
 interface PendingNavigation {
@@ -125,6 +124,8 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   const compact = width > 0 && width < COMPACT_BREAKPOINT_PX;
   const effectiveTreeWidth = compact ? width : clampTreeWidth(treeWidth, width || Number.POSITIVE_INFINITY);
+  // Quick open's empty-query list: where the user was, latest first.
+  const recentPaths = useMemo(() => [...new Set([...history.paths].reverse())], [history]);
 
   // Deferred directories load on expand; one request per path until it lands.
   const deferredRequests = useRef(new Set<string>());
@@ -139,7 +140,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       .call("tree", { source })
       .then((result) => {
         if (generation !== treeGeneration.current) return;
-        setTree({ entries: result.entries, root: result.root, truncated: result.truncated, isLoading: false, error: null });
+        setTree({ entries: result.entries, root: result.root, isLoading: false, error: null });
       })
       .catch((error: unknown) => {
         if (generation !== treeGeneration.current) return;
@@ -162,7 +163,6 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
             const kept = current.entries.filter((entry) => entry.path !== subpath && !entry.path.startsWith(prefix));
             return { ...current, entries: [...kept, { path: subpath, kind: "directory" }, ...result.entries] };
           });
-          if (result.truncated) toast.message(`Showing the first entries of ${subpath}; it is larger.`);
         })
         .catch((error: unknown) => {
           if (generation !== treeGeneration.current) return;
@@ -186,12 +186,11 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     }, 300);
   });
 
-  const needTree = treeOpen || quickOpen;
   useEffect(() => {
-    if (!needTree || treeRequested.current) return;
+    if (!treeOpen || treeRequested.current) return;
     treeRequested.current = true;
     void loadTree();
-  }, [needTree, loadTree]);
+  }, [treeOpen, loadTree]);
 
   const openInTab = useCallback(
     (path: string) => {
@@ -367,7 +366,6 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         label={label || (tree.root === "" ? "Files" : tree.root.split(/[\\/]/).at(-1) || "Files")}
         isLoading={tree.isLoading}
         error={tree.error}
-        truncated={tree.truncated}
         activePath={activePath}
         onOpenFile={openFile}
         onRefresh={() => void loadTree()}
@@ -465,7 +463,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           {editorColumn}
         </>
       )}
-      {quickOpen ? <QuickOpen entries={tree.entries} onOpen={openFile} onClose={() => setQuickOpen(false)} /> : null}
+      {quickOpen ? (
+        <QuickOpen source={source} recentPaths={recentPaths} onOpen={openFile} onClose={() => setQuickOpen(false)} />
+      ) : null}
       {themePicker !== null ? (
         <ThemePicker
           mode={bbTheme.mode}

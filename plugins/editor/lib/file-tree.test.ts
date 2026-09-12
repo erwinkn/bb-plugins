@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ancestorsOf, buildTree, filterTree, fuzzyScore, quickOpenMatches } from "./file-tree";
+import { ancestorsOf, buildTree, filterTree, fuzzyScore } from "./file-tree";
 
 test("buildTree nests flat paths and sorts directories before files", () => {
   const tree = buildTree([
@@ -50,17 +50,4 @@ test("fuzzyScore requires every character in order and prefers name matches", ()
   const nameHit = fuzzyScore("src/lib/file-tree.ts", "filetree")!;
   const pathHit = fuzzyScore("src/file/lib/tree-x.ts", "filetree")!;
   assert.ok(nameHit > pathHit, `${nameHit} > ${pathHit}`);
-});
-
-test("quickOpenMatches ranks files only, best first, within the limit", () => {
-  const entries = [
-    { path: "src", kind: "directory" as const },
-    { path: "src/components/Workbench.tsx", kind: "file" as const },
-    { path: "src/lib/work.ts", kind: "file" as const },
-    { path: "docs/bench.md", kind: "file" as const },
-  ];
-  const matches = quickOpenMatches(entries, "workbench", 10);
-  assert.equal(matches[0]!.path, "src/components/Workbench.tsx");
-  assert.ok(matches.every((entry) => entry.kind === "file"));
-  assert.equal(quickOpenMatches(entries, "", 1).length, 1);
 });

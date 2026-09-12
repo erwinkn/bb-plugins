@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { listLocalTree } from "./local-tree";
+import { listLocalFiles, listLocalTree } from "./local-tree";
 import { buildTree } from "./file-tree";
 
 async function fixture(): Promise<string> {
@@ -23,41 +23,55 @@ async function fixture(): Promise<string> {
   await symlink(os.homedir(), path.join(root, "escape"));
   await symlink(path.join(root, "src", "index.ts"), path.join(root, "index-link.ts"));
   await symlink("/etc/hosts", path.join(root, "leak.txt"));
+  // A link cycle: walking it must not loop the file index.
+  await symlink(root, path.join(root, "src", "loop"));
   return root;
 }
 
-test("listLocalTree includes dotfiles, hides VCS internals, and defers node_modules and symlinked dirs", async (t) => {
+test("listLocalTree lists one level, includes dotfiles, hides VCS internals, and defers every directory", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));
-  const { entries, truncated } = await listLocalTree(root, "", 1000);
-  assert.equal(truncated, false);
+  const { entries } = await listLocalTree(root, "");
   const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+  assert.deepEqual(
+    entries.filter((entry) => entry.kind === "directory"),
+    [".github", "node_modules", "src", "src-link"].map((entry) => ({ path: entry, kind: "directory", deferred: true })),
+  );
   assert.ok(byPath.has(".env"));
   assert.ok(byPath.has(".gitignore"));
-  assert.ok(byPath.has(".github/workflows/ci.yml"));
+  // One level only: a directory's contents wait for its own listing.
+  assert.ok(!byPath.has(".github/workflows"));
+  assert.ok(!byPath.has("src/index.ts"));
   assert.ok(!byPath.has(".git"));
   assert.ok(!byPath.has(".DS_Store"));
-  assert.deepEqual(byPath.get("node_modules"), { path: "node_modules", kind: "directory", deferred: true });
-  assert.ok(!byPath.has("node_modules/pkg"));
-  assert.deepEqual(byPath.get("src-link"), { path: "src-link", kind: "directory", deferred: true });
-  assert.ok(!byPath.has("dangling"));
-  // A deferred directory lists one level on request, with workspace-relative
-  // paths and its own directories deferred.
-  const inner = await listLocalTree(root, "node_modules", 1000);
-  assert.deepEqual(inner.entries, [{ path: "node_modules/pkg", kind: "directory", deferred: true }]);
-  const deeper = await listLocalTree(root, "node_modules/pkg", 1000);
-  assert.deepEqual(deeper.entries, [{ path: "node_modules/pkg/index.js", kind: "file" }]);
   // A symlink inside the workspace lists; one that leaves it lists nothing.
-  const linked = await listLocalTree(root, "src-link", 1000);
-  assert.deepEqual(linked.entries, [{ path: "src-link/index.ts", kind: "file" }]);
   assert.ok(!byPath.has("escape"));
-  assert.deepEqual(await listLocalTree(root, "escape", 1000), { entries: [], truncated: false });
+  assert.deepEqual(await listLocalTree(root, "escape"), { entries: [] });
   assert.deepEqual(byPath.get("index-link.ts"), { path: "index-link.ts", kind: "file" });
   assert.ok(!byPath.has("leak.txt"));
-  // The limit truncates instead of listing forever.
-  const capped = await listLocalTree(root, "", 2);
-  assert.equal(capped.entries.length, 2);
-  assert.equal(capped.truncated, true);
+  // Each deferred directory lists one level on request, with
+  // workspace-relative paths and its own directories deferred.
+  const inner = await listLocalTree(root, "node_modules");
+  assert.deepEqual(inner.entries, [{ path: "node_modules/pkg", kind: "directory", deferred: true }]);
+  const deeper = await listLocalTree(root, "node_modules/pkg");
+  assert.deepEqual(deeper.entries, [{ path: "node_modules/pkg/index.js", kind: "file" }]);
+  const linked = await listLocalTree(root, "src-link");
+  assert.deepEqual(linked.entries, [{ path: "src-link/index.ts", kind: "file" }, { path: "src-link/loop", kind: "directory", deferred: true }]);
+});
+
+test("listLocalFiles walks everything the search index needs, once per real directory", async (t) => {
+  const root = await fixture();
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const files = await listLocalFiles(root);
+  // src-link reaches src's contents through a link; they index under the
+  // real name only, and the link cycle back to the root does not loop.
+  assert.deepEqual(
+    [...files].sort(),
+    [".env", ".gitignore", ".github/workflows/ci.yml", "index-link.ts", "src/index.ts"].sort(),
+  );
+  // A link cycle terminates instead of recursing forever.
+  const filesAgain = await listLocalFiles(root);
+  assert.deepEqual(filesAgain.sort(), files.sort());
 });
 
 test("buildTree carries deferred through to the node", () => {

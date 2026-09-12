@@ -14,7 +14,6 @@ export interface FileTreeProps {
   label: string;
   isLoading: boolean;
   error: string | null;
-  truncated: boolean;
   activePath: string | null;
   onOpenFile: (path: string, options: { newTab: boolean }) => void;
   onRefresh: () => void;
@@ -42,7 +41,6 @@ export function FileTree({
   label,
   isLoading,
   error,
-  truncated,
   activePath,
   onOpenFile,
   onRefresh,
@@ -238,9 +236,6 @@ export function FileTree({
             />
           </>
         )}
-        {truncated && error === null ? (
-          <Message>Showing the first {entries.length.toLocaleString()} entries; this project is larger.</Message>
-        ) : null}
       </div>
       <ContextMenu state={menu} onClose={() => setMenu(null)} />
     </div>

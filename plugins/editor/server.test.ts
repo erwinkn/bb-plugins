@@ -128,6 +128,83 @@ test("create refuses parent traversal and setSetting refuses unknown keys", asyn
   await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "wordWrap", value: "yes" }));
 });
 
+test("tree lists one deferred level locally and search scans the file index", async (t) => {
+  const storage = mkdtempSync(path.join(tmpdir(), "editor-storage-"));
+  t.after(() => rmSync(storage, { recursive: true, force: true }));
+  process.env.BB_THREAD_STORAGE = storage;
+  t.after(() => delete process.env.BB_THREAD_STORAGE);
+  const root = path.join(storage, "thr_x");
+  mkdirSync(path.join(root, "src", "deep"), { recursive: true });
+  writeFileSync(path.join(root, "src", "index.ts"), "");
+  writeFileSync(path.join(root, "src", "deep", "nested.ts"), "");
+  writeFileSync(path.join(root, "readme.md"), "");
+
+  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "thread-storage", threadId: "thr_x", environmentId: null, projectId: null };
+  const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  assert.deepEqual(listing.entries, [
+    { path: "readme.md", kind: "file" },
+    { path: "src", kind: "directory", deferred: true },
+  ]);
+  const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
+  assert.deepEqual(inner.entries, [
+    { path: "src/deep", kind: "directory", deferred: true },
+    { path: "src/index.ts", kind: "file" },
+  ]);
+  // Search sees files in directories the tree never listed.
+  const found = rpcContract.search.output.parse(await harness.behavior.callRpc("search", { source, query: "nested" }));
+  assert.deepEqual(found.matches, [{ path: "src/deep/nested.ts" }]);
+});
+
+test("tree and search go through the daemon for another host's workspace", async (t) => {
+  const searches: unknown[] = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "erwin-editor",
+    sdk: {
+      system: { config: async () => ({ primaryHostId: "host_primary", dataDir: "/data" }) },
+      projects: {
+        get: async () => ({ sources: [{ isDefault: true, path: "/remote/work", hostId: "host_remote" }] }),
+      },
+      hosts: {
+        directory: async ({ path: dir }: { path?: string }) => ({
+          directory: dir,
+          parent: "/remote",
+          entries:
+            dir === "/remote/work"
+              ? [
+                  { kind: "directory", name: "src", path: "/remote/work/src" },
+                  { kind: "file", name: "README.md", path: "/remote/work/README.md" },
+                ]
+              : [{ kind: "file", name: "a.ts", path: `${dir}/a.ts` }],
+        }),
+      },
+      files: {
+        listPaths: async (args: unknown) => {
+          searches.push(args);
+          return { paths: [{ name: "a.ts", path: "src/a.ts", kind: "file", positions: [], score: 1 }], truncated: false };
+        },
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace", threadId: null, environmentId: null, projectId: "proj_x" };
+  const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  assert.deepEqual(listing.entries, [
+    { path: "src", kind: "directory", deferred: true },
+    { path: "README.md", kind: "file" },
+  ]);
+  const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
+  assert.deepEqual(inner.entries, [{ path: "src/a.ts", kind: "file" }]);
+  const found = rpcContract.search.output.parse(await harness.behavior.callRpc("search", { source, query: "a.ts" }));
+  assert.deepEqual(found.matches, [{ path: "src/a.ts" }]);
+  assert.deepEqual(searches, [
+    { hostId: "host_remote", path: "/remote/work", query: "a.ts", includeFiles: true, includeDirectories: false, limit: 50 },
+  ]);
+});
+
 test("plugin uses only public SDK imports and declared packages", () => {
   const scan = experimental_scanPublicSdkOnly(here, {
     allow: [

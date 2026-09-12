@@ -136,14 +136,3 @@ export function fuzzyScore(path: string, query: string): number | null {
   if (name.replace(/[-_. ]/g, "").includes(needle)) score += 5;
   return score - haystack.length / 100;
 }
-
-export function quickOpenMatches(entries: readonly FlatEntry[], query: string, limit: number): FlatEntry[] {
-  const scored: { entry: FlatEntry; score: number }[] = [];
-  for (const entry of entries) {
-    if (entry.kind !== "file") continue;
-    const score = fuzzyScore(entry.path, query);
-    if (score !== null) scored.push({ entry, score });
-  }
-  scored.sort((left, right) => right.score - left.score || left.entry.path.localeCompare(right.entry.path));
-  return scored.slice(0, limit).map((item) => item.entry);
-}

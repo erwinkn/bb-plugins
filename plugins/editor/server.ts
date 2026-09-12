@@ -5,14 +5,15 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { listLocalTree } from "./lib/local-tree.js";
+import { listLocalFiles, listLocalTree } from "./lib/local-tree.js";
+import { fuzzyScore } from "./lib/file-tree.js";
 import { CODE_THEME_CHOICES, codeThemeId, codeThemeLabel } from "./lib/themes.js";
 import { diffEntrySchema, diffTargetSchema, hasConflictMarkers, isWorkingTreeTarget, type DiffTarget } from "./lib/diff-contract.js";
 import { FILES_CHANGED_CHANNEL, watchContract, watchSignals, type FilesChangedSignal } from "./lib/watch-contract.js";
 import { WatchRegistry, WATCH_TTL_MS } from "./lib/watch-registry.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
-const MAX_TREE_ENTRIES = 10_000;
+const MAX_DIFF_FILES = 10_000;
 const MAX_COMMITS = 10_000;
 const MAX_SUBJECT_CHARS = 500;
 /** Served bundle files by extension; anything else is refused. */
@@ -138,15 +139,32 @@ export const rpcContract = defineRpcContract({
     ]),
   },
   /**
-   * The workspace's entries, or with `subpath` those under one directory
-   * (paths stay workspace-relative). Directories marked `deferred` were not
-   * descended into; list them with `subpath` when the user expands them.
+   * The entries directly inside one workspace directory (paths stay
+   * workspace-relative). Listings are a single level, the way code editors
+   * resolve them: every directory comes back `deferred` and lists with
+   * `subpath` when the user expands it, so no listing is ever capped by
+   * workspace size.
    */
   tree: {
     input: z.object({ source: sourceSchema, subpath: z.string().optional() }).strict(),
     output: z.object({
       root: z.string(),
       entries: z.array(z.object({ path: z.string(), kind: z.enum(["file", "directory"]), deferred: z.literal(true).optional() })),
+    }),
+  },
+  /**
+   * Quick open's file search: workspace-relative paths fuzzy-matched against
+   * `query`, best first. The workspace is searched on demand rather than from
+   * the tree's listing, so files in unopened directories match too.
+   */
+  search: {
+    input: z.object({
+      source: sourceSchema,
+      query: z.string().max(512),
+      limit: z.number().int().min(1).max(200).optional(),
+    }).strict(),
+    output: z.object({
+      matches: z.array(z.object({ path: z.string() })),
       truncated: z.boolean(),
     }),
   },
@@ -372,6 +390,22 @@ export default async function plugin(bb: BbPluginApi) {
     for (const hostId of watches.prune(Date.now())) await syncHost(hostId).catch(() => undefined);
   }
 
+  // Quick open's file index for local workspaces: one recursive walk per
+  // root, reused across keystrokes. A watch notice that can add or remove
+  // names (a rescan, or create/delete paths) drops it; it also expires on
+  // its own for roots nobody watches.
+  const filesIndexes = new Map<string, { files: string[]; expiresAt: number }>();
+  const FILES_INDEX_TTL_MS = 30 * 1000;
+  async function localFilesIndex(rootPath: string): Promise<string[]> {
+    const now = Date.now();
+    const cached = filesIndexes.get(rootPath);
+    if (cached !== undefined && cached.expiresAt > now) return cached.files;
+    for (const [key, entry] of filesIndexes) if (entry.expiresAt <= now) filesIndexes.delete(key);
+    const files = await listLocalFiles(rootPath);
+    filesIndexes.set(rootPath, { files, expiresAt: now + FILES_INDEX_TTL_MS });
+    return files;
+  }
+
   // Every open page gets every signal, and a page may hold two subscribers;
   // the sequence number lets each page act on a signal once.
   let changeSequence = 0;
@@ -382,6 +416,9 @@ export default async function plugin(bb: BbPluginApi) {
   watchHost.experimental_onSignal("changed", ({ hostId, payload }) => {
     const entry = watches.get(hostId, payload.rootPath);
     bb.log.debug(`file watch signal from ${hostId} for ${payload.rootPath}: ${payload.kind} ${payload.paths.map((change) => change.path).join(" ")}`);
+    if (payload.kind === "rescan" || payload.paths.some((change) => change.type !== "update")) {
+      filesIndexes.delete(payload.rootPath);
+    }
     if (entry === undefined) return;
     if (payload.kind === "rescan") {
       publishChange({ root: entry.key, kind: "rescan", changes: [] });
@@ -643,8 +680,8 @@ export default async function plugin(bb: BbPluginApi) {
         source: data.source, root: environment.path!,
         label: environment.branchName ?? environment.name ?? path.basename(environment.path!),
         baseBranch: data.baseBranch, target: data.target,
-        files: result.outcome === "available" ? result.files.slice(0, MAX_TREE_ENTRIES) : [],
-        truncated: result.outcome === "available" && (result.truncated || result.files.length > MAX_TREE_ENTRIES),
+        files: result.outcome === "available" ? result.files.slice(0, MAX_DIFF_FILES) : [],
+        truncated: result.outcome === "available" && (result.truncated || result.files.length > MAX_DIFF_FILES),
         message: data.message,
       };
     },
@@ -734,20 +771,57 @@ export default async function plugin(bb: BbPluginApi) {
       const target = await resolveTarget(source, ".");
       const clean = subpath.replace(/^\/+|\/+$/g, "");
       if (await isLocalWorkspace(target)) {
-        const listing = await listLocalTree(target.rootPath, clean, MAX_TREE_ENTRIES);
+        const listing = await listLocalTree(target.rootPath, clean);
         return { root: target.rootPath, ...listing };
       }
-      // Another host: BB's daemon lists it, without hidden entries, node_modules, or symlinks.
-      const result = await bb.sdk.files.listPaths({
-        path: clean === "" ? target.rootPath : path.posix.join(target.rootPath, clean),
-        includeFiles: true,
-        includeDirectories: true,
-        limit: MAX_TREE_ENTRIES,
-        ...(target.hostId !== undefined ? { hostId: target.hostId } : {}),
+      // Another host: the daemon lists one level, the way the local lister
+      // does. It sees hidden entries, node_modules, and symlinks, which
+      // list_paths dropped; every directory is deferred and lists on expand.
+      const hostId = await hostOf(target);
+      if (hostId === null) throw new Error("This workspace's host is not available");
+      const api = pathApiFor(target.rootPath);
+      const listing = await bb.sdk.hosts.directory({
+        hostId,
+        path: clean === "" ? target.rootPath : api.join(target.rootPath, clean),
       });
+      const prefix = clean === "" ? "" : `${clean}/`;
       return {
         root: target.rootPath,
-        entries: result.paths.map((entry) => ({ path: clean === "" ? entry.path : `${clean}/${entry.path}`, kind: entry.kind })),
+        entries: listing.entries.map((entry) => ({
+          path: `${prefix}${entry.name}`,
+          kind: entry.kind,
+          ...(entry.kind === "directory" ? { deferred: true as const } : {}),
+        })),
+      };
+    },
+
+    async search({ source, query, limit = 50 }) {
+      const target = await resolveTarget(source, ".");
+      const trimmed = query.trim();
+      if (trimmed === "") return { matches: [], truncated: false };
+      if (await isLocalWorkspace(target)) {
+        const files = await localFilesIndex(target.rootPath);
+        const scored: { path: string; score: number }[] = [];
+        for (const file of files) {
+          const score = fuzzyScore(file, trimmed);
+          if (score !== null) scored.push({ path: file, score });
+        }
+        scored.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+        return { matches: scored.slice(0, limit).map(({ path }) => ({ path })), truncated: false };
+      }
+      // Another host: the daemon fuzzy-searches it and ranks the matches.
+      const hostId = await hostOf(target);
+      if (hostId === null) throw new Error("This workspace's host is not available");
+      const result = await bb.sdk.files.listPaths({
+        hostId,
+        path: target.rootPath,
+        query: trimmed,
+        includeFiles: true,
+        includeDirectories: false,
+        limit,
+      });
+      return {
+        matches: result.paths.map((entry) => ({ path: entry.path.replace(/^\.?\/+/, "") })),
         truncated: result.truncated,
       };
     },

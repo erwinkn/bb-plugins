@@ -1,15 +1,17 @@
 /**
  * Lists a workspace on this machine for the file tree, the way code editors
- * do: hidden files and directories included. BB's own lister (the host
- * daemon's `list_paths`) drops every dotfile, `node_modules`, and symlinks
- * with no way to opt in, so workspaces on the local host are read directly.
+ * do: one level at a time, hidden files and directories included, and every
+ * directory deferred so its contents load when the user expands it. BB's own
+ * lister (the host daemon's `list_paths`) drops every dotfile,
+ * `node_modules`, and symlinks with no way to opt in, so workspaces on the
+ * local host are read directly. Quick open never walks the tree's entries;
+ * it searches its own index (`listLocalFiles`).
  *
- * Skipped entirely: VS Code's default `files.exclude` (`.git`, `.hg`, `.svn`,
- * `.DS_Store`, `Thumbs.db`). Listed but not descended into: `node_modules`
- * and directory symlinks; those come back `deferred` and load when expanded.
- * Symlinks whose target lies outside the workspace are omitted.
+ * Skipped entirely: VS Code's default `files.exclude` (`.git`, `.hg`,
+ * `.svn`, `.DS_Store`, `Thumbs.db`). Directory symlinks list as deferred
+ * folders only when their target stays inside the workspace.
  */
-import { lstat, opendir, realpath, stat } from "node:fs/promises";
+import { opendir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Stats } from "node:fs";
 
@@ -21,39 +23,134 @@ export interface TreeEntry {
   deferred?: true;
 }
 
-export interface TreeListing {
-  entries: TreeEntry[];
-  truncated: boolean;
-}
-
 const EXCLUDED_NAMES = new Set([".git", ".hg", ".svn", ".DS_Store", "Thumbs.db"]);
-const DEFERRED_DIRECTORY_NAMES = new Set(["node_modules"]);
+
+/** Never walked for quick open, the way `search.exclude` skips them in VS Code. */
+const SEARCH_SKIPPED_NAMES = new Set([...EXCLUDED_NAMES, "node_modules", ".bb"]);
 
 /**
- * Entries under `rootPath/subpath` (relative to `rootPath`), at most `limit`
- * of them. The workspace root (`subpath` empty) lists in full, depth first,
- * so quick open sees every file. A deferred directory lists one level, with
- * its child directories deferred in turn: `node_modules` alone can exceed
- * any limit, and a depth-first walk would spend it inside the first child.
- * The directory named by `subpath` is not an entry itself.
+ * The entries directly inside `rootPath/subpath` (relative to `rootPath`).
+ * Nothing is descended into: every directory comes back `deferred` and lists
+ * on demand, so a workspace of any size costs one directory read. The
+ * directory named by `subpath` is not an entry itself.
  */
-export async function listLocalTree(rootPath: string, subpath: string, limit: number): Promise<TreeListing> {
+export async function listLocalTree(rootPath: string, subpath: string): Promise<{ entries: TreeEntry[] }> {
   const entries: TreeEntry[] = [];
   const start = subpath === "" ? rootPath : path.join(rootPath, ...subpath.split("/"));
-  // The walk reads the resolved directory, never the path that named it, so
-  // a symlink swapped after the check cannot lead it elsewhere. A symlinked
-  // directory lists only when it stays inside the workspace; one that points
-  // elsewhere shows as an empty folder.
+  // The listing reads the resolved directory, never the path that named it,
+  // so a symlink swapped after the check cannot lead it elsewhere. A
+  // symlinked directory lists only when it stays inside the workspace; one
+  // that points elsewhere shows as an empty folder.
   let root: string;
   try {
     root = await realpath(rootPath);
   } catch {
-    return { entries, truncated: false };
+    return { entries };
   }
   const real = await resolveInside(root, start);
-  if (real === null) return { entries, truncated: false };
-  const truncated = await walk(real, subpath, { root, out: entries, limit, recurse: subpath === "" });
-  return { entries, truncated };
+  if (real === null) return { entries };
+  let handle;
+  try {
+    handle = await opendir(real);
+  } catch {
+    return { entries };
+  }
+  for await (const dirent of handle) {
+    if (EXCLUDED_NAMES.has(dirent.name)) continue;
+    const relative = subpath === "" ? dirent.name : `${subpath}/${dirent.name}`;
+    if (dirent.isDirectory()) {
+      entries.push({ path: relative, kind: "directory", deferred: true });
+      continue;
+    }
+    if (dirent.isSymbolicLink()) {
+      // Only links that stay inside the workspace are listed; one that points
+      // elsewhere would let file operations reach its target.
+      let target;
+      try {
+        const absolute = path.join(real, dirent.name);
+        target = await stat(absolute);
+        if (!isInside(root, await realpath(absolute))) continue;
+      } catch {
+        continue; // dangling
+      }
+      entries.push(target.isDirectory() ? { path: relative, kind: "directory", deferred: true } : { path: relative, kind: "file" });
+      continue;
+    }
+    if (dirent.isFile()) entries.push({ path: relative, kind: "file" });
+  }
+  entries.sort((left, right) => left.path.localeCompare(right.path));
+  return { entries };
+}
+
+/**
+ * Every file under `rootPath`, as workspace-relative POSIX paths, for quick
+ * open's index. Unlike the tree this walk is recursive; the caller caches
+ * the result and invalidates it on file-watcher notices, so the cost is paid
+ * once per burst of changes rather than once per keystroke. Directories in
+ * SEARCH_SKIPPED_NAMES are not descended. Directory symlinks are followed
+ * only inside the workspace, and each real directory is walked once, so a
+ * link cycle cannot loop the walk.
+ */
+export async function listLocalFiles(rootPath: string): Promise<string[]> {
+  const files: string[] = [];
+  let root: string;
+  try {
+    root = await realpath(rootPath);
+  } catch {
+    return files;
+  }
+  const seen = new Set<string>();
+  const visit = async (dir: string, relativeDir: string): Promise<void> => {
+    // Identity of the real directory, before and after the read: a swap
+    // mid-read drops what it listed, and a seen identity stops a link cycle.
+    const before = await directoryIdentity(dir);
+    if (before === null || seen.has(`${before.dev}:${before.ino}`)) return;
+    seen.add(`${before.dev}:${before.ino}`);
+    let handle;
+    try {
+      handle = await opendir(dir);
+    } catch {
+      return;
+    }
+    const mark = files.length;
+    const entries: { relative: string; dir: string }[] = [];
+    try {
+      for await (const dirent of handle) {
+        if (SEARCH_SKIPPED_NAMES.has(dirent.name)) continue;
+        const absolute = path.join(dir, dirent.name);
+        const relative = relativeDir === "" ? dirent.name : `${relativeDir}/${dirent.name}`;
+        if (dirent.isDirectory()) {
+          entries.push({ relative, dir: absolute });
+          continue;
+        }
+        if (dirent.isSymbolicLink()) {
+          try {
+            const target = await stat(absolute);
+            if (!isInside(root, await realpath(absolute))) continue;
+            if (target.isDirectory()) entries.push({ relative, dir: absolute });
+            else if (target.isFile()) files.push(relative);
+          } catch {
+            continue; // dangling
+          }
+          continue;
+        }
+        if (dirent.isFile()) files.push(relative);
+      }
+    } catch {
+      return;
+    }
+    const after = await directoryIdentity(dir);
+    if (after === null || after.ino !== before.ino || after.dev !== before.dev) {
+      files.length = mark;
+      return;
+    }
+    // A directory reachable through both a link and its real path indexes
+    // once; sorting makes the real name win regardless of read order.
+    entries.sort((left, right) => left.relative.localeCompare(right.relative));
+    for (const entry of entries) await visit(entry.dir, entry.relative);
+  };
+  await visit(root, "");
+  return files;
 }
 
 /** The real path of `target` when it is the (real) workspace root or under it; null otherwise. */
@@ -72,89 +169,10 @@ function isInside(root: string, real: string): boolean {
   return real.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
 }
 
-interface Walk {
-  /** Real path of the workspace root; symlinks may only point inside it. */
-  root: string;
-  out: TreeEntry[];
-  limit: number;
-  recurse: boolean;
-}
-
-/**
- * Returns true when `limit` stopped the walk. `relativeDir` is the
- * workspace-relative name of `dir`. Entries stream from the directory and
- * stop at the limit, so a directory with millions of entries costs no more
- * than the limit.
- *
- * Node has no fd-relative directory reads, so a walk cannot be made fully
- * race-free. A child directory is checked before and after it is read: it
- * must be a real directory (not a symlink) with the same identity both
- * times, or its entries are dropped. What remains is a swap and swap-back
- * inside one read.
- */
-async function walk(dir: string, relativeDir: string, walkState: Walk): Promise<boolean> {
-  const { root, out, limit, recurse } = walkState;
-  let handle;
-  try {
-    handle = await opendir(dir);
-  } catch {
-    return false;
-  }
-  try {
-    for await (const dirent of handle) {
-      if (EXCLUDED_NAMES.has(dirent.name)) continue;
-      if (out.length >= limit) return true;
-      const absolute = path.join(dir, dirent.name);
-      const relative = relativeDir === "" ? dirent.name : `${relativeDir}/${dirent.name}`;
-      if (dirent.isDirectory()) {
-        if (!recurse || DEFERRED_DIRECTORY_NAMES.has(dirent.name)) {
-          out.push({ path: relative, kind: "directory", deferred: true });
-          continue;
-        }
-        // A directory that fails its identity check (replaced meanwhile, or a
-        // junction that lstat does not report as a directory) is listed as
-        // deferred, so expanding it goes through the resolved-path check.
-        const before = await directoryIdentity(absolute);
-        if (before === null) {
-          out.push({ path: relative, kind: "directory", deferred: true });
-          continue;
-        }
-        out.push({ path: relative, kind: "directory" });
-        const mark = out.length;
-        const truncated = await walk(absolute, relative, walkState);
-        const after = await directoryIdentity(absolute);
-        if (after === null || after.ino !== before.ino || after.dev !== before.dev) {
-          out.length = mark;
-          out[mark - 1] = { path: relative, kind: "directory", deferred: true };
-        }
-        if (truncated) return true;
-        continue;
-      }
-      if (dirent.isSymbolicLink()) {
-        // Only links that stay inside the workspace are listed; one that points
-        // elsewhere would let file operations reach its target.
-        let target;
-        try {
-          target = await stat(absolute);
-          if (!isInside(root, await realpath(absolute))) continue;
-        } catch {
-          continue; // dangling
-        }
-        out.push(target.isDirectory() ? { path: relative, kind: "directory", deferred: true } : { path: relative, kind: "file" });
-        continue;
-      }
-      if (dirent.isFile()) out.push({ path: relative, kind: "file" });
-    }
-  } catch {
-    return false;
-  }
-  return false;
-}
-
-/** dev/ino of the real directory at `absolute`, or null when it is not one (or is a symlink). */
+/** dev/ino of the real directory at `absolute`, following links; null when it is not one. */
 async function directoryIdentity(absolute: string): Promise<Pick<Stats, "dev" | "ino"> | null> {
   try {
-    const info = await lstat(absolute);
+    const info = await stat(absolute);
     return info.isDirectory() ? { dev: info.dev, ino: info.ino } : null;
   } catch {
     return null;
