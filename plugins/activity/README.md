@@ -124,7 +124,7 @@ centered collapse chevrons, with no status icons, counts, or hover descriptions.
 The status menu retains its colored icons. Archived has a neutral archive-box
 icon in the menu and the row's right-aligned status position. The layout uses BB's theme tokens.
 
-Active rows use BB's native open, split, rename, pin, read, and archive actions. The plugin also keeps
+Active rows use BB's native open, split, rename, pin, read, and archive actions plus the plugin's library save and remove. The plugin also keeps
 the attributes needed for BB's thread navigation shortcuts. Right-click a row
 on desktop or hold it for 450 ms on mobile to open its actions. Scrolling,
 releasing early, or cancelling the touch cancels the hold. With keyboard focus
@@ -148,8 +148,9 @@ native behavior. No bulk read or delete actions are added.
 ## Spaces and project management
 
 A space is a named selection of projects. The Threads heading is the scope
-selector: it reads **All projects** or a space name. Its menu lists All
-projects, each saved space, and **Manage spaces…**, which goes to the
+selector: it reads **All projects**, a space name, or **Library**. Its menu
+lists All projects, each saved space, then Library — the saved-thread
+collection described below — and **Manage spaces…**, which goes to the
 plugin's **Spaces** page. The page also has its own row in BB's sidebar
 navigation (route
 `/plugins/erwin-activity/spaces`). There are no dialogs; every edit is a form
@@ -228,6 +229,24 @@ link so it works like any other BB page.
 - `bb activity spaces-export` prints the catalog. `bb activity spaces-import
   '<json>'` replaces it and bumps the revision. Use them for backups and for
   moving definitions between BB servers.
+
+## Library
+
+The library keeps threads for later without archiving them: no runtime
+cleanup runs and saved work keeps going. **Save to Library** in a row's
+actions marks the thread; **Remove from Library** unmarks it. Each save
+covers the whole family — children of a saved thread count as saved,
+including children created later — so one action keeps a family together.
+
+Saved threads leave the active view in every scope. The **Library** scope
+lists saved families instead, with live statuses, sorting, grouping, and
+Show more as usual; while another scope is selected, a status icon on the
+menu entry and the Threads heading reports saved threads needing attention
+or holding unread replies. Removing a member frees its family unless a
+descendant was saved on its own. Archiving or deleting drops the save, so a
+restore lands in the active view. The document lives in the plugin's
+key-value store, shared by all clients and cached locally for the next
+load.
 
 ## Draft limits
 

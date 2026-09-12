@@ -12,6 +12,10 @@ export const CLIENT_STATE_KEY = "bb-plugin-erwin-activity:v1";
 export const CLIENT_STATE_EVENT = "bb-plugin-erwin-activity:state";
 /** Spoken names that mean "no space": the whole thread list. */
 const ALL_PROJECTS = ["all", "all projects", "everything", "every project", "no space"];
+/** Reserved `spaceId` value for the activity plugin's saved-thread library scope. */
+export const LIBRARY_SCOPE_ID = "library";
+/** Spoken names for the library scope. A space literally named one of these is shadowed, like "all". */
+const LIBRARY = ["library", "the library", "saved", "saved threads"];
 
 export interface Space { id: string; name: string; projectIds: string[] }
 export interface SpaceChoice { id: string | null; name: string; projectCount: number | null }
@@ -32,16 +36,21 @@ export function readSelectedSpaceId(storage: StorageLike): string | null {
 /** The name the sidebar shows for the current selection. */
 export function currentSpace(storage: StorageLike): SpaceChoice {
   const id = readSelectedSpaceId(storage), space = id ? readSpaces(storage).find(s => s.id === id) : undefined;
-  return space ? { id: space.id, name: space.name, projectCount: space.projectIds.length } : { id: null, name: "All projects", projectCount: null };
+  if (space) return { id: space.id, name: space.name, projectCount: space.projectIds.length };
+  return id === LIBRARY_SCOPE_ID
+    ? { id: LIBRARY_SCOPE_ID, name: "Library", projectCount: null }
+    : { id: null, name: "All projects", projectCount: null };
 }
 /**
- * Resolve a spoken space name. "All projects" and its synonyms clear the space.
- * Otherwise the unique best match wins; a tie or no match returns null with the
- * ranked candidates so the caller can say what exists.
+ * Resolve a spoken space name. "All projects" and its synonyms clear the space;
+ * "the library" and its synonyms select the saved-thread library scope. Otherwise
+ * the unique best match wins; a tie or no match returns null with the ranked
+ * candidates so the caller can say what exists.
  */
 export function resolveSpace(spoken: string, spaces: Space[]): { choice: SpaceChoice | null; candidates: SpaceChoice[] } {
   const words = tokenize(spoken).join(" ");
   if (ALL_PROJECTS.includes(words)) return { choice: { id: null, name: "All projects", projectCount: null }, candidates: [] };
+  if (LIBRARY.includes(words)) return { choice: { id: LIBRARY_SCOPE_ID, name: "Library", projectCount: null }, candidates: [] };
   // Category and filler words carry nothing: "the mobile space" is "mobile".
   const meaningful = queryTokens(spoken).join(" ") || spoken;
   const space = resolveName(meaningful, spaces, s => s.name);

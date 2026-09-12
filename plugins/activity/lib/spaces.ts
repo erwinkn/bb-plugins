@@ -41,7 +41,12 @@ export interface ScopeProject {
 }
 export type Scope =
   | { kind: "all"; projectIds: null }
-  | { kind: "space"; space: Space; projectIds: Set<string> };
+  | { kind: "space"; space: Space; projectIds: Set<string> }
+  | { kind: "library"; projectIds: null };
+
+// Reserved `spaceId` value for the saved-thread library. Generated space ids
+// are `space-<uuid>`, so this can never collide.
+export const LIBRARY_SCOPE_ID = "library";
 
 // A selected space that no longer exists resolves to All projects; the
 // caller shows the notice.
@@ -49,6 +54,7 @@ export function resolveScope(
   catalog: SpaceCatalog,
   spaceId: string | null,
 ): Scope {
+  if (spaceId === LIBRARY_SCOPE_ID) return { kind: "library", projectIds: null };
   const space = spaceId
     ? catalog.spaces.find((s) => s.id === spaceId)
     : undefined;
@@ -57,12 +63,21 @@ export function resolveScope(
     : { kind: "all", projectIds: null };
 }
 
+// Library scope filters by saved membership, not projects, so every project
+// is in scope.
 export function inScope(scope: Scope, projectId: string): boolean {
   return scope.projectIds === null || scope.projectIds.has(projectId);
 }
 
 export function scopeLabel(scope: Scope): string {
-  return scope.kind === "all" ? "All projects" : scope.space.name;
+  switch (scope.kind) {
+    case "all":
+      return "All projects";
+    case "library":
+      return "Library";
+    default:
+      return scope.space.name;
+  }
 }
 
 /** Move the item at `from` to `to`, returning a new array. */

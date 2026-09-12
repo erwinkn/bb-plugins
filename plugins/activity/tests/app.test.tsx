@@ -41,7 +41,14 @@ const mountedSlots: ReturnType<typeof renderSdkSlot>[] = [];
 const renderSlot: typeof renderSdkSlot = (registration, props, options) => {
   const slot = renderSdkSlot(registration, props, {
     ...options,
-    rpc: { listArchived: async () => [], archiveTree: async () => ({ ok: true }), ...options?.rpc },
+    rpc: {
+      listArchived: async () => [],
+      archiveTree: async () => ({ ok: true }),
+      getLibrary: async () => ({ revision: 0, ids: [] }),
+      save: async () => ({ revision: 0, ids: [] }),
+      remove: async () => ({ revision: 0, ids: [] }),
+      ...options?.rpc,
+    },
   });
   mountedSlots.push(slot);
   return slot;

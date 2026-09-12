@@ -27,12 +27,20 @@
 - `components/inline-form.tsx`: shared inline form (focus, Escape, errors).
 - `components/project-header-menu.tsx`: right-click/long-press menu on project
   group headers.
-- `components/scope-menu.tsx`: the heading menu that selects All projects or a
-  space and opens the Spaces page.
+- `components/scope-menu.tsx`: the heading menu that selects All projects, a
+  space, or the Library and opens the Spaces page.
 - `components/new-thread-button.tsx`: scope-aware New thread button.
 - `server.ts`: archive list and restore RPCs through BB, with change signals.
 - `lib/archive-contract.ts`: validated archive RPC contract.
 - `lib/use-archives.ts`: paged archive loading and refresh handling.
+- `lib/library-schema.ts`: saved-thread document shared by server and frontend.
+- `lib/library-contract.ts`: library RPC contract (server; frontend imports its
+  type).
+- `lib/library.ts`: the ancestor rule that counts descendants of members as
+  saved.
+- `lib/library-store.ts`: key-value library document and archive/delete
+  cleanup.
+- `lib/use-library.ts`: library loading, local cache, and realtime refresh.
 - `lib/project-schema.ts`, `lib/project-contract.ts`, `lib/projects-rpc.ts`,
   `lib/use-projects.ts`: project inventory (folders, hosts) and management RPC
   over `bb.sdk.projects` and `bb.sdk.hosts`; the frontend hook fetches it for
