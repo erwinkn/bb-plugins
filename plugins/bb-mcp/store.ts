@@ -63,10 +63,6 @@ export function createStore(bb: BbPluginApi) {
       if (op && op.payloadHash !== hash(canonical({ kind, payload }))) throw new ToolError("idempotency_conflict", "This idempotency key was already used with different arguments.");
       return op;
     },
-    forThread: (threadId: string) => {
-      const row = db.prepare("SELECT body FROM operations WHERE json_extract(body, '$.threadId') = ? ORDER BY rowid DESC LIMIT 1").get(threadId) as { body: string } | undefined;
-      return row ? JSON.parse(row.body) as Operation : undefined;
-    },
     list: () => (db.prepare("SELECT body FROM operations ORDER BY rowid DESC").all() as {body: string}[]).map(r => JSON.parse(r.body) as Operation),
     async run(input: Parameters<typeof claim>[0], key: string | undefined, payload: unknown, dispatch: () => Promise<Record<string, unknown>>): Promise<Operation> {
       const { op, fresh } = claim(input, key, payload);
@@ -92,7 +88,6 @@ export function createStore(bb: BbPluginApi) {
   };
 }
 export type Store = ReturnType<typeof createStore>;
-export const isThreadOperation = (op: Operation) => ["create", "send", "handoff", "fork", "retry", "queue-send", "answer", "permission"].includes(op.kind);
 export function errorView(error: unknown) {
   return { code: error instanceof ToolError ? error.code : "bb_error", message: error instanceof Error ? error.message : String(error) };
 }

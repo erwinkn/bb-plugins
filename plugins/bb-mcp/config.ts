@@ -19,6 +19,3 @@ export type Config = Awaited<ReturnType<Settings["get"]>>;
 export class ToolError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
-export function threadUrl(c: Config, projectId: string, threadId: string) {
-  return c.appUrl ? new URL(`/projects/${encodeURIComponent(projectId)}/threads/${encodeURIComponent(threadId)}`, c.appUrl).href : null;
-}
