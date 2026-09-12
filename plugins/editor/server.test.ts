@@ -128,6 +128,105 @@ test("create refuses parent traversal and setSetting refuses unknown keys", asyn
   await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "wordWrap", value: "yes" }));
 });
 
+test("tree lists one level locally, prefetches the next, and search scans the file index", async (t) => {
+  const storage = mkdtempSync(path.join(tmpdir(), "editor-storage-"));
+  t.after(() => rmSync(storage, { recursive: true, force: true }));
+  process.env.BB_THREAD_STORAGE = storage;
+  t.after(() => delete process.env.BB_THREAD_STORAGE);
+  const root = path.join(storage, "thr_x");
+  mkdirSync(path.join(root, "src", "deep"), { recursive: true });
+  writeFileSync(path.join(root, "src", "index.ts"), "");
+  writeFileSync(path.join(root, "src", "deep", "nested.ts"), "");
+  writeFileSync(path.join(root, "readme.md"), "");
+
+  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "thread-storage", threadId: "thr_x", environmentId: null, projectId: null };
+  const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  // The level below the root resolved ahead of its expand: `src` is no
+  // longer deferred and its rows are already here. `src/deep` stays lazy.
+  assert.deepEqual(listing.entries, [
+    { path: "readme.md", kind: "file" },
+    { path: "src", kind: "directory" },
+    { path: "src/deep", kind: "directory", deferred: true },
+    { path: "src/index.ts", kind: "file" },
+  ]);
+  const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
+  assert.deepEqual(inner.entries, [
+    { path: "src/deep", kind: "directory" },
+    { path: "src/index.ts", kind: "file" },
+    { path: "src/deep/nested.ts", kind: "file" },
+  ]);
+  // Search sees files in directories the tree never listed.
+  const found = rpcContract.search.output.parse(await harness.behavior.callRpc("search", { source, query: "nested" }));
+  assert.deepEqual(found.matches, [{ path: "src/deep/nested.ts" }]);
+});
+
+test("tree and search go through the daemon for another host's workspace", async (t) => {
+  const searches: unknown[] = [];
+  const dirCalls: (string | undefined)[] = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "erwin-editor",
+    sdk: {
+      system: { config: async () => ({ primaryHostId: "host_primary", dataDir: "/data" }) },
+      projects: {
+        get: async () => ({ sources: [{ isDefault: true, path: "/remote/work", hostId: "host_remote" }] }),
+      },
+      hosts: {
+        directory: async ({ path: dir }: { path?: string }) => {
+          dirCalls.push(dir);
+          return {
+            directory: dir,
+            parent: "/remote",
+            entries:
+              dir === "/remote/work"
+                ? [
+                    { kind: "directory", name: "src", path: "/remote/work/src" },
+                    { kind: "file", name: "README.md", path: "/remote/work/README.md" },
+                  ]
+                : [{ kind: "file", name: "a.ts", path: `${dir}/a.ts` }],
+          };
+        },
+      },
+      files: {
+        listPaths: async (args: unknown) => {
+          searches.push(args);
+          return { paths: [{ name: "a.ts", path: "src/a.ts", kind: "file", positions: [], score: 1 }], truncated: false };
+        },
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace", threadId: null, environmentId: null, projectId: "proj_x" };
+  const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  // The root call prefetched `src`'s level in the same request.
+  assert.deepEqual(listing.entries, [
+    { path: "src", kind: "directory" },
+    { path: "README.md", kind: "file" },
+    { path: "src/a.ts", kind: "file" },
+  ]);
+  assert.deepEqual(dirCalls, ["/remote/work", "/remote/work/src"]);
+  const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
+  assert.deepEqual(inner.entries, [{ path: "src/a.ts", kind: "file" }]);
+  // A re-expand is served from the listing cache, not another host round trip.
+  await harness.behavior.callRpc("tree", { source, subpath: "src" });
+  assert.deepEqual(dirCalls, ["/remote/work", "/remote/work/src"]);
+  // A watch notice that can add or remove names drops the root's levels.
+  await harness.behavior.experimental_emitHostSignal("host_remote", "changed", {
+    rootPath: "/remote/work", kind: "changed",
+    paths: [{ path: "src/b.ts", type: "create" }],
+  });
+  await harness.behavior.callRpc("tree", { source, subpath: "src" });
+  assert.deepEqual(dirCalls, ["/remote/work", "/remote/work/src", "/remote/work/src"]);
+  const found = rpcContract.search.output.parse(await harness.behavior.callRpc("search", { source, query: "a.ts" }));
+  assert.deepEqual(found.matches, [{ path: "src/a.ts" }]);
+  assert.deepEqual(searches, [
+    { hostId: "host_remote", path: "/remote/work", query: "a.ts", includeFiles: true, includeDirectories: false, limit: 50 },
+  ]);
+});
+
 test("plugin uses only public SDK imports and declared packages", () => {
   const scan = experimental_scanPublicSdkOnly(here, {
     allow: [

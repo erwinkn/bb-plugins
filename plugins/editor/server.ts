@@ -5,14 +5,15 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { listLocalTree } from "./lib/local-tree.js";
+import { listLocalFiles, listLocalTree } from "./lib/local-tree.js";
+import { fuzzyScore, type FlatEntry } from "./lib/file-tree.js";
 import { CODE_THEME_CHOICES, codeThemeId, codeThemeLabel } from "./lib/themes.js";
 import { diffEntrySchema, diffTargetSchema, hasConflictMarkers, isWorkingTreeTarget, type DiffTarget } from "./lib/diff-contract.js";
 import { FILES_CHANGED_CHANNEL, watchContract, watchSignals, type FilesChangedSignal } from "./lib/watch-contract.js";
 import { WatchRegistry, WATCH_TTL_MS } from "./lib/watch-registry.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
-const MAX_TREE_ENTRIES = 10_000;
+const MAX_DIFF_FILES = 10_000;
 const MAX_COMMITS = 10_000;
 const MAX_SUBJECT_CHARS = 500;
 /** Served bundle files by extension; anything else is refused. */
@@ -138,16 +139,33 @@ export const rpcContract = defineRpcContract({
     ]),
   },
   /**
-   * The workspace's entries, or with `subpath` those under one directory
-   * (paths stay workspace-relative). Directories marked `deferred` were not
-   * descended into; list them with `subpath` when the user expands them.
+   * The entries inside one workspace directory (paths stay
+   * workspace-relative). Listings resolve a level at a time, the way code
+   * editors do: directories the user has not reached come back `deferred`
+   * and list with `subpath` on expand, so no listing is ever capped by
+   * workspace size. Modest child directories resolve one level ahead, so an
+   * expand usually has its rows already.
    */
   tree: {
     input: z.object({ source: sourceSchema, subpath: z.string().optional() }).strict(),
     output: z.object({
       root: z.string(),
       entries: z.array(z.object({ path: z.string(), kind: z.enum(["file", "directory"]), deferred: z.literal(true).optional() })),
-      truncated: z.boolean(),
+    }),
+  },
+  /**
+   * Quick open's file search: workspace-relative paths fuzzy-matched against
+   * `query`, best first. The workspace is searched on demand rather than from
+   * the tree's listing, so files in unopened directories match too.
+   */
+  search: {
+    input: z.object({
+      source: sourceSchema,
+      query: z.string().max(512),
+      limit: z.number().int().min(1).max(200).optional(),
+    }).strict(),
+    output: z.object({
+      matches: z.array(z.object({ path: z.string() })),
     }),
   },
   write: {
@@ -372,6 +390,92 @@ export default async function plugin(bb: BbPluginApi) {
     for (const hostId of watches.prune(Date.now())) await syncHost(hostId).catch(() => undefined);
   }
 
+  // Quick open's file index for local workspaces: one recursive walk per
+  // root, reused across keystrokes. A watch notice that can add or remove
+  // names (a rescan, or create/delete paths) drops it; it also expires on
+  // its own for roots nobody watches.
+  const filesIndexes = new Map<string, { files: string[]; expiresAt: number }>();
+  const FILES_INDEX_TTL_MS = 30 * 1000;
+  async function localFilesIndex(rootPath: string): Promise<string[]> {
+    const now = Date.now();
+    const cached = filesIndexes.get(rootPath);
+    if (cached !== undefined && cached.expiresAt > now) return cached.files;
+    for (const [key, entry] of filesIndexes) if (entry.expiresAt <= now) filesIndexes.delete(key);
+    const files = await listLocalFiles(rootPath);
+    filesIndexes.set(rootPath, { files, expiresAt: now + FILES_INDEX_TTL_MS });
+    return files;
+  }
+
+  // Remote directory listings: every expand is a round trip to the host, so
+  // resolved levels are cached the way VS Code keeps resolved explorer items.
+  // A watch notice that can add or remove names drops the root's levels; the
+  // TTL covers roots nobody watches. Root loads always ask the daemon —
+  // opening or refreshing the tree is when freshness matters — and refill it.
+  type DirListing = Awaited<ReturnType<typeof bb.sdk.hosts.directory>>;
+  const dirListings = new Map<string, { listing: DirListing; expiresAt: number }>();
+  const dirListingRequests = new Map<string, Promise<DirListing>>();
+  const DIR_LISTING_TTL_MS = 30 * 1000;
+  function remoteDirectory(hostId: string, dirPath: string, fresh = false): Promise<DirListing> {
+    const key = `${hostId}\0${dirPath}`;
+    if (!fresh) {
+      const cached = dirListings.get(key);
+      if (cached !== undefined && cached.expiresAt > Date.now()) return Promise.resolve(cached.listing);
+      const pending = dirListingRequests.get(key);
+      if (pending !== undefined) return pending;
+    }
+    const request = bb.sdk.hosts.directory({ hostId, path: dirPath })
+      .then((listing) => {
+        dirListings.set(key, { listing, expiresAt: Date.now() + DIR_LISTING_TTL_MS });
+        for (const [other, entry] of dirListings) if (entry.expiresAt <= Date.now()) dirListings.delete(other);
+        return listing;
+      })
+      .finally(() => {
+        if (dirListingRequests.get(key) === request) dirListingRequests.delete(key);
+      });
+    dirListingRequests.set(key, request);
+    return request;
+  }
+
+  function dropDirListings(hostId: string, rootPath: string): void {
+    const prefix = `${hostId}\0${rootPath}`;
+    for (const key of dirListings.keys()) {
+      const rest = key.slice(prefix.length);
+      if (key.startsWith(prefix) && (rest === "" || rest.startsWith("/") || rest.startsWith("\\"))) dirListings.delete(key);
+    }
+  }
+
+  /**
+   * Resolves the listed directories' own levels ahead of their expands.
+   * Remote listings pay a round trip per level, so an open feels instant only
+   * when its rows are already here. Bounds keep a big workspace cheap: a
+   * directory with more than PREFETCH_MAX_DIRS children stays fully lazy,
+   * one oversized child keeps its `deferred` marker, and the response as a
+   * whole stays under PREFETCH_ENTRY_BUDGET added rows. Children beyond the
+   * bounds still land in the listing cache when they were fetched, so their
+   * expands stay quick.
+   */
+  const PREFETCH_MAX_DIRS = 64;
+  const PREFETCH_DIR_MAX_ENTRIES = 500;
+  const PREFETCH_ENTRY_BUDGET = 4000;
+  async function prefetchLevels(
+    entries: FlatEntry[],
+    listLevel: (relative: string) => Promise<FlatEntry[]>,
+  ): Promise<FlatEntry[]> {
+    const dirs = entries.filter((entry) => entry.deferred === true);
+    if (dirs.length === 0 || dirs.length > PREFETCH_MAX_DIRS) return entries;
+    const levels = await Promise.all(dirs.map((dir) => listLevel(dir.path).catch(() => null)));
+    const out = [...entries];
+    let budget = PREFETCH_ENTRY_BUDGET;
+    dirs.forEach((dir, index) => {
+      const level = levels[index];
+      if (level === null || level.length > PREFETCH_DIR_MAX_ENTRIES || level.length > budget) return;
+      out[out.indexOf(dir)] = { path: dir.path, kind: "directory" };
+      out.push(...level);
+      budget -= level.length;
+    });
+    return out;
+  }
+
   // Every open page gets every signal, and a page may hold two subscribers;
   // the sequence number lets each page act on a signal once.
   let changeSequence = 0;
@@ -382,6 +486,10 @@ export default async function plugin(bb: BbPluginApi) {
   watchHost.experimental_onSignal("changed", ({ hostId, payload }) => {
     const entry = watches.get(hostId, payload.rootPath);
     bb.log.debug(`file watch signal from ${hostId} for ${payload.rootPath}: ${payload.kind} ${payload.paths.map((change) => change.path).join(" ")}`);
+    if (payload.kind === "rescan" || payload.paths.some((change) => change.type !== "update")) {
+      filesIndexes.delete(payload.rootPath);
+      dropDirListings(hostId, payload.rootPath);
+    }
     if (entry === undefined) return;
     if (payload.kind === "rescan") {
       publishChange({ root: entry.key, kind: "rescan", changes: [] });
@@ -643,8 +751,8 @@ export default async function plugin(bb: BbPluginApi) {
         source: data.source, root: environment.path!,
         label: environment.branchName ?? environment.name ?? path.basename(environment.path!),
         baseBranch: data.baseBranch, target: data.target,
-        files: result.outcome === "available" ? result.files.slice(0, MAX_TREE_ENTRIES) : [],
-        truncated: result.outcome === "available" && (result.truncated || result.files.length > MAX_TREE_ENTRIES),
+        files: result.outcome === "available" ? result.files.slice(0, MAX_DIFF_FILES) : [],
+        truncated: result.outcome === "available" && (result.truncated || result.files.length > MAX_DIFF_FILES),
         message: data.message,
       };
     },
@@ -734,21 +842,61 @@ export default async function plugin(bb: BbPluginApi) {
       const target = await resolveTarget(source, ".");
       const clean = subpath.replace(/^\/+|\/+$/g, "");
       if (await isLocalWorkspace(target)) {
-        const listing = await listLocalTree(target.rootPath, clean, MAX_TREE_ENTRIES);
-        return { root: target.rootPath, ...listing };
+        const entries = await prefetchLevels(
+          await listLocalTree(target.rootPath, clean),
+          (relative) => listLocalTree(target.rootPath, relative),
+        );
+        return { root: target.rootPath, entries };
       }
-      // Another host: BB's daemon lists it, without hidden entries, node_modules, or symlinks.
+      // Another host: the daemon lists one level, the way the local lister
+      // does. It sees hidden entries, node_modules, and symlinks, which
+      // list_paths dropped; every directory is deferred and lists on expand.
+      const hostId = await hostOf(target);
+      if (hostId === null) throw new Error("This workspace's host is not available");
+      const api = pathApiFor(target.rootPath);
+      const listLevel = async (relative: string): Promise<FlatEntry[]> => {
+        const listing = await remoteDirectory(
+          hostId,
+          relative === "" ? target.rootPath : api.join(target.rootPath, relative),
+          relative === "",
+        );
+        const prefix = relative === "" ? "" : `${relative}/`;
+        return listing.entries.map((entry) => ({
+          path: `${prefix}${entry.name}`,
+          kind: entry.kind,
+          ...(entry.kind === "directory" ? { deferred: true as const } : {}),
+        }));
+      };
+      return { root: target.rootPath, entries: await prefetchLevels(await listLevel(clean), listLevel) };
+    },
+
+    async search({ source, query, limit = 50 }) {
+      const target = await resolveTarget(source, ".");
+      const trimmed = query.trim();
+      if (trimmed === "") return { matches: [] };
+      if (await isLocalWorkspace(target)) {
+        const files = await localFilesIndex(target.rootPath);
+        const scored: { path: string; score: number }[] = [];
+        for (const file of files) {
+          const score = fuzzyScore(file, trimmed);
+          if (score !== null) scored.push({ path: file, score });
+        }
+        scored.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
+        return { matches: scored.slice(0, limit).map(({ path }) => ({ path })) };
+      }
+      // Another host: the daemon fuzzy-searches it and ranks the matches.
+      const hostId = await hostOf(target);
+      if (hostId === null) throw new Error("This workspace's host is not available");
       const result = await bb.sdk.files.listPaths({
-        path: clean === "" ? target.rootPath : path.posix.join(target.rootPath, clean),
+        hostId,
+        path: target.rootPath,
+        query: trimmed,
         includeFiles: true,
-        includeDirectories: true,
-        limit: MAX_TREE_ENTRIES,
-        ...(target.hostId !== undefined ? { hostId: target.hostId } : {}),
+        includeDirectories: false,
+        limit,
       });
       return {
-        root: target.rootPath,
-        entries: result.paths.map((entry) => ({ path: clean === "" ? entry.path : `${clean}/${entry.path}`, kind: entry.kind })),
-        truncated: result.truncated,
+        matches: result.paths.map((entry) => ({ path: entry.path.replace(/^\.?\/+/, "") })),
       };
     },
 
