@@ -69,94 +69,99 @@ The earlier Hello proof plugin and general branding experiment have been
 removed from the current collection. Their prior commits and release tags stay
 in Git history.
 
-### Develop locally, then verify the Git branch
+### Development topology
 
-Normal installations track Git `main`. A commit SHA, as shown above, can still
-be used when a fixed version is needed.
+This repository is developed by one **PM thread per plugin**. PM threads live
+in the pinned "Plugin PMs" section of the `bb-plugins` project and are
+long-lived. Each PM has a persistent managed-worktree environment — its desk.
+For a change to its plugin, the PM works in that environment directly or
+spawns child threads that **reuse** it; children never get a separate
+worktree for the same plugin, and only one thread works on a plugin at a
+time. The PM is the only agent that performs git operations in its worktree.
 
-1. Create or reuse a feature branch. Fetch `origin` and rebase it onto
-   `origin/main`, preserving other work and resolving conflicts.
-2. Install the affected plugin from the local worktree for development, subject
-   to the data-preservation rules below. Use `bb plugin dev <plugin-path>` to
-   watch files, rebuild, and reload. Run relevant checks and test in BB while
-   editing. Keep the worktree available until the plugin uses another source.
-3. Build the affected plugin, commit, push the branch to `origin`, and open a
-   **draft PR** against `main`. Switch only that plugin to the Git branch.
-   Keep its plugin ID and collection entry unchanged. Preserve settings,
-   secrets, schedules, and data.
-4. Confirm the installed source and resolved commit. Test the changed behavior
-   in BB, including desktop and mobile when the UI changes. Record the tested
-   commit, checks, and live evidence in the PR.
-5. Fix failures, push, and update the branch installation. Verify the new
-   resolved commit and repeat the affected tests before proceeding.
-6. Keep the PR in draft until the human explicitly requests that it be marked
-   ready for review. Passing checks, completed live verification, or a general
-   request to finish the work does not authorize this transition. Before marking
-   it ready, remove temporary work files from the PR diff and from any content
-   sent to review agents. This includes plans, review notes, Markdown documents,
-   HTML previews, prototype scripts, and other files created for development
-   that the plugin does not need. Keep tests and files required to build, run,
-   or use the plugin. Keep repository instructions and documentation changes
-   that the user explicitly requested. Check the final PR diff for these files
-   before requesting agent reviews, including reviews while the PR is in draft.
-   Extra review content consumes credits and costs money. Mark the PR ready only
-   after the user's explicit request, this cleanup, and successful live
-   verification. Monitor
-   checks and review comments while it is in draft and after it is marked ready.
-   Address valid findings and push fixes. Update the installed plugin and repeat
-   affected checks after each fix. Continue until required checks pass and review
-   findings are resolved on the latest commit. No comments yet is not proof of
-   a completed review; report unavailable or pending reviews.
-7. Give the user the PR and report whether it is draft or ready for review.
-   Leave the tested branch installed. The user
-   decides when to merge. Do not merge or enable auto-merge.
-8. After the user merges, confirm the merge on GitHub, switch the plugin back
-   to `main`, and update it. Confirm the resolved commit includes the merge
-   and verify that the plugin works without errors. A squash merge has a new
-   commit, so the branch SHA is not the final verification target.
+Cross-plugin work goes through an orchestrator thread, which dispatches to
+the relevant PMs instead of editing plugin code itself. Ping a PM directly
+for single-plugin work; ask the orchestrator when a change spans plugins.
 
-Local development avoids a commit and push for each test. The Git installation
-check then verifies the version that reviewers and users can install. For a
-plugin that is not installed yet, the local commands are:
+### The daily loop
+
+Normal state: each plugin installs from the main checkout's path —
+`path:~/Code/bb-plugins/plugins/<name>` — not a `git:` ref. The running plugin
+tracks whatever the checkout contains; `git pull --ff-only` +
+`bb plugin build <path>` + `bb plugin reload <name>` picks up landed changes.
+The main checkout stays on `main`: never check out a feature branch there and
+never run `git rebase` or `git reset --hard` in it while a PM has unmerged
+work.
+
+Trivial changes — docs, comments, small fixes that need no review — may be
+committed directly on `main` in the main checkout. Everything else:
+
+1. In the PM worktree, fetch `origin`, create the feature branch from
+   `origin/main`, and implement. Run `bb plugin dev
+   <pm-worktree>/plugins/<name>` there for live rebuild+reload.
+2. Point the running install at the PM worktree in place:
+   `bb plugin install path:<pm-worktree>/plugins/<name> --yes`. A path→path
+   move retains the plugin ID, settings, secrets, schedules, and stored data.
+   Verify the new source, then test the changed behavior in BB — desktop and
+   mobile checks when the UI changes. Keep the worktree until the install
+   moves off it — deleting the source path breaks a path install.
+3. Commit, push the branch, and open a **draft** PR against `main`. Record
+   the tested commit, checks, and live evidence in the PR.
+4. Keep the PR draft until the human explicitly requests ready-for-review —
+   passing checks and live verification do not authorize it. Before marking
+   ready, strip temporary work files (plans, review notes, prototypes,
+   preview HTML) from the PR diff and from content sent to review agents;
+   reviewers read the PR and extra content costs credits. Monitor checks and
+   review comments, fix findings, push, rebuild, and repeat verification
+   until the latest commit is clean.
+5. Return the PR to the user for the merge decision — never merge or enable
+   auto-merge. Leave the PM worktree installed while the PR is open.
+6. After the user merges: confirm the merge on GitHub (a squash merge makes
+   a new commit, so the branch SHA is not the final verification target),
+   `git pull` the main checkout, move the install back with
+   `bb plugin install path:~/Code/bb-plugins/plugins/<name> --yes`, rebuild,
+   and verify the running plugin.
+
+If the change is abandoned, move the install back to the main checkout path
+before abandoning the branch. Testing in the normal BB instance affects the
+plugin used for daily work until it returns to the main checkout.
+
+For a plugin that is not installed yet, the local commands are:
 
 ```sh
 bb plugin install path:/absolute/worktree/plugins/PLUGIN --yes
 bb plugin dev /absolute/worktree/plugins/PLUGIN
 ```
 
-Check the installed source before using these commands for an existing plugin.
-Local development does not bypass data-preservation rules. If a safe source
-switch is unavailable, use the Git-branch workflow for that installation.
-Coordinate before replacing an installation another thread is testing.
+Why not `git:`: a `git:` source cannot move in place — switching between
+`git:` and `path:` needs a remove/install cycle, which deletes settings and
+secrets (`data.db` survives only by courtesy; back it up). Tracking the
+checkout path keeps every feature iteration a single in-place move and keeps
+`bb plugin dev` available at all times.
 
-If the change is abandoned, restore `main`. Switch away from the local source
-before deleting its worktree. Testing in the normal BB instance affects the
-plugin used for daily work until it returns to `main`.
+### Source switches and data preservation
 
 Use `bb plugin source <id> --json` to inspect the installed source and
-`bb plugin update <id>` to fetch updates from its current ref. Updating alone
-does not switch the ref back to `main`. Check the current CLI help when changing
-refs. Preserve settings and data; `bb plugin remove` deletes plugin settings,
-secrets, and schedules and is not a general ref-switch command.
+`bb plugin update <id>` to fetch updates from its current ref — `update` does
+not fetch path installations. Check the current CLI help when changing refs.
+Preserve settings and data; `bb plugin remove` deletes plugin settings,
+secrets, and schedules and is not a source-switch command. Coordinate with
+the owning PM before replacing an installation its threads are testing.
 
-BB 0.42.1 has no in-place Git-ref switch in its CLI or plugin API. Installing
-the same plugin ID from a different ref is refused. For a plugin with no
-server-side settings, secrets, schedules, or stored data, a remove/install
-cycle can be used after verifying those stores are empty. Preserve the plugin
-ID and browser storage; never clear client preferences. Check the resulting
-source and enabled state. Record the previous source so installation failure
-can be rolled back. Do not apply this exception to a plugin with data.
+BB 0.42.1 has no in-place Git-ref switch in its CLI or plugin API, and
+installing the same plugin ID from a different ref is refused. Path installs
+avoid this entirely: `bb plugin install path:<directory> --yes` moves an
+existing `path:` installation in place while retaining its plugin ID and
+server-side state.
 
-An existing `path:` installation can move to another path with
-`bb plugin install path:<directory> --yes` while retaining its plugin ID and
-server-side state. For a branch preview of a plugin with settings, use a stable
-Git clone checked out at the pushed feature branch, build there, and move only
-that plugin to the clone. Do not use a temporary worktree. Record the clone's
-branch and full commit hash beside `bb plugin source`, since BB reports a path
-source without a resolved Git commit. Update that clone explicitly for each
-preview; `bb plugin update` does not fetch path installations. After merge,
-return it to `main` and rebuild, or move it back to its recorded normal path.
-A managed Git source switch still needs the upstream API described below.
+A remove/install cycle is the fallback for sources that cannot move in
+place. It is allowed only for a plugin with no server-side settings,
+secrets, schedules, or stored data — verify those stores are empty first,
+preserve the plugin ID and browser storage (never clear client preferences),
+record the previous source so failure can be rolled back, and check the
+resulting source and enabled state. For a plugin with data, back up its data
+directory, settings, and secrets beforehand and verify them afterward;
+`data.db` surviving removal is a courtesy, not a guarantee.
 
 For example, after confirming that a plugin has no server-side data:
 
@@ -167,45 +172,29 @@ bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin 
 bb plugin source erwin-devin --json
 ```
 
-After a new push, use `bb plugin update <id> --yes`. After the user
-merges, repeat the verified source-switch procedure with `@main`, then check
-the resolved commit and the plugin behavior. Recheck the data stores before
-each remove/install cycle; a later plugin version may start storing data.
+After a new push to an installed Git branch, use `bb plugin update <id> --yes`.
+After the user merges, switch back with `@main`, then check the resolved
+commit and plugin behavior. Recheck the data stores before each
+remove/install cycle; a later plugin version may start storing data.
+
+For a branch preview of a plugin with settings that must stay on a `git:`
+source, use a stable Git clone checked out at the pushed feature branch,
+build there, and move only that plugin to the clone. Do not use a temporary
+worktree. Record the clone's branch and full commit hash beside
+`bb plugin source`, since BB reports a path source without a resolved Git
+commit. Update that clone explicitly for each preview. After merge, return it
+to `main` and rebuild, or move it back to its recorded normal path. A managed
+Git source switch still needs the upstream API described below.
 
 `erwin-activity` stores its space catalog in `bb.storage.kv` (table
-`plugin_kv` in `bb.db`), so the exception above no longer applies to it once
-a space exists. Before changing its source, run `bb activity spaces-export`
-and keep the JSON; after the new source is running, compare it with a fresh
-export and restore it with `bb activity spaces-import '<json>'` if needed.
-Observed on BB 0.42.1: `bb plugin remove` left `plugin_kv` rows and
-`~/.bb/plugins/<id>/data.db` of removed plugins in place, matching its
-documented scope (settings, secrets, schedules). Treat that as a courtesy, not
-a guarantee; the export is the safety net.
-
-### The daily loop
-
-Normal state: each plugin installs from the main checkout's path —
-`path:~/Code/bb-plugins/plugins/<name>` — not a `git:` ref. The running plugin
-tracks whatever the checkout contains; `git pull` + `bb plugin build <path>` +
-`bb plugin reload <name>` picks up landed changes.
-
-For a change:
-
-1. Work in a worktree (`git worktree add`), run `bb plugin dev <path>` there
-   for live rebuild+reload while iterating.
-2. Point the running install at the worktree in place:
-   `bb plugin install path:<worktree>/plugins/<name> --yes`. A path→path move
-   retains the plugin ID, settings, secrets, schedules, and stored data.
-3. Test, commit, push, open a draft PR. Keep the worktree until the install
-   moves off it — deleting the source path breaks a path install.
-4. After merge: `git -C ~/Code/bb-plugins pull`, rebuild if needed, and move
-   the install back with `bb plugin install path:~/Code/bb-plugins/plugins/<name> --yes`.
-
-Why not `git:`: a `git:` source cannot move in place — switching between
-`git:` and `path:` needs a remove/install cycle, which deletes settings and
-secrets (`data.db` survives only by courtesy; back it up). Tracking the
-checkout path keeps every feature iteration a single in-place move and keeps
-`bb plugin dev` available at all times.
+`plugin_kv` in `bb.db`), so before changing its source, run
+`bb activity spaces-export` and keep the JSON; after the new source is
+running, compare it with a fresh export and restore it with
+`bb activity spaces-import '<json>'` if needed. Observed on BB 0.42.1:
+`bb plugin remove` left `plugin_kv` rows and `~/.bb/plugins/<id>/data.db` of
+removed plugins in place, matching its documented scope (settings, secrets,
+schedules). Treat that as a courtesy, not a guarantee; the export is the
+safety net.
 
 
 ## Desired upstream changes
@@ -278,6 +267,19 @@ Data-preserving source changes remain necessary for this populated plugin;
 the related source-rebind request is
 [BB #2297](https://github.com/get-bb/bb/issues/2297). Follow the stable-clone
 fallback above until a managed Git/path switch exists.
+
+### Thread- or environment-scoped plugin install sources
+
+BB 0.42.1 maps one plugin ID to one installed source globally, so two threads
+cannot live-test the same plugin concurrently — a `path:` move during one
+thread's verification affects every client. This is the structural limit the
+PM-per-plugin topology in this repository works around by serializing
+verification per plugin. Expose an install-source scope (per environment or
+per thread) or a dedicated test channel so parallel work on one plugin is
+possible. Related: the source-rebind request in
+[BB #2297](https://github.com/get-bb/bb/issues/2297). No upstream issue filed
+yet; suggested title: `Scope plugin install sources per environment or
+thread`.
 
 ### Hide the options button on plugin sidebar rows
 
