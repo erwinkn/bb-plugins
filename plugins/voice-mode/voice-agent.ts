@@ -22,6 +22,7 @@ import {
 import { actionStatus } from "./session-events.ts";
 import { nativeUi } from "./native-ui.ts";
 import { currentSpace } from "./spaces-bridge.ts";
+import { TRANSCRIPTION_MODEL, type VoiceEngine } from "./models.ts";
 
 /** The saved space the Threads sidebar shows on this device, or null for all projects or no storage. */
 function currentSpaceName(): string | null {
@@ -75,6 +76,8 @@ interface SessionHandle {
   stream: MediaStream;
   audio: HTMLAudioElement;
   dc: RTCDataChannel | null;
+  /** Which OpenAI session contract this call speaks; set from createCall. */
+  engine: VoiceEngine;
   /** The live mic track feeding the pc; swapped in when iOS suspends the mic. */
   micTrack: MediaStreamTrack | null;
   /** The pc's audio sender, so a fresh mic track can replace a suspended one. */
@@ -155,6 +158,13 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 2000): Promise<v
     }
     pc.addEventListener("icegatheringstatechange", check);
   });
+}
+
+/** Live append contents cap at 500 tokens; chunk conservatively by length. */
+function chunkText(text: string, size: number): string[] {
+  const chunks: string[] = [];
+  for (let index = 0; index < text.length; index += size) chunks.push(text.slice(index, index + size));
+  return chunks.length ? chunks : [""];
 }
 
 /**
@@ -280,6 +290,28 @@ export class VoiceAgent {
   private responseIdentity = new Map<string, { userTurn: number; requestId: string | null; replyId: string | null; source: string; binding: ResponseBinding }>();
   /** end_call was requested; the call ends once the goodbye has played. */
   private endCallAfterResponse = false;
+
+  // ---- gpt-live-1 engine state (see handleLiveEvent) ----
+  /** Synthetic input item: live transcript fragments carry no item identity. */
+  private liveInput: { id: string } | null = null;
+  private liveInputCounter = 0;
+  /** Current assistant speech run and the silence timer that finalizes it. */
+  private liveOutput: { id: string; text: string; lastAt: number } | null = null;
+  private liveOutputCounter = 0;
+  private liveOutputTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Delegated backend responses: nested response id -> tracked calls. */
+  private liveResponses = new Map<string, { delegationId: string | null; pending: Set<string>; terminal: boolean }>();
+  private liveDelegations = new Map<string, string>(); // delegation id -> nested response id
+  /** Outbound append event ids -> purpose, so acks/errors can be matched. */
+  private liveAppends = new Map<string, string>();
+  /** end_call ran; the delegated response still has to finish and speak. */
+  private liveAwaitingGoodbye = false;
+  /** The end_call delegation's backend response reached a terminal state. */
+  private liveEndCallTerminal = false;
+  /** After end_call: wait for the goodbye to go quiet, then session.close. */
+  private liveCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  private liveCloseFallback: ReturnType<typeof setTimeout> | null = null;
+  private liveClosing = false;
 
 
   /** The most recent tool call, so a suspend/teardown can name its likely cause. */
@@ -458,7 +490,8 @@ export class VoiceAgent {
       if (this.userTurn === exchange.version) this.input?.answered(exchange.version);
       if (this.nonce) this.report("finishUserExchange", { nonce: this.nonce, utteranceId: id });
     }
-    if (this.endCallAfterResponse && !this.responseActive && !this.pendingToolCalls && !this.outputSequencer.playbackPending) this.stop("end-call");
+    // Live ends calls through session.close once the goodbye drains instead.
+    if (this.session?.engine !== "live" && this.endCallAfterResponse && !this.responseActive && !this.pendingToolCalls && !this.outputSequencer.playbackPending) this.stop("end-call");
   }
 
   private quietForUpdates() {
@@ -479,6 +512,13 @@ export class VoiceAgent {
         return;
       }
       this.openOffer = { id: batch.offerId, nonce, responseId: null };
+      if (session.engine === "live") {
+        // Commentary appends are spoken by the live model; the offer counts as
+        // delivered once the last chunk's append is acknowledged.
+        const eventId = this.liveAppend(session.dc!, "session.commentary.append", "update", JSON.stringify({ type: "background_updates", ...batch }));
+        this.liveAppends.set(eventId, `offer:${batch.offerId}`);
+        return;
+      }
       session.dc!.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "system",
         content: [{ type: "input_text", text: JSON.stringify({ type: "background_updates", ...batch }) }] } }));
       this.requestResponse(session.dc!, { origin: "background", utterance: null });
@@ -1143,6 +1183,8 @@ export class VoiceAgent {
    */
   private speakUnprompted(session: SessionHandle, instruction: string) {
     if (this.session !== session || !session.dc) return;
+    // Live speaks on its own; an instructions append is how we ask for a turn.
+    if (session.engine === "live") { this.liveAppend(session.dc, "session.instructions.append", "prompt", instruction); return; }
     this.responseInstruction = instruction;
     this.responsePending = true;
     this.pendingBinding = { origin: "user", utterance: null };
@@ -1150,6 +1192,8 @@ export class VoiceAgent {
   }
 
   private requestResponse(dc: RTCDataChannel, binding?: ResponseBinding) {
+    // Live needs no response.create: the model answers settled input itself.
+    if (this.session?.engine === "live") return;
     const requested = binding ?? this.pendingBinding ?? { origin: "user", utterance: this.utterance() };
     this.pendingBinding = requested;
     if (dc.readyState !== "open") return;
@@ -1236,7 +1280,20 @@ export class VoiceAgent {
     if (this.replyTimer) clearTimeout(this.replyTimer);
     this.replyTimer = null;
     this.setMicSuspended(false);
+    this.liveInput = null; this.liveInputCounter = 0;
+    if (this.liveOutputTimer) clearTimeout(this.liveOutputTimer);
+    this.liveOutputTimer = null; this.liveOutput = null; this.liveOutputCounter = 0;
+    this.liveResponses.clear(); this.liveDelegations.clear();
+    this.liveAppends.clear();
+    this.liveAwaitingGoodbye = false; this.liveEndCallTerminal = false;
+    if (this.liveCloseTimer) clearTimeout(this.liveCloseTimer);
+    if (this.liveCloseFallback) clearTimeout(this.liveCloseFallback);
+    this.liveCloseTimer = null; this.liveCloseFallback = null; this.liveClosing = false;
     if (session) {
+      // A graceful live close lets final usage arrive; teardown does not wait.
+      if (session.engine === "live" && session.dc?.readyState === "open") {
+        try { session.dc.send(JSON.stringify({ type: "session.close" })); } catch { /* closing anyway */ }
+      }
       session.disposeLifecycle?.();
       session.dc?.close();
       session.pc.close();
@@ -1468,11 +1525,19 @@ export class VoiceAgent {
     const input=this.input;if(!input)return;
     const state=`${input.version}:${input.speaking}:${input.unresolved}:${input.pending}:${input.unavailable}`;
     if(state!==this.inputState){this.inputState=state;this.markConversationChange();this.emitChange();this.scheduleReplyDrain();}
-    if(this.sessionReady && input.takeResponse() && this.session?.dc)this.requestResponse(this.session.dc, { origin: "user", utterance: this.utterance() });
+    if(this.sessionReady && input.takeResponse() && this.session?.dc){
+      // Live answers settled input itself; the settled utterance only needs to
+      // exist so a later delegation can bind to it.
+      if(this.session.engine!=="live")this.requestResponse(this.session.dc, { origin: "user", utterance: this.utterance() });
+    }
   }
 
   /** One owner stops local playback and sends at most one clear per response. */
   private interruptSpeech(reason:string) {
+    // The live model hears barge-in itself and owns turn-taking; there is no
+    // response to cancel and no playback buffer to clear. Local state settles
+    // so a new utterance supersedes pending waits via its version.
+    if (this.session?.engine === "live") { this.setAssistantSpeaking(false); this.settleLiveOutputs(); return; }
     const generation=this.activeResponseId,playback=this.playbackResponseId;
     for (const id of new Set([generation, playback, ...this.outputSequencer.unsettledResponseIds()])) {
       if (id) this.interruptOutput(id);
@@ -1650,11 +1715,23 @@ export class VoiceAgent {
       // navigation/backgrounding when the element is actually in the DOM — a
       // detached `new Audio()` can go silent. Hidden so it never shows.
       this.prepareAudioElement(audio);
-      const session: SessionHandle = { pc, stream, audio, dc: null, micTrack: null, micSender: null };
+      const session: SessionHandle = { pc, stream, audio, dc: null, micTrack: null, micSender: null, engine: "realtime" };
       this.session = session;
       this.input=new InputController({
         now:()=>Date.now(),view:()=>{const native=nativeUi.snapshot();const view=native.bound ? native : this.bindings?.context ?? native;return {threadId:view.threadId,projectId:view.projectId,onNewThreadScreen:view.onNewThreadScreen ?? false};},
-        send:event=>{if(this.session!==session || !this.sessionReady || session.dc?.readyState!=="open")return false;session.dc.send(JSON.stringify(event));return true;},
+        send:event=>{
+          if(this.session!==session || !this.sessionReady || session.dc?.readyState!=="open")return false;
+          // Live has no input_audio_buffer.commit: the model owns turn-taking.
+          // A commit decision means the utterance is final locally, so settle
+          // the item with its accumulated transcript ourselves.
+          if(session.engine==="live" && event.type==="input_audio_buffer.commit"){
+            const itemId=String(event.event_id??"").slice("commit_".length);
+            const item=this.input?.item(itemId);
+            this.input?.committed(itemId);
+            if(item)this.input?.completed(itemId,item.text);
+            return true;
+          }
+          session.dc.send(JSON.stringify(event));return true;},
         changed:()=>this.inputChanged(),
         interrupt:item=>{this.responsePending=false;this.pendingBinding=null;
           if (item.utteranceId) this.exchanges.set(item.utteranceId, { version:item.version, finished:false });
@@ -1755,7 +1832,13 @@ export class VoiceAgent {
             device: { platform: clientDescriptor.platform, mobile: clientDescriptor.mobile, browser: clientDescriptor.browser, runtime: clientDescriptor.runtime },
             view: { threadId:view.threadId, projectId:view.projectId, space: currentSpaceName() } });
           if(this.session!==session || this.nonce!==nonce || dc.readyState!=="open")return;
-          dc.send(JSON.stringify({type:"conversation.item.create",item:{type:"message",role:"system",content:[{type:"input_text",text:JSON.stringify(context)}]}}));
+          if(session.engine==="live"){
+            // Live has no conversation items: the context lands as thinking
+            // appends (<=500 tokens each, so it is chunked conservatively).
+            this.liveAppend(dc,"session.thinking.append","context",JSON.stringify(context));
+          } else {
+            dc.send(JSON.stringify({type:"conversation.item.create",item:{type:"message",role:"system",content:[{type:"input_text",text:JSON.stringify(context)}]}}));
+          }
           this.liveClient=new LiveClient((method,input)=>this.rpc(method,input),()=>this.session===session && this.nonce===nonce && this.state!=="reconnecting",this.input!,nonce,callConversationId);
           this.sessionReady=true;this.clearConnectWatchdog();
           for(const track of stream.getAudioTracks())track.enabled=!(recovery?.muted ?? muted);
@@ -1771,14 +1854,18 @@ export class VoiceAgent {
           this.log("session.live");this.inputChanged();
           // A deliberate resume gets a status. Transfers and network recovery stay silent.
           const resumed = Array.isArray((context as { recentTurns?: unknown[] } | null)?.recentTurns) && (context as { recentTurns: unknown[] }).recentTurns.length > 0;
-          if (!transferFromNonce) this.speakUnprompted(session, resumed ? RESUME_INSTRUCTION : GREETING_INSTRUCTION);
+          if (!transferFromNonce && session.engine==="live") this.liveAppend(dc,"session.instructions.append","greeting",resumed ? RESUME_INSTRUCTION : GREETING_INSTRUCTION);
+          else if (!transferFromNonce) this.speakUnprompted(session, resumed ? RESUME_INSTRUCTION : GREETING_INSTRUCTION);
           this.scheduleReplyDrain();
         } catch(error) { if(this.session===session){this.log("session.contextFailed",{error:String(error)});if(this.recovery)this.retryConnection("context-failed");else this.stop("context-failed");} }
       };
       dc.onopen = () => {
         if(this.session!==session)return;
         this.logDiag("conn.dc.open");
-        dc.send(JSON.stringify({type:"session.update",event_id:"configure_input",session:{type:"realtime",audio:{input:{turn_detection:null,transcription:{model:"gpt-realtime-whisper",delay:"minimal"}}}}}));
+        // Live sessions are fully configured by the creation POST; the client
+        // waits for session.started instead of sending session.update.
+        if(session.engine==="live")return;
+        dc.send(JSON.stringify({type:"session.update",event_id:"configure_input",session:{type:"realtime",audio:{input:{turn_detection:null,transcription:{model:TRANSCRIPTION_MODEL,delay:"minimal"}}}}}));
       };
       dc.onclose = () => {
         if (this.session !== session) return;
@@ -1794,10 +1881,11 @@ export class VoiceAgent {
           return;
         }
         const type = String(event.type ?? "");
+        if (session.engine === "live") { this.handleLiveEvent(session, dc, event, acceptSession); return; }
         if(type==="session.created" || type==="session.updated") {
           const config=event.session as {audio?:{input?:{turn_detection?:unknown;transcription?:{model?:string}}}}|undefined;
           this.log("session.configuration",{eventType:type,input:config?.audio?.input??null});
-          if(config?.audio?.input?.turn_detection===null && config.audio.input.transcription?.model==="gpt-realtime-whisper")acceptSession();
+          if(config?.audio?.input?.turn_detection===null && config.audio.input.transcription?.model===TRANSCRIPTION_MODEL)acceptSession();
           else if(this.sessionReady && type==="session.updated"){this.stop("configuration-changed");toast.error("Voice input settings changed. Reconnect to restore word-based interruption.");}
           return;
         }
@@ -1976,14 +2064,16 @@ export class VoiceAgent {
       const localSdp = pc.localDescription?.sdp;
       if (!localSdp) throw new Error("No local SDP offer");
 
-      const { sdp } = await bindings.rpc.call("createCall", {
+      const call = await bindings.rpc.call("createCall", {
         sdp: localSdp,
         nonce,
         mobile: clientDescriptor.mobile,
         ...bindings.context,
-      });
+      }) as { sdp: string; engine?: VoiceEngine; sessionId?: string | null };
       if (this.session?.pc !== pc) return; // stopped while exchanging
-      await pc.setRemoteDescription({ type: "answer", sdp });
+      session.engine = call.engine === "live" ? "live" : "realtime";
+      this.log("session.endpoint", { engine: session.engine, sessionId: call.sessionId ?? null });
+      await pc.setRemoteDescription({ type: "answer", sdp: call.sdp });
     } catch (error) {
       if (acquiredStream && this.recovery?.stream !== acquiredStream && this.session?.stream !== acquiredStream) acquiredStream.getTracks().forEach(track => track.stop());
       if (!current()) return;
@@ -1992,6 +2082,292 @@ export class VoiceAgent {
       toast.error(`Ada: ${error instanceof Error ? error.message : String(error)}`);
       this.requestPresence();
     }
+  }
+
+  // ---- gpt-live-1 (live engine) ----
+  //
+  // A live session differs from realtime in the ways this section adapts:
+  // the creation POST carries the whole session config, so the data channel
+  // only carries events; the model owns turn-taking (full duplex), so no
+  // response.create/response.cancel/buffer control exists; transcripts arrive
+  // as timestamped fragments with no item identity; and tool calls arrive as
+  // nested Responses events inside `response.event` envelopes whose results go
+  // back as response.item.create followed by response.create.
+
+  /** Send a chunked session.*.append (500-token cap) and track its event ids. */
+  private liveAppend(dc: RTCDataChannel, type: string, tag: string, content: string, delegationId: string | null = null): string {
+    const chunks = chunkText(content, 1400);
+    let lastId = "";
+    chunks.forEach((chunk, index) => {
+      lastId = `live_${tag}_${index}_${crypto.randomUUID()}`;
+      this.liveAppends.set(lastId, tag);
+      dc.send(JSON.stringify({ type, event_id: lastId, delegation_id: delegationId, content: chunk }));
+    });
+    if (this.liveAppends.size > 300) this.liveAppends.delete(this.liveAppends.keys().next().value!);
+    return lastId;
+  }
+
+  /** Acks/errors match the outgoing event id through client_event_id. */
+  private liveAppendAck(event: Record<string, unknown>, failed = false) {
+    const error = event.error as { client_event_id?: unknown } | undefined;
+    const clientId = typeof event.client_event_id === "string" ? event.client_event_id
+      : typeof error?.client_event_id === "string" ? error.client_event_id : null;
+    if (!clientId) return;
+    const tag = this.liveAppends.get(clientId);
+    this.liveAppends.delete(clientId);
+    if (tag?.startsWith("offer:") && this.openOffer?.id === tag.slice(6)) this.closeOffer(failed ? "not_delivered" : "delivered");
+  }
+
+  /** Transcript fragments carry no item id; one open input item per speech run. */
+  private liveInputId(): string {
+    const current = this.liveInput;
+    if (current && this.input?.item(current.id)?.state === "open") return current.id;
+    const id = `live_in_${++this.liveInputCounter}`;
+    this.liveInput = { id };
+    return id;
+  }
+
+  /** The utterance a delegation belongs to: settled if possible, else open. */
+  private liveBindingUtterance(): ToolUtterance | null {
+    return this.utterance() ?? this.input?.currentUtterance() ?? null;
+  }
+
+  /** Assistant speech or a delegation covers the pending user utterances. */
+  private finishLiveExchanges() {
+    for (const [id, exchange] of this.exchanges) {
+      if (exchange.finished) continue;
+      exchange.finished = true;
+      if (this.userTurn === exchange.version) this.input?.answered(exchange.version);
+      if (this.nonce) this.report("finishUserExchange", { nonce: this.nonce, utteranceId: id });
+    }
+  }
+
+  private handleLiveEvent(session: SessionHandle, dc: RTCDataChannel, event: Record<string, unknown>, acceptSession: () => void) {
+    const type = String(event.type ?? "");
+    if (type === "session.started") {
+      this.log("session.configuration", { eventType: type, engine: "live", sessionId: (event.session as { id?: unknown } | undefined)?.id ?? null });
+      void acceptSession();
+      return;
+    }
+    if (!this.sessionReady && type !== "error") return;
+    if (type === "session.input_transcript.delta") {
+      const delta = String(event.delta ?? "");
+      if (delta) this.input?.delta(this.liveInputId(), delta, typeof event.event_id === "string" ? event.event_id : undefined);
+      return;
+    }
+    if (type === "session.output_transcript.delta") {
+      this.liveAssistantDelta(String(event.delta ?? ""), typeof event.event_id === "string" ? event.event_id : undefined);
+      return;
+    }
+    if (type === "session.delegation.created") { this.liveDelegationCreated(event); return; }
+    if (type === "response.event") { this.liveResponseEvent(dc, session, event); return; }
+    if (type === "session.commentary.appended" || type === "session.thinking.appended" || type === "session.instructions.appended") { this.liveAppendAck(event); return; }
+    if (type === "session.usage.updated") { this.log("session.usage", { usage: event.usage ?? null, context: event.context_window ?? null }); return; }
+    if (type === "session.updated") { this.log("session.configuration", { eventType: type, engine: "live" }); return; }
+    if (type === "session.closed") {
+      const reason = typeof event.reason === "string" ? event.reason : "unknown";
+      this.log("session.closed", { reason, usage: event.usage ?? null });
+      if (this.session === session) this.stop(this.liveClosing || reason === "close_requested" ? "end-call" : "session-closed");
+      return;
+    }
+    if (type === "error") { this.liveError(event); return; }
+  }
+
+  /** Group output transcript fragments into one assistant item per speech run. */
+  private liveAssistantDelta(delta: string, eventId?: string) {
+    if (!delta) return;
+    const now = Date.now();
+    if (this.liveOutput && now - this.liveOutput.lastAt > 1400) this.finishLiveAssistant();
+    if (!this.liveOutput) this.liveOutput = { id: `live_out_${++this.liveOutputCounter}`, text: "", lastAt: now };
+    const item = this.liveOutput;
+    item.lastAt = now;
+    item.text += delta;
+    if (this.liveOutputTimer) clearTimeout(this.liveOutputTimer);
+    this.liveOutputTimer = setTimeout(() => {
+      this.liveOutputTimer = null;
+      this.setAssistantSpeaking(false);
+      this.finishLiveAssistant();
+      this.scheduleLiveClose();
+    }, 1500);
+    maybeUnref(this.liveOutputTimer);
+    this.setAssistantSpeaking(true);
+    this.finishLiveExchanges();
+    if (this.transcriptBuffer.delta("assistant", item.id, delta, now, { userTurn: this.userTurn, responseId: null, source: "live" }, eventId)) this.streamChanged();
+    this.markConversationChange();
+  }
+
+  private finishLiveAssistant() {
+    const item = this.liveOutput;
+    if (!item) return;
+    this.liveOutput = null;
+    if (this.liveOutputTimer) { clearTimeout(this.liveOutputTimer); this.liveOutputTimer = null; }
+    const text = item.text.trim();
+    if (text) this.log("assistant", { text, itemId: item.id, userTurn: this.userTurn, source: "live" });
+    this.completeStream("assistant", item.id);
+    if (this.liveEndCallTerminal) this.liveAwaitingGoodbye = false;
+  }
+
+  private liveDelegationCreated(event: Record<string, unknown>) {
+    const delegation = event.delegation as { id?: unknown; target?: unknown } | undefined;
+    const delegationId = typeof delegation?.id === "string" ? delegation.id : null;
+    const responseId = typeof event.response_id === "string" ? event.response_id : null;
+    if (delegationId && responseId) this.liveDelegations.set(delegationId, responseId);
+    if (responseId) {
+      this.liveResponses.set(responseId, { delegationId, pending: new Set(), terminal: false });
+      this.responseIdentity.set(responseId, { userTurn: this.userTurn, requestId: null, replyId: null, source: "live",
+        binding: { origin: "user", utterance: this.liveBindingUtterance() } });
+    }
+    this.log("delegation.created", { delegationId, responseId, target: delegation?.target ?? null, userTurn: this.userTurn });
+    this.finishLiveExchanges();
+    this.markConversationChange();
+  }
+
+  /** Nested Responses events inside a response.event envelope. */
+  private liveResponseEvent(dc: RTCDataChannel, session: SessionHandle, event: Record<string, unknown>) {
+    const inner = event.event as Record<string, unknown> | undefined;
+    if (!inner) return;
+    const innerType = String(inner.type ?? "");
+    const innerResponse = inner.response as Record<string, unknown> | undefined;
+    const delegationId = typeof event.delegation_id === "string" ? event.delegation_id : null;
+    const responseId = (typeof inner.response_id === "string" ? inner.response_id : null)
+      ?? (typeof innerResponse?.id === "string" ? innerResponse.id : null)
+      ?? (delegationId ? this.liveDelegations.get(delegationId) ?? null : null);
+    if (innerType === "response.created") {
+      if (responseId) {
+        if (!this.liveResponses.has(responseId)) this.liveResponses.set(responseId, { delegationId, pending: new Set(), terminal: false });
+        if (delegationId) this.liveDelegations.set(delegationId, responseId);
+        if (!this.responseIdentity.has(responseId)) this.responseIdentity.set(responseId, { userTurn: this.userTurn, requestId: null, replyId: null, source: "live",
+          binding: { origin: "user", utterance: this.liveBindingUtterance() } });
+      }
+      this.markConversationChange();
+      return;
+    }
+    if (innerType === "response.output_item.done") {
+      const item = inner.item as Record<string, unknown> | undefined;
+      if (item?.type === "function_call" && responseId) this.queueLiveToolCall(dc, session, responseId, item);
+      return;
+    }
+    if (innerType === "response.completed" || innerType === "response.failed" || innerType === "response.incomplete") {
+      const record = responseId ? this.liveResponses.get(responseId) : undefined;
+      if (record) record.terminal = true;
+      this.log("delegation.response", { responseId, delegationId, status: innerResponse?.status ?? innerType, calls: record ? record.pending.size : null });
+      const usage = innerResponse?.usage;
+      if (usage && typeof usage === "object" && this.nonce) {
+        void this.bindings?.rpc.call("recordUsage", { model: typeof innerResponse?.model === "string" ? innerResponse.model : null, sessionId: this.nonce, usage: usage as Record<string, unknown> }).catch(() => undefined);
+      }
+      if (this.endCallAfterResponse) this.liveEndCallTerminal = true;
+      this.markConversationChange();
+      this.settleLiveOutputs();
+      this.scheduleLiveClose();
+      return;
+    }
+  }
+
+  /** Run one delegated function call through the same auth + RPC path as realtime. */
+  private queueLiveToolCall(dc: RTCDataChannel, session: SessionHandle, responseId: string, item: Record<string, unknown>) {
+    const record = this.liveResponses.get(responseId) ?? { delegationId: null, pending: new Set<string>(), terminal: false };
+    this.liveResponses.set(responseId, record);
+    const callId = String(item.call_id ?? "");
+    if (callId) record.pending.add(callId);
+    this.log("realtime.event", { eventType: "live:function_call", responseId, callId, name: item.name ?? null, monotonicMs: performance.now() });
+    this.toolChain = this.toolChain.then(async () => {
+      const submitted = await this.executeLiveToolCall(dc, session, responseId, item);
+      if (this.session !== session) return;
+      if (callId) record.pending.delete(callId);
+      // Continue the backend once every collected call has its output back.
+      if (submitted && record.pending.size === 0 && !record.terminal && dc.readyState === "open")
+        dc.send(JSON.stringify({ type: "response.create", event_id: `continue_${crypto.randomUUID()}` }));
+    }).catch(error => this.log("tool.dispatchFailed", { error: String(error) }));
+  }
+
+  private async executeLiveToolCall(dc: RTCDataChannel, session: SessionHandle, responseId: string, item: Record<string, unknown>): Promise<boolean> {
+    if (dc.readyState !== "open" || !this.nonce) return false;
+    const bindings = this.bindings;
+    const name = String(item.name ?? "");
+    const callId = String(item.call_id ?? "");
+    const toolSessionId = this.nonce;
+    let args: Record<string, unknown> = {};
+    try {
+      args = JSON.parse(typeof item.arguments === "string" ? item.arguments : "{}");
+    } catch { /* keep {} */ }
+    const binding = this.responseIdentity.get(responseId)?.binding ?? { origin: "user" as const, utterance: this.liveBindingUtterance() };
+    this.log("tool.call", { name, args, callId, responseId, engine: "live", userTurn: this.userTurn, confirmedSpeech: this.userSpeaking, audioActivity: this.input?.audioActive ?? false });
+    this.lastTool = { name, at: Date.now() };
+    let output: string;
+    let status: "success" | "error" | undefined;
+    if (binding.origin !== "user" || !binding.utterance) {
+      // Same rule as realtime: an action needs a bound user utterance.
+      output = "Not executed: the request is not authorized.";
+      status = "error";
+      this.log("tool.blocked", { reason: "no bound user utterance", name, responseId, callId, engine: "live" });
+      if (toolSessionId && bindings) this.writeEvent(bindings.rpc, toolSessionId, "tool.result", { name, callId, output, status: "error" });
+      if (callId && dc.readyState === "open" && this.nonce === toolSessionId && this.session === session)
+        dc.send(JSON.stringify({ type: "response.item.create", item: { type: "function_call_output", call_id: callId, output } }));
+      return true;
+    }
+    try {
+      if (!this.liveClient) throw new Error("The live conversation is unavailable");
+      await this.reports;
+      if (this.nonce !== toolSessionId || this.session !== session) return false;
+      const result = await this.liveClient.execute(callId, name, args, binding, responseId);
+      const directive = result as { action?: string; updates?: string } | null;
+      if (directive?.action === "end_call") { this.endCallAfterResponse = true; this.liveAwaitingGoodbye = true; this.armLiveCloseFallback(); }
+      else if (directive?.action === "remain_silent") this.closeOffer(directive.updates === "dismiss" ? "dismissed" : "deferred");
+      output = typeof result === "string" ? result : JSON.stringify(result);
+      const receipt = result as { status?: string } | null;
+      status = receipt && ["failed", "unknown", "cancelled"].includes(receipt.status ?? "") ? "error" : "success";
+    } catch (error) {
+      status = "error";
+      output = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    // Use the captured session: a stopped call's late result must not land in a new one.
+    if (toolSessionId && bindings) this.writeEvent(bindings.rpc, toolSessionId, "tool.result", {
+      name, callId, output: output.slice(0, 4000), status: status ?? actionStatus({ output }) });
+    if (!callId || dc.readyState !== "open" || this.nonce !== toolSessionId || this.session !== session) return false;
+    dc.send(JSON.stringify({ type: "response.item.create", item: { type: "function_call_output", call_id: callId, output } }));
+    this.markConversationChange();
+    this.settleLiveOutputs();
+    this.scheduleLiveClose();
+    return true;
+  }
+
+  /** end_call under live: close once the spoken result has played and gone quiet. */
+  private scheduleLiveClose() {
+    const session = this.session;
+    if (!session || session.engine !== "live" || !this.endCallAfterResponse || this.liveClosing) return;
+    if (this.liveAwaitingGoodbye || !this.liveEndCallTerminal) return;
+    if (this.assistantSpeaking || this.liveOutput) return;
+    if ([...this.liveResponses.values()].some(record => !record.terminal)) return;
+    this.forceLiveClose();
+  }
+
+  private forceLiveClose() {
+    const session = this.session;
+    if (!session || this.liveClosing) return;
+    this.liveClosing = true;
+    if (session.dc?.readyState === "open") session.dc.send(JSON.stringify({ type: "session.close" }));
+    this.log("session.closeRequested", { engine: "live" });
+    this.liveCloseTimer = setTimeout(() => { if (this.session === session) this.stop("end-call"); }, 8000);
+    maybeUnref(this.liveCloseTimer);
+  }
+
+  /** Never leave a live call hanging if the goodbye or the backend stalls. */
+  private armLiveCloseFallback() {
+    if (this.liveCloseFallback) return;
+    this.liveCloseFallback = setTimeout(() => {
+      this.liveAwaitingGoodbye = false;
+      this.liveEndCallTerminal = true;
+      this.forceLiveClose();
+    }, 15000);
+    maybeUnref(this.liveCloseFallback);
+  }
+
+  private liveError(event: Record<string, unknown>) {
+    const error = event.error as { message?: string; code?: string; type?: string; client_event_id?: string } | undefined;
+    this.liveAppendAck(event, true);
+    this.log("error", { message: error?.message ?? "live error", code: error?.code ?? null, type: error?.type ?? null,
+      clientEventId: error?.client_event_id ?? event.client_event_id ?? null, engine: "live" });
+    toast.error(`Ada: ${error?.message ?? "voice error"}`);
   }
 }
 

@@ -142,7 +142,7 @@ test("reloads audio preferences saved by another browser window", () => {
 });
 
 const settleVoice = () => new Promise<void>(resolve => setImmediate(resolve));
-async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output: "Tool complete", status: "success" }), overrides: Record<string, (args: any) => unknown> = {}, initialState = "live") {
+async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output: "Tool complete", status: "success" }), overrides: Record<string, (args: any) => unknown> = {}, initialState = "live", engine: "realtime" | "live" = "realtime") {
   const rpcCalls: {method:string;args:any}[]=[];
   t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"] });
   const originals = ["navigator", "RTCPeerConnection", "Audio"].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
@@ -175,7 +175,7 @@ async function liveVoiceFixture(t: TestContext, runTool = async () => ({ output:
     createDataChannel() { channels.push(this.dc); return this.dc; }
     async createOffer() { return { type: "offer", sdp: "offer" }; }
     async setLocalDescription(description: RTCSessionDescriptionInit) { this.localDescription = description; }
-    async setRemoteDescription() { this.dc.onopen?.(); this.dc.onmessage?.({data:JSON.stringify({type:"session.updated",session:{audio:{input:{turn_detection:null,transcription:{model:"gpt-realtime-whisper"}}}}})}); }
+    async setRemoteDescription() { this.dc.onopen?.(); this.dc.onmessage?.({data:JSON.stringify(engine === "live" ? {type:"session.started",session:{id:"live_sess_1"}} : {type:"session.updated",session:{audio:{input:{turn_detection:null,transcription:{model:"gpt-live-transcribe"}}}}})}); }
   }
   class FakeAudio {
     autoplay = false;
@@ -845,7 +845,7 @@ test("call-start context is injected once before the microphone and first respon
   const context = f.dc.sent.filter(event=>event.item?.role==="system");
   assert.equal(context.length,1);
   assert.equal(JSON.parse(context[0].item.content[0].text).type,"call_start_context");
-  for(let i=0;i<2;i++) f.dc.emit("session.updated",{session:{audio:{input:{turn_detection:null,transcription:{model:"gpt-realtime-whisper"}}}}});
+  for(let i=0;i<2;i++) f.dc.emit("session.updated",{session:{audio:{input:{turn_detection:null,transcription:{model:"gpt-live-transcribe"}}}}});
   await settleVoice();
   assert.equal(f.rpcCalls.filter(call=>call.method==="callStartContext").length,1);
   const device = f.rpcCalls.find(call => call.method === "callStartContext")!.args.device;
@@ -1154,4 +1154,39 @@ test("a retained microphone that the OS muted stays marked paused after recovery
   assert.equal(f.agent.getState(),"live");
   assert.equal(f.agent.getMicSuspended(),true);
   assert.equal(f.peers.at(-1)!.dc.responses().length,0);
+});
+
+test("gpt-live-1: transcripts commit locally and delegated function calls round-trip", async t => {
+  const f = await liveVoiceFixture(t, async () => ({ output: "Done", status: "succeeded" }),
+    { createCall: () => ({ sdp: "answer", engine: "live", sessionId: "sess_live" }) }, "live", "live");
+  const dc = f.dc;
+  // Live sessions are configured by the creation POST: no session.update, the
+  // call-start context lands as thinking appends, and the greeting is an
+  // instructions append rather than response.create.
+  assert.ok(!dc.sent.some(event => event.type === "session.update"));
+  assert.ok(!dc.sent.some(event => event.type === "conversation.item.create"));
+  assert.ok(dc.sent.some(event => event.type === "session.thinking.append"));
+  assert.ok(dc.sent.some(event => event.type === "session.instructions.append" && event.content.includes("Speak first")));
+
+  const input = (f.agent as unknown as { input: import("./input-controller.ts").InputController }).input;
+  input.sample(0.04); f.tick(150); input.sample(0.04);
+  dc.emit("session.input_transcript.delta", { event_id: "t1", delta: "Check ", start_ms: 0, end_ms: 100 });
+  dc.emit("session.input_transcript.delta", { event_id: "t2", delta: "this thread", start_ms: 100, end_ms: 300 });
+  f.tick(300); input.sample(0); f.tick(800); input.sample(0);
+  // The local commit intercept settles the item; no server commit exists.
+  assert.ok(!dc.sent.some(event => event.type === "input_audio_buffer.commit"));
+  f.tick(2000); input.sample(0); await settleVoice();
+  assert.ok(f.rpcCalls.some(call => call.method === "logEvent" && call.args?.kind === "user"));
+
+  // The voice model delegates; the backend emits a function call; we execute
+  // it through the same runTool path and return output + response.create.
+  dc.emit("session.delegation.created", { delegation: { id: "del_1", target: "responses" }, response_id: "resp_1" });
+  dc.emit("response.event", { delegation_id: "del_1", event: { type: "response.output_item.done", response_id: "resp_1",
+    item: { type: "function_call", call_id: "call_1", name: "read_threads", arguments: JSON.stringify({ thread_ids: ["build"], what: "output" }) } } });
+  await settleVoice();
+  assert.ok(f.rpcCalls.some(call => call.method === "runTool" && call.args?.tool === "read_threads"));
+  const itemOut = dc.sent.filter(event => event.type === "response.item.create").at(-1);
+  assert.equal(itemOut?.item?.type, "function_call_output");
+  assert.equal(itemOut?.item?.call_id, "call_1");
+  assert.ok(dc.sent.some(event => event.type === "response.create" && String(event.event_id).startsWith("continue_")));
 });

@@ -22,15 +22,26 @@ import { join } from "node:path";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
+  DEFAULT_LIVE_BACKEND,
+  DEFAULT_LIVE_VOICE,
   DEFAULT_MODEL,
   DEFAULT_VOICE,
+  LIVE_BACKEND_OPTIONS,
+  LIVE_VOICE_OPTIONS,
   MODEL_OPTIONS,
+  TRANSCRIPTION_MODEL,
   VOICE_OPTIONS,
+  engineForModel,
+  isLiveBackend,
+  isLiveVoice,
   isModel,
   isVoice,
+  type LiveBackend,
+  type LiveVoice,
   type RealtimeModel,
   type Voice,
 } from "./models";
+import { LIVE_BACKEND_PREAMBLE, LIVE_ENGINE_PROMPT } from "./live-prompt.ts";
 import { sessionEventLog } from "./session-events.ts";
 import { DEFAULT_SHORTCUTS, isValidShortcut, normalizeShortcuts, type Shortcuts } from "./shortcuts";
 
@@ -92,7 +103,14 @@ export const rpcContract = defineRpcContract({
         nonce: z.string().min(1),
       })
       .strict(),
-    output: z.object({ sdp: z.string() }).strict(),
+    output: z
+      .object({
+        sdp: z.string(),
+        /** Which session contract the client should speak on the data channel. */
+        engine: z.enum(["realtime", "live"]).optional(),
+        sessionId: z.string().nullable().optional(),
+      })
+      .strict(),
   },
   /** Record token usage from one realtime response.done event. */
   recordUsage: {
@@ -147,6 +165,8 @@ export const rpcContract = defineRpcContract({
       .object({
         model: z.enum(MODEL_OPTIONS),
         voice: z.enum(VOICE_OPTIONS),
+        liveVoice: z.enum(LIVE_VOICE_OPTIONS),
+        liveBackend: z.enum(LIVE_BACKEND_OPTIONS),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
       })
@@ -158,6 +178,8 @@ export const rpcContract = defineRpcContract({
       .object({
         model: z.enum(MODEL_OPTIONS).optional(),
         voice: z.enum(VOICE_OPTIONS).optional(),
+        liveVoice: z.enum(LIVE_VOICE_OPTIONS).optional(),
+        liveBackend: z.enum(LIVE_BACKEND_OPTIONS).optional(),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]).optional(),
         shortcuts: shortcutsSchema.optional(),
       })
@@ -166,6 +188,8 @@ export const rpcContract = defineRpcContract({
       .object({
         model: z.enum(MODEL_OPTIONS),
         voice: z.enum(VOICE_OPTIONS),
+        liveVoice: z.enum(LIVE_VOICE_OPTIONS),
+        liveBackend: z.enum(LIVE_BACKEND_OPTIONS),
         credentialPreference: z.enum(["auto", "apiKey", "subscription"]),
         shortcuts: shortcutsSchema,
       })
@@ -267,6 +291,8 @@ export const rpcContract = defineRpcContract({
 });
 
 const REALTIME_ENDPOINT = "https://api.openai.com/v1/realtime/calls";
+/** gpt-live-1 sessions: JSON session + transport in, {session.id, transport.sdp} out. */
+const LIVE_ENDPOINT = "https://api.openai.com/v1/live/sessions";
 
 // USD per 1M tokens for the gpt-realtime family (openai.com/api/pricing,
 // checked 2026-02). Cached input (text or audio) is a flat $0.40.
@@ -422,6 +448,10 @@ export default async function plugin(bb: BbPluginApi) {
   interface VoiceConfig {
     model: RealtimeModel;
     voice: Voice;
+    /** Voice for gpt-live-1 sessions; its set differs from realtime voices. */
+    liveVoice: LiveVoice;
+    /** The Responses model a gpt-live-1 session delegates work to. */
+    liveBackend: LiveBackend;
     credentialPreference: CredentialPreference;
     shortcuts: Shortcuts;
   }
@@ -429,6 +459,8 @@ export default async function plugin(bb: BbPluginApi) {
   const CONFIG_DEFAULTS: VoiceConfig = {
     model: DEFAULT_MODEL,
     voice: DEFAULT_VOICE,
+    liveVoice: DEFAULT_LIVE_VOICE,
+    liveBackend: DEFAULT_LIVE_BACKEND,
     credentialPreference: "auto",
     shortcuts: { ...DEFAULT_SHORTCUTS },
   };
@@ -437,6 +469,8 @@ export default async function plugin(bb: BbPluginApi) {
     return {
       model: isModel(stored.model) ? stored.model : CONFIG_DEFAULTS.model,
       voice: isVoice(stored.voice) ? stored.voice : CONFIG_DEFAULTS.voice,
+      liveVoice: isLiveVoice(stored.liveVoice) ? stored.liveVoice : CONFIG_DEFAULTS.liveVoice,
+      liveBackend: isLiveBackend(stored.liveBackend) ? stored.liveBackend : CONFIG_DEFAULTS.liveBackend,
       credentialPreference: isCredentialPreference(stored.credentialPreference)
         ? stored.credentialPreference
         : CONFIG_DEFAULTS.credentialPreference,
@@ -795,10 +829,66 @@ export default async function plugin(bb: BbPluginApi) {
     async createCall({ sdp, threadId, projectId, onNewThreadScreen, nonce, mobile = false }) {
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
       const key = await apiKey();
-      const { model, voice } = await readConfig();
+      const { model, voice, liveVoice, liveBackend } = await readConfig();
       // The model can only choose a profile it was shown; unreadable settings leave the free-form schema.
       const profiles = await readNamedWorkerSettings(bb).then(s => ({ profiles: s.profiles.map(p => ({ name: p.name, instructions: p.instructions })), defaultProfile: s.defaultProfile }))
         .catch(error => { bb.log.warn(`Worker profiles unavailable for the call schema: ${String(error)}`); return {}; });
+
+      if (engineForModel(model) === "live") {
+        // gpt-live-1: a full-duplex voice layer that delegates reasoning and
+        // tool calls to a Responses backend. The backend gets the aide prompt
+        // (it owns tool semantics); the voice layer gets a short conversation
+        // prompt and decides when to delegate.
+        const session = {
+          model,
+          instructions: LIVE_ENGINE_PROMPT,
+          audio: { output: { voice: liveVoice } },
+          delegation: {
+            type: "responses",
+            responses: {
+              model: liveBackend,
+              instructions: `${LIVE_BACKEND_PREAMBLE}${prompts.read("aide")}`,
+              tools: liveToolSchemas(profiles),
+              tool_choice: "auto",
+              parallel_tool_calls: false,
+            },
+          },
+        };
+        const response = await fetch(LIVE_ENDPOINT, {
+          signal: AbortSignal.timeout(12_000),
+          method: "POST",
+          headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ session, transport: { type: "webrtc", sdp } }),
+        });
+        const text = await response.text();
+        if (!response.ok) {
+          bb.log.error(`OpenAI live call failed: ${response.status} ${text.slice(0, 500)}`);
+          // A ChatGPT-subscription token authenticates on the Live endpoint but
+          // is denied at session creation ("Voice session access denied") —
+          // only a platform API key is entitled. Say so when we sent one.
+          const { openaiApiKey } = await settings.get();
+          const { credentialPreference } = await readConfig();
+          const codex = !!(await codexToken());
+          const usedSubscription = credentialPreference === "subscription" ? codex : !(openaiApiKey || process.env.OPENAI_API_KEY) && codex;
+          const hint = response.status === 403 && usedSubscription
+            ? " The ChatGPT subscription token is not entitled to gpt-live-1 sessions; set an OpenAI API key in Voice Mode settings."
+            : "";
+          throw new Error(`OpenAI live call failed: ${response.status} ${response.statusText}.${hint}`);
+        }
+        if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
+        let result: { session?: { id?: unknown }; transport?: { sdp?: unknown } };
+        try {
+          result = JSON.parse(text);
+        } catch {
+          throw new Error("OpenAI live call returned an unreadable response.");
+        }
+        if (typeof result.transport?.sdp !== "string" || !result.transport.sdp) {
+          throw new Error("OpenAI live call returned no SDP answer.");
+        }
+        const liveSessionId = typeof result.session?.id === "string" ? result.session.id : null;
+        bb.log.info(`gpt-live-1 session created: ${liveSessionId ?? "unknown"}`);
+        return { sdp: result.transport.sdp, engine: "live" as const, sessionId: liveSessionId };
+      }
 
       const session = {
         type: "realtime",
@@ -807,7 +897,7 @@ export default async function plugin(bb: BbPluginApi) {
         audio: {
           input: {
             noise_reduction: { type: "near_field" },
-            transcription: { model: "gpt-realtime-whisper", delay: "minimal" },
+            transcription: { model: TRANSCRIPTION_MODEL, delay: "minimal" },
             // The client owns input commits and word-qualified interruption.
             turn_detection: null,
           },
@@ -831,7 +921,7 @@ export default async function plugin(bb: BbPluginApi) {
         throw new Error(`OpenAI realtime call failed: ${response.status} ${response.statusText}`);
       }
       if (currentCall().nonce !== nonce) throw new Error("Voice call was stopped or replaced.");
-      return { sdp: text };
+      return { sdp: text, engine: "realtime" as const };
     },
     async getPrompt(input) {
       const role=input?.role ?? "aide";
@@ -931,6 +1021,11 @@ export default async function plugin(bb: BbPluginApi) {
       const inDetails = (usage.input_token_details ?? {}) as Record<string, unknown>;
       const outDetails = (usage.output_token_details ?? {}) as Record<string, unknown>;
       const cachedDetails = (inDetails.cached_tokens_details ?? {}) as Record<string, unknown>;
+      // Delegated live backends report Responses-style flat usage instead of
+      // the realtime token_details shape; map it onto the same columns.
+      const flatIn = num(usage.input_tokens);
+      const flatOut = num(usage.output_tokens);
+      const flatCached = num((usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens);
       const { model: configuredModel } = await readConfig();
       db.prepare(
         `INSERT INTO usage_events (ts, model, session_id, input_text, input_audio, cached_text, cached_audio, output_text, output_audio)
@@ -939,11 +1034,11 @@ export default async function plugin(bb: BbPluginApi) {
         Date.now(),
         model ?? configuredModel,
         sessionId,
-        num(inDetails.text_tokens),
+        num(inDetails.text_tokens) || flatIn - flatCached,
         num(inDetails.audio_tokens),
-        num(cachedDetails.text_tokens),
+        num(cachedDetails.text_tokens) || flatCached,
         num(cachedDetails.audio_tokens),
-        num(outDetails.text_tokens),
+        num(outDetails.text_tokens) || flatOut,
         num(outDetails.audio_tokens),
       );
       return { ok: true as const };

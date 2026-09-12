@@ -210,7 +210,34 @@ test("call configuration leaves interruption and response creation to validated 
   t.mock.method(globalThis,"fetch", async (_url: unknown, init?: RequestInit) => {config=JSON.parse((init!.body as FormData).get("session") as string);return new Response("answer");});
   await harness.behavior.callRpc("createCall", {nonce:"config-call",sdp:"offer",threadId:null,projectId:null});
   assert.equal(config.audio.input.turn_detection,null);
-  assert.deepEqual(config.audio.input.transcription,{model:"gpt-realtime-whisper",delay:"minimal"});
+  assert.deepEqual(config.audio.input.transcription,{model:"gpt-live-transcribe",delay:"minimal"});
+});
+
+test("gpt-live-1 creates a live session that delegates tools to the configured backend", async t => {
+  const {bb,harness} = createFakePluginHost({pluginId:"voice-mode",settings:{openaiApiKey:"sk-test"}});
+  t.after(() => harness.lifecycle.dispose()); await plugin(bb);
+  await harness.behavior.callRpc("setConfig", { model: "gpt-live-1" });
+  await harness.behavior.callRpc("claimCall", {nonce:"live-call"});
+  const requests: { url: unknown; body: any }[] = [];
+  t.mock.method(globalThis,"fetch", async (url: unknown, init?: RequestInit) => {
+    requests.push({ url, body: JSON.parse(init!.body as string) });
+    return new Response(JSON.stringify({ session: { id: "sess_live_1" }, transport: { sdp: "live answer" } }));
+  });
+  const result = await harness.behavior.callRpc("createCall", {nonce:"live-call",sdp:"offer",threadId:null,projectId:null}) as any;
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://api.openai.com/v1/live/sessions");
+  assert.equal(requests[0].body.session.model, "gpt-live-1");
+  assert.equal(requests[0].body.session.delegation.type, "responses");
+  assert.equal(requests[0].body.session.delegation.responses.model, "gpt-5.6-terra");
+  assert.equal(requests[0].body.session.delegation.responses.tool_choice, "auto");
+  assert.equal(requests[0].body.session.delegation.responses.parallel_tool_calls, false);
+  assert.deepEqual(requests[0].body.session.delegation.responses.tools.map((tool: any) => tool.name), liveToolSchemas().map(tool => tool.name));
+  assert.equal(requests[0].body.session.audio.output.voice, "quartz");
+  assert.equal(requests[0].body.transport.type, "webrtc");
+  assert.equal(requests[0].body.transport.sdp, "offer");
+  assert.equal(result.engine, "live");
+  assert.equal(result.sdp, "live answer");
+  assert.equal(result.sessionId, "sess_live_1");
 });
 
 
