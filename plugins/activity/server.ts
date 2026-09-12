@@ -2,11 +2,15 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { archiveContract } from "./lib/archive-contract";
 import { archiveTree } from "./lib/archive-tree";
 import { threadTitle } from "./lib/status";
+import { registerActivityCli } from "./lib/activity-cli";
+import { registerLibrary } from "./lib/library-store";
 import { registerProjects } from "./lib/projects-rpc";
 import { registerSpaces } from "./lib/spaces-store";
 
 export default function plugin(bb: BbPluginApi) {
-  registerSpaces(bb);
+  const spaces = registerSpaces(bb);
+  const library = registerLibrary(bb);
+  registerActivityCli(bb, { spaces, library });
   registerProjects(bb);
   bb.rpc.register(archiveContract, {
     parentTitle: async ({ threadId }) =>

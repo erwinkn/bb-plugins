@@ -160,6 +160,7 @@ function server(start: SpaceCatalog = initial, projectsStart = inventory) {
     getSpaces: async () => catalog,
     saveSpaces,
     listArchived: async () => [],
+    getLibrary: async () => ({ revision: 0, entries: [] }),
     listProjects: async () => projectList,
     createProject,
     renameProject,

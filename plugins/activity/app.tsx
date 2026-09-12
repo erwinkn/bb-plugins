@@ -14,8 +14,10 @@ import { projectLabel } from "./lib/project-schema";
 import { STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
+import { useLibrary } from "./lib/use-library";
 import { useSpaces } from "./lib/use-spaces";
-import { inScope, resolveScope } from "./lib/spaces";
+import { savedThreadIds } from "./lib/library";
+import { inScope, LIBRARY_SCOPE_ID, resolveScope } from "./lib/spaces";
 import { DisplayMenu } from "./components/menus";
 import { ProjectHeaderMenu } from "./components/project-header-menu";
 import {
@@ -108,8 +110,10 @@ function ThreadsList(props: PluginThreadListProps) {
   const { status, threads, projects } = experimental_useSidebarThreads();
   const state = useClientState();
   const spaces = useSpaces();
+  const library = useLibrary();
   const scope = resolveScope(spaces.catalog, state.spaceId);
-  const scopeKey = scope.kind === "all" ? "all" : `space:${scope.space.id}`;
+  const scopeKey =
+    scope.kind === "space" ? `space:${scope.space.id}` : scope.kind;
   // Space and project management lives on the Spaces page.
   const navigate = useBbNavigate();
   const openSpacesPage = (subPath: string) =>
@@ -127,7 +131,11 @@ function ThreadsList(props: PluginThreadListProps) {
     id: string;
   } | null>(null);
   const projectRpc = useRpc<typeof projectContract>();
-  const archives = useArchives(threads, state.showArchives);
+  // The library holds active threads only; archives never join it.
+  const archives = useArchives(
+    threads,
+    state.showArchives && scope.kind !== "library",
+  );
   const archived = state.showArchives
     ? archives.threads
         .filter((thread) => inScope(scope, thread.projectId))
@@ -160,11 +168,20 @@ function ThreadsList(props: PluginThreadListProps) {
     ]),
   );
   const knownDrafts = new Set(state.drafts);
+  // Saved threads and every descendant of a member stay out of the active
+  // view; the library scope inverts the same set to list saved families.
+  const saved = savedThreadIds(threads, library.memberIds);
   // Scope membership applies before pins and families: a pinned thread or a
   // descendant outside the scope stays hidden, and an inside child whose
   // parent is outside becomes a root. Titles stay unfiltered for parent labels.
   const available = threads
-    .filter((thread) => !thread.isArchived && inScope(scope, thread.projectId))
+    .filter((thread) =>
+      thread.isArchived
+        ? false
+        : scope.kind === "library"
+          ? saved.has(thread.id)
+          : !saved.has(thread.id) && inScope(scope, thread.projectId),
+    )
     .map((thread) => ({
       thread,
       status: statusOf(thread, knownDrafts.has(`thread:${thread.id}`)),
@@ -219,10 +236,14 @@ function ThreadsList(props: PluginThreadListProps) {
       });
     }
   }
-  const newDrafts = [...displayProjects.values()].filter(
-    (project) =>
-      knownDrafts.has(`new:${project.id}`) && !state.hidden.includes("draft"),
-  );
+  const newDrafts =
+    scope.kind === "library"
+      ? []
+      : [...displayProjects.values()].filter(
+          (project) =>
+            knownDrafts.has(`new:${project.id}`) &&
+            !state.hidden.includes("draft"),
+        );
   const families = buildThreadTree(visible, state.sortBy).map((node) => ({
     node,
     status: familyStatus(node),
@@ -238,6 +259,8 @@ function ThreadsList(props: PluginThreadListProps) {
     updateState((current) => ({ ...current, spaceId: null }));
   const selectSpace = (spaceId: string) =>
     updateState((current) => ({ ...current, spaceId }));
+  const selectLibrary = () =>
+    updateState((current) => ({ ...current, spaceId: LIBRARY_SCOPE_ID }));
   const removeProject = async (projectId: string) => {
     await projectRpc.call("deleteProject", { projectId });
     if (
@@ -256,14 +279,32 @@ function ThreadsList(props: PluginThreadListProps) {
     (thread) => thread.id === props.activeThreadId,
   );
   const activeOutside =
-    scope.kind !== "all" &&
-    activeThread !== undefined &&
-    !inScope(scope, activeThread.projectId);
+    scope.kind === "library"
+      ? activeThread !== undefined && !saved.has(activeThread.id)
+      : scope.kind === "space" &&
+        activeThread !== undefined &&
+        !inScope(scope, activeThread.projectId);
+  // A saved family asking for input or holding an unread reply marks the
+  // Library scope entry without leaving the library.
+  let librarySignal: "attention" | "unread" | null = null;
+  for (const thread of threads) {
+    if (thread.isArchived || !saved.has(thread.id)) continue;
+    const status = statusOf(thread, knownDrafts.has(`thread:${thread.id}`));
+    if (status === "attention") {
+      librarySignal = "attention";
+      break;
+    }
+    if (status === "unread") librarySignal = "unread";
+  }
   const spaceMissing =
     state.spaceId !== null &&
+    state.spaceId !== LIBRARY_SCOPE_ID &&
     scope.kind !== "space" &&
     spaces.status === "ready";
-  const scopePending = state.spaceId !== null && spaces.status === "loading";
+  const scopePending =
+    scope.kind === "library"
+      ? library.status === "loading"
+      : state.spaceId !== null && spaces.status === "loading";
   // Rows under a project header omit the project name, which would repeat it.
   const makeRow = (showProject: boolean) => {
     const row = (
@@ -284,6 +325,14 @@ function ThreadsList(props: PluginThreadListProps) {
           thread.parentThreadId ? titles.get(thread.parentThreadId) : undefined
         }
         active={props.activeThreadId === thread.id}
+        libraryAction={
+          library.memberIds.has(thread.id) &&
+          !(thread.parentThreadId && saved.has(thread.parentThreadId))
+            ? "remove"
+            : scope.kind === "library"
+              ? null
+              : "save"
+        }
         onNavigate={props.onNavigate}
         onError={report}
       >
@@ -361,8 +410,10 @@ function ThreadsList(props: PluginThreadListProps) {
           <ScopeMenu
             scope={scope}
             catalog={spaces.catalog}
+            librarySignal={librarySignal}
             onSelectAll={selectAll}
             onSelectSpace={selectSpace}
+            onSelectLibrary={selectLibrary}
             onManage={openManage}
           />
           <DisplayMenu />
@@ -381,10 +432,20 @@ function ThreadsList(props: PluginThreadListProps) {
             </button>
           </p>
         )}
-        {spaces.status === "error" && state.spaceId !== null && (
+        {spaces.status === "error" &&
+          state.spaceId !== null &&
+          scope.kind !== "library" && (
+            <div role="alert" className="mt-2 text-xs text-destructive">
+              Cannot load spaces. Showing all projects.
+              <button className="ml-2 underline" onClick={spaces.refresh}>
+                Retry
+              </button>
+            </div>
+          )}
+        {library.status === "error" && (
           <div role="alert" className="mt-2 text-xs text-destructive">
-            Cannot load spaces. Showing all projects.
-            <button className="ml-2 underline" onClick={spaces.refresh}>
+            Cannot load the library. Saved threads stay in the active list.
+            <button className="ml-2 underline" onClick={library.refresh}>
               Retry
             </button>
           </div>
@@ -427,7 +488,11 @@ function ThreadsList(props: PluginThreadListProps) {
       >
         {status === "loading" || scopePending ? (
           <p role="status" className="p-2 text-sm text-muted-foreground">
-            {scopePending ? "Loading spaces…" : "Loading threads…"}
+            {scopePending
+              ? scope.kind === "library"
+                ? "Loading the library…"
+                : "Loading spaces…"
+              : "Loading threads…"}
           </p>
         ) : status === "error" ? (
           <div role="alert" className="p-2 text-sm">
@@ -578,6 +643,8 @@ function ThreadsList(props: PluginThreadListProps) {
                         Choose projects
                       </button>
                     </>
+                  ) : scope.kind === "library" ? (
+                    "No saved threads. Save one from a thread's actions to keep it here."
                   ) : scope.kind !== "all" ? (
                     "No matching threads in this space."
                   ) : (

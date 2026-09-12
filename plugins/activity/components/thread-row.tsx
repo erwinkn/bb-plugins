@@ -15,6 +15,7 @@ import {
   type SortBy,
 } from "../lib/status";
 import type { archiveContract } from "../lib/archive-contract";
+import type { libraryContract } from "../lib/library-contract";
 import { menuItemClass } from "./menus";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { relativeAge } from "../lib/time";
@@ -40,6 +41,7 @@ export function ThreadRow({
   active,
   now,
   sortBy,
+  libraryAction,
   onNavigate,
   onError,
 }: {
@@ -55,10 +57,17 @@ export function ThreadRow({
   active: boolean;
   now: number;
   sortBy: SortBy;
+  /**
+   * "save" offers Save to Library, "remove" offers Remove from Library, and
+   * null hides the entry — e.g. a child shown in the library only through a
+   * saved ancestor.
+   */
+  libraryAction: "save" | "remove" | null;
   onNavigate: () => void;
   onError: (error: unknown) => void;
 }) {
   const rpc = useRpc<typeof archiveContract>();
+  const libraryRpc = useRpc<typeof libraryContract>();
   const navigate = useBbNavigate();
   const nested = depth > 0;
   const actions = experimental_useSidebarThreadActions();
@@ -361,6 +370,23 @@ export function ThreadRow({
                   >
                     {thread.isPinned ? "Unpin" : "Pin"}
                   </Menu.Item>
+                  {libraryAction && (
+                    <Menu.Item
+                      className={menuItemClass}
+                      onSelect={() => {
+                        void libraryRpc
+                          .call(
+                            libraryAction === "save" ? "save" : "remove",
+                            { threadId: thread.id },
+                          )
+                          .catch(onError);
+                      }}
+                    >
+                      {libraryAction === "save"
+                        ? "Save to Library"
+                        : "Remove from Library"}
+                    </Menu.Item>
+                  )}
                   <Menu.Separator className="my-1 h-px bg-border" />
                 </>
               )}

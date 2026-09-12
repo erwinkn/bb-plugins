@@ -52,59 +52,44 @@ export function registerSpaces(bb: BbPluginApi) {
     saveSpaces: ({ expectedRevision, spaces }) =>
       store.save(expectedRevision, spaces),
   });
-  bb.cli.register({
-    name: "activity",
-    summary:
-      "Threads sidebar spaces: named project selections shared by all clients",
-    commands: [
-      {
-        name: "spaces-export",
-        summary: "Print the space catalog as JSON",
-        usage: "bb activity spaces-export",
-      },
-      {
-        name: "spaces-import",
-        summary: "Replace the space catalog with a JSON document",
-        usage: "bb activity spaces-import '<json from spaces-export>'",
-      },
-    ],
-    async run(argv) {
-      const [action, payload] = argv;
-      if (action !== "spaces-export" && action !== "spaces-import")
-        return {
-          exitCode: 2,
-          stderr:
-            "Usage: bb activity spaces-export | bb activity spaces-import '<json>'\n",
-        };
-      if (action === "spaces-export")
-        return {
-          exitCode: 0,
-          stdout: `${JSON.stringify(await store.read(), null, 2)}\n`,
-        };
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(payload ?? "");
-      } catch {
-        return { exitCode: 2, stderr: "Import expects one JSON argument.\n" };
-      }
-      const document = catalogSchema.safeParse(parsed);
-      const spaces = document.success
-        ? document.data.spaces
-        : (parsed as { spaces?: unknown })?.spaces;
-      const list = catalogSchema.shape.spaces.safeParse(spaces);
-      if (!list.success)
-        return { exitCode: 2, stderr: "Import expects a spaces catalog.\n" };
-      try {
-        const next = await store.save(null, list.data);
-        return {
-          exitCode: 0,
-          stdout: `Imported ${next.spaces.length} space(s) at revision ${next.revision}.\n`,
-        };
-      } catch (error) {
-        if (error instanceof SpaceValidationError)
-          return { exitCode: 1, stderr: `${error.message}\n` };
-        throw error;
-      }
-    },
-  });
+  return store;
+}
+
+// `bb.cli.register` accepts one registration per plugin, so the CLI lives in
+// activity-cli.ts and calls this for the spaces subcommands.
+export async function runSpacesCli(
+  store: ReturnType<typeof createSpacesStore>,
+  action: string | undefined,
+  payload: string | undefined,
+): Promise<{ exitCode: number; stdout?: string; stderr?: string } | null> {
+  if (action !== "spaces-export" && action !== "spaces-import") return null;
+  if (action === "spaces-export")
+    return {
+      exitCode: 0,
+      stdout: `${JSON.stringify(await store.read(), null, 2)}\n`,
+    };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload ?? "");
+  } catch {
+    return { exitCode: 2, stderr: "Import expects one JSON argument.\n" };
+  }
+  const document = catalogSchema.safeParse(parsed);
+  const spaces = document.success
+    ? document.data.spaces
+    : (parsed as { spaces?: unknown })?.spaces;
+  const list = catalogSchema.shape.spaces.safeParse(spaces);
+  if (!list.success)
+    return { exitCode: 2, stderr: "Import expects a spaces catalog.\n" };
+  try {
+    const next = await store.save(null, list.data);
+    return {
+      exitCode: 0,
+      stdout: `Imported ${next.spaces.length} space(s) at revision ${next.revision}.\n`,
+    };
+  } catch (error) {
+    if (error instanceof SpaceValidationError)
+      return { exitCode: 1, stderr: `${error.message}\n` };
+    throw error;
+  }
 }
