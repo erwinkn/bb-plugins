@@ -265,7 +265,7 @@ export class VoiceAgent {
    * a transcription repair, or the greeting at call start. Sent once, then cleared.
    */
   private responseInstruction: string | null = null;
-  private openOffer: { id: string; nonce: string; responseId: string | null } | null = null;
+  private openOffer: { id: string; nonce: string; responseId: string | null; pendingAppends?: Set<string> } | null = null;
   private batchPending = false;
   private reports: Promise<unknown> = Promise.resolve();
   private pendingReports = 0;
@@ -513,10 +513,11 @@ export class VoiceAgent {
       }
       this.openOffer = { id: batch.offerId, nonce, responseId: null };
       if (session.engine === "live") {
-        // Commentary appends are spoken by the live model; the offer counts as
-        // delivered once the last chunk's append is acknowledged.
-        const eventId = this.liveAppend(session.dc!, "session.commentary.append", "update", JSON.stringify({ type: "background_updates", ...batch }));
-        this.liveAppends.set(eventId, `offer:${batch.offerId}`);
+        // Commentary appends are spoken by the live model. Every chunk carries
+        // the offer tag: the offer is delivered only once each chunk's append
+        // is acknowledged, and any chunk's failure closes it as not delivered.
+        const eventIds = this.liveAppend(session.dc!, "session.commentary.append", `offer:${batch.offerId}`, JSON.stringify({ type: "background_updates", ...batch }));
+        this.openOffer.pendingAppends = new Set(eventIds);
         return;
       }
       session.dc!.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "system",
@@ -2095,16 +2096,16 @@ export class VoiceAgent {
   // back as response.item.create followed by response.create.
 
   /** Send a chunked session.*.append (500-token cap) and track its event ids. */
-  private liveAppend(dc: RTCDataChannel, type: string, tag: string, content: string, delegationId: string | null = null): string {
+  private liveAppend(dc: RTCDataChannel, type: string, tag: string, content: string, delegationId: string | null = null): string[] {
     const chunks = chunkText(content, 1400);
-    let lastId = "";
-    chunks.forEach((chunk, index) => {
-      lastId = `live_${tag}_${index}_${crypto.randomUUID()}`;
-      this.liveAppends.set(lastId, tag);
-      dc.send(JSON.stringify({ type, event_id: lastId, delegation_id: delegationId, content: chunk }));
+    const ids = chunks.map((chunk, index) => {
+      const id = `live_${tag.replace(/[^A-Za-z0-9_-]/g, "_")}_${index}_${crypto.randomUUID()}`;
+      this.liveAppends.set(id, tag);
+      dc.send(JSON.stringify({ type, event_id: id, delegation_id: delegationId, content: chunk }));
+      return id;
     });
-    if (this.liveAppends.size > 300) this.liveAppends.delete(this.liveAppends.keys().next().value!);
-    return lastId;
+    while (this.liveAppends.size > 300) this.liveAppends.delete(this.liveAppends.keys().next().value!);
+    return ids;
   }
 
   /** Acks/errors match the outgoing event id through client_event_id. */
@@ -2115,7 +2116,18 @@ export class VoiceAgent {
     if (!clientId) return;
     const tag = this.liveAppends.get(clientId);
     this.liveAppends.delete(clientId);
-    if (tag?.startsWith("offer:") && this.openOffer?.id === tag.slice(6)) this.closeOffer(failed ? "not_delivered" : "delivered");
+    const offer = this.openOffer;
+    if (!tag?.startsWith("offer:") || offer?.id !== tag.slice(6)) return;
+    const pending = offer.pendingAppends;
+    if (failed) {
+      // One lost chunk means the model heard an incomplete update; drop the
+      // remaining chunk ids so a later ack cannot resurrect the offer.
+      for (const id of pending ?? []) this.liveAppends.delete(id);
+      this.closeOffer("not_delivered");
+      return;
+    }
+    pending?.delete(clientId);
+    if (!pending?.size) this.closeOffer("delivered");
   }
 
   /** Transcript fragments carry no item id; one open input item per speech run. */
@@ -2132,10 +2144,17 @@ export class VoiceAgent {
     return this.utterance() ?? this.input?.currentUtterance() ?? null;
   }
 
-  /** Assistant speech or a delegation covers the pending user utterances. */
+  /**
+   * Assistant speech or a delegation covers the pending user utterances. The
+   * current utterance is left open while the user is still speaking or its
+   * transcript is unresolved: a late fragment of the previous answer must not
+   * settle words the model has not heard yet. The next delta or delegation
+   * after the input settles finishes it, matching the non-live path.
+   */
   private finishLiveExchanges() {
     for (const [id, exchange] of this.exchanges) {
       if (exchange.finished) continue;
+      if (this.userTurn === exchange.version && (this.userSpeaking || this.input?.unresolved)) continue;
       exchange.finished = true;
       if (this.userTurn === exchange.version) this.input?.answered(exchange.version);
       if (this.nonce) this.report("finishUserExchange", { nonce: this.nonce, utteranceId: id });
