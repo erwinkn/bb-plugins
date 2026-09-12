@@ -232,40 +232,21 @@ link so it works like any other BB page.
 
 ## Library
 
-The library keeps threads for later without archiving them: no runtime or
-terminal cleanup runs, saved work keeps going, and the thread stays a normal
-BB thread everywhere else. **Save to Library** in a row's actions marks the
-thread; **Remove from Library** unmarks it. Each entry covers the thread's
-whole family through the ancestor rule — children of a saved thread count as
-saved, including children created after the save — so one action keeps a
-family together.
+The library keeps threads for later without archiving them: no runtime
+cleanup runs and saved work keeps going. **Save to Library** in a row's
+actions marks the thread; **Remove from Library** unmarks it. Each save
+covers the whole family — children of a saved thread count as saved,
+including children created later — so one action keeps a family together.
 
-- Saved threads and their descendants leave the active view: every status
-  group, the project groups, and the Pinned section skip them in All
-  projects and in every space. In the **Library** scope the same list shows
-  saved families instead, with live status markers, sorting, grouping,
-  filters, and Show more working as usual. A saved thread that starts
-  working or needs attention is visible there without returning to the
-  active list.
-- While another scope is selected, the scope menu's **Library** entry and the
-  Threads heading carry a status icon when a saved thread needs attention or
-  is unread — the library stays quiet but never hides that something wants a
-  look.
-- Membership is a set of explicit saves. Removing a member frees its family
-  unless a descendant was saved on its own; that entry keeps its branch.
-  Rows that appear in the library only through a saved ancestor carry no
-  library action. If the open thread is not saved, the same outside-scope
-  notice as a space offers **Show all projects**.
-- Archiving or deleting a thread drops its entry, so a restore lands in the
-  active view rather than back in the library. Archived descendants were
-  never entries; restoring one into a saved family returns it through the
-  ancestor rule.
-- The document is shared by every client of one BB server and stored in the
-  plugin's key-value store with a revision, like spaces. Each client caches
-  a copy for the next load. `bb activity library-export` prints it and `bb
-  activity library-import '<json>'` replaces it.
-- Pins survive saving and take effect again on removal. Draft flags work in
-  the library, but new-thread drafts are not threads and cannot be saved.
+Saved threads leave the active view in every scope. The **Library** scope
+lists saved families instead, with live statuses, sorting, grouping, and
+Show more as usual; while another scope is selected, a status icon on the
+menu entry and the Threads heading reports saved threads needing attention
+or holding unread replies. Removing a member frees its family unless a
+descendant was saved on its own. Archiving or deleting drops the save, so a
+restore lands in the active view. The document lives in the plugin's
+key-value store, shared by all clients and cached locally for the next
+load.
 
 ## Draft limits
 

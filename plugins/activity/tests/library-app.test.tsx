@@ -40,13 +40,7 @@ const threads = [
     projectId: "project-2",
   }),
 ];
-const initial: LibraryDoc = {
-  revision: 1,
-  entries: [
-    { id: "saved", savedAt: 1 },
-    { id: "saved-child", savedAt: 1 },
-  ],
-};
+const initial: LibraryDoc = { revision: 1, ids: ["saved", "saved-child"] };
 // A fake server: the mutations keep a document the test can broadcast as the
 // realtime signal.
 function server(start: LibraryDoc = initial) {
@@ -57,18 +51,15 @@ function server(start: LibraryDoc = initial) {
     getLibrary: async () => doc,
     save: vi.fn(async (input: unknown) => {
       const { threadId } = input as { threadId: string };
-      if (doc.entries.some((entry) => entry.id === threadId)) return doc;
-      doc = {
-        revision: doc.revision + 1,
-        entries: [...doc.entries, { id: threadId, savedAt: 1 }],
-      };
+      if (!doc.ids.includes(threadId))
+        doc = { revision: doc.revision + 1, ids: [...doc.ids, threadId] };
       return doc;
     }),
     remove: vi.fn(async (input: unknown) => {
       const { threadId } = input as { threadId: string };
       doc = {
         revision: doc.revision + 1,
-        entries: doc.entries.filter((entry) => entry.id !== threadId),
+        ids: doc.ids.filter((id) => id !== threadId),
       };
       return doc;
     }),
@@ -150,7 +141,7 @@ describe("library scope", () => {
   });
 
   it("saves a thread from a row action and hides it once the signal lands", async () => {
-    const fake = server({ revision: 0, entries: [] });
+    const fake = server({ revision: 0, ids: [] });
     const slot = mount(fake);
     await tick();
     expect(rows(slot)).toHaveLength(4);
@@ -248,7 +239,7 @@ describe("library scope", () => {
   });
 
   it("shows the empty state and does not confuse Library with a missing space", async () => {
-    const fake = server({ revision: 0, entries: [] });
+    const fake = server({ revision: 0, ids: [] });
     updateState((state) => ({ ...state, spaceId: "library" }));
     const slot = mount(fake, { activeThreadId: "" });
     await tick();

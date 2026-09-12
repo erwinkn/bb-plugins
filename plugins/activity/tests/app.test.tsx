@@ -44,9 +44,9 @@ const renderSlot: typeof renderSdkSlot = (registration, props, options) => {
     rpc: {
       listArchived: async () => [],
       archiveTree: async () => ({ ok: true }),
-      getLibrary: async () => ({ revision: 0, entries: [] }),
-      saveTree: async () => ({ revision: 0, entries: [] }),
-      removeTree: async () => ({ revision: 0, entries: [] }),
+      getLibrary: async () => ({ revision: 0, ids: [] }),
+      save: async () => ({ revision: 0, ids: [] }),
+      remove: async () => ({ revision: 0, ids: [] }),
       ...options?.rpc,
     },
   });

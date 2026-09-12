@@ -14,11 +14,9 @@ import {
 
 // The last document this client saw. It filters the active view immediately
 // on the next load, before the server answers.
-/** Local-storage key of the cached library document. */
-export const LIBRARY_CACHE_KEY = "bb-plugin-erwin-activity:library-cache";
-const CACHE_KEY = LIBRARY_CACHE_KEY;
+const CACHE_KEY = "bb-plugin-erwin-activity:library-cache";
 
-export function readLibraryCache(): LibraryDoc | null {
+function readLibraryCache(): LibraryDoc | null {
   try {
     const parsed = libraryDocSchema.safeParse(
       JSON.parse(window.localStorage.getItem(CACHE_KEY) ?? "null"),
@@ -92,7 +90,7 @@ export function useLibrary(): LibraryState {
   }, [rpc, connection, attempt, apply]);
   return {
     doc: doc ?? EMPTY_LIBRARY,
-    memberIds: new Set((doc ?? EMPTY_LIBRARY).entries.map((entry) => entry.id)),
+    memberIds: new Set((doc ?? EMPTY_LIBRARY).ids),
     status: doc ? "ready" : error ? "error" : "loading",
     error,
     refresh,

@@ -38,11 +38,9 @@
   type).
 - `lib/library.ts`: the ancestor rule that counts descendants of members as
   saved.
-- `lib/library-store.ts`: key-value library document, archive/delete cleanup,
-  and the library export/import handlers.
+- `lib/library-store.ts`: key-value library document and archive/delete
+  cleanup.
 - `lib/use-library.ts`: library loading, local cache, and realtime refresh.
-- `lib/activity-cli.ts`: the plugin's single `bb activity` CLI registration,
-  dispatching to each store's subcommands.
 - `lib/project-schema.ts`, `lib/project-contract.ts`, `lib/projects-rpc.ts`,
   `lib/use-projects.ts`: project inventory (folders, hosts) and management RPC
   over `bb.sdk.projects` and `bb.sdk.hosts`; the frontend hook fetches it for
@@ -51,7 +49,7 @@
 - `lib/space-contract.ts`: space RPC contract (server; frontend imports its type).
 - `lib/spaces.ts`: catalog normalization and scope resolution shared by both sides.
 - `lib/spaces-store.ts`: key-value catalog with revision checks, realtime
-  signals, and the spaces export/import handlers.
+  signals, and the `bb activity` export/import CLI.
 - `lib/use-spaces.ts`: catalog loading, local cache, realtime refresh, and saves.
 - `tests/`: policy and public SDK frontend tests.
 
