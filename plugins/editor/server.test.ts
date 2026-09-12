@@ -160,6 +160,7 @@ test("tree lists one deferred level locally and search scans the file index", as
 
 test("tree and search go through the daemon for another host's workspace", async (t) => {
   const searches: unknown[] = [];
+  const dirCalls: (string | undefined)[] = [];
   const { bb, harness } = createFakePluginHost({
     pluginId: "erwin-editor",
     sdk: {
@@ -168,17 +169,20 @@ test("tree and search go through the daemon for another host's workspace", async
         get: async () => ({ sources: [{ isDefault: true, path: "/remote/work", hostId: "host_remote" }] }),
       },
       hosts: {
-        directory: async ({ path: dir }: { path?: string }) => ({
-          directory: dir,
-          parent: "/remote",
-          entries:
-            dir === "/remote/work"
-              ? [
-                  { kind: "directory", name: "src", path: "/remote/work/src" },
-                  { kind: "file", name: "README.md", path: "/remote/work/README.md" },
-                ]
-              : [{ kind: "file", name: "a.ts", path: `${dir}/a.ts` }],
-        }),
+        directory: async ({ path: dir }: { path?: string }) => {
+          dirCalls.push(dir);
+          return {
+            directory: dir,
+            parent: "/remote",
+            entries:
+              dir === "/remote/work"
+                ? [
+                    { kind: "directory", name: "src", path: "/remote/work/src" },
+                    { kind: "file", name: "README.md", path: "/remote/work/README.md" },
+                  ]
+                : [{ kind: "file", name: "a.ts", path: `${dir}/a.ts` }],
+          };
+        },
       },
       files: {
         listPaths: async (args: unknown) => {
@@ -198,6 +202,16 @@ test("tree and search go through the daemon for another host's workspace", async
   ]);
   const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
   assert.deepEqual(inner.entries, [{ path: "src/a.ts", kind: "file" }]);
+  // A re-expand is served from the listing cache, not another host round trip.
+  await harness.behavior.callRpc("tree", { source, subpath: "src" });
+  assert.deepEqual(dirCalls, ["/remote/work", "/remote/work/src"]);
+  // A watch notice that can add or remove names drops the root's levels.
+  await harness.behavior.experimental_emitHostSignal("host_remote", "changed", {
+    rootPath: "/remote/work", kind: "changed",
+    paths: [{ path: "src/b.ts", type: "create" }],
+  });
+  await harness.behavior.callRpc("tree", { source, subpath: "src" });
+  assert.deepEqual(dirCalls, ["/remote/work", "/remote/work/src", "/remote/work/src"]);
   const found = rpcContract.search.output.parse(await harness.behavior.callRpc("search", { source, query: "a.ts" }));
   assert.deepEqual(found.matches, [{ path: "src/a.ts" }]);
   assert.deepEqual(searches, [

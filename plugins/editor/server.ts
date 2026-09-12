@@ -406,6 +406,44 @@ export default async function plugin(bb: BbPluginApi) {
     return files;
   }
 
+  // Remote directory listings: every expand is a round trip to the host, so
+  // resolved levels are cached the way VS Code keeps resolved explorer items.
+  // A watch notice that can add or remove names drops the root's levels; the
+  // TTL covers roots nobody watches. Root loads always ask the daemon —
+  // opening or refreshing the tree is when freshness matters — and refill it.
+  type DirListing = Awaited<ReturnType<typeof bb.sdk.hosts.directory>>;
+  const dirListings = new Map<string, { listing: DirListing; expiresAt: number }>();
+  const dirListingRequests = new Map<string, Promise<DirListing>>();
+  const DIR_LISTING_TTL_MS = 30 * 1000;
+  function remoteDirectory(hostId: string, dirPath: string, fresh = false): Promise<DirListing> {
+    const key = `${hostId}\0${dirPath}`;
+    if (!fresh) {
+      const cached = dirListings.get(key);
+      if (cached !== undefined && cached.expiresAt > Date.now()) return Promise.resolve(cached.listing);
+      const pending = dirListingRequests.get(key);
+      if (pending !== undefined) return pending;
+    }
+    const request = bb.sdk.hosts.directory({ hostId, path: dirPath })
+      .then((listing) => {
+        dirListings.set(key, { listing, expiresAt: Date.now() + DIR_LISTING_TTL_MS });
+        for (const [other, entry] of dirListings) if (entry.expiresAt <= Date.now()) dirListings.delete(other);
+        return listing;
+      })
+      .finally(() => {
+        if (dirListingRequests.get(key) === request) dirListingRequests.delete(key);
+      });
+    dirListingRequests.set(key, request);
+    return request;
+  }
+
+  function dropDirListings(hostId: string, rootPath: string): void {
+    const prefix = `${hostId}\0${rootPath}`;
+    for (const key of dirListings.keys()) {
+      const rest = key.slice(prefix.length);
+      if (key.startsWith(prefix) && (rest === "" || rest.startsWith("/") || rest.startsWith("\\"))) dirListings.delete(key);
+    }
+  }
+
   // Every open page gets every signal, and a page may hold two subscribers;
   // the sequence number lets each page act on a signal once.
   let changeSequence = 0;
@@ -418,6 +456,7 @@ export default async function plugin(bb: BbPluginApi) {
     bb.log.debug(`file watch signal from ${hostId} for ${payload.rootPath}: ${payload.kind} ${payload.paths.map((change) => change.path).join(" ")}`);
     if (payload.kind === "rescan" || payload.paths.some((change) => change.type !== "update")) {
       filesIndexes.delete(payload.rootPath);
+      dropDirListings(hostId, payload.rootPath);
     }
     if (entry === undefined) return;
     if (payload.kind === "rescan") {
@@ -780,10 +819,11 @@ export default async function plugin(bb: BbPluginApi) {
       const hostId = await hostOf(target);
       if (hostId === null) throw new Error("This workspace's host is not available");
       const api = pathApiFor(target.rootPath);
-      const listing = await bb.sdk.hosts.directory({
+      const listing = await remoteDirectory(
         hostId,
-        path: clean === "" ? target.rootPath : api.join(target.rootPath, clean),
-      });
+        clean === "" ? target.rootPath : api.join(target.rootPath, clean),
+        clean === "",
+      );
       const prefix = clean === "" ? "" : `${clean}/`;
       return {
         root: target.rootPath,

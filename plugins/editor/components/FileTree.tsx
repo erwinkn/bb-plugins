@@ -34,6 +34,8 @@ interface Draft {
 type RowEdit = { kind: "rename"; path: string } | { kind: "delete"; path: string };
 
 const INDENT_PER_LEVEL_PX = 12;
+/** Below this a deferred level usually lands; a slower one earns the row. */
+const LOADING_ROW_DELAY_MS = 200;
 
 export function FileTree({
   entries,
@@ -432,14 +434,7 @@ function Rows(props: RowsProps) {
                 {draft !== null && draft.parent === node.path ? (
                   <DraftRow draft={draft} level={level + 1} onCancel={onCancelDraft} onCreate={onCreate} onDone={onCancelDraft} />
                 ) : null}
-                {node.deferred && node.children.length === 0 ? (
-                  <div
-                    className="flex h-6 items-center text-[13px] leading-6 text-muted-foreground"
-                    style={{ paddingLeft: 6 + (level + 1) * INDENT_PER_LEVEL_PX + 22 }}
-                  >
-                    Loading…
-                  </div>
-                ) : null}
+                {node.deferred && node.children.length === 0 ? <LoadingRow level={level + 1} /> : null}
                 <Rows {...props} level={level + 1} nodes={node.children} />
               </>
             ) : null}
@@ -447,6 +442,24 @@ function Rows(props: RowsProps) {
         );
       })}
     </>
+  );
+}
+
+/** A deferred level's placeholder. Local listings land fast enough that the row would only flash, so it waits out the delay. */
+function LoadingRow({ level }: { level: number }) {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setShow(true), LOADING_ROW_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  if (!show) return null;
+  return (
+    <div
+      className="flex h-6 items-center text-[13px] leading-6 text-muted-foreground"
+      style={{ paddingLeft: 6 + level * INDENT_PER_LEVEL_PX + 22 }}
+    >
+      Loading…
+    </div>
   );
 }
 

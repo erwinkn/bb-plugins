@@ -199,6 +199,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
         };
         view.setup(host);
         view.setItems([item]);
+        resetScroll(host);
         // setItems schedules rendering. It does not mean that the file, its
         // highlighter, or the editable DOM exists yet. The callbacks below
         // report readiness after Pierre actually renders or attaches.
@@ -265,6 +266,12 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       state.itemType = item.type;
       setFileComparison(props.oldContent !== undefined && item.type === "file");
       state.view.setItems([item]);
+      // The scroll container survives the item swap, and Pierre's layout
+      // anchor does not resolve across documents, so the previous file's
+      // offset would leave this one's first lines above the viewport. A new
+      // document always starts at the top.
+      resetScroll(hostRef.current);
+      requestAnimationFrame(() => resetScroll(hostRef.current));
       return;
     }
     // Only another author's change or a change of editability re-seeds. A
@@ -551,6 +558,15 @@ function buildItem(
     editable: props.readOnly !== true,
     renderType,
   }, runtime.parseDiffFromFile);
+}
+
+/** Zero the pane's scroll offset, whether the scroller is the host or Pierre's. */
+function resetScroll(host: HTMLDivElement | null): void {
+  if (host === null) return;
+  host.scrollTop = 0;
+  for (const element of host.querySelectorAll("*")) {
+    if (element instanceof HTMLElement && element.scrollTop !== 0) element.scrollTop = 0;
+  }
 }
 
 function editorOf(state: SurfaceState | null): Editor | null {
