@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-bb-mcp",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "type": "module",
   "private": true,
   "engines": {
@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "BB MCP",
-    "description": "Create, manage, and monitor BB threads from remote MCP clients and Executor.",
+    "description": "Remote control of BB through one code-mode MCP tool: JavaScript with a bb global mirroring the complete BB SDK, plus durable dispatch receipts.",
     "branding": {
       "icon": "Network"
     },

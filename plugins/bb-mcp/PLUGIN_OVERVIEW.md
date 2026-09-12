@@ -1,15 +1,5 @@
-Delegate coding work from Executor or another MCP client to the BB instance you control. Threads stay visible in BB, where you can inspect their conversations, worktrees, and results.
+Remote control of BB for a trusted orchestrator (Grok Bot, Executor) through a code-mode MCP.
 
-## What you get
+`bb_execute` runs JavaScript in an isolated worker with a `bb` global mirroring the complete BB SDK — threads, projects, environments, files, terminals, hosts, providers, plugins, system, skills, threadSections and guide — plus `bb.ops` for durable, deduplicated dispatch receipts and `bb.approve` for remote permission approvals. `bb_read` exposes the same surface restricted to non-mutating methods, annotated read-only so clients can auto-approve it. Compose calls, loop, wait and filter inside the worker; only the final result crosses the wire.
 
-Discover projects, execution hosts, providers, and models. Create root or child threads, hand work to a new conversation with source context, select execution options, update models, queue or steer follow-ups, and inspect progress, results, changes and pull request metadata. New work uses isolated worktrees by default; handoffs reuse the source workspace unless requested otherwise.
-
-## Reliable handoffs
-
-Create, handoff and send tools require stable idempotency keys. Recorded requests survive reloads, while uncertain outcomes require reconciliation instead of automatic duplicate dispatch. Status responses distinguish queued work and pending prompts from a completed turn.
-
-## Requirements
-
-Requires BB 0.42.1 or later with compatible Plugin SDK 0.4.47 APIs, configured coding providers, and an authenticated HTTPS endpoint reachable by your MCP client. Provider usage and infrastructure retain their normal costs. Executor is optional. Configure explicit project and host access in BB settings and keep the connection token in your client's secret storage.
-
-Use `bb mcp status` for configuration and `bb mcp operations` for recent request outcomes. Call `bb_get_capabilities` for coverage and the remaining parity roadmap. Standalone permission/service-tier updates, automatic completion callbacks and remote permission approvals are not included in this release.
+The endpoint grants the plugin's owner-level access over `x-bb-plugin-token` authentication with Host/Origin checks. This is a trusted-caller remote interface — the worker is a reliability boundary, not a security sandbox — protect the token accordingly.

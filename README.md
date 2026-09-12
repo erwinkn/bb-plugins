@@ -2,12 +2,12 @@
 
 A private GitHub collection of BB plugins.
 
-`bb-mcp` exposes authenticated MCP tools for creating, managing, and monitoring
-BB coding threads through Executor or a direct client. It uses explicit
-project/host scope, isolated worktrees, bounded results, and durable request
-records. Child threads, handoffs and execution controls are supported. See
-[BB MCP](plugins/bb-mcp/README.md) for setup and the
-[product parity inventory](plugins/bb-mcp/PARITY.md) for the remaining roadmap.
+`bb-mcp` exposes BB through a code-mode MCP for trusted orchestrators:
+`bb_execute` runs JavaScript in an isolated worker whose `bb` global mirrors the
+complete BB SDK, `bb_read` serves the read-only subset for client auto-approval,
+and `bb.ops`/`bb.approve` add durable dispatch receipts and remote approvals.
+The token is owner-level — filesystem, terminals and plugin administration are
+all reachable. See [BB MCP](plugins/bb-mcp/README.md).
 
 `plans` provides plan review with a per-thread
 review panel, comments, revision history, and feedback to the original agent. See
@@ -218,20 +218,25 @@ host/parent ceilings, without sending a dummy message or restarting work.
 The MCP supports those fields on create/send and reports the standalone gap.
 Tracked in [BB #3401](https://github.com/get-bb/bb/issues/3401).
 
-### Potential MCP parity API gaps to validate locally
+### MCP code-mode boundary
 
-The [parity inventory](plugins/bb-mcp/PARITY.md) identifies three additional
-contracts to verify while implementing the remaining adapters:
+bb-mcp 0.4 replaced scoped thread-management tools with full-SDK code mode:
+the sandbox runs caller JavaScript with the token's owner-level access (files,
+terminals, plugin administration — all of `bb.sdk`). The only plugin-side
+boundary is the `bb_read` read-only tier for client auto-approval. Remaining
+native boundaries are the standalone permission/service-tier update and atomic
+idempotency requests noted above and below. No new upstream issue is needed.
 
-- Complete tool-output retrieval when event history retains only a preview.
-  A bounded, paginated output API should distinguish truncation from missing data.
-- Attachment inventory and removal: the current public SDK exposes upload,
-  read and copy, but no matching list/delete operations.
-- Provider goal controls: establish a typed contract for create/update,
-  pause/resume and budget changes instead of synthesizing private events.
+### Follow-ups before a scheduled thread's first run
 
-These are local candidates, not filed requests. Confirm the exact missing
-contract against the installed SDK before preparing an issue later.
+BB 0.42.1 accepts a scheduled first instruction but rejects a follow-up without
+an explicit model before that first turn initializes: `no stored execution
+model`. Specifying the creation model on the follow-up succeeds (verified in
+`pulse-ui`). Core should resolve the model from the queued initial execution
+options or normal defaults. The MCP documents the explicit-model workaround.
+No upstream issue filed yet; suggested title: `Resolve execution defaults for
+follow-ups before a scheduled thread starts` in
+[BB issues](https://github.com/get-bb/bb/issues).
 
 ### Durable idempotency for thread creation and messaging
 
@@ -872,3 +877,43 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
   `latestAttentionAt` when a pending interaction is created on an idle thread.
 - **Status:** filed as [BB #3397](https://github.com/get-bb/bb/issues/3397),
   `Plugin prompts created with bb.ui.requestInput do not emit interaction.pending`.
+
+
+### `threads.interactions.resolve` rejects valid decisions (2026-09-11)
+
+- **Where:** BB SDK `threads.interactions.resolve` via bb-mcp codemode (`bb_execute`) on 0.42.x.
+- **Symptom:** For pending approval interactions (`payload.kind: approval`, subjects `tool_use` / `command`), every tried body fails with `HTTP 400: Invalid discriminator value. Expected 'allow_once' | 'allow_for_session' | 'deny'`, including `resolution: 'allow_for_session'` / `'allow_once'` / `'deny'` copied from `payload.availableDecisions`, and object shapes `{ decision }`, `{ kind }`, `{ type }`.
+- **Contrast:** CLI `bb thread interactions approve <interactionId> <threadId> --json` succeeds and returns `resolution: { decision: "allow_once", grantedPermissions: null }`.
+- **Related CLI mismatch:** `grant --scope session` errors with `Interaction … is tool-use|command and cannot be granted with this command`. `approve` has no `--scope` flag, so `allow_for_session` is advertised in `availableDecisions` but not reachable from the documented CLI for these subject kinds.
+- **`respond`:** correctly rejects approvals (`Plugin interaction expected` when `value` is set) — approvals are not plugin forms.
+- **Root cause found (bb-mcp 0.4.0):** `grantedPermissions` is a required-but-nullable key on the allow_* resolution variants — sending `{ decision }` without it fails as "Invalid discriminator value" instead of a missing-key error. bb-mcp now ships `bb.approve` which builds the correct shape. Upstream ask remains: a useful error message, plus CLI `grant --scope session` support for tool_use/command subjects.
+- **Status:** not filed. Suggested title: `threads.interactions.resolve rejects allow_once/allow_for_session/deny for approval interactions`.
+
+### Terminals SDK input/create arg gaps (2026-09-11)
+
+- **`terminals.input`:** CLI documents `bb terminal send --text … [--enter]`. SDK rejects `text` / `enter` / `data` with `HTTP 400: Required`. Works with `{ terminalId, dataBase64 }` (raw PTY bytes, include trailing newline).
+- **`terminals.create`:** `{ scope: { kind: "thread", threadId }, command }` alone returns `HTTP 400: Required`. Succeeds when `cols` and `rows` are also set. Initial `command` did not appear to run (shell MOTD/prompt only); needed a follow-up `input`.
+- **Status:** not filed. Suggested titles: `terminals.input should accept text/enter like the CLI`; `terminals.create should not require cols/rows when omitted`.
+
+### `threads.send` permissionMode bump fails without stored execution model (2026-09-11)
+
+- **Symptom:** Follow-up `threads.send` with `permissionMode: "full"` failed on some Pulse review threads (shell-TTL pair) with `no stored execution model` (later also saw HTTP 502 on retry). Other threads in the same batch accepted the mode bump.
+- **Status:** not filed. Suggested title: `threads.send permissionMode update fails when execution model is missing`.
+
+### `bb.files.write` via bb_execute fails with Unrecognized key signal (2026-09-11)
+
+- **Where:** BB SDK `files.write` invoked from bb-mcp codemode (`bb_execute`) on 0.42.x.
+- **Symptom:** Calls with `{ path, content }` fail with `Unrecognized key: "signal"` because the sandbox injects an `AbortSignal` into SDK args.
+- **Resolution (bb-mcp 0.4.0):** this was a bb-mcp bug, not BB — the sandbox injected `signal` into every object arg. Injection is now restricted to SDK methods that declare `signal?: AbortSignal`, so `bb.files.write({ path, content })` works. No upstream issue needed.
+
+### `threads.spawn` silently drops explicit execution fields without `executionInputSources` (2026-09-11)
+
+- **Symptom:** `threads.spawn({ providerId: "claude-code", model: "claude-fable-5-1", reasoningLevel: "high", permissionMode: "full", ... })` accepted the call but ran on the project default (acp-devin / swe-2) — the fields were silently ignored. They only take effect when `executionInputSources` marks each one `"explicit"` (e.g. `{ providerId: "explicit", model: "explicit", reasoningLevel: "explicit", permissionMode: "explicit" }`).
+- **Ask:** reject explicit fields without a source marker, or default supplied fields to explicit — silently running the wrong provider is a costly footgun for automation.
+- **Status:** not filed. Suggested title: `threads.spawn ignores providerId/model unless executionInputSources marks them explicit`.
+
+### Plugins cannot observe undeclared stored settings (2026-09-12)
+
+- **Symptom:** bb-mcp 0.4 removed the legacy scope/ceiling settings (`projectIds`, `hostIds`, `providerIds`, `permissionMode`, rate limits). Upgraded installs silently gain owner-level access, and there is no API to detect it: `bb.settings.define` only serves declared keys and `plugins.getSettings` filters values to the current schema.
+- **Ask:** let a plugin read its own stored-but-undeclared setting keys (or a `storedKeys` list) so migrations can warn or adapt.
+- **Status:** not filed. Suggested title: `Expose stored-but-undeclared plugin setting keys for migration checks`.
