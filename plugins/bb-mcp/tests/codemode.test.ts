@@ -15,7 +15,7 @@ const storeStub = {
   get: () => undefined,
   run: async (input: { kind: string; threadId?: string | null }, _k: unknown, _p: unknown, dispatch: () => Promise<Record<string, unknown>>) => {
     const response = await dispatch();
-    return { id: "op_1", kind: input.kind, projectId: null, hostId: null, threadId: typeof response.threadId === "string" ? response.threadId : input.threadId ?? null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response };
+    return { id: "op_1", kind: input.kind, call: (input as { call?: string }).call, projectId: null, hostId: null, threadId: typeof response.threadId === "string" ? response.threadId : input.threadId ?? null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response };
   },
 } as unknown as Store;
 
@@ -52,14 +52,36 @@ describe("runCode", () => {
     await expect(runCode({ code: `async () => { await bb.threads.nope({}); }`, paths, dispatch }))
       .rejects.toMatchObject({ code: "execution_failed" });
   });
-  it("treats non-function code as a body returning null", async () => {
+  it("returns the value of expression-shaped code", async () => {
     const out = await runCode({ code: `42`, paths, dispatch });
-    expect(out.result).toBeNull();
+    expect(out.result).toBe(42);
   });
-  it("runs a bare call expression exactly once, as a body", async () => {
+  it("recognizes functions behind comments, directives and bare arrows", async () => {
+    for (const [code, want] of [
+      [`// explain\nasync () => 7`, 7],
+      [`/* doc */\nasync () => 8`, 8],
+      [`"use strict";\nasync () => 9`, 9],
+      [`  \n\nasync () => 10`, 10],
+      [`x => 11`, 11],
+    ] as const) {
+      const out = await runCode({ code, paths, dispatch });
+      expect(out.result).toBe(want);
+    }
+  });
+  it("accepts an async IIFE and awaits its value", async () => {
+    const out = await runCode({ code: `(async () => 12)()`, paths, dispatch });
+    expect(out.result).toBe(12);
+  });
+  it("runs a synchronous IIFE exactly once", async () => {
+    const d = vi.fn(async () => ({}));
+    const out = await runCode({ code: `(() => { bb.projects.list(); })()`, paths, dispatch: d });
+    expect(out.result).toBeNull();
+    expect(d).toHaveBeenCalledTimes(1);
+  });
+  it("runs a bare call expression exactly once and returns its value", async () => {
     const d = vi.fn(async (n: string, a: unknown) => dispatch(n, a));
     const out = await runCode({ code: `bb.projects.list()`, paths, dispatch: d });
-    expect(out.result).toBeNull();
+    expect(out.result).toEqual([{ id: "a" }, { id: "b" }]);
     expect(d).toHaveBeenCalledTimes(1);
   });
   it("terminates the worker when the request aborts", async () => {
@@ -67,6 +89,15 @@ describe("runCode", () => {
     const started = runCode({ code: `async () => { await new Promise(r => setTimeout(r, 60000)); }`, paths, dispatch, signal: ac.signal });
     ac.abort();
     await expect(started).rejects.toMatchObject({ code: "execution_aborted" });
+  });
+  it("rejects a request cancelled while it waits for a worker slot", async () => {
+    const slow = { code: `async () => { await new Promise(r => setTimeout(r, 400)); return 1; }`, paths, dispatch };
+    const running = Array.from({ length: 8 }, () => runCode(slow));
+    const ac = new AbortController();
+    const queued = runCode({ ...slow, signal: ac.signal });
+    ac.abort();
+    await expect(queued).rejects.toMatchObject({ code: "execution_aborted" });
+    await Promise.all(running);
   });
   it("kills runaway code at the timeout", async () => {
     await expect(runCode({ code: `async () => { while (true) {} }`, paths, dispatch, timeoutMs: 1000 }))
@@ -168,6 +199,33 @@ describe("makeDispatch validation", () => {
   });
 });
 
+describe("read-only verbs", () => {
+  it("covers the read-shaped members that were missed", () => {
+    expect(isReadPath("threads.listRunning")).toBe(true);
+    expect(isReadPath("hosts.cloneDefaultPath")).toBe(true);
+    expect(isReadPath("plugins.catalog.installPlan")).toBe(true);
+  });
+});
+
+describe("read-only ops.get", () => {
+  it("redacts responses recorded by execute-only calls", async () => {
+    const store = {
+      get: (id: string) => id === "op_secret"
+        ? { id, kind: "plugins.token", call: "plugins.token", projectId: null, hostId: null, threadId: null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { token: "secret" } }
+        : { id, kind: "create", call: "threads.spawn", projectId: null, hostId: null, threadId: "thr_1", state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { threadId: "thr_1" } },
+    } as unknown as Store;
+    const ro = makeDispatch(sdk, store, () => {}, undefined, true);
+    const secret = await ro("ops.get", { operationId: "op_secret" }) as Record<string, unknown>;
+    expect(secret.response).toBeNull();
+    expect(secret.responseRedacted).toBeTruthy();
+    const plain = await ro("ops.get", { operationId: "op_plain" }) as Record<string, unknown>;
+    expect(plain.response).toEqual({ threadId: "thr_1" });
+    const full = makeDispatch(sdk, store, () => {});
+    const visible = await full("ops.get", { operationId: "op_secret" }) as Record<string, unknown>;
+    expect(visible.response).toEqual({ token: "secret" });
+  });
+});
+
 describe("read-only dispatch", () => {
   const roDispatch = makeDispatch(sdk, storeStub, () => {}, undefined, true);
   it("serves reads and blocks mutations with a clear error", async () => {
@@ -227,7 +285,7 @@ describe("permissionMode defaulting", () => {
   const spySdk = (defaults: { thread?: unknown; project?: unknown; ceiling?: unknown }) => ({
     threads: { spawn: vi.fn(async (a: unknown) => a), send: vi.fn(async (a: unknown) => a), defaultExecutionOptions: async () => defaults.thread },
     projects: { defaultExecutionOptions: vi.fn(async () => defaults.project) },
-    system: { executionOptions: async () => defaults.ceiling === undefined ? undefined : { permissionCeiling: defaults.ceiling } },
+    system: { executionOptions: vi.fn(async () => defaults.ceiling === undefined ? undefined : { permissionCeiling: defaults.ceiling }) },
   });
   it("uses the project's configured default when present", async () => {
     const s = spySdk({ project: { permissionMode: "auto" }, ceiling: "full" });
@@ -278,10 +336,41 @@ describe("permissionMode defaulting", () => {
     await sdkCall(s, "threads.queuedMessages.create", { threadId: "t", input: [], permissionMode: "full" });
     expect(s.threads.queuedMessages.create).toHaveBeenCalledWith(expect.objectContaining({ executionInputSources: { permissionMode: "explicit" } }));
   });
+  it("does not add executionInputSources to fork — its schema is strict and lacks the field", async () => {
+    const s = { threads: { fork: vi.fn(async (a: unknown) => a) } };
+    await sdkCall(s, "threads.fork", { sourceThreadId: "t", permissionMode: "auto" });
+    expect(s.threads.fork).toHaveBeenCalledWith(expect.not.objectContaining({ executionInputSources: expect.anything() }));
+  });
   it("does not touch non-dispatch paths", async () => {
     const s = spySdk({ project: { permissionMode: "auto" }, ceiling: "full" });
     const read = await sdkCall(s, "projects.defaultExecutionOptions", { projectId: "p1" });
     expect(read).toEqual({ permissionMode: "auto" });
+    expect(s.threads.spawn).not.toHaveBeenCalled();
+  });
+  it("surfaces a failed default lookup as precondition_failed", async () => {
+    const s = spySdk({ project: null, ceiling: "full" });
+    s.projects.defaultExecutionOptions = vi.fn(async () => { throw new Error("socket hangup"); });
+    await expect(sdkCall(s, "threads.spawn", { projectId: "p1", input: [] }))
+      .rejects.toMatchObject({ code: "precondition_failed" });
+    expect(s.threads.spawn).not.toHaveBeenCalled();
+  });
+  it("passes the request signal to the default lookups", async () => {
+    const s = spySdk({ project: { permissionMode: "auto" }, ceiling: "full" });
+    const ctrl = new AbortController();
+    await sdkCall(s, "threads.spawn", { projectId: "p1", input: [] }, ctrl.signal);
+    const ceilingArgs = (s.system.executionOptions as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(ceilingArgs.signal).toBe(ctrl.signal);
+    const projectArgs = (s.projects.defaultExecutionOptions as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(projectArgs.signal).toBe(ctrl.signal);
+  });
+  it("does not dispatch once the signal aborts mid-lookup", async () => {
+    const s = spySdk({ project: { permissionMode: "auto" }, ceiling: "full" });
+    const ctrl = new AbortController();
+    let release!: () => void;
+    s.projects.defaultExecutionOptions = vi.fn(() => new Promise<{ permissionMode: string }>(r => { release = () => r({ permissionMode: "auto" }); }));
+    const pendingCall = sdkCall(s, "threads.spawn", { projectId: "p1", input: [] }, ctrl.signal);
+    ctrl.abort(); release();
+    await expect(pendingCall).rejects.toMatchObject({ code: "execution_aborted" });
     expect(s.threads.spawn).not.toHaveBeenCalled();
   });
 });
@@ -321,14 +410,26 @@ describe("bb.approve", () => {
     await dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "allow_for_session" });
     expect((s.threads.interactions.resolve as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ resolution: { decision: "allow_for_session", grantedPermissions: { fileSystem: { read: ["."], write: [] }, network: null } } });
   });
+  it("defaults permission_grant allow_once to the subject's requested permissions", async () => {
+    const s = approvalSdk(approval({ subject: { kind: "permission_grant", permissions: { fileSystem: { read: ["."], write: [] }, network: null } } }));
+    await dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "allow_once" });
+    expect((s.threads.interactions.resolve as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ resolution: { decision: "allow_once", grantedPermissions: { fileSystem: { read: ["."], write: [] }, network: null } } });
+  });
   it("normalizes a partial grant object to the SDK's required-nullable keys", async () => {
     const s = approvalSdk(approval());
     await dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "allow_for_session", grantedPermissions: { network: { enabled: false } } });
     expect((s.threads.interactions.resolve as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ resolution: { decision: "allow_for_session", grantedPermissions: { network: { enabled: false }, fileSystem: null } } });
   });
-  it("rejects approvals that are no longer pending", async () => {
+  it("rejects approvals that are no longer pending or are expired", async () => {
     const s = approvalSdk({ ...approval(), status: "resolved" });
     await expect(dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "deny" })).rejects.toMatchObject({ code: "conflict" });
+    const expired = approvalSdk({ ...approval(), payload: { ...approval().payload, expiresAt: Date.now() - 1000 } });
+    await expect(dispatchFor(expired)("approve", { threadId: "t", interactionId: "int_1", decision: "deny" })).rejects.toMatchObject({ code: "conflict" });
+  });
+  it("surfaces a failed interaction lookup as precondition_failed, not outcome_unknown", async () => {
+    const s = { threads: { interactions: { get: vi.fn(async () => { throw new Error("socket hangup"); }), resolve: vi.fn() } } };
+    await expect(dispatchFor(s)("approve", { threadId: "t", interactionId: "i", decision: "deny" }))
+      .rejects.toMatchObject({ code: "precondition_failed" });
   });
   it("rejects decisions the interaction does not offer and non-approvals", async () => {
     const s = approvalSdk(approval({ availableDecisions: ["deny"] }));

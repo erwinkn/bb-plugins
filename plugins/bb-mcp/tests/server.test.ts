@@ -3,7 +3,8 @@ import { createFakePluginHost, makeThreadResponse, experimental_scanPublicSdkOnl
 import { fileURLToPath } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import plugin from "../server";
-import { createStore } from "../store";
+import { canonical, createStore } from "../store";
+import { createHash } from "node:crypto";
 import { getOp, reconcileOp, runOp } from "../ops";
 import { sdkCall } from "../codemode";
 import { ToolError } from "../config";
@@ -74,6 +75,30 @@ describe("durable dispatch", () => {
     const first = await store.run(scope, "key", spawnCall, async () => { throw err; });
     expect(first.state).toBe("failed");
   });
+  it("recognizes alternate 4xx shapes: statusCode field and HTTP message prefix", async () => {
+    const { store } = storeHost();
+    const a = await store.run(scope, "key-a", spawnCall, async () => { throw Object.assign(new Error("nope"), { statusCode: 404 }); });
+    expect(a.state).toBe("failed");
+    const b = await store.run(scope, "key-b", spawnCall, async () => { throw new Error("HTTP 409: Conflict"); });
+    expect(b.state).toBe("failed");
+    const c = await store.run(scope, "key-c", spawnCall, async () => { throw Object.assign(new Error("HTTP 500: oops"), { statusCode: 500 }); });
+    expect(c.state).toBe("outcome_unknown");
+  });
+  it("rejects unfingerprintable args (BigInt, circular) as invalid_arguments", async () => {
+    const { store } = storeHost();
+    await expect(store.run(scope, "key", { call: "files.write", args: { n: 5n } }, async () => ({}))).rejects.toMatchObject({ code: "invalid_arguments" });
+    const cyc: Record<string, unknown> = {}; cyc.self = cyc;
+    await expect(store.run(scope, "key", { call: "files.write", args: cyc }, async () => ({}))).rejects.toMatchObject({ code: "invalid_arguments" });
+  });
+  it("fingerprints Date and Map args instead of collapsing them", async () => {
+    const { store } = storeHost();
+    const send = (when: Date) => ({ call: "threads.send", args: { threadId: "thr_test", when } });
+    await store.run(scope, "key", send(new Date("2026-01-01T00:00:00Z")), async () => ({}));
+    await expect(store.run(scope, "key", send(new Date("2027-01-01T00:00:00Z")), async () => ({}))).rejects.toMatchObject({ code: "idempotency_conflict" });
+    const m = (v: number) => ({ call: "threads.send", args: { threadId: "thr_test", meta: new Map([["a", v]]) } });
+    await store.run(scope, "kmap", m(1), async () => ({}));
+    await expect(store.run(scope, "kmap", m(2), async () => ({}))).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
   it("lets a retry with corrected args replace a failed receipt", async () => {
     const { store } = storeHost();
     await store.run(scope, "key", spawnCall, async () => { throw new ToolError("invalid_arguments", "bad"); });
@@ -86,6 +111,19 @@ describe("durable dispatch", () => {
     const upload = (bytes: number[]) => ({ call: "projects.attachments.upload", args: { data: new Uint8Array(bytes).buffer } });
     await store.run(scope, "key", upload([1, 2, 3]), async () => ({}));
     await expect(store.run(scope, "key", upload([4, 5, 6]), async () => ({}))).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+  it("replays receipts written by the pre-scope fingerprint format", async () => {
+    const { bb, store } = storeHost();
+    const hash = (v: string) => createHash("sha256").update(v).digest("hex");
+    const legacy = { id: "op_legacy", keyHash: hash("legacy-key"), payloadHash: hash(canonical({ kind: scope.kind, payload: spawnCall })),
+      kind: scope.kind, projectId: "proj_allowed", hostId: null, threadId: "thr_test", state: "accepted", createdAt: 1, updatedAt: 1, response: { threadId: "thr_test" } };
+    bb.storage.database().prepare("INSERT INTO operations (id, key_hash, body) VALUES (?, ?, ?)").run(legacy.id, legacy.keyHash, JSON.stringify(legacy));
+    const replay = await store.run(scope, "legacy-key", spawnCall, vi.fn(async () => ({})));
+    expect(replay.id).toBe("op_legacy");
+    // A legacy receipt with a different recorded thread still conflicts when the retry is scoped to another thread.
+    const scoped = await store.run({ ...scope, threadId: "thr_other" }, "legacy-key", { ...spawnCall, threadId: "thr_other" }, vi.fn(async () => ({})))
+      .catch(e => e);
+    expect(scoped).toMatchObject({ code: "idempotency_conflict" });
   });
   it("joins a same-key retry to the in-flight dispatch rather than replaying pending", async () => {
     const { store } = storeHost(); let release!: () => void;
@@ -158,6 +196,8 @@ describe("MCP transport", () => {
     expect(harness.inspection.sdk.callsTo("projects.list")).toHaveLength(2);
     const badCall = await client.callTool({ name: "bb_execute", arguments: { code: `async () => bb.threads.get({})` } });
     expect(badCall.isError).toBeFalsy(); // the sandbox function resolved; its result shape is BB's
+    const badArgs = await client.callTool({ name: "bb_execute", arguments: { code: "async () => 1", timeoutMs: "abc" as unknown as number } });
+    expect(badArgs.isError).toBe(true); expect(JSON.stringify(badArgs.content)).toMatch(/[Ii]nvalid[ _]arguments/);
   });
   it("runs durable dispatch through bb.ops.run in the sandbox", async () => {
     const { bb, harness } = host(); plugin(bb);

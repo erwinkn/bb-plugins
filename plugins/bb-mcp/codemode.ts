@@ -18,6 +18,7 @@ const READ_VERBS = new Set([
   "catalog", "detail", "entries", "models", "version", "usageLimits", "providerStates",
   "providerCliStatus", "cliSkillsStatus", "attention", "defaultExecutionOptions", "executionOptions",
   "sidebarBootstrap", "promptHistory", "fileContent", "files", "branches", "commands",
+  "listRunning", "cloneDefaultPath", "installPlan", "listUpdateResults", "checkUpdates", "getSource",
   "diff", "diffFile", "diffFiles", "diffBranches", "diffPatch", "pullRequest", "conversationOutline",
   "childSummary", "resolveMentions", "timeline", "timelineTurnSummaryDetails",
   "storageFiles", "storageLocation", "storagePaths", "render", "directory", "getContent", "listFiles",
@@ -30,7 +31,10 @@ export function isReadPath(path: string): boolean {
   return READ_VERBS.has(path.split(".").at(-1)!);
 }
 
-export type Dispatch = (path: string, args: unknown) => Promise<unknown>;
+// The per-call signal overrides the request signal: runCode passes its
+// execution controller; ops.run inner calls pass null — durable dispatch must
+// survive the client disconnecting mid-operation.
+export type Dispatch = (path: string, args: unknown, signal?: AbortSignal | null) => Promise<unknown>;
 
 // threads.spawn callers that omit permissionMode get a resolved default: the
 // project's configured execution default, else "full" clamped to the system
@@ -42,9 +46,11 @@ const PERMISSION_DEFAULT_PATHS = new Set(["threads.spawn"]);
 const PERMISSION_RANK: Record<string, number> = { "accept-edits": 0, auto: 1, full: 2 };
 
 // BB silently drops caller-supplied execution fields unless executionInputSources
-// marks each one "explicit" — the SDK's create/send/fork/queue schemas all carry
-// it. Marking supplied fields is a no-op when BB already honors them.
-const EXEC_SOURCE_PATHS = new Set(["threads.spawn", "threads.send", "threads.editMessage", "threads.fork", "threads.queuedMessages.create"]);
+// marks each one "explicit" — the SDK's create/send/edit/queue schemas all
+// carry it. Marking supplied fields is a no-op when BB already honors them.
+// threads.fork is deliberately absent: its SDK args schema is strict and does
+// not declare executionInputSources, so injecting it would break forks.
+const EXEC_SOURCE_PATHS = new Set(["threads.spawn", "threads.send", "threads.editMessage", "threads.queuedMessages.create"]);
 const EXEC_SOURCE_FIELDS = ["providerId", "model", "reasoningLevel", "serviceTier", "permissionMode"];
 
 // Methods whose args declare `signal?: AbortSignal` in the bundled SDK types.
@@ -59,7 +65,7 @@ async function resolvePermissionMode(sdk: unknown, args: Record<string, unknown>
   if (typeof args.projectId === "string")
     mode = (await sdkCall(sdk, "projects.defaultExecutionOptions", { projectId: args.projectId }, signal) as { permissionMode?: unknown } | undefined)?.permissionMode;
   let resolved = typeof mode === "string" ? mode : "full";
-  const ceiling = (await sdkCall(sdk, "system.executionOptions", { signal }) as { permissionCeiling?: unknown } | undefined)?.permissionCeiling;
+  const ceiling = (await sdkCall(sdk, "system.executionOptions", {}, signal) as { permissionCeiling?: unknown } | undefined)?.permissionCeiling;
   if (typeof ceiling === "string" && ceiling in PERMISSION_RANK && (PERMISSION_RANK[resolved] ?? PERMISSION_RANK.full) > PERMISSION_RANK[ceiling]) resolved = ceiling;
   return resolved;
 }
@@ -90,11 +96,18 @@ export async function sdkCall(sdk: unknown, path: string, args: unknown, signal?
     const sources = a.executionInputSources !== null && typeof a.executionInputSources === "object" ? { ...(a.executionInputSources as Record<string, unknown>) } : {};
     for (const f of EXEC_SOURCE_FIELDS) if (a[f] !== undefined && sources[f] === undefined) sources[f] = "explicit";
     if (PERMISSION_DEFAULT_PATHS.has(path) && a.permissionMode === undefined) {
-      a.permissionMode = await resolvePermissionMode(sdk, a, signal);
+      // A failed lookup is pre-commit: the ledger must record "failed", not
+      // "outcome_unknown" — spawn was never invoked.
+      try { a.permissionMode = await resolvePermissionMode(sdk, a, signal); }
+      catch (e) {
+        if (e instanceof ToolError) throw e;
+        throw new ToolError("precondition_failed", `Could not resolve the permissionMode default: ${e instanceof Error ? e.message : String(e)}`);
+      }
       if (sources.permissionMode === undefined) sources.permissionMode = "client-preference";
     }
     if (Object.keys(sources).length) a.executionInputSources = sources;
   }
+  if (signal?.aborted) throw new ToolError("execution_aborted", "The request was cancelled.");
   return Reflect.apply(fn as (a: unknown) => Promise<unknown>, node, [callArgs]);
 }
 
@@ -103,20 +116,21 @@ export async function sdkCall(sdk: unknown, path: string, args: unknown, signal?
 // through the same gate via their inner callback, deliberately without the
 // request signal: durable dispatch must survive client disconnects.
 export function makeDispatch(sdk: unknown, store: Store, log: (path: string) => void, signal?: AbortSignal, readOnly = false): Dispatch {
-  const hostCall = (name: string, input: unknown, sig?: AbortSignal): Promise<unknown> => {
+  const hostCall = (name: string, input: unknown, sig?: AbortSignal | null): Promise<unknown> => {
     log(name);
     if (readOnly && !isReadPath(name))
       throw new ToolError("not_read_method", `"${name}" can mutate; bb_read only serves read methods. Use bb_execute.`);
-    return name === "approve" ? approveInteraction(input, (p, a) => hostCall(p, a, sig)) : sdkCall(sdk, name, input, sig);
+    const effective = sig === undefined ? signal : sig ?? undefined;
+    return name === "approve" ? approveInteraction(input, (p, a) => hostCall(p, a, effective)) : sdkCall(sdk, name, input, effective);
   };
-  return async (name, input) => {
-    if (name === "ops.get") { log(name); return getOp(store, input); }
+  return async (name, input, sig) => {
+    if (name === "ops.get") { log(name); return getOp(store, input, readOnly ? p => READ_BLOCKED.has(p) : undefined); }
     if (name === "ops.run") {
       log(name);
       if (readOnly) throw new ToolError("not_read_method", "Durable dispatch can mutate; bb_read only serves read methods. Use bb_execute.");
-      return runOp(store, input, (p, a) => hostCall(p, a));
+      return runOp(store, input, (p, a) => hostCall(p, a, null));
     }
-    return hostCall(name, input, signal);
+    return hostCall(name, input, sig);
   };
 }
 
@@ -179,34 +193,61 @@ const finish = msg => {
   try { parentPort.postMessage({ ...msg, logs }); }
   catch { try { parentPort.postMessage({ failed: true, message: "The returned value could not be serialized.", logs }); } catch {} }
 };
-let fn, firstErr;
-// Only evaluate code that already looks like a function; anything else runs
-// once as a body — a bare expression must not dispatch then fail as non-function.
-if (/^\\s*(async\\b|function\\b|\\()/.test(code)) {
-  try { fn = vm.runInContext("(\\n" + code + "\\n)", context, { timeout: 5000 }); }
-  catch (e) { firstErr = e; }
+let compiled, firstErr;
+// Compile the code as an expression first: compilation never executes, so a
+// program is never run twice and a bare call returns its result instead of
+// erroring after dispatching. If it does not parse, the code is
+// statement-shaped — compile it once as an async function body. Leading
+// comments/directives that break expression parsing are stripped and retried.
+const stripped = code.replace(/^(?:\\s+|\\/\\/[^\\n]*(?:\\n|$)|\\/\\*[\\s\\S]*?\\*\\/|(["'])(?:\\\\[\\s\\S]|(?!\\1)[\\s\\S])*\\1\\s*;?)+/, "");
+for (const source of stripped === code ? [code] : [code, stripped]) {
+  try { compiled = new vm.Script("(\\n" + source + "\\n)"); break; }
+  catch (e) { if (!firstErr) firstErr = e; }
 }
-if (fn === undefined) {
-  try { fn = vm.runInContext("(async function __main__() {\\n" + code + "\\n})", context, { timeout: 5000 }); }
-  catch { finish({ failed: true, message: firstErr && firstErr.message ? firstErr.message : String(firstErr) }); }
+if (!compiled) {
+  try { compiled = new vm.Script("(async function __main__() {\\n" + code + "\\n})"); }
+  catch (e) { finish({ failed: true, message: firstErr && firstErr.message ? firstErr.message : String(e) }); }
 }
-if (fn !== undefined) {
-  if (typeof fn !== "function") finish({ failed: true, message: "Code must evaluate to a function, e.g. async () => { ... return value; }" });
-  else {
-    try { Promise.resolve(fn()).then(result => finish({ done: true, result }), e => finish({ failed: true, message: e && e.message ? e.message : String(e) })); }
-    catch (e) { finish({ failed: true, message: e && e.message ? e.message : String(e) }); }
-  }
+if (compiled) {
+  try {
+    const value = compiled.runInContext(context, { timeout: 5000 });
+    Promise.resolve(typeof value === "function" ? value() : value).then(
+      result => finish({ done: true, result }),
+      e => finish({ failed: true, message: e && e.message ? e.message : String(e) }));
+  } catch (e) { finish({ failed: true, message: e && e.message ? e.message : String(e) }); }
 }`;
 
 const MAX_CONCURRENT = 8;
 let active = 0;
-const waiters: (() => void)[] = [];
-const acquire = () => active < MAX_CONCURRENT ? (active++, Promise.resolve()) : new Promise<void>(r => waiters.push(r));
-const release = () => { const next = waiters.shift(); if (next) next(); else active--; };
+type Waiter = { signal?: AbortSignal; resolve: () => void; reject: (e: ToolError) => void; onAbort: () => void };
+const waiters: Waiter[] = [];
+const abortedError = () => new ToolError("execution_aborted", "The MCP request was cancelled.");
+const promote = () => {
+  while (active < MAX_CONCURRENT && waiters.length) {
+    const w = waiters.shift()!;
+    if (w.signal?.aborted) { w.reject(abortedError()); continue; }
+    active++;
+    w.signal?.removeEventListener("abort", w.onAbort);
+    w.resolve();
+  }
+};
+const acquire = (signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const w: Waiter = { signal, resolve, reject, onAbort: () => {
+    const i = waiters.indexOf(w);
+    if (i >= 0) { waiters.splice(i, 1); reject(abortedError()); }
+  } };
+  signal?.addEventListener("abort", w.onAbort, { once: true });
+  waiters.push(w); promote();
+});
+const release = () => { active--; promote(); };
 
 export async function runCode(opts: { code: string; paths: string[]; dispatch: Dispatch; timeoutMs?: number; signal?: AbortSignal }): Promise<{ result: unknown; logs: string[] }> {
   const timeoutMs = Math.min(Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, 1000), MAX_TIMEOUT_MS);
-  await acquire();
+  await acquire(opts.signal);
+  // The slot is held until the worker is gone, not just settled — releasing
+  // early lets a burst of cancelled calls stack live workers past the cap.
+  let slotHeld = true, slotOwned = false;
+  const releaseSlot = () => { if (slotHeld) { slotHeld = false; release(); } };
   try {
     return await new Promise((resolve, reject) => {
       const worker = new Worker(WORKER_SRC, {
@@ -215,10 +256,13 @@ export async function runCode(opts: { code: string; paths: string[]; dispatch: D
         resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 64, stackSizeMb: 4 },
       });
       let settled = false, timedOut = false;
+      // Every worker-bound call carries this signal: cancellation or timeout
+      // aborts in-flight host calls, and sdkCall refuses new dispatches.
+      const ctrl = new AbortController();
       const cleanup = () => { clearTimeout(timer); opts.signal?.removeEventListener("abort", onAbort); };
-      const finish = (fn: () => void) => { if (settled) return; settled = true; cleanup(); void worker.terminate(); fn(); };
+      const finish = (fn: () => void) => { if (settled) return; settled = true; slotOwned = true; ctrl.abort(); cleanup(); void worker.terminate().finally(releaseSlot); fn(); };
       const onAbort = () => finish(() => reject(new ToolError("execution_aborted", "The MCP request was cancelled.")));
-      const timer = setTimeout(() => { timedOut = true; void worker.terminate(); }, timeoutMs);
+      const timer = setTimeout(() => { timedOut = true; ctrl.abort(); void worker.terminate(); }, timeoutMs);
       if (opts.signal?.aborted) { onAbort(); return; }
       opts.signal?.addEventListener("abort", onAbort, { once: true });
       worker.on("message", (m: { call?: boolean; id?: number; path?: string; args?: unknown; done?: boolean; failed?: boolean; resultJson?: string; logs?: string[]; message?: string }) => {
@@ -226,7 +270,7 @@ export async function runCode(opts: { code: string; paths: string[]; dispatch: D
           if (settled) return;
           // Deferred invocation: a synchronous throw from dispatch must still
           // become an error reply, never an unhandled exception in the handler.
-          Promise.resolve().then(() => opts.dispatch(m.path!, m.args)).then(
+          Promise.resolve().then(() => opts.dispatch(m.path!, m.args, ctrl.signal)).then(
             result => {
               try { worker.postMessage({ id: m.id, ok: true, result }); }
               catch {
@@ -242,7 +286,7 @@ export async function runCode(opts: { code: string; paths: string[]; dispatch: D
       worker.on("exit", code => finish(() => reject(new ToolError(timedOut ? "execution_timeout" : "execution_failed",
         timedOut ? `Execution exceeded ${timeoutMs} ms and was terminated.` : `Code worker exited (${String(code)}).`))));
     });
-  } finally { release(); }
+  } finally { if (!slotOwned) releaseSlot(); }
 }
 
 // Generated from @get-bb/plugin-sdk's bundled bb-plugin-sdk.d.ts. Regenerate if
@@ -468,7 +512,7 @@ The SDK has no durable dispatch, so \`bb.ops\` adds it:
 - ops.run({ call: "threads.spawn", args, key?, kind?, threadId?, projectId? }) runs one SDK call inside a recorded receipt. Reusing \`key\` with the same call+args replays the stored receipt instead of dispatching again; a different payload is idempotency_conflict. state "outcome_unknown" means BB may have committed; inspect BB (threads.get/list) before retrying under a new key.
 - ops.get({ operationId }) reads a stored receipt.
 
-\`bb.approve({ threadId, interactionId, decision, grantedPermissions? })\` resolves a pending permission approval — the code-mode equivalent of \`bb thread approve\` / \`bb thread grant --scope session\`. It verifies the interaction is still a pending approval, checks the decision is in its \`availableDecisions\`, and builds the resolution BB expects (\`grantedPermissions\` is a required-but-nullable key on allow_*; omitting it fails with "Invalid discriminator value"; deny takes none). \`allow_for_session\` defaults \`grantedPermissions\` to the request's offered \`sessionGrant\`. For user_question and plugin-form interactions use \`threads.interactions.resolve\` directly with \`{ kind: "user_answer", answers }\` or \`{ kind: "request_answer", value }\` — inspect the interaction first for its contract.
+\`bb.approve({ threadId, interactionId, decision, grantedPermissions? })\` resolves a pending permission approval — the code-mode equivalent of \`bb thread approve\` / \`bb thread grant --scope session\`. It verifies the interaction is still a pending approval — including its \`status\` and \`expiresAt\` when present — checks the decision is in its \`availableDecisions\`, and builds the resolution BB expects (\`grantedPermissions\` is a required-but-nullable key on allow_*; omitting it fails with "Invalid discriminator value"; deny takes none). \`allow_for_session\` defaults \`grantedPermissions\` to the request's offered \`sessionGrant\`. For user_question and plugin-form interactions use \`threads.interactions.resolve\` directly with \`{ kind: "user_answer", answers }\` or \`{ kind: "request_answer", value }\` — inspect the interaction first for its contract.
 
 console.* output returns in \`logs\`. Provided globals: setTimeout/clearTimeout, Buffer, btoa/atob, TextEncoder/TextDecoder, crypto.randomUUID/getRandomValues. No module imports. Limits: ${DEFAULT_TIMEOUT_MS} ms default timeout (${MAX_TIMEOUT_MS} ms max via timeoutMs), ${MAX_CALLS} bb calls, ${MAX_LOG_BYTES} B of logs, ${MAX_RESULT_BYTES} B returned result (UTF-8 JSON). A terminated or disconnected execution does not stop work BB already accepted.
 

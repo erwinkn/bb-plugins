@@ -19,7 +19,7 @@ export async function runOp(store: Store, args: unknown, call: SdkCall) {
   // `kind` label is cosmetic and stays out of the fingerprint.
   const payload = { call: a.call, args: a.args, ...scope };
   const op = await store.run(
-    { kind, ...scope, hostId: null },
+    { kind, call: a.call, ...scope, hostId: null },
     a.key, payload,
     async () => {
       const result = await call(a.call as string, a.args);
@@ -31,11 +31,19 @@ export async function runOp(store: Store, args: unknown, call: SdkCall) {
   return operationView(op);
 }
 
-export function getOp(store: Store, args: unknown) {
+// Receipts store full dispatch responses. Under bb_read the metadata stays
+// readable, but a response recorded by an execute-only call (plugins.token,
+// plugins.getSettings, system.config) is redacted — the live path hides it too.
+export function getOp(store: Store, args: unknown, sensitive?: (callPath: string) => boolean) {
   const id = (args as { operationId?: unknown })?.operationId;
   const op = typeof id === "string" ? store.get(id) : undefined;
   if (!op) throw new ToolError("not_found", "Operation unavailable.");
-  return operationView(op);
+  const view = operationView(op);
+  if (sensitive?.(op.call ?? op.kind)) {
+    view.response = null;
+    (view as Record<string, unknown>).responseRedacted = "The recorded call is execute-only.";
+  }
+  return view;
 }
 
 // Operator-only recovery for an outcome_unknown receipt. The thread must exist
@@ -65,24 +73,39 @@ export async function approveInteraction(args: unknown, call: SdkCall) {
     throw new ToolError("invalid_arguments", "decision must be allow_once, allow_for_session or deny.");
   if (decision === "deny" && a.grantedPermissions !== undefined)
     throw new ToolError("invalid_arguments", "deny does not take grantedPermissions.");
-  const interaction = await call("threads.interactions.get", { threadId: a.threadId, interactionId: a.interactionId }) as {
+  // A failed lookup is pre-commit: wrap it so the ledger records "failed",
+  // not "outcome_unknown" (resolve was never sent).
+  let interaction: {
     status?: unknown;
-    payload?: { kind?: unknown; availableDecisions?: unknown; subject?: { kind?: unknown; sessionGrant?: unknown; permissions?: unknown } };
+    expiresAt?: unknown;
+    payload?: { kind?: unknown; expiresAt?: unknown; availableDecisions?: unknown; subject?: { kind?: unknown; sessionGrant?: unknown; permissions?: unknown } };
   };
+  try {
+    interaction = await call("threads.interactions.get", { threadId: a.threadId, interactionId: a.interactionId }) as typeof interaction;
+  } catch (e) {
+    if (e instanceof ToolError) throw e;
+    throw new ToolError("precondition_failed", `Could not load the interaction: ${e instanceof Error ? e.message : String(e)}`);
+  }
   const payload = interaction?.payload;
   if (payload?.kind !== "approval") throw new ToolError("conflict", "Interaction is not a pending approval.");
   if (interaction.status !== undefined && interaction.status !== "pending")
     throw new ToolError("conflict", "Interaction is no longer pending.");
+  const expiresAt = payload.expiresAt ?? interaction.expiresAt;
+  if (typeof expiresAt === "number" && expiresAt <= Date.now())
+    throw new ToolError("conflict", "Interaction has expired.");
   const offered = Array.isArray(payload.availableDecisions) ? payload.availableDecisions : [];
   if (offered.length && !offered.includes(decision))
     throw new ToolError("conflict", `Decision "${decision}" is not offered on this interaction.`);
   if (decision === "deny")
     return call("threads.interactions.resolve", { threadId: a.threadId, interactionId: a.interactionId, resolution: { decision: "deny" } });
   // Explicit null is meaningful (one-time allow); only an omitted key defaults.
+  // The default is what the subject requested: permission_grant asks for
+  // subject.permissions on either allow decision; other subjects offer a
+  // sessionGrant that only applies to allow_for_session.
   const subject = payload.subject;
-  const offeredGrant = subject?.sessionGrant ?? (subject?.kind === "permission_grant" ? subject.permissions : undefined);
-  let grantedPermissions = a.grantedPermissions !== undefined ? a.grantedPermissions
-    : decision === "allow_for_session" ? (offeredGrant ?? null) : null;
+  const requested = subject?.kind === "permission_grant" ? subject.permissions
+    : decision === "allow_for_session" ? subject?.sessionGrant : undefined;
+  let grantedPermissions = a.grantedPermissions !== undefined ? a.grantedPermissions : (requested ?? null);
   // The grant object's children are required-but-nullable in the SDK schema.
   if (grantedPermissions !== null && typeof grantedPermissions === "object")
     grantedPermissions = { fileSystem: null, network: null, ...(grantedPermissions as Record<string, unknown>) };

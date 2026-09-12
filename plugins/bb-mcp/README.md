@@ -137,10 +137,12 @@ project.
 - When `threads.spawn` omits `permissionMode`, the plugin resolves one: the
   project's configured execution default, else `"full"` clamped to the system
   permission ceiling — never silently `"accept-edits"`. Injected defaults are
-  marked `executionInputSources.permissionMode: "client-preference"`. On all
-  create/send/fork/queue calls, caller-supplied execution fields
+  marked `executionInputSources.permissionMode: "client-preference"`. On
+  create/send/edit/queue calls, caller-supplied execution fields
   (`providerId`, `model`, `reasoningLevel`, `serviceTier`, `permissionMode`)
   are marked `"explicit"` automatically — BB silently drops them otherwise.
+  `threads.fork` is the exception: its args schema does not declare
+  `executionInputSources`, so its fields pass through unmarked.
   `threads.send`, `threads.fork` and queued-message creation are deliberately
   not defaulted — omitting `permissionMode` there inherits the thread's
   stored execution options.

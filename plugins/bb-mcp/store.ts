@@ -4,16 +4,21 @@ import { ToolError } from "./config";
 
 export type Operation = {
   id: string; keyHash: string; payloadHash: string; kind: string;
+  /** The SDK call path that produced this receipt (ops.run only). */
+  call?: string;
   projectId: string | null; hostId: string | null; threadId: string | null;
   related?: { threadId: string; projectId: string; hostId: string | null }[];
   state: "pending" | "accepted" | "failed" | "outcome_unknown";
   createdAt: number; updatedAt: number; response: Record<string, unknown> | null;
   error?: { code: string; message: string };
 };
-function canonical(value: unknown): string {
+export function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value instanceof ArrayBuffer) return `ab:${createHash("sha256").update(Buffer.from(value)).digest("hex")}`;
   if (ArrayBuffer.isView(value)) return `ab:${createHash("sha256").update(Buffer.from(value.buffer, value.byteOffset, value.byteLength)).digest("hex")}`;
+  if (value instanceof Date) return `date:${value.getTime()}`;
+  if (value instanceof Map) return `map:{${[...value.entries()].map(([k, v]) => `${canonical(k)}=>${canonical(v)}`).sort().join(",")}}`;
+  if (value instanceof Set) return `set:[${[...value.values()].map(canonical).sort().join(",")}]`;
   if (value !== null && typeof value === "object") return "{" + Object.entries(value).filter(([,v]) => v !== undefined).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",") + "}";
   return JSON.stringify(value);
 }
@@ -22,10 +27,14 @@ const hash = (value: string) => createHash("sha256").update(value).digest("hex")
 // A rejection is only "unknown" when the server may have committed — timeouts,
 // disconnects, 5xx. ToolErrors are raised pre-dispatch, and HTTP 4xx is a
 // definitive server-side rejection: record "failed" and let the key retry.
+// The runtime's HTTP errors expose status/statusCode and an "HTTP <code>:"
+// message prefix; accept all three shapes.
 function isDefinitive(error: unknown): boolean {
   if (error instanceof ToolError) return true;
-  const status = (error as { status?: unknown } | null)?.status;
-  return typeof status === "number" && status >= 400 && status < 500;
+  const e = error as { status?: unknown; statusCode?: unknown; message?: unknown } | null;
+  const status = typeof e?.status === "number" ? e.status : e?.statusCode;
+  if (typeof status === "number" && status >= 400 && status < 500) return true;
+  return typeof e?.message === "string" && /^HTTP 4\d\d\b/.test(e.message);
 }
 
 export function createStore(bb: BbPluginApi) {
@@ -47,10 +56,24 @@ export function createStore(bb: BbPluginApi) {
   function claim(input: Omit<Operation, "id" | "state" | "createdAt" | "updatedAt" | "response" | "payloadHash" | "keyHash">, key: string | undefined, payload: unknown) {
     return db.transaction(() => {
       if (disposed) throw new ToolError("unavailable", "Plugin is reloading; retry with the same idempotency key.");
-      const keyHash = hash(key ?? randomUUID()), payloadHash = hash(canonical(payload));
+      let keyHash: string, payloadHash: string;
+      try {
+        keyHash = hash(key ?? randomUUID());
+        payloadHash = hash(canonical(payload));
+      } catch {
+        throw new ToolError("invalid_arguments", "Payload contains a value that cannot be fingerprinted (BigInt, circular structure, or host object).");
+      }
       const existing = getBy("key_hash", keyHash);
       if (existing && existing.state !== "failed") {
-        if (existing.payloadHash !== payloadHash) throw new ToolError("idempotency_conflict", "This idempotency key was already used with different arguments.");
+        // Receipts written before scope joined the fingerprint hashed
+        // { kind, payload: {call, args} }. Accept them on identical call+args,
+        // unless a supplied scope contradicts the stored receipt.
+        const p = payload as { call?: unknown; args?: unknown; threadId?: unknown; projectId?: unknown } | null;
+        const legacy = hash(canonical({ kind: existing.kind, payload: { call: p?.call, args: p?.args } }));
+        const scoped = (typeof p?.threadId === "string" && p.threadId !== existing.threadId)
+          || (typeof p?.projectId === "string" && p.projectId !== existing.projectId);
+        if ((existing.payloadHash !== payloadHash && existing.payloadHash !== legacy) || (existing.payloadHash === legacy && scoped))
+          throw new ToolError("idempotency_conflict", "This idempotency key was already used with different arguments.");
         return { op: existing, fresh: false };
       }
       if (existing) {

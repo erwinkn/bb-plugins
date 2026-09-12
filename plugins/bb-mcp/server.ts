@@ -32,7 +32,9 @@ export default function plugin(bb: BbPluginApi) {
           bb.log.info(`MCP ${name}: ok`);
           return { content: [{ type: "text" as const, text: JSON.stringify({ data }) }], structuredContent: { data } };
         } catch (error) {
-          const { code, message } = errorView(error);
+          const { code, message } = error instanceof z.ZodError
+            ? { code: "invalid_arguments", message: error.issues.map(i => `${i.path.join(".") || "input"}: ${i.message}`).join("; ") }
+            : errorView(error);
           bb.log.warn(`MCP ${name}: ${code}`);
           return { isError: true, content: [{ type: "text" as const, text: JSON.stringify({ error: { code, message } }) }] };
         }
