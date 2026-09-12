@@ -51,8 +51,10 @@ export function createStore(bb: BbPluginApi) {
   // A previous generation may have dispatched but not recorded its result.
   db.prepare("UPDATE operations SET body = json_set(body, '$.state', 'outcome_unknown', '$.updatedAt', ?) WHERE json_extract(body, '$.state') = 'pending'").run(Date.now());
   // Receipts written before the call path was recorded cannot prove their
-  // response is credential-free — drop it; state/id/threadId are preserved.
-  db.prepare("UPDATE operations SET body = json_remove(body, '$.response') WHERE json_extract(body, '$.call') IS NULL AND json_extract(body, '$.response') IS NOT NULL").run();
+  // response is credential-free — null it out; state/id/threadId are
+  // preserved, and reconciled rows carry call: "reconciled" so the strip
+  // does not erase the operator-confirmed marker on the next load.
+  db.prepare("UPDATE operations SET body = json_set(body, '$.response', json('null')) WHERE json_extract(body, '$.call') IS NULL AND json_extract(body, '$.response') IS NOT NULL").run();
   const inflight = new Map<string, Promise<Operation>>();
   let disposed = false;
   bb.onDispose(() => { disposed = true; });
@@ -97,7 +99,7 @@ export function createStore(bb: BbPluginApi) {
       return db.transaction(() => {
         const op = getBy("id", id);
         if (!op || op.state !== "outcome_unknown") throw new ToolError("conflict", "Only an outcome_unknown operation can be reconciled.");
-        const resolved: Operation = { ...op, state: "accepted", threadId, updatedAt: Date.now(), response: { threadId, reconciliation: "operator_confirmed" } };
+        const resolved: Operation = { ...op, call: op.call ?? "reconciled", state: "accepted", threadId, updatedAt: Date.now(), response: { threadId, reconciliation: "operator_confirmed" } };
         save(resolved); return resolved;
       })();
     },

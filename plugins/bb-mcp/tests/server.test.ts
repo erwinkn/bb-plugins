@@ -138,8 +138,18 @@ describe("durable dispatch", () => {
     put("op_old", { id: "op_old", kind: "fetch", state: "accepted", response: { token: "secret" }, createdAt: 1, updatedAt: 1 });
     put("op_new", { id: "op_new", kind: "threads.spawn", call: "threads.spawn", state: "accepted", response: { threadId: "thr_1" }, createdAt: 1, updatedAt: 1 });
     const fresh = createStore(bb);
-    expect(fresh.get("op_old")?.response).toBeUndefined();
+    expect(fresh.get("op_old")?.response).toBeNull();
     expect(fresh.get("op_new")?.response).toEqual({ threadId: "thr_1" });
+  });
+  it("keeps an operator reconciliation on a legacy receipt across reloads", async () => {
+    const { bb, store } = storeHost();
+    const db = bb.storage.database();
+    db.prepare("INSERT INTO operations (id, key_hash, body) VALUES (?, ?, ?)").run("op_leg", "kh_leg", JSON.stringify({ id: "op_leg", kind: "fetch", state: "outcome_unknown", projectId: null, hostId: null, threadId: null, response: null, createdAt: 1, updatedAt: 1 }));
+    const s1 = createStore(bb);
+    const rec = s1.reconcile("op_leg", "thr_test");
+    expect(rec.state).toBe("accepted");
+    const s2 = createStore(bb);
+    expect(s2.get("op_leg")?.response).toMatchObject({ reconciliation: "operator_confirmed" });
   });
   it("joins a same-key retry to the in-flight dispatch rather than replaying pending", async () => {
     const { store } = storeHost(); let release!: () => void;
