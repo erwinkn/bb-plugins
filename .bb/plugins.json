@@ -38,6 +38,10 @@
     {
       "name": "erwin-plugin-nav",
       "source": "./plugins/plugin-nav"
+    },
+    {
+      "name": "erwin-model-favorites",
+      "source": "./plugins/model-favorites"
     }
   ]
 }

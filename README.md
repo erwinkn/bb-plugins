@@ -36,6 +36,9 @@ compact](plugins/provider-usage/README.md) for installation and rollback.
 `erwin-plugin-nav` hides the ellipsis button on plugin sidebar rows, including
 Automations. See [Hide plugin nav menus](plugins/plugin-nav/README.md).
 
+`erwin-model-favorites` adds a star action to the composer that applies starred
+models to the current thread. See [Model favorites](plugins/model-favorites/README.md).
+
 ## Install
 
 Use BB 0.42.1 or later. The bb server needs Git, npm, and GitHub access to this
@@ -376,7 +379,12 @@ adding a tab to the built-in selector would depend on internal UI details.
 If BB wants plugins to supply these lists, add a model-picker tab API that
 passes provider/model selections through the host's normal selection logic.
 
-Status: recorded here; no upstream issue filed and no plugin installed.
+Status: `erwin-model-favorites` implements the subset a plugin can reach: a
+composer star action that applies favorites through `threads.update`, plus a
+Settings section for managing them. The rest still needs upstream surface:
+a provider's model can change on an existing thread, but its provider cannot
+(`threads.update` has no provider field), and the new-thread composer's draft
+selection has no plugin read/write API, so favorites cannot be applied there.
 Suggested issue title: `Add a Favorites tab for models across providers`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues), with the
 requested behavior above. Check new and existing threads, duplicate model names
