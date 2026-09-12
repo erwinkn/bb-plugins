@@ -725,6 +725,37 @@ Suggested issue title: `Mobile panel shell applies select-none to plugin
 content, blocking selection and CSS highlights in WebKit`. File the request in
 [BB issues](https://github.com/get-bb/bb/issues).
 
+### Detect dev-server ports and offer one-click Connect sharing
+
+BB Connect can already share an HTTP port: `bb connect expose <port>` from a
+thread on any enrolled host returns an owner-session URL such as
+`https://<host-label>--<port>.<base-domain>` through the getbb.app tunnel, and
+`unexpose`/`shares` manage it. Discovery is the gap: nothing notices that a dev
+server bound a port, so the user or agent must know the port and run the
+command. Agents currently rely on the `share-server-links` skill to expose the
+port and hand back a link.
+
+Requested behavior:
+
+- Detect newly listening HTTP ports on enrolled hosts and surface them in the
+  UI — for example a share affordance on the terminal that started the server,
+  a shares panel, or a notification with a one-click expose action.
+- Optionally auto-expose ports bound by processes BB launched, behind a
+  per-project or per-host opt-in with an allowlist/denylist.
+- Unexpose automatically when the process exits or the port closes, or mark the
+  share stale.
+- Keep shares owner-session-only by default; any wider audience stays explicit.
+
+Verified on 2026-09-12 against installed BB: `bb connect expose` works and the
+instance is paired (`https://erwin.getbb.app`), but there is no port detection
+or UI affordance. A plugin could poll `ss`/`lsof` and call the CLI, but native
+detection has better process and lifecycle context than port-scanning
+heuristics.
+
+Status: recorded here; no upstream issue filed.
+Suggested issue title: `Connect: detect listening dev-server ports and offer one-click or automatic sharing`.
+File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this
