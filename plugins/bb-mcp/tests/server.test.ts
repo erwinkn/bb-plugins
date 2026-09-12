@@ -137,9 +137,11 @@ describe("durable dispatch", () => {
     const put = (id: string, body: object) => db.prepare("INSERT INTO operations (id, key_hash, body) VALUES (?, ?, ?)").run(id, `kh_${id}`, JSON.stringify(body));
     put("op_old", { id: "op_old", kind: "fetch", state: "accepted", response: { token: "secret" }, createdAt: 1, updatedAt: 1 });
     put("op_new", { id: "op_new", kind: "threads.spawn", call: "threads.spawn", state: "accepted", response: { threadId: "thr_1" }, createdAt: 1, updatedAt: 1 });
+    put("op_tok", { id: "op_tok", kind: "plugins.token", call: "plugins.token", state: "accepted", response: { token: "secret" }, createdAt: 1, updatedAt: 1 });
     const fresh = createStore(bb);
     expect(fresh.get("op_old")?.response).toBeNull();
     expect(fresh.get("op_new")?.response).toEqual({ threadId: "thr_1" });
+    expect(fresh.get("op_tok")?.response).toBeNull();
   });
   it("keeps an operator reconciliation on a legacy receipt across reloads", async () => {
     const { bb, store } = storeHost();

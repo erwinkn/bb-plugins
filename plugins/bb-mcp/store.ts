@@ -50,11 +50,14 @@ export function createStore(bb: BbPluginApi) {
   const save = (op: Operation) => db.prepare("UPDATE operations SET body = ? WHERE id = ?").run(JSON.stringify(op), op.id);
   // A previous generation may have dispatched but not recorded its result.
   db.prepare("UPDATE operations SET body = json_set(body, '$.state', 'outcome_unknown', '$.updatedAt', ?) WHERE json_extract(body, '$.state') = 'pending'").run(Date.now());
-  // Receipts written before the call path was recorded cannot prove their
-  // response is credential-free — null it out; state/id/threadId are
-  // preserved, and reconciled rows carry call: "reconciled" so the strip
-  // does not erase the operator-confirmed marker on the next load.
-  db.prepare("UPDATE operations SET body = json_set(body, '$.response', json('null')) WHERE json_extract(body, '$.call') IS NULL AND json_extract(body, '$.response') IS NOT NULL").run();
+  // Receipts whose response could hold credentials or config are nulled out:
+  // legacy rows pre-date the call column so provenance is unprovable, and
+  // rows naming an execute-only call path may have been written before
+  // ops.run refused them. Keep the literals in sync with codemode's
+  // READ_BLOCKED. Reconciled rows carry call: "reconciled" and survive.
+  db.prepare(`UPDATE operations SET body = json_set(body, '$.response', json('null'))
+    WHERE (json_extract(body, '$.call') IS NULL OR json_extract(body, '$.call') IN ('plugins.token', 'plugins.getSettings', 'system.config'))
+      AND json_extract(body, '$.response') IS NOT NULL`).run();
   const inflight = new Map<string, Promise<Operation>>();
   let disposed = false;
   bb.onDispose(() => { disposed = true; });
