@@ -77,14 +77,14 @@ async function boot(baseUrl: string): Promise<PierreRuntime> {
   // Resolve metrics before creating a virtualized editor. If the optional font
   // cannot load, BB's monospace stack remains a usable fallback.
   await runtime.loadFont().catch((error: unknown) => {
-    console.warn("[erwin-editor] Geist Mono could not load; using BB's monospace font", error);
+    console.warn("[editor] Geist Mono could not load; using BB's monospace font", error);
   });
   if (!runtime.ownsContainerElement) {
     // BB's app registers `<diffs-container>` from its own Pierre copy. The tag
     // can only be defined once, so our elements then carry that copy's
     // stylesheet. Rendering continues; the styling is what to check.
     console.warn(
-      "[erwin-editor] another copy of Pierre already defined <diffs-container>; " +
+      "[editor] another copy of Pierre already defined <diffs-container>; " +
         `this surface renders with that copy's styles, not ${runtime.version}`,
     );
   }
@@ -95,7 +95,7 @@ async function boot(baseUrl: string): Promise<PierreRuntime> {
         workerFactory: () =>
           new Worker(new URL(`${baseUrl}/worker.js`, window.location.origin), {
             type: "module",
-            name: "erwin-editor-syntax",
+            name: "editor-syntax",
           }),
         poolSize: WORKER_POOL_SIZE,
       },
@@ -104,7 +104,7 @@ async function boot(baseUrl: string): Promise<PierreRuntime> {
     });
   } catch (error: unknown) {
     // Highlighting falls back to the main thread: slower, not broken.
-    console.warn("[erwin-editor] the syntax worker pool did not start", error);
+    console.warn("[editor] the syntax worker pool did not start", error);
   }
   return { ...runtime, workerPool };
 }

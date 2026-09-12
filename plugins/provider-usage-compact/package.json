@@ -1,5 +1,5 @@
 {
-  "name": "bb-plugin-erwin-provider-usage",
+  "name": "bb-plugin-provider-usage-compact",
   "version": "0.1.0",
   "type": "module",
   "engines": {

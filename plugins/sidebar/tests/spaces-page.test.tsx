@@ -451,7 +451,7 @@ describe("spaces page", () => {
   it("keeps a routed space the cache does not know until the server answers", async () => {
     // Another client created "fresh"; this one still has an older cache.
     window.localStorage.setItem(
-      "bb-plugin-erwin-activity:spaces-cache",
+      "bb-plugin-sidebar:spaces-cache",
       JSON.stringify(initial),
     );
     const fresh: Space = { id: "fresh", name: "Fresh", projectIds: [] };
@@ -541,7 +541,7 @@ describe("spaces page", () => {
   it("shows a placeholder for a space the cache does not know while the load is pending", async () => {
     compact = true;
     window.localStorage.setItem(
-      "bb-plugin-erwin-activity:spaces-cache",
+      "bb-plugin-sidebar:spaces-cache",
       JSON.stringify(initial),
     );
     const rpc = {

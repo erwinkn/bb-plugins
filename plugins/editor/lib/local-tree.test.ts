@@ -7,7 +7,7 @@ import { listLocalFiles, listLocalTree } from "./local-tree";
 import { buildTree } from "./file-tree";
 
 async function fixture(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "erwin-editor-tree-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "editor-tree-"));
   await mkdir(path.join(root, ".github", "workflows"), { recursive: true });
   await mkdir(path.join(root, ".git", "objects"), { recursive: true });
   await mkdir(path.join(root, "src"), { recursive: true });

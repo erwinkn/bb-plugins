@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { parseState, updateState, useClientState } from "../lib/client-state";
 
-const KEY = "bb-plugin-erwin-activity:v1";
+const KEY = "bb-plugin-sidebar:v1";
 const storage = window.localStorage;
 
 beforeEach(() => {

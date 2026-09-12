@@ -11,7 +11,7 @@ import { EMPTY_CATALOG } from "./spaces";
 // The last catalog this client saw. It renders immediately on the next load
 // and keeps a selected space usable while the server is unreachable.
 /** Local-storage key of the cached catalog. Other plugins may read it to list spaces. */
-export const SPACES_CACHE_KEY = "bb-plugin-erwin-activity:spaces-cache";
+export const SPACES_CACHE_KEY = "bb-plugin-sidebar:spaces-cache";
 const CACHE_KEY = SPACES_CACHE_KEY;
 
 export function readSpacesCache(): SpaceCatalog | null {

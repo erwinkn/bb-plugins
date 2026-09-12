@@ -43,7 +43,7 @@ export function BbDiffRenderer(props: PluginDiffRendererProps) {
       theme={theme}
       onStatusChange={(status) => {
         if (status.kind === "error") {
-          console.warn("[erwin-editor] falling back to BB's diff renderer:", status.message);
+          console.warn("[editor] falling back to BB's diff renderer:", status.message);
           setFailed(status.message);
         }
       }}

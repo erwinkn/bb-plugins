@@ -13,14 +13,14 @@ export interface ClientState {
   spaceId: string | null;
 }
 /** Local-storage key of this client's state. Other plugins may write `spaceId` here. */
-export const CLIENT_STATE_KEY = "bb-plugin-erwin-activity:v1";
+export const CLIENT_STATE_KEY = "bb-plugin-sidebar:v1";
 const KEY = CLIENT_STATE_KEY;
 /**
  * Same-window change signal. A `storage` event only fires in other windows, so
  * a plugin that writes this state in the same page dispatches this event after
  * the write; the store re-reads storage and re-renders.
  */
-export const CLIENT_STATE_EVENT = "bb-plugin-erwin-activity:state";
+export const CLIENT_STATE_EVENT = "bb-plugin-sidebar:state";
 const DEFAULT: ClientState = {
   groupBy: "status",
   sortBy: "updated",

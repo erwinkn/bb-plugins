@@ -167,7 +167,7 @@ describe("provider usage footer disclosure", () => {
     vi.stubGlobal("fetch", fetchMock);
     const app = await loadPluginApp(() => import("./app"));
     const mounted = await mountPluginContentScripts(app, {
-      pluginId: "erwin-provider-usage",
+      pluginId: "provider-usage-compact",
     });
     const item = app.experimentalSidebarFooterItems[0];
     expect(item).toMatchObject({
@@ -180,7 +180,7 @@ describe("provider usage footer disclosure", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/v1/plugins/erwin-provider-usage/rpc/getUsage",
+        "/api/v1/plugins/provider-usage-compact/rpc/getUsage",
         expect.objectContaining({
           method: "POST",
           body: JSON.stringify({

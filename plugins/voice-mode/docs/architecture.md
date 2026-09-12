@@ -88,7 +88,7 @@ ordinals to option values before any SDK call. Provider questions resolve with a
 `user_answer` resolution; Questions-plugin rounds are read and answered through
 `bb.sdk.plugins.callRpc` with one draft per question and one submit. Watches describe
 interactions before the transaction so rounds reach the inbox with their questions.
-`spaces-bridge.ts` switches the Threads sidebar of the erwin-activity plugin:
+`spaces-bridge.ts` switches the Threads sidebar of the sidebar plugin:
 it reads that plugin's cached space catalog and client state from local storage,
 resolves a spoken name with the same ranked matching, writes `spaceId` the way the
 plugin does, and dispatches the plugin's same-window state event so its store

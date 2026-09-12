@@ -309,7 +309,7 @@ describe("activity sidebar", () => {
     });
     expect(archive.getAttribute("aria-expanded")).toBe("false");
     expect(
-      parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
+      parseState(localStorage.getItem("bb-plugin-sidebar:v1"))
         .showArchives,
     ).toBe(true);
 
@@ -323,7 +323,7 @@ describe("activity sidebar", () => {
       slot.queryByRole("button", { name: "Archived", hidden: true }),
     ).toBeNull();
     expect(
-      parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
+      parseState(localStorage.getItem("bb-plugin-sidebar:v1"))
         .showArchives,
     ).toBe(false);
   });
@@ -371,7 +371,7 @@ describe("activity sidebar", () => {
         expect(restore).toHaveBeenCalledWith({ threadId: "old-0" }),
       );
       expect(
-        parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
+        parseState(localStorage.getItem("bb-plugin-sidebar:v1"))
           .expandedArchives,
       ).toEqual(["archive"]);
       fireEvent.click(slot.getByRole("button", { name: "Archived" }));
@@ -2099,7 +2099,7 @@ describe("activity sidebar", () => {
       );
       expect(rowTime.getAttribute("aria-label")).toMatch(/^Created /);
       expect(
-        parseState(localStorage.getItem("bb-plugin-erwin-activity:v1")).sortBy,
+        parseState(localStorage.getItem("bb-plugin-sidebar:v1")).sortBy,
       ).toBe("created");
       slot.unmount();
       slot = renderSlot(app.threadLists[0], props, {
@@ -2121,7 +2121,7 @@ describe("activity sidebar", () => {
     ).toBeTruthy();
     fireEvent.click(slot.getByRole("button", { name: "Draft" }));
     expect(slot.queryByText("Read reply")).toBeNull();
-    expect(localStorage.getItem("bb-plugin-erwin-activity:v1")).toContain(
+    expect(localStorage.getItem("bb-plugin-sidebar:v1")).toContain(
       "status:draft",
     );
     act(() => recordDraft("thread:done", false));
@@ -2143,11 +2143,11 @@ describe("activity sidebar", () => {
     const slot = mount();
     act(() => {
       localStorage.setItem(
-        "bb-plugin-erwin-activity:v1",
+        "bb-plugin-sidebar:v1",
         JSON.stringify({ ...parseState(null), hidden: ["done"] }),
       );
       window.dispatchEvent(
-        new StorageEvent("storage", { key: "bb-plugin-erwin-activity:v1" }),
+        new StorageEvent("storage", { key: "bb-plugin-sidebar:v1" }),
       );
     });
     expect(slot.queryByRole("region", { name: "Done" })).toBeNull();
@@ -2178,19 +2178,19 @@ describe("composer draft observation", () => {
         },
       },
     );
-    expect(localStorage.getItem("bb-plugin-erwin-activity:v1")).toContain(
+    expect(localStorage.getItem("bb-plugin-sidebar:v1")).toContain(
       "thread:draft-thread",
     );
-    expect(localStorage.getItem("bb-plugin-erwin-activity:v1")).not.toContain(
+    expect(localStorage.getItem("bb-plugin-sidebar:v1")).not.toContain(
       "Private",
     );
     await slot.behavior.setComposerText("");
-    expect(localStorage.getItem("bb-plugin-erwin-activity:v1")).not.toContain(
+    expect(localStorage.getItem("bb-plugin-sidebar:v1")).not.toContain(
       "thread:draft-thread",
     );
     await slot.behavior.setComposerText("Another draft");
     slot.unmount();
-    expect(localStorage.getItem("bb-plugin-erwin-activity:v1")).toContain(
+    expect(localStorage.getItem("bb-plugin-sidebar:v1")).toContain(
       "thread:draft-thread",
     );
   });
@@ -2206,7 +2206,7 @@ describe("composer draft observation", () => {
         },
       },
     );
-    expect(localStorage.getItem("bb-plugin-erwin-activity:v1")).toContain(
+    expect(localStorage.getItem("bb-plugin-sidebar:v1")).toContain(
       "new:project-1",
     );
   });

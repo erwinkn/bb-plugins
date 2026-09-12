@@ -153,7 +153,7 @@ lists All projects, each saved space, then Library — the saved-thread
 collection described below — and **Manage spaces…**, which goes to the
 plugin's **Spaces** page. The page also has its own row in BB's sidebar
 navigation (route
-`/plugins/erwin-activity/spaces`). There are no dialogs; every edit is a form
+`/plugins/sidebar/spaces`). There are no dialogs; every edit is a form
 on the page, and on phones the page shows one column at a time with a back
 link so it works like any other BB page.
 
@@ -201,7 +201,7 @@ link so it works like any other BB page.
   the header), and **Manage spaces…**.
 - Another plugin in the same page may switch the selected space: it writes
   `spaceId` in this client's stored state and dispatches the plugin's
-  `bb-plugin-erwin-activity:state` window event, after which the Threads list
+  `bb-plugin-sidebar:state` window event, after which the Threads list
   re-reads the state. Voice Mode uses this for "switch to the mobile space".
 - Space definitions are shared by every client of one BB server and stored in
   the plugin's key-value store as one document with a revision. A save that
@@ -226,7 +226,7 @@ link so it works like any other BB page.
 - Projects created outside Manage (BB's own panel, the CLI) are not added to
   any space automatically. SDK 0.4.47 has no project-creation event that
   identifies the originating client.
-- `bb activity spaces-export` prints the catalog. `bb activity spaces-import
+- `bb sidebar spaces-export` prints the catalog. `bb sidebar spaces-import
   '<json>'` replaces it and bumps the revision. Use them for backups and for
   moving definitions between BB servers.
 
@@ -270,7 +270,7 @@ by the plugin.
 Requires BB 0.42.1 or later and Plugin SDK 0.4.47 or later.
 
 ```sh
-cd plugins/activity
+cd plugins/sidebar
 npm ci --include=dev
 npm run typecheck
 npm test
@@ -280,7 +280,7 @@ bb plugin install .
 
 Select **Threads** in **Settings → Appearance → Sidebar** if BB does not select
 it automatically. The selection is per client. Use `bb plugin dev` for live
-development. To remove it, run `bb plugin remove erwin-activity`.
+development. To remove it, run `bb plugin remove sidebar`.
 
 Tests cover status precedence, date sorting in both views, navigation, storage validation,
 draft text and attachments, fallback UI, a disconnected realtime connection, space

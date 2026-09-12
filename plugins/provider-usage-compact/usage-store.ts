@@ -58,7 +58,7 @@ export function createUsageStore() {
     return (async () => {
       try {
         const response = await fetch(
-          "/api/v1/plugins/erwin-provider-usage/rpc/getUsage",
+          "/api/v1/plugins/provider-usage-compact/rpc/getUsage",
           {
             method: "POST",
             headers: { "content-type": "application/json" },

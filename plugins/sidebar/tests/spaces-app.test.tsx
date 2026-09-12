@@ -8,7 +8,7 @@ import { thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 const localStorage = window.localStorage;
-const CACHE_KEY = "bb-plugin-erwin-activity:spaces-cache";
+const CACHE_KEY = "bb-plugin-sidebar:spaces-cache";
 
 const projects = [
   { id: "project-1", name: "One", isPersonal: false },
@@ -232,7 +232,7 @@ describe("spaces", () => {
       "outside this scope",
     );
     expect(
-      parseState(localStorage.getItem("bb-plugin-erwin-activity:v1")),
+      parseState(localStorage.getItem("bb-plugin-sidebar:v1")),
     ).toMatchObject({ spaceId: "one" });
 
     fireEvent.click(slot.getByRole("button", { name: "Show all projects" }));

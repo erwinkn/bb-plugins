@@ -1,4 +1,4 @@
-/** Switch the Threads sidebar between saved spaces of the erwin-activity plugin.
+/** Switch the Threads sidebar between saved spaces of the sidebar plugin.
  * Both plugins run in one page. The activity plugin caches its space catalog and
  * keeps this client's selection in local storage; it re-reads that state on a
  * same-window event. Voice lists spaces from the cache, resolves a spoken name,
@@ -6,10 +6,10 @@
  */
 import { queryTokens, rank, resolveName, tokenize } from "./target-matching.ts";
 
-/** Keys owned by plugins/activity/lib. A test pins them to the activity plugin's exports. */
-export const SPACES_CACHE_KEY = "bb-plugin-erwin-activity:spaces-cache";
-export const CLIENT_STATE_KEY = "bb-plugin-erwin-activity:v1";
-export const CLIENT_STATE_EVENT = "bb-plugin-erwin-activity:state";
+/** Keys owned by plugins/sidebar/lib. A test pins them to the activity plugin's exports. */
+export const SPACES_CACHE_KEY = "bb-plugin-sidebar:spaces-cache";
+export const CLIENT_STATE_KEY = "bb-plugin-sidebar:v1";
+export const CLIENT_STATE_EVENT = "bb-plugin-sidebar:state";
 /** Spoken names that mean "no space": the whole thread list. */
 const ALL_PROJECTS = ["all", "all projects", "everything", "every project", "no space"];
 /** Reserved `spaceId` value for the activity plugin's saved-thread library scope. */

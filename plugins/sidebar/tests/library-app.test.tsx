@@ -136,7 +136,7 @@ describe("library scope", () => {
     // The whole family appears, including the child saved by inheritance.
     expect(rows(slot)).toEqual(["saved", "saved-child", "saved-new"]);
     expect(
-      parseState(localStorage.getItem("bb-plugin-erwin-activity:v1")),
+      parseState(localStorage.getItem("bb-plugin-sidebar:v1")),
     ).toMatchObject({ spaceId: "library" });
   });
 

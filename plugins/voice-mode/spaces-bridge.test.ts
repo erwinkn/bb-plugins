@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 
 /** The activity plugin's exported constants, read as text so this test needs none of its dependencies. */
 function activityConstant(file: string, name: string): string {
-  const source = readFileSync(new URL(`../activity/lib/${file}`, import.meta.url), "utf8");
+  const source = readFileSync(new URL(`../sidebar/lib/${file}`, import.meta.url), "utf8");
   return new RegExp(`export const ${name} = "([^"]+)"`).exec(source)?.[1] ?? "";
 }
 const ACTIVITY_CACHE = activityConstant("use-spaces.ts", "SPACES_CACHE_KEY"), ACTIVITY_STATE = activityConstant("client-state.ts", "CLIENT_STATE_KEY"), ACTIVITY_EVENT = activityConstant("client-state.ts", "CLIENT_STATE_EVENT"), ACTIVITY_LIBRARY = activityConstant("spaces.ts", "LIBRARY_SCOPE_ID");

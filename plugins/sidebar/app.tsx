@@ -668,7 +668,7 @@ export default definePluginApp((app) => {
     component: SpacesPage,
   });
   app.slots.experimental_threadList({
-    id: "activity",
+    id: "sidebar",
     title: "Threads",
     description:
       "Threads grouped by status: Needs Attention, Unread, Working, Draft, Done.",

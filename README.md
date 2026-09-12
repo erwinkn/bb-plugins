@@ -13,16 +13,16 @@ all reachable. See [BB MCP](plugins/bb-mcp/README.md).
 review panel, comments, revision history, and feedback to the original agent. See
 [Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
 
-`erwin-activity` adds a status-first thread list: Needs Attention, Unread,
+`sidebar` adds a status-first thread list: Needs Attention, Unread,
 Working, Draft, and Done. It also supports project grouping and spaces, named
 project selections shared by every client. See
-[Threads](plugins/activity/README.md) for local installation and draft limits.
+[Threads](plugins/sidebar/README.md) for local installation and draft limits.
 
-`erwin-editor` adds a Pierre file editor: a Files panel with a file tree,
+`editor` adds a Pierre file editor: a Files panel with a file tree,
 BB-matched syntax colors, a code theme picker, and an editable Changes tab.
 Both tabs share file buffers and safe saves. See [Editor](plugins/editor/README.md).
 
-`erwin-devin` adds **Devin** as a provider, with a native icon, sign-in
+`devin` adds **Devin** as a provider, with a native icon, sign-in
 help, executable setting, account usage, and live ACP model catalog. It preserves the provider
 ID `acp-devin`. See [Devin provider](plugins/devin/README.md) for configuration,
 verification, and migration from a custom ACP entry.
@@ -30,11 +30,11 @@ verification, and migration from a custom ACP entry.
 `voice-mode` adds one live voice model, background workers, task and subscription
 views, session history, and spoken thread updates. See [Voice Mode](plugins/voice-mode/README.md).
 
-`erwin-provider-usage` supplies the compact usage popup. See [Provider usage
-compact](plugins/provider-usage/README.md) for installation and rollback.
+`provider-usage-compact` supplies the compact usage popup. See [Provider usage
+compact](plugins/provider-usage-compact/README.md) for installation and rollback.
 
-`erwin-plugin-nav` hides the ellipsis button on plugin sidebar rows, including
-Automations. See [Hide plugin nav menus](plugins/plugin-nav/README.md).
+`remove-plugin-ellipsis` hides the ellipsis button on plugin sidebar rows, including
+Automations. See [Hide plugin nav menus](plugins/remove-plugin-ellipsis/README.md).
 
 ## Install
 
@@ -45,7 +45,7 @@ token in the repository URL.
 Replace `COMMIT_SHA` with the full reviewed commit SHA:
 
 ```sh
-bb plugin install git:https://github.com/erwinkn/bb-plugins.git@COMMIT_SHA --plugin erwin-devin
+bb plugin install git:https://github.com/erwinkn/bb-plugins.git@COMMIT_SHA --plugin devin
 ```
 
 Follow the migration steps first if a custom ACP entry already owns
@@ -166,10 +166,10 @@ directory, settings, and secrets beforehand and verify them afterward;
 For example, after confirming that a plugin has no server-side data:
 
 ```sh
-bb plugin source erwin-devin --json
-bb plugin remove erwin-devin
-bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin erwin-devin --yes
-bb plugin source erwin-devin --json
+bb plugin source devin --json
+bb plugin remove devin
+bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin devin --yes
+bb plugin source devin --json
 ```
 
 After a new push to an installed Git branch, use `bb plugin update <id> --yes`.
@@ -186,11 +186,11 @@ commit. Update that clone explicitly for each preview. After merge, return it
 to `main` and rebuild, or move it back to its recorded normal path. A managed
 Git source switch still needs the upstream API described below.
 
-`erwin-activity` stores its space catalog in `bb.storage.kv` (table
+`sidebar` stores its space catalog in `bb.storage.kv` (table
 `plugin_kv` in `bb.db`), so before changing its source, run
-`bb activity spaces-export` and keep the JSON; after the new source is
+`bb sidebar spaces-export` and keep the JSON; after the new source is
 running, compare it with a fresh export and restore it with
-`bb activity spaces-import '<json>'` if needed. Observed on BB 0.42.1:
+`bb sidebar spaces-import '<json>'` if needed. Observed on BB 0.42.1:
 `bb plugin remove` left `plugin_kv` rows and `~/.bb/plugins/<id>/data.db` of
 removed plugins in place, matching its documented scope (settings, secrets,
 schedules). Treat that as a courtesy, not a guarantee; the export is the
@@ -288,7 +288,7 @@ Hide from sidebar and Customize sidebar. Those actions stay available from
 right-click and More > Customize sidebar. There is no per-row or global
 visibility option.
 
-`erwin-plugin-nav` hides the button with a content script on
+`remove-plugin-ellipsis` hides the button with a content script on
 `data-sidebar-navigation-item` / `.bb-sidebar-hover-actions`. Automations is
 special-cased by BB to `__bb__/automations` but still uses the plugin row.
 Thread rows and built-in New thread / Search / Extensions use different
@@ -463,13 +463,13 @@ Verified against BB 0.42.1: `plugin source` is read-only, `plugin update` keeps
 the current ref, and install refuses an existing managed plugin ID from a
 different ref. Removal deletes settings, secrets, and schedules.
 
-Rechecked on 2026-09-09 for `erwin-editor`: installing the HTML-preview
+Rechecked on 2026-09-09 for `editor`: installing the HTML-preview
 worktree over its Git `main` installation returned HTTP 422, with
-`plugin id "erwin-editor" is already installed ...; remove it first`.
+`plugin id "editor" is already installed ...; remove it first`.
 The Editor has saved settings, so this command could not activate the change.
 The user then explicitly authorized removal and reinstallation. After backing
 up the plugin directory and exporting its settings, installation from the
-worktree succeeded with the same `erwin-editor` ID. All seven settings were
+worktree succeeded with the same `editor` ID. All seven settings were
 restored and verified. This was an explicit exception, not an in-place switch.
 
 Status: no upstream issue filed. Suggested issue title:
@@ -512,7 +512,7 @@ File the request in [BB issues](https://github.com/get-bb/bb/issues).
 ### Usage popup: compact header and visible provider tabs
 
 The original popup belongs to BB's built-in `provider-usage` plugin. This
-collection now provides `erwin-provider-usage` as a local replacement through
+collection now provides `provider-usage-compact` as a local replacement through
 BB's footer API. The same layout changes can still go upstream in BB's
 `plugins/provider-usage` source.
 
@@ -540,7 +540,7 @@ Requested changes:
   provider list or add a separate Devin usage request.
 
 Verified on 2026-09-06 against the running app: `bb provider list` reports
-`acp-devin`, owned by `erwin-devin`, with `maintenance.usage: true`. A forced
+`acp-devin`, owned by `devin`, with `maintenance.usage: true`. A forced
 `provider-usage` `getUsage` RPC for the connected machine returned all four
 providers and valid Devin usage with `status: "ok"`, a plan label, and a weekly
 window. The backend already loads usage-capable providers through
@@ -553,7 +553,7 @@ providers, narrow popup widths, keyboard tab selection, machine switching,
 refresh, outside-click dismissal, Escape, and visible focus indicators. Verify
 that Devin's existing usage window renders when its tab is selected.
 
-Status: implemented in [Provider usage compact](plugins/provider-usage/README.md).
+Status: implemented in [Provider usage compact](plugins/provider-usage-compact/README.md).
 No upstream issue filed. The built-in plugin can be enabled again to roll back.
 Live checking also found that BB handles Escape but does not handle outside
 clicks for footer disclosures. Our plugin adds a scoped listener for that action;

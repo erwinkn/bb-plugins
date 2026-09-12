@@ -1,7 +1,7 @@
-# bb-plugin-erwin-editor
+# bb-plugin-editor
 
 A Pierre file editor for BB with **Files** and **Changes** tabs that share one
-code theme, one file buffer and one save queue. Plugin id: `erwin-editor`.
+code theme, one file buffer and one save queue. Plugin id: `editor`.
 Disable the bundled `monaco-editor` plugin before installing this one.
 
 ## Files
@@ -118,7 +118,7 @@ npm test
 ```
 
 Install with
-`bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin erwin-editor`
+`bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin editor`
 and follow the repository's draft-PR and branch-install procedure for changes.
 `assets/pierre/` contains the committed browser editor, worker, language and
 theme chunks, font, and license notices. Installation and first use serve

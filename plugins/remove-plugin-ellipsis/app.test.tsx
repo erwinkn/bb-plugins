@@ -57,7 +57,7 @@ describe("plugin nav menus", () => {
   it("hides the ellipsis on every plugin nav row and leaves other menus", async () => {
     fixture();
     const scripts = await mountPluginContentScripts(app, {
-      pluginId: "erwin-plugin-nav",
+      pluginId: "remove-plugin-ellipsis",
       generation: 1,
     });
     try {

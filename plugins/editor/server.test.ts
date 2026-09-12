@@ -36,11 +36,11 @@ test("missing shipped assets fail without running a build", (t) => {
 });
 
 test("the assets RPC serves the committed browser and worker files", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   const assets = rpcContract.assets.output.parse(await harness.behavior.callRpc("assets", null));
-  const routeBase = assets.baseUrl.replace("/api/v1/plugins/erwin-editor/http", "");
+  const routeBase = assets.baseUrl.replace("/api/v1/plugins/editor/http", "");
   for (const entry of ["editor.js", "worker.js"]) {
     const response = await harness.behavior.fetchHttp("GET", `${routeBase}/${entry}`);
     assert.equal(response.status, 200);
@@ -51,7 +51,7 @@ test("the assets RPC serves the committed browser and worker files", async (t) =
 });
 
 test("the RPC contract validates source shapes strictly", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   await assert.rejects(() => harness.behavior.callRpc("read", { path: "a.ts", source: { kind: "nope" } }));
@@ -66,7 +66,7 @@ test("the RPC contract validates source shapes strictly", async (t) => {
 });
 
 test("workspace without a thread or project asks for a project", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   await assert.rejects(() => harness.behavior.callRpc("workspace", { threadId: null, projectId: null }), /Select a project/);
@@ -74,7 +74,7 @@ test("workspace without a thread or project asks for a project", async (t) => {
 
 test("settings and the picker share predefined themes without changing BB's global theme", async (t) => {
   let { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     settings: { codePalette: "conductor" }, // An older installation falls back to Follow BB.
     sdk: { theme: { get: async () => ({ themeId: "default" }) } },
   });
@@ -99,7 +99,7 @@ test("settings and the picker share predefined themes without changing BB's glob
 });
 
 test("read, write, and tree refuse paths that leave the workspace", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   const source = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
@@ -117,7 +117,7 @@ test("read, write, and tree refuse paths that leave the workspace", async (t) =>
 });
 
 test("create refuses parent traversal and setSetting refuses unknown keys", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   const source = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
@@ -139,7 +139,7 @@ test("tree lists one level locally, prefetches the next, and search scans the fi
   writeFileSync(path.join(root, "src", "deep", "nested.ts"), "");
   writeFileSync(path.join(root, "readme.md"), "");
 
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   const source = { kind: "thread-storage", threadId: "thr_x", environmentId: null, projectId: null };
@@ -167,7 +167,7 @@ test("tree and search go through the daemon for another host's workspace", async
   const searches: unknown[] = [];
   const dirCalls: (string | undefined)[] = [];
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: {
       system: { config: async () => ({ primaryHostId: "host_primary", dataDir: "/data" }) },
       projects: {
@@ -276,7 +276,7 @@ async function fileWriteHost(initialContent: string | null, createDuringRead = f
   let disk = initialContent;
   const digest = () => disk === null ? null : createHash("sha256").update(disk).digest("hex");
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: {
       environments: { get: async () => environment },
       files: {
@@ -338,7 +338,7 @@ test("create writes only an absent file and preserves a file created after its c
 
 test("previewBase leases the workspace root on the file's host and refuses paths outside it", async (t) => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: {
       environments: { get: async () => environment },
       files: { createPreview: async () => ({ baseUrl: "/api/v1/files/preview/lease1", expiresAtMs: 1_000 }) },
@@ -390,7 +390,7 @@ async function diffHost(options: {
   const entry = { ...modifiedEntry, ...options.entry };
   const newContent = options.newContent ?? "new\n";
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: {
       threads: { get: async () => makeThreadResponse({ environmentId: environment.id, projectId: environment.projectId }) },
       environments: {
@@ -713,7 +713,7 @@ test("deleting a new file requires confirmation and never removes recursively", 
 test("watch registers the workspace root on its host, relays changes with sequence numbers, and stops when unwatched", async (t) => {
   const hostCalls: { method: string; input: unknown; hostId: string }[] = [];
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: { environments: { get: async () => environment } },
     experimental_callHostRpc: async (call) => {
       hostCalls.push(call);
@@ -763,7 +763,7 @@ test("watch reports no root when the host cannot watch, and keeps the registrati
   let online = false;
   const hostCalls: unknown[] = [];
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: { environments: { get: async () => environment } },
     experimental_callHostRpc: async (call) => {
       if (!online) throw new Error("host offline");

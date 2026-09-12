@@ -1,6 +1,6 @@
 # Provider usage compact
 
-`erwin-provider-usage` replaces BB's built-in usage popup with a compact header.
+`provider-usage-compact` replaces BB's built-in usage popup with a compact header.
 The machine button shows an icon. Its tooltip and accessible label identify the
 selected machine. All header controls are 32 pixels high. Provider tabs wrap when
 space is limited. Click outside the popup or press Escape to close it.
@@ -23,15 +23,15 @@ bb plugin install path:. --yes
 bb plugin disable provider-usage
 ```
 
-Confirm that `erwin-provider-usage` is running before disabling the built-in
+Confirm that `provider-usage-compact` is running before disabling the built-in
 plugin. Both plugins use separate IDs. Installation does not change BB's app
 bundle. Keep this directory available while the local plugin is installed.
-After source changes, build and run `bb plugin reload erwin-provider-usage`.
+After source changes, build and run `bb plugin reload provider-usage-compact`.
 
 ## Switch back
 
 ```sh
-bb plugin disable erwin-provider-usage
+bb plugin disable provider-usage-compact
 bb plugin enable provider-usage
 ```
 

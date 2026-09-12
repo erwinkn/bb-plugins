@@ -153,7 +153,7 @@ export interface DraftStore {
   remove(key: string): void;
 }
 
-const DRAFT_PREFIX = "erwin-editor:draft:v1:";
+const DRAFT_PREFIX = "editor:draft:v1:";
 const DRAFT_DEBOUNCE_MS = 400;
 /** Bigger buffers are not kept for a later session; the store cannot hold them. */
 const MAX_DRAFT_CHARS = 1_000_000;

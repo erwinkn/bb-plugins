@@ -15,7 +15,7 @@ See the [official Devin CLI documentation](https://docs.devin.ai/work-with-devin
 The default launch is `devin acp`. If needed, set an absolute executable path:
 
 ```sh
-bb plugin config erwin-devin set command /absolute/path/to/devin
+bb plugin config devin set command /absolute/path/to/devin
 ```
 
 The executable must exist on the execution machine. The setting is shared across
@@ -33,16 +33,16 @@ may contain machine paths or credentials and must not be committed.
 2. Save the existing `provider-acp` customAgents setting privately. Remove only
    the entry whose slug is `devin` through the supported plugin settings API.
    Preserve all other custom agents. Do not disable the entire ACP plugin.
-3. Install `erwin-devin` and set its command to the previous executable path.
+3. Install `devin` and set its command to the previous executable path.
    The current plugin supports the normal `acp` argument and inherited process
    environment. If the old entry has custom arguments, env, cwd, or dialect
    options, adapt and test those requirements before removing it.
-4. Verify `bb provider list` reports `acp-devin` owned by `erwin-devin`, then
+4. Verify `bb provider list` reports `acp-devin` owned by `devin`, then
    inspect `bb provider models acp-devin` and run a small test conversation.
 5. Disable the earlier `erwin-provider-branding` and `devin-branding` icon
    plugins after the native provider works. Keep their source/settings for rollback.
 
-If installation or model discovery fails, disable `erwin-devin` and restore only
+If installation or model discovery fails, disable `devin` and restore only
 the original Devin custom entry. Do not overwrite other agents added meanwhile.
 No automatic installation hook edits another plugin's settings.
 

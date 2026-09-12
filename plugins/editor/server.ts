@@ -27,7 +27,7 @@ const ASSET_CONTENT_TYPES: Record<string, string> = {
   ".map": "application/json; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
 };
-const PACKAGE_NAME = "bb-plugin-erwin-editor";
+const PACKAGE_NAME = "bb-plugin-editor";
 /** BB ids are `<prefix>_<alphanumerics>`; a thread id becomes a directory name under thread storage, so nothing path-like passes. */
 const BB_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 

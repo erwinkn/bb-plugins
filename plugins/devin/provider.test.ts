@@ -19,7 +19,7 @@ test("Devin retains its provider ID and uses a native icon and public ACP launch
 });
 
 test("executable setting re-registers one provider; invalid settings preserve it", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-devin", experimental_hostEntry: true });
+  const { bb, harness } = createFakePluginHost({ pluginId: "devin", experimental_hostEntry: true });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   assert.equal(harness.inspection.registrations.providerRegistrations.length, 1);

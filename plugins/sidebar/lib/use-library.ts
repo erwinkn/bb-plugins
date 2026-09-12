@@ -14,7 +14,7 @@ import {
 
 // The last document this client saw. It filters the active view immediately
 // on the next load, before the server answers.
-const CACHE_KEY = "bb-plugin-erwin-activity:library-cache";
+const CACHE_KEY = "bb-plugin-sidebar:library-cache";
 
 function readLibraryCache(): LibraryDoc | null {
   try {

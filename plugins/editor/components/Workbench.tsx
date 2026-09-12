@@ -89,7 +89,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     rpc
       .call("theme", null)
       .then((theme) => setThemePicker((state) => (state === null ? null : { current: theme.pair })))
-      .catch((error: unknown) => console.warn("[erwin-editor] could not read BB's theme", error));
+      .catch((error: unknown) => console.warn("[editor] could not read BB's theme", error));
   }, [rpc]);
   const [focusNonce, setFocusNonce] = useState(0);
   const treeRequested = useRef(false);

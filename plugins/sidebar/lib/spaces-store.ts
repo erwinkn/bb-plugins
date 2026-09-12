@@ -53,19 +53,19 @@ export function registerSpaces(bb: BbPluginApi) {
       store.save(expectedRevision, spaces),
   });
   bb.cli.register({
-    name: "activity",
+    name: "sidebar",
     summary:
       "Threads sidebar spaces: named project selections shared by all clients",
     commands: [
       {
         name: "spaces-export",
         summary: "Print the space catalog as JSON",
-        usage: "bb activity spaces-export",
+        usage: "bb sidebar spaces-export",
       },
       {
         name: "spaces-import",
         summary: "Replace the space catalog with a JSON document",
-        usage: "bb activity spaces-import '<json from spaces-export>'",
+        usage: "bb sidebar spaces-import '<json from spaces-export>'",
       },
     ],
     async run(argv) {
@@ -74,7 +74,7 @@ export function registerSpaces(bb: BbPluginApi) {
         return {
           exitCode: 2,
           stderr:
-            "Usage: bb activity spaces-export | bb activity spaces-import '<json>'\n",
+            "Usage: bb sidebar spaces-export | bb sidebar spaces-import '<json>'\n",
         };
       if (action === "spaces-export")
         return {
