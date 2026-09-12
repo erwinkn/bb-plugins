@@ -767,6 +767,70 @@ describe("activity sidebar", () => {
     ).toHaveLength(1);
   });
 
+  it("lists No project last, above Archived, in Project view", async () => {
+    updateState((state) => ({
+      ...state,
+      groupBy: "project",
+      showArchives: true,
+    }));
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects: [
+          { id: "personal", name: "Personal", isPersonal: true },
+          { id: "project-z", name: "Zeta", isPersonal: false },
+          { id: "project-a", name: "Alpha", isPersonal: false },
+        ],
+        threads: [
+          thread({ id: "t-personal", projectId: "personal" }),
+          thread({ id: "t-z", projectId: "project-z" }),
+          thread({ id: "t-a", projectId: "project-a" }),
+        ],
+      },
+      rpc: { listArchived: async () => archiveRows.slice(0, 1) },
+    });
+    await slot.findByRole("region", { name: "Archived" });
+    expect(
+      slot
+        .getAllByRole("region")
+        .map((region) => region.getAttribute("aria-label")),
+    ).toEqual(["Alpha", "Zeta", "No project", "Archived"]);
+  });
+
+  it("uses a single-line row under No project", () => {
+    updateState((state) => ({ ...state, groupBy: "project" }));
+    const environment = {
+      id: "env",
+      name: "Local",
+      branchName: "main",
+      workspaceDisplayKind: "managed-worktree" as const,
+    };
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: {
+        projects: [
+          { id: "personal", name: "Personal", isPersonal: true },
+          { id: "project-1", name: "One", isPersonal: false },
+        ],
+        threads: [
+          thread({ id: "loose", projectId: "personal", environment }),
+          thread({ id: "grouped", projectId: "project-1", environment }),
+        ],
+      },
+    });
+    const row = (id: string) =>
+      slot.container.querySelector(
+        `[data-sidebar-thread-id="${id}"]`,
+      ) as HTMLElement;
+    const lines = (id: string) =>
+      Array.from(row(id).children).filter((e) => e.tagName === "SPAN");
+    // No project rows hold the title and the age on one line; the branch is
+    // omitted because a stray worktree name means nothing there.
+    expect(lines("loose")).toHaveLength(1);
+    expect(row("loose").textContent).not.toContain("main");
+    expect(lines("loose")[0]!.querySelector("time")).not.toBeNull();
+    expect(lines("grouped")).toHaveLength(2);
+    expect(row("grouped").textContent).toContain("main");
+  });
+
   it.each([
     ["Needs Attention", 5, { hasPendingInteraction: true }],
     ["Unread", 5, { isUnread: true }],

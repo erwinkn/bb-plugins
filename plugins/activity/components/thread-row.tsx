@@ -41,6 +41,7 @@ export function ThreadRow({
   active,
   now,
   sortBy,
+  singleLine = false,
   libraryAction,
   onNavigate,
   onError,
@@ -57,6 +58,11 @@ export function ThreadRow({
   active: boolean;
   now: number;
   sortBy: SortBy;
+  /**
+   * True renders only the title line with the timestamp: No project rows have
+   * no project, branch, or pull request metadata worth a second line.
+   */
+  singleLine?: boolean;
   /**
    * "save" offers Save to Library, "remove" offers Remove from Library, and
    * null hides the entry — e.g. a child shown in the library only through a
@@ -107,6 +113,15 @@ export function ThreadRow({
   const title = threadTitle(thread);
   const branch = thread.environment?.branchName;
   const timestamp = sortBy === "created" ? thread.createdAt : thread.updatedAt;
+  const age = (
+    <time
+      dateTime={new Date(timestamp).toISOString()}
+      aria-label={`${sortBy === "created" ? "Created" : "Updated"} ${new Date(timestamp).toLocaleString()}`}
+      className={`shrink-0 tabular-nums ${singleLine ? "text-xs leading-4 text-[var(--subtle-foreground)]" : ""}`}
+    >
+      {relativeAge(timestamp, now)}
+    </time>
+  );
   const open = (split = false) => {
     if (thread.isArchived) navigate.toThread(thread.id);
     else actions.open(thread.id, { split });
@@ -229,7 +244,7 @@ export function ThreadRow({
                   if (suppressClick.current && event.detail !== 0) return;
                   open(event.metaKey || event.ctrlKey);
                 }}
-                className="flex min-w-0 flex-1 select-none flex-col rounded-md py-2 pr-2 text-left no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className={`flex min-w-0 flex-1 select-none flex-col rounded-md ${singleLine ? "py-1.5" : "py-2"} pr-2 text-left no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring`}
                 style={{
                   paddingLeft: `${nested ? 1.75 + (depth - 1) * 1.5 : 0.5}rem`,
                 }}
@@ -244,7 +259,7 @@ export function ThreadRow({
                     strokeWidth="1.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className="absolute top-3 size-3 text-[var(--subtle-foreground)]"
+                    className={`absolute ${singleLine ? "top-2.5" : "top-3"} size-3 text-[var(--subtle-foreground)]`}
                     style={{ left: `${0.5 + (depth - 1) * 1.5}rem` }}
                   >
                     <path d="M3 3v5a2 2 0 0 0 2 2h8m-3-3 3 3-3 3" />
@@ -272,46 +287,43 @@ export function ThreadRow({
                       )}
                     </span>
                   )}
+                  {singleLine && age}
                 </span>
-                <span className="mt-0.5 flex min-w-0 items-center gap-2 text-xs leading-4 text-[var(--subtle-foreground)]">
-                  <span
-                    className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
-                  >
-                    {thread.parentThreadId && !nested ? "↳ " : ""}
-                    {pullRequest && (
-                      <span
-                        data-thread-pull-request=""
-                        className="flex shrink-0 items-center gap-1"
-                      >
-                        <PullRequestIcon pullRequest={pullRequest} />
-                        <span className="tabular-nums">
-                          #{pullRequest.number}
+                {!singleLine && (
+                  <span className="mt-0.5 flex min-w-0 items-center gap-2 text-xs leading-4 text-[var(--subtle-foreground)]">
+                    <span
+                      className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
+                    >
+                      {thread.parentThreadId && !nested ? "↳ " : ""}
+                      {pullRequest && (
+                        <span
+                          data-thread-pull-request=""
+                          className="flex shrink-0 items-center gap-1"
+                        >
+                          <PullRequestIcon pullRequest={pullRequest} />
+                          <span className="tabular-nums">
+                            #{pullRequest.number}
+                          </span>
                         </span>
-                      </span>
-                    )}
-                    {showProject && (
-                      <>
-                        {pullRequest && <span aria-hidden="true">·</span>}
-                        <span className="shrink-0">{project}</span>
-                      </>
-                    )}
-                    {branch && (
-                      <>
-                        {(pullRequest || showProject) && (
-                          <span aria-hidden="true">·</span>
-                        )}
-                        <span className="shrink-0">{branch}</span>
-                      </>
-                    )}
+                      )}
+                      {showProject && (
+                        <>
+                          {pullRequest && <span aria-hidden="true">·</span>}
+                          <span className="shrink-0">{project}</span>
+                        </>
+                      )}
+                      {branch && (
+                        <>
+                          {(pullRequest || showProject) && (
+                            <span aria-hidden="true">·</span>
+                          )}
+                          <span className="shrink-0">{branch}</span>
+                        </>
+                      )}
+                    </span>
+                    {age}
                   </span>
-                  <time
-                    dateTime={new Date(timestamp).toISOString()}
-                    aria-label={`${sortBy === "created" ? "Created" : "Updated"} ${new Date(timestamp).toLocaleString()}`}
-                    className="shrink-0 tabular-nums"
-                  >
-                    {relativeAge(timestamp, now)}
-                  </time>
-                </span>
+                )}
               </a>
             </Menu.Trigger>
           </ThreadInfo>
