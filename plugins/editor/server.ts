@@ -166,7 +166,6 @@ export const rpcContract = defineRpcContract({
     }).strict(),
     output: z.object({
       matches: z.array(z.object({ path: z.string() })),
-      truncated: z.boolean(),
     }),
   },
   write: {
@@ -844,8 +843,8 @@ export default async function plugin(bb: BbPluginApi) {
       const clean = subpath.replace(/^\/+|\/+$/g, "");
       if (await isLocalWorkspace(target)) {
         const entries = await prefetchLevels(
-          (await listLocalTree(target.rootPath, clean)).entries,
-          (relative) => listLocalTree(target.rootPath, relative).then((listing) => listing.entries),
+          await listLocalTree(target.rootPath, clean),
+          (relative) => listLocalTree(target.rootPath, relative),
         );
         return { root: target.rootPath, entries };
       }
@@ -874,7 +873,7 @@ export default async function plugin(bb: BbPluginApi) {
     async search({ source, query, limit = 50 }) {
       const target = await resolveTarget(source, ".");
       const trimmed = query.trim();
-      if (trimmed === "") return { matches: [], truncated: false };
+      if (trimmed === "") return { matches: [] };
       if (await isLocalWorkspace(target)) {
         const files = await localFilesIndex(target.rootPath);
         const scored: { path: string; score: number }[] = [];
@@ -883,7 +882,7 @@ export default async function plugin(bb: BbPluginApi) {
           if (score !== null) scored.push({ path: file, score });
         }
         scored.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
-        return { matches: scored.slice(0, limit).map(({ path }) => ({ path })), truncated: false };
+        return { matches: scored.slice(0, limit).map(({ path }) => ({ path })) };
       }
       // Another host: the daemon fuzzy-searches it and ranks the matches.
       const hostId = await hostOf(target);
@@ -898,7 +897,6 @@ export default async function plugin(bb: BbPluginApi) {
       });
       return {
         matches: result.paths.map((entry) => ({ path: entry.path.replace(/^\.?\/+/, "") })),
-        truncated: result.truncated,
       };
     },
 

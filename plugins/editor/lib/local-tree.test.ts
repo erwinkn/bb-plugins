@@ -31,7 +31,7 @@ async function fixture(): Promise<string> {
 test("listLocalTree lists one level, includes dotfiles, hides VCS internals, and defers every directory", async (t) => {
   const root = await fixture();
   t.after(() => rm(root, { recursive: true, force: true }));
-  const { entries } = await listLocalTree(root, "");
+  const entries = await listLocalTree(root, "");
   const byPath = new Map(entries.map((entry) => [entry.path, entry]));
   assert.deepEqual(
     entries.filter((entry) => entry.kind === "directory"),
@@ -46,17 +46,17 @@ test("listLocalTree lists one level, includes dotfiles, hides VCS internals, and
   assert.ok(!byPath.has(".DS_Store"));
   // A symlink inside the workspace lists; one that leaves it lists nothing.
   assert.ok(!byPath.has("escape"));
-  assert.deepEqual(await listLocalTree(root, "escape"), { entries: [] });
+  assert.deepEqual(await listLocalTree(root, "escape"), []);
   assert.deepEqual(byPath.get("index-link.ts"), { path: "index-link.ts", kind: "file" });
   assert.ok(!byPath.has("leak.txt"));
   // Each deferred directory lists one level on request, with
   // workspace-relative paths and its own directories deferred.
   const inner = await listLocalTree(root, "node_modules");
-  assert.deepEqual(inner.entries, [{ path: "node_modules/pkg", kind: "directory", deferred: true }]);
+  assert.deepEqual(inner, [{ path: "node_modules/pkg", kind: "directory", deferred: true }]);
   const deeper = await listLocalTree(root, "node_modules/pkg");
-  assert.deepEqual(deeper.entries, [{ path: "node_modules/pkg/index.js", kind: "file" }]);
+  assert.deepEqual(deeper, [{ path: "node_modules/pkg/index.js", kind: "file" }]);
   const linked = await listLocalTree(root, "src-link");
-  assert.deepEqual(linked.entries, [{ path: "src-link/index.ts", kind: "file" }, { path: "src-link/loop", kind: "directory", deferred: true }]);
+  assert.deepEqual(linked, [{ path: "src-link/index.ts", kind: "file" }, { path: "src-link/loop", kind: "directory", deferred: true }]);
 });
 
 test("listLocalFiles walks everything the search index needs, once per real directory", async (t) => {

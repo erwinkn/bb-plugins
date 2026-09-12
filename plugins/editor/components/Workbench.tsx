@@ -127,14 +127,14 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   // Quick open's empty-query list: where the user was, latest first.
   const recentPaths = useMemo(() => [...new Set([...history.paths].reverse())], [history]);
 
-  // Deferred directories load on expand; one request per path until it lands.
-  const deferredRequests = useRef(new Set<string>());
-  // A refresh starts a new generation; deferred results from before it are dropped.
+  // Directory listings load on expand; one request per path until it lands.
+  const listingRequests = useRef(new Set<string>());
+  // A refresh starts a new generation; in-flight results from before it are dropped.
   const treeGeneration = useRef(0);
   const loadTree = useCallback(() => {
     treeGeneration.current += 1;
     const generation = treeGeneration.current;
-    deferredRequests.current.clear();
+    listingRequests.current.clear();
     setTree((current) => ({ ...current, isLoading: true, error: null }));
     return rpc
       .call("tree", { source })
@@ -151,8 +151,8 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   const loadDirectory = useCallback(
     (subpath: string) => {
-      if (deferredRequests.current.has(subpath)) return;
-      deferredRequests.current.add(subpath);
+      if (listingRequests.current.has(subpath)) return;
+      listingRequests.current.add(subpath);
       const generation = treeGeneration.current;
       rpc
         .call("tree", { source, subpath })
@@ -162,7 +162,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         })
         .catch((error: unknown) => {
           if (generation !== treeGeneration.current) return;
-          deferredRequests.current.delete(subpath);
+          listingRequests.current.delete(subpath);
           toast.error(error instanceof Error ? error.message : `Could not list ${subpath}`);
         });
     },
@@ -365,7 +365,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         activePath={activePath}
         onOpenFile={openFile}
         onRefresh={() => void loadTree()}
-        onExpandDeferred={loadDirectory}
+        onLoadDirectory={loadDirectory}
         onCreate={createEntry}
         onRename={renameEntry}
         onDelete={deleteEntry}

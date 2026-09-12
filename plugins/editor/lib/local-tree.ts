@@ -14,14 +14,7 @@
 import { opendir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Stats } from "node:fs";
-
-export interface TreeEntry {
-  /** Workspace-relative POSIX path. */
-  path: string;
-  kind: "file" | "directory";
-  /** Directory whose contents were not listed; expand it to list them. */
-  deferred?: true;
-}
+import type { FlatEntry } from "./file-tree.js";
 
 const EXCLUDED_NAMES = new Set([".git", ".hg", ".svn", ".DS_Store", "Thumbs.db"]);
 
@@ -34,8 +27,8 @@ const SEARCH_SKIPPED_NAMES = new Set([...EXCLUDED_NAMES, "node_modules", ".bb"])
  * on demand, so a workspace of any size costs one directory read. The
  * directory named by `subpath` is not an entry itself.
  */
-export async function listLocalTree(rootPath: string, subpath: string): Promise<{ entries: TreeEntry[] }> {
-  const entries: TreeEntry[] = [];
+export async function listLocalTree(rootPath: string, subpath: string): Promise<FlatEntry[]> {
+  const entries: FlatEntry[] = [];
   const start = subpath === "" ? rootPath : path.join(rootPath, ...subpath.split("/"));
   // The listing reads the resolved directory, never the path that named it,
   // so a symlink swapped after the check cannot lead it elsewhere. A
@@ -45,15 +38,15 @@ export async function listLocalTree(rootPath: string, subpath: string): Promise<
   try {
     root = await realpath(rootPath);
   } catch {
-    return { entries };
+    return entries;
   }
   const real = await resolveInside(root, start);
-  if (real === null) return { entries };
+  if (real === null) return entries;
   let handle;
   try {
     handle = await opendir(real);
   } catch {
-    return { entries };
+    return entries;
   }
   for await (const dirent of handle) {
     if (EXCLUDED_NAMES.has(dirent.name)) continue;
@@ -79,7 +72,7 @@ export async function listLocalTree(rootPath: string, subpath: string): Promise<
     if (dirent.isFile()) entries.push({ path: relative, kind: "file" });
   }
   entries.sort((left, right) => left.path.localeCompare(right.path));
-  return { entries };
+  return entries;
 }
 
 /**

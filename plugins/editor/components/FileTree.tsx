@@ -18,7 +18,7 @@ export interface FileTreeProps {
   onOpenFile: (path: string, options: { newTab: boolean }) => void;
   onRefresh: () => void;
   /** Called when an expanded directory's listing could return more data. */
-  onExpandDeferred: (path: string) => void;
+  onLoadDirectory: (path: string) => void;
   /** Resolves when the entry exists; rejects with a message to show inline. */
   onCreate: (path: string, kind: CreateKind) => Promise<void>;
   onRename: (path: string, newPath: string, kind: CreateKind) => Promise<void>;
@@ -46,7 +46,7 @@ export function FileTree({
   activePath,
   onOpenFile,
   onRefresh,
-  onExpandDeferred,
+  onLoadDirectory,
   onCreate,
   onRename,
   onDelete,
@@ -106,8 +106,8 @@ export function FileTree({
     return paths;
   }, [tree]);
   useEffect(() => {
-    for (const path of effectiveExpanded) if (expandablePaths.has(path)) onExpandDeferred(path);
-  }, [expandablePaths, effectiveExpanded, onExpandDeferred]);
+    for (const path of effectiveExpanded) if (expandablePaths.has(path)) onLoadDirectory(path);
+  }, [expandablePaths, effectiveExpanded, onLoadDirectory]);
 
   const toggle = (path: string) => {
     setExpanded((current) => {
