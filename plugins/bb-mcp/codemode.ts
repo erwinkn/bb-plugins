@@ -264,8 +264,10 @@ export async function runCode(opts: { code: string; paths: string[]; dispatch: D
       // aborts in-flight host calls, and sdkCall refuses new dispatches.
       const ctrl = new AbortController();
       const cleanup = () => { clearTimeout(timer); opts.signal?.removeEventListener("abort", onAbort); };
-      const finish = (fn: () => void) => { if (settled) return; settled = true; slotOwned = true; ctrl.abort(); cleanup(); void worker.terminate().finally(releaseSlot); fn(); };
-      const onAbort = () => finish(() => reject(new ToolError("execution_aborted", "The MCP request was cancelled.")));
+      const finish = (fn: () => void) => { if (settled) return; settled = true; slotOwned = true; cleanup(); void worker.terminate().finally(releaseSlot); fn(); };
+      // Abort the execution signal only when the run is being torn down —
+      // after a clean `done` an unawaited call should still commit, not race.
+      const onAbort = () => { ctrl.abort(); finish(() => reject(new ToolError("execution_aborted", "The MCP request was cancelled."))); };
       const timer = setTimeout(() => { timedOut = true; ctrl.abort(); void worker.terminate(); }, timeoutMs);
       if (opts.signal?.aborted) { onAbort(); return; }
       opts.signal?.addEventListener("abort", onAbort, { once: true });
@@ -513,8 +515,8 @@ export const EXECUTE_DESCRIPTION = `Run JavaScript against the complete BB SDK i
 Global \`bb\` mirrors the BB SDK method-for-method (bb.threads.get calls sdk.threads.get, and so on). Each resolves to the SDK result or throws an Error with a string \`.code\` (e.g. not_found, invalid_arguments, bb_error). Argument and result types are the BB SDK's own; BB validates server-side and errors are descriptive. \`bb.guide.render()\` returns BB's usage guide. Methods returning live handles (e.g. \`subscribe\`) are not exposed. Args accept the SDK's standard \`signal\` option implicitly: cancelling this call aborts inner waits.
 
 The SDK has no durable dispatch, so \`bb.ops\` adds it:
-- ops.run({ call: "threads.spawn", args, key?, kind?, threadId?, projectId? }) runs one SDK call inside a recorded receipt. Reusing \`key\` with the same call+args replays the stored receipt instead of dispatching again; a different payload is idempotency_conflict. state "outcome_unknown" means BB may have committed; inspect BB (threads.get/list) before retrying under a new key.
-- ops.get({ operationId }) reads a stored receipt. Calls that return credentials or configuration (plugins.token, plugins.getSettings, system.config) are refused — call them directly; a receipt would only persist the secret.
+- ops.run({ call: "threads.spawn", args, key?, kind?, threadId?, projectId? }) runs one SDK call inside a recorded receipt. Reusing \`key\` with the same call+args replays the stored receipt instead of dispatching again; a different payload is idempotency_conflict. state "outcome_unknown" means BB may have committed; inspect BB (threads.get/list) before retrying under a new key. Calls that return credentials or configuration (plugins.token, plugins.getSettings, system.config) are refused — call them directly; a receipt would only persist the secret.
+- ops.get({ operationId }) reads a stored receipt.
 
 \`bb.approve({ threadId, interactionId, decision, grantedPermissions? })\` resolves a pending permission approval — the code-mode equivalent of \`bb thread approve\` / \`bb thread grant --scope session\`. It verifies the interaction is still a pending approval — including its \`status\` and \`expiresAt\` when present — checks the decision is in its \`availableDecisions\`, and builds the resolution BB expects (\`grantedPermissions\` is a required-but-nullable key on allow_*; omitting it fails with "Invalid discriminator value"; deny takes none). \`allow_for_session\` defaults \`grantedPermissions\` to the request's offered \`sessionGrant\`. For user_question and plugin-form interactions use \`threads.interactions.resolve\` directly with \`{ kind: "user_answer", answers }\` or \`{ kind: "request_answer", value }\` — inspect the interaction first for its contract.
 
