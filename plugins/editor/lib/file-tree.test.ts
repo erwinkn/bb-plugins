@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ancestorsOf, buildTree, filterTree, fuzzyScore } from "./file-tree";
+import { ancestorsOf, buildTree, filterTree, fuzzyScore, mergeListing } from "./file-tree";
 
 test("buildTree nests flat paths and sorts directories before files", () => {
   const tree = buildTree([
@@ -23,6 +23,49 @@ test("buildTree synthesises directories the listing omitted and sorts case-insen
   ]);
   assert.deepEqual(tree.map((node) => node.name), ["a", "Alpha.ts", "beta.ts"]);
   assert.equal(tree[0]!.children[0]!.path, "a/b");
+});
+
+test("mergeListing replaces direct children, resolves the directory, and keeps deeper levels", () => {
+  const merged = mergeListing(
+    [
+      { path: "src", kind: "directory", deferred: true },
+      { path: "src/old.ts", kind: "file" },
+      { path: "src/lib", kind: "directory" },
+      { path: "src/lib/util.ts", kind: "file" },
+      { path: "other.ts", kind: "file" },
+    ],
+    "src",
+    [
+      { path: "src/new.ts", kind: "file" },
+      { path: "src/lib", kind: "directory" },
+      { path: "src/lib/extra.ts", kind: "file" },
+    ],
+  );
+  assert.deepEqual(merged, [
+    { path: "src", kind: "directory" },
+    { path: "src/new.ts", kind: "file" },
+    { path: "src/lib", kind: "directory" },
+    { path: "src/lib/extra.ts", kind: "file" },
+    // Fetched before this listing, and the listing did not cover the level.
+    { path: "src/lib/util.ts", kind: "file" },
+    { path: "other.ts", kind: "file" },
+  ]);
+});
+
+test("mergeListing drops a deleted direct child but keeps its unrelated siblings", () => {
+  const merged = mergeListing(
+    [
+      { path: "src", kind: "directory" },
+      { path: "src/gone.ts", kind: "file" },
+      { path: "src/kept.ts", kind: "file" },
+    ],
+    "src",
+    [{ path: "src/kept.ts", kind: "file" }],
+  );
+  assert.deepEqual(merged, [
+    { path: "src", kind: "directory" },
+    { path: "src/kept.ts", kind: "file" },
+  ]);
 });
 
 test("ancestorsOf lists each containing directory, nearest last", () => {

@@ -62,6 +62,33 @@ function sortRecursively(node: TreeNode): void {
   for (const child of node.children) sortRecursively(child);
 }
 
+/**
+ * Folds a `tree(subpath)` response into the flat entries. The directory's
+ * direct children come from the response — a child missing there was deleted
+ * — while deeper levels it does not cover keep their fetched entries: a
+ * re-requested directory must not drop grandchildren another expand listed.
+ */
+export function mergeListing(
+  entries: readonly FlatEntry[],
+  subpath: string,
+  listing: readonly FlatEntry[],
+): FlatEntry[] {
+  const prefix = `${subpath}/`;
+  const depth = (entryPath: string) => entryPath.slice(prefix.length).split("/").length;
+  const direct = new Set(
+    listing.filter((entry) => entry.path.startsWith(prefix) && depth(entry.path) === 1).map((entry) => entry.path),
+  );
+  const out: FlatEntry[] = [{ path: subpath, kind: "directory" }, ...listing];
+  const seen = new Set(out.map((entry) => entry.path));
+  for (const entry of entries) {
+    if (entry.path === subpath || seen.has(entry.path)) continue;
+    if (entry.path.startsWith(prefix) && depth(entry.path) === 1 && !direct.has(entry.path)) continue;
+    out.push(entry);
+    seen.add(entry.path);
+  }
+  return out;
+}
+
 /** The last segment of a path and what precedes it, without the slash. */
 export function splitPath(path: string): { directory: string; name: string } {
   const name = path.split("/").at(-1) ?? path;

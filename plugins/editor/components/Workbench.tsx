@@ -3,7 +3,7 @@ import type { ComponentType } from "react";
 import { toast } from "sonner";
 import { experimental_useCodeTheme, useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
-import { splitPath, type FlatEntry } from "@/lib/file-tree";
+import { mergeListing, splitPath, type FlatEntry } from "@/lib/file-tree";
 import { useElementWidth } from "@/lib/use-element-width";
 import type { EditorPrefs } from "@/lib/editor-options";
 import {
@@ -158,11 +158,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         .call("tree", { source, subpath })
         .then((result) => {
           if (generation !== treeGeneration.current) return;
-          setTree((current) => {
-            const prefix = `${subpath}/`;
-            const kept = current.entries.filter((entry) => entry.path !== subpath && !entry.path.startsWith(prefix));
-            return { ...current, entries: [...kept, { path: subpath, kind: "directory" }, ...result.entries] };
-          });
+          setTree((current) => ({ ...current, entries: mergeListing(current.entries, subpath, result.entries) }));
         })
         .catch((error: unknown) => {
           if (generation !== treeGeneration.current) return;

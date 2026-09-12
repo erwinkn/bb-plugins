@@ -17,7 +17,7 @@ export interface FileTreeProps {
   activePath: string | null;
   onOpenFile: (path: string, options: { newTab: boolean }) => void;
   onRefresh: () => void;
-  /** Called for an expanded directory whose contents are not listed yet. */
+  /** Called when an expanded directory's listing could return more data. */
   onExpandDeferred: (path: string) => void;
   /** Resolves when the entry exists; rejects with a message to show inline. */
   onCreate: (path: string, kind: CreateKind) => Promise<void>;
@@ -89,13 +89,16 @@ export function FileTree({
     [expanded, filtered.expand],
   );
 
-  // Directories listed without their contents (node_modules, symlinks) load
-  // once they are open; the owner dedupes requests and merges the result.
-  const deferredPaths = useMemo(() => {
+  // An expanded directory requests a listing whenever one could add data:
+  // its own rows are missing (deferred) or a child's next level is not
+  // resolved yet. The response carries both, so every open pushes the
+  // prefetched frontier one level deeper. The owner dedupes requests and
+  // merges the result.
+  const expandablePaths = useMemo(() => {
     const paths = new Set<string>();
     const visit = (nodes: readonly TreeNode[]) => {
       for (const node of nodes) {
-        if (node.deferred) paths.add(node.path);
+        if (node.deferred || node.children.some((child) => child.deferred)) paths.add(node.path);
         visit(node.children);
       }
     };
@@ -103,8 +106,8 @@ export function FileTree({
     return paths;
   }, [tree]);
   useEffect(() => {
-    for (const path of effectiveExpanded) if (deferredPaths.has(path)) onExpandDeferred(path);
-  }, [deferredPaths, effectiveExpanded, onExpandDeferred]);
+    for (const path of effectiveExpanded) if (expandablePaths.has(path)) onExpandDeferred(path);
+  }, [expandablePaths, effectiveExpanded, onExpandDeferred]);
 
   const toggle = (path: string) => {
     setExpanded((current) => {
