@@ -21,6 +21,9 @@ Star models and re-apply them from a star button in the BB composer.
 
 ## Limits
 
+- Composer actions render in the trailing cluster before voice/submit; the
+  SDK offers no placement option, so the star cannot sit next to the model
+  picker on the left.
 - The new-thread composer's draft provider/model selection is not reachable
   through the plugin SDK, so the star button does not appear there. Starring
   a model for *new* threads is only possible through Settings.

@@ -383,8 +383,10 @@ Status: `erwin-model-favorites` implements the subset a plugin can reach: a
 composer star action that applies favorites through `threads.update`, plus a
 Settings section for managing them. The rest still needs upstream surface:
 a provider's model can change on an existing thread, but its provider cannot
-(`threads.update` has no provider field), and the new-thread composer's draft
-selection has no plugin read/write API, so favorites cannot be applied there.
+(`threads.update` has no provider field), the new-thread composer's draft
+selection has no plugin read/write API, and composer actions are pinned to
+the trailing cluster before voice/submit — there is no placement option or
+leading slot, so a plugin button cannot sit beside the model picker.
 Suggested issue title: `Add a Favorites tab for models across providers`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues), with the
 requested behavior above. Check new and existing threads, duplicate model names
