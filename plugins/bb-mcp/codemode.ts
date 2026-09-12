@@ -121,14 +121,17 @@ export function makeDispatch(sdk: unknown, store: Store, log: (path: string) => 
     if (readOnly && !isReadPath(name))
       throw new ToolError("not_read_method", `"${name}" can mutate; bb_read only serves read methods. Use bb_execute.`);
     const effective = sig === undefined ? signal : sig ?? undefined;
-    return name === "approve" ? approveInteraction(input, (p, a) => hostCall(p, a, effective)) : sdkCall(sdk, name, input, effective);
+    // approve's inner calls must inherit the caller's raw signal, not the
+    // normalized one — a ledgered approve passes null (durable), and
+    // forwarding it as undefined would re-attach the request signal.
+    return name === "approve" ? approveInteraction(input, (p, a) => hostCall(p, a, sig)) : sdkCall(sdk, name, input, effective);
   };
   return async (name, input, sig) => {
     if (name === "ops.get") { log(name); return getOp(store, input, readOnly ? p => READ_BLOCKED.has(p) : undefined); }
     if (name === "ops.run") {
       log(name);
       if (readOnly) throw new ToolError("not_read_method", "Durable dispatch can mutate; bb_read only serves read methods. Use bb_execute.");
-      return runOp(store, input, (p, a) => hostCall(p, a, null));
+      return runOp(store, input, (p, a) => hostCall(p, a, null), p => READ_BLOCKED.has(p));
     }
     return hostCall(name, input, sig);
   };
@@ -225,13 +228,14 @@ const abortedError = () => new ToolError("execution_aborted", "The MCP request w
 const promote = () => {
   while (active < MAX_CONCURRENT && waiters.length) {
     const w = waiters.shift()!;
+    w.signal?.removeEventListener("abort", w.onAbort);
     if (w.signal?.aborted) { w.reject(abortedError()); continue; }
     active++;
-    w.signal?.removeEventListener("abort", w.onAbort);
     w.resolve();
   }
 };
 const acquire = (signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) { reject(abortedError()); return; }
   const w: Waiter = { signal, resolve, reject, onAbort: () => {
     const i = waiters.indexOf(w);
     if (i >= 0) { waiters.splice(i, 1); reject(abortedError()); }
@@ -510,7 +514,7 @@ Global \`bb\` mirrors the BB SDK method-for-method (bb.threads.get calls sdk.thr
 
 The SDK has no durable dispatch, so \`bb.ops\` adds it:
 - ops.run({ call: "threads.spawn", args, key?, kind?, threadId?, projectId? }) runs one SDK call inside a recorded receipt. Reusing \`key\` with the same call+args replays the stored receipt instead of dispatching again; a different payload is idempotency_conflict. state "outcome_unknown" means BB may have committed; inspect BB (threads.get/list) before retrying under a new key.
-- ops.get({ operationId }) reads a stored receipt.
+- ops.get({ operationId }) reads a stored receipt. Calls that return credentials or configuration (plugins.token, plugins.getSettings, system.config) are refused — call them directly; a receipt would only persist the secret.
 
 \`bb.approve({ threadId, interactionId, decision, grantedPermissions? })\` resolves a pending permission approval — the code-mode equivalent of \`bb thread approve\` / \`bb thread grant --scope session\`. It verifies the interaction is still a pending approval — including its \`status\` and \`expiresAt\` when present — checks the decision is in its \`availableDecisions\`, and builds the resolution BB expects (\`grantedPermissions\` is a required-but-nullable key on allow_*; omitting it fails with "Invalid discriminator value"; deny takes none). \`allow_for_session\` defaults \`grantedPermissions\` to the request's offered \`sessionGrant\`. For user_question and plugin-form interactions use \`threads.interactions.resolve\` directly with \`{ kind: "user_answer", answers }\` or \`{ kind: "request_answer", value }\` — inspect the interaction first for its contract.
 

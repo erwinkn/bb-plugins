@@ -50,6 +50,9 @@ export function createStore(bb: BbPluginApi) {
   const save = (op: Operation) => db.prepare("UPDATE operations SET body = ? WHERE id = ?").run(JSON.stringify(op), op.id);
   // A previous generation may have dispatched but not recorded its result.
   db.prepare("UPDATE operations SET body = json_set(body, '$.state', 'outcome_unknown', '$.updatedAt', ?) WHERE json_extract(body, '$.state') = 'pending'").run(Date.now());
+  // Receipts written before the call path was recorded cannot prove their
+  // response is credential-free — drop it; state/id/threadId are preserved.
+  db.prepare("UPDATE operations SET body = json_remove(body, '$.response') WHERE json_extract(body, '$.call') IS NULL AND json_extract(body, '$.response') IS NOT NULL").run();
   const inflight = new Map<string, Promise<Operation>>();
   let disposed = false;
   bb.onDispose(() => { disposed = true; });

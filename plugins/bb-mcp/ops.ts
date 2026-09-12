@@ -6,10 +6,13 @@ export type SdkCall = (path: string, args: unknown) => Promise<unknown>;
 // The one thing callers cannot do themselves: a durable receipt that survives
 // HTTP disconnects and dedupes retries by key. Everything else is a plain
 // bb.sdk call.
-export async function runOp(store: Store, args: unknown, call: SdkCall) {
+export async function runOp(store: Store, args: unknown, call: SdkCall, blocked?: (callPath: string) => boolean) {
   const a = (args ?? {}) as { call?: unknown; args?: unknown; key?: unknown; kind?: unknown; threadId?: unknown; projectId?: unknown };
   if (typeof a.call !== "string" || !a.call) throw new ToolError("invalid_arguments", "ops.run requires a call path like \"threads.spawn\".");
   if (a.key !== undefined && typeof a.key !== "string") throw new ToolError("invalid_arguments", "key must be a string.");
+  // Credential-bearing reads gain nothing from a receipt and would persist
+  // secrets in plaintext — refuse to ledger them.
+  if (blocked?.(a.call)) throw new ToolError("invalid_arguments", `"${a.call}" returns credentials or configuration; call it directly instead of recording a receipt.`);
   const kind = typeof a.kind === "string" && a.kind ? a.kind : a.call;
   const scope = {
     threadId: typeof a.threadId === "string" ? a.threadId : null,

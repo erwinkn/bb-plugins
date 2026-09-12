@@ -99,6 +99,15 @@ describe("runCode", () => {
     await expect(queued).rejects.toMatchObject({ code: "execution_aborted" });
     await Promise.all(running);
   });
+  it("rejects an already-aborted request without waiting for a slot", async () => {
+    const slow = { code: `async () => { await new Promise(r => setTimeout(r, 400)); return 1; }`, paths, dispatch };
+    const running = Array.from({ length: 8 }, () => runCode(slow));
+    const ac = new AbortController(); ac.abort();
+    const queued = runCode({ ...slow, signal: ac.signal });
+    const verdict = await Promise.race([queued.then(() => "resolved", () => "aborted"), new Promise(r => setTimeout(() => r("still waiting"), 250))]);
+    expect(verdict).toBe("aborted");
+    await Promise.all(running);
+  });
   it("kills runaway code at the timeout", async () => {
     await expect(runCode({ code: `async () => { while (true) {} }`, paths, dispatch, timeoutMs: 1000 }))
       .rejects.toMatchObject({ code: "execution_timeout" });
@@ -430,6 +439,16 @@ describe("bb.approve", () => {
     const s = { threads: { interactions: { get: vi.fn(async () => { throw new Error("socket hangup"); }), resolve: vi.fn() } } };
     await expect(dispatchFor(s)("approve", { threadId: "t", interactionId: "i", decision: "deny" }))
       .rejects.toMatchObject({ code: "precondition_failed" });
+  });
+  it("a ledgered approve stays durable under an aborted request signal", async () => {
+    const s = approvalSdk(approval());
+    const ac = new AbortController(); ac.abort();
+    const d = makeDispatch(s, storeStub, () => {}, ac.signal);
+    const out = await d("ops.run", { call: "approve", args: { threadId: "t", interactionId: "int_1", decision: "deny" } }) as Record<string, unknown>;
+    expect(out.state).toBe("accepted");
+    expect(s.threads.interactions.resolve).toHaveBeenCalledTimes(1);
+    // The same call unledgered aborts with the request.
+    await expect(d("approve", { threadId: "t", interactionId: "int_1", decision: "deny" })).rejects.toMatchObject({ code: "execution_aborted" });
   });
   it("rejects decisions the interaction does not offer and non-approvals", async () => {
     const s = approvalSdk(approval({ availableDecisions: ["deny"] }));

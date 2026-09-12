@@ -125,6 +125,22 @@ describe("durable dispatch", () => {
       .catch(e => e);
     expect(scoped).toMatchObject({ code: "idempotency_conflict" });
   });
+  it("refuses to ledger credential-bearing reads", async () => {
+    const { bb, store } = storeHost();
+    const call = (p: string, a: unknown) => sdkCall(bb.sdk, p, a);
+    await expect(runOp(store, { key: "k", call: "plugins.token", args: {} }, call, p => new Set(["plugins.token"]).has(p)))
+      .rejects.toMatchObject({ code: "invalid_arguments" });
+  });
+  it("strips responses from receipts written before call paths were recorded", async () => {
+    const { bb, store } = storeHost();
+    const db = bb.storage.database();
+    const put = (id: string, body: object) => db.prepare("INSERT INTO operations (id, key_hash, body) VALUES (?, ?, ?)").run(id, `kh_${id}`, JSON.stringify(body));
+    put("op_old", { id: "op_old", kind: "fetch", state: "accepted", response: { token: "secret" }, createdAt: 1, updatedAt: 1 });
+    put("op_new", { id: "op_new", kind: "threads.spawn", call: "threads.spawn", state: "accepted", response: { threadId: "thr_1" }, createdAt: 1, updatedAt: 1 });
+    const fresh = createStore(bb);
+    expect(fresh.get("op_old")?.response).toBeUndefined();
+    expect(fresh.get("op_new")?.response).toEqual({ threadId: "thr_1" });
+  });
   it("joins a same-key retry to the in-flight dispatch rather than replaying pending", async () => {
     const { store } = storeHost(); let release!: () => void;
     const gate = new Promise<void>(r => { release = r; });
