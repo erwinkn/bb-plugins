@@ -336,19 +336,14 @@ describe("activity sidebar", () => {
       });
       await waitFor(() =>
         expect(slot.getAllByRole("button", { name: "Archived" })).toHaveLength(
-          groupBy === "status" ? 1 : 2,
+          1,
         ),
       );
       expect(slot.queryByText("Old thread 0")).toBeNull();
       expect(slot.queryByText("No matching threads.")).toBeNull();
-      const group =
-        groupBy === "project"
-          ? within(slot.getByRole("region", { name: "One" }))
-          : slot;
-      fireEvent.click(group.getByRole("button", { name: "Archived" }));
-      expect(group.getByText("Old thread 0")).toBeTruthy();
-      if (groupBy === "project")
-        expect(group.queryByText("Old thread 1")).toBeNull();
+      fireEvent.click(slot.getByRole("button", { name: "Archived" }));
+      expect(slot.getByText("Old thread 0")).toBeTruthy();
+      expect(slot.getByText("Old thread 1")).toBeTruthy();
       const target = slot.container.querySelector(
         '[data-sidebar-thread-id="old-0"]',
       )!;
@@ -371,11 +366,9 @@ describe("activity sidebar", () => {
       expect(
         parseState(localStorage.getItem("bb-plugin-erwin-activity:v1"))
           .expandedArchives,
-      ).toEqual([
-        groupBy === "status" ? "archive:status" : "archive:project:project-1",
-      ]);
-      fireEvent.click(group.getByRole("button", { name: "Archived" }));
-      expect(group.queryByText("Old thread 0")).toBeNull();
+      ).toEqual(["archive"]);
+      fireEvent.click(slot.getByRole("button", { name: "Archived" }));
+      expect(slot.queryByText("Old thread 0")).toBeNull();
     },
   );
   it("does not expose split gestures or other active actions for archives", async () => {

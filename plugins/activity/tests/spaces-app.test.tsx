@@ -491,10 +491,7 @@ describe("spaces", () => {
       showArchives: true,
       groupBy: "project",
       drafts: ["new:project-2", "new:project-1"],
-      expandedArchives: [
-        "archive:project:project-1",
-        "archive:project:project-2",
-      ],
+      expandedArchives: ["archive"],
     }));
     const slot = mount({
       ...server(),
