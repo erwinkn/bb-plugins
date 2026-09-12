@@ -52,6 +52,13 @@ function threadOnMachine(
 
 describe("provider usage footer disclosure", () => {
   it("aggregates every machine and keeps machine and provider selection local to the card", async () => {
+    // Floating UI checks :modal when positioning the desktop menu. jsdom 26's
+    // nwsapi recurses through Element.matches for that unsupported browser state.
+    // This card uses a non-modal menu; keep all other selector matching real.
+    const matches = Element.prototype.matches;
+    vi.spyOn(Element.prototype, "matches").mockImplementation(function (selector) {
+      return selector === ":modal" ? false : matches.call(this, selector);
+    });
     const extraProviders = ["Claude Code", "Cursor", "Devin", "Extra one", "Extra two"].map((name) => ({
       id: name.toLowerCase().replaceAll(" ", "-"), displayName: name,
       logoUrl: null, iconGlyph: "Bot", iconTint: null,
