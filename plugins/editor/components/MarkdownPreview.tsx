@@ -49,7 +49,7 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
         })
         .catch((error: unknown) => {
           // Without a lease the text still renders; only relative images are missing.
-          console.warn("[erwin-editor] could not lease the preview root", error);
+          console.warn("[editor] could not lease the preview root", error);
         });
     };
     renew();

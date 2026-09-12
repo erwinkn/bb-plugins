@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ancestorsOf, buildTree, filterTree, fuzzyScore, quickOpenMatches } from "./file-tree";
+import { ancestorsOf, buildTree, filterTree, fuzzyScore, mergeListing } from "./file-tree";
 
 test("buildTree nests flat paths and sorts directories before files", () => {
   const tree = buildTree([
@@ -23,6 +23,49 @@ test("buildTree synthesises directories the listing omitted and sorts case-insen
   ]);
   assert.deepEqual(tree.map((node) => node.name), ["a", "Alpha.ts", "beta.ts"]);
   assert.equal(tree[0]!.children[0]!.path, "a/b");
+});
+
+test("mergeListing replaces direct children, resolves the directory, and keeps deeper levels", () => {
+  const merged = mergeListing(
+    [
+      { path: "src", kind: "directory", deferred: true },
+      { path: "src/old.ts", kind: "file" },
+      { path: "src/lib", kind: "directory" },
+      { path: "src/lib/util.ts", kind: "file" },
+      { path: "other.ts", kind: "file" },
+    ],
+    "src",
+    [
+      { path: "src/new.ts", kind: "file" },
+      { path: "src/lib", kind: "directory" },
+      { path: "src/lib/extra.ts", kind: "file" },
+    ],
+  );
+  assert.deepEqual(merged, [
+    { path: "src", kind: "directory" },
+    { path: "src/new.ts", kind: "file" },
+    { path: "src/lib", kind: "directory" },
+    { path: "src/lib/extra.ts", kind: "file" },
+    // Fetched before this listing, and the listing did not cover the level.
+    { path: "src/lib/util.ts", kind: "file" },
+    { path: "other.ts", kind: "file" },
+  ]);
+});
+
+test("mergeListing drops a deleted direct child but keeps its unrelated siblings", () => {
+  const merged = mergeListing(
+    [
+      { path: "src", kind: "directory" },
+      { path: "src/gone.ts", kind: "file" },
+      { path: "src/kept.ts", kind: "file" },
+    ],
+    "src",
+    [{ path: "src/kept.ts", kind: "file" }],
+  );
+  assert.deepEqual(merged, [
+    { path: "src", kind: "directory" },
+    { path: "src/kept.ts", kind: "file" },
+  ]);
 });
 
 test("ancestorsOf lists each containing directory, nearest last", () => {
@@ -50,17 +93,4 @@ test("fuzzyScore requires every character in order and prefers name matches", ()
   const nameHit = fuzzyScore("src/lib/file-tree.ts", "filetree")!;
   const pathHit = fuzzyScore("src/file/lib/tree-x.ts", "filetree")!;
   assert.ok(nameHit > pathHit, `${nameHit} > ${pathHit}`);
-});
-
-test("quickOpenMatches ranks files only, best first, within the limit", () => {
-  const entries = [
-    { path: "src", kind: "directory" as const },
-    { path: "src/components/Workbench.tsx", kind: "file" as const },
-    { path: "src/lib/work.ts", kind: "file" as const },
-    { path: "docs/bench.md", kind: "file" as const },
-  ];
-  const matches = quickOpenMatches(entries, "workbench", 10);
-  assert.equal(matches[0]!.path, "src/components/Workbench.tsx");
-  assert.ok(matches.every((entry) => entry.kind === "file"));
-  assert.equal(quickOpenMatches(entries, "", 1).length, 1);
 });

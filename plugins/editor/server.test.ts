@@ -36,11 +36,11 @@ test("missing shipped assets fail without running a build", (t) => {
 });
 
 test("the assets RPC serves the committed browser and worker files", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   const assets = rpcContract.assets.output.parse(await harness.behavior.callRpc("assets", null));
-  const routeBase = assets.baseUrl.replace("/api/v1/plugins/erwin-editor/http", "");
+  const routeBase = assets.baseUrl.replace("/api/v1/plugins/editor/http", "");
   for (const entry of ["editor.js", "worker.js"]) {
     const response = await harness.behavior.fetchHttp("GET", `${routeBase}/${entry}`);
     assert.equal(response.status, 200);
@@ -51,7 +51,7 @@ test("the assets RPC serves the committed browser and worker files", async (t) =
 });
 
 test("the RPC contract validates source shapes strictly", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   await assert.rejects(() => harness.behavior.callRpc("read", { path: "a.ts", source: { kind: "nope" } }));
@@ -66,7 +66,7 @@ test("the RPC contract validates source shapes strictly", async (t) => {
 });
 
 test("workspace without a thread or project asks for a project", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   await assert.rejects(() => harness.behavior.callRpc("workspace", { threadId: null, projectId: null }), /Select a project/);
@@ -74,7 +74,7 @@ test("workspace without a thread or project asks for a project", async (t) => {
 
 test("settings and the picker share predefined themes without changing BB's global theme", async (t) => {
   let { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     settings: { codePalette: "conductor" }, // An older installation falls back to Follow BB.
     sdk: { theme: { get: async () => ({ themeId: "default" }) } },
   });
@@ -99,7 +99,7 @@ test("settings and the picker share predefined themes without changing BB's glob
 });
 
 test("read, write, and tree refuse paths that leave the workspace", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   const source = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
@@ -117,7 +117,7 @@ test("read, write, and tree refuse paths that leave the workspace", async (t) =>
 });
 
 test("create refuses parent traversal and setSetting refuses unknown keys", async (t) => {
-  const { bb, harness } = createFakePluginHost({ pluginId: "erwin-editor" });
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
   await plugin(bb);
   const source = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
@@ -126,6 +126,105 @@ test("create refuses parent traversal and setSetting refuses unknown keys", asyn
   await assert.rejects(() => harness.behavior.callRpc("remove", { path: "..", source, kind: "directory" }), /cannot contain/);
   await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "fontSize", value: 40 }));
   await assert.rejects(() => harness.behavior.callRpc("setSetting", { key: "wordWrap", value: "yes" }));
+});
+
+test("tree lists one level locally, prefetches the next, and search scans the file index", async (t) => {
+  const storage = mkdtempSync(path.join(tmpdir(), "editor-storage-"));
+  t.after(() => rmSync(storage, { recursive: true, force: true }));
+  process.env.BB_THREAD_STORAGE = storage;
+  t.after(() => delete process.env.BB_THREAD_STORAGE);
+  const root = path.join(storage, "thr_x");
+  mkdirSync(path.join(root, "src", "deep"), { recursive: true });
+  writeFileSync(path.join(root, "src", "index.ts"), "");
+  writeFileSync(path.join(root, "src", "deep", "nested.ts"), "");
+  writeFileSync(path.join(root, "readme.md"), "");
+
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "thread-storage", threadId: "thr_x", environmentId: null, projectId: null };
+  const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  // The level below the root resolved ahead of its expand: `src` is no
+  // longer deferred and its rows are already here. `src/deep` stays lazy.
+  assert.deepEqual(listing.entries, [
+    { path: "readme.md", kind: "file" },
+    { path: "src", kind: "directory" },
+    { path: "src/deep", kind: "directory", deferred: true },
+    { path: "src/index.ts", kind: "file" },
+  ]);
+  const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
+  assert.deepEqual(inner.entries, [
+    { path: "src/deep", kind: "directory" },
+    { path: "src/index.ts", kind: "file" },
+    { path: "src/deep/nested.ts", kind: "file" },
+  ]);
+  // Search sees files in directories the tree never listed.
+  const found = rpcContract.search.output.parse(await harness.behavior.callRpc("search", { source, query: "nested" }));
+  assert.deepEqual(found.matches, [{ path: "src/deep/nested.ts" }]);
+});
+
+test("tree and search go through the daemon for another host's workspace", async (t) => {
+  const searches: unknown[] = [];
+  const dirCalls: (string | undefined)[] = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "editor",
+    sdk: {
+      system: { config: async () => ({ primaryHostId: "host_primary", dataDir: "/data" }) },
+      projects: {
+        get: async () => ({ sources: [{ isDefault: true, path: "/remote/work", hostId: "host_remote" }] }),
+      },
+      hosts: {
+        directory: async ({ path: dir }: { path?: string }) => {
+          dirCalls.push(dir);
+          return {
+            directory: dir,
+            parent: "/remote",
+            entries:
+              dir === "/remote/work"
+                ? [
+                    { kind: "directory", name: "src", path: "/remote/work/src" },
+                    { kind: "file", name: "README.md", path: "/remote/work/README.md" },
+                  ]
+                : [{ kind: "file", name: "a.ts", path: `${dir}/a.ts` }],
+          };
+        },
+      },
+      files: {
+        listPaths: async (args: unknown) => {
+          searches.push(args);
+          return { paths: [{ name: "a.ts", path: "src/a.ts", kind: "file", positions: [], score: 1 }], truncated: false };
+        },
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace", threadId: null, environmentId: null, projectId: "proj_x" };
+  const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  // The root call prefetched `src`'s level in the same request.
+  assert.deepEqual(listing.entries, [
+    { path: "src", kind: "directory" },
+    { path: "README.md", kind: "file" },
+    { path: "src/a.ts", kind: "file" },
+  ]);
+  assert.deepEqual(dirCalls, ["/remote/work", "/remote/work/src"]);
+  const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
+  assert.deepEqual(inner.entries, [{ path: "src/a.ts", kind: "file" }]);
+  // A re-expand is served from the listing cache, not another host round trip.
+  await harness.behavior.callRpc("tree", { source, subpath: "src" });
+  assert.deepEqual(dirCalls, ["/remote/work", "/remote/work/src"]);
+  // A watch notice that can add or remove names drops the root's levels.
+  await harness.behavior.experimental_emitHostSignal("host_remote", "changed", {
+    rootPath: "/remote/work", kind: "changed",
+    paths: [{ path: "src/b.ts", type: "create" }],
+  });
+  await harness.behavior.callRpc("tree", { source, subpath: "src" });
+  assert.deepEqual(dirCalls, ["/remote/work", "/remote/work/src", "/remote/work/src"]);
+  const found = rpcContract.search.output.parse(await harness.behavior.callRpc("search", { source, query: "a.ts" }));
+  assert.deepEqual(found.matches, [{ path: "src/a.ts" }]);
+  assert.deepEqual(searches, [
+    { hostId: "host_remote", path: "/remote/work", query: "a.ts", includeFiles: true, includeDirectories: false, limit: 50 },
+  ]);
 });
 
 test("plugin uses only public SDK imports and declared packages", () => {
@@ -177,7 +276,7 @@ async function fileWriteHost(initialContent: string | null, createDuringRead = f
   let disk = initialContent;
   const digest = () => disk === null ? null : createHash("sha256").update(disk).digest("hex");
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: {
       environments: { get: async () => environment },
       files: {
@@ -239,7 +338,7 @@ test("create writes only an absent file and preserves a file created after its c
 
 test("previewBase leases the workspace root on the file's host and refuses paths outside it", async (t) => {
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: {
       environments: { get: async () => environment },
       files: { createPreview: async () => ({ baseUrl: "/api/v1/files/preview/lease1", expiresAtMs: 1_000 }) },
@@ -291,7 +390,7 @@ async function diffHost(options: {
   const entry = { ...modifiedEntry, ...options.entry };
   const newContent = options.newContent ?? "new\n";
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: {
       threads: { get: async () => makeThreadResponse({ environmentId: environment.id, projectId: environment.projectId }) },
       environments: {
@@ -614,7 +713,7 @@ test("deleting a new file requires confirmation and never removes recursively", 
 test("watch registers the workspace root on its host, relays changes with sequence numbers, and stops when unwatched", async (t) => {
   const hostCalls: { method: string; input: unknown; hostId: string }[] = [];
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: { environments: { get: async () => environment } },
     experimental_callHostRpc: async (call) => {
       hostCalls.push(call);
@@ -664,7 +763,7 @@ test("watch reports no root when the host cannot watch, and keeps the registrati
   let online = false;
   const hostCalls: unknown[] = [];
   const { bb, harness } = createFakePluginHost({
-    pluginId: "erwin-editor",
+    pluginId: "editor",
     sdk: { environments: { get: async () => environment } },
     experimental_callHostRpc: async (call) => {
       if (!online) throw new Error("host offline");

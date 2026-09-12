@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { toast } from "sonner";
 import { experimental_useCodeTheme, useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
-import { splitPath, type FlatEntry } from "@/lib/file-tree";
+import { mergeListing, splitPath, type FlatEntry } from "@/lib/file-tree";
 import { useElementWidth } from "@/lib/use-element-width";
 import type { EditorPrefs } from "@/lib/editor-options";
 import {
@@ -45,12 +45,11 @@ export interface WorkbenchProps {
 interface TreeState {
   entries: readonly FlatEntry[];
   root: string;
-  truncated: boolean;
   isLoading: boolean;
   error: string | null;
 }
 
-const EMPTY_TREE: TreeState = { entries: [], root: "", truncated: false, isLoading: false, error: null };
+const EMPTY_TREE: TreeState = { entries: [], root: "", isLoading: false, error: null };
 
 /** A file to show, and how it reaches history: recorded as new, or reached by Back/Forward at `historyIndex`. */
 interface PendingNavigation {
@@ -90,7 +89,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     rpc
       .call("theme", null)
       .then((theme) => setThemePicker((state) => (state === null ? null : { current: theme.pair })))
-      .catch((error: unknown) => console.warn("[erwin-editor] could not read BB's theme", error));
+      .catch((error: unknown) => console.warn("[editor] could not read BB's theme", error));
   }, [rpc]);
   const [focusNonce, setFocusNonce] = useState(0);
   const treeRequested = useRef(false);
@@ -125,21 +124,23 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   const compact = width > 0 && width < COMPACT_BREAKPOINT_PX;
   const effectiveTreeWidth = compact ? width : clampTreeWidth(treeWidth, width || Number.POSITIVE_INFINITY);
+  // Quick open's empty-query list: where the user was, latest first.
+  const recentPaths = useMemo(() => [...new Set([...history.paths].reverse())], [history]);
 
-  // Deferred directories load on expand; one request per path until it lands.
-  const deferredRequests = useRef(new Set<string>());
-  // A refresh starts a new generation; deferred results from before it are dropped.
+  // Directory listings load on expand; one request per path until it lands.
+  const listingRequests = useRef(new Set<string>());
+  // A refresh starts a new generation; in-flight results from before it are dropped.
   const treeGeneration = useRef(0);
   const loadTree = useCallback(() => {
     treeGeneration.current += 1;
     const generation = treeGeneration.current;
-    deferredRequests.current.clear();
+    listingRequests.current.clear();
     setTree((current) => ({ ...current, isLoading: true, error: null }));
     return rpc
       .call("tree", { source })
       .then((result) => {
         if (generation !== treeGeneration.current) return;
-        setTree({ entries: result.entries, root: result.root, truncated: result.truncated, isLoading: false, error: null });
+        setTree({ entries: result.entries, root: result.root, isLoading: false, error: null });
       })
       .catch((error: unknown) => {
         if (generation !== treeGeneration.current) return;
@@ -150,23 +151,18 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   const loadDirectory = useCallback(
     (subpath: string) => {
-      if (deferredRequests.current.has(subpath)) return;
-      deferredRequests.current.add(subpath);
+      if (listingRequests.current.has(subpath)) return;
+      listingRequests.current.add(subpath);
       const generation = treeGeneration.current;
       rpc
         .call("tree", { source, subpath })
         .then((result) => {
           if (generation !== treeGeneration.current) return;
-          setTree((current) => {
-            const prefix = `${subpath}/`;
-            const kept = current.entries.filter((entry) => entry.path !== subpath && !entry.path.startsWith(prefix));
-            return { ...current, entries: [...kept, { path: subpath, kind: "directory" }, ...result.entries] };
-          });
-          if (result.truncated) toast.message(`Showing the first entries of ${subpath}; it is larger.`);
+          setTree((current) => ({ ...current, entries: mergeListing(current.entries, subpath, result.entries) }));
         })
         .catch((error: unknown) => {
           if (generation !== treeGeneration.current) return;
-          deferredRequests.current.delete(subpath);
+          listingRequests.current.delete(subpath);
           toast.error(error instanceof Error ? error.message : `Could not list ${subpath}`);
         });
     },
@@ -186,12 +182,11 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     }, 300);
   });
 
-  const needTree = treeOpen || quickOpen;
   useEffect(() => {
-    if (!needTree || treeRequested.current) return;
+    if (!treeOpen || treeRequested.current) return;
     treeRequested.current = true;
     void loadTree();
-  }, [needTree, loadTree]);
+  }, [treeOpen, loadTree]);
 
   const openInTab = useCallback(
     (path: string) => {
@@ -367,11 +362,10 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         label={label || (tree.root === "" ? "Files" : tree.root.split(/[\\/]/).at(-1) || "Files")}
         isLoading={tree.isLoading}
         error={tree.error}
-        truncated={tree.truncated}
         activePath={activePath}
         onOpenFile={openFile}
         onRefresh={() => void loadTree()}
-        onExpandDeferred={loadDirectory}
+        onLoadDirectory={loadDirectory}
         onCreate={createEntry}
         onRename={renameEntry}
         onDelete={deleteEntry}
@@ -465,7 +459,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           {editorColumn}
         </>
       )}
-      {quickOpen ? <QuickOpen entries={tree.entries} onOpen={openFile} onClose={() => setQuickOpen(false)} /> : null}
+      {quickOpen ? (
+        <QuickOpen source={source} recentPaths={recentPaths} onOpen={openFile} onClose={() => setQuickOpen(false)} />
+      ) : null}
       {themePicker !== null ? (
         <ThemePicker
           mode={bbTheme.mode}

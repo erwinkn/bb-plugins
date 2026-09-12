@@ -27,7 +27,7 @@ function bridge(dir: string, fetch: Fetch, opts: { identity?: string | (() => st
   const acp: ProviderBridgeEntry = { experimental_apiVersion: 1, handleLine: line => { forwarded.push(JSON.parse(line)); } };
   const identity = typeof opts.identity === "function" ? opts.identity : () => (opts.identity as string | undefined) ?? "id-1";
   const entry = withDevinModels(acp, fetch, line => output.push(JSON.parse(line)), { identity: async () => identity(), now: opts.now ?? (() => T0) });
-  entry.start!({ pluginId: "erwin-devin", dataDir: dir, tempDir: dir });
+  entry.start!({ pluginId: "devin", dataDir: dir, tempDir: dir });
   const select = (id: number, reasoningLevel?: string, serviceTier?: string, model = groupId) => entry.handleLine(JSON.stringify({
     jsonrpc: "2.0", id, method: "thread/start", params: { threadId: `t${id}`, options: { model, reasoningLevel, serviceTier, permissionMode: "full", providerOptions: { acpLaunchSpec: launch } } },
   }));

@@ -1,6 +1,6 @@
 /** Persisted workbench layout: tree width and whether the tree is shown. */
 
-const PREFIX = "bb-plugin-erwin-editor:";
+const PREFIX = "bb-plugin-editor:";
 
 export const DEFAULT_TREE_WIDTH = 200;
 export const MIN_TREE_WIDTH = 140;

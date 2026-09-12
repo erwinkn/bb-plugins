@@ -1,7 +1,7 @@
 {
   "$schema": "https://getbb.app/schemas/plugins.schema.json",
   "schemaVersion": 1,
-  "name": "erwin-plugins",
+  "name": "bb-plugins",
   "plugins": [
     {
       "name": "bb-mcp",
@@ -12,7 +12,7 @@
       "source": "./plugins/plans"
     },
     {
-      "name": "erwin-devin",
+      "name": "devin",
       "source": "./plugins/devin"
     },
     {
@@ -20,15 +20,15 @@
       "source": "./plugins/voice-mode"
     },
     {
-      "name": "erwin-provider-usage",
-      "source": "./plugins/provider-usage"
+      "name": "provider-usage-compact",
+      "source": "./plugins/provider-usage-compact"
     },
     {
-      "name": "erwin-activity",
-      "source": "./plugins/activity"
+      "name": "sidebar",
+      "source": "./plugins/sidebar"
     },
     {
-      "name": "erwin-editor",
+      "name": "editor",
       "source": "./plugins/editor"
     },
     {
@@ -36,8 +36,8 @@
       "source": "./plugins/questions"
     },
     {
-      "name": "erwin-plugin-nav",
-      "source": "./plugins/plugin-nav"
+      "name": "remove-plugin-ellipsis",
+      "source": "./plugins/remove-plugin-ellipsis"
     }
   ]
 }

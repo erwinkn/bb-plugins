@@ -92,10 +92,10 @@ Ask what is waiting on a thread to hear its queued messages. Then say "send it n
 to steer one into the active turn, "cancel that message" to delete it, or "change
 that message to" followed by the new text.
 
-With the Threads plugin's spaces, say "switch to the mobile space" or "show all
-projects" to change the sidebar scope on the device that owns the call. Ada names
-the space it applied, or lists the saved spaces when the name did not match.
-Creating or editing spaces stays on the Threads page.
+With the Threads plugin's spaces, say "switch to the mobile space", "show all
+projects", or "show the library" to change the sidebar scope on the device that
+owns the call. Ada names the scope it applied, or lists the saved spaces when the
+name did not match. Creating or editing spaces stays on the Threads page.
 
 You can say "agent" instead of "thread". An agent is a root thread, and a sub-agent
 is a child thread of that root. Ada applies this mapping when it resolves what you

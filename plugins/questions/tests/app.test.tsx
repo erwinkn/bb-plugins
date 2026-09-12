@@ -112,7 +112,7 @@ function backend(initial: Partial<ThreadState> = {}) {
         environmentId: "env_1",
         hostId: "host_1",
         hits: [
-          { path: "plugins/activity/app.tsx", name: "app.tsx", kind: "file" as const },
+          { path: "plugins/sidebar/app.tsx", name: "app.tsx", kind: "file" as const },
           { path: "README.md", name: "README.md", kind: "file" as const },
         ].filter((hit) => hit.path.toLowerCase().includes(query.toLowerCase())),
         truncated: false,
@@ -429,7 +429,7 @@ describe("Questions panel", () => {
     const input = slot.getByRole("combobox", { name: "Search files" });
     fireEvent.change(input, { target: { value: "app" } });
     const option = await slot.findByRole("option", { name: /app\.tsx/ });
-    expect((option).textContent).toMatch("plugins/activity/app.tsx");
+    expect((option).textContent).toMatch("plugins/sidebar/app.tsx");
     fireEvent.keyDown(input, { key: "Enter" });
     expect((slot.getByRole("option", { name: /app\.tsx/ })).getAttribute("aria-selected")).toBe("true");
     expect(within(slot.container).getAllByRole("button", { name: "app.tsx" })).toHaveLength(1);
@@ -437,8 +437,8 @@ describe("Questions panel", () => {
 
     const badges = slot.getByLabelText("Selected files");
     expect(badges.compareDocumentPosition(slot.getByRole("listbox")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    fireEvent.click(slot.getByRole("button", { name: "Remove plugins/activity/app.tsx" }));
-    expect(slot.queryByRole("button", { name: "Remove plugins/activity/app.tsx" })).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "Remove plugins/sidebar/app.tsx" }));
+    expect(slot.queryByRole("button", { name: "Remove plugins/sidebar/app.tsx" })).toBeNull();
   });
 
   it("clamps the keyboard row when reopening with fewer results", async () => {

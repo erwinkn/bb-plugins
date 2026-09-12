@@ -7,7 +7,7 @@
 // step so a command from another device or a hung-up call never moves this
 // window. It never navigates on its own: every action here is one the user
 // asked for by voice, and a draft is only ever prepared, never sent.
-import { applySpace, currentSpace, readSpaces, resolveSpace } from "./spaces-bridge.ts";
+import { LIBRARY_SCOPE_ID, applySpace, currentSpace, readSpaces, resolveSpace } from "./spaces-bridge.ts";
 import type {
   BbNavigate,
   ComposerView,
@@ -385,10 +385,11 @@ export class NativeUi {
    * ask it. Success means the panel confirmed the selection, not just the URL.
    */
   /**
-   * Switch the Threads sidebar to a saved space of the activity plugin. Spaces come
-   * from that plugin's cached catalog in this browser; the selection is written the
-   * way the plugin writes it and the plugin's store is told in this window. Nothing
-   * is fetched, and a name that does not resolve changes nothing.
+   * Switch the Threads sidebar to a saved space or the library scope of the
+   * activity plugin. Spaces come from that plugin's cached catalog in this
+   * browser; the selection is written the way the plugin writes it and the
+   * plugin's store is told in this window. Nothing is fetched, and a name that
+   * does not resolve changes nothing.
    */
   private switchSpace(spoken: string): UiActionResult {
     const storage = typeof window === "undefined" ? null : window.localStorage;
@@ -404,7 +405,9 @@ export class NativeUi {
     applySpace(storage, choice, event => window.dispatchEvent(new Event(event)));
     const after = currentSpace(storage);
     if (after.id !== choice.id) return failed(`Could not switch to ${choice.name}: the selection did not stick.`);
-    return succeeded(choice.id ? `The Threads sidebar now shows the ${choice.name} space${choice.projectCount === null ? "" : ` (${choice.projectCount} project${choice.projectCount === 1 ? "" : "s"})`}.` : "The Threads sidebar now shows all projects.");
+    if (!choice.id) return succeeded("The Threads sidebar now shows all projects.");
+    const label = choice.id === LIBRARY_SCOPE_ID ? "the Library" : `the ${choice.name} space${choice.projectCount === null ? "" : ` (${choice.projectCount} project${choice.projectCount === 1 ? "" : "s"})`}`;
+    return succeeded(`The Threads sidebar now shows ${label}.`);
   }
 
   private async showVoice(app: NativeUiAppBinding, isCurrent: () => boolean): Promise<UiActionResult> {

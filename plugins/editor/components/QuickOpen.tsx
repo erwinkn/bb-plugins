@@ -1,32 +1,76 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { quickOpenMatches, type FlatEntry } from "@/lib/file-tree";
+import { useRpc } from "@get-bb/plugin-sdk/app";
+import type { FileSource, rpcContract } from "../server";
 import { cn } from "@/lib/utils";
 import { FileIcon, SearchIcon } from "./icons";
 
 const LIMIT = 40;
+const DEBOUNCE_MS = 120;
+
+interface Row {
+  path: string;
+}
 
 export function QuickOpen({
-  entries,
+  source,
+  recentPaths,
   onOpen,
   onClose,
 }: {
-  entries: readonly FlatEntry[];
+  source: FileSource;
+  /** Files the user had open, latest first; shown before a query is typed. */
+  recentPaths: readonly string[];
   onOpen: (path: string, options: { newTab: boolean }) => void;
   onClose: () => void;
 }) {
+  const rpc = useRpc<typeof rpcContract>();
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
+  const [results, setResults] = useState<readonly Row[]>([]);
+  const [searching, setSearching] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
+  const generation = useRef(0);
 
-  const matches = useMemo(() => quickOpenMatches(entries, query, LIMIT), [entries, query]);
+  const trimmed = query.trim();
+  // Memoized so the selection-reset effect only fires when the list changes.
+  const recents: readonly Row[] = useMemo(() => recentPaths.map((path) => ({ path })), [recentPaths]);
+  const matches = trimmed === "" ? recents : results;
+
+  // The workspace is searched on demand, so files in directories the tree
+  // never opened still match. A response for an older query is dropped.
+  useEffect(() => {
+    if (trimmed === "") {
+      generation.current += 1;
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    const which = ++generation.current;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      rpc
+        .call("search", { source, query: trimmed, limit: LIMIT })
+        .then((result) => {
+          if (which !== generation.current) return;
+          setResults(result.matches);
+          setSearching(false);
+        })
+        .catch(() => {
+          if (which !== generation.current) return;
+          setResults([]);
+          setSearching(false);
+        });
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [rpc, source, trimmed]);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  // The list re-sorts when entries arrive, so a kept index would name another file.
-  useEffect(() => setIndex(0), [query, entries]);
+  // The list re-sorts when results arrive, so a kept index would name another file.
+  useEffect(() => setIndex(0), [query, matches]);
 
   useEffect(() => {
     listRef.current?.children[index]?.scrollIntoView({ block: "nearest" });
@@ -84,7 +128,7 @@ export function QuickOpen({
         <ul ref={listRef} role="listbox" className="min-h-0 flex-1 overflow-y-auto p-1">
           {matches.length === 0 ? (
             <li className="px-3 py-6 text-center text-xs text-muted-foreground">
-              {entries.length === 0 ? "Loading files…" : "No matching files"}
+              {searching ? "Searching…" : trimmed === "" ? "No recent files" : "No matching files"}
             </li>
           ) : (
             matches.map((entry, i) => {

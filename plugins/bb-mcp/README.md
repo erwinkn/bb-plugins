@@ -1,275 +1,181 @@
 # BB MCP
 
-Create, manage, and monitor BB coding threads from Executor or another remote
-MCP client. BB owns execution and conversations; this headless plugin exposes a
-scoped interface over the public BB SDK.
+Remote control of BB from Grok Bot, Executor or another MCP client, for
+trusted personal use. Version 0.4.0 exposes a single code-mode tool,
+`bb_execute`, whose `bb` global mirrors the complete BB SDK: threads,
+threadSections, projects, environments, files, terminals, hosts, providers,
+plugins, system, skills, status, theme and guide. There is no plugin-side
+permission layer; the endpoint grants the plugin's own owner-level access and
+must only be reachable by systems you trust.
 
-Version 0.2 adds real child threads, the product's source-reference handoff,
-execution controls, and thread updates. See the [product parity audit and
-delivery plan](PARITY.md), or call `bb_get_capabilities`, for what is shipped,
-planned, blocked upstream, or intentionally interactive.
+## Connect
 
-Requires BB 0.42.1 / Plugin SDK 0.4.47 and a connected execution host. MCP SDK
-2.0.0 serves modern `2026-07-28` requests and stateless 2025 initialization on
-the same Streamable HTTP endpoint. Legacy calls use finite SSE responses;
-modern calls return JSON. There is no session database or background MCP task.
-
-## Install and configure
+Requires BB 0.42.1 / Plugin SDK 0.4.47 and configured coding providers.
+Provider and infrastructure usage retains its normal costs.
 
 ```sh
 bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin bb-mcp --yes
-bb plugin config bb-mcp set projectIds 'proj_first,proj_second'
-bb plugin config bb-mcp set hostIds 'host_linux'
-bb plugin config bb-mcp set defaultHostId host_linux
 bb plugin config bb-mcp set appUrl https://your-bb.example.com
 bb plugin config bb-mcp set endpointUrl https://your-mcp.example.com/mcp
 bb mcp status
 ```
 
-Find IDs with `bb project list --json` and `bb machine list --json`. Project
-and host lists are explicit allowlists; an empty list denies operations. Read
-and write tools check scope even when a caller supplies a known thread or
-environment ID. Threads that have not yet received an environment can be read
-when the plugin has a recorded host for their creation.
+Expose HTTPS `/mcp` through a proxy to
+`/api/v1/plugins/bb-mcp/http/mcp`. See the [Caddy example](deploy/Caddyfile.example).
+Use Streamable HTTP and the custom secret header `x-bb-plugin-token`.
+Obtain the token with `bb plugin token bb-mcp` in a private terminal; do not
+paste it into prompts, URLs, source or logs. BB validates the token. The plugin
+also checks Host/Origin against its configured URLs and BB loopback; service
+clients may omit Origin. Query-string tokens are refused.
+Both modern 2026-07-28 and stateless legacy 2025 negotiation work.
 
-Settings:
+The settings are `appUrl`, `endpointUrl` and optional `defaultHostId`.
+Former project/host/provider scopes, permission ceilings and quota settings
+are retired and ignored. Credentials, settings values and the operation
+database are preserved on upgrade. Refresh/reconnect the MCP client after
+upgrading so it discards the removed per-operation tools.
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `projectIds` | empty | Comma/space-separated project IDs |
-| `hostIds` | empty | Comma/space-separated host IDs |
-| `defaultHostId` | empty | Default host for new worktrees |
-| `providerIds` | empty | Optional provider allowlist; empty permits installed providers |
-| `appUrl` | empty | HTTPS BB URL used for thread links |
-| `endpointUrl` | empty | HTTPS MCP URL accepted by the HTTP host/origin checks |
-| `permissionMode` | `auto` | Maximum execution permission; lower supported modes are used when necessary |
-| `requestsPerMinute` | 120 | Authenticated HTTP request limit per plugin generation |
-| `createsPerHour` | 20 | Durable new-thread admission limit, including uncertain outcomes |
-| `maxPendingOperations` | 4 | Concurrent create/send dispatch limit |
+## Code mode
 
-The host's native permission ceiling and BB's concurrency controls also apply.
-The MCP caller can request a permission mode within the configured ceiling,
-host ceiling, and any parent ceiling. An explicit unsupported/excessive mode
-fails; omitted modes resolve to an allowed supported default. It cannot change
-the operator's ceiling or configure the plugin. Discover
-providers before choosing one and pass `providerId` to discover its models.
-Pass `environmentId` when the provider needs a workspace-specific catalog.
+`bb_execute(code, timeoutMs?)` evaluates a caller-supplied async function in a
+sandboxed worker thread. Inside it, `bb` calls the same methods as `bb.sdk`
+(`bb.threads.get({threadId})`, `bb.projects.list()`, `bb.files.read(...)`, and
+so on — the full signature list is in the tool description), plus `bb.ops`
+below. Compose calls, loop, poll and filter inside the sandbox; only the
+returned value and `console.*` logs cross the wire.
 
-## HTTPS and authentication
+A second tool, `bb_read`, runs the same code under the same limits but only
+serves non-mutating methods — the gate applies to every host-bound call,
+including `ops.run` and `approve`, which are rejected outright (`ops.get`
+stays readable). It is annotated read-only so MCP clients can auto-approve
+it — prefer it for monitoring and discovery flows, and keep `bb_execute`
+for work dispatch. Client-side, configure your orchestrator to auto-approve
+whichever of the two you use; server-side there is no per-call approval
+layer by design.
 
-The internal route is:
+Successful results contain `{"data":{"result":...,"logs":[...]}}`. The result
+is the SDK's raw shape — `list` methods return bare arrays, reads return their
+documented objects; nothing is wrapped per call. Filter or aggregate large
+responses inside the sandbox before returning (a 256 KB result cap applies;
+big intermediate values like `providers.models` are fine inside). SDK errors
+reach the sandbox as exceptions carrying their `.code`; sandbox faults set
+`isError` with the message only — no stack traces or argument logging.
 
-```text
-/api/v1/plugins/bb-mcp/http/mcp
-```
-
-Route a dedicated HTTPS hostname's `/mcp` path to that exact route. A
-[Caddy example](deploy/Caddyfile.example) is included. Keep the general BB API
-private, preserve MCP headers, disable response caching, and ensure this
-service path does not redirect to a browser login. The plugin checks Host and
-Origin against its configured URLs and BB loopback URL. An absent Origin is
-accepted for service clients. It does not trust forwarded identity headers.
-
-BB manages the credential. Obtain it through `bb plugin token bb-mcp` in a
-private terminal or pipe it directly to your connection secret store. Do not
-paste it into a prompt, source file, URL, or log. The plugin requires the
-`x-bb-plugin-token` header and rejects BB's query-string token alternative.
-Missing or invalid credentials return HTTP 401.
-
-In Executor's live console:
-
-1. Add a remote MCP integration for the public endpoint, with Streamable HTTP.
-2. Choose API-key/custom-header authentication named `x-bb-plugin-token`, with
-   no prefix, and store the BB token as the connection's secret.
-3. Set Executor policies for the exposed tools and verify `bb_list_projects`.
-4. Use that catalog from the assistant already connected to Executor.
-
-No Executor deployment or GrokBot-specific adapter is required. If the ingress
-adds Cloudflare Access, configure its service credentials as additional
-connection secret headers. OAuth can be added for clients that require it or
-for delegated identities; this first version uses one service principal.
-
-For a direct client, use the same HTTPS URL and custom header. Follow that
-client's secret management mechanism. Rotate using `bb plugin token bb-mcp
---rotate`, immediately update the Executor connection secret, and reconnect.
-Rotation invalidates the previous token. Disabling the plugin disables its
-routes and does not stop existing coding threads.
-
-## Tools
-
-All successful tool results contain `{ "data": ... }` in both structured
-content and the text representation. Tool failures set `isError` and return a
-bounded `{ "error": { "code", "message" } }` text block.
-
-| Tool | Purpose |
-| --- | --- |
-| `bb_list_projects` | Allowed projects and default execution host |
-| `bb_get_capabilities` | Implemented features, limits and parity roadmap |
-| `bb_list_runtimes` | Allowed hosts/providers and paginated provider models |
-| `bb_list_threads` | Paginated project scan with title/tree/archived/hidden filters |
-| `bb_get_thread` | Runtime, execution options, queue and pending prompts |
-| `bb_get_events` | Incremental event summaries with an exclusive sequence cursor |
-| `bb_create_thread` | Root/child creation, workspace choice and execution options |
-| `bb_handoff_thread` | New conversation with source-thread context reference |
-| `bb_send_message` | Queue/steer follow-up with execution options and optional schedule |
-| `bb_stop_thread` | Release current runtime; queued instructions remain separate |
-| `bb_rename_thread` | Update a thread title |
-| `bb_update_thread` | Title, parent, visibility and sticky model/reasoning updates |
-| `bb_get_result` | Latest root assistant message with turn provenance/freshness |
-| `bb_get_changes` | Page changed files/PR metadata and request bounded patches |
-| `bb_get_operation` | Read a stored create/handoff/send outcome |
-
-Example create arguments:
-
-```json
-{
-  "projectId": "proj_first",
-  "prompt": "Fix the failing test and report the change and validation.",
-  "title": "Fix failing test",
-  "providerId": "codex",
-  "idempotencyKey": "ticket-42-initial-instruction"
+```js
+async () => {
+  const op = await bb.ops.run({
+    kind: "create", key: "ticket-42-start",
+    call: "threads.spawn",
+    args: { projectId: "proj_x", input: [{ type: "text", text: "Fix the failing tests", mentions: [] }], environment: { type: "host", hostId: "host_x", workspace: { type: "managed-worktree", baseBranch: { kind: "default" } } } },
+  });
+  const threadId = op.threadId;
+  await bb.threads.wait({ threadId, status: "idle", timeoutMs: 60000 });
+  const events = await bb.threads.events.list({ threadId, order: "desc", limit: "5", types: ["item/completed"] });
+  return events.map(e => e.data?.item?.text).filter(Boolean)[0] ?? null;
 }
 ```
 
-Creation returns an operation ID and acceptance receipt. Provisioning may
-still be pending and `environmentId` may be null. Read the current thread for
-its resolved execution and environment; the stored receipt is historical.
-New tasks use isolated managed worktrees by default and do not navigate the
-user's open BB panes. Explicit environment reuse shares that environment's
-working files. Its project/host must be allowed.
+### Durable dispatch (`bb.ops`)
 
-Add `parentThreadId` to create a child in BB's tree. Reusing `environmentId`
-alone creates no parent relationship. Child visibility inherits the parent
-unless supplied explicitly. Thread summaries expose `parentThreadId`,
-`sourceThreadId`, `originKind` and `visibility`; listing can filter by parent,
-native source relationship, `hasParent`, `archived` and `includeHidden`.
+The SDK has no request ledger, so the plugin adds two functions:
 
-For a handoff, call `bb_handoff_thread`:
+- `bb.ops.run({call, args, key?, kind?, threadId?, projectId?})` executes one
+  SDK call inside a recorded receipt. Reusing `key` with identical
+  `call`+`args`+scope replays the stored receipt (a concurrent retry joins the
+  in-flight dispatch); a changed payload under the same key is
+  `idempotency_conflict`. Ledgered calls intentionally run without the
+  request's abort signal: they must survive client disconnects.
+- `bb.ops.get({operationId})` reads a stored receipt.
 
-```json
-{
-  "sourceThreadId": "thr_previous",
-  "prompt": "Continue with the remaining tests using the prior thread's context.",
-  "providerId": "claude-code",
-  "idempotencyKey": "ticket-42-handoff"
-}
-```
+`bb.approve({ threadId, interactionId, decision, grantedPermissions? })`
+resolves a pending permission approval — the code-mode equivalent of
+`bb thread approve` / `bb thread grant --scope session`. It verifies the
+interaction is still a pending approval, checks the decision is offered, and
+builds the resolution shape BB requires (`grantedPermissions` is
+required-but-nullable on `allow_*`; `deny` takes none; `allow_for_session`
+defaults to the request's `sessionGrant`, or to the requested permissions for
+`permission_grant` subjects; an explicit `null` grants once-only scope). For
+`user_question` and plugin-form
+interactions, call `threads.interactions.resolve` directly with
+`{ kind: "user_answer", answers }` or `{ kind: "request_answer", value }` —
+inspect the interaction first for its contract.
 
-This matches BB's UI handoff: a new conversation with a rich source-thread
-mention, using BB's context resolution. It reuses the source environment by
-default; set `reuseSourceEnvironment: false` for a new worktree or pass an
-explicit allowed `environmentId`. It does not clone a provider session, create
-a parent edge unless requested, or stop/archive the source. Both source and
-target scope are checked, including receipt reads after scope revocation.
+A receipt's `state` is `accepted`, `failed` or `outcome_unknown`. `failed`
+means BB definitively rejected the request (a pre-dispatch `ToolError` or an
+HTTP 4xx) — nothing committed, so the key is free and retrying with corrected
+arguments re-dispatches under it. `outcome_unknown` means BB may have
+committed despite the lost response — inspect BB (e.g.
+`threads.get`/`threads.list`) before retrying under a new key, and never
+automatically redispatch it. `bb mcp operations` lists receipts;
+`bb mcp reconcile <operation-id> <thread-id> --confirmed` records a manually
+verified outcome after checking the thread exists and matches the recorded
+project.
 
-Create, handoff and send accept `model`, `reasoningLevel`, `permissionMode`
-and `serviceTier` (`default`/`fast`, provider-dependent). Create and handoff
-also accept `providerId`. Catalog discovery reports provider capabilities and
-model defaults. `sendAt` schedules a first or follow-up instruction using a
-future Unix timestamp in milliseconds.
+### Limits and boundary
 
-Use `bb_update_thread` to set title, parent (`null` clears it), visibility,
-model or reasoning without dispatching work. Model/reasoning updates stay
-within the current provider and apply to next/later turns. Standalone
-permission/service-tier updates need [BB #3401](https://github.com/get-bb/bb/issues/3401);
-until then, set those fields on the next `bb_send_message`. The plugin does
-not simulate an update with a hidden prompt or plugin-only sticky settings.
+- Execution ends at a 30 s default timeout (120 s max via `timeoutMs`), 500
+  `bb` calls, or 8 KB of `console.*` output; runaway code is terminated with
+  the worker. Workers get a 256 MB old-generation cap, and at most 8
+  executions run concurrently (the rest queue). Termination never stops work
+  BB already accepted.
+- Cancelling the MCP call terminates the worker and propagates an abort
+  `signal` into inner SDK calls (except `ops.run` dispatches, which are
+  intentionally durable).
+- Provided globals beyond `console`: `setTimeout`/`clearTimeout`, `Buffer`,
+  `btoa`/`atob`, `TextEncoder`/`TextDecoder`, `crypto.randomUUID`/
+  `getRandomValues`. There are no module imports.
+- Methods returning live handles (`subscribe`, streams) are not exposed to the
+  sandbox. `bb.guide.render()` returns BB's own usage guide for argument
+  details.
+- Terminals take exact arg shapes: `terminals.create` requires `scope`
+  (`{kind:"thread", threadId}` / `{kind:"environment", environmentId}` /
+  `{kind:"host_path", hostId, cwd}`) plus `cols` and `rows`;
+  `terminals.input` takes `{terminalId, dataBase64}` — base64 PTY bytes, not
+  `text`/`enter`. `files.write` takes exactly `{path, content}`.
+- The worker is `node:vm` inside `worker_threads`: a reliability boundary for
+  trusted orchestrators, not a hostile-code sandbox.
+- When `threads.spawn` omits `permissionMode`, the plugin resolves one: the
+  project's configured execution default, else `"full"` clamped to the system
+  permission ceiling — never silently `"accept-edits"`. Injected defaults are
+  marked `executionInputSources.permissionMode: "client-preference"`. On
+  create/send/edit/queue calls, caller-supplied execution fields
+  (`providerId`, `model`, `reasoningLevel`, `serviceTier`, `permissionMode`)
+  are marked `"explicit"` automatically — BB silently drops them otherwise.
+  `threads.fork` is the exception: its args schema does not declare
+  `executionInputSources`, so its fields pass through unmarked.
+  `threads.send`, `threads.fork` and queued-message creation are deliberately
+  not defaulted — omitting `permissionMode` there inherits the thread's
+  stored execution options.
+- BB's own validation, provider policies, availability, costs, paging and
+  client/proxy timeouts all still apply; nothing is clipped or admitted by
+  the plugin.
 
-`bb_send_message` returns BB's actual `delivery` and, when queued, the queued
-message ID and wait reason. A queued outcome is successful acceptance, not a
-failure to resend. Use its `afterSeq` with event/result reads. `steer` can
-still queue during provisioning, startup, or a pending interaction.
-
-## Progress and results
-
-Poll every approximately 15 seconds. Runtime status, `activity`, pending
-interactions, and queue state are separate facts. Idle is not a declaration
-that a coding task succeeded. `taskCompletion` is deliberately `not_inferred`.
-`isCurrentTurnResult` requires an idle, completed matching turn without pending
-prompts, queued messages, or a later request. The caller still evaluates the
-assistant's result. Snapshots carry observation time and are not atomic across
-concurrent BB changes.
-
-Pending prompts are read from BB's interactions API, including plugin prompts
-that do not emit lifecycle events. Answer them in BB. Remote approval, question
-answering, and automatic callback delivery are outside this first release.
-
-Follow `nextAfterSeq` for events. Text is truncated explicitly; tool payloads
-and reasoning text are omitted. Pages stop at the response budget without
-skipping the remaining events. Thread title/host filters apply to scanned
-pages, so follow `nextOffset` even if a page contains no matches. Result search
-looks back through at most 100 matching events; `historyWindowExhausted` means
-to inspect event history rather than infer that no earlier answer exists.
-
-Changed-file responses omit BB's automatic inline patches. Request up to three
-relative paths for explicit patches; each patch is capped at 10 KB. File lists
-are paginated, and BB's own truncation flags are preserved. `all` includes
-changes since the environment's base branch and uncommitted work. Use
-`uncommitted` for environments without a base branch. Requests cap at 64 KiB;
-individual result data cap at 60 KB before MCP's text/structured duplication.
-
-## Retry and recovery
-
-Use one stable idempotency key per create/handoff/send instruction. Same key and same
-arguments returns the stored operation. Reusing it for different arguments is
-an `idempotency_conflict`. Keys are stored as hashes, and prompts are not copied
-into the operation ledger. HTTP disconnect does not stop accepted coding work.
-
-Handoffs share creation admission limits with ordinary threads. Replays use
-the original supplied arguments rather than newly resolved defaults, including
-after a scheduled time passes. Stored 0.1 create/send receipts remain valid.
-After upgrading, refresh Executor's discovered tools to load the added schemas.
-
-BB may commit a request before the plugin records its response. SDK failures
-at that boundary and pending requests recovered after reload are retained as
-`outcome_unknown`; they are never automatically dispatched again. Exactly-once
-creation needs [upstream support](https://github.com/get-bb/bb/issues/3396).
-
-```sh
-bb mcp operations
-# Inspect the matching thread and its history before confirming acceptance:
-bb mcp reconcile op_ID thr_ID --confirmed
-```
-
-Reconciliation is local/operator-only, applies only to uncertain requests, and
-checks the thread against the recorded project/host and any existing thread ID.
-It records an operator-confirmed acceptance; it does not execute work. If you
-establish that no request was accepted, deliberately issue a new instruction
-with a new key. Keep the old unknown record for audit.
-
-There is a 10,000-operation cap with no automatic key expiry. New instructions
-fail closed at that cap; existing receipts remain readable/replayable. Back up
-the plugin's BB-managed database before administrative maintenance. Settings,
-HTTP token and request history must survive installation source changes.
-
-## Development and verification
+## Develop and verify
 
 ```sh
 npm ci --include=dev
 npm run typecheck
 npm test
 npm run build
-bb plugin install path:/absolute/path/to/plugins/bb-mcp --yes
-bb plugin dev /absolute/path/to/plugins/bb-mcp
-node tests/live-client.mjs
-node tests/live-client.mjs --legacy bb_list_projects
-node tests/live-client.mjs bb_get_thread '{"threadId":"thr_ID"}'
 ```
 
-The live client runs on the BB server and obtains the plugin token in memory
-through the CLI. It never puts the credential in process arguments or output.
-`--url` targets the authenticated public endpoint. Use test worktrees and stop
-their runtimes after verification.
+Tests cover the sandbox bridge (composition, error propagation, timeout kill),
+the SDK path dispatch, the durable-ops ledger (dedupe, outcome_unknown,
+reconcile) and the MCP transport (auth, Host/Origin checks, `bb_execute`
+end-to-end). `tests/live-client.mjs` performs calls with an in-memory
+credential against a live BB.
 
-Tests use the official BB fake host with real SQLite and official MCP clients.
-They cover protocol negotiation, scope, runtime validation, queue/attention,
-request conflicts, restart recovery and bounded output. BB enforces token
-equality outside that fake host, so verify missing/wrong tokens against the
-installed route as well. `bb plugin logs bb-mcp` logs tool names/outcomes only.
+## Upstream feedback desired in BB
 
-Follow the root README's draft-PR workflow. BB 0.42.1 cannot switch a populated
-path installation to a managed Git branch in place. Use the documented stable
-Git clone/path-rebind fallback and record its full commit; do not remove this
-plugin to change its source. Keep the tested branch installed while the PR is
-open. After merge, update the stable clone to `main`, build and reload, or use
-a future data-preserving managed source switch.
+Observed by orchestrator agents driving this endpoint:
+
+- Provider catalog model IDs can be URL-encoded JSON; stable aliases (e.g.
+  `swe-2`) would be easier for agents to use.
+- Reasoning tiers vs. models are indistinguishable in the catalog — e.g.
+  "SWE-2 Max" is `reasoningLevel: "max"` on model `swe-2`, not a model ID.
+- `bb.guide.render()` is conceptual only; argument shapes for spawn/send
+  remain tribal knowledge (this plugin now embeds the common shapes in the
+  `bb_execute` description).
+
+Follow the repository's data-preserving plugin update workflow. Never remove
+a populated installation merely to change its source.

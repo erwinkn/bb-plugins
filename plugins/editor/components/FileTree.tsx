@@ -14,12 +14,11 @@ export interface FileTreeProps {
   label: string;
   isLoading: boolean;
   error: string | null;
-  truncated: boolean;
   activePath: string | null;
   onOpenFile: (path: string, options: { newTab: boolean }) => void;
   onRefresh: () => void;
-  /** Called for an expanded directory whose contents are not listed yet. */
-  onExpandDeferred: (path: string) => void;
+  /** Called when an expanded directory's listing could return more data. */
+  onLoadDirectory: (path: string) => void;
   /** Resolves when the entry exists; rejects with a message to show inline. */
   onCreate: (path: string, kind: CreateKind) => Promise<void>;
   onRename: (path: string, newPath: string, kind: CreateKind) => Promise<void>;
@@ -35,6 +34,8 @@ interface Draft {
 type RowEdit = { kind: "rename"; path: string } | { kind: "delete"; path: string };
 
 const INDENT_PER_LEVEL_PX = 12;
+/** Below this a deferred level usually lands; a slower one earns the row. */
+const LOADING_ROW_DELAY_MS = 200;
 
 export function FileTree({
   entries,
@@ -42,11 +43,10 @@ export function FileTree({
   label,
   isLoading,
   error,
-  truncated,
   activePath,
   onOpenFile,
   onRefresh,
-  onExpandDeferred,
+  onLoadDirectory,
   onCreate,
   onRename,
   onDelete,
@@ -89,13 +89,16 @@ export function FileTree({
     [expanded, filtered.expand],
   );
 
-  // Directories listed without their contents (node_modules, symlinks) load
-  // once they are open; the owner dedupes requests and merges the result.
-  const deferredPaths = useMemo(() => {
+  // An expanded directory requests a listing whenever one could add data:
+  // its own rows are missing (deferred) or a child's next level is not
+  // resolved yet. The response carries both, so every open pushes the
+  // prefetched frontier one level deeper. The owner dedupes requests and
+  // merges the result.
+  const expandablePaths = useMemo(() => {
     const paths = new Set<string>();
     const visit = (nodes: readonly TreeNode[]) => {
       for (const node of nodes) {
-        if (node.deferred) paths.add(node.path);
+        if (node.deferred || node.children.some((child) => child.deferred)) paths.add(node.path);
         visit(node.children);
       }
     };
@@ -103,8 +106,8 @@ export function FileTree({
     return paths;
   }, [tree]);
   useEffect(() => {
-    for (const path of effectiveExpanded) if (deferredPaths.has(path)) onExpandDeferred(path);
-  }, [deferredPaths, effectiveExpanded, onExpandDeferred]);
+    for (const path of effectiveExpanded) if (expandablePaths.has(path)) onLoadDirectory(path);
+  }, [expandablePaths, effectiveExpanded, onLoadDirectory]);
 
   const toggle = (path: string) => {
     setExpanded((current) => {
@@ -238,9 +241,6 @@ export function FileTree({
             />
           </>
         )}
-        {truncated && error === null ? (
-          <Message>Showing the first {entries.length.toLocaleString()} entries; this project is larger.</Message>
-        ) : null}
       </div>
       <ContextMenu state={menu} onClose={() => setMenu(null)} />
     </div>
@@ -437,14 +437,7 @@ function Rows(props: RowsProps) {
                 {draft !== null && draft.parent === node.path ? (
                   <DraftRow draft={draft} level={level + 1} onCancel={onCancelDraft} onCreate={onCreate} onDone={onCancelDraft} />
                 ) : null}
-                {node.deferred && node.children.length === 0 ? (
-                  <div
-                    className="flex h-6 items-center text-[13px] leading-6 text-muted-foreground"
-                    style={{ paddingLeft: 6 + (level + 1) * INDENT_PER_LEVEL_PX + 22 }}
-                  >
-                    Loading…
-                  </div>
-                ) : null}
+                {node.deferred && node.children.length === 0 ? <LoadingRow level={level + 1} /> : null}
                 <Rows {...props} level={level + 1} nodes={node.children} />
               </>
             ) : null}
@@ -452,6 +445,24 @@ function Rows(props: RowsProps) {
         );
       })}
     </>
+  );
+}
+
+/** A deferred level's placeholder. Local listings land fast enough that the row would only flash, so it waits out the delay. */
+function LoadingRow({ level }: { level: number }) {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setShow(true), LOADING_ROW_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  if (!show) return null;
+  return (
+    <div
+      className="flex h-6 items-center text-[13px] leading-6 text-muted-foreground"
+      style={{ paddingLeft: 6 + level * INDENT_PER_LEVEL_PX + 22 }}
+    >
+      Loading…
+    </div>
   );
 }
 

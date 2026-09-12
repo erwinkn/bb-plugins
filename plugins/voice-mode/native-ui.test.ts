@@ -404,17 +404,17 @@ test("switch_space resolves a spoken name from the cached catalog, applies it, a
   try {
     const ui = fast(); ui.bind(fakeApp().binding);
     assert.match((await ui.execute({ kind: "switch_space", space: "mobile" }, current)).detail, /no saved spaces yet/);
-    values.set("bb-plugin-erwin-activity:spaces-cache", JSON.stringify({ revision: 1, spaces: [{ id: "s1", name: "Mobile", projectIds: ["a", "b"] }, { id: "s2", name: "BB plugins", projectIds: ["c"] }] }));
-    values.set("bb-plugin-erwin-activity:v1", JSON.stringify({ groupBy: "status", spaceId: null }));
+    values.set("bb-plugin-sidebar:spaces-cache", JSON.stringify({ revision: 1, spaces: [{ id: "s1", name: "Mobile", projectIds: ["a", "b"] }, { id: "s2", name: "BB plugins", projectIds: ["c"] }] }));
+    values.set("bb-plugin-sidebar:v1", JSON.stringify({ groupBy: "status", spaceId: null }));
     const switched = await ui.execute({ kind: "switch_space", space: "the mobile space" }, current);
     assert.equal(switched.status, "succeeded"); assert.match(switched.detail, /Mobile space \(2 projects\)/);
-    assert.equal(JSON.parse(values.get("bb-plugin-erwin-activity:v1")!).spaceId, "s1");
-    assert.deepEqual(events, ["bb-plugin-erwin-activity:state"]);
+    assert.equal(JSON.parse(values.get("bb-plugin-sidebar:v1")!).spaceId, "s1");
+    assert.deepEqual(events, ["bb-plugin-sidebar:state"]);
     assert.match((await ui.execute({ kind: "switch_space", space: "mobile" }, current)).detail, /already shows Mobile/);
     const miss = await ui.execute({ kind: "switch_space", space: "finance" }, current);
     assert.equal(miss.status, "failed"); assert.match(miss.detail, /Saved spaces: /);
-    assert.equal(JSON.parse(values.get("bb-plugin-erwin-activity:v1")!).spaceId, "s1", "a miss changes nothing");
+    assert.equal(JSON.parse(values.get("bb-plugin-sidebar:v1")!).spaceId, "s1", "a miss changes nothing");
     assert.match((await ui.execute({ kind: "switch_space", space: "all projects" }, current)).detail, /all projects/);
-    assert.equal(JSON.parse(values.get("bb-plugin-erwin-activity:v1")!).spaceId, null);
+    assert.equal(JSON.parse(values.get("bb-plugin-sidebar:v1")!).spaceId, null);
   } finally { if (original) Object.defineProperty(globalThis, "window", original); else Reflect.deleteProperty(globalThis, "window"); }
 });
