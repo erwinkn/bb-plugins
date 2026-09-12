@@ -2,13 +2,12 @@
 
 A private GitHub collection of BB plugins.
 
-`bb-mcp` exposes thread management through Executor, Grok Bot or a direct MCP
-client: every project and thread, queue controls, questions and permission
-approvals. General SDK/CLI access, direct filesystem/terminal tools, permanent
-deletion, Git/PR writes and BB administration are deliberately excluded.
-There are no plugin-imposed project allowlists, quotas or output clipping.
-See [BB MCP](plugins/bb-mcp/README.md) and its
-[scope and boundary inventory](plugins/bb-mcp/PARITY.md).
+`bb-mcp` exposes BB through a code-mode MCP for trusted orchestrators:
+`bb_execute` runs JavaScript in an isolated worker whose `bb` global mirrors the
+complete BB SDK, `bb_read` serves the read-only subset for client auto-approval,
+and `bb.ops`/`bb.approve` add durable dispatch receipts and remote approvals.
+The token is owner-level — filesystem, terminals and plugin administration are
+all reachable. See [BB MCP](plugins/bb-mcp/README.md).
 
 `plans` provides plan review with a per-thread
 review panel, comments, revision history, and feedback to the original agent. See
@@ -219,15 +218,14 @@ host/parent ceilings, without sending a dummy message or restarting work.
 The MCP supports those fields on create/send and reports the standalone gap.
 Tracked in [BB #3401](https://github.com/get-bb/bb/issues/3401).
 
-### Thread-focused MCP boundary
+### MCP code-mode boundary
 
-The MCP deliberately excludes general administration, direct file/terminal
-access and permanent deletion. These are scope choices, not missing upstream
-APIs. All-project visibility, queue management, question/form answers and
-permission approvals use existing public SDK methods. Remaining native
-boundaries are documented in [the inventory](plugins/bb-mcp/PARITY.md), notably
-the standalone permission/service-tier update and atomic idempotency requests
-above and below. No new upstream issue is needed for the scope change.
+bb-mcp 0.4 replaced scoped thread-management tools with full-SDK code mode:
+the sandbox runs caller JavaScript with the token's owner-level access (files,
+terminals, plugin administration — all of `bb.sdk`). The only plugin-side
+boundary is the `bb_read` read-only tier for client auto-approval. Remaining
+native boundaries are the standalone permission/service-tier update and atomic
+idempotency requests noted above and below. No new upstream issue is needed.
 
 ### Follow-ups before a scheduled thread's first run
 
@@ -913,3 +911,9 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
 - **Symptom:** `threads.spawn({ providerId: "claude-code", model: "claude-fable-5-1", reasoningLevel: "high", permissionMode: "full", ... })` accepted the call but ran on the project default (acp-devin / swe-2) — the fields were silently ignored. They only take effect when `executionInputSources` marks each one `"explicit"` (e.g. `{ providerId: "explicit", model: "explicit", reasoningLevel: "explicit", permissionMode: "explicit" }`).
 - **Ask:** reject explicit fields without a source marker, or default supplied fields to explicit — silently running the wrong provider is a costly footgun for automation.
 - **Status:** not filed. Suggested title: `threads.spawn ignores providerId/model unless executionInputSources marks them explicit`.
+
+### Plugins cannot observe undeclared stored settings (2026-09-12)
+
+- **Symptom:** bb-mcp 0.4 removed the legacy scope/ceiling settings (`projectIds`, `hostIds`, `providerIds`, `permissionMode`, rate limits). Upgraded installs silently gain owner-level access, and there is no API to detect it: `bb.settings.define` only serves declared keys and `plugins.getSettings` filters values to the current schema.
+- **Ask:** let a plugin read its own stored-but-undeclared setting keys (or a `storedKeys` list) so migrations can warn or adapt.
+- **Status:** not filed. Suggested title: `Expose stored-but-undeclared plugin setting keys for migration checks`.

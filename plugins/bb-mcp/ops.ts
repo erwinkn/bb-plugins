@@ -11,16 +11,20 @@ export async function runOp(store: Store, args: unknown, call: SdkCall) {
   if (typeof a.call !== "string" || !a.call) throw new ToolError("invalid_arguments", "ops.run requires a call path like \"threads.spawn\".");
   if (a.key !== undefined && typeof a.key !== "string") throw new ToolError("invalid_arguments", "key must be a string.");
   const kind = typeof a.kind === "string" && a.kind ? a.kind : a.call;
-  const payload = { call: a.call, args: a.args };
-  const old = store.find(a.key, kind, payload);
-  if (old) return operationView(old);
+  const scope = {
+    threadId: typeof a.threadId === "string" ? a.threadId : null,
+    projectId: typeof a.projectId === "string" ? a.projectId : null,
+  };
+  // Receipt identity is the whole intent: call, args and declared scope. The
+  // `kind` label is cosmetic and stays out of the fingerprint.
+  const payload = { call: a.call, args: a.args, ...scope };
   const op = await store.run(
-    { kind, projectId: typeof a.projectId === "string" ? a.projectId : null, hostId: null, threadId: typeof a.threadId === "string" ? a.threadId : null },
+    { kind, ...scope, hostId: null },
     a.key, payload,
     async () => {
       const result = await call(a.call as string, a.args);
-      const response: Record<string, unknown> = result !== null && typeof result === "object" ? { ...(result as Record<string, unknown>) } : { result };
-      if (typeof response.threadId !== "string" && typeof response.id === "string") response.threadId = response.id;
+      const response: Record<string, unknown> = result !== null && typeof result === "object" && !Array.isArray(result) ? { ...(result as Record<string, unknown>) } : { result };
+      if (typeof response.threadId !== "string" && typeof response.id === "string" && response.id.startsWith("thr_")) response.threadId = response.id;
       return response;
     },
   );
@@ -62,15 +66,25 @@ export async function approveInteraction(args: unknown, call: SdkCall) {
   if (decision === "deny" && a.grantedPermissions !== undefined)
     throw new ToolError("invalid_arguments", "deny does not take grantedPermissions.");
   const interaction = await call("threads.interactions.get", { threadId: a.threadId, interactionId: a.interactionId }) as {
-    payload?: { kind?: unknown; availableDecisions?: unknown; subject?: { sessionGrant?: unknown } };
+    status?: unknown;
+    payload?: { kind?: unknown; availableDecisions?: unknown; subject?: { kind?: unknown; sessionGrant?: unknown; permissions?: unknown } };
   };
   const payload = interaction?.payload;
   if (payload?.kind !== "approval") throw new ToolError("conflict", "Interaction is not a pending approval.");
+  if (interaction.status !== undefined && interaction.status !== "pending")
+    throw new ToolError("conflict", "Interaction is no longer pending.");
   const offered = Array.isArray(payload.availableDecisions) ? payload.availableDecisions : [];
   if (offered.length && !offered.includes(decision))
     throw new ToolError("conflict", `Decision "${decision}" is not offered on this interaction.`);
   if (decision === "deny")
     return call("threads.interactions.resolve", { threadId: a.threadId, interactionId: a.interactionId, resolution: { decision: "deny" } });
-  const grantedPermissions = a.grantedPermissions ?? (decision === "allow_for_session" ? payload.subject?.sessionGrant : undefined) ?? null;
+  // Explicit null is meaningful (one-time allow); only an omitted key defaults.
+  const subject = payload.subject;
+  const offeredGrant = subject?.sessionGrant ?? (subject?.kind === "permission_grant" ? subject.permissions : undefined);
+  let grantedPermissions = a.grantedPermissions !== undefined ? a.grantedPermissions
+    : decision === "allow_for_session" ? (offeredGrant ?? null) : null;
+  // The grant object's children are required-but-nullable in the SDK schema.
+  if (grantedPermissions !== null && typeof grantedPermissions === "object")
+    grantedPermissions = { fileSystem: null, network: null, ...(grantedPermissions as Record<string, unknown>) };
   return call("threads.interactions.resolve", { threadId: a.threadId, interactionId: a.interactionId, resolution: { decision, grantedPermissions } });
 }

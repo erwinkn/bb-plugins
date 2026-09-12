@@ -14,7 +14,7 @@ export default function plugin(bb: BbPluginApi) {
   const handler = createMcpHandler(() => {
     const server = new McpServer({ name: "bb-mcp", version: "0.4.0" }, {
       capabilities: { tools: {} },
-      instructions: "Code-mode remote control of BB for a trusted orchestrator. bb_execute runs JavaScript in a sandboxed worker whose `bb` global mirrors the complete BB SDK (threads, threadSections, projects, environments, files, terminals, hosts, providers, plugins, system, skills, status, theme, guide) plus bb.ops for durable, deduplicated dispatch receipts. Compose calls, loop, wait and filter inside the sandbox; only the returned value crosses the wire. BB enforces its own validation and native limits; there is no plugin-side permission layer.",
+      instructions: "Code-mode remote control of BB for a trusted orchestrator. bb_execute runs JavaScript in an isolated worker whose `bb` global mirrors the complete BB SDK (threads, threadSections, projects, environments, files, terminals, hosts, providers, plugins, system, skills, status, theme, guide) plus bb.ops for durable, deduplicated dispatch receipts. Compose calls, loop, wait and filter inside the worker; only the returned value crosses the wire. BB enforces its own validation and native limits; there is no plugin-side permission layer.",
     });
     const codeTool = (name: string, description: string, readOnly: boolean) =>
       server.registerTool(name, {
@@ -26,7 +26,7 @@ export default function plugin(bb: BbPluginApi) {
         try {
           const args = inputSchema.parse(input);
           const data = await runCode({
-            code: args.code, timeoutMs: args.timeoutMs, paths: SDK_PATHS,
+            code: args.code, timeoutMs: args.timeoutMs, paths: SDK_PATHS, signal: ctx.mcpReq.signal,
             dispatch: makeDispatch(bb.sdk, store, path => bb.log.info(`MCP exec ${path}`), ctx.mcpReq.signal, readOnly),
           });
           bb.log.info(`MCP ${name}: ok`);

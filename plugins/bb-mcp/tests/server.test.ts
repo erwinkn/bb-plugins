@@ -6,6 +6,7 @@ import plugin from "../server";
 import { createStore } from "../store";
 import { getOp, reconcileOp, runOp } from "../ops";
 import { sdkCall } from "../codemode";
+import { ToolError } from "../config";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -56,6 +57,47 @@ describe("durable dispatch", () => {
     expect(first.state).toBe("outcome_unknown");
     expect(await store.run(scope, "key", spawnCall, dispatch)).toEqual(first); expect(dispatch).toHaveBeenCalledTimes(1);
     expect(first.error?.message).toBe("secret provider URL");
+  });
+  it("records definitive rejections as failed and lets the key be retried", async () => {
+    const { store } = storeHost();
+    const dispatch = vi.fn(async () => { throw new ToolError("not_found", "Unknown BB method."); });
+    const first = await store.run(scope, "key", spawnCall, dispatch);
+    expect(first.state).toBe("failed");
+    expect(first.error?.code).toBe("not_found");
+    const second = await store.run(scope, "key", spawnCall, async () => ({ threadId: "thr_test" }));
+    expect(second.state).toBe("accepted");
+    expect(second.threadId).toBe("thr_test");
+  });
+  it("treats HTTP 4xx rejections as definitive failures", async () => {
+    const { store } = storeHost();
+    const err = Object.assign(new Error("HTTP 400: Required"), { status: 400 });
+    const first = await store.run(scope, "key", spawnCall, async () => { throw err; });
+    expect(first.state).toBe("failed");
+  });
+  it("lets a retry with corrected args replace a failed receipt", async () => {
+    const { store } = storeHost();
+    await store.run(scope, "key", spawnCall, async () => { throw new ToolError("invalid_arguments", "bad"); });
+    const fixed = { ...spawnCall, args: { projectId: "proj_allowed", input: [{ type: "text", text: "Fixed", mentions: [] }] } };
+    const second = await store.run(scope, "key", fixed, async () => ({ threadId: "thr_test" }));
+    expect(second.state).toBe("accepted");
+  });
+  it("fingerprints binary args instead of collapsing them", async () => {
+    const { store } = storeHost();
+    const upload = (bytes: number[]) => ({ call: "projects.attachments.upload", args: { data: new Uint8Array(bytes).buffer } });
+    await store.run(scope, "key", upload([1, 2, 3]), async () => ({}));
+    await expect(store.run(scope, "key", upload([4, 5, 6]), async () => ({}))).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+  it("joins a same-key retry to the in-flight dispatch rather than replaying pending", async () => {
+    const { store } = storeHost(); let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    const call = vi.fn(async () => { await gate; return { id: "thr_test" }; });
+    const a = runOp(store, { key: "k", call: "threads.spawn", args: {} }, call);
+    const b = runOp(store, { key: "k", call: "threads.spawn", args: {} }, call);
+    release();
+    const [one, two] = await Promise.all([a, b]);
+    expect(one.state).toBe("accepted");
+    expect(two).toMatchObject({ id: one.id, state: "accepted" });
+    expect(call).toHaveBeenCalledTimes(1);
   });
   it("recovers a persisted in-flight request on reload without repeating it", async () => {
     const { bb, harness, store } = storeHost();

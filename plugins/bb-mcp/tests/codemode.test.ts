@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { isReadPath, makeDispatch, runCode, sdkCall } from "../codemode";
+import { isReadPath, makeDispatch, runCode, sdkCall, SDK_PATHS } from "../codemode";
 import { ToolError } from "../config";
 import type { Store } from "../store";
 
@@ -11,10 +12,11 @@ const sdk = {
 };
 
 const storeStub = {
-  find: () => undefined,
   get: () => undefined,
-  run: async (input: { kind: string; threadId?: string | null }, _k: unknown, _p: unknown, dispatch: () => Promise<Record<string, unknown>>) =>
-    ({ id: "op_1", kind: input.kind, projectId: null, hostId: null, threadId: input.threadId ?? null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response: await dispatch() }),
+  run: async (input: { kind: string; threadId?: string | null }, _k: unknown, _p: unknown, dispatch: () => Promise<Record<string, unknown>>) => {
+    const response = await dispatch();
+    return { id: "op_1", kind: input.kind, projectId: null, hostId: null, threadId: typeof response.threadId === "string" ? response.threadId : input.threadId ?? null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response };
+  },
 } as unknown as Store;
 
 const dispatch = makeDispatch(sdk, storeStub, () => {});
@@ -50,8 +52,21 @@ describe("runCode", () => {
     await expect(runCode({ code: `async () => { await bb.threads.nope({}); }`, paths, dispatch }))
       .rejects.toMatchObject({ code: "execution_failed" });
   });
-  it("rejects non-function code", async () => {
-    await expect(runCode({ code: `42`, paths, dispatch })).rejects.toMatchObject({ code: "execution_failed" });
+  it("treats non-function code as a body returning null", async () => {
+    const out = await runCode({ code: `42`, paths, dispatch });
+    expect(out.result).toBeNull();
+  });
+  it("runs a bare call expression exactly once, as a body", async () => {
+    const d = vi.fn(async (n: string, a: unknown) => dispatch(n, a));
+    const out = await runCode({ code: `bb.projects.list()`, paths, dispatch: d });
+    expect(out.result).toBeNull();
+    expect(d).toHaveBeenCalledTimes(1);
+  });
+  it("terminates the worker when the request aborts", async () => {
+    const ac = new AbortController();
+    const started = runCode({ code: `async () => { await new Promise(r => setTimeout(r, 60000)); }`, paths, dispatch, signal: ac.signal });
+    ac.abort();
+    await expect(started).rejects.toMatchObject({ code: "execution_aborted" });
   });
   it("kills runaway code at the timeout", async () => {
     await expect(runCode({ code: `async () => { while (true) {} }`, paths, dispatch, timeoutMs: 1000 }))
@@ -82,14 +97,64 @@ describe("sdkCall", () => {
     await expect(sdkCall(sdk, "threads.bogus", {})).rejects.toMatchObject({ code: "not_found" });
     await expect(sdkCall(sdk, "nope.x.y", {})).rejects.toMatchObject({ code: "not_found" });
   });
+  it("rejects paths outside the declared SDK surface, including prototype walks", async () => {
+    await expect(sdkCall(sdk, "threads.get.constructor", {})).rejects.toMatchObject({ code: "not_found" });
+    await expect(sdkCall(sdk, "threads.toString", {})).rejects.toMatchObject({ code: "not_found" });
+    await expect(sdkCall({ threads: { get: Object.assign(async () => ({}), { sneaky: async () => "x" }) } }, "threads.get.sneaky", {}))
+      .rejects.toMatchObject({ code: "not_found" });
+  });
+});
+
+// Catches drift between the advertised/exposed surface and the bundled SDK
+// types — a missing method or a renamed signal declaration shows up here.
+describe("SDK surface coverage", () => {
+  const dts = readFileSync(new URL("../node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts", import.meta.url), "utf8");
+  const bodies = new Map<string, string>();
+  for (const m of dts.matchAll(/interface (\w+)[^\n{]*\{([\s\S]*?)\n\}/g)) bodies.set(m[1], m[2]!);
+  const declared: string[] = [];
+  const signalPaths = new Set<string>();
+  const walk = (prefix: string, body: string) => {
+    for (const m of body.matchAll(/^\s{4}(\w+): (\w+Area);/gm)) walk(prefix + m[1] + ".", bodies.get(m[2]) ?? "");
+    for (const m of body.matchAll(/^\s{4}(\w+)\(([\s\S]{0,300}?)\)\s*:/gm)) {
+      const path = prefix + m[1];
+      declared.push(path);
+      const argsText = m[2];
+      if (/signal\?/.test(argsText)) { signalPaths.add(path); continue; }
+      const typeName = argsText.match(/\w+\??\s*:\s*(\w+)/)?.[1];
+      if (typeName && /signal\?:/.test(bodies.get(typeName) ?? "")) signalPaths.add(path);
+    }
+  };
+  for (const m of (bodies.get("BbSdkAreas") ?? "").matchAll(/^\s{4}(\w+): (\w+Area);/gm)) walk(m[1] + ".", bodies.get(m[2]) ?? "");
+  for (const m of (bodies.get("BbSdk") ?? "").matchAll(/^\s{4}(\w+): (\w+Area);/gm)) walk(m[1] + ".", bodies.get(m[2]) ?? "");
+  // subscribe returns a live unsubscribe function and is intentionally not exposed.
+  const expected = [...new Set(declared)].filter(p => p !== "subscribe").sort();
+  it("exposes every declared SDK method", () => {
+    const exposed = SDK_PATHS.filter(p => !p.startsWith("ops.") && p !== "approve").sort();
+    expect(exposed).toEqual(expected);
+  });
 });
 
 describe("ops dispatch", () => {
-  it("ops.run records the call result and normalizes threadId", async () => {
+  it("ops.run records the call result", async () => {
     const d = makeDispatch(sdk, storeStub, () => {});
     const out = await d("ops.run", { kind: "create", call: "threads.get", args: { threadId: "thr_1" } }) as Record<string, unknown>;
     expect(out.state).toBe("accepted");
-    expect((out.response as Record<string, unknown>).threadId).toBe("thr_1");
+    expect((out.response as Record<string, unknown>).id).toBe("thr_1");
+    expect(out.threadId).toBe("thr_1");
+  });
+  it("ops.run only promotes thread-returning call ids to threadId", async () => {
+    const projectsCreate = { projects: { create: async () => ({ id: "proj_new" }) } };
+    const d = makeDispatch(projectsCreate, storeStub, () => {});
+    const out = await d("ops.run", { call: "projects.create", args: {} }) as Record<string, unknown>;
+    expect(out.state).toBe("accepted");
+    expect(out.threadId).toBeNull();
+  });
+  it("ops.run inner calls are logged for audit", async () => {
+    const seen: string[] = [];
+    const d = makeDispatch(sdk, storeStub, (n) => seen.push(n));
+    await d("ops.run", { call: "threads.get", args: { threadId: "thr_1" } });
+    expect(seen).toContain("ops.run");
+    expect(seen).toContain("threads.get");
   });
   it("ops.get rejects missing operations", async () => {
     await expect(dispatch("ops.get", { operationId: "op_none" })).rejects.toMatchObject({ code: "not_found" });
@@ -111,12 +176,21 @@ describe("read-only dispatch", () => {
     await expect(runCode({ code: `async () => bb.threads.spawn({})`, paths, dispatch: roDispatch }))
       .rejects.toMatchObject({ code: "execution_failed", message: expect.stringContaining("read methods") });
   });
+  it("blocks durable dispatch and approvals, but allows ops.get", async () => {
+    await expect(roDispatch("ops.run", { call: "threads.get", args: {} })).rejects.toMatchObject({ code: "not_read_method" });
+    await expect(roDispatch("approve", { threadId: "t", interactionId: "i", decision: "deny" })).rejects.toMatchObject({ code: "not_read_method" });
+    await expect(roDispatch("ops.get", { operationId: "op_x" })).rejects.toMatchObject({ code: "not_found" });
+    // end to end through the sandbox: the ledgered write never reaches the SDK
+    const write = vi.fn(async () => ({}));
+    const guarded = makeDispatch({ ...sdk, files: { write } }, storeStub, () => {}, undefined, true);
+    await expect(runCode({ code: `async () => bb.ops.run({ call: "files.write", args: { path: "/x", content: "y" } })`, paths: [...paths, "files.write"], dispatch: guarded }))
+      .rejects.toMatchObject({ code: "execution_failed" });
+    expect(write).not.toHaveBeenCalled();
+  });
   it("keeps credential-bearing reads execute-only", () => {
     expect(isReadPath("plugins.token")).toBe(false);
     expect(isReadPath("system.config")).toBe(false);
     expect(isReadPath("threads.wait")).toBe(true);
-    expect(isReadPath("ops.get")).toBe(true);
-    expect(isReadPath("ops.run")).toBe(false);
   });
 });
 
@@ -124,6 +198,22 @@ describe("result limits", () => {
   it("rejects oversized returned values with guidance", async () => {
     await expect(runCode({ code: `async () => "x".repeat(400000)`, paths, dispatch }))
       .rejects.toMatchObject({ code: "execution_failed", message: expect.stringContaining("Filter") });
+  });
+  it("measures the cap in UTF-8 bytes, not UTF-16 length", async () => {
+    // 100k astral chars ≈ 400 KB UTF-8 — under the old char-count check, over the byte cap.
+    await expect(runCode({ code: `async () => "\\u{1f600}".repeat(100000)`, paths, dispatch }))
+      .rejects.toMatchObject({ code: "execution_failed", message: expect.stringContaining("Filter") });
+  });
+  it("returns null for undefined results instead of dropping the key", async () => {
+    const out = await runCode({ code: `async () => { await bb.projects.list(); }`, paths, dispatch });
+    expect(out.result).toBeNull();
+    expect("result" in out).toBe(true);
+  });
+  it("rejects results JSON cannot represent, inside the sandbox", async () => {
+    await expect(runCode({ code: `async () => 10n`, paths, dispatch }))
+      .rejects.toMatchObject({ code: "execution_failed", message: expect.stringMatching(/serializ/i) });
+    await expect(runCode({ code: `async () => { const o = {}; o.self = o; return o; }`, paths, dispatch }))
+      .rejects.toMatchObject({ code: "execution_failed", message: expect.stringMatching(/serializ/i) });
   });
   it("lets large intermediate results stay inside the sandbox", async () => {
     const big = { threads: { list: async () => "x".repeat(400000) } };
@@ -165,6 +255,29 @@ describe("permissionMode defaulting", () => {
     expect(s.threads.spawn).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: "auto", executionInputSources: { permissionMode: "explicit" } }));
     expect(s.projects.defaultExecutionOptions).not.toHaveBeenCalled();
   });
+  it("marks every caller-supplied execution field explicit, not just permissionMode", async () => {
+    const s = spySdk({ project: { permissionMode: "auto" }, ceiling: "full" });
+    await sdkCall(s, "threads.spawn", { projectId: "p1", input: [], providerId: "codex", model: "gpt-6-astra", reasoningLevel: "xhigh", serviceTier: "fast" });
+    expect(s.threads.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: "codex", model: "gpt-6-astra", reasoningLevel: "xhigh", serviceTier: "fast",
+      permissionMode: "auto",
+      executionInputSources: { providerId: "explicit", model: "explicit", reasoningLevel: "explicit", serviceTier: "explicit", permissionMode: "client-preference" },
+    }));
+  });
+  it("merges with caller-provided executionInputSources without overriding them", async () => {
+    const s = spySdk({ project: null, ceiling: "full" });
+    await sdkCall(s, "threads.spawn", { projectId: "p1", input: [], model: "m", executionInputSources: { model: "client-preference" } });
+    expect(s.threads.spawn).toHaveBeenCalledWith(expect.objectContaining({
+      executionInputSources: { model: "client-preference", permissionMode: "client-preference" },
+    }));
+  });
+  it("marks explicit execution fields on send and queued message creation", async () => {
+    const s = { threads: { send: vi.fn(async (a: unknown) => a), queuedMessages: { create: vi.fn(async (a: unknown) => a) } } };
+    await sdkCall(s, "threads.send", { threadId: "t", input: [], mode: "steer", model: "m" });
+    expect(s.threads.send).toHaveBeenCalledWith(expect.objectContaining({ executionInputSources: { model: "explicit" } }));
+    await sdkCall(s, "threads.queuedMessages.create", { threadId: "t", input: [], permissionMode: "full" });
+    expect(s.threads.queuedMessages.create).toHaveBeenCalledWith(expect.objectContaining({ executionInputSources: { permissionMode: "explicit" } }));
+  });
   it("does not touch non-dispatch paths", async () => {
     const s = spySdk({ project: { permissionMode: "auto" }, ceiling: "full" });
     const read = await sdkCall(s, "projects.defaultExecutionOptions", { projectId: "p1" });
@@ -175,7 +288,7 @@ describe("permissionMode defaulting", () => {
 
 describe("bb.approve", () => {
   const approval = (extra: Record<string, unknown> = {}) => ({
-    id: "int_1", payload: { kind: "approval", availableDecisions: ["allow_once", "allow_for_session", "deny"], subject: { sessionGrant: { network: { enabled: true } } }, ...extra },
+    id: "int_1", status: "pending", payload: { kind: "approval", availableDecisions: ["allow_once", "allow_for_session", "deny"], subject: { kind: "command", sessionGrant: { network: { enabled: true } } }, ...extra },
   });
   const approvalSdk = (interaction: unknown) => ({
     threads: { interactions: { get: vi.fn(async () => interaction), resolve: vi.fn(async (a: unknown) => a) } },
@@ -198,10 +311,29 @@ describe("bb.approve", () => {
     expect((s.threads.interactions.resolve as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ resolution: { decision: "deny" } });
     expect((s.threads.interactions.resolve as ReturnType<typeof vi.fn>).mock.calls[0][0].resolution).not.toHaveProperty("grantedPermissions");
   });
+  it("honors an explicit null grantedPermissions on allow_for_session", async () => {
+    const s = approvalSdk(approval());
+    await dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "allow_for_session", grantedPermissions: null });
+    expect((s.threads.interactions.resolve as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ resolution: { decision: "allow_for_session", grantedPermissions: null } });
+  });
+  it("defaults permission_grant session approvals to the subject's permissions", async () => {
+    const s = approvalSdk(approval({ subject: { kind: "permission_grant", permissions: { fileSystem: { read: ["."], write: [] }, network: null } } }));
+    await dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "allow_for_session" });
+    expect((s.threads.interactions.resolve as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ resolution: { decision: "allow_for_session", grantedPermissions: { fileSystem: { read: ["."], write: [] }, network: null } } });
+  });
+  it("normalizes a partial grant object to the SDK's required-nullable keys", async () => {
+    const s = approvalSdk(approval());
+    await dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "allow_for_session", grantedPermissions: { network: { enabled: false } } });
+    expect((s.threads.interactions.resolve as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({ resolution: { decision: "allow_for_session", grantedPermissions: { network: { enabled: false }, fileSystem: null } } });
+  });
+  it("rejects approvals that are no longer pending", async () => {
+    const s = approvalSdk({ ...approval(), status: "resolved" });
+    await expect(dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "deny" })).rejects.toMatchObject({ code: "conflict" });
+  });
   it("rejects decisions the interaction does not offer and non-approvals", async () => {
     const s = approvalSdk(approval({ availableDecisions: ["deny"] }));
     await expect(dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "allow_once" })).rejects.toMatchObject({ code: "conflict" });
-    const q = approvalSdk({ id: "int_2", payload: { kind: "user_question" } });
+    const q = approvalSdk({ id: "int_2", status: "pending", payload: { kind: "user_question" } });
     await expect(dispatchFor(q)("approve", { threadId: "t", interactionId: "int_2", decision: "deny" })).rejects.toMatchObject({ code: "conflict" });
     await expect(dispatchFor(s)("approve", { threadId: "t", interactionId: "int_1", decision: "maybe" })).rejects.toMatchObject({ code: "invalid_arguments" });
   });

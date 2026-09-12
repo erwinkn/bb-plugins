@@ -41,31 +41,39 @@ export type Dispatch = (path: string, args: unknown) => Promise<unknown>;
 const PERMISSION_DEFAULT_PATHS = new Set(["threads.spawn"]);
 const PERMISSION_RANK: Record<string, number> = { "accept-edits": 0, auto: 1, full: 2 };
 
-const tryCall = (sdk: unknown, path: string, args: unknown, signal?: AbortSignal) =>
-  sdkCall(sdk, path, args, signal).catch(() => undefined);
+// BB silently drops caller-supplied execution fields unless executionInputSources
+// marks each one "explicit" — the SDK's create/send/fork/queue schemas all carry
+// it. Marking supplied fields is a no-op when BB already honors them.
+const EXEC_SOURCE_PATHS = new Set(["threads.spawn", "threads.send", "threads.editMessage", "threads.fork", "threads.queuedMessages.create"]);
+const EXEC_SOURCE_FIELDS = ["providerId", "model", "reasoningLevel", "serviceTier", "permissionMode"];
 
 // Methods whose args declare `signal?: AbortSignal` in the bundled SDK types.
 // Injecting it anywhere else fails strict arg validation (files.write rejected
 // the key). Regenerate from bb-plugin-sdk.d.ts when the SDK version changes.
-const SIGNAL_PATHS = new Set(["environments.diff","environments.diffBranches","environments.diffFile","environments.diffFiles","environments.diffPatch","environments.get","environments.pullRequest","environments.paths","environments.status","files.read","files.list","files.listPaths","files.createPreview","hosts.directory","hosts.get","hosts.cloneDefaultPath","hosts.list","hosts.pathsExist","hosts.pickFolder","hosts.providerCliStatus","projects.attachments.read","projects.branches","projects.commands","projects.defaultExecutionOptions","projects.fileContent","projects.files","projects.get","projects.list","projects.paths","projects.promptHistory","projects.sidebarBootstrap","plugins.checkUpdates","plugins.catalog.installPlan","plugins.catalog.search","plugins.catalog.status","plugins.marketplaces.list","plugins.marketplaces.refresh","plugins.getSettings","plugins.getSource","plugins.list","plugins.listUpdateResults","providers.list","providers.models","skills.getContent","skills.list","skills.listFiles","skills.registry.detail","skills.registry.entries","skills.registry.get","skills.registry.repositoryStars","skills.registry.search","status.get","system.attention","system.config","system.executionOptions","system.cliSkillsStatus","system.transcribeVoice","system.providerStates","system.usageLimits","system.version","terminals.get","terminals.list","terminals.output","theme.get","theme.catalog","threadSections.list","threads.childSummary","threads.conversationOutline","threads.count","threads.defaultExecutionOptions","threads.events.list","threads.events.wait","threads.get","threads.queue.list","threads.interactions.get","threads.interactions.list","threads.list","threads.output","threads.promptHistory","threads.queuedMessages.list","threads.resolveMentions","threads.search","threads.tabs.get","threads.timeline","threads.timelineTurnSummaryDetails","threads.storageFiles","threads.storageLocation","threads.storagePaths","threads.wait"]);
+const SIGNAL_PATHS = new Set(["environments.diff","environments.diffBranches","environments.diffFile","environments.diffFiles","environments.diffPatch","environments.get","environments.pullRequest","environments.paths","environments.status","files.read","files.list","files.listPaths","files.createPreview","hosts.directory","hosts.get","hosts.cloneDefaultPath","hosts.list","hosts.pathsExist","hosts.pickFolder","hosts.providerCliStatus","projects.attachments.read","projects.branches","projects.commands","projects.defaultExecutionOptions","projects.fileContent","projects.files","projects.get","projects.list","projects.paths","projects.promptHistory","projects.sidebarBootstrap","plugins.checkUpdates","plugins.catalog.installPlan","plugins.catalog.search","plugins.catalog.status","plugins.marketplaces.list","plugins.marketplaces.refresh","plugins.getSettings","plugins.getSource","plugins.list","plugins.listUpdateResults","providers.list","providers.models","skills.getContent","skills.list","skills.listFiles","skills.registry.detail","skills.registry.entries","skills.registry.get","skills.registry.repositoryStars","skills.registry.search","status.get","system.attention","system.config","system.executionOptions","system.cliSkillsStatus","system.transcribeVoice","system.providerStates","system.usageLimits","system.version","terminals.get","terminals.list","terminals.output","theme.get","theme.catalog","threadSections.list","threads.childSummary","threads.conversationOutline","threads.count","threads.defaultExecutionOptions","threads.events.list","threads.events.wait","threads.get","threads.queue.list","threads.interactions.get","threads.interactions.list","threads.list","threads.listRunning","threads.output","threads.promptHistory","threads.queuedMessages.list","threads.resolveMentions","threads.search","threads.tabs.get","threads.timeline","threads.timelineTurnSummaryDetails","threads.storageFiles","threads.storageLocation","threads.storagePaths","threads.wait"]);
 
+// Lookup failures propagate: spawning with a guessed mode is worse than
+// erroring — BB's own default may be a remembered "accept-edits".
 async function resolvePermissionMode(sdk: unknown, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
   let mode: unknown;
   if (typeof args.projectId === "string")
-    mode = (await tryCall(sdk, "projects.defaultExecutionOptions", { projectId: args.projectId }) as { permissionMode?: unknown } | undefined)?.permissionMode;
+    mode = (await sdkCall(sdk, "projects.defaultExecutionOptions", { projectId: args.projectId }, signal) as { permissionMode?: unknown } | undefined)?.permissionMode;
   let resolved = typeof mode === "string" ? mode : "full";
-  const ceiling = (await tryCall(sdk, "system.executionOptions", { signal }) as { permissionCeiling?: unknown } | undefined)?.permissionCeiling;
+  const ceiling = (await sdkCall(sdk, "system.executionOptions", { signal }) as { permissionCeiling?: unknown } | undefined)?.permissionCeiling;
   if (typeof ceiling === "string" && ceiling in PERMISSION_RANK && (PERMISSION_RANK[resolved] ?? PERMISSION_RANK.full) > PERMISSION_RANK[ceiling]) resolved = ceiling;
   return resolved;
 }
 
-// Resolves "threads.interactions.list"-style paths into bb.sdk calls. The
-// request's abort `signal` is injected into plain-object args only for paths
-// whose SDK args declare it (SIGNAL_PATHS) — everywhere else strict arg
+// Resolves "threads.interactions.list"-style paths into bb.sdk calls. Paths are
+// whitelisted against the declared SDK surface first — without that check the
+// walker below could reach host-realm members (fn.constructor, subscribe).
+// The request's abort `signal` is injected into plain-object args only for
+// paths whose SDK args declare it (SIGNAL_PATHS) — everywhere else strict arg
 // validation would reject the unknown key.
 // Reflect.apply, not fn.call: proxy-based SDK facades treat property access as
 // a method path, so reading fn.call would resolve a bogus "<path>.call".
 export async function sdkCall(sdk: unknown, path: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+  if (!SDK_PATH_SET.has(path)) throw new ToolError("not_found", `Unknown BB method "${path}".`);
   const parts = path.split(".");
   let node: unknown = sdk;
   for (const p of parts.slice(0, -1)) {
@@ -77,28 +85,37 @@ export async function sdkCall(sdk: unknown, path: string, args: unknown, signal?
   const callArgs = args !== null && typeof args === "object" && !Array.isArray(args)
     ? (SIGNAL_PATHS.has(path) ? { ...args, signal } : { ...(args as Record<string, unknown>) })
     : args;
-  if (PERMISSION_DEFAULT_PATHS.has(path) && callArgs !== null && typeof callArgs === "object") {
+  if (EXEC_SOURCE_PATHS.has(path) && callArgs !== null && typeof callArgs === "object") {
     const a = callArgs as Record<string, unknown>;
-    const sources = a.executionInputSources !== null && typeof a.executionInputSources === "object" ? a.executionInputSources as Record<string, unknown> : {};
-    if (a.permissionMode === undefined) {
+    const sources = a.executionInputSources !== null && typeof a.executionInputSources === "object" ? { ...(a.executionInputSources as Record<string, unknown>) } : {};
+    for (const f of EXEC_SOURCE_FIELDS) if (a[f] !== undefined && sources[f] === undefined) sources[f] = "explicit";
+    if (PERMISSION_DEFAULT_PATHS.has(path) && a.permissionMode === undefined) {
       a.permissionMode = await resolvePermissionMode(sdk, a, signal);
       if (sources.permissionMode === undefined) sources.permissionMode = "client-preference";
-    } else if (sources.permissionMode === undefined) sources.permissionMode = "explicit";
+    }
     if (Object.keys(sources).length) a.executionInputSources = sources;
   }
   return Reflect.apply(fn as (a: unknown) => Promise<unknown>, node, [callArgs]);
 }
 
-// `bb.ops.*` is the plugin's durable ledger. Ledgered calls deliberately run
-// without the request signal: they must survive client disconnects.
+// One choke point for every host-bound call — audit log, then the read-only
+// gate, then the SDK (or the approve helper built on it). Ledgered calls go
+// through the same gate via their inner callback, deliberately without the
+// request signal: durable dispatch must survive client disconnects.
 export function makeDispatch(sdk: unknown, store: Store, log: (path: string) => void, signal?: AbortSignal, readOnly = false): Dispatch {
-  const hostCall = (name: string, input: unknown, sig?: AbortSignal): Promise<unknown> =>
-    name === "approve" ? approveInteraction(input, (p, a) => sdkCall(sdk, p, a, sig)) : sdkCall(sdk, name, input, sig);
-  return async (name, input) => {
-    if (name === "ops.run") return runOp(store, input, (p, a) => hostCall(p, a));
-    if (name === "ops.get") return getOp(store, input);
-    if (readOnly && !isReadPath(name)) throw new ToolError("not_read_method", `"${name}" can mutate; bb_read only serves read methods. Use bb_execute.`);
+  const hostCall = (name: string, input: unknown, sig?: AbortSignal): Promise<unknown> => {
     log(name);
+    if (readOnly && !isReadPath(name))
+      throw new ToolError("not_read_method", `"${name}" can mutate; bb_read only serves read methods. Use bb_execute.`);
+    return name === "approve" ? approveInteraction(input, (p, a) => hostCall(p, a, sig)) : sdkCall(sdk, name, input, sig);
+  };
+  return async (name, input) => {
+    if (name === "ops.get") { log(name); return getOp(store, input); }
+    if (name === "ops.run") {
+      log(name);
+      if (readOnly) throw new ToolError("not_read_method", "Durable dispatch can mutate; bb_read only serves read methods. Use bb_execute.");
+      return runOp(store, input, (p, a) => hostCall(p, a));
+    }
     return hostCall(name, input, signal);
   };
 }
@@ -108,6 +125,8 @@ export function makeDispatch(sdk: unknown, store: Store, log: (path: string) => 
 const WORKER_SRC = `"use strict";
 const { parentPort, workerData } = require("node:worker_threads");
 const vm = require("node:vm");
+const { Buffer } = require("node:buffer");
+const { webcrypto } = require("node:crypto");
 const { code, paths, maxCalls, maxLogBytes, maxLogLines, maxResultBytes } = workerData;
 const pending = new Map();
 let seq = 0, calls = 0, logBytes = 0;
@@ -130,7 +149,8 @@ const invoke = (path, args) => {
   return new Promise((resolve, reject) => {
     const id = ++seq;
     pending.set(id, { resolve, reject });
-    parentPort.postMessage({ call: true, id, path, args: args === undefined ? {} : args });
+    try { parentPort.postMessage({ call: true, id, path, args: args === undefined ? {} : args }); }
+    catch { pending.delete(id); reject(Object.assign(new Error("Call arguments must be structured-cloneable data."), { code: "invalid_arguments" })); }
   });
 };
 const bb = {};
@@ -144,21 +164,31 @@ const context = vm.createContext({
   bb,
   console: { log: record, info: record, warn: record, error: record, debug: record },
   setTimeout, clearTimeout,
+  Buffer, btoa, atob, TextEncoder, TextDecoder, crypto: webcrypto,
 });
 const finish = msg => {
   if (msg.done) {
-    let size = -1;
-    try { size = JSON.stringify(msg.result)?.length ?? 0; } catch {}
-    if (size > maxResultBytes) msg = { failed: true, message: "Result exceeds " + maxResultBytes + " bytes. Filter, page or aggregate inside the sandbox before returning." };
+    // Serialize in the worker: the result crossing the bridge is already valid
+    // JSON, measured in UTF-8 bytes, or a clean failure message.
+    let json;
+    try { json = JSON.stringify(msg.result === undefined ? null : msg.result); }
+    catch { return finish({ failed: true, message: "The returned value cannot be serialized as JSON (BigInt, circular reference). Reduce it inside the sandbox." }); }
+    if (Buffer.byteLength(json, "utf8") > maxResultBytes) return finish({ failed: true, message: "Result exceeds " + maxResultBytes + " bytes. Filter, page or aggregate inside the sandbox before returning." });
+    msg = { done: true, resultJson: json };
   }
   try { parentPort.postMessage({ ...msg, logs }); }
   catch { try { parentPort.postMessage({ failed: true, message: "The returned value could not be serialized.", logs }); } catch {} }
 };
-let fn;
-try { fn = vm.runInContext("(\\n" + code + "\\n)", context, { timeout: 5000 }); }
-catch (first) {
+let fn, firstErr;
+// Only evaluate code that already looks like a function; anything else runs
+// once as a body — a bare expression must not dispatch then fail as non-function.
+if (/^\\s*(async\\b|function\\b|\\()/.test(code)) {
+  try { fn = vm.runInContext("(\\n" + code + "\\n)", context, { timeout: 5000 }); }
+  catch (e) { firstErr = e; }
+}
+if (fn === undefined) {
   try { fn = vm.runInContext("(async function __main__() {\\n" + code + "\\n})", context, { timeout: 5000 }); }
-  catch { finish({ failed: true, message: first && first.message ? first.message : String(first) }); }
+  catch { finish({ failed: true, message: firstErr && firstErr.message ? firstErr.message : String(firstErr) }); }
 }
 if (fn !== undefined) {
   if (typeof fn !== "function") finish({ failed: true, message: "Code must evaluate to a function, e.g. async () => { ... return value; }" });
@@ -168,42 +198,56 @@ if (fn !== undefined) {
   }
 }`;
 
-export function runCode(opts: { code: string; paths: string[]; dispatch: Dispatch; timeoutMs?: number }): Promise<{ result: unknown; logs: string[] }> {
+const MAX_CONCURRENT = 8;
+let active = 0;
+const waiters: (() => void)[] = [];
+const acquire = () => active < MAX_CONCURRENT ? (active++, Promise.resolve()) : new Promise<void>(r => waiters.push(r));
+const release = () => { const next = waiters.shift(); if (next) next(); else active--; };
+
+export async function runCode(opts: { code: string; paths: string[]; dispatch: Dispatch; timeoutMs?: number; signal?: AbortSignal }): Promise<{ result: unknown; logs: string[] }> {
   const timeoutMs = Math.min(Math.max(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, 1000), MAX_TIMEOUT_MS);
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(WORKER_SRC, {
-      eval: true,
-      workerData: { code: opts.code, paths: opts.paths, maxCalls: MAX_CALLS, maxLogBytes: MAX_LOG_BYTES, maxLogLines: MAX_LOG_LINES, maxResultBytes: MAX_RESULT_BYTES },
+  await acquire();
+  try {
+    return await new Promise((resolve, reject) => {
+      const worker = new Worker(WORKER_SRC, {
+        eval: true,
+        workerData: { code: opts.code, paths: opts.paths, maxCalls: MAX_CALLS, maxLogBytes: MAX_LOG_BYTES, maxLogLines: MAX_LOG_LINES, maxResultBytes: MAX_RESULT_BYTES },
+        resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 64, stackSizeMb: 4 },
+      });
+      let settled = false, timedOut = false;
+      const cleanup = () => { clearTimeout(timer); opts.signal?.removeEventListener("abort", onAbort); };
+      const finish = (fn: () => void) => { if (settled) return; settled = true; cleanup(); void worker.terminate(); fn(); };
+      const onAbort = () => finish(() => reject(new ToolError("execution_aborted", "The MCP request was cancelled.")));
+      const timer = setTimeout(() => { timedOut = true; void worker.terminate(); }, timeoutMs);
+      if (opts.signal?.aborted) { onAbort(); return; }
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
+      worker.on("message", (m: { call?: boolean; id?: number; path?: string; args?: unknown; done?: boolean; failed?: boolean; resultJson?: string; logs?: string[]; message?: string }) => {
+        if (m.call) {
+          if (settled) return;
+          // Deferred invocation: a synchronous throw from dispatch must still
+          // become an error reply, never an unhandled exception in the handler.
+          Promise.resolve().then(() => opts.dispatch(m.path!, m.args)).then(
+            result => {
+              try { worker.postMessage({ id: m.id, ok: true, result }); }
+              catch {
+                try { worker.postMessage({ id: m.id, ok: false, error: { code: "unserializable_result", message: `"${m.path}" returned a value that cannot cross the sandbox bridge (live handle, function or stream).` } }); } catch { /* worker gone */ }
+              }
+            },
+            (e: unknown) => { try { worker.postMessage({ id: m.id, ok: false, error: errorView(e) }); } catch { /* worker gone */ } },
+          );
+        } else if (m.done) finish(() => resolve({ result: m.resultJson === undefined ? null : JSON.parse(m.resultJson), logs: m.logs ?? [] }));
+        else if (m.failed) finish(() => reject(new ToolError("execution_failed", String(m.message).slice(0, 1000))));
+      });
+      worker.on("error", e => finish(() => reject(new ToolError("execution_failed", e.message.slice(0, 500)))));
+      worker.on("exit", code => finish(() => reject(new ToolError(timedOut ? "execution_timeout" : "execution_failed",
+        timedOut ? `Execution exceeded ${timeoutMs} ms and was terminated.` : `Code worker exited (${String(code)}).`))));
     });
-    let settled = false, timedOut = false;
-    const finish = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(timer); void worker.terminate(); fn(); };
-    const timer = setTimeout(() => { timedOut = true; void worker.terminate(); }, timeoutMs);
-    worker.on("message", (m: { call?: boolean; id?: number; path?: string; args?: unknown; done?: boolean; failed?: boolean; result?: unknown; logs?: string[]; message?: string }) => {
-      if (m.call) {
-        // Deferred invocation: a synchronous throw from dispatch must still
-        // become an error reply, never an unhandled exception in the handler.
-        Promise.resolve().then(() => opts.dispatch(m.path!, m.args)).then(
-          result => {
-            try { worker.postMessage({ id: m.id, ok: true, result }); }
-            catch {
-              try { worker.postMessage({ id: m.id, ok: false, error: { code: "unserializable_result", message: `"${m.path}" returned a value that cannot cross the sandbox bridge (live handle, function or stream).` } }); } catch { /* worker gone */ }
-            }
-          },
-          (e: unknown) => { try { worker.postMessage({ id: m.id, ok: false, error: errorView(e) }); } catch { /* worker gone */ } },
-        );
-      } else if (m.done) finish(() => resolve({ result: m.result, logs: m.logs ?? [] }));
-      else if (m.failed) finish(() => reject(new ToolError("execution_failed", String(m.message).slice(0, 1000))));
-    });
-    worker.on("error", e => finish(() => reject(new ToolError("execution_failed", e.message.slice(0, 500)))));
-    worker.on("exit", code => finish(() => reject(new ToolError(timedOut ? "execution_timeout" : "execution_failed",
-      timedOut ? `Execution exceeded ${timeoutMs} ms and was terminated.` : `Code worker exited (${String(code)}).`))));
-  });
+  } finally { release(); }
 }
 
 // Generated from @get-bb/plugin-sdk's bundled bb-plugin-sdk.d.ts. Regenerate if
-
-// Generated from @get-bb/plugin-sdk's bundled bb-plugin-sdk.d.ts. Regenerate if
 // the SDK version changes; the sandbox exposes exactly these paths plus bb.ops.
+// tests/codemode.test.ts "SDK surface coverage" fails when this drifts.
 export const SDK_API = `
 environments.archiveThreads(args: EnvironmentActionArgs): Promise<EnvironmentArchiveThreadsResult>;
 environments.commit(args: EnvironmentCommitArgs): Promise<EnvironmentCommitResult>;
@@ -347,6 +391,7 @@ threads.interactions.list(args: ThreadInteractionListArgs): Promise<ThreadIntera
 threads.interactions.resolve(args: ThreadInteractionResolveArgs): Promise<ThreadInteractionResolveResult>;
 threads.interactions.respond(args: ThreadInteractionRespondArgs): Promise<ThreadInteractionRespondResult>;
 threads.list(args?: ThreadListArgs): Promise<ThreadListResult>;
+threads.listRunning(args?: { signal?: AbortSignal }): Promise<ThreadRunningResult>;
 threads.markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
 threads.markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
 threads.open(args: ThreadOpenArgs): Promise<ThreadOpenResult>;
@@ -408,11 +453,16 @@ export const SDK_PATHS = SDK_API.split("\n")
   .filter((p): p is string => !!p)
   .concat(["ops.run", "ops.get", "approve"]);
 
-export const EXECUTE_DESCRIPTION = `Run JavaScript against the complete BB SDK in a sandboxed worker: compose calls, loop, and filter server-side so only the returned value crosses the wire.
+// The dispatch whitelist: only declared SDK methods can be invoked through
+// sdkCall — anything else (constructor, toString, subscribe, ad-hoc function
+// members) is rejected before the path walker touches the object graph.
+const SDK_PATH_SET = new Set(SDK_PATHS.filter(p => !p.startsWith("ops.") && p !== "approve"));
 
-\`code\` must evaluate to an async function: \`async () => { ...; return result; }\`. A bare function body (statements ending in \`return\`) is also accepted.
+export const EXECUTE_DESCRIPTION = `Run JavaScript against the complete BB SDK in an isolated worker: compose calls, loop, and filter server-side so only the returned value crosses the wire. Trusted callers only — the worker is a reliability boundary (timeouts, memory caps, log capture), not a security sandbox; code it runs has the token's full owner-level access.
 
-Global \`bb\` mirrors the BB SDK method-for-method (bb.threads.get calls sdk.threads.get, and so on). Each resolves to the SDK result or throws an Error with a string \`.code\` (e.g. not_found, invalid_arguments, bb_error). Argument and result types are the BB SDK's own; BB validates server-side and errors are descriptive. \`bb.guide.render()\` returns BB's usage guide. Methods that return live handles (subscriptions, streams) cannot cross the sandbox bridge and fail with unserializable_result. Args accept the SDK's standard \`signal\` option implicitly: cancelling this call aborts inner waits.
+\`code\` must evaluate to an async function: \`async () => { ...; return result; }\`. Anything else runs once as a bare function body (statements ending in \`return\`).
+
+Global \`bb\` mirrors the BB SDK method-for-method (bb.threads.get calls sdk.threads.get, and so on). Each resolves to the SDK result or throws an Error with a string \`.code\` (e.g. not_found, invalid_arguments, bb_error). Argument and result types are the BB SDK's own; BB validates server-side and errors are descriptive. \`bb.guide.render()\` returns BB's usage guide. Methods returning live handles (e.g. \`subscribe\`) are not exposed. Args accept the SDK's standard \`signal\` option implicitly: cancelling this call aborts inner waits.
 
 The SDK has no durable dispatch, so \`bb.ops\` adds it:
 - ops.run({ call: "threads.spawn", args, key?, kind?, threadId?, projectId? }) runs one SDK call inside a recorded receipt. Reusing \`key\` with the same call+args replays the stored receipt instead of dispatching again; a different payload is idempotency_conflict. state "outcome_unknown" means BB may have committed; inspect BB (threads.get/list) before retrying under a new key.
@@ -420,7 +470,7 @@ The SDK has no durable dispatch, so \`bb.ops\` adds it:
 
 \`bb.approve({ threadId, interactionId, decision, grantedPermissions? })\` resolves a pending permission approval — the code-mode equivalent of \`bb thread approve\` / \`bb thread grant --scope session\`. It verifies the interaction is still a pending approval, checks the decision is in its \`availableDecisions\`, and builds the resolution BB expects (\`grantedPermissions\` is a required-but-nullable key on allow_*; omitting it fails with "Invalid discriminator value"; deny takes none). \`allow_for_session\` defaults \`grantedPermissions\` to the request's offered \`sessionGrant\`. For user_question and plugin-form interactions use \`threads.interactions.resolve\` directly with \`{ kind: "user_answer", answers }\` or \`{ kind: "request_answer", value }\` — inspect the interaction first for its contract.
 
-console.* output returns in \`logs\`. setTimeout/clearTimeout are provided. No imports or fetch. Limits: ${DEFAULT_TIMEOUT_MS} ms default timeout (${MAX_TIMEOUT_MS} ms max via timeoutMs), ${MAX_CALLS} bb calls, ${MAX_LOG_BYTES} B of logs, ${MAX_RESULT_BYTES} B returned result. A terminated or disconnected execution does not stop work BB already accepted.
+console.* output returns in \`logs\`. Provided globals: setTimeout/clearTimeout, Buffer, btoa/atob, TextEncoder/TextDecoder, crypto.randomUUID/getRandomValues. No module imports. Limits: ${DEFAULT_TIMEOUT_MS} ms default timeout (${MAX_TIMEOUT_MS} ms max via timeoutMs), ${MAX_CALLS} bb calls, ${MAX_LOG_BYTES} B of logs, ${MAX_RESULT_BYTES} B returned result (UTF-8 JSON). A terminated or disconnected execution does not stop work BB already accepted.
 
 Results are the SDK's raw shapes: list methods return bare arrays, reads return their documented objects — there is no per-call envelope beyond \`{data:{result,logs}}\`. Large SDK responses (e.g. providers.models) stay inside the sandbox fine; only the returned value crosses the wire, so filter/aggregate before returning.
 
@@ -432,14 +482,18 @@ threads.spawn(args: {
   title?: string;
   environment:
     | { type: "reuse"; environmentId: string }
-    | { type: "host"; hostId: string; workspace: { type: "managed-worktree"; baseBranch?: { kind: "default" } | { kind: "branch"; branch: string } } | { type: "personal" } | { type: "unmanaged"; path: string }; branch?: string }
-    | { type: "unmanaged"; path: string }
-    | { type: "personal" };
-  providerId?: string; model?: string; reasoningLevel?: "min"|"low"|"medium"|"high"|"max";
-  permissionMode?: "accept-edits" | "auto" | "full";  // omitted: thread/project default, else "full" (clamped to the system permission ceiling)
-  serviceTier?: string;
-  parentThreadId?: string; sectionId?: string; sendAt?: number; visibility?: "visible"|"hidden"|"agent-only";
+    | { type: "host"; hostId?: string; workspace:
+        | { type: "managed-worktree"; baseBranch: { kind: "default" } | { kind: "named"; name: string } }
+        | { type: "personal" }
+        | { type: "unmanaged"; path: string | null; branch?: { kind: "existing"; name: string } | { kind: "new"; baseBranch: string } } }
+    | { type: "project-default" };
+  providerId?: string; model?: string; serviceTier?: string;
+  reasoningLevel?: "none"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra"|"ultracode";
+  permissionMode?: "accept-edits" | "auto" | "full";  // omitted: project default, else "full" (clamped to the system permission ceiling)
+  parentThreadId?: string; sectionId?: string; sendAt?: number; visibility?: "visible"|"hidden";
 })
+// Supplied execution fields (providerId/model/reasoningLevel/serviceTier/permissionMode)
+// are marked executionInputSources: "explicit" automatically — BB ignores them otherwise.
 threads.send(args: {
   threadId: string; input: same-as-spawn;
   mode: "queue-if-active" | "steer-if-active" | "auto" | "start" | "steer";  // required
@@ -457,7 +511,7 @@ terminals.create({ scope: { kind: "thread"; threadId } | { kind: "environment"; 
 terminals.input({ terminalId; dataBase64: string })  // base64-encoded bytes; text/enter fields are not accepted
 terminals.output({ terminalId; sinceSeq?; tailBytes?; limitChunks? })
 terminals.list({ scope })
-files.write({ path; content })  // exact arg keys; unknown keys are rejected
+files.write({ path: string; content: string; contentEncoding?: "base64"|"utf8"; createParents?: boolean; mode?: number; expectedSha256?: string|null; hostId?; rootPath? })  // unknown keys are rejected
 \`\`\`
 For anything else, inspect the target first (e.g. bb.threads.interactions.get) — pending interactions carry their own response schema.
 

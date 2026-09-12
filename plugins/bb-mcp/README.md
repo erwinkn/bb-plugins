@@ -45,11 +45,13 @@ below. Compose calls, loop, poll and filter inside the sandbox; only the
 returned value and `console.*` logs cross the wire.
 
 A second tool, `bb_read`, runs the same code under the same limits but only
-serves non-mutating methods. It is annotated read-only so MCP clients can
-auto-approve it — prefer it for monitoring and discovery flows, and keep
-`bb_execute` for work dispatch. Client-side, configure your orchestrator to
-auto-approve whichever of the two you use; server-side there is no per-call
-approval layer by design.
+serves non-mutating methods — the gate applies to every host-bound call,
+including `ops.run` and `approve`, which are rejected outright (`ops.get`
+stays readable). It is annotated read-only so MCP clients can auto-approve
+it — prefer it for monitoring and discovery flows, and keep `bb_execute`
+for work dispatch. Client-side, configure your orchestrator to auto-approve
+whichever of the two you use; server-side there is no per-call approval
+layer by design.
 
 Successful results contain `{"data":{"result":...,"logs":[...]}}`. The result
 is the SDK's raw shape — `list` methods return bare arrays, reads return their
@@ -78,10 +80,11 @@ async () => {
 The SDK has no request ledger, so the plugin adds two functions:
 
 - `bb.ops.run({call, args, key?, kind?, threadId?, projectId?})` executes one
-  SDK call inside a recorded receipt. Reusing `key` with identical `call`+`args`
-  replays the stored receipt instead of dispatching again; a changed payload
-  under the same key is `idempotency_conflict`. Ledgered calls intentionally
-  run without the request's abort signal: they must survive client disconnects.
+  SDK call inside a recorded receipt. Reusing `key` with identical
+  `call`+`args`+scope replays the stored receipt (a concurrent retry joins the
+  in-flight dispatch); a changed payload under the same key is
+  `idempotency_conflict`. Ledgered calls intentionally run without the
+  request's abort signal: they must survive client disconnects.
 - `bb.ops.get({operationId})` reads a stored receipt.
 
 `bb.approve({ threadId, interactionId, decision, grantedPermissions? })`
@@ -90,13 +93,18 @@ resolves a pending permission approval — the code-mode equivalent of
 interaction is still a pending approval, checks the decision is offered, and
 builds the resolution shape BB requires (`grantedPermissions` is
 required-but-nullable on `allow_*`; `deny` takes none; `allow_for_session`
-defaults to the request's `sessionGrant`). For `user_question` and plugin-form
+defaults to the request's `sessionGrant`, or to the requested permissions for
+`permission_grant` subjects; an explicit `null` grants once-only scope). For
+`user_question` and plugin-form
 interactions, call `threads.interactions.resolve` directly with
 `{ kind: "user_answer", answers }` or `{ kind: "request_answer", value }` —
 inspect the interaction first for its contract.
 
-A receipt's `state` is `accepted` or `outcome_unknown`. `outcome_unknown` means
-BB may have committed despite the lost response — inspect BB (e.g.
+A receipt's `state` is `accepted`, `failed` or `outcome_unknown`. `failed`
+means BB definitively rejected the request (a pre-dispatch `ToolError` or an
+HTTP 4xx) — nothing committed, so the key is free and retrying with corrected
+arguments re-dispatches under it. `outcome_unknown` means BB may have
+committed despite the lost response — inspect BB (e.g.
 `threads.get`/`threads.list`) before retrying under a new key, and never
 automatically redispatch it. `bb mcp operations` lists receipts;
 `bb mcp reconcile <operation-id> <thread-id> --confirmed` records a manually
@@ -107,12 +115,18 @@ project.
 
 - Execution ends at a 30 s default timeout (120 s max via `timeoutMs`), 500
   `bb` calls, or 8 KB of `console.*` output; runaway code is terminated with
-  the worker. Termination never stops work BB already accepted.
-- Cancelling the MCP call propagates an abort `signal` into inner SDK calls
-  (except `ops.run` dispatches, which are intentionally durable).
-- Methods returning live handles (`subscribe`, streams) cannot cross the
-  worker bridge and fail with `unserializable_result`. `bb.guide.render()`
-  returns BB's own usage guide for argument details.
+  the worker. Workers get a 256 MB old-generation cap, and at most 8
+  executions run concurrently (the rest queue). Termination never stops work
+  BB already accepted.
+- Cancelling the MCP call terminates the worker and propagates an abort
+  `signal` into inner SDK calls (except `ops.run` dispatches, which are
+  intentionally durable).
+- Provided globals beyond `console`: `setTimeout`/`clearTimeout`, `Buffer`,
+  `btoa`/`atob`, `TextEncoder`/`TextDecoder`, `crypto.randomUUID`/
+  `getRandomValues`. There are no module imports.
+- Methods returning live handles (`subscribe`, streams) are not exposed to the
+  sandbox. `bb.guide.render()` returns BB's own usage guide for argument
+  details.
 - Terminals take exact arg shapes: `terminals.create` requires `scope`
   (`{kind:"thread", threadId}` / `{kind:"environment", environmentId}` /
   `{kind:"host_path", hostId, cwd}`) plus `cols` and `rows`;
@@ -123,11 +137,13 @@ project.
 - When `threads.spawn` omits `permissionMode`, the plugin resolves one: the
   project's configured execution default, else `"full"` clamped to the system
   permission ceiling — never silently `"accept-edits"`. Injected defaults are
-  marked `executionInputSources.permissionMode: "client-preference"`;
-  caller-supplied values are marked `"explicit"`. `threads.send`,
-  `threads.fork` and queued-message creation are deliberately not defaulted —
-  omitting `permissionMode` there inherits the thread's stored execution
-  options.
+  marked `executionInputSources.permissionMode: "client-preference"`. On all
+  create/send/fork/queue calls, caller-supplied execution fields
+  (`providerId`, `model`, `reasoningLevel`, `serviceTier`, `permissionMode`)
+  are marked `"explicit"` automatically — BB silently drops them otherwise.
+  `threads.send`, `threads.fork` and queued-message creation are deliberately
+  not defaulted — omitting `permissionMode` there inherits the thread's
+  stored execution options.
 - BB's own validation, provider policies, availability, costs, paging and
   client/proxy timeouts all still apply; nothing is clipped or admitted by
   the plugin.

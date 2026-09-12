@@ -6,16 +6,27 @@ export type Operation = {
   id: string; keyHash: string; payloadHash: string; kind: string;
   projectId: string | null; hostId: string | null; threadId: string | null;
   related?: { threadId: string; projectId: string; hostId: string | null }[];
-  state: "pending" | "accepted" | "outcome_unknown";
+  state: "pending" | "accepted" | "failed" | "outcome_unknown";
   createdAt: number; updatedAt: number; response: Record<string, unknown> | null;
   error?: { code: string; message: string };
 };
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value instanceof ArrayBuffer) return `ab:${createHash("sha256").update(Buffer.from(value)).digest("hex")}`;
+  if (ArrayBuffer.isView(value)) return `ab:${createHash("sha256").update(Buffer.from(value.buffer, value.byteOffset, value.byteLength)).digest("hex")}`;
   if (value !== null && typeof value === "object") return "{" + Object.entries(value).filter(([,v]) => v !== undefined).sort(([a],[b]) => a.localeCompare(b)).map(([k,v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",") + "}";
   return JSON.stringify(value);
 }
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+
+// A rejection is only "unknown" when the server may have committed — timeouts,
+// disconnects, 5xx. ToolErrors are raised pre-dispatch, and HTTP 4xx is a
+// definitive server-side rejection: record "failed" and let the key retry.
+function isDefinitive(error: unknown): boolean {
+  if (error instanceof ToolError) return true;
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" && status >= 400 && status < 500;
+}
 
 export function createStore(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -36,11 +47,18 @@ export function createStore(bb: BbPluginApi) {
   function claim(input: Omit<Operation, "id" | "state" | "createdAt" | "updatedAt" | "response" | "payloadHash" | "keyHash">, key: string | undefined, payload: unknown) {
     return db.transaction(() => {
       if (disposed) throw new ToolError("unavailable", "Plugin is reloading; retry with the same idempotency key.");
-      const keyHash = hash(key ?? randomUUID()), payloadHash = hash(canonical({ kind: input.kind, payload }));
+      const keyHash = hash(key ?? randomUUID()), payloadHash = hash(canonical(payload));
       const existing = getBy("key_hash", keyHash);
-      if (existing) {
+      if (existing && existing.state !== "failed") {
         if (existing.payloadHash !== payloadHash) throw new ToolError("idempotency_conflict", "This idempotency key was already used with different arguments.");
         return { op: existing, fresh: false };
+      }
+      if (existing) {
+        // A failed attempt committed nothing: the key is free to retry, even
+        // with corrected arguments. Keep the op id stable across attempts.
+        const op: Operation = { ...input, id: existing.id, keyHash, payloadHash, state: "pending", createdAt: existing.createdAt, updatedAt: Date.now(), response: null, error: undefined };
+        save(op);
+        return { op, fresh: true };
       }
       const op: Operation = { ...input, id: `op_${randomUUID()}`, keyHash, payloadHash, state: "pending", createdAt: Date.now(), updatedAt: Date.now(), response: null };
       db.prepare("INSERT INTO operations (id, key_hash, body) VALUES (?, ?, ?)").run(op.id, keyHash, JSON.stringify(op));
@@ -57,12 +75,6 @@ export function createStore(bb: BbPluginApi) {
         save(resolved); return resolved;
       })();
     },
-    find(key: string | undefined, kind: Operation["kind"], payload: unknown) {
-      if (key === undefined) return undefined;
-      const op = getBy("key_hash", hash(key));
-      if (op && op.payloadHash !== hash(canonical({ kind, payload }))) throw new ToolError("idempotency_conflict", "This idempotency key was already used with different arguments.");
-      return op;
-    },
     list: () => (db.prepare("SELECT body FROM operations ORDER BY rowid DESC").all() as {body: string}[]).map(r => JSON.parse(r.body) as Operation),
     async run(input: Parameters<typeof claim>[0], key: string | undefined, payload: unknown, dispatch: () => Promise<Record<string, unknown>>): Promise<Operation> {
       const { op, fresh } = claim(input, key, payload);
@@ -76,10 +88,9 @@ export function createStore(bb: BbPluginApi) {
           if (!disposed) save(accepted);
           return disposed ? { ...op, state: "outcome_unknown" as const } : accepted;
         } catch (error) {
-          // A rejected SDK promise does not establish whether the server committed.
-          const unknown: Operation = { ...op, state: "outcome_unknown", updatedAt: Date.now(), error: errorView(error) };
-          if (!disposed) save(unknown);
-          return unknown;
+          const settled: Operation = { ...op, state: isDefinitive(error) ? "failed" : "outcome_unknown", updatedAt: Date.now(), error: errorView(error) };
+          if (!disposed) save(settled);
+          return settled;
         } finally { inflight.delete(op.id); }
       });
       inflight.set(op.id, pending);
@@ -93,5 +104,9 @@ export function errorView(error: unknown) {
 }
 export function operationView(op: Operation) {
   const { keyHash: _key, payloadHash: _payload, ...view } = op;
-  return { ...view, ...(op.state === "outcome_unknown" ? { recovery: "BB may have accepted this request. Inspect the target thread or recent BB threads; do not dispatch again with a new key until reconciled." } : {}) };
+  return {
+    ...view,
+    ...(op.state === "outcome_unknown" ? { recovery: "BB may have accepted this request. Inspect the target thread or recent BB threads; do not dispatch again with a new key until reconciled." } : {}),
+    ...(op.state === "failed" ? { recovery: "BB definitively rejected this request — it did not commit. Retry under the same key with corrected arguments." } : {}),
+  };
 }
