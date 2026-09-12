@@ -193,7 +193,7 @@ function ThreadsList(props: PluginThreadListProps) {
         },
       ]),
   );
-  for (const { thread } of [...visible, ...archived]) {
+  for (const { thread } of visible) {
     if (!displayProjects.has(thread.projectId)) {
       displayProjects.set(thread.projectId, {
         id: thread.projectId,
@@ -329,24 +329,6 @@ function ThreadsList(props: PluginThreadListProps) {
       </button>
     </li>
   );
-  const archiveGroup = (
-    id: string,
-    rows: typeof archived,
-    renderRow: typeof row = row,
-  ) =>
-    rows.length > 0 ? (
-      <Group id={id} title="Archived" archive>
-        <ThreadRoots
-          label="Archived"
-          pageSize={10}
-          nodes={buildThreadTree(rows, state.sortBy)}
-          drafts={[]}
-          activeThreadId={props.activeThreadId}
-          renderRow={(node) => renderRow(node)}
-          renderDraft={draftRow}
-        />
-      </Group>
-    ) : null;
   const threadCounts = new Map<string, number>();
   for (const thread of threads)
     threadCounts.set(
@@ -499,12 +481,7 @@ function ThreadsList(props: PluginThreadListProps) {
                     const drafts = newDrafts.filter(
                       (draft) => draft.id === project.id,
                     );
-                    const projectArchives = archived.filter(
-                      ({ thread }) => thread.projectId === project.id,
-                    );
-                    return rows.length ||
-                      drafts.length ||
-                      projectArchives.length ? (
+                    return rows.length || drafts.length ? (
                       <Group
                         key={project.id}
                         id={`project:${project.id}`}
@@ -568,16 +545,22 @@ function ThreadsList(props: PluginThreadListProps) {
                           renderRow={(node) => projectRow(node)}
                           renderDraft={draftRow}
                         />
-                        {archiveGroup(
-                          `archive:project:${project.id}`,
-                          projectArchives,
-                          projectRow,
-                        )}
                       </Group>
                     ) : null;
                   })}
-            {state.groupBy === "status" &&
-              archiveGroup("archive:status", archived)}
+            {archived.length > 0 && (
+              <Group id="archive" title="Archived" archive>
+                <ThreadRoots
+                  label="Archived"
+                  pageSize={10}
+                  nodes={buildThreadTree(archived, state.sortBy)}
+                  drafts={[]}
+                  activeThreadId={props.activeThreadId}
+                  renderRow={(node) => row(node)}
+                  renderDraft={draftRow}
+                />
+              </Group>
+            )}
             {state.hidden.length < STATUSES.length &&
               !archived.length &&
               !visible.length &&

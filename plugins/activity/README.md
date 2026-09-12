@@ -279,10 +279,10 @@ release passes the menu tests.
 ## Archived threads
 
 Archived threads are hidden by default. Enable **Archived** under **Show statuses**
-in Threads display options to show them. Status view then has an Archived section
-after the active groups. Project view has an Archived section inside each
-project, including projects with only archives. The sections start collapsed
-and remember their state per client. Status filters do not hide archived
+in Threads display options to show them. Both views then have a single Archived
+section at the bottom of the list; its rows keep their project names. The
+section starts collapsed and remembers its state per client. Status filters do
+not hide archived
 threads. The selected date sort also applies to archives.
 
 Expand a section to browse its threads. Rows use the same paging and child
