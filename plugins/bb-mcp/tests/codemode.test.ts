@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { isReadPath, makeDispatch, runCode, sdkCall, SDK_PATHS } from "../codemode";
 import { ToolError } from "../config";
+import { SDK_VERSION, SIGNAL_PATHS } from "../sdk-api";
+import { parseSdk, render } from "../scripts/generate-sdk-api.mjs";
 import type { Store } from "../store";
 
 const paths = ["projects.list", "threads.get", "threads.interactions.list", "missing.method", "threads.list", "threads.spawn", "ops.run", "ops.get"];
@@ -13,8 +15,8 @@ const sdk = {
 
 const storeStub = {
   get: () => undefined,
-  run: async (input: { kind: string; threadId?: string | null }, _k: unknown, _p: unknown, dispatch: () => Promise<Record<string, unknown>>) => {
-    const response = await dispatch();
+  run: async (input: { kind: string; threadId?: string | null }, _k: unknown, _p: unknown, dispatch: (op: { id: string }) => Promise<Record<string, unknown>>) => {
+    const response = await dispatch({ id: "op_1" });
     return { id: "op_1", kind: input.kind, call: (input as { call?: string }).call, projectId: null, hostId: null, threadId: typeof response.threadId === "string" ? response.threadId : input.threadId ?? null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response };
   },
 } as unknown as Store;
@@ -148,29 +150,31 @@ describe("sdkCall", () => {
 // Catches drift between the advertised/exposed surface and the bundled SDK
 // types — a missing method or a renamed signal declaration shows up here.
 describe("SDK surface coverage", () => {
-  const dts = readFileSync(new URL("../node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts", import.meta.url), "utf8");
-  const bodies = new Map<string, string>();
-  for (const m of dts.matchAll(/interface (\w+)[^\n{]*\{([\s\S]*?)\n\}/g)) bodies.set(m[1], m[2]!);
-  const declared: string[] = [];
-  const signalPaths = new Set<string>();
-  const walk = (prefix: string, body: string) => {
-    for (const m of body.matchAll(/^\s{4}(\w+): (\w+Area);/gm)) walk(prefix + m[1] + ".", bodies.get(m[2]) ?? "");
-    for (const m of body.matchAll(/^\s{4}(\w+)\(([\s\S]{0,300}?)\)\s*:/gm)) {
-      const path = prefix + m[1];
-      declared.push(path);
-      const argsText = m[2];
-      if (/signal\?/.test(argsText)) { signalPaths.add(path); continue; }
-      const typeName = argsText.match(/\w+\??\s*:\s*(\w+)/)?.[1];
-      if (typeName && /signal\?:/.test(bodies.get(typeName) ?? "")) signalPaths.add(path);
-    }
-  };
-  for (const m of (bodies.get("BbSdkAreas") ?? "").matchAll(/^\s{4}(\w+): (\w+Area);/gm)) walk(m[1] + ".", bodies.get(m[2]) ?? "");
-  for (const m of (bodies.get("BbSdk") ?? "").matchAll(/^\s{4}(\w+): (\w+Area);/gm)) walk(m[1] + ".", bodies.get(m[2]) ?? "");
-  // subscribe returns a live unsubscribe function and is intentionally not exposed.
-  const expected = [...new Set(declared)].filter(p => p !== "subscribe").sort();
+  const sdkDir = new URL("../node_modules/@get-bb/plugin-sdk/", import.meta.url);
+  const dts = readFileSync(new URL("bundled-types/bb-plugin-sdk.d.ts", sdkDir), "utf8");
+  const parsed = parseSdk(dts);
   it("exposes every declared SDK method", () => {
     const exposed = SDK_PATHS.filter(p => !p.startsWith("ops.") && p !== "approve").sort();
-    expect(exposed).toEqual(expected);
+    expect(exposed).toEqual([...parsed.paths].sort());
+    expect(exposed).not.toContain("subscribe");
+    expect(exposed).not.toContain("experimental_desktopBrowsers.subscribe");
+  });
+  it("covers the 0.43.x additions", () => {
+    for (const p of ["threads.getPluginMetadata", "threads.updatePluginMetadata", "threads.context", "system.uiPreferences.list", "system.uiPreferences.set", "system.uiPreferences.reset",
+      "environments.list", "environments.delete", "hosts.experimental_create", "hosts.experimental_suspend", "hosts.experimental_resume", "hosts.experimental_retryCleanup", "hosts.experimental_listProviders", "hosts.experimental_getEnrollmentCommand"])
+      expect(SDK_PATHS).toContain(p);
+    expect(SDK_PATHS.filter(p => p === "theme.set")).toHaveLength(1);
+  });
+  it("injects signal exactly where the SDK declares it", () => {
+    expect([...SIGNAL_PATHS]).toEqual(parsed.signalPaths);
+    expect(SIGNAL_PATHS).toContain("threads.getPluginMetadata");
+    expect(SIGNAL_PATHS).not.toContain("threads.updatePluginMetadata".replace("update", "files.write"));
+    expect(SIGNAL_PATHS).not.toContain("files.write");
+    expect(SIGNAL_PATHS).not.toContain("environments.delete");
+  });
+  it("sdk-api.ts matches the installed SDK (run `npm run sdk-api` after `bb plugin types`)", () => {
+    expect(SDK_VERSION).toBe(JSON.parse(readFileSync(new URL("package.json", sdkDir), "utf8")).version);
+    expect(readFileSync(new URL("../sdk-api.ts", import.meta.url), "utf8")).toBe(render());
   });
 });
 
@@ -199,6 +203,32 @@ describe("ops dispatch", () => {
   it("ops.get rejects missing operations", async () => {
     await expect(dispatch("ops.get", { operationId: "op_none" })).rejects.toMatchObject({ code: "not_found" });
   });
+  it("ops.run seeds the receipt id into spawned and forked threads' plugin metadata", async () => {
+    const spawn = vi.fn(async (_args: unknown) => ({ id: "thr_new" }));
+    const fork = vi.fn(async (_args: unknown) => ({ id: "thr_fork" }));
+    const d = makeDispatch({ threads: { spawn, fork, get: sdk.threads.get } }, storeStub, () => {});
+    const explicit = { projectId: "p", permissionMode: "full" };
+    await d("ops.run", { call: "threads.spawn", args: { ...explicit, pluginMetadata: { ticket: "42", operationId: "caller-supplied" } } });
+    expect(spawn.mock.calls[0]?.[0]).toMatchObject({ projectId: "p", pluginMetadata: { ticket: "42", operationId: "op_1" } });
+    await d("ops.run", { call: "threads.fork", args: { threadId: "thr_x" } });
+    expect(fork.mock.calls[0]?.[0]).toMatchObject({ threadId: "thr_x", pluginMetadata: { operationId: "op_1" } });
+    // Other calls and direct (unledgered) spawns are untouched.
+    await d("ops.run", { call: "threads.get", args: { threadId: "thr_1" } });
+    await d("threads.spawn", explicit);
+    expect(spawn.mock.calls[1]?.[0]).not.toHaveProperty("pluginMetadata");
+    await expect(d("ops.run", { call: "threads.spawn", args: { ...explicit, pluginMetadata: ["nope"] } })).rejects.toMatchObject({ code: "invalid_arguments" });
+    // Structured-cloneable non-plain objects must fail too, not spread to {}.
+    await expect(d("ops.run", { call: "threads.spawn", args: { ...explicit, pluginMetadata: new Date() } })).rejects.toMatchObject({ code: "invalid_arguments" });
+    await expect(d("ops.run", { call: "threads.spawn", args: { ...explicit, pluginMetadata: new Map([["k", 1]]) } })).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+  it("ops.run refuses to ledger calls that return credentials or enrollment secrets", async () => {
+    const enroll = vi.fn(async () => ({ command: "bb enroll --token secret" }));
+    const d = makeDispatch({ ...sdk, hosts: { experimental_getEnrollmentCommand: enroll } }, storeStub, () => {});
+    await expect(d("ops.run", { call: "hosts.experimental_getEnrollmentCommand", args: { hostId: "h" } })).rejects.toMatchObject({ code: "invalid_arguments" });
+    await expect(d("ops.run", { call: "plugins.token", args: {} })).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(enroll).not.toHaveBeenCalled();
+  });
 });
 
 describe("makeDispatch validation", () => {
@@ -214,6 +244,15 @@ describe("read-only verbs", () => {
     expect(isReadPath("hosts.cloneDefaultPath")).toBe(true);
     expect(isReadPath("plugins.catalog.installPlan")).toBe(true);
   });
+  it("classifies the 0.43.x surfaces", () => {
+    for (const p of ["threads.context", "threads.getPluginMetadata", "system.uiPreferences.list", "environments.list", "environments.listProviders",
+      "hosts.experimental_listProviders", "system.machineEnvironment", "theme.resolve", "experimental_desktopBrowsers.listTabs", "experimental_desktopBrowsers.captureTab"])
+      expect(isReadPath(p), p).toBe(true);
+    for (const p of ["threads.updatePluginMetadata", "system.uiPreferences.set", "system.uiPreferences.reset", "environments.delete", "hosts.experimental_create",
+      "hosts.experimental_suspend", "hosts.experimental_resume", "hosts.experimental_retryCleanup", "hosts.experimental_getEnrollmentCommand", "system.replaceMachineEnvironment",
+      "threads.interactions.resolve", "experimental_desktopBrowsers.acquireControl", "experimental_desktopBrowsers.importCookies"])
+      expect(isReadPath(p), p).toBe(false);
+  });
 });
 
 describe("read-only ops.get", () => {
@@ -221,12 +260,17 @@ describe("read-only ops.get", () => {
     const store = {
       get: (id: string) => id === "op_secret"
         ? { id, kind: "plugins.token", call: "plugins.token", projectId: null, hostId: null, threadId: null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { token: "secret" } }
-        : { id, kind: "create", call: "threads.spawn", projectId: null, hostId: null, threadId: "thr_1", state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { threadId: "thr_1" } },
+        : id === "op_enroll"
+          ? { id, kind: "enroll", call: "hosts.experimental_getEnrollmentCommand", projectId: null, hostId: null, threadId: null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { command: "bb enroll --token secret" } }
+          : { id, kind: "create", call: "threads.spawn", projectId: null, hostId: null, threadId: "thr_1", state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { threadId: "thr_1" } },
     } as unknown as Store;
     const ro = makeDispatch(sdk, store, () => {}, undefined, true);
     const secret = await ro("ops.get", { operationId: "op_secret" }) as Record<string, unknown>;
     expect(secret.response).toBeNull();
     expect(secret.responseRedacted).toBeTruthy();
+    const enroll = await ro("ops.get", { operationId: "op_enroll" }) as Record<string, unknown>;
+    expect(enroll.response).toBeNull();
+    expect(enroll.responseRedacted).toBeTruthy();
     const plain = await ro("ops.get", { operationId: "op_plain" }) as Record<string, unknown>;
     expect(plain.response).toEqual({ threadId: "thr_1" });
     const full = makeDispatch(sdk, store, () => {});
