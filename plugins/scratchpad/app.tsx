@@ -8,11 +8,18 @@ import type { rpcContract } from "./contract";
 import { CHANNEL, documentSchema, type Note, type NoteDocument, type Scope } from "./model";
 import { editorSchema, type NoteBlock } from "./schema";
 import { NoteSession, type DraftStorage } from "./session";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 
 const ACTION = "scratchpad";
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 function NotebookIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="5" y="3" width="15" height="18" rx="2"/><path d="M9 3v18M3 7h4M3 12h4M3 17h4M12 8h5M12 12h5"/></svg>;
+}
+function HistoryIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.7 7M3 4v7h7M12 7v5l3 2"/></svg>;
+}
+function ExportIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 16v4a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-4"/></svg>;
 }
 function download(name: string, data: string, type: string) {
   const url = URL.createObjectURL(new Blob([data], { type }));
@@ -108,16 +115,19 @@ function LoadedPad({ threadId, initial }: { threadId: string; initial: { scope: 
       download("scratchpad.md", result.markdown, "text/markdown");
     } catch (error) { session.report(error); }
   };
-  const status = state.conflict ? "Changes to review" : state.saving ? "Saving…" : state.error ? "Not saved" : state.dirty ? "Unsaved changes" : "Saved";
   return <div className="scratchpad" data-testid="scratchpad-panel">
     <div className="sp-topbar">
-      <div className="sp-context"><strong title={scope.path}>{scope.projectName}</strong><span title={scope.path}>Shared in this worktree</span></div>
-      <span className={`sp-status ${state.conflict || state.error ? "sp-status-warning" : ""}`} role="status">{status}</span>
-      <button className="sp-button" onClick={showHistory} aria-pressed={!!history}>History</button>
-      <details className="sp-export"><summary className="sp-button">Export</summary><div>
-        <button className="sp-button" onClick={() => download("scratchpad.json", JSON.stringify({ ...state.note, document: state.document }, null, 2), "application/json")}>Export JSON</button>
-        <button className="sp-button" onClick={exportMarkdown}>Export Markdown</button>
-      </div></details>
+      <div className="sp-context"><strong title={scope.projectName}>{scope.projectName}</strong><span title={scope.path} aria-label={`Worktree: ${scope.branch || scope.environmentName}`}>{scope.branch || scope.environmentName}</span></div>
+      <button className="sp-button sp-icon-button" type="button" onClick={showHistory} aria-pressed={!!history} aria-label="History" title="History"><HistoryIcon /></button>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <button className="sp-button sp-icon-button" type="button" aria-label="Export" title="Export"><ExportIcon /></button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent aria-label="Export scratchpad">
+          <DropdownMenuItem onSelect={() => download("scratchpad.json", JSON.stringify({ ...state.note, document: state.document }, null, 2), "application/json")}>Export JSON</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => { void exportMarkdown(); }}>Export Markdown</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
     {state.storageWarning && <div className="sp-banner" role="alert">This browser cannot keep a recovery draft. Keep this panel open until your changes are saved.</div>}
     {state.error && <div className="sp-banner" role="alert">{state.error}<button className="sp-button" onClick={() => { refresh(); void session.flush(); }}>Retry</button></div>}
