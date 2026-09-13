@@ -52,6 +52,13 @@ function threadOnMachine(
 
 describe("provider usage footer disclosure", () => {
   it("aggregates every machine and keeps machine and provider selection local to the card", async () => {
+    // Floating UI checks :modal when positioning the desktop menu. jsdom 26's
+    // nwsapi recurses through Element.matches for that unsupported browser state.
+    // This card uses a non-modal menu; keep all other selector matching real.
+    const matches = Element.prototype.matches;
+    vi.spyOn(Element.prototype, "matches").mockImplementation(function (selector) {
+      return selector === ":modal" ? false : matches.call(this, selector);
+    });
     const extraProviders = ["Claude Code", "Cursor", "Devin", "Extra one", "Extra two"].map((name) => ({
       id: name.toLowerCase().replaceAll(" ", "-"), displayName: name,
       logoUrl: null, iconGlyph: "Bot", iconTint: null,
@@ -71,6 +78,7 @@ describe("provider usage footer disclosure", () => {
                   id: "host-m4",
                   displayName: "M4",
                   status: "connected",
+                  machineProvider: { id: "local", logoUrl: null, icon: "Laptop" },
                   error: null,
                   providers: [
                     {
@@ -124,6 +132,11 @@ describe("provider usage footer disclosure", () => {
                   id: "host-m5",
                   displayName: "A machine with a name too long for the header",
                   status: "connected",
+                  machineProvider: {
+                    id: "modal",
+                    logoUrl: "/api/v1/system/machine-providers/modal/logo",
+                    icon: "Cloud",
+                  },
                   error: null,
                   providers: [
                     {
@@ -155,6 +168,7 @@ describe("provider usage footer disclosure", () => {
                   id: "host-intel",
                   displayName: "Intel",
                   status: "disconnected",
+                  machineProvider: null,
                   error: null,
                   providers: [],
                 },
@@ -211,18 +225,38 @@ describe("provider usage footer disclosure", () => {
 
     expect(machinePicker.textContent).toBe("");
     expect(machinePicker.getAttribute("title")).toBe("A machine with a name too long for the header");
+    // The machine button shows the host's machine-provider artwork.
+    const modalIcon = machinePicker.querySelector(
+      '[data-provider-kind="machine"][data-provider-id="modal"]',
+    );
+    expect(modalIcon?.getAttribute("data-provider-logo")).toBe(
+      "/api/v1/system/machine-providers/modal/logo",
+    );
+    expect(modalIcon?.getAttribute("data-provider-glyph")).toBe("Cloud");
+    expect(modalIcon?.getAttribute("data-provider-fallback")).toBe("ComputerTerminal01");
     expect(slot.getAllByRole("tab")).toHaveLength(6);
     const devinTab = slot.getByRole("tab", { name: "Devin" });
     fireEvent.click(devinTab);
     expect(slot.getByRole("heading", { name: "Devin" })).toBeTruthy();
     expect(slot.getByText("99% used")).toBeTruthy();
+    // Providers without a logo render their glyph through the host registry.
+    expect(devinTab.querySelector('[data-icon="Bot"][data-icon-fallback="Bot"]')).not.toBeNull();
     fireEvent.keyDown(devinTab, { key: "End" });
     expect(slot.getByRole("tab", { name: "Extra two" }).getAttribute("aria-selected")).toBe("true");
     fireEvent.keyDown(slot.getByRole("tab", { name: "Extra two" }), { key: "Home" });
     expect(slot.getByRole("tab", { name: "Codex" }).getAttribute("aria-selected")).toBe("true");
 
     fireEvent.pointerDown(machinePicker, { button: 0 });
-    fireEvent.click(slot.getByRole("menuitemradio", { name: "M4" }));
+    const m4Item = slot.getByRole("menuitemradio", { name: "M4" });
+    expect(m4Item.querySelector('[data-provider-kind="machine"][data-provider-id="local"]')).not.toBeNull();
+    expect(m4Item.querySelector('[data-icon="Check"]')).not.toBeNull();
+    expect(
+      slot.getByRole("menuitemradio", { name: "Intel" }).querySelector('[data-icon="ComputerTerminal01"]'),
+    ).not.toBeNull();
+    fireEvent.click(m4Item);
+    expect(
+      slot.getByRole("button", { name: "Usage machine: M4" }).querySelector('[data-provider-id="local"]'),
+    ).not.toBeNull();
     const claudeTab = slot.getByRole("tab", { name: "Claude Code" });
     const codexTab = slot.getByRole("tab", { name: "Codex" });
     expect(
@@ -259,9 +293,14 @@ describe("provider usage footer disclosure", () => {
     ).toBeTruthy();
     expect(slot.queryByRole("button", { name: "Collapse provider usage" })).toBeNull();
     expect(dismiss).not.toHaveBeenCalled();
+    // Hosts without a machine provider keep the generic host terminal icon.
+    expect(
+      slot.getByRole("button", { name: "Usage machine: Intel" }).querySelector('[data-icon="ComputerTerminal01"]'),
+    ).not.toBeNull();
     const reloadButton = slot.getByRole("button", {
       name: "Reload provider usage",
     }) as HTMLButtonElement;
+    expect(reloadButton.querySelector('[data-icon="RotateCcw"]')).not.toBeNull();
     await waitFor(() => expect(reloadButton.disabled).toBe(false));
     const callsBeforeManualRefresh = fetchMock.mock.calls.length;
     fireEvent.click(reloadButton);

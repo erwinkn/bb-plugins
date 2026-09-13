@@ -4,6 +4,7 @@ import {
   usageSnapshotSchema,
   type ProviderUsage,
   type UsageMachine,
+  type UsageMachineProvider,
   type UsageProvider,
   type UsageSnapshot,
 } from "./usage-schema.js";
@@ -30,15 +31,18 @@ interface UsageRequest {
   maxAgeMs: number;
 }
 
+/** Per-machine usage without the machine provider, which is resolved per request. */
+type LoadedMachine = Omit<UsageMachine, "machineProvider">;
+
 interface MachineCacheEntry {
   dirty: boolean;
   loadedAt: number;
-  machine: UsageMachine;
+  machine: LoadedMachine;
 }
 
 interface PendingMachineUsage {
   force: boolean;
-  promise: Promise<UsageMachine>;
+  promise: Promise<LoadedMachine>;
 }
 
 function normalizedTint(
@@ -85,6 +89,46 @@ function normalizedUsage(
 }
 
 type Host = Awaited<ReturnType<BbPluginApi["sdk"]["hosts"]["list"]>>[number];
+type MachineProviderArtwork = Pick<UsageMachineProvider, "logoUrl" | "icon">;
+
+function nonemptyOrNull(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+/**
+ * Artwork for the machine providers known to this bb, keyed by provider ID.
+ * Missing on hosts older than the experimental listing; every host then gets
+ * an id-only record and the frontend falls back to the generic machine icon.
+ */
+async function loadMachineProviderArtwork(
+  bb: BbPluginApi,
+): Promise<Map<string, MachineProviderArtwork>> {
+  const artwork = new Map<string, MachineProviderArtwork>();
+  try {
+    const providers = await bb.sdk.hosts.experimental_listProviders();
+    for (const provider of providers) {
+      artwork.set(provider.id, {
+        logoUrl: nonemptyOrNull(provider.logoUrl),
+        icon: nonemptyOrNull(provider.icon),
+      });
+    }
+  } catch {
+    // Keep the id-only fallback.
+  }
+  return artwork;
+}
+
+function resolveMachineProvider(
+  host: Host,
+  artwork: ReadonlyMap<string, MachineProviderArtwork>,
+): UsageMachineProvider | null {
+  const id = nonemptyOrNull(host.machineProviderId ?? null);
+  if (id === null) return null;
+  const known = artwork.get(id);
+  return { id, logoUrl: known?.logoUrl ?? null, icon: known?.icon ?? null };
+}
 type Provider = Awaited<
   ReturnType<BbPluginApi["sdk"]["providers"]["list"]>
 >[number];
@@ -114,7 +158,7 @@ function normalizedProvider(
 async function loadMachineUsage(
   bb: BbPluginApi,
   host: Host,
-): Promise<UsageMachine> {
+): Promise<LoadedMachine> {
   const providersPromise = bb.sdk.providers.list({
     hostId: host.id,
     capability: "usage",
@@ -185,7 +229,7 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
     host: Host,
     request: UsageRequest,
     targeted: boolean,
-  ): Promise<UsageMachine> => {
+  ): Promise<LoadedMachine> => {
     const cached = cache.get(host.id);
     const effectiveMaxAgeMs =
       cached?.dirty === true
@@ -232,7 +276,10 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
   };
 
   const readUsage = async (request: UsageRequest): Promise<UsageSnapshot> => {
-    const hosts = await bb.sdk.hosts.list();
+    const [hosts, machineProviderArtwork] = await Promise.all([
+      bb.sdk.hosts.list(),
+      loadMachineProviderArtwork(bb),
+    ]);
     const hostIds = new Set(hosts.map((host) => host.id));
     for (const machineId of cache.keys()) {
       if (!hostIds.has(machineId)) cache.delete(machineId);
@@ -256,7 +303,10 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
       if (entry === undefined) {
         throw new Error("Provider usage cache is missing " + host.name + ".");
       }
-      machines.push(entry.machine);
+      machines.push({
+        ...entry.machine,
+        machineProvider: resolveMachineProvider(host, machineProviderArtwork),
+      });
     }
     return { machines };
   };
