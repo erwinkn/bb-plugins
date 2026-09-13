@@ -490,7 +490,7 @@ function ThreadsList(props: PluginThreadListProps) {
       ? library.status === "loading"
       : state.spaceId !== null && spaces.status === "loading";
   // Rows under a project header omit the project name, which would repeat it.
-  const makeRow = (showProject: boolean) => {
+  const makeRow = (showProject: boolean, singleLine = false) => {
     const row = (
       { thread, status, children }: ThreadNode,
       depth = 0,
@@ -504,6 +504,7 @@ function ThreadsList(props: PluginThreadListProps) {
         depth={depth}
         project={projectNames.get(thread.projectId) ?? "Unknown project"}
         showProject={showProject}
+        singleLine={singleLine}
         provider={providerNames.get(thread.providerId) ?? thread.providerId}
         parent={
           thread.parentThreadId ? titles.get(thread.parentThreadId) : undefined
@@ -541,6 +542,9 @@ function ThreadsList(props: PluginThreadListProps) {
   };
   const row = makeRow(true);
   const projectRow = makeRow(false);
+  // No project has no folder, branch, or pull request to list; its threads
+  // get a single-line row.
+  const personalRow = makeRow(false, true);
   const draftRow = (project: { id: string; name: string }) => (
     <li key={`new:${project.id}`}>
       <button
@@ -728,8 +732,15 @@ function ThreadsList(props: PluginThreadListProps) {
                         </Group>
                       );
                     })
-                  : [...displayProjects.values()]
-                      .sort((a, b) => a.name.localeCompare(b.name))
+                  : // No project closes the list, right above Archived.
+                    [...displayProjects.values()]
+                      .sort((a, b) =>
+                        a.isPersonal === b.isPersonal
+                          ? a.name.localeCompare(b.name)
+                          : a.isPersonal
+                            ? 1
+                            : -1,
+                      )
                       .map((project) => {
                         const rows = buildThreadTree(
                           visible.filter(
@@ -802,7 +813,11 @@ function ThreadsList(props: PluginThreadListProps) {
                               nodes={rows}
                               drafts={drafts}
                               activeThreadId={props.activeThreadId}
-                              renderRow={(node) => projectRow(node)}
+                              renderRow={(node) =>
+                                (project.isPersonal ? personalRow : projectRow)(
+                                  node,
+                                )
+                              }
                               renderDraft={draftRow}
                             />
                           </Group>
