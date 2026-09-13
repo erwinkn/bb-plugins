@@ -123,9 +123,22 @@ request routing, and the canonical bridge protocol against a local
 scripted agent. The bridge test runs in its own process because its stdout
 capture must not intercept the Node test runner's binary transport.
 
-`@get-bb/plugin-sdk` is a runtime dependency: bb bundles its public ACP bridge
-into `dist/host.js` during Git installation. The host daemon downloads and runs
-that artifact. The plugin starts no agent process while importing its code.
+`@get-bb/plugin-sdk` is pinned as a devDependency (`bb plugin types` keeps it
+at the running bb's SDK version). `bb plugin build` bundles the public ACP
+bridge into `dist/host.js`, so the artifact has no bare SDK import. The host
+daemon downloads and runs that artifact. The plugin starts no agent process
+while importing its code.
+
+## Status
+
+- Version gate: works on bb 0.43.0; nothing here uses thread plugin metadata,
+  so bb 0.43.1 is not required. Last verified with bb 0.43.1 and SDK 0.4.87.
+- [BB #3453](https://github.com/get-bb/bb/issues/3453) is still open and still
+  present in SDK 0.4.87: the bundled ACP bridge answers `fs/write_text_file`
+  with `result: null` (`handleFsWriteTextFile` in `provider-bridge-acp.js`),
+  so Devin `write` and `edit` tool results keep reading
+  `Failed to write file '<path>': Parse error` although the file is written.
+  The plugin cannot work around this. See the repository README for details.
 
 The native SVG mark is a vector adaptation of the Devin documentation favicon
 used in the earlier local plugin. This is a personal provider integration, not
