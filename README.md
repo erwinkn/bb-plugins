@@ -135,12 +135,13 @@ times; never check out another branch there, and never run `git rebase` or
    with `--permission-mode full`: with `accept-edits`, the child's first file
    edits still stop for approval, and permission mode can only be raised
    afterwards through a follow-up message, which queues behind that approval.
-   Every child thread, implementation or investigation, runs on Devin SWE-2
-   at high reasoning with full permissions, never on Claude Fable:
-   `--provider acp-devin --model
-   'devin-family:%5B%22swe-2%22%2C262000%2C%22%22%5D' --reasoning-level high
-   --permission-mode full` (the model id comes from
-   `bb provider models acp-devin`). If a Devin child still stops for command
+   Children never run on Claude Fable. Implementation children run on Devin
+   SWE-2 at high reasoning: `--provider acp-devin --model
+   'devin-family:%5B%22swe-2%22%2C262000%2C%22%22%5D' --reasoning-level high`
+   (model id from `bb provider models acp-devin`). Investigation and
+   feasibility children run on Codex GPT-5.6 Sol at high reasoning:
+   `--provider codex --model gpt-5.6-sol --reasoning-level high`. Both always
+   with `--permission-mode full`. If a Devin child still stops for command
    approval, approve it with `bb thread interactions approve <pint> <thread>`
    and re-send full permissions with `bb thread tell <thread> "…" --mode auto
    --permission-mode full`.
