@@ -21,6 +21,7 @@ import { MAX_QUOTE_LENGTH, type QuoteMatch } from "../lib/quote-anchor";
 
 vi.mock("@get-bb/plugin-sdk/app", () => ({
   Markdown: ({ content }: { content: string }) => <>{renderBlocks(content)}</>,
+  experimental_Icon: ({ name, className }: { name: string; className?: string }) => <svg data-icon={name} className={className} />,
 }));
 
 // The component is imported after the mock so it sees the stub renderer.

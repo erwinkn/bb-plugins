@@ -111,7 +111,7 @@ export function PlanHeader({
             title="Switch view"
             className="h-8 w-auto min-w-0 shrink-0 gap-1 border-transparent bg-transparent px-1.5 text-muted-foreground hover:text-foreground"
           >
-            <SelectValue><Icon name={view === "document" ? "ListTodo" : view === "changes" ? "Code" : "Comment"} className="size-4" aria-hidden /></SelectValue>
+            <SelectValue><Icon name={view === "document" ? "ListTodo" : view === "changes" ? "Code" : "MessageSquare"} className="size-4" aria-hidden /></SelectValue>
           </SelectTrigger>
           <SelectContent align="end">
             {views.map((item) => (
@@ -162,7 +162,7 @@ export function PlanHeader({
               Copy Markdown
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onShortcuts}>
-              <Icon name="Keyboard" className="size-4" aria-hidden />
+              <Icon name="plans-keyboard" className="size-4" aria-hidden />
               Keyboard shortcuts
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={onDiagnostics}>

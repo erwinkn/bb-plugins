@@ -129,6 +129,9 @@ If the provider rejects steering, the plugin sends that message with `queue-if-a
 The selected mode stays unchanged, and the panel shows a notice.
 The plugin drops feedback for an archived or deleted thread and shows a notice in the panel.
 It does not replay that feedback after the thread is restored.
+When the thread is unarchived, the plugin restores the review prompt for an open plan.
+If the user deletes the plugin's queued message before it dispatches, that feedback is marked cancelled and never resent.
+You receive no message for it; the user can send the feedback again or write in the thread.
 The plugin groups nearby events and appends to its queued message.
 Failed deliveries retry after 5 seconds, 30 seconds, 2 minutes, then every 5 minutes.
 The panel shows **Not delivered · retrying**.
@@ -142,15 +145,16 @@ bb plans submit <file> [title]
 bb plans update <plan> <file> --summary <text> [--resolve #n ...]
 bb plans reply <plan> <#n> <text> [--no-resolve]
 bb plans handoff <plan>
-bb plans get <plan> [--version-id <id>]
+bb plans get [plan] [--version-id <id>]
 bb plans list [offset] [--thread <id>]
 bb plans review <plan> --comment "quote::body" --ask "quote::body" --redline "quote" --looks-good "quote" [--approve]
 ```
 
 Quote annotation numbers in shell commands, for example `'#7'`.
 Use `bb plans get` after context loss.
+Without a plan ID, it returns the thread's active plan from the metadata pointer that each submit, update, and approval writes.
 Add `--version-id` to read the approved version.
-Use `bb plans list` if you lost the plan ID.
+Use `bb plans list` if the pointer is missing.
 Never review your own plan.
 The `review` command serves a separate reviewer thread and rejects the plan's own thread.
 
