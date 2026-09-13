@@ -144,10 +144,12 @@ interface CredentialStatus {
 }
 
 /**
- * Shows which credential Ada is using, and — only when both an API key and a
- * ChatGPT subscription are available — lets the user pick between them.
+ * Shows which credential Ada is using, and — only when both an API key (stored
+ * here or supplied through OPENAI_API_KEY) and a ChatGPT subscription are
+ * available — lets the user pick between them. The environment key counts so
+ * a pinned subscription can always be switched back to a key that still works.
  */
-function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
+export function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
   const rpc = useRpc<typeof rpcContract>();
   const [status, setStatus] = useState<CredentialStatus | null>(null);
 
@@ -167,8 +169,9 @@ function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
   const statusText = (() => {
     switch (status?.effective) {
       case "apiKey":
-      case "env":
         return "Using your OpenAI API key";
+      case "env":
+        return "Using the OPENAI_API_KEY environment variable";
       case "subscription":
         return "Using your ChatGPT subscription";
       default:
@@ -176,7 +179,8 @@ function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
     }
   })();
 
-  const canChoose = !!status && status.hasApiKey && status.subscriptionAvailable;
+  const keyAvailable = !!status && (status.hasApiKey || status.envKeyPresent);
+  const canChoose = keyAvailable && !!status && status.subscriptionAvailable;
   const chooserValue: "apiKey" | "subscription" =
     status?.preference === "subscription" ? "subscription" : "apiKey";
 
@@ -218,13 +222,15 @@ function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
           className={selectClass}
         >
           <option value="subscription">ChatGPT subscription</option>
-          <option value="apiKey">OpenAI API key</option>
+          <option value="apiKey">{status?.hasApiKey ? "OpenAI API key" : "OpenAI API key (OPENAI_API_KEY)"}</option>
         </select>
-        <div>
-          <Button type="button" variant="outline" size="sm" onClick={() => void removeKey()}>
-            Remove API key
-          </Button>
-        </div>
+        {status?.hasApiKey ? (
+          <div>
+            <Button type="button" variant="outline" size="sm" onClick={() => void removeKey()}>
+              Remove API key
+            </Button>
+          </div>
+        ) : null}
         {liveKeyWarning ? <p className="text-xs italic text-amber-600 dark:text-amber-500">{liveKeyWarning}</p> : null}
       </div>
     );

@@ -11,11 +11,13 @@ import {
 } from "react";
 import {
   definePluginApp,
+  experimental_ProviderIcon,
   experimental_useSidebarThreads,
   type ExperimentalSidebarFooterDisclosureProps,
   useBbContext,
 } from "@get-bb/plugin-sdk/app";
-import { ICON_NAMES, Icon, type IconName } from "./components/ui/icon";
+import { Icon } from "./components/host-icon";
+import { isHostIconName } from "./lib/host-icon-names";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -32,6 +34,9 @@ import {
   type UsageProvider,
   type UsageWindow as UsageWindowValue,
 } from "./usage-schema.js";
+
+// JSX treats lowercase tags as intrinsic elements, so alias the SDK component.
+const ProviderIcon = experimental_ProviderIcon;
 
 const CARD_MAX_AGE_MS = 2 * 60_000;
 const FOCUS_MAX_AGE_MS = 5 * 60_000;
@@ -51,10 +56,6 @@ function providerIconStyle(provider: UsageProvider): CSSProperties | undefined {
       provider.iconTint.dark +
       ")",
   };
-}
-
-function isIconName(value: string): value is IconName {
-  return ICON_NAMES.some((iconName) => iconName === value);
 }
 
 function ProviderMark({
@@ -87,13 +88,46 @@ function ProviderMark({
     );
   }
   const iconName =
-    provider.iconGlyph !== null && isIconName(provider.iconGlyph)
+    provider.iconGlyph !== null && isHostIconName(provider.iconGlyph)
       ? provider.iconGlyph
       : "Bot";
   return (
     <span aria-hidden="true" style={tintStyle}>
-      <Icon name={iconName} className={className} />
+      <Icon name={iconName} fallback="Bot" className={className} />
     </span>
+  );
+}
+
+function MachineIcon({
+  machine,
+  className,
+}: {
+  machine: UsageMachine | null;
+  className: string;
+}) {
+  const machineProvider = machine?.machineProvider ?? null;
+  if (machineProvider === null) {
+    return (
+      <Icon
+        name="ComputerTerminal01"
+        fallback="Terminal"
+        aria-hidden="true"
+        className={className}
+      />
+    );
+  }
+  return (
+    <ProviderIcon
+      providerKind="machine"
+      provider={{
+        id: machineProvider.id,
+        logoUrl: machineProvider.logoUrl,
+        icon: machineProvider.icon,
+      }}
+      fallback="ComputerTerminal01"
+      aria-hidden="true"
+      className={className}
+    />
   );
 }
 
@@ -235,7 +269,7 @@ function MachineSelector({
             "flex size-8 shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:opacity-50",
           )}
         >
-          <Icon name="ComputerTerminal01" aria-hidden="true" className="size-4" />
+          <MachineIcon machine={activeMachine} className="size-4" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
@@ -258,6 +292,10 @@ function MachineSelector({
               )}
             >
               <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                <MachineIcon
+                  machine={machine}
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                />
                 <span
                   aria-hidden="true"
                   className={cn(
@@ -276,6 +314,7 @@ function MachineSelector({
               </span>
               <Icon
                 name="Check"
+                fallback="CircleCheck"
                 aria-hidden="true"
                 className={cn(
                   "size-3.5 shrink-0",
@@ -479,6 +518,7 @@ function ProviderUsageStatus({ dismiss }: ExperimentalSidebarFooterDisclosurePro
         >
           <Icon
             name="RotateCcw"
+            fallback="ArrowReloadHorizontal"
             aria-hidden="true"
             className={
               "size-4 " + (snapshot.isRefreshing ? "animate-spin motion-reduce:animate-none" : "")
