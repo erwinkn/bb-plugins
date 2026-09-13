@@ -849,6 +849,20 @@ exports no list or literal union of valid names. This collection generates one
 from bb source with `scripts/host-icon-names.mjs`. Already reported upstream
 as [BB #1859](https://github.com/get-bb/bb/issues/1859), open.
 
+### Heading IDs on host Markdown
+
+BB's `Markdown` renderer emits headings without `id` attributes, and a
+same-document anchor link routes to the app root rather than scrolling. The
+Editor plugin's preview intercepts the click and matches the anchor to a
+heading by a GitHub-style slug of its text; duplicate heading texts collapse
+to the first match, and any change to bb's slug rules would silently diverge.
+Emitting heading ids (and letting same-document anchors scroll to them) would
+let plugins drop the shim.
+
+Status: recorded 2026-09-13; no upstream issue filed. Suggested issue title:
+`Markdown: emit heading ids so anchor links can scroll`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Account Pooler coverage for ACP providers
 
 The bundled Account Pooler proxies only Claude and Codex. Checked 2026-09-12
