@@ -109,6 +109,7 @@ describe("archive API", () => {
               ...makeThreadResponse({ id: "old", archivedAt: 123 }),
               environmentName: null,
               environmentBranchName: null,
+              environmentProviderId: null,
               environmentWorkspaceDisplayKind: "other",
             },
           ],

@@ -13,6 +13,7 @@ const archivedThread = z.object({
   environmentId: z.nullable(z.string()),
   environmentName: z.nullable(z.string()),
   environmentBranchName: z.nullable(z.string()),
+  environmentProviderId: z.nullable(z.string()),
   environmentWorkspaceDisplayKind: z.enum([
     "managed-worktree",
     "unmanaged-worktree",

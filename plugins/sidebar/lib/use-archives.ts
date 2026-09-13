@@ -34,6 +34,7 @@ function sidebarThread(thread: ArchivedThread): PluginSidebarThread {
           id: thread.environmentId,
           name: thread.environmentName,
           branchName: thread.environmentBranchName,
+          providerId: thread.environmentProviderId,
           workspaceDisplayKind: thread.environmentWorkspaceDisplayKind,
         }
       : null,
