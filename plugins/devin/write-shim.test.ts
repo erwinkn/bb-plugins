@@ -47,6 +47,14 @@ test("the shim repairs result:null on fs/write_text_file responses only", async 
     proc.stdin.write("noise from bridge\n");
     assert.equal((JSON.parse(await next())).params.received, "noise from bridge");
 
+    // A multi-byte character split across writes must not become U+FFFD.
+    const utf8Line = JSON.stringify({ jsonrpc: "2.0", method: "test/noise", params: { text: "héllo → ✓" } });
+    const bytes = Buffer.from(utf8Line + "\n", "utf8");
+    const cut = bytes.indexOf(0xc3); // é = 0xC3 0xA9; the first write ends mid-character
+    proc.stdin.write(bytes.subarray(0, cut + 1));
+    proc.stdin.write(bytes.subarray(cut + 1));
+    assert.equal((JSON.parse(await next())).params.received, utf8Line);
+
     proc.stdin.end();
     const [code] = await once(proc, "exit");
     assert.equal(code, 0);

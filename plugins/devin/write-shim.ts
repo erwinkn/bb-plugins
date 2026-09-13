@@ -47,17 +47,21 @@ function parseMessage(line) {
 }
 
 function pipeLines(from, to, transform) {
-  let pending = "";
+  // Split on raw bytes: a multi-byte UTF-8 character can straddle two chunks,
+  // and 0x0A never appears inside one, so only complete lines are decoded.
+  let pending = Buffer.alloc(0);
   from.on("data", (chunk) => {
-    const lines = (pending + chunk).split("\\n");
-    pending = lines.pop();
-    for (const line of lines) {
-      if (!to.write(transform(line) + "\\n")) from.pause();
+    pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+    let index;
+    while ((index = pending.indexOf(0x0a)) !== -1) {
+      const raw = pending.subarray(0, index);
+      pending = pending.subarray(index + 1);
+      if (!to.write(transform(raw.toString("utf8")) + "\\n")) from.pause();
     }
   });
   to.on("drain", () => from.resume());
   from.on("end", () => {
-    if (pending !== "") to.write(transform(pending));
+    if (pending.length !== 0) to.write(transform(pending.toString("utf8")));
     to.end();
   });
 }
