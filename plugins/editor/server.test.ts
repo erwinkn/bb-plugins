@@ -277,6 +277,8 @@ const environment: Environment = {
   branchName: "feature", baseBranch: "main", defaultBranch: "main", mergeBaseBranch: null,
   name: null, isGitRepo: true, isWorktree: true, managed: true, status: "ready",
   workspaceProvisionType: "managed-worktree", createdAt: 0, updatedAt: 0,
+  environmentProviderId: null, environmentProviderInstanceKey: null, environmentProviderSelection: null,
+  lifecycle: { phase: "active", retireAt: null, teardown: null },
 };
 const modifiedEntry: DiffFiles["files"][number] = {
   path: "a.ts", previousPath: null, changeKind: "modified", origin: "tracked",

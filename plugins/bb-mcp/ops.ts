@@ -1,6 +1,25 @@
 import { ToolError } from "./config";
 import { operationView, type Store } from "./store";
 
+// Thread-creating calls get the receipt id seeded into the new thread's
+// bb-mcp plugin-metadata namespace (BB 0.43.1+): provenance that survives on
+// the thread itself, recoverable with threads.getPluginMetadata. The caller's
+// own pluginMetadata keys are kept; operationId is the plugin's.
+export const METADATA_SEED_PATHS = new Set(["threads.spawn", "threads.fork"]);
+export function seedOperationMetadata(callPath: string, args: unknown, operationId: string): unknown {
+  if (!METADATA_SEED_PATHS.has(callPath)) return args;
+  if (args === undefined || args === null) return { pluginMetadata: { operationId } };
+  if (typeof args !== "object" || Array.isArray(args)) return args;
+  const a = args as Record<string, unknown>;
+  const seed = a.pluginMetadata === undefined ? {} : a.pluginMetadata;
+  // Structured clone can deliver non-plain objects (Date, Map): they would
+  // spread to {} and silently drop the caller's metadata, so reject them.
+  const proto = typeof seed === "object" && seed !== null ? Object.getPrototypeOf(seed) : undefined;
+  if (proto !== Object.prototype && proto !== null)
+    throw new ToolError("invalid_arguments", "pluginMetadata must be a plain JSON object.");
+  return { ...a, pluginMetadata: { ...(seed as Record<string, unknown>), operationId } };
+}
+
 export type SdkCall = (path: string, args: unknown) => Promise<unknown>;
 
 // The one thing callers cannot do themselves: a durable receipt that survives
@@ -24,8 +43,8 @@ export async function runOp(store: Store, args: unknown, call: SdkCall, blocked?
   const op = await store.run(
     { kind, call: a.call, ...scope, hostId: null },
     a.key, payload,
-    async () => {
-      const result = await call(a.call as string, a.args);
+    async op => {
+      const result = await call(a.call as string, seedOperationMetadata(a.call as string, a.args, op.id));
       const response: Record<string, unknown> = result !== null && typeof result === "object" && !Array.isArray(result) ? { ...(result as Record<string, unknown>) } : { result };
       if (typeof response.threadId !== "string" && typeof response.id === "string" && response.id.startsWith("thr_")) response.threadId = response.id;
       return response;

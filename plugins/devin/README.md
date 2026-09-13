@@ -123,9 +123,29 @@ request routing, and the canonical bridge protocol against a local
 scripted agent. The bridge test runs in its own process because its stdout
 capture must not intercept the Node test runner's binary transport.
 
-`@get-bb/plugin-sdk` is a runtime dependency: bb bundles its public ACP bridge
-into `dist/host.js` during Git installation. The host daemon downloads and runs
-that artifact. The plugin starts no agent process while importing its code.
+`@get-bb/plugin-sdk` is pinned as a devDependency (`bb plugin types` keeps it
+at the running bb's SDK version). `bb plugin build` bundles the public ACP
+bridge into `dist/host.js`, so the artifact has no bare SDK import. The host
+daemon downloads and runs that artifact. The plugin starts no agent process
+while importing its code.
+
+## Status
+
+- Version gate: works on bb 0.43.0; nothing here uses thread plugin metadata,
+  so bb 0.43.1 is not required. Last verified with bb 0.43.1 and SDK 0.4.87.
+- [BB #3453](https://github.com/get-bb/bb/issues/3453) is still open and still
+  present in SDK 0.4.87: the bundled ACP bridge answers `fs/write_text_file`
+  with `result: null` (`handleFsWriteTextFile` in `provider-bridge-acp.js`),
+  which the ACP schema forbids, so Devin reported
+  `Failed to write file '<path>': Parse error` although the file was written.
+  The plugin works around it at the wire level: a bridge wrapper rewrites the
+  launch spec to spawn `devin acp` through a small stdio proxy
+  (`write-shim.ts`, installed into the bridge data dir on start) that turns
+  `result: null` into `result: {}` on `fs/write_text_file` responses only.
+  Everything else passes through unchanged. When BB fixes #3453 the shim stays
+  correct — an object result is forwarded untouched. The built-in ACP provider
+  keeps the bug; only this plugin's `acp-devin` threads are covered. See the
+  repository README for details.
 
 The native SVG mark is a vector adaptation of the Devin documentation favicon
 used in the earlier local plugin. This is a personal provider integration, not

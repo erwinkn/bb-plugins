@@ -1,13 +1,46 @@
 /**
- * Relative paths in a Markdown document, for its rendered preview. The
- * document's own directory is where they resolve, and they must stay inside
- * the workspace root. Images are pointed at a preview lease, which serves the
- * files under that root. Links to other files become root-relative, which is
- * how BB's Markdown renderer reads a path; the preview then opens them.
+ * The document binding behind a rendered Markdown preview, and the relative
+ * paths for a preview BB cannot bind (see MarkdownPreview). A source BB can
+ * bind — a thread's workspace or its storage — renders through
+ * `documentFor`, and BB resolves relative images and links itself. For any
+ * other source the document's own directory is where relative paths
+ * resolve, and they must stay inside the workspace root. Images are pointed
+ * at a preview lease, which serves the files under that root. Links to
+ * other files become root-relative, which is how BB's Markdown renderer
+ * reads a path; the preview then opens them.
  */
+import type { ExperimentalLiveFileTarget } from "@get-bb/plugin-sdk/app";
+import type { FileSessionSource } from "./file-session";
 
 const INLINE = /(!?)\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)((?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*)\)/g;
 const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
+/** A link definition line; `[^` labels are footnotes, which have no path to rewrite. */
+const DEFINITION = /^\s{0,3}\[((?!\^)[^\]]*)\]:\s*(<[^>]*>|[^)\s]+)(.*)$/;
+/** A reference use: `![text][label]`, `[label][]`, or the `[label]` shortcut — not `[text](inline)`. */
+const REFERENCE = /(!?)\[([^\]]*)\](?:\[([^\]]*)\])?(?!\()/g;
+
+/** BB's document binding for a source it can serve: a thread's environment or its storage. */
+export interface MarkdownPreviewDocument {
+  threadId: string;
+  rootPath: string;
+  target: Exclude<ExperimentalLiveFileTarget, { kind: "host" }>;
+}
+
+/**
+ * The document binding for `source`, or null when BB cannot bind it — a
+ * host path, or a workspace with no thread — and the preview rewrites
+ * relative paths instead.
+ */
+export function documentFor(source: FileSessionSource, rootPath: string, relativePath: string): MarkdownPreviewDocument | null {
+  if (source.threadId === null || rootPath === "" || relativePath === "") return null;
+  if (source.kind === "workspace" && source.environmentId !== null) {
+    return { threadId: source.threadId, rootPath, target: { kind: "workspace", environmentId: source.environmentId, path: relativePath } };
+  }
+  if (source.kind === "thread-storage") {
+    return { threadId: source.threadId, rootPath, target: { kind: "thread-storage", threadId: source.threadId, path: relativePath } };
+  }
+  return null;
+}
 
 export interface PathRewrite {
   /** The document's path, relative to the workspace root. */
@@ -23,6 +56,27 @@ export function hasMarkdownImage(markdown: string): boolean {
 
 export function rewriteMarkdownPaths(markdown: string, { filePath, baseUrl }: PathRewrite): string {
   const directory = filePath.split(/[\\/]/).slice(0, -1);
+  // A definition's destination is rewritten for the syntax that references
+  // it: a label used only by images takes the lease URL, anything else the
+  // root-relative link. Labels fold like CommonMark's: case and runs of
+  // whitespace inside them are insignificant.
+  const linkLabels = new Set<string>();
+  const imageLabels = new Set<string>();
+  let scanFence: string | null = null;
+  for (const line of markdown.split("\n")) {
+    const opening = FENCE.exec(line);
+    if (opening !== null) {
+      const marker = opening[1]!;
+      if (scanFence === null) scanFence = marker;
+      else if (marker[0] === scanFence[0] && marker.length >= scanFence.length) scanFence = null;
+      continue;
+    }
+    if (scanFence !== null || DEFINITION.test(line)) continue;
+    for (const match of line.matchAll(REFERENCE)) {
+      const label = (match[3] || match[2])!.trim().toLowerCase().replace(/\s+/g, " ");
+      (match[1] === "!" ? imageLabels : linkLabels).add(label);
+    }
+  }
   let fence: string | null = null;
   return markdown
     .split("\n")
@@ -35,6 +89,20 @@ export function rewriteMarkdownPaths(markdown: string, { filePath, baseUrl }: Pa
         return line;
       }
       if (fence !== null) return line;
+      const definition = DEFINITION.exec(line);
+      if (definition !== null) {
+        const [whole, label, rawTarget, rest] = definition;
+        const target = rawTarget.startsWith("<") ? rawTarget.slice(1, -1) : rawTarget;
+        const resolved = resolveRelative(directory, target);
+        if (resolved === null) return line;
+        const head = whole.slice(0, whole.length - rawTarget.length - rest.length);
+        const key = label.trim().toLowerCase().replace(/\s+/g, " ");
+        if (baseUrl !== null && imageLabels.has(key) && !linkLabels.has(key)) {
+          return `${head}${baseUrl}/${resolved.map(encodeURIComponent).join("/")}${rest}`;
+        }
+        const link = resolved.join("/");
+        return `${head}${/[\s()]/.test(link) ? `<${link}>` : link}${rest}`;
+      }
       return line.replace(INLINE, (whole, bang: string, text: string, rawTarget: string, title: string) => {
         const image = bang === "!";
         if (image && baseUrl === null) return whole;
@@ -97,6 +165,23 @@ export function workspacePathFromHref(href: string, rootPath: string): string | 
   const candidate = windows ? pathname.toLowerCase() : pathname;
   const prefix = windows ? root.toLowerCase() : root;
   return candidate.startsWith(`${prefix}/`) && pathname.length > root.length + 1 ? pathname.slice(root.length + 1) : null;
+}
+
+/**
+ * The root-relative path a rewritten link refers to — a bare relative path
+ * under the workspace root — or null for anything the rewrite leaves alone:
+ * schemes, anchors, absolute paths, `..` escapes.
+ */
+export function rootRelativeFromHref(href: string): string | null {
+  if (href === "" || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href) || href.startsWith("/") || href.startsWith("#") || href.startsWith("?")) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(href.replace(/[?#].*$/, ""));
+  } catch {
+    decoded = href.replace(/[?#].*$/, "");
+  }
+  if (decoded === "" || decoded.split("/").some((part) => part === "..")) return null;
+  return decoded;
 }
 
 /** The workspace root a file was read from: its absolute path minus its root-relative one. */

@@ -101,7 +101,7 @@ function AttachmentChip({
       {preview ? (
         <img src={preview} alt="" className="size-7 rounded-[3px] object-cover" />
       ) : (
-        <Icon name={attachment.type === "localImage" ? "FileAttachment" : "File"} className="size-3.5 text-[var(--subtle-foreground)]" />
+        <Icon name={attachment.type === "localImage" ? "FileAttachment" : "File"} fallback="File" className="size-3.5 text-[var(--subtle-foreground)]" />
       )}
       <span className="max-w-40 truncate" aria-label={attachment.name}>
         {attachment.name}

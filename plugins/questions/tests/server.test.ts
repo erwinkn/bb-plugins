@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { createFakePluginHost, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makeQueueEntry, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
 import { MIGRATIONS, QuestionsStore } from "../server/store";
 import { QuestionsService } from "../server/service";
 import { QuestionInteractions } from "../server/interactions";
-import { emptyAnswer, threadStateSchema, type Answer, type Question, type Submission } from "../lib/model";
+import { LIMITS, actionableFailures, emptyAnswer, threadStateSchema, type Answer, type Question, type Submission } from "../lib/model";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 const ids = new Map<string, string>();
@@ -17,12 +17,23 @@ afterEach(async () => { for (const host of hosts.splice(0)) await host.harness.l
 
 async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHost>) => void) {
   const send = vi.fn(async () => ({ ok: true, delivery: "sent" }));
+  /** Per-thread `questions` metadata namespace, as bb 0.43.1 stores it. */
+  const metadata = new Map<string, Record<string, unknown>>();
   const host = createFakePluginHost({
     pluginId: "questions",
     sdk: {
       threads: {
         get: async ({ threadId }) => makeThreadResponse({ id: threadId, projectId: `proj_${threadId}`, environmentId: `env_${threadId}` }),
         send,
+        getPluginMetadata: async ({ threadId }) => structuredClone(metadata.get(threadId) ?? {}),
+        updatePluginMetadata: async ({ threadId, set, remove }) => {
+          const next = { ...(metadata.get(threadId) ?? {}) };
+          for (const key of remove ?? []) delete next[key];
+          Object.assign(next, structuredClone(set ?? {}));
+          if (Object.keys(next).length === 0) metadata.delete(threadId);
+          else metadata.set(threadId, next);
+          return structuredClone(next);
+        },
       },
       environments: {
         get: async ({ environmentId }) => ({ id: environmentId, hostId: `host_${environmentId}` }),
@@ -52,7 +63,7 @@ async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHos
   const submit = async (questionIds: string[], submissionId = "s1", version = 1) => rpc("questions_submit", {
     threadId: "t", submissionId: uuid(submissionId), items: questionIds.map((questionId) => ({ questionId, expectedVersion: version })),
   }) as Promise<{ outcome: string; submission: Submission }>;
-  return { ...host, send, rpc, state, ask, save, submit };
+  return { ...host, send, metadata, rpc, state, ask, save, submit };
 }
 
 describe("Questions backend", () => {
@@ -196,7 +207,7 @@ describe("Questions backend", () => {
     const submission: Submission = {
       id: uuid("expiry-gap"), threadId: "t", state: "pending", questionIds: [q.id],
       snapshot: { [q.id]: { ...emptyAnswer(), text: "Late answer" } },
-      error: null, createdAt: 1, settledAt: null,
+      error: null, createdAt: 1, settledAt: null, queuedMessageId: null,
     };
     expire({ outcome: "cancelled", reason: "timeout" });
     const confirmed = vi.fn();
@@ -411,7 +422,7 @@ describe("Questions backend", () => {
     const submitted = { ...emptyAnswer(), text: "Original answer" };
     const h = await setup(({ bb }) => {
       const db = bb.storage.database();
-      bb.storage.migrate(db, MIGRATIONS.slice(0, -1));
+      bb.storage.migrate(db, MIGRATIONS.slice(0, MIGRATIONS.findIndex((statement) => statement.includes("mode = 'panel'"))));
       db.prepare("INSERT INTO rounds VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         .run("legacy", "t", "proj_t", 1, "notebook", "Keep this", "[]", 123);
       db.prepare("INSERT INTO answers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -616,9 +627,202 @@ describe("Questions backend", () => {
     expect(state.submissions.find((s) => s.id === uuid("history_0"))!.state).toBe("uncertain");
   });
 
+  it("reads a stored summary until the next write moves it into thread metadata", async () => {
+    const h = await setup();
+    const store = new QuestionsStore(h.bb.storage.database());
+    store.setLegacySummary("t", "Stored before metadata existed", 5);
+    expect((await h.state()).summary).toEqual({ markdown: "Stored before metadata existed", updatedAt: 5 });
+    expect(h.metadata.has("t")).toBe(false);
+
+    expect(await h.harness.behavior.callAgentTool("questions_summary", { summary: "# Goal\nShip it" }, { threadId: "t", projectId: "proj_t" })).toBe("Summary updated.");
+    expect(h.metadata.get("t")).toEqual({ summary: { markdown: "# Goal\nShip it", updatedAt: expect.any(Number), version: 1 } });
+    expect(store.getLegacySummary("t")).toBeNull();
+    expect((await h.state()).summary?.markdown).toBe("# Goal\nShip it");
+    expect(await h.harness.behavior.runCli(["summary", "show"], { threadId: "t" })).toMatchObject({ exitCode: 0, stdout: "# Goal\nShip it" });
+
+    // Metadata wins over a lingering legacy row, and clearing removes only our key.
+    store.setLegacySummary("t", "Stale copy", 1);
+    h.metadata.set("t", { ...h.metadata.get("t"), other: { plugin: "data" } });
+    expect((await h.state()).summary?.markdown).toBe("# Goal\nShip it");
+    expect(await h.harness.behavior.callAgentTool("questions_summary", { summary: null }, { threadId: "t", projectId: "proj_t" })).toBe("Summary cleared.");
+    expect(h.metadata.get("t")).toEqual({ other: { plugin: "data" } });
+    expect(store.getLegacySummary("t")).toBeNull();
+    expect((await h.state()).summary).toBeNull();
+    expect(h.harness.inspection.sdk.callsTo("threads.updatePluginMetadata").at(-1)?.[0]).toMatchObject({ threadId: "t", remove: ["summary"] });
+  });
+
+  it("treats a malformed or oversized metadata summary as absent", async () => {
+    const h = await setup();
+    h.metadata.set("t", { summary: { markdown: 42, updatedAt: 1, version: 1 } });
+    expect((await h.state()).summary).toBeNull();
+    h.metadata.set("t", { summary: { markdown: "x".repeat(LIMITS.summaryChars + 1), updatedAt: 1, version: 1 } });
+    expect((await h.state()).summary).toBeNull();
+    h.metadata.set("t", { summary: { markdown: "future", updatedAt: 1, version: 2 } });
+    expect((await h.state()).summary).toBeNull();
+    await expect(h.harness.behavior.callAgentTool("questions_summary", { summary: "x".repeat(LIMITS.summaryChars + 1) }, { threadId: "t", projectId: "proj_t" })).rejects.toThrow(/8000/);
+    expect(await h.harness.behavior.runCli(["summary", "set", "y".repeat(LIMITS.summaryChars + 1)], { threadId: "t" })).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("8000") });
+  });
+
+  it("backfills stored summaries into thread metadata once", async () => {
+    const h = await setup();
+    const store = new QuestionsStore(h.bb.storage.database());
+    store.setLegacySummary("a", "Summary A", 10);
+    store.setLegacySummary("b", "Summary B", 20);
+    store.setLegacySummary("gone", "Summary for a deleted thread", 30);
+    h.metadata.set("b", { summary: { markdown: "Newer B", updatedAt: 25, version: 1 } });
+    h.harness.sdk.stub("threads.getPluginMetadata", async ({ threadId }: { threadId: string }) => {
+      if (threadId === "gone") throw new Error("Thread not found");
+      return structuredClone(h.metadata.get(threadId) ?? {});
+    });
+
+    const dry = await h.harness.behavior.runCli(["summary", "backfill", "--dry-run", "--json"]);
+    expect(JSON.parse(dry.stdout ?? "")).toEqual({ dryRun: true, total: 3, migrated: ["a"], kept: ["b"], failed: [{ threadId: "gone", error: "Thread not found" }] });
+    expect(h.metadata.has("a")).toBe(false);
+    expect(store.listLegacySummaries()).toHaveLength(3);
+
+    const run = await h.harness.behavior.runCli(["summary", "backfill"]);
+    expect(run).toMatchObject({ exitCode: 1 });
+    expect(run.stdout).toContain("moved 1 into thread metadata, 1 already there, 1 failed.");
+    expect(run.stdout).toContain("gone: Thread not found");
+    expect(h.metadata.get("a")).toEqual({ summary: { markdown: "Summary A", updatedAt: 10, version: 1 } });
+    expect(h.metadata.get("b")).toEqual({ summary: { markdown: "Newer B", updatedAt: 25, version: 1 } });
+    expect(store.listLegacySummaries().map((row) => row.threadId)).toEqual(["gone"]);
+
+    const again = await h.harness.behavior.runCli(["summary", "backfill"]);
+    expect(again).toMatchObject({ exitCode: 1, stdout: expect.stringContaining("1 stored summary: moved 0") });
+  });
+
+  it("reads the summary through the tool when no summary argument is given", async () => {
+    const h = await setup();
+    expect(await h.harness.behavior.callAgentTool("questions_summary", {}, { threadId: "t", projectId: "proj_t" })).toBe("No summary recorded for this thread.");
+
+    await h.harness.behavior.callAgentTool("questions_summary", { summary: "Earlier note" }, { threadId: "t", projectId: "proj_t" });
+    expect(await h.harness.behavior.callAgentTool("questions_summary", {}, { threadId: "t", projectId: "proj_t" })).toBe("Earlier note");
+    expect(await h.harness.behavior.callAgentTool("questions_summary", {}, { threadId: "other", projectId: "proj_other" })).toBe("No summary recorded for this thread.");
+
+    await h.harness.behavior.callAgentTool("questions_summary", { summary: null }, { threadId: "t", projectId: "proj_t" });
+    expect(await h.harness.behavior.callAgentTool("questions_summary", {}, { threadId: "t", projectId: "proj_t" })).toBe("No summary recorded for this thread.");
+  });
+
+  it("cancels a queued submission when its message is removed and lets the user resubmit", async () => {
+    const h = await setup();
+    const round = await h.ask([{ title: "Queued?" }]);
+    const q = round.questions[0]!;
+    await h.save(q, { ...emptyAnswer(), text: "Queued answer" });
+    h.send.mockImplementationOnce(async () => ({ ok: true, delivery: "queued", queuedMessage: makeQueueEntry({ id: "qm_1", threadId: "t" }) }) as { ok: boolean; delivery: string });
+    const first = await h.submit([q.id], "queued");
+    expect(first.submission).toMatchObject({ state: "queued", queuedMessageId: "qm_1" });
+    expect((await h.state()).answers[0]!.submitted?.text).toBe("Queued answer");
+
+    await h.harness.behavior.emitThreadEvent("message.cancelled", { entry: makeQueueEntry({ id: "qm_other", threadId: "t" }) });
+    await h.harness.behavior.emitThreadEvent("message.cancelled", { entry: makeQueueEntry({ id: "qm_1", threadId: "other" }) });
+    expect((await h.state()).submissions[0]!.state).toBe("queued");
+
+    await h.harness.behavior.emitThreadEvent("message.cancelled", { entry: makeQueueEntry({ id: "qm_1", threadId: "t" }) });
+    let state = await h.state();
+    expect(state.submissions[0]).toMatchObject({ state: "cancelled", error: expect.stringContaining("removed before the agent"), snapshot: { [q.id]: { text: "Queued answer" } } });
+    expect(state.answers[0]).toMatchObject({ submitted: null, submissionId: null, submittedAt: null, draft: { text: "Queued answer" } });
+    expect(actionableFailures(state.submissions).map((item) => item.state)).toEqual(["cancelled"]);
+    expect(h.send).toHaveBeenCalledTimes(1);
+    await h.harness.behavior.emitThreadEvent("message.cancelled", { entry: makeQueueEntry({ id: "qm_1", threadId: "t" }) });
+    expect((await h.state()).submissions).toHaveLength(1);
+
+    const again = await h.submit([q.id], "resent");
+    expect(again.submission.state).toBe("sent");
+    expect(h.send).toHaveBeenCalledTimes(2);
+    state = await h.state();
+    expect(actionableFailures(state.submissions)).toEqual([]);
+    expect(state.answers[0]!.submissionId).toBe(uuid("resent"));
+  });
+
+  it("reopens only the held round's prompt when its thread is unarchived", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
+    const requestInput = h.bb.ui.requestInput;
+    let settle!: (result: Awaited<ReturnType<typeof requestInput>>) => void;
+    let calls = 0;
+    h.bb.ui.requestInput = (request, options) => ++calls === 1
+      ? new Promise((resolve) => { settle = resolve; })
+      : requestInput(request, options);
+    await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Held?" }] }, { threadId: "t", projectId: "proj_t" });
+    const held = (await h.state()).rounds[0]!;
+    // A later round that never held a prompt must stay quiet on unarchive.
+    await h.ask([{ title: "Never held?" }]);
+
+    // Archiving an active thread interrupts the open prompt like a stop does.
+    settle({ outcome: "cancelled", reason: "thread-stopped" });
+    const store = new QuestionsStore(h.bb.storage.database());
+    expect(store.getOpenHoldRound("t")).toBe(held.id);
+
+    // Emit until the hold teardown finishes and the unarchive reopens it.
+    await vi.waitFor(async () => {
+      await h.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+      expect(h.harness.pendingInteractions).toHaveLength(1);
+    });
+    expect(h.harness.pendingInteractions[0]!.payload).toEqual({ roundId: held.id });
+
+    // Unarchiving again while the hold is alive does not duplicate it.
+    await h.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+    expect(h.harness.pendingInteractions).toHaveLength(1);
+
+    // A user dismissal ends the hold; later unarchives reopen nothing.
+    h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
+    await vi.waitFor(() => expect(store.getOpenHoldRound("t")).toBeNull());
+    await h.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+    expect(h.harness.pendingInteractions).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("does not reopen the prompt once the held round was submitted", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
+    const requestInput = h.bb.ui.requestInput;
+    let settle!: (result: Awaited<ReturnType<typeof requestInput>>) => void;
+    let calls = 0;
+    h.bb.ui.requestInput = (request, options) => ++calls === 1
+      ? new Promise((resolve) => { settle = resolve; })
+      : requestInput(request, options);
+    await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Held?" }] }, { threadId: "t", projectId: "proj_t" });
+    const q = (await h.state()).rounds[0]!.questions[0]!;
+    await h.save(q, { ...emptyAnswer(), text: "Answered while archived" });
+
+    settle({ outcome: "cancelled", reason: "thread-stopped" });
+    await h.submit([q.id], "archived-answer");
+    expect(h.send).toHaveBeenCalledTimes(1);
+    const store = new QuestionsStore(h.bb.storage.database());
+    expect(store.getOpenHoldRound("t")).toBeNull();
+
+    await h.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+    expect(h.harness.pendingInteractions).toHaveLength(0);
+  });
+
+  it("keeps the open-hold marker across a reload so unarchive can still reopen it", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
+    const requestInput = h.bb.ui.requestInput;
+    let settle!: (result: Awaited<ReturnType<typeof requestInput>>) => void;
+    let calls = 0;
+    h.bb.ui.requestInput = (request, options) => ++calls === 1
+      ? new Promise((resolve) => { settle = resolve; })
+      : requestInput(request, options);
+    await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Held?" }] }, { threadId: "t", projectId: "proj_t" });
+    const held = (await h.state()).rounds[0]!;
+
+    settle({ outcome: "cancelled", reason: "thread-stopped" });
+    const store = new QuestionsStore(h.bb.storage.database());
+    expect(store.getOpenHoldRound("t")).toBe(held.id);
+    const replacement = await h.harness.lifecycle.reload(plugin);
+    hosts.push(replacement);
+    expect(replacement.harness.pendingInteractions).toHaveLength(0);
+
+    await replacement.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+    expect(replacement.harness.pendingInteractions).toHaveLength(1);
+    expect(replacement.harness.pendingInteractions[0]!.payload).toEqual({ roundId: held.id });
+  });
+
   it("uses only public SDK imports", async () => {
     const result = experimental_scanPublicSdkOnly(new URL("..", import.meta.url).pathname, { allow: [
-      /^react(?:-dom)?(?:\/.*)?$/, /^@radix-ui\//, /^@hugeicons\//,
+      /^react(?:-dom)?(?:\/.*)?$/, /^@radix-ui\//,
       /^@\/(?:components|lib|hooks)\/[\w/-]+$/, /^@testing-library\/react$/,
       /^(?:class-variance-authority|clsx|tailwind-merge|better-sqlite3|sonner|vaul)$/,
       /^vitest(?:\/.*)?$/,

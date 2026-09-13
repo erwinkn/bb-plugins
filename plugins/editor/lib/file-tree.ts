@@ -75,33 +75,54 @@ function sortRecursively(node: TreeNode): void {
 }
 
 /**
- * Folds a `tree(subpath)` response into the flat entries. The directory's
- * direct children come from the response — a child missing there was deleted
- * — while deeper levels it does not cover keep their fetched entries: a
- * re-requested directory must not drop grandchildren another expand listed.
+ * Folds a `tree(subpath)` response into the flat entries — or, with
+ * `subpath` "", a full reload into them. The level's direct children come
+ * from the response — a child missing there was deleted, and what hung
+ * below it goes with it — while deeper levels the response does not cover
+ * keep their fetched entries: a relisted directory must not drop
+ * grandchildren another request listed.
  */
 export function mergeListing(
   entries: readonly FlatEntry[],
   subpath: string,
   listing: readonly FlatEntry[],
 ): FlatEntry[] {
-  const prefix = `${subpath}/`;
-  const depth = (entryPath: string) => entryPath.slice(prefix.length).split("/").length;
-  const direct = new Set(
-    listing.filter((entry) => entry.path.startsWith(prefix) && depth(entry.path) === 1).map((entry) => entry.path),
-  );
+  const prefix = subpath === "" ? "" : `${subpath}/`;
+  const isDirectChild = (entryPath: string) =>
+    entryPath.startsWith(prefix) && entryPath.slice(prefix.length).split("/").length === 1;
+  // Only a directory keeps descendants: a child relisted as a file drops
+  // whatever a stale listing held below it.
+  const direct = new Set(listing.filter((entry) => entry.kind === "directory" && isDirectChild(entry.path)).map((entry) => entry.path));
   // The directory resolves, keeping what its own listing said about it (a
   // symbolic link's target) since the level below does not describe it.
-  const { deferred: _deferred, ...self } = entries.find((entry) => entry.path === subpath) ?? { path: subpath, kind: "directory" as const };
-  const out: FlatEntry[] = [{ ...self, kind: "directory" }, ...listing];
+  const { deferred: _deferred, ...self } =
+    entries.find((entry) => entry.path === subpath) ?? { path: subpath, kind: "directory" as const };
+  const out: FlatEntry[] = subpath === "" ? [...listing] : [{ ...self, kind: "directory" }, ...listing];
   const seen = new Set(out.map((entry) => entry.path));
   for (const entry of entries) {
-    if (entry.path === subpath || seen.has(entry.path)) continue;
-    if (entry.path.startsWith(prefix) && depth(entry.path) === 1 && !direct.has(entry.path)) continue;
-    out.push(entry);
-    seen.add(entry.path);
+    if (seen.has(entry.path)) continue;
+    if (!entry.path.startsWith(prefix)) {
+      out.push(entry);
+      seen.add(entry.path);
+      continue;
+    }
+    // Inside the relisted level an old entry survives only through a direct
+    // child that is still listed: itself, or the directory it sits under.
+    const top = entry.path.slice(prefix.length).split("/", 1)[0]!;
+    if (direct.has(prefix + top)) {
+      out.push(entry);
+      seen.add(entry.path);
+    }
   }
   return out;
+}
+
+/** Whether two flat listings hold the same paths with the same kinds and deferred flags. */
+export function sameEntries(left: readonly FlatEntry[], right: readonly FlatEntry[]): boolean {
+  if (left.length !== right.length) return false;
+  const key = (entry: FlatEntry) => `${entry.kind === "directory" ? "d" : "f"}${entry.deferred === true ? "!" : ""}${entry.path}`;
+  const keys = new Set(left.map(key));
+  return right.every((entry) => keys.has(key(entry)));
 }
 
 /** The last segment of a path and what precedes it, without the slash. */

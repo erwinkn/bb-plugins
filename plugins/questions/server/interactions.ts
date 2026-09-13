@@ -12,10 +12,16 @@ type WaitingRound = {
   done: Promise<PluginInteractionResult>;
 };
 
+/** Records which round's prompt is open so an unarchive can reopen it. */
+export interface HoldPersistence {
+  mark(round: Round): void;
+  unmark(threadId: string, roundId: string): void;
+}
+
 /** The native prompt controls attention, not answer delivery. No holds survive reload. */
 export class QuestionInteractions {
   private active = new Map<string, WaitingRound>();
-  constructor(private readonly bb: BbPluginApi) {}
+  constructor(private readonly bb: BbPluginApi, private readonly persistence?: HoldPersistence) {}
 
   has(threadId: string): boolean { return this.active.has(threadId); }
 
@@ -34,12 +40,18 @@ export class QuestionInteractions {
   private start(round: Round, attached: boolean, signal?: AbortSignal): WaitingRound {
     if (this.has(round.threadId)) throw new Error("This thread already has a Questions interaction open.");
     if (signal?.aborted) throw new Error("Questions request was cancelled.");
+    this.persistence?.mark(round);
     const stop = new AbortController();
     const onAbort = () => stop.abort();
     signal?.addEventListener("abort", onAbort, { once: true });
     const entry: WaitingRound = { round, attached, stop, done: Promise.resolve({ outcome: "cancelled", reason: "request-aborted" }) };
     this.active.set(round.threadId, entry);
-    entry.done = this.prompt(entry).finally(() => {
+    entry.done = this.prompt(entry).then((result) => {
+      // A dismissal ends the hold for good. Stops, aborts, reloads, and
+      // archive interruptions keep the marker so unarchive can reopen it.
+      if (result.outcome === "cancelled" && result.reason === "user") this.persistence?.unmark(round.threadId, round.id);
+      return result;
+    }).finally(() => {
       signal?.removeEventListener("abort", onAbort);
       if (this.active.get(round.threadId) === entry) this.active.delete(round.threadId);
     });

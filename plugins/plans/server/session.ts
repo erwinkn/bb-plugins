@@ -23,6 +23,8 @@ export class LiveSession {
   private updatingRow?: string;
   private recovering = false;
   private holdTimer?: ReturnType<typeof setTimeout>;
+  private cancelledRows = new Set<string>();
+  private restoreHold = false;
   constructor(readonly id: string, private bb: BbPluginApi, private store: PlanStore, private outbox: Outbox, private options: SessionOptions = {}) {}
 
   get busy() { return !!this.inFlight; }
@@ -83,6 +85,44 @@ export class LiveSession {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => { void this.flush(); }, Math.max(0, due - now));
   }
+  /** The user deleted a queued row on this plan's thread. Matching rows are never resent. */
+  cancelled(rowId: string) {
+    if (this.disposed) return;
+    // While a send is in flight the deleted row can be the one it just created
+    // before its pointer was persisted; record it and let flush() settle it.
+    if (this.store.get(this.id).delivery.queuedMessageId !== rowId && !this.busy) return;
+    this.cancelledRows.add(rowId);
+    if (!this.busy) this.applyCancellations();
+  }
+  private applyCancellations() {
+    let applied = false;
+    for (const rowId of this.cancelledRows) {
+      const plan = this.store.get(this.id);
+      if (plan.delivery.queuedMessageId === rowId) {
+        const ids = plan.delivery.itemIds;
+        this.store.db.transaction(() => {
+          this.outbox.state(ids, "cancelled");
+          plan.delivery = { ...plan.delivery, queuedMessageId: null, queuedUpdatedAt: null, itemIds: [], itemRevisions: {} };
+          this.store.saveDelivery(plan);
+        })();
+        this.store.changed(this.id);
+        applied = true;
+      }
+      this.cancelledRows.delete(rowId);
+    }
+    // The thread has nothing queued from this plan, so the review prompt can come back.
+    if (applied) this.hold();
+  }
+  /** The thread came back from the archive. Dropped feedback stays dropped. */
+  unarchived() {
+    if (this.disposed) return;
+    const plan = this.store.get(this.id);
+    if (plan.delivery.notice === unavailableNotice) {
+      plan.delivery.notice = null; this.store.saveDelivery(plan); this.store.changed(this.id);
+    }
+    if (plan.status === "approved") return;
+    this.release(); this.hold();
+  }
   dispatched(rowId: string, text: string) {
     const plan = this.store.get(this.id);
     if (this.busy) this.dispatchedRows.set(rowId, text);
@@ -118,7 +158,13 @@ export class LiveSession {
     if (this.inFlight) { await this.inFlight; this.schedule(false); return; }
     this.firstEventAt = undefined;
     this.inFlight = Promise.resolve().then(() => this.deliver());
-    try { await this.inFlight; } finally { this.inFlight = undefined; this.dispatchedRows.clear(); if (!this.disposed) this.schedule(false); }
+    try { await this.inFlight; } finally {
+      this.inFlight = undefined; this.dispatchedRows.clear();
+      if (!this.disposed && this.cancelledRows.size) this.applyCancellations();
+      // hold() is a no-op while a newer batch sits in the queue.
+      if (!this.disposed && this.restoreHold) { this.restoreHold = false; this.hold(); }
+      if (!this.disposed) this.schedule(false);
+    }
   }
   private async deliver() {
     let pending = this.outbox.list(this.id).filter((item) => item.state === "pending" && (!item.attempts || item.nextAttemptAt <= Date.now()));
@@ -185,7 +231,16 @@ export class LiveSession {
           }
           // A gone row cannot be appended. Do not replay the batch it already held.
           const oldIds = plan.delivery.itemIds;
-          this.reconcile(oldIds, plan.delivery.itemRevisions, this.dispatchedRows.get(rowId));
+          if (this.cancelledRows.has(rowId)) {
+            // The user deleted the row; its batch was never delivered.
+            this.store.db.transaction(() => {
+              this.outbox.state(oldIds, "cancelled");
+              plan = this.store.get(this.id);
+              plan.delivery = { ...plan.delivery, queuedMessageId: null, queuedUpdatedAt: null, itemIds: [], itemRevisions: {} };
+              this.store.saveDelivery(plan);
+            })();
+            this.cancelledRows.delete(rowId); this.restoreHold = true;
+          } else this.reconcile(oldIds, plan.delivery.itemRevisions, this.dispatchedRows.get(rowId));
           plan = this.store.get(this.id);
           pending = pending.filter((item) => !oldIds.includes(item.id));
         } finally { this.updatingRow = undefined; }
@@ -204,9 +259,20 @@ export class LiveSession {
       }
       const ids = pending.map((item) => item.id);
       if (result.delivery === "queued" && !this.dispatchedRows.has(result.queuedMessage.id)) {
-        plan = this.store.get(this.id);
-        plan.delivery = { ...plan.delivery, queuedMessageId: result.queuedMessage.id, queuedUpdatedAt: result.queuedMessage.updatedAt, itemIds: ids, itemRevisions: revisions(pending) };
-        this.store.db.transaction(() => { this.outbox.state(ids, "queued"); this.store.saveDelivery(plan); })();
+        if (this.cancelledRows.has(result.queuedMessage.id)) {
+          // The row was deleted before its pointer could be saved; the batch was never delivered.
+          this.store.db.transaction(() => {
+            this.outbox.state(ids, "cancelled");
+            plan = this.store.get(this.id);
+            plan.delivery = { ...plan.delivery, queuedMessageId: null, queuedUpdatedAt: null, itemIds: [], itemRevisions: {} };
+            this.store.saveDelivery(plan);
+          })();
+          this.cancelledRows.delete(result.queuedMessage.id); this.restoreHold = true;
+        } else {
+          plan = this.store.get(this.id);
+          plan.delivery = { ...plan.delivery, queuedMessageId: result.queuedMessage.id, queuedUpdatedAt: result.queuedMessage.updatedAt, itemIds: ids, itemRevisions: revisions(pending) };
+          this.store.db.transaction(() => { this.outbox.state(ids, "queued"); this.store.saveDelivery(plan); })();
+        }
       } else this.outbox.delivered(this.id, ids);
       this.store.changed(this.id);
     } catch (error) {

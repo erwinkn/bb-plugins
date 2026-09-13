@@ -17,7 +17,7 @@ import {
   getOverlayTriggerClassName,
   preventOverlayTriggerSelection,
 } from "./overlay-trigger.js";
-import { Icon } from "../../components/ui/icon.js";
+import { Icon } from "../host-icon";
 
 interface ResponsiveDialogContextValue extends ResponsiveOverlayContextValue {
   titleId: string;

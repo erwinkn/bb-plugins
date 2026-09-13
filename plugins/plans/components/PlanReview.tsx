@@ -381,6 +381,7 @@ export function PlanReview({
               actions={commentActions}
               canEdit={canEdit}
               failedAnnotations={delivery.failedAnnotations}
+              cancelledAnnotations={delivery.cancelledAnnotations}
               pending={pending}
               showHeader={false}
             />
@@ -398,6 +399,7 @@ export function PlanReview({
               actions={commentActions}
               canEdit={canEdit}
               failedAnnotations={delivery.failedAnnotations}
+              cancelledAnnotations={delivery.cancelledAnnotations}
               pending={pending}
               emptyMessage={view === "changes" && canEdit ? "Open Document to comment on the text." : undefined}
             />

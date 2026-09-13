@@ -1190,3 +1190,71 @@ test("gpt-live-1: transcripts commit locally and delegated function calls round-
   assert.equal(itemOut?.item?.call_id, "call_1");
   assert.ok(dc.sent.some(event => event.type === "response.create" && String(event.event_id).startsWith("continue_")));
 });
+
+test("gpt-live-1: assistant speech does not settle an utterance the user is still speaking", async t => {
+  const f = await liveVoiceFixture(t, undefined, { createCall: () => ({ sdp: "answer", engine: "live", sessionId: "sess_live" }) }, "live", "live");
+  const dc = f.dc;
+  const input = (f.agent as unknown as { input: import("./input-controller.ts").InputController }).input;
+  const finishes = () => f.rpcCalls.filter(call => call.method === "finishUserExchange");
+  // The user starts a new sentence while a fragment of Ada's previous answer is
+  // still arriving: the exchange must stay open with the input unresolved.
+  input.sample(0.04); f.tick(150); input.sample(0.04);
+  dc.emit("session.input_transcript.delta", { event_id: "t1", delta: "Check ", start_ms: 0, end_ms: 100 });
+  dc.emit("session.input_transcript.delta", { event_id: "t2", delta: "this thread", start_ms: 100, end_ms: 300 });
+  assert.ok(input.unresolved);
+  const utteranceId = input.currentUtterance()?.id;
+  assert.ok(utteranceId);
+  dc.emit("session.output_transcript.delta", { event_id: "o1", delta: "…and that was the build." });
+  await settleVoice();
+  assert.equal(finishes().length, 0, "a late prior-turn fragment must not finish the new utterance");
+  assert.ok(input.pending, "the open utterance was not closed as answered");
+  // Once the input settles, the next assistant fragment covers the utterance.
+  f.tick(300); input.sample(0); f.tick(800); input.sample(0); f.tick(2000); input.sample(0); await settleVoice();
+  assert.ok(!input.unresolved);
+  assert.equal(finishes().length, 0, "settling alone does not report an answer");
+  dc.emit("session.output_transcript.delta", { event_id: "o2", delta: "Sure, opening it." });
+  await settleVoice();
+  assert.deepEqual(finishes().map(call => call.args.utteranceId), [utteranceId]);
+  dc.emit("session.output_transcript.delta", { event_id: "o3", delta: " Done." });
+  await settleVoice();
+  assert.equal(finishes().length, 1, "an exchange finishes once");
+});
+
+async function liveOfferFixture(t: TestContext, summary = "Build finished. " + "x".repeat(2000), expectedChunks = 2) {
+  const f = await liveVoiceFixture(t, undefined, {
+    createCall: () => ({ sdp: "answer", engine: "live", sessionId: "sess_live" }),
+    nextUpdateBatch: (() => { let offered = false; return () => { if (offered) return null; offered = true; return { offerId: "offer", items: [{ summary }], asOf: 123 }; }; })(),
+  }, "live", "live");
+  f.tick(2000); await settleVoice(); f.tick(2000); await settleVoice();
+  const chunks = f.dc.sent.filter(event => event.type === "session.commentary.append" && String(event.event_id).startsWith("live_offer_offer_"));
+  assert.equal(chunks.length, expectedChunks, "the update is appended in chunks, all tagged with the offer");
+  assert.equal(JSON.parse(chunks.map(chunk => chunk.content).join("")).offerId, "offer");
+  const closes = () => f.rpcCalls.filter(call => call.method === "closeOffer");
+  assert.equal(closes().length, 0);
+  return { ...f, chunks, closes };
+}
+
+test("gpt-live-1: a multi-chunk update is delivered only once every chunk is acknowledged", async t => {
+  const f = await liveOfferFixture(t);
+  f.dc.emit("session.commentary.appended", { client_event_id: f.chunks[1].event_id }); await settleVoice();
+  assert.equal(f.closes().length, 0, "the last chunk's ack alone does not deliver the offer");
+  f.dc.emit("session.commentary.appended", { client_event_id: f.chunks[0].event_id }); await settleVoice();
+  assert.deepEqual(f.closes().map(call => call.args.outcome), ["delivered"]);
+});
+
+test("gpt-live-1: a failed chunk closes the update as not delivered even after a later ack", async t => {
+  const f = await liveOfferFixture(t);
+  f.dc.emit("error", { error: { message: "append rejected", client_event_id: f.chunks[0].event_id } }); await settleVoice();
+  assert.deepEqual(f.closes().map(call => call.args.outcome), ["not_delivered"]);
+  f.dc.emit("session.commentary.appended", { client_event_id: f.chunks[1].event_id }); await settleVoice();
+  assert.equal(f.closes().length, 1, "the surviving chunk's ack cannot resurrect the offer as delivered");
+});
+
+test("gpt-live-1: an update larger than the append ledger still closes once every chunk is acknowledged", async t => {
+  // More than 300 chunks overflows the liveAppends bound; the offer's own ids must not be evicted.
+  const f = await liveOfferFixture(t, "x".repeat(430_000), 308);
+  assert.ok(f.chunks.length > 300);
+  for (const chunk of f.chunks) f.dc.emit("session.commentary.appended", { client_event_id: chunk.event_id });
+  await settleVoice();
+  assert.deepEqual(f.closes().map(call => call.args.outcome), ["delivered"]);
+});

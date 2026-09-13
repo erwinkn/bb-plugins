@@ -56,7 +56,7 @@ function answer(questionId: string, roundId: string, draft: Answer | null, versi
 }
 
 function submission(id: string, state: Submission["state"], questionIds: string[], createdAt: number): Submission {
-  return { id, threadId: THREAD, state, questionIds, snapshot: {}, error: state === "failed" ? "refused" : null, createdAt, settledAt: createdAt };
+  return { id, threadId: THREAD, state, questionIds, snapshot: {}, error: state === "failed" ? "refused" : null, createdAt, settledAt: createdAt, queuedMessageId: null };
 }
 
 /** In-memory backend that mirrors the real RPC contract semantics. */
@@ -171,6 +171,26 @@ describe("registrations", () => {
 });
 
 describe("Questions panel", () => {
+  it("offers to resubmit answers whose queued message was removed", async () => {
+    const frozen: Answer = { ...emptyAnswer(), text: "Frozen answer" };
+    const server = backend({
+      rounds: [round("r1", 1, [question("q1")])],
+      answers: [answer("q1", "r1", { ...emptyAnswer(), text: "Edited later" }, 2)],
+      submissions: [{ ...submission("c1", "cancelled", ["q1"], 10), snapshot: { q1: frozen }, error: "The queued message was removed before the agent received it." }],
+    });
+    const slot = mountPanel(server);
+    const alert = await slot.findByRole("alert");
+    expect(alert.textContent).toContain("Answers to Q1 were not delivered.");
+    expect(alert.textContent).toContain("removed before the agent received it");
+    fireEvent.click(within(alert).getByRole("button", { name: "Resubmit" }));
+    await waitFor(() => expect(server.calls.some((call) => call.method === "questions_submit")).toBe(true));
+    const saved = server.calls.find((call) => call.method === "questions_save_draft")!.input as { draft: Answer };
+    expect(saved.draft.text).toBe("Frozen answer");
+    expect(server.calls.find((call) => call.method === "questions_submit")!.input).toMatchObject({ items: [{ questionId: "q1", expectedVersion: 3 }] });
+    await waitFor(() => expect(toasts.calls).toContain("success:Sent 1 answer."));
+    await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
+  });
+
   it("requires every required answer, lets optional answers stay blank, and submits only the active round", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("old")]), round("r2", 2, [question("required"), question("optional", { optional: true })])] });
     const slot = mountPanel(server);

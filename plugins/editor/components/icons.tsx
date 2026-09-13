@@ -1,37 +1,30 @@
 /**
- * Icons come from Hugeicons, the set BB draws its own chrome with, at BB's
- * compact size: 14px, stroke 1.5, `text-muted-foreground` unless a parent
- * sets the color.
+ * Icons come from BB's host registry where it has a name for them (see
+ * lib/host-icon.tsx), at BB's compact size: 14px via `size-3.5`,
+ * `text-muted-foreground` unless a parent sets the color. Glyphs the
+ * registry has no name for still come from Hugeicons, the set BB draws its
+ * own chrome with, at stroke 1.5.
  */
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   ArrowLeft01Icon,
-  ArrowRight01Icon,
-  ArrowTurnBackwardIcon,
-  GitBranchIcon,
   GitCommitIcon,
   GitCompareIcon,
-  Cancel01Icon,
-  File01Icon,
   FileAddIcon,
-  Folder01Icon,
-  FolderAddIcon,
-  FolderOpenIcon,
-  LinkSquare01Icon,
-  MoreHorizontalIcon,
-  PencilEdit02Icon,
-  RefreshIcon,
-  Search01Icon,
-  SidebarLeftIcon,
-  SidebarRightIcon,
-  ViewIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { fileGlyph } from "@/lib/file-icons";
+import { HostIcon } from "@/lib/host-icon";
+import type { HostIconName } from "@/lib/host-icon-names";
 import { cn } from "@/lib/utils";
 
 interface IconProps {
   className?: string;
+}
+
+function makeHost(name: HostIconName) {
+  return function Icon({ className }: IconProps) {
+    return <HostIcon name={name} className={cn("size-3.5 shrink-0", className)} />;
+  };
 }
 
 function make(icon: IconSvgElement) {
@@ -40,35 +33,33 @@ function make(icon: IconSvgElement) {
   };
 }
 
-export const BranchGlyph = make(GitBranchIcon);
+export const BranchGlyph = makeHost("GitBranch");
 export const CommitGlyph = make(GitCommitIcon);
 export const CompareGlyph = make(GitCompareIcon);
 
 export const ArrowLeftIcon = make(ArrowLeft01Icon);
-export const ArrowRightIcon = make(ArrowRight01Icon);
-export const CloseIcon = make(Cancel01Icon);
-export const CheckIcon = make(Tick02Icon);
-export const ExternalIcon = make(LinkSquare01Icon);
+export const ArrowRightIcon = makeHost("ArrowRight");
+export const CloseIcon = makeHost("X");
+export const CheckIcon = makeHost("Check");
+export const ExternalIcon = makeHost("ExternalLink");
 export const FileAddGlyph = make(FileAddIcon);
-export const FolderAddGlyph = make(FolderAddIcon);
-export const FolderIcon = make(Folder01Icon);
-export const FolderOpenGlyph = make(FolderOpenIcon);
-export const MoreIcon = make(MoreHorizontalIcon);
-export const EditGlyph = make(PencilEdit02Icon);
-export const PreviewGlyph = make(ViewIcon);
-export const RefreshGlyph = make(RefreshIcon);
-export const RevertGlyph = make(ArrowTurnBackwardIcon);
-export const SearchIcon = make(Search01Icon);
-export const SidebarLeftGlyph = make(SidebarLeftIcon);
-export const SidebarRightGlyph = make(SidebarRightIcon);
+export const FolderAddGlyph = makeHost("FolderPlus");
+export const FolderIcon = makeHost("Folder");
+export const FolderOpenGlyph = makeHost("FolderOpen");
+export const MoreIcon = makeHost("MoreHorizontal");
+export const EditGlyph = makeHost("Edit");
+export const PreviewGlyph = makeHost("Eye");
+export const RefreshGlyph = makeHost("ArrowReloadHorizontal");
+export const RevertGlyph = makeHost("ArrowTurnBackward");
+export const SearchIcon = makeHost("Search");
+export const SidebarLeftGlyph = makeHost("PanelLeft");
+export const SidebarRightGlyph = makeHost("PanelRight");
 
 export function ChevronIcon({ className, open }: IconProps & { open: boolean }) {
   return (
-    <HugeiconsIcon
-      icon={ArrowRight01Icon}
-      strokeWidth={1.5}
+    <HostIcon
+      name="ChevronRight"
       className={cn("size-3.5 shrink-0 transition-transform duration-100", open && "rotate-90", className)}
-      aria-hidden
     />
   );
 }
@@ -92,4 +83,4 @@ export function FileIcon({ path, className }: { path: string; className?: string
   );
 }
 
-const GenericFileIcon = make(File01Icon);
+const GenericFileIcon = makeHost("File");

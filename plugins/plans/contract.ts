@@ -11,7 +11,8 @@
  * approve({id, requestId, versionId}) approves the viewed latest version once and releases the hold.
  * setDeliveryMode({id, mode}) saves the mode and queues its notification.
  * remove({id}) -> {ok:true}; deliveryStatus({id}) -> pending/failed/dropped items and delivered approvals.
- * annotationDeliveryStatus({id}) -> pending/failed items with annotation IDs.
+ * annotationDeliveryStatus({id}) -> pending/failed/cancelled items with annotation IDs.
+ * A cancelled item was in a queued message the user deleted before dispatch; it is not resent.
  * Plan.delivery.notice reports a provider fallback for the panel.
  * Every mutation publishes plans-changed {id}; creation also publishes
  * plan-submitted {id, threadId}. Annotation data remains under comments.
@@ -91,7 +92,7 @@ export const updateSchema = z.object({
 export const agentReplySchema = z.object({ planId: idSchema, annotation: idSchema, body: bodySchema, resolve: z.boolean().optional() });
 const target = z.object({ id: idSchema, annotationId: idSchema });
 export const deliveryStatusSchema = z.object({
-  id: idSchema, kind: z.string(), state: z.enum(["pending", "failed", "dropped", "delivered"]), attempts: z.number(), nextAttemptAt: z.number(),
+  id: idSchema, kind: z.string(), state: z.enum(["pending", "failed", "dropped", "cancelled", "delivered"]), attempts: z.number(), nextAttemptAt: z.number(),
 });
 export const plansContract = defineRpcContract({
   list: { input: z.object({ threadId: idSchema.optional(), offset: z.number().int().nonnegative().optional() }), output: z.array(planSchema) },

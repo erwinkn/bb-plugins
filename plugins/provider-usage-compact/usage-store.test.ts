@@ -10,7 +10,7 @@ function deferred<T>() {
 
 function response(name: string) {
   return new Response(JSON.stringify({ ok: true, result: { machines: [{
-    id: "machine", displayName: name, status: "connected", providers: [], error: null,
+    id: "machine", displayName: name, status: "connected", machineProvider: null, providers: [], error: null,
   }] } }), { status: 200 });
 }
 

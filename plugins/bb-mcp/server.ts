@@ -3,7 +3,7 @@ import { createMcpHandler, McpServer, type CallToolResult, type ServerContext } 
 import { z } from "zod";
 import { defineSettings, ToolError } from "./config";
 import { createStore, errorView, operationView } from "./store";
-import { EXECUTE_DESCRIPTION, EXECUTE_TOOL, makeDispatch, READ_DESCRIPTION, READ_TOOL, runCode, sdkCall, SDK_PATHS } from "./codemode";
+import { EXECUTE_DESCRIPTION, EXECUTE_TOOL, makeDispatch, READ_DESCRIPTION, READ_TOOL, runCode, sdkCall, SDK_PATHS, SDK_VERSION } from "./codemode";
 import { reconcileOp } from "./ops";
 
 const inputSchema = z.object({ code: z.string().min(1).max(32768), timeoutMs: z.number().int().min(1000).max(120000).optional() }).strict();
@@ -12,9 +12,9 @@ export default function plugin(bb: BbPluginApi) {
   const settings = defineSettings(bb);
   const store = createStore(bb);
   const handler = createMcpHandler(() => {
-    const server = new McpServer({ name: "bb-mcp", version: "0.4.0" }, {
+    const server = new McpServer({ name: "bb-mcp", version: "0.5.0" }, {
       capabilities: { tools: {} },
-      instructions: "Code-mode remote control of BB for a trusted orchestrator. bb_execute runs JavaScript in an isolated worker whose `bb` global mirrors the complete BB SDK (threads, threadSections, projects, environments, files, terminals, hosts, providers, plugins, system, skills, status, theme, guide) plus bb.ops for durable, deduplicated dispatch receipts. Compose calls, loop, wait and filter inside the worker; only the returned value crosses the wire. BB enforces its own validation and native limits; there is no plugin-side permission layer.",
+      instructions: "Code-mode remote control of BB for a trusted orchestrator. bb_execute runs JavaScript in an isolated worker whose `bb` global mirrors the complete BB SDK (threads incl. plugin metadata and context usage, threadSections, projects, environments, files, terminals, hosts incl. machine providers, providers, plugins, system incl. uiPreferences, skills, status, theme, experimental_desktopBrowsers, guide) plus bb.ops for durable, deduplicated dispatch receipts; ops.run spawns seed { operationId } into the thread's bb-mcp metadata namespace. bb_read serves the non-mutating subset. Compose calls, loop, wait and filter inside the worker; only the returned value crosses the wire. BB enforces its own validation and native limits; there is no plugin-side permission layer.",
     });
     const codeTool = (name: string, description: string, readOnly: boolean) =>
       server.registerTool(name, {
@@ -73,7 +73,7 @@ export default function plugin(bb: BbPluginApi) {
       } catch (e) { return { exitCode: 1, stderr: e instanceof ToolError ? e.message : "BB could not reconcile the operation." }; }
     }
     if (argv[0] === "operations") return { exitCode: 0, stdout: JSON.stringify(store.list().map(operationView), null, 2) };
-    if (!argv.length || ["status", "--help"].includes(argv[0])) return { exitCode: 0, stdout: JSON.stringify({ endpointPath: "/api/v1/plugins/bb-mcp/http/mcp", authentication: "x-bb-plugin-token", version: "0.4.0", surface: "code-mode full bb.sdk plus bb.ops", methodCount: SDK_PATHS.length, settings: await settings.get() }, null, 2) };
+    if (!argv.length || ["status", "--help"].includes(argv[0])) return { exitCode: 0, stdout: JSON.stringify({ endpointPath: "/api/v1/plugins/bb-mcp/http/mcp", authentication: "x-bb-plugin-token", version: "0.5.0", sdkVersion: SDK_VERSION, surface: "code-mode full bb.sdk plus bb.ops", methodCount: SDK_PATHS.length, settings: await settings.get() }, null, 2) };
     return { exitCode: 1, stderr: "Usage: bb mcp status | operations | reconcile <operation-id> <thread-id> --confirmed" };
   } });
 }

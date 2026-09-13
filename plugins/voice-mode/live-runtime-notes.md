@@ -72,7 +72,7 @@ workers, including muted workers. An unavailable worker keeps its slot.
 Native events and recovery run on one queue. A send's SDK call and receipt write
 share that queue so an early dispatch callback cannot lose its operation match.
 Each watched child gets its own event cursor and retains the same root grouping.
-Recovery reads pages of 200 events. Each stored turn keeps its own available
+Recovery reads pages of 100 events (BB 0.43 caps a page at 100). Each stored turn keeps its own available
 assistant text; missing historical text is marked missing. Lifecycle snapshots
 cover a fast completion that had no recorded event. Event keys suppress repeats.
 

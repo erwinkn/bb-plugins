@@ -134,6 +134,8 @@ export const SUBMISSION_STATES = [
   "queued",
   "uncertain",
   "failed",
+  /** The queued message was removed before the agent received it. */
+  "cancelled",
 ] as const;
 export type SubmissionState = (typeof SUBMISSION_STATES)[number];
 
@@ -147,6 +149,8 @@ export const submissionSchema = z.object({
   error: z.string().nullable(),
   createdAt: z.number(),
   settledAt: z.number().nullable(),
+  /** BB's queued-message row when delivery was queued; matched on message.cancelled. */
+  queuedMessageId: z.string().nullable(),
 });
 export type Submission = z.infer<typeof submissionSchema>;
 
@@ -155,6 +159,32 @@ export const summarySchema = z.object({
   updatedAt: z.number(),
 });
 export type Summary = z.infer<typeof summarySchema>;
+
+/**
+ * The summary lives in the thread's plugin metadata (bb ≥ 0.43.1) under this
+ * key of the `questions` namespace. `version` is the record format, so a
+ * later shape can be told apart from this one.
+ */
+export const SUMMARY_METADATA_KEY = "summary";
+export const SUMMARY_METADATA_VERSION = 1;
+export const summaryMetadataSchema = z.object({
+  markdown: z.string().max(LIMITS.summaryChars),
+  updatedAt: z.number().int().nonnegative(),
+  version: z.literal(SUMMARY_METADATA_VERSION),
+});
+export type SummaryMetadata = z.infer<typeof summaryMetadataSchema>;
+
+/**
+ * Reads the summary out of a metadata namespace. Any API client, another
+ * plugin, or the thread's own agent can write the namespace, so the value is
+ * untrusted: anything that is not a well-formed record within the size bound
+ * counts as no summary.
+ */
+export function summaryFromMetadata(metadata: unknown): Summary | null {
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const parsed = summaryMetadataSchema.safeParse((metadata as Record<string, unknown>)[SUMMARY_METADATA_KEY]);
+  return parsed.success ? { markdown: parsed.data.markdown, updatedAt: parsed.data.updatedAt } : null;
+}
 
 export const threadStateSchema = z.object({
   threadId: z.string(),
@@ -293,13 +323,14 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
- * Failed or uncertain attempts that still own the latest attempt for at
- * least one of their questions. A later successful send of other questions
- * never hides them; an attempt fully superseded by newer ones is not listed.
+ * Failed, uncertain, or cancelled attempts that still own the latest attempt
+ * for at least one of their questions. A later successful send of other
+ * questions never hides them; an attempt fully superseded by newer ones is
+ * not listed.
  */
 export function actionableFailures(submissions: Submission[]): Submission[] {
   return submissions.filter((submission) => {
-    if (submission.state !== "uncertain" && submission.state !== "failed") return false;
+    if (submission.state !== "uncertain" && submission.state !== "failed" && submission.state !== "cancelled") return false;
     return submission.questionIds.some(
       (questionId) =>
         !submissions.some(

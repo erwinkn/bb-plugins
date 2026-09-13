@@ -296,6 +296,13 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           if (state !== null) state.pendingFocus = { target };
           return false;
         }
+        // Bare DOM focus leaves a document that has no selection unable to
+        // take keystrokes, so a fresh editor gets a caret on its first
+        // visible line. An existing selection is restored untouched.
+        if (target === undefined && (editor.getViewState().selections?.length ?? 0) === 0) {
+          editor.focus({ lineNumber: "first-visible" });
+          return true;
+        }
         editor.focus(target);
         return true;
       },
@@ -345,6 +352,39 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     revertAtLine(stateRef.current, latest.current, hovered.lineNumber, hovered.side);
   };
 
+  /**
+   * A click in dead space — below the last rendered line, or on an empty
+   * line the browser cannot anchor a caret to — produces no document
+   * selection, so the editor keeps no caret and drops keystrokes. Put the
+   * caret where the click meant it to land.
+   */
+  const surfacePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.pointerType === "touch") return;
+    const state = stateRef.current;
+    const editor = editorOf(state);
+    const host = hostRef.current;
+    if (editor === null || host === null) return;
+    const path = event.nativeEvent.composedPath();
+    // The gutter and deleted rows run their own gestures.
+    if (path.some((node) => node instanceof HTMLElement && (node.dataset.columnNumber !== undefined || node.dataset.lineType === "change-deletion"))) return;
+    const content = editableContentOf(host);
+    if (content === null) return;
+    const lastLine = lastRenderedLine(content);
+    const contentBottom = lastLine === null ? content.getBoundingClientRect().bottom : lastLine.rect.bottom;
+    if (event.clientY > contentBottom) {
+      event.preventDefault();
+      focusLineEnd(editor, lastLine?.number, event.shiftKey);
+      return;
+    }
+    const line = lineRowAt(content, event.clientY) ?? 0;
+    const extend = event.shiftKey;
+    requestAnimationFrame(() => {
+      if (stateRef.current !== state || editorOf(state) !== editor) return;
+      if ((editor.getViewState().selections?.length ?? 0) > 0) return;
+      focusLineEnd(editor, line === 0 ? undefined : line, extend);
+    });
+  };
+
   return (
     <div
       ref={surfaceRef}
@@ -372,7 +412,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
               props.content === props.oldContent ? "No text changes · File contents" : "File contents"}
         </div>
       ) : null}
-      <div ref={hostRef} className="relative min-h-0 w-full flex-1 overflow-auto" />
+      <div ref={hostRef} className="relative min-h-0 w-full flex-1 overflow-auto" onPointerDown={surfacePointerDown} />
       {hovered !== null ? (
         <button
           ref={revertButtonRef}
@@ -573,6 +613,61 @@ function editorOf(state: SurfaceState | null): Editor | null {
   if (state === null) return null;
   const editor = (state.view.getEditor(state.docKey) as Editor | undefined) ?? null;
   return editor === state.readyEditor ? editor : null;
+}
+
+/** The contenteditable inside Pierre's shadow DOM; null for read-only items. */
+function editableContentOf(host: HTMLElement): HTMLElement | null {
+  for (const element of host.querySelectorAll("*")) {
+    const editable = element.shadowRoot?.querySelector("[contenteditable]");
+    if (editable instanceof HTMLElement) return editable;
+  }
+  return null;
+}
+
+/** Rows the caret can land on: `data-line` is the one-based document line. */
+function lineRows(content: HTMLElement): HTMLElement[] {
+  return [...content.querySelectorAll<HTMLElement>("[data-line]")].filter(
+    (row) => row.dataset.lineType !== "change-deletion" && Number.isInteger(Number(row.dataset.line)),
+  );
+}
+
+/** The last rendered editable line's document number and box. */
+function lastRenderedLine(content: HTMLElement): { number: number; rect: DOMRect } | null {
+  const rows = lineRows(content);
+  if (rows.length === 0) return null;
+  const row = rows[rows.length - 1];
+  return { number: Number(row.dataset.line), rect: row.getBoundingClientRect() };
+}
+
+/** The document line under `clientY`, or the last rendered line above it. */
+function lineRowAt(content: HTMLElement, clientY: number): number | null {
+  let line: number | null = null;
+  for (const row of lineRows(content)) {
+    const rect = row.getBoundingClientRect();
+    if (clientY < rect.top) break;
+    line = Number(row.dataset.line);
+    if (clientY < rect.bottom) break;
+  }
+  return line;
+}
+
+/**
+ * The caret goes to the end of `lineNumber` (one-based), or to the document
+ * end when it is omitted. `extend` grows the current selection to that point
+ * instead of collapsing it, like a shift-click.
+ */
+function focusLineEnd(editor: Editor, lineNumber?: number, extend = false): void {
+  const lines = editor.getText().split("\n");
+  const line = Math.min(Math.max(1, lineNumber ?? lines.length), lines.length);
+  const character = lines[line - 1].length;
+  const primary = editor.getViewState().selections?.at(-1);
+  if (extend && primary !== undefined) {
+    const anchor = primary.direction === -1 ? primary.end : primary.start;
+    editor.setSelections([{ start: anchor, end: { line: line - 1, character }, direction: "forward" }]);
+    editor.focus();
+    return;
+  }
+  editor.focus({ lineNumber: line, character, preventScroll: true });
 }
 
 function run(state: SurfaceState | null, action: (editor: Editor) => void): boolean {

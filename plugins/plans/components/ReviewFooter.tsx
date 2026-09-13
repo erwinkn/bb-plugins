@@ -14,7 +14,7 @@ export interface SubmitFailure { message: string; requestId: string; action: Rev
 interface ReviewFooterProps {
   plan: Plan;
   failedCount: number;
-  approvalState?: "pending" | "failed" | "dropped" | "sent";
+  approvalState?: "pending" | "failed" | "dropped" | "cancelled" | "sent";
   submitting: ReviewAction | null;
   failure: SubmitFailure | null;
   onSubmit: (action: ReviewAction) => void;
@@ -42,6 +42,7 @@ export function ReviewFooter({ plan, failedCount, approvalState = "pending", sub
               ? "Sample plan: nothing was sent to an agent."
               : approvalState === "dropped" ? "Approval not delivered. The linked thread is archived or deleted."
               : approvalState === "failed" ? "Approval not delivered · retrying"
+              : approvalState === "cancelled" ? "Approval not delivered · cancelled. Tell the agent in the thread if it should implement the plan."
               : approvalState === "sent" ? "Approval sent to the thread" : "Sending approval…"}
           </p>
           {failedCount > 0 ? <p className="text-xs text-muted-foreground">{failedCount} not delivered</p> : null}

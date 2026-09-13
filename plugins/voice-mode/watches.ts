@@ -14,6 +14,8 @@ export function interactionData(interaction: Interaction) {
   return { id: interaction.id, kind: interaction.payload.kind, status: interaction.status,
     createdAt: interaction.createdAt, payload: interaction.payload };
 }
+const EVENT_PAGE = 100;
+const UNKNOWN_DELIVERY_WINDOW = 200;
 export class Watches {
   private chain: Promise<unknown> = Promise.resolve();
   constructor(readonly bb: BbPluginApi, readonly store: LiveStore, readonly operations: Operations) {}
@@ -103,6 +105,11 @@ export class Watches {
         }
         return;
       }
+      if (name === "message.cancelled") {
+        const { entry } = payload as PluginThreadEventPayloads["message.cancelled"];
+        await this.cancelled(entry, receivedAt);
+        return;
+      }
       if (!("thread" in payload)) return;
       const thread = payload.thread;
       if (!this.store.watches().some(w => w.state === "active")) return;
@@ -112,11 +119,48 @@ export class Watches {
         for (const watch of await this.match(thread)) this.pending(watch, thread, interaction, spec);
         return;
       }
+      if (name === "thread.unarchived") { await this.unarchived(thread); return; }
       if (name === "thread.idle" || name === "thread.failed" || name === "thread.active" || name === "thread.archived") {
+        // BB announces new prompts through interaction.pending (fixed in BB 0.43.0), so
+        // ordinary lifecycle handling no longer lists every interaction. Startup,
+        // reconnect, and explicit refreshes still read the full list.
         await this.reconcileThread(thread, name === "thread.idle" ? (payload as PluginThreadEventPayloads["thread.idle"]).lastAssistantText : undefined,
-          name === "thread.failed" ? (payload as PluginThreadEventPayloads["thread.failed"]).error : undefined);
+          name === "thread.failed" ? (payload as PluginThreadEventPayloads["thread.failed"]).error : undefined, false, false);
       }
     });
+  }
+  /** A queued voice message deleted before dispatch: close its operation and tell the caller. */
+  private async cancelled(entry: PluginThreadEventPayloads["message.cancelled"]["entry"], at: number) {
+    const rows = this.store.db.prepare("SELECT * FROM voice_operations WHERE queued_message_id = ? AND target_thread_id = ? AND completed_at IS NULL").all(entry.id, entry.threadId) as OperationRow[];
+    if (!rows.length) return;
+    const text = entry.content.filter(p => p.type === "text").map(p => p.text ?? "").join("\n");
+    let thread: Thread | null = null;
+    try { thread = await this.bb.sdk.threads.get({ threadId: entry.threadId }); }
+    catch (error) { this.bb.log.warn(`Live runtime could not read ${entry.threadId} after a cancelled message: ${String(error)}`); }
+    const watches = thread ? await this.match(thread) : [];
+    this.store.db.transaction(() => {
+      for (const row of rows) {
+        this.store.db.prepare("UPDATE voice_operations SET completed_at = ? WHERE id = ?").run(at, row.id);
+        this.operations.finish(row.id, "cancelled", { queuedMessageId: entry.id, delivery: "cancelled", cancelledAt: at, text });
+      }
+      if (thread) this.store.db.prepare("UPDATE voice_tasks SET follow_ups_queued = ?, updated_at = ? WHERE thread_id = ?").run(thread.queuedMessageCount, at, thread.id);
+      for (const watch of watches) if (rows.some(row => row.conversation_id === watch.conversation_id))
+        this.add(watch, thread!, "milestone", { title: threadName(thread!), event: "message_cancelled", text: tail(text, 600).text,
+          operationIds: rows.filter(row => row.conversation_id === watch.conversation_id).map(row => row.id), asOf: at, source: "message.cancelled" }, `cancelled:${entry.id}`);
+    })();
+  }
+  /** Archived news is stale once the thread is back; the task returns to its live status. */
+  private async unarchived(thread: Thread) {
+    const watches = await this.match(thread);
+    if (!watches.length) return;
+    const at = this.store.now();
+    this.store.db.transaction(() => {
+      for (const watch of watches) {
+        this.store.db.prepare("UPDATE voice_inbox SET status = 'resolved', eligible = 0, updated_at = ? WHERE conversation_id = ? AND thread_id = ? AND kind = 'archived' AND status IN ('queued','offered','deferred')").run(at, watch.conversation_id, thread.id);
+        this.add(watch, thread, "milestone", { title: threadName(thread), event: "unarchived", status: thread.status, asOf: thread.updatedAt, source: "thread.unarchived" }, `unarchived:${thread.updatedAt}`);
+      }
+    })();
+    await this.reconcileThread(thread, undefined, undefined, false, false);
   }
   private async match(thread: Thread) {
     const root = await this.root(thread);
@@ -150,24 +194,44 @@ export class Watches {
       return { operationId: row.id, correlation };
     });
   }
+  // BB 0.43 caps one events.list page at 100 rows.
   private async eventsAfter(threadId: string, cursor: number): Promise<StoredEvent[]> {
     const all: StoredEvent[] = [];
     for (;;) {
-      const page = await this.bb.sdk.threads.events.list({ threadId, afterSeq: String(cursor), order: "asc", limit: "200" });
+      const page = await this.bb.sdk.threads.events.list({ threadId, afterSeq: String(cursor), order: "asc", limit: String(EVENT_PAGE) });
       if (!page.length) return all;
       all.push(...page); const next = page.at(-1)!.seq;
       if (next <= cursor) throw new Error("Thread event cursor did not advance");
       cursor = next;
-      if (page.length < 200) return all;
+      if (page.length < EVENT_PAGE) return all;
     }
   }
-  private async reconcileThread(thread: Thread, suppliedText?: string | null, suppliedError?: string | null, discovery = false) {
+  /** The newest `count` events, newest first, read in pages of EVENT_PAGE. */
+  private async latestEvents(threadId: string, count: number): Promise<StoredEvent[]> {
+    const all: StoredEvent[] = [];
+    let beforeSeq: number | undefined;
+    while (all.length < count) {
+      const page = await this.bb.sdk.threads.events.list({ threadId, order: "desc", limit: String(Math.min(EVENT_PAGE, count - all.length)), ...(beforeSeq === undefined ? {} : { beforeSeq: String(beforeSeq) }) });
+      if (!page.length) break;
+      all.push(...page); beforeSeq = page.at(-1)!.seq;
+      if (page.length < EVENT_PAGE) break;
+    }
+    return all;
+  }
+  /**
+   * `listInteractions` reads every interaction on the thread to create prompts and
+   * resolve answered ones. Lifecycle events pass false: prompts arrive through
+   * interaction.pending, and only the inbox's own open prompts are re-read, since
+   * BB has no resolved event.
+   */
+  private async reconcileThread(thread: Thread, suppliedText?: string | null, suppliedError?: string | null, discovery = false, listInteractions = true) {
     const matches = await this.match(thread);
     if (!matches.length) return;
     if (this.store.db.prepare("SELECT 1 FROM voice_operations WHERE target_thread_id = ? AND tool = 'message_thread' AND status = 'unknown'").get(thread.id))
       await this.reconcileUnknown(thread.id);
     const output = suppliedText !== undefined ? suppliedText : (await this.bb.sdk.threads.output({ threadId: thread.id })).output;
-    const interactions = await this.bb.sdk.threads.interactions.list({ threadId: thread.id });
+    const interactions = listInteractions ? await this.bb.sdk.threads.interactions.list({ threadId: thread.id }) : [];
+    const settled = listInteractions ? null : await this.settledInteractions(thread.id);
     // Described outside the transaction: a Questions-plugin round needs an RPC to read its questions.
     const described = new Map(await Promise.all(interactions.filter(i => i.status === "pending").map(async i => [i.id, await describeInteraction(this.bb, i)] as const)));
     for (const watch of matches) {
@@ -207,11 +271,21 @@ export class Watches {
         this.store.db.prepare("UPDATE voice_tasks SET status = ?, last_text = ?, follow_ups_queued = ?, updated_at = ? WHERE conversation_id = ? AND thread_id = ?").run(taskStatus, output, thread.queuedMessageCount, thread.updatedAt, watch.conversation_id, thread.id);
         for (const interaction of interactions) this.pending(watch, thread, interaction, described.get(interaction.id));
         const pending = new Set(interactions.filter(i => i.status === "pending").map(i => i.id));
-        for (const item of this.store.inbox(watch.conversation_id)) if (item.thread_id === thread.id && item.interaction_id && !pending.has(item.interaction_id))
+        for (const item of this.store.inbox(watch.conversation_id)) if (item.thread_id === thread.id && item.interaction_id && (settled ? settled.has(item.interaction_id) : !pending.has(item.interaction_id)))
           this.store.db.prepare("UPDATE voice_inbox SET status = 'resolved', eligible = 0 WHERE id = ?").run(item.id);
         this.store.db.prepare("UPDATE voice_watches SET cursor_seq = ?, last_status = ?, last_text = ?, updated_at = ? WHERE conversation_id = ? AND thread_id = ?").run(events.at(-1)?.seq ?? watch.cursor_seq, thread.status, output, this.store.now(), watch.conversation_id, thread.id);
       })();
     }
+  }
+  /** The inbox's open prompts on a thread that BB no longer reports as pending. */
+  private async settledInteractions(threadId: string) {
+    const settled = new Set<string>();
+    const open = new Set((this.store.db.prepare("SELECT DISTINCT interaction_id FROM voice_inbox WHERE thread_id = ? AND interaction_id IS NOT NULL AND status != 'resolved'").all(threadId) as { interaction_id: string }[]).map(row => row.interaction_id));
+    for (const interactionId of open) {
+      try { if ((await this.bb.sdk.threads.interactions.get({ threadId, interactionId })).status !== "pending") settled.add(interactionId); }
+      catch (error) { this.bb.log.warn(`Live runtime could not re-read interaction ${interactionId} on ${threadId}: ${String(error)}`); }
+    }
+    return settled;
   }
   async reconcileUnknown(threadId?: string) {
     for (const row of this.store.db.prepare("SELECT * FROM voice_operations WHERE status IN ('unknown','queued') AND tool = 'message_thread' AND (? IS NULL OR target_thread_id = ?)").all(threadId ?? null, threadId ?? null) as OperationRow[]) {
@@ -224,7 +298,7 @@ export class Watches {
         this.store.db.prepare("UPDATE voice_operations SET queued_message_id = ? WHERE id = ?").run(matches[0].id, row.id);
         this.operations.finish(row.id, "queued", { queuedMessageId: matches[0].id, reconciled: true }); continue;
       }
-      const events = await this.bb.sdk.threads.events.list({ threadId: row.target_thread_id, order: "desc", limit: "200" });
+      const events = await this.latestEvents(row.target_thread_id, UNKNOWN_DELIVERY_WINDOW);
       const sent = events.filter(e => e.createdAt >= row.created_at && (e.type === "item/started" || e.type === "item/completed") && userMessageBody(e.data) === row.body);
       const distinct = new Set(sent.map(e => (e.data as { item: { id: string } }).item.id));
       if (distinct.size === 1) {

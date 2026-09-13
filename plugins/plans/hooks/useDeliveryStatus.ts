@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime } from "@get-bb/plugin-sdk/app";
 import { PLANS_CHANGED, usePlansApi } from "./usePlansApi";
 
-type ApprovalState = "pending" | "failed" | "dropped" | "sent";
+type ApprovalState = "pending" | "failed" | "dropped" | "cancelled" | "sent";
 
 export function useDeliveryStatus(planId: string, planStatus = "open") {
   const api = usePlansApi();
   const [status, setStatus] = useState({
     planId, planStatus, failedCount: 0,
     failedAnnotations: new Set<string>() as ReadonlySet<string>,
+    cancelledAnnotations: new Set<string>() as ReadonlySet<string>,
     approvalState: "pending" as ApprovalState,
   });
   const refreshRef = useRef<() => void>(() => {});
@@ -37,7 +38,9 @@ export function useDeliveryStatus(planId: string, planStatus = "open") {
           planId, planStatus: requestedStatus,
           failedCount: items.filter((item) => item.state === "failed").length,
           failedAnnotations: new Set(annotations.filter((item) => item.state === "failed").map((item) => item.annotationId)),
+          cancelledAnnotations: new Set(annotations.filter((item) => item.state === "cancelled").map((item) => item.annotationId)),
           approvalState: approvals.some((item) => item.state === "dropped") ? "dropped"
+            : approvals.some((item) => item.state === "cancelled") ? "cancelled"
             : approvals.some((item) => item.state === "failed") ? "failed"
             : approvals.some((item) => item.state === "delivered") ? "sent" : "pending",
         });
@@ -63,6 +66,7 @@ export function useDeliveryStatus(planId: string, planStatus = "open") {
   return {
     failedCount: status.planId === planId ? status.failedCount : 0,
     failedAnnotations: status.planId === planId ? status.failedAnnotations : new Set<string>(),
+    cancelledAnnotations: status.planId === planId ? status.cancelledAnnotations : new Set<string>(),
     approvalState: status.planId === planId && status.planStatus === planStatus ? status.approvalState : "pending" as const,
   };
 }

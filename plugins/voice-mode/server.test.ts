@@ -314,3 +314,21 @@ test("recovery claims are idempotent and cannot take a stopped or transferred ca
     assert.equal(await harness.behavior.callRpc("reconnectCall",{nonce:"late",previousNonce:"other-device"}),null);
   } finally { await harness.lifecycle.dispose(); }
 });
+
+test("usage accounting keeps audio-only turns out of the text columns and still maps flat Responses usage", async t => {
+  const {bb,harness} = createFakePluginHost({pluginId:"voice-mode",settings:{openaiApiKey:"sk-test"}});
+  t.after(() => harness.lifecycle.dispose()); await plugin(bb);
+  await harness.behavior.callRpc("recordUsage", { model: "gpt-realtime", sessionId: "audio-turn", usage: {
+    input_tokens: 130, output_tokens: 50,
+    input_token_details: { text_tokens: 0, audio_tokens: 100, cached_tokens: 30, cached_tokens_details: { text_tokens: 0, audio_tokens: 30 } },
+    output_token_details: { text_tokens: 0, audio_tokens: 50 },
+  } });
+  await harness.behavior.callRpc("recordUsage", { model: "gpt-5.6-terra", sessionId: "delegated", usage: {
+    input_tokens: 120, output_tokens: 30, input_tokens_details: { cached_tokens: 20 },
+  } });
+  const rows = bb.storage.database().prepare("SELECT session_id, input_text, input_audio, cached_text, cached_audio, output_text, output_audio FROM usage_events ORDER BY id").all();
+  assert.deepEqual(rows, [
+    { session_id: "audio-turn", input_text: 0, input_audio: 100, cached_text: 0, cached_audio: 30, output_text: 0, output_audio: 50 },
+    { session_id: "delegated", input_text: 100, input_audio: 0, cached_text: 20, cached_audio: 0, output_text: 30, output_audio: 0 },
+  ]);
+});
