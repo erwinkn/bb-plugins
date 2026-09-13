@@ -16,6 +16,7 @@ import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
 import { useLibrary } from "./lib/use-library";
 import { useSpaces } from "./lib/use-spaces";
+import { useUiPreferences } from "./lib/use-ui-preferences";
 import { savedThreadIds } from "./lib/library";
 import { inScope, LIBRARY_SCOPE_ID, resolveScope } from "./lib/spaces";
 import { DisplayMenu } from "./components/menus";
@@ -155,6 +156,9 @@ function ThreadsList(props: PluginThreadListProps) {
   }, []);
   const report = (cause: unknown) =>
     setError(cause instanceof Error ? cause.message : String(cause));
+  // Grouping, sort, and collapsed Pinned/project groups follow BB's synced
+  // sidebar preferences.
+  useUiPreferences(report);
   const projectNames = new Map(
     projects.map((project) => [project.id, projectLabel(project)]),
   );
@@ -190,6 +194,7 @@ function ThreadsList(props: PluginThreadListProps) {
   const pinned = buildThreadTree(
     available.filter(({ thread }) => pinnedIds.has(thread.id)),
     state.sortBy,
+    state.sortDirection,
   );
   const visible = available.filter(
     ({ thread, status }) =>
@@ -244,7 +249,11 @@ function ThreadsList(props: PluginThreadListProps) {
             knownDrafts.has(`new:${project.id}`) &&
             !state.hidden.includes("draft"),
         );
-  const families = buildThreadTree(visible, state.sortBy).map((node) => ({
+  const families = buildThreadTree(
+    visible,
+    state.sortBy,
+    state.sortDirection,
+  ).map((node) => ({
     node,
     status: familyStatus(node),
   }));
@@ -542,6 +551,7 @@ function ThreadsList(props: PluginThreadListProps) {
                         (row) => row.thread.projectId === project.id,
                       ),
                       state.sortBy,
+                      state.sortDirection,
                     );
                     const drafts = newDrafts.filter(
                       (draft) => draft.id === project.id,
@@ -618,7 +628,11 @@ function ThreadsList(props: PluginThreadListProps) {
                 <ThreadRoots
                   label="Archived"
                   pageSize={10}
-                  nodes={buildThreadTree(archived, state.sortBy)}
+                  nodes={buildThreadTree(
+                    archived,
+                    state.sortBy,
+                    state.sortDirection,
+                  )}
                   drafts={[]}
                   activeThreadId={props.activeThreadId}
                   renderRow={(node) => row(node)}

@@ -39,9 +39,11 @@ A pinned child appears as a root here only when it has no available pinned ances
 Each thread appears once. Child previews and Show more work as in other families.
 Archived threads stay hidden until you enable Archived in Threads display options.
 The display menu offers **Date updated**
-(the default) and **Date created**, both newest first. The choice applies in
+(the default) and **Date created**, and an **Order** of **Newest first** (the
+default) or **Oldest first**. The choice applies in
 both Status and Project views and stays when you switch views or reload.
-The sort uses BB's `updatedAt` or `createdAt`, not attention events.
+The sort uses BB's `updatedAt` or `createdAt`, not attention events. Pinned
+threads lead their group in both orders.
 Children appear below their parent, with an inset arrow inside each child row
 instead of a connecting line outside the rows. Each parent initially shows three
 children. Show more reveals three more at a time; Show less restores the preview.
@@ -80,7 +82,32 @@ Children in each family stay below their parent. A child's timestamp or pin does
 move its parent. New-thread drafts have no thread timestamp and appear after dated
 threads in their group. Groups can collapse. There is no thread search field.
 Old saved project filters from before spaces are ignored.
-Preferences stay on this client. Sorting and grouping do not change thread state.
+Sorting and grouping do not change thread state.
+
+Grouping, the date sort, the order, and the collapsed state of the Pinned
+group and of each project group follow BB's synced sidebar preferences, so
+they match the native sidebar and every other client:
+
+| Plugin setting | BB preference |
+| --- | --- |
+| Group by Project / Status | `sidebar.organizationMode` `project` / `chronological` |
+| Date updated / Date created | `sidebar.chronologicalSort` `updated` / `created` |
+| Newest first / Oldest first | `sidebar.sortDirection` `descending` / `ascending` |
+| Pinned group collapsed | `pinned` in `sidebar.collapsedSections` |
+| Project group collapsed | the project id in `sidebar.collapsedProjects` |
+
+BB's chronological and machine modes both show Status grouping. An
+alphabetical or manual BB sort keeps the plugin's last date sort until you
+pick one here. The plugin reads the preferences when the list mounts, when the
+connection returns, and when the window regains focus, because BB's own
+clients write them without a signal that reaches a plugin. Each change here is
+written through with BB's per-key revision; a write that races another client
+is retried once against the fresh value, and a second failure is reported.
+Entries the plugin does not show, such as other collapsed projects or the
+Threads section, are preserved. Hidden statuses, collapsed status groups,
+archive visibility, expanded archives, spaces, and the library stay on this
+client. localStorage remains the cache and the fallback while BB is
+unreachable.
 If browser storage rejects a write, this tab keeps its unsaved preferences and
 draft flags in memory. It retries on the next local update, even if the value
 does not change. Until that write succeeds, this tab's unsaved snapshot takes
@@ -282,7 +309,7 @@ Select **Threads** in **Settings → Appearance → Sidebar** if BB does not sel
 it automatically. The selection is per client. Use `bb plugin dev` for live
 development. To remove it, run `bb plugin remove sidebar`.
 
-Tests cover status precedence, date sorting in both views, navigation, storage validation,
+Tests cover status precedence, date sorting in both views, synced preferences, navigation, storage validation,
 draft text and attachments, fallback UI, a disconnected realtime connection, space
 filtering and editing, the Spaces page, project management through BB's API,
 the space catalog RPC, and the spaces CLI.

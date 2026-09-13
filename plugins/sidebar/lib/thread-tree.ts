@@ -1,5 +1,11 @@
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
-import { compareThreads, STATUSES, type SortBy, type Status } from "./status";
+import {
+  compareThreads,
+  STATUSES,
+  type SortBy,
+  type SortDirection,
+  type Status,
+} from "./status";
 
 export interface ThreadNode {
   thread: PluginSidebarThread;
@@ -64,6 +70,7 @@ export function containsThread(node: ThreadNode, id: string | null): boolean {
 export function buildThreadTree(
   rows: { thread: PluginSidebarThread; status: Status }[],
   sortBy: SortBy,
+  direction: SortDirection = "descending",
 ): ThreadNode[] {
   const nodes = new Map<string, ThreadNode>(
     rows.map((row) => [row.thread.id, { ...row, children: [] }]),
@@ -84,7 +91,9 @@ export function buildThreadTree(
     }
   }
   const sort = (siblings: ThreadNode[]) => {
-    siblings.sort((a, b) => compareThreads(a.thread, b.thread, sortBy));
+    siblings.sort((a, b) =>
+      compareThreads(a.thread, b.thread, sortBy, direction),
+    );
     for (const node of siblings) sort(node.children);
   };
   sort(roots);

@@ -10,7 +10,15 @@
 - `components/thread-row.tsx`: native thread navigation and actions.
 - `components/pull-request.tsx`: pull request icon and summary text.
 - `components/thread-children.tsx`: child previews, expansion, and two-level nesting.
-- `components/menus.tsx`: grouping, date sorting, and status visibility controls.
+- `components/menus.tsx`: grouping, date sorting, order, and status visibility
+  controls.
+- `lib/ui-preferences-schema.ts`: the five BB sidebar preferences the plugin
+  mirrors, shared by server and frontend.
+- `lib/ui-preferences-contract.ts`, `lib/ui-preferences-store.ts`: read and
+  compare-and-swap write RPCs over `bb.sdk.system.uiPreferences`, with a
+  realtime signal per write.
+- `lib/use-ui-preferences.ts`: applies BB's preferences to client state on
+  mount, focus, and reconnect, and writes local changes through.
 - `components/spaces-page.tsx`: the Spaces `navPanel` page (route
   `/plugins/<id>/spaces`, sub-paths `new`, `projects`, `<spaceId>`): the
   spaces list, the New space form, a space's heading actions, and the All

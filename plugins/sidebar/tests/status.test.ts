@@ -107,6 +107,18 @@ describe("status policy", () => {
       [a, b].sort((x, y) => compareThreads(x, y, "updated")).map((t) => t.id),
     ).toEqual(["b", "a"]);
   });
+  it("keeps pins first while ascending order shows the oldest thread first", () => {
+    const rows = [
+      thread({ id: "recent", updatedAt: 500 }),
+      thread({ id: "old", updatedAt: 100 }),
+      thread({ id: "pin", isPinned: true, updatedAt: 300 }),
+    ];
+    expect(
+      rows
+        .sort((a, b) => compareThreads(a, b, "updated", "ascending"))
+        .map((t) => t.id),
+    ).toEqual(["pin", "old", "recent"]);
+  });
   it("uses fallback titles", () =>
     expect(
       threadTitle(thread({ title: " ", titleFallback: "First prompt" })),
@@ -135,6 +147,18 @@ describe("client storage boundary", () => {
       expect(parseState(JSON.stringify({ sortBy })).sortBy).toBe("updated");
     },
   );
+  it.each([null, "bad", "default"])(
+    "uses newest first for an invalid sort direction: %s",
+    (sortDirection) => {
+      expect(parseState(JSON.stringify({ sortDirection })).sortDirection).toBe(
+        "descending",
+      );
+    },
+  );
+  it("keeps an ascending sort direction", () =>
+    expect(
+      parseState(JSON.stringify({ sortDirection: "ascending" })).sortDirection,
+    ).toBe("ascending"));
   it.each([null, "{", "null", "42"])(
     "accepts missing or corrupt storage: %s",
     (raw) => expect(parseState(raw).groupBy).toBe("status"),
@@ -157,6 +181,7 @@ describe("client storage boundary", () => {
       expandedArchives: [],
       groupBy: "status",
       sortBy: "updated",
+      sortDirection: "descending",
       spaceId: null,
     });
   });

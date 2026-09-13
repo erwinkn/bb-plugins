@@ -1,9 +1,15 @@
 import { useSyncExternalStore } from "react";
-import { STATUSES, type Status, type SortBy } from "./status";
+import {
+  STATUSES,
+  type Status,
+  type SortBy,
+  type SortDirection,
+} from "./status";
 
 export interface ClientState {
   groupBy: "status" | "project";
   sortBy: SortBy;
+  sortDirection: SortDirection;
   hidden: Status[];
   showArchives: boolean;
   collapsed: string[];
@@ -24,6 +30,7 @@ export const CLIENT_STATE_EVENT = "bb-plugin-sidebar:state";
 const DEFAULT: ClientState = {
   groupBy: "status",
   sortBy: "updated",
+  sortDirection: "descending",
   hidden: [],
   showArchives: false,
   collapsed: [],
@@ -43,6 +50,8 @@ export function parseState(raw: string | null): ClientState {
     return {
       groupBy: value.groupBy === "project" ? "project" : "status",
       sortBy: value.sortBy === "created" ? "created" : "updated",
+      sortDirection:
+        value.sortDirection === "ascending" ? "ascending" : "descending",
       hidden: strings(value.hidden).filter((s): s is Status =>
         STATUSES.includes(s as Status),
       ),
