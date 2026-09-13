@@ -4,6 +4,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type FocusEvent,
   type ReactNode,
 } from "react";
 import {
@@ -55,6 +56,7 @@ import { HostIcon } from "./lib/host-icon";
 import { StatusIcon } from "./components/status-icon";
 import { ArchiveIcon } from "./components/archive-icon";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
+import { useFinePointer } from "./lib/use-fine-pointer";
 import {
   buildThreadTree,
   familyStatus,
@@ -104,6 +106,7 @@ function Group({
   icon,
   count,
   attention = false,
+  trailing,
   children,
   archive = false,
   wrapHeader = (header) => header,
@@ -117,6 +120,12 @@ function Group({
   count?: number;
   /** Colors the count chip while it is non-zero. */
   attention?: boolean;
+  /**
+   * A control in the chip's place before the chevron. On a mouse or trackpad
+   * it appears while the header line is hovered or focused; touch viewports
+   * always show it.
+   */
+  trailing?: ReactNode;
   archive?: boolean;
   children: ReactNode;
   /** Wraps the header button, e.g. in a context menu. */
@@ -125,6 +134,11 @@ function Group({
   belowHeader?: ReactNode;
 }) {
   const { collapsed, expandedArchives } = useClientState();
+  const finePointer = useFinePointer();
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const showTrailing =
+    trailing !== undefined && (!finePointer || hovered || focused);
   const dnd = useThreadDndState();
   const { setNodeRef } = useDroppable({
     id: getThreadGroupDroppableId(id),
@@ -145,7 +159,7 @@ function Group({
             : { collapsed: toggleValue(current.collapsed, id) }),
         }))
       }
-      className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
     >
       {icon && (
         <span
@@ -162,6 +176,11 @@ function Group({
       {count !== undefined && (
         <GroupCount count={count} attention={attention} />
       )}
+      {trailing !== undefined && (
+        // Reserves the trailing control's slot: a button cannot nest another
+        // button, so the control itself sits over this gap.
+        <span aria-hidden="true" className="size-4 shrink-0" />
+      )}
       <HostIcon
         name="ChevronDown"
         fallback="ArrowDown"
@@ -175,7 +194,32 @@ function Group({
       aria-label={title}
       className={`mt-5 first:mt-3 ${dnd?.dragOverGroupKey === id ? "rounded-md bg-accent/40 ring-1 ring-inset ring-ring/40" : ""}`}
     >
-      {wrapHeader(header)}
+      <div
+        data-group-header={id}
+        className="relative mb-1"
+        // Only a header with a trailing control tracks hover and focus.
+        {...(trailing !== undefined && {
+          onPointerEnter: () => setHovered(true),
+          onPointerLeave: () => setHovered(false),
+          onFocus: () => setFocused(true),
+          onBlur: (event: FocusEvent<HTMLDivElement>) => {
+            if (
+              !event.currentTarget.contains(event.relatedTarget as Node | null)
+            )
+              setFocused(false);
+          },
+        })}
+      >
+        {wrapHeader(header)}
+        {showTrailing && (
+          <span
+            data-group-trailing=""
+            className="absolute right-8 top-1/2 flex -translate-y-1/2 items-center"
+          >
+            {trailing}
+          </span>
+        )}
+      </div>
       {belowHeader}
       {!closed && children}
     </section>
@@ -834,12 +878,36 @@ function ThreadsList(props: PluginThreadListProps) {
                             key={project.id}
                             id={`project:${project.id}`}
                             title={project.name}
-                            count={rows.length + drafts.length}
                             icon={
                               <ProjectGlyph
                                 name={project.name}
                                 neutral={project.isPersonal}
                               />
+                            }
+                            trailing={
+                              project.known ? (
+                                <button
+                                  type="button"
+                                  data-project-new-thread={project.id}
+                                  aria-label={`New thread in ${project.name}`}
+                                  title="New thread"
+                                  // Keep the press away from the header's long press.
+                                  onPointerDown={(event) =>
+                                    event.stopPropagation()
+                                  }
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openNew(project.id);
+                                  }}
+                                  className="flex size-4 items-center justify-center rounded text-[var(--subtle-foreground)] outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                  <HostIcon
+                                    name="Plus"
+                                    fallback="FolderPlus"
+                                    className="size-3.5"
+                                  />
+                                </button>
+                              ) : undefined
                             }
                             wrapHeader={(header) =>
                               !project.known ? (

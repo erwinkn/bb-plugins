@@ -38,8 +38,9 @@ import { projectHueStep } from "../lib/project-hue";
 export type ProviderIconRecord = ExperimentalProviderIconProps["provider"];
 
 // Palette roles with BB fallbacks (see plugins/theme/README.md).
-const FILE_COLOR_CLASS = "text-[var(--bbp-file,var(--timeline-accent))]";
-const AGENT_COLOR_CLASS = "text-[var(--bbp-agent,var(--pr-merged))]";
+// Child arrows stay in the subtle text color: a colored arrow on every nested
+// row competes with the status markers.
+const ARROW_COLOR_CLASS = "text-[var(--subtle-foreground)]";
 
 // Overflowing text fades out at the right edge instead of showing an ellipsis.
 export const fadeClass =
@@ -347,7 +348,7 @@ export function ThreadRow({
                     strokeWidth="1.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className={`absolute ${singleLine ? "top-2.5" : "top-3"} size-3 ${AGENT_COLOR_CLASS}`}
+                    className={`absolute ${singleLine ? "top-2.5" : "top-3"} size-3 ${ARROW_COLOR_CLASS}`}
                     style={{ left: `${0.5 + (depth - 1) * 1.5}rem` }}
                   >
                     <path d="M3 3v5a2 2 0 0 0 2 2h8m-3-3 3 3-3 3" />
@@ -418,7 +419,7 @@ export function ThreadRow({
                       className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
                     >
                       {thread.parentThreadId && !nested && (
-                        <span aria-hidden="true" className={AGENT_COLOR_CLASS}>
+                        <span aria-hidden="true" className={ARROW_COLOR_CLASS}>
                           ↳
                         </span>
                       )}
@@ -468,7 +469,11 @@ export function ThreadRow({
                             <HostIcon
                               name="GitBranch"
                               fallback="Fork"
-                              className={`size-3 shrink-0 ${FILE_COLOR_CLASS}`}
+                              // Same size as the pull request glyph; the
+                              // flex row keeps it centered on the text. It
+                              // carries no per-thread information, so it
+                              // stays in the surrounding text color.
+                              className="size-3.5 shrink-0"
                             />
                             {branch}
                           </span>

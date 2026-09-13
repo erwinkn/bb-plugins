@@ -135,8 +135,9 @@ Rows have two lines. The first line shows the provider's glyph (BB's
 `experimental_ProviderIcon` for the thread's `providerId`, so plugin-registered
 artwork and tints apply), the title, and the status marker at its right end.
 The second line shows muted metadata: the pull request for the thread's branch
-when BB reports one, then the project name, then a git-branch glyph in the file
-blue and the branch. Under a project header the project name is omitted, because it would
+when BB reports one, then the project name, then a git-branch glyph in the same
+muted color as the text and the same size as the pull request glyph, and the
+branch. Under a project header the project name is omitted, because it would
 repeat the header; pinned rows keep it. Rows under **No project** have no
 project metadata at all, so they collapse to a single line: the title, the
 status marker, and the age. The age for the selected date sits at the right end of
@@ -164,7 +165,8 @@ Touch keeps tap-to-open and long-press actions, without a hover card.
 Working rows have a green spinner; unread rows have a
 blue dot. Needs Attention rows have an amber alert icon. Draft rows, including
 new-thread drafts, have a violet dashed-circle icon. Done rows have no status
-icon. Child arrows stay separate from status icons and use the agent purple. Needs
+icon. Child arrows stay separate from status icons and keep BB's subtle text
+color, so they never compete with the markers. Needs
 Attention rows also get BB's attention surface wash behind the whole row.
 Group headers show a glyph, the label, a count chip, and the collapse chevron,
 with no hover descriptions. The glyph is the group's status icon, a pin for
@@ -172,6 +174,12 @@ Pinned, the archive box for Archived, or a folder in the project's identity
 color for a project. The chip counts the rows in the group; it is muted except
 on Needs Attention, where it turns amber while non-zero. Glyph and chip are
 decorative, so the header's accessible name stays the plain label.
+Project headers have no count chip. In its place, before the chevron, a `+`
+button opens BB's new-thread composer in that project, the same path as the
+header menu's **New thread**, without collapsing the group. On a mouse or
+trackpad (`pointer: fine`) the button appears only while the header line is
+hovered or focused; touch viewports always show it. Its accessible name is
+"New thread in" followed by the project name. Unknown projects have no button.
 The status menu retains its colored icons. Archived has a neutral archive-box
 icon in the menu and the row's right-aligned status position. The layout uses BB's theme tokens.
 
@@ -391,8 +399,8 @@ fallbacks, written as `var(--bbp-x, var(<BB token>))` so the look degrades to
 BB's defaults when the BB Color palette is not selected: attention amber
 (`--bbp-attention` / `--warning-text`), unread and files blue (`--bbp-file` /
 `--timeline-accent`), working and open green (`--bbp-done` / `--success`),
-errors and closed red (`--bbp-error` / `--destructive-text`), agents, child
-arrows, drafts, and merged purple (`--bbp-agent` / `--pr-merged`), and draft
+errors and closed red (`--bbp-error` / `--destructive-text`), agents, drafts,
+and merged purple (`--bbp-agent` / `--pr-merged`), and draft
 pull requests in the edit amber (`--bbp-edit` / `--warning-text`). Every status
 keeps its own shape, so color never carries it alone; colored text only uses
 BB's `-text` tokens.

@@ -1765,7 +1765,7 @@ describe("activity sidebar", () => {
       recordDraft("new:project-1", true);
     });
     for (const group of slot.getAllByRole("region")) {
-      const header = group.querySelector(":scope > button")!;
+      const header = group.querySelector("[data-group-header] button")!;
       // The accessible name stays the plain label: glyph and count are decorative.
       expect(slot.getByRole("button", { name: group.getAttribute("aria-label")! })).toBe(header);
       expect(header.hasAttribute("title")).toBe(false);

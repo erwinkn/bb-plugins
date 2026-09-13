@@ -114,7 +114,7 @@ describe("status colors", () => {
       expect(value).not.toMatch(/oklch|sky-|violet-/);
     }
   });
-  it("washes attention rows, keeps the green spinner, and colors the unread dot and child arrow", () => {
+  it("washes attention rows, keeps the green spinner, colors the unread dot, and keeps child arrows subtle", () => {
     const slot = mount();
     expect(wrapper(slot, "attention").className).toContain("bg-[var(--surface-attention)]");
     expect(wrapper(slot, "attention").getAttribute("data-thread-status")).toBe("attention");
@@ -125,12 +125,14 @@ describe("status colors", () => {
     expect(spinner.classList.contains("motion-safe:animate-spin")).toBe(true);
     const dot = row(slot, "unread").querySelector("[data-status-dot='unread']")!;
     expect(dot.classList.contains("bg-[var(--bbp-file,var(--timeline-accent))]")).toBe(true);
-    // Both child arrows: the inset arrow under a parent and the ↳ of a child
-    // whose parent is missing.
+    // Both child arrows, the inset arrow under a parent and the ↳ of a child
+    // whose parent is missing, stay in the subtle text color: no agent purple.
     const arrow = row(slot, "child").querySelector("[data-child-arrow]")!;
-    expect(arrow.classList.contains("text-[var(--bbp-agent,var(--pr-merged))]")).toBe(true);
+    expect(arrow.classList.contains("text-[var(--subtle-foreground)]")).toBe(true);
+    expect(arrow.getAttribute("class")).not.toContain("bbp-agent");
     const orphanArrow = Array.from(row(slot, "orphan").querySelectorAll("span")).find((e) => e.textContent === "↳")!;
-    expect(orphanArrow.classList.contains("text-[var(--bbp-agent,var(--pr-merged))]")).toBe(true);
+    expect(orphanArrow.classList.contains("text-[var(--subtle-foreground)]")).toBe(true);
+    expect(orphanArrow.className).not.toContain("bbp-agent");
     expect(orphanArrow.getAttribute("aria-hidden")).toBe("true");
   });
   it("does not wash the selected row", () => {
@@ -172,12 +174,19 @@ describe("provider and branch glyphs", () => {
     expect(codex.getAttribute("data-provider-id")).toBe("codex");
     expect(codex.hasAttribute("data-provider-logo")).toBe(false);
   });
-  it("puts a file-blue git-branch glyph before the branch name", () => {
-    const slot = mount();
+  it("puts a neutral git-branch glyph, as large as the pull request glyph, before the branch name", () => {
+    const slot = mount({ sidebarPullRequests: { done: pullRequest("open") } });
     const branch = row(slot, "done").querySelector("[data-thread-branch]")!;
     expect(branch.textContent).toBe("feat/colors");
     const glyph = branch.querySelector("[data-icon='GitBranch']")!;
-    expect(glyph.classList.contains("text-[var(--bbp-file,var(--timeline-accent))]")).toBe(true);
+    // No color of its own: it inherits the muted metadata text.
+    expect(glyph.getAttribute("class") ?? "").not.toMatch(/text-\[|bbp-/);
+    expect(glyph.classList.contains("size-3.5")).toBe(true);
+    expect(glyph.classList.contains("size-3")).toBe(false);
+    const pullRequestGlyph = row(slot, "done").querySelector("[data-pull-request-state]")!;
+    expect(pullRequestGlyph.classList.contains("size-3.5")).toBe(true);
+    // The flex row centers the glyph on the text.
+    expect(branch.className).toContain("items-center");
     expect(row(slot, "unread").querySelector("[data-thread-branch]")).toBeNull();
   });
 });
@@ -220,7 +229,7 @@ describe("group headers", () => {
     // An empty group is not rendered, so an attention count is never a colored zero.
     expect(slot.container.querySelector("[data-group-count-tone='attention'][data-group-count='0']")).toBeNull();
   });
-  it("counts pinned and project groups", () => {
+  it("counts the pinned group but not project headers", () => {
     const slot = mount({
       sidebarThreads: {
         projects,
@@ -231,9 +240,82 @@ describe("group headers", () => {
     expect(pinned.querySelector("[data-group-count]")?.textContent).toBe("1");
     expect(pinned.querySelector("[data-group-icon] [data-icon='Pin']")).not.toBeNull();
     act(() => updateState((current) => ({ ...current, groupBy: "project" })));
-    expect(slot.getByRole("button", { name: "One" }).querySelector("[data-group-count]")?.textContent).toBe("4");
-    // Project view lists the cross-project child under its own project.
-    expect(slot.getByRole("button", { name: "Two" }).querySelector("[data-group-count]")?.textContent).toBe("2");
+    for (const name of ["One", "Two", "No project"]) {
+      const header = slot.getByRole("button", { name });
+      expect(header.querySelector("[data-group-count]")).toBeNull();
+      expect(header.querySelector("[data-group-icon] [data-icon='Folder']")).not.toBeNull();
+    }
+    // Status groups keep their chips.
+    act(() => updateState((current) => ({ ...current, groupBy: "status" })));
+    expect(slot.getByRole("button", { name: "Done" }).querySelector("[data-group-count]")).not.toBeNull();
+  });
+});
+
+describe("project header new thread", () => {
+  const project = () => act(() => updateState((current) => ({ ...current, groupBy: "project" })));
+  const headerLine = (slot: { container: HTMLElement }, id: string) =>
+    slot.container.querySelector(`[data-group-header="project:${id}"]`) as HTMLElement;
+  const plus = (slot: { container: HTMLElement }, id: string) =>
+    slot.container.querySelector(`[data-project-new-thread="${id}"]`) as HTMLElement | null;
+  it("always shows a '+' on touch viewports that opens a new thread in that project", () => {
+    finePointer = false;
+    const slot = mount();
+    project();
+    const button = plus(slot, "project-2")!;
+    expect(button).not.toBeNull();
+    expect(button.getAttribute("aria-label")).toBe("New thread in Two");
+    expect(button.querySelector("[data-icon='Plus']")).not.toBeNull();
+    // It sits in the chip's place, before the chevron, outside the header
+    // button: a button cannot nest another button.
+    const header = slot.getByRole("button", { name: "Two" });
+    expect(header.contains(button)).toBe(false);
+    expect(headerLine(slot, "project-2").contains(button)).toBe(true);
+    expect(header.querySelector("[data-group-count]")).toBeNull();
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(button);
+    expect(slot.inspection.sidebarActionCalls).toEqual([
+      { method: "openNewThread", options: { projectId: "project-2", focusPrompt: true } },
+    ]);
+    expect(props.onNavigate).toHaveBeenCalledTimes(1);
+    // The header did not collapse.
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    // No project is a real BB project too, so it gets the control.
+    expect(plus(slot, "personal")).not.toBeNull();
+  });
+  it("shows the '+' only while the header line is hovered or focused on a fine pointer", () => {
+    finePointer = true;
+    const slot = mount();
+    project();
+    expect(plus(slot, "project-1")).toBeNull();
+    const line = headerLine(slot, "project-1");
+    fireEvent.pointerOver(line);
+    expect(plus(slot, "project-1")).not.toBeNull();
+    expect(plus(slot, "project-2")).toBeNull();
+    fireEvent.pointerOut(line);
+    expect(plus(slot, "project-1")).toBeNull();
+    // Keyboard focus on the header reveals it as well.
+    fireEvent.focus(slot.getByRole("button", { name: "One" }));
+    expect(plus(slot, "project-1")).not.toBeNull();
+    fireEvent.blur(slot.getByRole("button", { name: "One" }));
+    expect(plus(slot, "project-1")).toBeNull();
+    fireEvent.pointerOver(line);
+    fireEvent.click(plus(slot, "project-1")!);
+    expect(slot.inspection.sidebarActionCalls).toEqual([
+      { method: "openNewThread", options: { projectId: "project-1", focusPrompt: true } },
+    ]);
+  });
+  it("gives an unknown project no '+'", () => {
+    finePointer = false;
+    const slot = mount({
+      sidebarThreads: {
+        projects,
+        threads: [...threads, thread({ id: "lost", title: "Lost", projectId: "gone" })],
+      },
+    });
+    project();
+    expect(slot.getByRole("button", { name: "Unknown project" })).toBeTruthy();
+    expect(plus(slot, "gone")).toBeNull();
+    expect(plus(slot, "project-1")).not.toBeNull();
   });
 });
 
