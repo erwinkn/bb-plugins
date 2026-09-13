@@ -140,6 +140,13 @@ times; never check out another branch there, and never run `git rebase` or
    registered path is the Mac checkout: Devin enforces file writes against
    the registered environment path, so a child on the Mac-path environment
    cannot write anything on this host.
+   BB clamps a child's permission mode to its parent's current mode: if the
+   orchestrator runs in `auto`, a Devin child (which supports only
+   `accept-edits` and `full`) is silently dropped to `accept-edits` and stops
+   on every command, and no later `tell --permission-mode full` can raise it.
+   Keep the orchestrator thread itself in `full` before spawning, or spawn
+   without `--parent-thread` (losing the parent link). Approvals granted with
+   `bb thread interactions approve` are allow-once.
    Children never run on Claude Fable. Implementation children run on Devin
    SWE-2 at high reasoning: `--provider acp-devin --model
    'devin-family:%5B%22swe-2%22%2C262000%2C%22%22%5D' --reasoning-level high`
