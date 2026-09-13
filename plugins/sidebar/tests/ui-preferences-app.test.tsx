@@ -6,7 +6,10 @@ import {
   renderSlot as renderSdkSlot,
 } from "@get-bb/plugin-sdk/testing/app";
 import { parseState, updateState } from "../lib/client-state";
-import type { SyncedPreferences } from "../lib/ui-preferences-schema";
+import type {
+  SyncedPreferenceEntry,
+  SyncedPreferences,
+} from "../lib/ui-preferences-schema";
 import { thread } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
@@ -40,7 +43,15 @@ type Host = SyncedPreferences;
 
 function mount(
   host: Host,
-  options: { failWrites?: number; readError?: { current: Error | null } } = {},
+  options: {
+    failWrites?: number;
+    readError?: { current: Error | null };
+    holdWrite?: {
+      current:
+        | ((entry: SyncedPreferenceEntry) => Promise<SyncedPreferenceEntry>)
+        | null;
+    };
+  } = {},
 ) {
   let failures = options.failWrites ?? 0;
   const readError = options.readError ?? { current: null };
@@ -70,7 +81,10 @@ function mount(
           value: input.value,
         };
         host[input.key] = next as never;
-        return { key: input.key, ...next };
+        const entry = { key: input.key, ...next } as SyncedPreferenceEntry;
+        return options.holdWrite?.current
+          ? options.holdWrite.current(entry)
+          : entry;
       },
     },
   });
@@ -313,5 +327,73 @@ describe("synced sidebar preferences", () => {
     await waitFor(() => expect(reads(slot)).toBe(3));
     expect(host["sidebar.sortDirection"]).toEqual(entry("ascending", 6));
     expect(current().sortDirection).toBe("ascending");
+  });
+
+  it("keeps the newer host revision when a stale write acknowledgement lands", async () => {
+    const host = hostDefaults();
+    let release!: () => void;
+    const holdWrite: {
+      current:
+        | ((entry: SyncedPreferenceEntry) => Promise<SyncedPreferenceEntry>)
+        | null;
+    } = {
+      current: (entry: SyncedPreferenceEntry) =>
+        new Promise<SyncedPreferenceEntry>((resolve) => {
+          holdWrite.current = null;
+          release = () => resolve(entry);
+        }),
+    };
+    const slot = mount(host, { holdWrite });
+    await waitFor(() => expect(reads(slot)).toBe(1));
+    await chooseDisplayOption(slot, "Oldest first");
+    await waitFor(() => expect(writes(slot)).toHaveLength(1));
+    // Another client's revision lands before our write's response; the
+    // unacknowledged local value stays on screen until the write settles.
+    await slot.behavior.emitRealtime("ui-preferences-changed", {
+      key: "sidebar.sortDirection",
+      revision: 3,
+      value: "descending",
+    });
+    await settle();
+    expect(current().sortDirection).toBe("ascending");
+    // The stale acknowledgement clears the pending value but must not roll
+    // host or UI back over the newer revision.
+    await act(async () => release());
+    await settle();
+    expect(current().sortDirection).toBe("descending");
+    expect(writes(slot)).toHaveLength(1);
+  });
+
+  it("writes a newer value queued behind a held request for the same key", async () => {
+    const host = hostDefaults();
+    let release!: () => void;
+    const holdWrite: {
+      current:
+        | ((entry: SyncedPreferenceEntry) => Promise<SyncedPreferenceEntry>)
+        | null;
+    } = {
+      current: (entry: SyncedPreferenceEntry) =>
+        new Promise<SyncedPreferenceEntry>((resolve) => {
+          holdWrite.current = null;
+          release = () => resolve(entry);
+        }),
+    };
+    const slot = mount(host, { holdWrite });
+    await waitFor(() => expect(reads(slot)).toBe(1));
+    await chooseDisplayOption(slot, "Oldest first");
+    await waitFor(() => expect(writes(slot)).toHaveLength(1));
+    // The user changes the same key while the first write is in flight.
+    await chooseDisplayOption(slot, "Newest first");
+    await act(async () => release());
+    // The held ack must not delete the newer pending value: its queued
+    // write still runs and chains on the acknowledged revision.
+    await waitFor(() => expect(writes(slot)).toHaveLength(2));
+    expect(writes(slot)[1]).toEqual({
+      key: "sidebar.sortDirection",
+      value: "descending",
+      expectedRevision: 2,
+    });
+    expect(host["sidebar.sortDirection"]).toEqual(entry("descending", 3));
+    expect(current().sortDirection).toBe("descending");
   });
 });

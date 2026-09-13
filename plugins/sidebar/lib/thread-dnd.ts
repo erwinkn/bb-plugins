@@ -165,6 +165,23 @@ export function resolveThreadDropDecision(
   return null;
 }
 
+// Detach unpins first so a failed unpin leaves the thread exactly where it
+// was; reparenting first could strand it detached but still pinned.
+export function applyDetachDecision(
+  decision: { activeId: string; unpin: boolean },
+  reparent: (threadId: string, parentThreadId: string | null) => void,
+  setPinned: (threadId: string, pinned: boolean) => Promise<unknown>,
+  onError: (error: unknown) => void,
+): void {
+  if (!decision.unpin) {
+    reparent(decision.activeId, null);
+    return;
+  }
+  void setPinned(decision.activeId, false)
+    .then(() => reparent(decision.activeId, null))
+    .catch(onError);
+}
+
 export function resolveRowDropState(decision: ThreadDropDecision | null): {
   threadId: string;
   state: ThreadNestTargetState;
@@ -240,7 +257,12 @@ export function resolveThreadRowNestCollisions(args: {
   onRowPointer?.({ threadId, relativeY, nesting });
   if (!nesting) {
     holdNestCandidate(null);
-    return otherCollisions;
+    // Rows that can never nest (the dragged row, archived rows) still own
+    // their rect: keep the collision so the drop resolves against the row
+    // itself instead of falling through to the enclosing group.
+    return bandFraction == null
+      ? [rowCollision, ...otherCollisions]
+      : otherCollisions;
   }
   return holdNestCandidate(threadId)
     ? [rowCollision, ...otherCollisions]

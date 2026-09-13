@@ -221,11 +221,21 @@ export function useUiPreferences(onError: (error: unknown) => void) {
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const pending = useRef(new Map<SyncedKey, Mirror>());
 
-  const flushPending = useCallback(() => {
+  // Keys whose local value differs from the acknowledged mirror become
+  // pending; an existing entry keeps the value first queued for it.
+  const syncPending = useCallback(() => {
+    if (!mirror.current) return;
+    const next = projectionOf(stateRef.current);
+    for (const key of changedKeys(mirror.current, next))
+      if (!pending.current.has(key)) pending.current.set(key, next);
+  }, []);
+
+  const flushPending = useCallback((): void => {
     if (!host.current || !mirror.current) return;
     for (const [key, next] of pending.current) {
       queue.current = queue.current.then(async () => {
-        if (!pending.current.has(key)) return;
+        // The entry may have been superseded or already acknowledged.
+        if (pending.current.get(key) !== next) return;
         const attempt = async (retry: boolean): Promise<void> => {
           if (!host.current || !mirror.current) return;
           try {
@@ -233,12 +243,30 @@ export function useUiPreferences(onError: (error: unknown) => void) {
               "uiPreferences.write",
               writeFor(key, host.current, mirror.current, next),
             );
-            host.current = {
-              ...host.current,
-              [entry.key]: { revision: entry.revision, value: entry.value },
-            };
-            pending.current.delete(key);
-            mirror.current = advanceMirror(mirror.current, key, next);
+            // A newer local change may already be queued for this key;
+            // only clear the entry this request actually wrote.
+            if (pending.current.get(key) === next)
+              pending.current.delete(key);
+            if (entry.revision >= host.current[entry.key].revision) {
+              host.current = {
+                ...host.current,
+                [entry.key]: { revision: entry.revision, value: entry.value },
+              };
+              mirror.current = advanceMirror(mirror.current, key, next);
+              // Advancing the mirror can reveal newer local values still
+              // waiting for their own write.
+              syncPending();
+              flushPending();
+            } else {
+              // Realtime already delivered a newer revision while this
+              // acknowledgement was in flight: reconcile to the retained
+              // snapshot instead of rolling host and UI back.
+              const agreed = mirrorOf(host.current, stateRef.current);
+              mirror.current = agreed;
+              updateState((current) =>
+                applyMirror(current, pendingMirror(agreed, pending.current)),
+              );
+            }
           } catch (cause) {
             if (!retry) {
               errorRef.current(cause);
@@ -260,7 +288,7 @@ export function useUiPreferences(onError: (error: unknown) => void) {
         await attempt(true);
       });
     }
-  }, [rpc]);
+  }, [rpc, syncPending]);
 
   const apply = useCallback(
     (next: SyncedPreferences) => {
@@ -314,12 +342,9 @@ export function useUiPreferences(onError: (error: unknown) => void) {
   const projection = projectionOf(state);
   const projectionKey = JSON.stringify(projection);
   useEffect(() => {
-    if (!host.current || !mirror.current) return;
-    const next = projectionOf(stateRef.current);
-    for (const key of changedKeys(mirror.current, next))
-      pending.current.set(key, next);
+    syncPending();
     flushPending();
     // The projection key captures every field this effect compares.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectionKey, rpc, flushPending]);
+  }, [projectionKey, rpc, flushPending, syncPending]);
 }

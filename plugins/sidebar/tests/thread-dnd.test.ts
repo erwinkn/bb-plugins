@@ -3,6 +3,7 @@ import type { Collision } from "@dnd-kit/core";
 import {
   NEST_BAND_FRACTION,
   PINNED_NEST_BAND_FRACTION,
+  applyDetachDecision,
   buildThreadDndLookup,
   getThreadGroupDroppableId,
   getThreadRowDroppableId,
@@ -276,7 +277,7 @@ describe("resolveThreadRowNestCollisions", () => {
     expect(result.map((c) => c.id)).toEqual([rowId]);
   });
 
-  it("drops the row when the band fraction is null (self or archived)", () => {
+  it("keeps rows that can never nest so self and archived drops no-op", () => {
     const result = resolveThreadRowNestCollisions({
       collisions: [collision(rowId), collision(groupId)],
       droppableRects: rects,
@@ -284,7 +285,27 @@ describe("resolveThreadRowNestCollisions", () => {
       getBandFraction: () => null,
       holdNestCandidate: () => true,
     });
-    expect(result.map((c) => c.id)).toEqual([groupId]);
+    expect(result.map((c) => c.id)).toEqual([rowId, groupId]);
+  });
+
+  it("resolves a nested thread dropped on its own row to a no-op", () => {
+    const l = buildThreadDndLookup([
+      info({ id: "nested", parentThreadId: "parent" }),
+      info({ id: "parent" }),
+    ]);
+    const ownRow = getThreadRowDroppableId("nested");
+    const result = resolveThreadRowNestCollisions({
+      collisions: [collision(ownRow), collision(groupId)],
+      droppableRects: new Map([[ownRow, rect(100, 40)]]),
+      pointerCoordinates: { x: 10, y: 120 },
+      // The active row has no band fraction.
+      getBandFraction: () => null,
+      holdNestCandidate: () => true,
+    });
+    expect(String(result[0]!.id)).toBe(ownRow);
+    expect(
+      resolveThreadDropDecision(l, "nested", result[0]!.id),
+    ).toBeNull();
   });
 
   it("passes collisions through when the pointer is not over a row", () => {
@@ -316,5 +337,40 @@ describe("resolveThreadRowNestCollisions", () => {
       holdNestCandidate: () => true,
     });
     expect(inside.map((c) => c.id)).toEqual([rowId]);
+  });
+});
+
+describe("applyDetachDecision", () => {
+  it("detaches directly when the source is not pinned", () => {
+    const reparent = vi.fn();
+    const setPinned = vi.fn();
+    applyDetachDecision(
+      { activeId: "a", unpin: false },
+      reparent,
+      setPinned,
+      vi.fn(),
+    );
+    expect(reparent).toHaveBeenCalledWith("a", null);
+    expect(setPinned).not.toHaveBeenCalled();
+  });
+
+  it("unpins a pinned source before detaching it", async () => {
+    const order: string[] = [];
+    const reparent = vi.fn(() => void order.push("reparent"));
+    const setPinned = vi.fn(async () => void order.push("unpin"));
+    const onError = vi.fn();
+    applyDetachDecision({ activeId: "a", unpin: true }, reparent, setPinned, onError);
+    await vi.waitFor(() => expect(reparent).toHaveBeenCalledWith("a", null));
+    expect(order).toEqual(["unpin", "reparent"]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("leaves the thread in place when the unpin fails", async () => {
+    const reparent = vi.fn();
+    const setPinned = vi.fn().mockRejectedValue(new Error("offline"));
+    const onError = vi.fn();
+    applyDetachDecision({ activeId: "a", unpin: true }, reparent, setPinned, onError);
+    await vi.waitFor(() => expect(onError).toHaveBeenCalled());
+    expect(reparent).not.toHaveBeenCalled();
   });
 });

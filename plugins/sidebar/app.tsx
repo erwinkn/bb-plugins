@@ -55,6 +55,7 @@ import {
   type ThreadNode,
 } from "./lib/thread-tree";
 import {
+  applyDetachDecision,
   buildThreadDndLookup,
   getThreadGroupDroppableId,
   isThreadWithinSubtree,
@@ -279,9 +280,12 @@ function ThreadsList(props: PluginThreadListProps) {
           reparent(decision.activeId, decision.parentThreadId);
           return;
         case "detach":
-          reparent(decision.activeId, null);
-          if (decision.unpin)
-            void actions.setPinned(decision.activeId, false).catch(report);
+          applyDetachDecision(
+            decision,
+            reparent,
+            (threadId, pinned) => actions.setPinned(threadId, pinned),
+            report,
+          );
           return;
         case "pin":
           void actions.setPinned(decision.activeId, true).catch(report);
