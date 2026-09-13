@@ -20,7 +20,6 @@ import {
 import { MIGRATIONS, QuestionsStore } from "./server/store";
 import { QuestionsError, QuestionsService } from "./server/service";
 import { QuestionInteractions } from "./server/interactions";
-import { summaryInstructions } from "./server/agent-instructions";
 
 const threadArg = z.object({ threadId: z.string().min(1) });
 
@@ -321,13 +320,14 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.registerTool({
     name: "questions_summary",
     description:
-      "Set or clear the short markdown summary shown on the Summary tab of this thread's Questions: the goal, the current direction, and what is still open.",
+      "Read, set, or clear this thread's Questions summary — your own earlier note about the goal, the current direction, and what is still open. It survives compaction; call with no arguments to check for one.",
     parameters: z.object({
       summary: z
         .string()
         .max(LIMITS.summaryChars)
         .nullable()
-        .describe("Markdown, at most 8000 characters. Pass null to clear."),
+        .optional()
+        .describe("Markdown, at most 8000 characters. Pass null to clear. Omit to read the current summary."),
     }),
     presentation: {
       label: { pending: "Updating summary", completed: "Updated summary" },
@@ -336,23 +336,16 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async execute(params, ctx) {
       try {
+        if (params.summary === undefined) {
+          const summary = await service.getSummary(ctx.threadId);
+          return summary === null ? "No summary recorded for this thread." : summary.markdown;
+        }
         await service.setSummary(ctx.threadId, params.summary);
         return params.summary === null ? "Summary cleared." : "Summary updated.";
       } catch (error) {
         return { content: [{ type: "text", text: errorMessage(error) }], isError: true };
       }
     },
-  });
-
-  // The summary is the agent's own note to itself. It rides along in the
-  // metadata snapshot each turn, quoted as data; the four tools stay selected.
-  bb.agents.configure((context) => {
-    const instructions = summaryInstructions(context.pluginMetadata);
-    return {
-      tools: ["questions_ask", "questions_image", "questions_read", "questions_summary"],
-      skills: [],
-      ...(instructions === null ? {} : { instructions }),
-    };
   });
 
   const usage = [

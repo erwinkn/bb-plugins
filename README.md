@@ -1054,7 +1054,7 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
   `developerInstructions` on `thread/resume`, but the resumed codex session
   keeps its original context — the rollout gains no new developer item and the
   model cannot see post-start instruction updates.
-- **Impact:** per-thread plugin instructions (the questions summary) only reach
-  Codex at `thread/start`; updates set later never surface.
+- **Impact:** per-thread plugin instructions (via `bb.agents.configure`) only
+  reach Codex at `thread/start`; updates set later never surface.
 - **Status:** not filed. Suggested title: `Apply updated developerInstructions
   on thread/resume (or document that resume keeps the original context)`.
