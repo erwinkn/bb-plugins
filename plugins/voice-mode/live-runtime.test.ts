@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { LiveRuntime, liveRpcContract } from "./live-runtime.ts";
 import { LIVE_RUNTIME_MIGRATIONS } from "./live-store.ts";
+import { readVoiceThreadMetadata } from "./thread-metadata.ts";
 import { hash, canonical } from "./operations.ts";
 import { liveToolArgs, liveToolSchemas, LIVE_EFFECTS } from "./live-tools.ts";
 import { defaultWorkerSettings, WORKER_PROFILE_KEY, readNamedWorkerSettings, NAMED_WORKER_PROFILE_KEY } from "./worker-profiles.ts";
@@ -24,7 +25,7 @@ async function fixture() {
   const world = {
     threads: new Map<string, Any>([["build", makeThreadResponse({ id: "build", projectId: "app", title: "Build Fix", status: "active", updatedAt: 9000 })]]),
     outputs: new Map<string, string>(), events: new Map<string, Any[]>(), interactions: new Map<string, Any[]>(), queue: new Map<string, Any[]>(), executions: new Map<string, Any>(),
-    list: null as null | ((args: Any) => Promise<Any[]>), interactionReads: 0,
+    list: null as null | ((args: Any) => Promise<Any[]>), interactionReads: 0, interactionLists: 0,
     sends: [] as Any[], spawns: [] as Any[], archives: [] as string[], resolutions: [] as Any[], answers: [] as Any[], stops: [] as string[], updates: [] as Any[], queueSends: [] as Any[], queueDeletes: [] as Any[], queueUpdates: [] as Any[], pluginCalls: [] as Any[], rounds: new Map<string, Any>(),
     send: null as null | ((args: Any) => Promise<Any>), spawn: null as null | ((args: Any) => Promise<Any>), get: null as null | ((args: Any) => Promise<Any>),
   };
@@ -71,7 +72,7 @@ async function fixture() {
       update: async (args: Any) => { world.updates.push(args); const t = world.threads.get(args.threadId); if (args.title !== undefined) t.title = args.title; return { ok: true }; },
       archive: async ({ threadId }: Any) => { world.archives.push(threadId); const t = world.threads.get(threadId); t.archivedAt = at; return { ok: true, archivedThreadIds: [threadId] }; },
       interactions: {
-        list: async ({ threadId }: Any) => (world.interactions.get(threadId) ?? []).filter(i => i.status === "pending"),
+        list: async ({ threadId }: Any) => { world.interactionLists++; return (world.interactions.get(threadId) ?? []).filter(i => i.status === "pending"); },
         get: async ({ threadId, interactionId }: Any) => { world.interactionReads++; const i = world.interactions.get(threadId)?.find(i => i.id === interactionId); if (!i) throw new Error("Missing interaction"); return i; },
         resolve: async (args: Any) => { world.resolutions.push(args); const i = world.interactions.get(args.threadId)!.find(i => i.id === args.interactionId); i.status = "resolved"; return i; },
         respond: async (args: Any) => { world.answers.push(args); const i = world.interactions.get(args.threadId)!.find(i => i.id === args.interactionId); i.status = "resolved"; return i; },
@@ -1340,4 +1341,79 @@ test("handoff refuses a source that moves environments during context preparatio
   h.world.get = async ({ threadId }) => { const thread = h.world.threads.get(threadId); return threadId === source.id && ++reads > 1 ? { ...thread, environmentId: "env_other" } : thread; };
   const result = await h.run("create_thread", handoffRequest);
   assert.match(result.error, /source changed/); assert.equal(h.world.spawns.length, 0);
+});
+
+test("spawned workers and handoffs seed voice provenance metadata on the new thread", async t => {
+  const h = await fixture(); t.after(h.close);
+  const receipt = await h.run("spawn_worker", worker);
+  assert.equal(receipt.status, "running");
+  const seed = h.world.spawns.at(-1).pluginMetadata;
+  assert.deepEqual(seed, { version: 1, conversationId: "conversation", operationId: receipt.operationId, profileId: "investigate" });
+  assert.deepEqual(readVoiceThreadMetadata(seed), seed);
+  assert.equal(readVoiceThreadMetadata({ ...seed, conversationId: 5 }), null, "metadata is untrusted and validated on read");
+  sourceEnvironment(h);
+  await h.run("find_targets", { query: "" }, h.later("u2"));
+  const handoff = await h.run("create_thread", handoffRequest, h.later("u3"));
+  assert.equal(handoff.status, "running");
+  assert.deepEqual(h.world.spawns.at(-1).pluginMetadata, { version: 1, conversationId: "conversation", operationId: handoff.operationId, profileId: readVoiceThreadMetadata(h.world.spawns.at(-1).pluginMetadata)!.profileId,
+    handoff: { sourceThreadId: "build", contextBoundary: handoff.handoff.sourceSeqEnd } });
+});
+
+test("a cancelled queued message closes its operation, updates the task, and tells the caller once", async t => {
+  const h = await fixture(); t.after(h.close);
+  const spawned = await h.run("spawn_worker", worker); const workerId = spawned.threadId;
+  h.world.send = async () => ({ delivery: "queued", queuedMessage: { id: "q1" } });
+  const sent = await h.run("message_thread", { thread_id: workerId, body: "Also check the tests", mode: "normal" }, h.later("u2"));
+  assert.equal(sent.status, "queued");
+  await h.idle(workerId, "Working", 1);
+  assert.equal(h.runtime.store.tasks().find(task => task.thread_id === workerId)!.follow_ups_queued, 1);
+  const entry = { id: "q1", threadId: workerId, content: [{ type: "text", text: "Also check the tests", mentions: [] }] } as Any;
+  h.world.threads.get(workerId).queuedMessageCount = 0; h.tick();
+  await h.runtime.watches.event("message.cancelled", { entry });
+  const operation = h.runtime.operations.get(sent.operationId)!;
+  assert.equal(operation.status, "cancelled"); assert.ok(operation.completed_at);
+  assert.equal(h.runtime.operations.receipt(operation).delivery, "cancelled");
+  assert.equal(h.runtime.store.tasks().find(task => task.thread_id === workerId)!.follow_ups_queued, 0);
+  const notices = h.runtime.store.inbox("conversation").filter(item => item.event_key === "cancelled:q1");
+  assert.equal(notices.length, 1); assert.equal(notices[0].kind, "milestone"); assert.match(notices[0].detail, /message_cancelled/);
+  await h.runtime.watches.event("message.cancelled", { entry });
+  assert.equal(h.runtime.store.inbox("conversation").filter(item => item.event_key === "cancelled:q1").length, 1, "a repeated event adds nothing");
+  await h.runtime.watches.event("message.cancelled", { entry: { ...entry, id: "someone-elses" } });
+  assert.equal(h.runtime.store.inbox("conversation").filter(item => item.event_key.startsWith("cancelled:")).length, 1, "messages Ada did not send are not news");
+});
+
+test("unarchiving a watched thread drops stale archived news and restores the task", async t => {
+  const h = await fixture(); t.after(h.close);
+  const spawned = await h.run("spawn_worker", worker); const workerId = spawned.threadId;
+  const thread = h.world.threads.get(workerId);
+  h.tick(); thread.archivedAt = h.now(); thread.updatedAt = h.now();
+  await h.runtime.watches.event("thread.archived", { thread });
+  const archived = h.runtime.store.inbox("conversation").find(item => item.thread_id === workerId && item.kind === "archived")!;
+  assert.equal(archived.status, "queued");
+  assert.equal(h.runtime.store.tasks().find(task => task.thread_id === workerId)!.status, "stopped");
+  h.tick(); thread.archivedAt = null; thread.status = "idle"; thread.updatedAt = h.now(); h.world.outputs.set(workerId, "Finished");
+  await h.runtime.watches.event("thread.unarchived", { thread });
+  assert.equal(h.runtime.store.inbox("conversation").find(item => item.id === archived.id)!.status, "resolved", "the archived notice is no longer news");
+  const restored = h.runtime.store.inbox("conversation").find(item => item.event_key === `unarchived:${thread.updatedAt}`)!;
+  assert.equal(restored.kind, "milestone"); assert.match(restored.detail, /"event":"unarchived"/);
+  assert.equal(h.runtime.store.tasks().find(task => task.thread_id === workerId)!.status, "turn_ended");
+  await h.runtime.watches.event("thread.unarchived", { thread: { ...thread, id: "unwatched" } });
+  assert.equal(h.runtime.store.inbox("conversation").filter(item => item.thread_id === "unwatched").length, 0);
+});
+
+test("lifecycle events rely on interaction.pending and re-read only the inbox's open prompts", async t => {
+  const h = await fixture(); t.after(h.close); await h.watch();
+  const approval = h.approval(); h.world.interactionLists = 0; h.world.interactionReads = 0;
+  await h.idle("build", "Need a decision");
+  assert.equal(h.world.interactionLists, 0, "a lifecycle event does not list interactions");
+  assert.equal(h.runtime.store.inbox("conversation").filter(item => item.interaction_id).length, 0, "prompts arrive through interaction.pending");
+  await h.runtime.watches.event("interaction.pending", { thread: h.world.threads.get("build"), interaction: approval as Any });
+  const prompt = h.runtime.store.inbox("conversation").find(item => item.interaction_id === approval.id)!;
+  assert.equal(prompt.status, "queued");
+  approval.status = "resolved";
+  await h.idle("build", "Decided");
+  assert.equal(h.world.interactionLists, 0); assert.equal(h.world.interactionReads, 1, "only the open prompt is re-read");
+  assert.equal(h.runtime.store.inbox("conversation").find(item => item.id === prompt.id)!.status, "resolved");
+  await h.restart();
+  assert.ok(h.world.interactionLists > 0, "startup and reconnect still read the full list");
 });

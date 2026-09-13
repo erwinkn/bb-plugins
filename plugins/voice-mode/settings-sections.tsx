@@ -1,4 +1,5 @@
 import { PromptEditor } from "./prompt-editor";
+import { HostIcon } from "./lib/host-icon";
 export { PromptEditor } from "./prompt-editor";
 // bb-plugin-voice-mode — polished settings sections.
 //
@@ -110,12 +111,7 @@ const selectClass =
   "block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
 
 function RefreshIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
-      <path d="M13.7 2.5V5H11.2" />
-    </svg>
-  );
+  return <HostIcon name="ArrowReloadHorizontal" fallback="RotateCcw" className="size-4" />;
 }
 
 /**

@@ -419,7 +419,7 @@ export default async function plugin(bb: BbPluginApi) {
     const link = nonce ? db.prepare("SELECT conversation_id FROM voice_conversation_calls WHERE call_id = ?").get(nonce) as { conversation_id: string } | undefined : undefined;
     return { nonce, conversationId: link?.conversation_id };
   }, Date.now, 30000, () => prompts.read("worker"));
-  for (const name of ["thread.active", "thread.idle", "thread.failed", "thread.archived", "interaction.pending", "message.dispatched"] as const) {
+  for (const name of ["thread.active", "thread.idle", "thread.failed", "thread.archived", "thread.unarchived", "interaction.pending", "message.dispatched", "message.cancelled"] as const) {
     bb.events.on(name, payload => liveRuntime.watches.event(name, payload).catch(error => bb.log.warn(`Live runtime event failed: ${error instanceof Error ? error.message : String(error)}`)));
   }
   // Startup must not fail on a transient SDK error. The import keeps its marker unset and retries next start.
