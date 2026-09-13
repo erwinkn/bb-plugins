@@ -17,11 +17,11 @@
     "skills": []
   },
   "dependencies": {
-    "@get-bb/plugin-sdk": "0.4.47",
     "protobufjs": "8.8.0",
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.87",
     "@types/node": "22.19.15",
     "better-sqlite3": "13.0.3",
     "cron-parser": "5.5.0",
