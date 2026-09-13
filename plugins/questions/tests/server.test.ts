@@ -618,7 +618,7 @@ describe("Questions backend", () => {
 
   it("uses only public SDK imports", async () => {
     const result = experimental_scanPublicSdkOnly(new URL("..", import.meta.url).pathname, { allow: [
-      /^react(?:-dom)?(?:\/.*)?$/, /^@radix-ui\//, /^@hugeicons\//,
+      /^react(?:-dom)?(?:\/.*)?$/, /^@radix-ui\//,
       /^@\/(?:components|lib|hooks)\/[\w/-]+$/, /^@testing-library\/react$/,
       /^(?:class-variance-authority|clsx|tailwind-merge|better-sqlite3|sonner|vaul)$/,
       /^vitest(?:\/.*)?$/,
