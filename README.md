@@ -135,6 +135,10 @@ times; never check out another branch there, and never run `git rebase` or
    with `--permission-mode full`: with `accept-edits`, the child's first file
    edits still stop for approval, and permission mode can only be raised
    afterwards through a follow-up message, which queues behind that approval.
+   Plugin implementation children always run on Devin SWE-2 at high
+   reasoning: `--provider acp-devin --model
+   'devin-family:%5B%22swe-2%22%2C262000%2C%22%22%5D' --reasoning-level high`
+   (the model id comes from `bb provider models acp-devin`).
 3. The child reports back with the files changed and what it verified. It does
    not commit.
 4. The orchestrator reviews the diff, runs `bb plugin build
