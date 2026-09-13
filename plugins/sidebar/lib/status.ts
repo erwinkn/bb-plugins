@@ -38,11 +38,15 @@ const WORK_INDICATORS = new Set([
 ]);
 
 // Display order and precedence are separate: work outranks an old unread flag.
+// `woke` is the sidebar's own signal: a snooze ended and the thread has not
+// been opened since, so it needs attention even without a host indicator.
 export function statusOf(
   thread: PluginSidebarThread,
   hasDraft = false,
+  woke = false,
 ): Status {
   if (
+    woke ||
     thread.hasPendingInteraction ||
     thread.indicator === "waiting-for-input" ||
     thread.indicator === "unread-error"

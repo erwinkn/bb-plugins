@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FocusEvent,
   type ReactNode,
@@ -24,6 +25,10 @@ import { STATUSES, STATUS_LABEL, statusOf, threadTitle } from "./lib/status";
 import { toggleValue, updateState, useClientState } from "./lib/client-state";
 import { useArchives } from "./lib/use-archives";
 import { useLibrary } from "./lib/use-library";
+import { useSnooze, useSnoozePresets } from "./lib/use-snooze";
+import type { snoozeContract } from "./lib/snooze-contract";
+import { isSleeping, isWoke, type SnoozeEntry } from "./lib/snooze-schema";
+import { SnoozeSettings } from "./components/snooze-settings";
 import { useSpaces } from "./lib/use-spaces";
 import { useUiPreferences } from "./lib/use-ui-preferences";
 import { savedThreadIds } from "./lib/library";
@@ -109,6 +114,8 @@ function Group({
   trailing,
   children,
   archive = false,
+  defaultClosed = false,
+  dropTarget = true,
   wrapHeader = (header) => header,
   belowHeader,
 }: {
@@ -127,6 +134,10 @@ function Group({
    */
   trailing?: ReactNode;
   archive?: boolean;
+  /** Closed until opened, like Archived; the open state persists per client. */
+  defaultClosed?: boolean;
+  /** False keeps drags from landing on the group. */
+  dropTarget?: boolean;
   children: ReactNode;
   /** Wraps the header button, e.g. in a context menu. */
   wrapHeader?: (header: ReactNode) => ReactNode;
@@ -142,11 +153,12 @@ function Group({
   const dnd = useThreadDndState();
   const { setNodeRef } = useDroppable({
     id: getThreadGroupDroppableId(id),
-    disabled: !dnd || archive,
+    disabled: !dnd || archive || !dropTarget,
   });
-  const closed = archive
-    ? !expandedArchives.includes(id)
-    : collapsed.includes(id);
+  const closed =
+    archive || defaultClosed
+      ? !expandedArchives.includes(id)
+      : collapsed.includes(id);
   const header = (
     <button
       type="button"
@@ -154,7 +166,7 @@ function Group({
       onClick={() =>
         updateState((current) => ({
           ...current,
-          ...(archive
+          ...(archive || defaultClosed
             ? { expandedArchives: toggleValue(current.expandedArchives, id) }
             : { collapsed: toggleValue(current.collapsed, id) }),
         }))
@@ -270,6 +282,9 @@ function ThreadsList(props: PluginThreadListProps) {
   );
   const spaces = useSpaces();
   const library = useLibrary();
+  const snoozes = useSnooze();
+  const snoozePresets = useSnoozePresets();
+  const snoozeRpc = useRpc<typeof snoozeContract>();
   const scope = resolveScope(spaces.catalog, state.spaceId);
   const scopeKey =
     scope.kind === "space" ? `space:${scope.space.id}` : scope.kind;
@@ -311,6 +326,23 @@ function ThreadsList(props: PluginThreadListProps) {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
+  // Opening a woke thread ends its attention signal. Once per document, so a
+  // failed call does not repeat on every render.
+  const acknowledged = useRef<string | null>(null);
+  useEffect(() => {
+    const id = props.activeThreadId;
+    if (!id) return;
+    const key = `${id}@${snoozes.doc.revision}`;
+    if (acknowledged.current === key) return;
+    if (
+      !snoozes.doc.entries.some(
+        (entry) => entry.threadId === id && isWoke(entry),
+      )
+    )
+      return;
+    acknowledged.current = key;
+    void snoozeRpc.call("acknowledge", { threadId: id }).catch(report);
+  });
   // Grouping, sort, and collapsed Pinned/project groups follow BB's synced
   // sidebar preferences.
   useUiPreferences(report);
@@ -449,21 +481,47 @@ function ThreadsList(props: PluginThreadListProps) {
   // Saved threads and every descendant of a member stay out of the active
   // view; the library scope inverts the same set to list saved families.
   const saved = savedThreadIds(threads, library.memberIds);
+  // A sleeping snooze hides the thread and its descendants, like a save; a
+  // woke one keeps the thread in Needs Attention until it is opened.
+  const sleeping = new Map<string, SnoozeEntry>();
+  const wokeIds = new Set<string>();
+  for (const entry of snoozes.doc.entries) {
+    if (isSleeping(entry, now)) sleeping.set(entry.threadId, entry);
+    else if (isWoke(entry)) wokeIds.add(entry.threadId);
+  }
+  const snoozedIds = savedThreadIds(threads, new Set(sleeping.keys()));
+  const inView = (thread: (typeof threads)[number]) =>
+    thread.isArchived
+      ? false
+      : scope.kind === "library"
+        ? saved.has(thread.id)
+        : !saved.has(thread.id) && inScope(scope, thread.projectId);
+  const withStatus = (thread: (typeof threads)[number]) => ({
+    thread,
+    status: statusOf(
+      thread,
+      knownDrafts.has(`thread:${thread.id}`),
+      wokeIds.has(thread.id),
+    ),
+  });
   // Scope membership applies before pins and families: a pinned thread or a
   // descendant outside the scope stays hidden, and an inside child whose
   // parent is outside becomes a root. Titles stay unfiltered for parent labels.
   const available = threads
-    .filter((thread) =>
-      thread.isArchived
-        ? false
-        : scope.kind === "library"
-          ? saved.has(thread.id)
-          : !saved.has(thread.id) && inScope(scope, thread.projectId),
-    )
-    .map((thread) => ({
-      thread,
-      status: statusOf(thread, knownDrafts.has(`thread:${thread.id}`)),
-    }));
+    .filter((thread) => inView(thread) && !snoozedIds.has(thread.id))
+    .map(withStatus);
+  // Snoozed families keep their scope and sort by wake time, soonest first.
+  const snoozed = buildThreadTree(
+    threads
+      .filter((thread) => inView(thread) && snoozedIds.has(thread.id))
+      .map(withStatus),
+    state.sortBy,
+    state.sortDirection,
+  ).sort(
+    (a, b) =>
+      (sleeping.get(a.thread.id)?.until ?? 0) -
+      (sleeping.get(b.thread.id)?.until ?? 0),
+  );
   const pinnedIds = pinnedThreadIds(available);
   const pinned = buildThreadTree(
     available.filter(({ thread }) => pinnedIds.has(thread.id)),
@@ -624,6 +682,11 @@ function ThreadsList(props: PluginThreadListProps) {
           candidates: nestCandidatesFor(thread.id),
           onSetParent: (parentThreadId) =>
             reparent(thread.id, parentThreadId),
+        }}
+        snooze={{
+          until: sleeping.get(thread.id)?.until ?? null,
+          woke: wokeIds.has(thread.id),
+          presets: snoozePresets.doc.presets,
         }}
         onNavigate={props.onNavigate}
         onError={report}
@@ -975,6 +1038,26 @@ function ThreadsList(props: PluginThreadListProps) {
                           </Group>
                         ) : null;
                       })}
+                {snoozed.length > 0 && (
+                  <Group
+                    id="snoozed"
+                    title="Snoozed"
+                    defaultClosed
+                    dropTarget={false}
+                    count={snoozed.length}
+                    icon={
+                      <HostIcon
+                        name="Clock"
+                        fallback="Circle"
+                        className="size-3.5 text-[var(--subtle-foreground)]"
+                      />
+                    }
+                  >
+                    <ul aria-label="Snoozed threads" className="m-0 list-none p-0">
+                      {snoozed.map((entry) => row(entry))}
+                    </ul>
+                  </Group>
+                )}
                 {archived.length > 0 && (
                   <Group
                     id="archive"
@@ -1000,6 +1083,7 @@ function ThreadsList(props: PluginThreadListProps) {
                 )}
                 {state.hidden.length < STATUSES.length &&
                   !archived.length &&
+                  !snoozed.length &&
                   !visible.length &&
                   !pinned.length &&
                   !newDrafts.length && (
@@ -1047,6 +1131,11 @@ export default definePluginApp((app) => {
     icon: "Layers",
     path: SPACES_PANEL_PATH,
     component: SpacesPage,
+  });
+  app.slots.settingsSection({
+    id: "snooze",
+    title: "Snooze presets",
+    component: SnoozeSettings,
   });
   app.slots.experimental_threadList({
     id: "sidebar",

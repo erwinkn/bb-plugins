@@ -1214,3 +1214,17 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
   reach Codex at `thread/start`; updates set later never surface.
 - **Status:** not filed. Suggested title: `Apply updated developerInstructions
   on thread/resume (or document that resume keeps the original context)`.
+
+### Thread-header menu action slot for plugins (2026-09-13)
+
+- **Where:** BB 0.43.1 / SDK 0.4.87, the thread header's ellipsis menu
+  (`ThreadActionsMenu`), built from host state only.
+- **Ask:** a `threadHeaderMenuAction` (or `threadActions`) slot with the same
+  `{ threadId, projectId }` context as `commandPaletteAction`, rendered as
+  items before the separator and reused by BB's own sidebar row menu, so the
+  Threads plugin can add "Snooze…" and "Unsnooze" where users look first.
+- **Workaround:** the sidebar plugin offers snooze in its own row menu and
+  hover control; `experimental_threadHeaderAction` would add a separate
+  header button, not a menu entry.
+- **Status:** not filed. Suggested title: `Add a plugin slot for thread
+  header menu actions`.

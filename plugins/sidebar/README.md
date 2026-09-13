@@ -320,6 +320,60 @@ restore lands in the active view. The document lives in the plugin's
 key-value store, shared by all clients and cached locally for the next
 load.
 
+## Snooze
+
+Snooze hides a thread until a time and brings it back as something to look
+at. **Snooze…** in a row's context menu (right-click, or a long press on a
+touch viewport) lists the presets and **Custom date and time…**; on a mouse
+or trackpad a clock control appears on hover, left of the archive control,
+and opens the same presets in a small popover. A snoozed row's control and
+menu entry become **Unsnooze**.
+
+- A sleeping thread leaves the status groups and Pinned, together with its
+  descendants (the same family rule as the library). The **Snoozed** group,
+  closed by default and placed before Archived, lists sleeping families
+  soonest first, with the wake time in place of the age.
+- A pinned thread can be snoozed: the snooze unpins it and remembers the
+  pin, and the pin returns when the snooze ends by any route.
+- When the wake time comes, the plugin marks the thread unread through BB
+  and flags it *woke*; a woke thread sits in **Needs Attention** until it is
+  opened, which clears the flag. If BB was down at the wake time, the thread
+  wakes on the first poll after the next start.
+- Agent activity on a sleeping thread (a turn starting or finishing, a
+  failure, or a pending question) ends the snooze early, so the thread
+  surfaces the same way. Archiving or deleting a thread drops its snooze.
+
+The presets are shared by the popover, the menu, and the CLI and are edited
+in BB settings under **Threads › Snooze presets**. Each preset has a label,
+a CLI name, and either a delay in minutes or a local clock time a number of
+days ahead (0 means today, or tomorrow once the time has passed). The
+defaults are **1 hour**, **3 hours**, **Tomorrow** (09:00), and **Next
+week** (the same weekday, 09:00).
+
+Agents and scripts use the `bb sidebar` commands:
+
+```sh
+bb sidebar snooze <threadId> --until tomorrow      # a preset name
+bb sidebar snooze <threadId> --until 2h            # 45m, 2h, 3d, 1w
+bb sidebar snooze <threadId> --until 2026-09-20T09:00
+bb sidebar unsnooze <threadId>
+bb sidebar snoozes [--json]
+bb sidebar presets [--json]
+```
+
+The thread id defaults to the invoking thread. The `thread-snooze` skill in
+`skills/` tells agents when to reach for these. Snooze state lives in the
+plugin's key-value store (one revisioned document served by the
+`getSnoozes`, `snooze`, `unsnooze`, and `acknowledge` RPCs and pushed on
+the `snoozes-changed` channel); the plugin cron schedule `snooze-wake`
+polls it every minute. Each snooze is mirrored into the thread's plugin
+metadata as `{ snoozed: true, snoozedUntil }` in the `sidebar` namespace
+for agents and other plugins, and removed when the snooze ends.
+
+There is no snooze entry in the thread header's ellipsis menu: that menu is
+host-owned with no plugin slot (see *Desired upstream changes* in the root
+README).
+
 ## Draft limits
 
 SDK 0.4.47 does not expose saved composer drafts in its thread list. An invisible

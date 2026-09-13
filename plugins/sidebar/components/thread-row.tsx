@@ -1,5 +1,6 @@
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import * as Menu from "@radix-ui/react-context-menu";
+import * as Popover from "@radix-ui/react-popover";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   useRpc,
@@ -19,6 +20,13 @@ import {
 } from "../lib/status";
 import type { archiveContract } from "../lib/archive-contract";
 import type { libraryContract } from "../lib/library-contract";
+import type { snoozeContract } from "../lib/snooze-contract";
+import { formatWakeTime, type SnoozePreset } from "../lib/snooze-presets";
+import {
+  SnoozePopoverContent,
+  snoozeChoices,
+  type SnoozePickerMode,
+} from "./snooze-picker";
 import { menuItemClass } from "./menus";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { relativeAge } from "../lib/time";
@@ -58,6 +66,14 @@ export interface ThreadRowNesting {
   onSetParent: (parentThreadId: string | null) => void;
 }
 
+export interface ThreadRowSnooze {
+  /** Wake time while the thread sleeps; null when it is not snoozed. */
+  until: number | null;
+  /** The snooze ended and the thread has not been opened since. */
+  woke: boolean;
+  presets: readonly SnoozePreset[];
+}
+
 export function ThreadRow({
   thread,
   status,
@@ -74,6 +90,7 @@ export function ThreadRow({
   singleLine = false,
   libraryAction,
   nesting,
+  snooze,
   onNavigate,
   onError,
 }: {
@@ -106,11 +123,14 @@ export function ThreadRow({
    */
   libraryAction: "save" | "remove" | null;
   nesting?: ThreadRowNesting;
+  /** Snooze state and presets; omitted rows (archives) offer no snooze. */
+  snooze?: ThreadRowSnooze;
   onNavigate: () => void;
   onError: (error: unknown) => void;
 }) {
   const rpc = useRpc<typeof archiveContract>();
   const libraryRpc = useRpc<typeof libraryContract>();
+  const snoozeRpc = useRpc<typeof snoozeContract>();
   const navigate = useBbNavigate();
   const nested = depth > 0;
   const actions = experimental_useSidebarThreadActions();
@@ -123,6 +143,10 @@ export function ThreadRow({
   const savingRef = useRef(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const menuOpenedEditor = useRef(false);
+  // The presets popover, opened from the hover control or the menu's Custom…
+  // entry; the menu's focus return is skipped while it opens.
+  const [picker, setPicker] = useState<SnoozePickerMode | null>(null);
+  const menuOpenedPicker = useRef(false);
   const rowRef = useRef<HTMLAnchorElement>(null);
   const restoreRowFocus = useRef(false);
   const closeEditor = () => {
@@ -171,7 +195,18 @@ export function ThreadRow({
   // The project accent only appears where the project name does, so a row
   // under its own project header stays plain.
   const accentStep = showProject && !singleLine ? projectHueStep(project) : null;
-  const showArchiveControl = finePointer && hovered && !menuOpen;
+  // The controls stay while the popover is open, since the pointer leaves
+  // the row to reach it.
+  const showHoverControls =
+    finePointer && (hovered || picker !== null) && !menuOpen;
+  const sleeping = snooze !== undefined && snooze.until !== null;
+  const canSnooze = snooze !== undefined && !thread.isArchived;
+  const snoozeUntil = (until: number) => {
+    void snoozeRpc.call("snooze", { threadId: thread.id, until }).catch(onError);
+  };
+  const unsnooze = () => {
+    void snoozeRpc.call("unsnooze", { threadId: thread.id }).catch(onError);
+  };
   const toggleArchived = () => {
     void rpc
       .call(thread.isArchived ? "restoreThread" : "archiveTree", {
@@ -199,12 +234,40 @@ export function ThreadRow({
   const open = (split = false) => {
     if (thread.isArchived) navigate.toThread(thread.id);
     else actions.open(thread.id, { split });
+    // Opening a woke thread clears its attention signal.
+    if (snooze?.woke)
+      void snoozeRpc
+        .call("acknowledge", { threadId: thread.id })
+        .catch(onError);
     onNavigate();
   };
+  // A sleeping row shows when it wakes instead of its age.
+  const stamp =
+    sleeping && snooze.until !== null ? (
+      <time
+        dateTime={new Date(snooze.until).toISOString()}
+        data-thread-wake=""
+        aria-label={`Wakes ${new Date(snooze.until).toLocaleString()}`}
+        className={`flex shrink-0 items-center gap-1 tabular-nums ${singleLine ? "text-xs leading-4 text-[var(--subtle-foreground)]" : ""}`}
+      >
+        <HostIcon name="Clock" fallback="Circle" className="size-3 shrink-0" />
+        {formatWakeTime(snooze.until, now)}
+      </time>
+    ) : (
+      age
+    );
   return (
     <li data-thread-node={thread.id} className="min-w-0">
+      <Popover.Root
+        open={picker !== null}
+        onOpenChange={(open) => {
+          if (!open) setPicker(null);
+        }}
+      >
+      <Popover.Anchor asChild>
       <div
         data-thread-status={thread.isArchived ? "archived" : status}
+        data-thread-snoozed={sleeping ? "" : undefined}
         onPointerEnter={() => setHovered(true)}
         onPointerLeave={() => setHovered(false)}
         className={`group relative flex min-w-0 items-center rounded-md ${active ? "bg-accent text-accent-foreground" : `${status === "attention" && !thread.isArchived ? "bg-[var(--surface-attention)]" : ""} hover:bg-accent/60`} ${nestTargetState ? NEST_TARGET_STATE_CLASS[nestTargetState] : ""} ${draggable.isDragging ? "opacity-50" : ""}`}
@@ -372,7 +435,33 @@ export function ThreadRow({
                   >
                     {title}
                   </span>
-                  {showArchiveControl ? (
+                  {showHoverControls && canSnooze && (
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      data-thread-snooze-action={sleeping ? "unsnooze" : "snooze"}
+                      aria-label={sleeping ? "Unsnooze thread" : "Snooze thread"}
+                      aria-haspopup={sleeping ? undefined : "dialog"}
+                      aria-expanded={sleeping ? undefined : picker !== null}
+                      title={sleeping ? "Unsnooze" : "Snooze"}
+                      // Keep the press away from drag, split, and long press.
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        if (sleeping) unsnooze();
+                        else setPicker(picker ? null : "presets");
+                      }}
+                      className={`flex size-4 shrink-0 items-center justify-center rounded hover:bg-accent hover:text-foreground ${picker ? "bg-accent text-foreground" : "text-[var(--subtle-foreground)]"}`}
+                    >
+                      <HostIcon
+                        name={sleeping ? "BellDot" : "Clock"}
+                        fallback="Circle"
+                        className="size-3.5"
+                      />
+                    </span>
+                  )}
+                  {showHoverControls ? (
                     <span
                       role="button"
                       tabIndex={-1}
@@ -411,7 +500,7 @@ export function ThreadRow({
                       )}
                     </span>
                   )}
-                  {singleLine && age}
+                  {singleLine && stamp}
                 </span>
                 {!singleLine && (
                   <span className="mt-0.5 flex min-w-0 items-center gap-2 text-xs leading-4 text-[var(--subtle-foreground)]">
@@ -480,7 +569,7 @@ export function ThreadRow({
                         </>
                       )}
                     </span>
-                    {age}
+                    {stamp}
                   </span>
                 )}
               </a>
@@ -495,6 +584,9 @@ export function ThreadRow({
                   event.preventDefault();
                   // The editor may already be closed when Radix restores focus.
                   (renameInputRef.current ?? rowRef.current)?.focus();
+                } else if (menuOpenedPicker.current) {
+                  menuOpenedPicker.current = false;
+                  event.preventDefault();
                 }
               }}
               aria-label={`Actions for ${title}`}
@@ -531,6 +623,52 @@ export function ThreadRow({
                   >
                     Mark as {thread.isUnread ? "read" : "unread"}
                   </Menu.Item>
+                  {canSnooze && sleeping && (
+                    <Menu.Item className={menuItemClass} onSelect={unsnooze}>
+                      Unsnooze
+                    </Menu.Item>
+                  )}
+                  {canSnooze && !sleeping && (
+                    <Menu.Sub>
+                      <Menu.SubTrigger className={menuItemClass}>
+                        <span className="min-w-0 flex-1">Snooze…</span>
+                        <HostIcon name="ChevronRight" className="size-3.5 shrink-0" />
+                      </Menu.SubTrigger>
+                      <Menu.Portal>
+                        <Menu.SubContent
+                          {...scope}
+                          sideOffset={4}
+                          aria-label="Snooze until"
+                          className="z-50 min-w-48 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+                        >
+                          {snoozeChoices(snooze.presets, now).map((choice) => (
+                            <Menu.Item
+                              key={choice.id}
+                              data-snooze-preset={choice.id}
+                              className={menuItemClass}
+                              onSelect={() => snoozeUntil(choice.until)}
+                            >
+                              <span className="min-w-0 flex-1">{choice.label}</span>
+                              <span className="shrink-0 text-xs tabular-nums text-[var(--subtle-foreground)]">
+                                {choice.hint}
+                              </span>
+                            </Menu.Item>
+                          ))}
+                          <Menu.Separator className="my-1 h-px bg-border" />
+                          <Menu.Item
+                            data-snooze-preset="custom"
+                            className={menuItemClass}
+                            onSelect={() => {
+                              menuOpenedPicker.current = true;
+                              setPicker("custom");
+                            }}
+                          >
+                            Custom date and time…
+                          </Menu.Item>
+                        </Menu.SubContent>
+                      </Menu.Portal>
+                    </Menu.Sub>
+                  )}
                   <Menu.Item
                     className={menuItemClass}
                     onSelect={() => {
@@ -612,6 +750,18 @@ export function ThreadRow({
           </Menu.Portal>
         </Menu.Root>}
       </div>
+      </Popover.Anchor>
+      {picker !== null && snooze !== undefined && (
+        <SnoozePopoverContent
+          title={title}
+          now={now}
+          mode={picker}
+          presets={snooze.presets}
+          onSnooze={snoozeUntil}
+          onClose={() => setPicker(null)}
+        />
+      )}
+      </Popover.Root>
       {children}
     </li>
   );
