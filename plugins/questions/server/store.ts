@@ -445,7 +445,12 @@ export class QuestionsStore {
     return result.changes;
   }
 
-  getSummary(threadId: string): Summary | null {
+  // Summaries moved to thread plugin metadata. The `summaries` table is the
+  // read-only migration source: it is consulted only when metadata has no
+  // summary, and a row is deleted once its thread's summary lives in
+  // metadata (write-through or backfill).
+
+  getLegacySummary(threadId: string): Summary | null {
     const row = this.db
       .prepare<[string], { markdown: string; updated_at: number }>(
         "SELECT markdown, updated_at FROM summaries WHERE thread_id = ?",
@@ -454,18 +459,27 @@ export class QuestionsStore {
     return row ? { markdown: row.markdown, updatedAt: row.updated_at } : null;
   }
 
-  setSummary(threadId: string, markdown: string, now: number): Summary {
+  listLegacySummaries(): Array<Summary & { threadId: string }> {
+    return this.db
+      .prepare<[], { thread_id: string; markdown: string; updated_at: number }>(
+        "SELECT thread_id, markdown, updated_at FROM summaries ORDER BY updated_at ASC",
+      )
+      .all()
+      .map((row) => ({ threadId: row.thread_id, markdown: row.markdown, updatedAt: row.updated_at }));
+  }
+
+  /** Only tests and the pre-metadata plugin write this table. */
+  setLegacySummary(threadId: string, markdown: string, now: number): void {
     this.db
       .prepare(
         `INSERT INTO summaries (thread_id, markdown, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(thread_id) DO UPDATE SET markdown = excluded.markdown, updated_at = excluded.updated_at`,
       )
       .run(threadId, markdown, now);
-    return { markdown, updatedAt: now };
   }
 
-  clearSummary(threadId: string): void {
-    this.db.prepare("DELETE FROM summaries WHERE thread_id = ?").run(threadId);
+  deleteLegacySummary(threadId: string): boolean {
+    return this.db.prepare("DELETE FROM summaries WHERE thread_id = ?").run(threadId).changes > 0;
   }
 
   /** Runs `work` in one SQLite transaction. */

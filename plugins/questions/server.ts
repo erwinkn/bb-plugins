@@ -15,10 +15,12 @@ import {
   submissionSchema,
   threadStateSchema,
   hasContent,
+  questionLabels,
 } from "./lib/model";
 import { MIGRATIONS, QuestionsStore } from "./server/store";
 import { QuestionsError, QuestionsService } from "./server/service";
 import { QuestionInteractions } from "./server/interactions";
+import { summaryInstructions } from "./server/agent-instructions";
 
 const threadArg = z.object({ threadId: z.string().min(1) });
 
@@ -197,21 +199,15 @@ export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(rpcContract, {
     questions_state: ({ threadId }) => service.state(threadId),
     questions_round: ({ threadId, roundId }) => {
-      const state = service.state(threadId);
-      const round = state.rounds.find((item) => item.id === roundId) ?? null;
+      const rounds = store.listRounds(threadId);
+      const round = rounds.find((item) => item.id === roundId) ?? null;
       const labels: Record<string, string> = {};
       if (round) {
-        const ordered = [...state.rounds].sort((a, b) => a.number - b.number);
-        let index = 0;
-        for (const item of ordered) {
-          for (const question of item.questions) {
-            index += 1;
-            if (item.id === round.id) labels[question.id] = `Q${index}`;
-          }
-        }
+        const all = questionLabels(rounds);
+        for (const question of round.questions) labels[question.id] = all.get(question.id) ?? question.id;
       }
       const ids = new Set(round?.questions.map((question) => question.id) ?? []);
-      return { round, answers: state.answers.filter((item) => ids.has(item.questionId)), labels };
+      return { round, answers: store.listAnswers(threadId).filter((item) => ids.has(item.questionId)), labels };
     },
     questions_save_draft: (input) => service.saveDraft(input),
     questions_upload_attachment: (input) => service.uploadAttachment(input),
@@ -310,14 +306,25 @@ export default async function plugin(bb: BbPluginApi) {
       icon: { glyph: "MessageQuestion" },
       suppress: true,
     },
-    execute(params, ctx) {
+    async execute(params, ctx) {
       try {
-        service.setSummary(ctx.threadId, params.summary);
+        await service.setSummary(ctx.threadId, params.summary);
         return params.summary === null ? "Summary cleared." : "Summary updated.";
       } catch (error) {
         return { content: [{ type: "text", text: errorMessage(error) }], isError: true };
       }
     },
+  });
+
+  // The summary is the agent's own note to itself. It rides along in the
+  // metadata snapshot each turn, quoted as data; the four tools stay selected.
+  bb.agents.configure((context) => {
+    const instructions = summaryInstructions(context.pluginMetadata);
+    return {
+      tools: ["questions_ask", "questions_image", "questions_read", "questions_summary"],
+      skills: [],
+      ...(instructions === null ? {} : { instructions }),
+    };
   });
 
   const usage = [
@@ -327,8 +334,10 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb questions read [--thread <id>] [--round <id>] [--after <question-id>]",
     "  bb questions rounds [--thread <id>] [--json]",
     "  bb questions summary [--thread <id>] set <markdown> | clear | show",
+    "  bb questions summary backfill [--dry-run]",
     "",
     "The thread defaults to the thread the command runs in (BB_THREAD_ID).",
+    "summary backfill copies every summary still in the plugin database into its thread's plugin metadata; run it once after upgrading to bb 0.43.1.",
     "CLI asks return immediately and hold the BB prompt on the server. End your turn; answers arrive as a message. Do not poll.",
     "--file reads on the invoking thread's machine. Outside a thread, pass --host and an absolute file path.",
     "questions.json holds the same object questions_ask accepts:",
@@ -357,7 +366,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (value === undefined) throw new QuestionsError(`--${name} needs a value.`);
         flags.set(name, [...(flags.get(name) ?? []), value]);
         index += 1;
-      } else if (["json", "inline", "multiple", "help"].includes(name)) {
+      } else if (["json", "inline", "multiple", "help", "dry-run"].includes(name)) {
         booleans.add(name);
       } else {
         throw new QuestionsError(`Unknown option --${name}.`);
@@ -396,8 +405,8 @@ export default async function plugin(bb: BbPluginApi) {
       },
       {
         name: "summary",
-        summary: "Set, clear, or show the Summary tab text",
-        usage: "bb questions summary [--thread <id>] set <markdown> | clear | show",
+        summary: "Set, clear, or show the Summary tab text; backfill moves stored summaries into thread metadata",
+        usage: "bb questions summary [--thread <id>] set <markdown> | clear | show | backfill [--dry-run]",
       },
     ],
     async run(argv, ctx) {
@@ -407,6 +416,16 @@ export default async function plugin(bb: BbPluginApi) {
         const json = parsed.booleans.has("json");
         const [command, ...rest] = parsed.positionals;
         if (command === undefined || command === "help" || parsed.booleans.has("help")) return { exitCode: 0, stdout: usage };
+        if (command === "summary" && rest[0] === "backfill") {
+          const report = await service.backfillSummaries({ dryRun: parsed.booleans.has("dry-run") });
+          if (json) return { exitCode: report.failed.length > 0 ? 1 : 0, stdout: JSON.stringify(report) };
+          const verb = report.dryRun ? "would move" : "moved";
+          const lines = [
+            `${report.total} stored summar${report.total === 1 ? "y" : "ies"}: ${verb} ${report.migrated.length} into thread metadata, ${report.kept.length} already there, ${report.failed.length} failed.`,
+            ...report.failed.map((item) => `  ${item.threadId}: ${item.error}`),
+          ];
+          return { exitCode: report.failed.length > 0 ? 1 : 0, stdout: lines.join("\n") };
+        }
         const { threadId, projectId } = await resolveThread(parsed, ctx.threadId);
         switch (command) {
           case "ask": {
@@ -454,7 +473,7 @@ export default async function plugin(bb: BbPluginApi) {
           case "read":
             return { exitCode: 0, stdout: service.read(threadId, parsed.flags.get("round")?.[0] ?? null, parsed.flags.get("after")?.[0] ?? null) };
           case "rounds": {
-            const state = service.state(threadId);
+            const state = await service.state(threadId);
             const answers = new Map(state.answers.map((item) => [item.questionId, item]));
             const rows = state.rounds.map((round) => ({
               id: round.id,
@@ -478,15 +497,15 @@ export default async function plugin(bb: BbPluginApi) {
             if (action === "set") {
               const markdown = words.join(" ").trim();
               if (markdown === "") return { exitCode: 1, stderr: "summary set needs text." };
-              service.setSummary(threadId, markdown);
+              await service.setSummary(threadId, markdown);
               return { exitCode: 0, stdout: "Summary updated." };
             }
             if (action === "clear") {
-              service.setSummary(threadId, null);
+              await service.setSummary(threadId, null);
               return { exitCode: 0, stdout: "Summary cleared." };
             }
             if (action === "show") {
-              const summary = service.state(threadId).summary;
+              const summary = await service.getSummary(threadId);
               return { exitCode: 0, stdout: summary ? summary.markdown : "No summary." };
             }
             return { exitCode: 1, stderr: usage };

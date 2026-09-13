@@ -156,6 +156,32 @@ export const summarySchema = z.object({
 });
 export type Summary = z.infer<typeof summarySchema>;
 
+/**
+ * The summary lives in the thread's plugin metadata (bb ≥ 0.43.1) under this
+ * key of the `questions` namespace. `version` is the record format, so a
+ * later shape can be told apart from this one.
+ */
+export const SUMMARY_METADATA_KEY = "summary";
+export const SUMMARY_METADATA_VERSION = 1;
+export const summaryMetadataSchema = z.object({
+  markdown: z.string().max(LIMITS.summaryChars),
+  updatedAt: z.number().int().nonnegative(),
+  version: z.literal(SUMMARY_METADATA_VERSION),
+});
+export type SummaryMetadata = z.infer<typeof summaryMetadataSchema>;
+
+/**
+ * Reads the summary out of a metadata namespace. Any API client, another
+ * plugin, or the thread's own agent can write the namespace, so the value is
+ * untrusted: anything that is not a well-formed record within the size bound
+ * counts as no summary.
+ */
+export function summaryFromMetadata(metadata: unknown): Summary | null {
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const parsed = summaryMetadataSchema.safeParse((metadata as Record<string, unknown>)[SUMMARY_METADATA_KEY]);
+  return parsed.success ? { markdown: parsed.data.markdown, updatedAt: parsed.data.updatedAt } : null;
+}
+
 export const threadStateSchema = z.object({
   threadId: z.string(),
   rounds: z.array(roundSchema),

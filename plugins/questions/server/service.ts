@@ -12,10 +12,15 @@ import {
   type QuestionMode,
   type Round,
   type Submission,
+  type Summary,
+  type SummaryMetadata,
   type ThreadState,
   type ChangeSignal,
   LIMITS,
+  SUMMARY_METADATA_KEY,
+  SUMMARY_METADATA_VERSION,
   answerSchema,
+  summaryFromMetadata,
   answerStatus,
   answersEqual,
   emptyAnswer,
@@ -82,6 +87,16 @@ export type SubmitResult =
   | { outcome: "in-flight"; questionIds: string[] }
   | { outcome: "nothing" };
 
+export interface SummaryBackfillReport {
+  dryRun: boolean;
+  total: number;
+  /** Legacy rows copied into metadata (or that would be, on a dry run). */
+  migrated: string[];
+  /** Threads whose metadata already had a summary; only the legacy row goes. */
+  kept: string[];
+  failed: Array<{ threadId: string; error: string }>;
+}
+
 export interface PathHit {
   path: string;
   name: string;
@@ -138,14 +153,71 @@ export class QuestionsService {
     return this.store.markStalePendingUncertain(this.now());
   }
 
-  state(threadId: string): ThreadState {
+  async state(threadId: string): Promise<ThreadState> {
     return {
       threadId,
       rounds: this.store.listRounds(threadId),
       answers: this.store.listAnswers(threadId),
-      summary: this.store.getSummary(threadId),
+      summary: await this.getSummary(threadId),
       submissions: this.store.listSubmissions(threadId, LIMITS.submissionsListed),
     };
+  }
+
+  /**
+   * Dual read: the thread's plugin metadata first, then the pre-metadata
+   * `summaries` table for a thread whose summary was never rewritten.
+   */
+  async getSummary(threadId: string): Promise<Summary | null> {
+    const metadata = await this.deps.sdk.threads.getPluginMetadata({ threadId });
+    const summary = summaryFromMetadata(metadata);
+    if (summary !== null) return summary;
+    if (SUMMARY_METADATA_KEY in metadata) {
+      this.deps.log.warn(`thread ${threadId} has a malformed ${SUMMARY_METADATA_KEY} metadata record; ignoring it`);
+    }
+    return this.store.getLegacySummary(threadId);
+  }
+
+  /** Write-through: metadata is written first, then the legacy row is dropped. */
+  async setSummary(threadId: string, markdown: string | null): Promise<void> {
+    if (markdown === null || markdown.trim() === "") {
+      await this.deps.sdk.threads.updatePluginMetadata({ threadId, remove: [SUMMARY_METADATA_KEY] });
+    } else {
+      if (markdown.length > LIMITS.summaryChars) {
+        throw new QuestionsError(`Summary is limited to ${LIMITS.summaryChars} characters.`);
+      }
+      const record: SummaryMetadata = { markdown, updatedAt: this.now(), version: SUMMARY_METADATA_VERSION };
+      await this.deps.sdk.threads.updatePluginMetadata({ threadId, set: { [SUMMARY_METADATA_KEY]: record } });
+    }
+    this.store.deleteLegacySummary(threadId);
+    this.deps.publish({ threadId, kind: "summary" });
+  }
+
+  /**
+   * One-time migration of every legacy row into metadata. A thread whose
+   * metadata already holds a summary keeps it; its legacy row is only
+   * dropped. A thread bb cannot update keeps its row and is reported.
+   */
+  async backfillSummaries(options: { dryRun: boolean }): Promise<SummaryBackfillReport> {
+    const report: SummaryBackfillReport = { dryRun: options.dryRun, total: 0, migrated: [], kept: [], failed: [] };
+    for (const legacy of this.store.listLegacySummaries()) {
+      report.total += 1;
+      try {
+        const metadata = await this.deps.sdk.threads.getPluginMetadata({ threadId: legacy.threadId });
+        if (summaryFromMetadata(metadata) !== null) {
+          report.kept.push(legacy.threadId);
+        } else {
+          if (!options.dryRun) {
+            const record: SummaryMetadata = { markdown: legacy.markdown, updatedAt: legacy.updatedAt, version: SUMMARY_METADATA_VERSION };
+            await this.deps.sdk.threads.updatePluginMetadata({ threadId: legacy.threadId, set: { [SUMMARY_METADATA_KEY]: record } });
+          }
+          report.migrated.push(legacy.threadId);
+        }
+        if (!options.dryRun) this.store.deleteLegacySummary(legacy.threadId);
+      } catch (error) {
+        report.failed.push({ threadId: legacy.threadId, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return report;
   }
 
   ask(threadId: string, projectId: string, rawInput: unknown): AskResult {
@@ -267,18 +339,6 @@ export class QuestionsService {
         last = question.id;
     }
     return lines.join("\n") || "No more answers.";
-  }
-
-  setSummary(threadId: string, markdown: string | null): void {
-    if (markdown === null || markdown.trim() === "") {
-      this.store.clearSummary(threadId);
-    } else {
-      if (markdown.length > LIMITS.summaryChars) {
-        throw new QuestionsError(`Summary is limited to ${LIMITS.summaryChars} characters.`);
-      }
-      this.store.setSummary(threadId, markdown, this.now());
-    }
-    this.deps.publish({ threadId, kind: "summary" });
   }
 
   private requireQuestion(threadId: string, questionId: string): { round: Round; question: Question } {
