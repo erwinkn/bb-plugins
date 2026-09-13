@@ -21,6 +21,16 @@ test("relative links become root-relative so BB resolves them from the workspace
   assert.equal(rewriteMarkdownPaths("[s](<my doc.md>)", at), "[s](<docs/guide/my doc.md>)");
 });
 
+test("link definitions resolve against the document's directory", () => {
+  assert.equal(rewriteMarkdownPaths("[n]: child.md", at), "[n]: docs/guide/child.md");
+  assert.equal(rewriteMarkdownPaths('  [n]: <../a b.md> "Title"', at), '  [n]: <docs/a b.md> "Title"');
+  assert.equal(rewriteMarkdownPaths("[next][n]\n\n[n]: child.md", at), "[next][n]\n\n[n]: docs/guide/child.md");
+  // Footnotes, remote destinations and escapes are not link targets.
+  for (const source of ["[^n]: a note", "[n]: https://example.com", "[n]: /absolute.md", "[n]: ../../../outside.md"]) {
+    assert.equal(rewriteMarkdownPaths(source, at), source, source);
+  }
+});
+
 test("without a lease, images stay as written while links still resolve", () => {
   const source = "![a](x.png) [b](y.md)";
   assert.equal(rewriteMarkdownPaths(source, { ...at, baseUrl: null }), "![a](x.png) [b](docs/guide/y.md)");
@@ -93,6 +103,9 @@ test("rewritten root-relative links map back to workspace paths", () => {
   assert.equal(rootRelativeFromHref("docs/guide/setup.md"), "docs/guide/setup.md");
   assert.equal(rootRelativeFromHref("docs/my%20doc.md"), "docs/my doc.md");
   assert.equal(rootRelativeFromHref("docs/a.md#frag"), "docs/a.md");
+  // An encoded delimiter is a filename character, not a URL one.
+  assert.equal(rootRelativeFromHref("docs/a%23b.md"), "docs/a#b.md");
+  assert.equal(rootRelativeFromHref("docs/a%3Fb.md?x=1#f"), "docs/a?b.md");
   for (const href of ["https://x/y", "file:///a/b", "mailto:x@y.z", "#anchor", "/abs/path", "../outside.md", "a/../../b.md", "//cdn/x", "?", ""]) {
     assert.equal(rootRelativeFromHref(href), null, href);
   }

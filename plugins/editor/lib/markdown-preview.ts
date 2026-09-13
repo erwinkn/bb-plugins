@@ -14,6 +14,8 @@ import type { FileSessionSource } from "./file-session";
 
 const INLINE = /(!?)\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)((?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*)\)/g;
 const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
+/** A link definition line; `[^` labels are footnotes, which have no path to rewrite. */
+const DEFINITION = /^(\s{0,3}\[(?!\^)[^\]]*\]:\s*)(<[^>]*>|[^)\s]+)(.*)$/;
 
 /** BB's document binding for a source it can serve: a thread's environment or its storage. */
 export interface MarkdownPreviewDocument {
@@ -64,6 +66,15 @@ export function rewriteMarkdownPaths(markdown: string, { filePath, baseUrl }: Pa
         return line;
       }
       if (fence !== null) return line;
+      const definition = DEFINITION.exec(line);
+      if (definition !== null) {
+        const [, prefix, rawTarget, rest] = definition;
+        const target = rawTarget.startsWith("<") ? rawTarget.slice(1, -1) : rawTarget;
+        const resolved = resolveRelative(directory, target);
+        if (resolved === null) return line;
+        const link = resolved.join("/");
+        return `${prefix}${/[\s()]/.test(link) ? `<${link}>` : link}${rest}`;
+      }
       return line.replace(INLINE, (whole, bang: string, text: string, rawTarget: string, title: string) => {
         const image = bang === "!";
         if (image && baseUrl === null) return whole;
@@ -137,11 +148,10 @@ export function rootRelativeFromHref(href: string): string | null {
   if (href === "" || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(href) || href.startsWith("/") || href.startsWith("#") || href.startsWith("?")) return null;
   let decoded: string;
   try {
-    decoded = decodeURIComponent(href);
+    decoded = decodeURIComponent(href.replace(/[?#].*$/, ""));
   } catch {
-    decoded = href;
+    decoded = href.replace(/[?#].*$/, "");
   }
-  decoded = decoded.replace(/[?#].*$/, "");
   if (decoded === "" || decoded.split("/").some((part) => part === "..")) return null;
   return decoded;
 }
