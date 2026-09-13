@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
 import { findBbInstall, readBundleFiles } from "./lib/bb-install";
 import { BB_PROVIDER_IDS } from "./lib/host-contract";
-import { markColor, PROVIDER_MARKS } from "./lib/provider-marks";
+import { CODEX_GRADIENT, markColor, PROVIDER_MARKS } from "./lib/provider-marks";
 
 const css = readFileSync(join(import.meta.dirname, "themes", "color.css"), "utf8");
 const app = await loadPluginApp(() => import("./app"));
@@ -75,7 +75,7 @@ describe("app.tsx provider icons", () => {
     for (const id of ["pi", "acp-hermes-agent", "acp-omp"]) expect(ids.has(id), id).toBe(false);
   });
 
-  for (const mark of PROVIDER_MARKS) {
+  for (const mark of PROVIDER_MARKS.filter((entry) => entry.paint === "token")) {
     it(`${mark.providerId}: renders an inline SVG in its brand hue with a BB fallback`, () => {
       const html = renderToStaticMarkup(createElement(mark.icon, { className: "size-full" }));
       expect(html.startsWith("<svg")).toBe(true);
@@ -90,6 +90,35 @@ describe("app.tsx provider icons", () => {
       expect(html).not.toMatch(/\b(rgb|hsl|oklch)a?\(/);
     });
   }
+
+  for (const mark of PROVIDER_MARKS.filter((entry) => entry.paint === "artwork")) {
+    it(`${mark.providerId}: renders an inline SVG in its own official colors, untouched by the token`, () => {
+      const html = renderToStaticMarkup(createElement(mark.icon, { className: "size-full" }));
+      expect(html.startsWith("<svg")).toBe(true);
+      expect(html).toMatch(/viewBox="[-\d. ]+"/);
+      expect(html).toContain('class="size-full"');
+      expect(html).toContain('aria-hidden="true"');
+      expect(html).not.toContain("currentColor");
+      expect(html).not.toContain("var(--");
+      // The artwork's paint server is declared inline and the path uses it.
+      const id = /<linearGradient id="([^"]+)"/.exec(html)?.[1];
+      expect(id, "gradient id").toBeTruthy();
+      expect(html).toContain(`<path fill="url(#${id})" d="`);
+    });
+  }
+
+  it("codex: keeps the supplied cloud's gradient stops and gives each instance its own gradient id", () => {
+    const codex = PROVIDER_MARKS.find((mark) => mark.providerId === "codex")!;
+    const html = renderToStaticMarkup(createElement("div", null, createElement(codex.icon), createElement(codex.icon)));
+    const ids = [...html.matchAll(/<linearGradient id="([^"]+)"/g)].map((match) => match[1]);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    for (const id of ids) expect(html).toContain(`fill="url(#${id})"`);
+    expect(html.match(/stop-color="([^"]+)"/g)?.slice(0, 3).map((stop) => /"([^"]+)"/.exec(stop)![1])).toEqual([...CODEX_GRADIENT]);
+    expect(CODEX_GRADIENT).toEqual(["#b1a7ff", "#7a9dff", "#3941ff"]);
+    // Vertical gradient over the 250-unit artwork, as in the supplied file.
+    expect(html).toContain('gradientUnits="userSpaceOnUse" x1="125" y1=".332" x2="125" y2="249.667"');
+  });
 
   it("defines every brand token in color.css for light and dark", () => {
     const light = declarations((selector) => selector === ":root, .light");

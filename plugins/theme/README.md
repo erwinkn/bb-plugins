@@ -74,8 +74,11 @@ pickers, the metadata panel and the sidebar thread rows show every agent in
 gray. `app.tsx` registers `experimental_providerIcon` for each agent provider
 configured on this install, with the provider's official mark drawn inline
 (`lib/provider-marks.tsx`). The artwork is taken verbatim from BB 0.43.1's
-bundled provider plugins (`plugins/provider-*/icons/*.svg` in the BB source)
-and, for Devin, from `plugins/devin/assets/devin.svg`; only the color changes.
+bundled provider plugins (`plugins/provider-*/icons/*.svg` in the BB source),
+from `plugins/devin/assets/devin.svg` for Devin and, for Codex, from OpenAI's
+Codex app icon supplied as an SVG (the six-lobed cloud with the `>_` prompt;
+BB and the Codex packages only ship the OpenAI knot). Monochrome marks only
+change color; the Codex cloud keeps its own gradient.
 The host draws the marks wherever it draws a provider icon and wherever a
 plugin renders `experimental_ProviderIcon`. The composer chip shows BB's
 lightning glyph instead of the provider while fast mode is on. Disabling the
@@ -84,22 +87,31 @@ plugin restores BB's masks.
 | Provider id | Artwork | Color token | Value | Fallback without the palette |
 | --- | --- | --- | --- | --- |
 | `claude-code` | Anthropic spark | `--bbp-brand-claude` | Anthropic terracotta `#D97757` | `--warning-text` |
-| `codex` | OpenAI knot | `--bbp-brand-codex` | OpenAI green `#10A37F` | `--success` |
+| `codex` | Codex cloud, own gradient `#B1A7FF` → `#7A9DFF` → `#3941FF` | `--bbp-brand-codex` (flat accent only) | light `#3941FF`, dark `#7A9DFF` | `--timeline-accent` |
 | `acp-cursor` | Cursor cube | `--bbp-brand-cursor` | `--ink` (monochrome brand) | `--foreground` |
 | `acp-grok` | xAI mark | `--bbp-brand-grok` | `--ink` (monochrome brand) | `--foreground` |
 | `acp-opencode` | opencode squares | `--bbp-brand-opencode` | `--ink` (monochrome brand) | `--foreground` |
 | `acp-devin` (our plugin) | Devin knot | `--bbp-brand-devin` | `--ink` (monochrome brand) | `--foreground` |
 
-Both brand accents clear 3:1 on the white canvas and more on the dark one, so
-they are used as-is in both modes. Cursor, xAI, opencode and Devin ship
+The Anthropic accent clears 3:1 on both canvases and is used as-is in both
+modes. The Codex mark paints itself with the gradient from the supplied file
+(trimmed by hand from 2,444 to 2,179 bytes: editor metadata, the unused
+gradient template, the style class and the gradient matrix removed, numbers
+normalized, shape and colors untouched) with the `>_` prompt filled white
+behind the cut-out as on the app icon, each instance with its own gradient
+id; its token is not applied to the mark and only names a flat Codex blue,
+the gradient's deep end on the white canvas (6.2:1) and its mid stop on the
+dark one (7.0:1), where the deep end would sit at 2.9:1. Cursor, xAI, opencode and Devin ship
 monochrome marks and no accent is known to us, so they render at full ink
 strength (black on light, near-white on dark) rather than an invented hue;
 to add one, set the token's light and dark values in `themes/color.css`.
 BB's `pi` provider already declares its own violet tint, and the
 `acp-hermes-agent` / `acp-omp` presets are not configured here, so those keep
-BB's artwork. `provider-icons.test.tsx` renders every mark, checks the
-fallback tokens exist in both of BB's mode blocks, and computes each color's
-contrast against BB's light and dark canvases (3:1 minimum).
+BB's artwork. `provider-icons.test.tsx` renders every mark (token-painted ones
+with no literal color, the Codex cloud with its exact gradient stops and a
+distinct gradient id per instance), checks the fallback tokens exist in both
+of BB's mode blocks, and computes each token's contrast against BB's light
+and dark canvases (3:1 minimum).
 
 ## Upgrade check
 

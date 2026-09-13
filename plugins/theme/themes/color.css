@@ -49,9 +49,12 @@
   --bbp-thinking: color-mix(in oklch, var(--bbp-agent) 70%, var(--muted-foreground));
   /* Provider brand marks (lib/provider-marks.tsx). Known brand accents at
    * their real values (both clear 3:1 on the white canvas); monochrome brands
-   * at full ink strength until an official accent is supplied. */
+   * at full ink strength until an official accent is supplied. The Codex
+   * cloud paints itself with its own gradient (#B1A7FF, #7A9DFF, #3941FF);
+   * its token is the gradient stop that clears 3:1 on this canvas, for
+   * anything that needs the brand as one flat color. */
   --bbp-brand-claude: oklch(0.672 0.131 38.8); /* Anthropic #D97757, 3.1:1 */
-  --bbp-brand-codex: oklch(0.637 0.124 169.5); /* OpenAI #10A37F, 3.2:1 */
+  --bbp-brand-codex: oklch(0.517 0.27 270.3); /* Codex gradient end #3941FF, 6.2:1 */
   --bbp-brand-cursor: var(--ink); /* monochrome brand */
   --bbp-brand-grok: var(--ink); /* monochrome brand */
   --bbp-brand-opencode: var(--ink); /* monochrome brand */
@@ -68,9 +71,10 @@
   --bbp-error: var(--destructive-text); /* oklch(0.65 0.16 22) */
   --bbp-agent: var(--pr-merged); /* oklch(0.68 0.18 295) */
   --bbp-thinking: color-mix(in oklch, var(--bbp-agent) 70%, var(--muted-foreground));
-  /* Brand marks on the dark canvas (oklch 19.5%): the same accents. */
+  /* Brand marks on the dark canvas (oklch 19.5%): the same accents, except
+   * Codex, whose gradient end would sit at 2.9:1 here, so its mid stop. */
   --bbp-brand-claude: oklch(0.672 0.131 38.8); /* 5.9:1 */
-  --bbp-brand-codex: oklch(0.637 0.124 169.5); /* 5.7:1 */
+  --bbp-brand-codex: oklch(0.713 0.149 267.7); /* Codex gradient mid #7A9DFF, 7.0:1 */
   --bbp-brand-cursor: var(--ink);
   --bbp-brand-grok: var(--ink);
   --bbp-brand-opencode: var(--ink);

@@ -4,20 +4,25 @@
  * `app.slots.experimental_providerIcon` in `app.tsx`; disabling the plugin
  * falls back to BB's masks.
  *
- * The artwork is the official monochrome mark each provider ships, taken
- * verbatim from BB 0.43.1's bundled provider plugins (`plugins/provider-*\/
- * icons/*.svg` in the BB source) or, for Devin, from our own provider plugin
- * (`plugins/devin/assets/devin.svg`). Nothing is redrawn: only the color
- * changes. Providers whose mark is not available here keep BB's mask.
+ * The artwork is the official mark each provider ships, taken verbatim from
+ * BB 0.43.1's bundled provider plugins (`plugins/provider-*\/icons/*.svg` in
+ * the BB source), from our own Devin plugin (`plugins/devin/assets/devin.svg`)
+ * or, for Codex, from OpenAI's Codex app icon supplied as an SVG (see
+ * `CodexMark`). Nothing is redrawn: monochrome marks only change color, and
+ * the Codex cloud keeps its own gradient. Providers whose mark is not
+ * available here keep BB's mask.
  *
- * Each mark's color is a `--bbp-brand-*` token from `themes/color.css`
- * (light and dark values) with a BB token as the fallback so the mark still
- * reads sensibly when the BB Color palette is not selected. Brands with a
- * known accent (Anthropic terracotta, OpenAI green) use it; monochrome brands
- * (Cursor, xAI, opencode, Devin) render at full ink strength until an
- * official accent is supplied.
+ * Each mark has a `--bbp-brand-*` token in `themes/color.css` (light and
+ * dark values) with a BB token as the fallback so the mark still reads
+ * sensibly when the BB Color palette is not selected. Monochrome marks are
+ * painted with that token (`paint: "token"`); a mark that carries its own
+ * official colors (`paint: "artwork"`) ignores it, and the token then only
+ * names the brand's flat accent for anything that needs a single color.
+ * Brands with a known accent (Anthropic terracotta, Codex blue) use it;
+ * monochrome brands (Cursor, xAI, opencode, Devin) render at full ink
+ * strength until an official accent is supplied.
  */
-import type { ComponentType, ReactNode } from "react";
+import { useId, type ComponentType, type ReactNode } from "react";
 
 export interface ProviderMark {
   /** BB provider id (declaration id, not plugin id). */
@@ -28,6 +33,8 @@ export interface ProviderMark {
   token: `--bbp-brand-${string}`;
   /** BB token (defined in both modes) used when the palette is not selected. */
   fallback: `--${string}`;
+  /** `token`: painted with the brand token; `artwork`: carries its own official colors. */
+  paint: "token" | "artwork";
   /** Where the artwork comes from. */
   source: string;
   icon: ComponentType<{ className?: string }>;
@@ -41,7 +48,8 @@ export function markColor(token: string, fallback: string): string {
 interface MarkProps {
   className?: string;
   viewBox: string;
-  color: string;
+  /** Brand color for a monochrome mark; omit when the artwork paints itself. */
+  color?: string;
   fillRule?: "evenodd" | "nonzero";
   clipRule?: "evenodd" | "nonzero";
   children: ReactNode;
@@ -52,8 +60,8 @@ function Mark({ className, viewBox, color, fillRule, clipRule, children }: MarkP
     <svg
       viewBox={viewBox}
       className={className}
-      style={{ color }}
-      fill="currentColor"
+      style={color === undefined ? undefined : { color }}
+      fill={color === undefined ? undefined : "currentColor"}
       fillRule={fillRule}
       clipRule={clipRule}
       aria-hidden="true"
@@ -74,14 +82,40 @@ function ClaudeCodeMark({ className }: { className?: string }) {
   );
 }
 
-/** Codex: BB plugins/provider-codex/icons/codex.svg (OpenAI knot). */
+/**
+ * Codex: OpenAI's Codex app icon, the six-lobed cloud with the `>_` prompt
+ * cut out, from the SVG Erwin supplied (2026-09-13; the official marks BB
+ * and the Codex packages ship are the OpenAI knot or the knot inside this
+ * cloud outline, never the plain cloud). Trimmed by hand from that file:
+ * editor metadata, the unused gradient template, the style class and the
+ * gradient matrix are gone and the numbers are normalized; the shape and
+ * the official lavender-to-blue gradient are unchanged. The prompt is a
+ * cut-out in the supplied file; the app icon shows it white, so the same
+ * two subpaths are filled white underneath (Erwin, 2026-09-13). The
+ * gradient is the mark's own color, so `--bbp-brand-codex` is not applied
+ * here. Each
+ * instance gets its own gradient id (`useId`) so several marks on one page,
+ * some possibly hidden, never share a paint server.
+ */
 function CodexMark({ className }: { className?: string }) {
+  const gradient = useId();
   return (
-    <Mark className={className} viewBox="0 0 24 24" color={markColor("--bbp-brand-codex", "--success")} fillRule="evenodd">
-      <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.8956zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" />
+    <Mark className={className} viewBox="0 0 250 250">
+      <defs>
+        <linearGradient id={gradient} gradientUnits="userSpaceOnUse" x1="125" y1=".332" x2="125" y2="249.667">
+          <stop stopColor={CODEX_GRADIENT[0]} />
+          <stop offset=".5" stopColor={CODEX_GRADIENT[1]} />
+          <stop offset="1" stopColor={CODEX_GRADIENT[2]} />
+        </linearGradient>
+      </defs>
+      <path fill="#fff" d="M132.6 151.5c-2.3 .1-4.4 1-6 2.8-1.5 1.6-2.4 3.7-2.4 5.9 0 2.3 .9 4.4 2.4 6.2 1.6 1.6 3.7 2.5 6 2.6h50.4c2.4 .1 4.8-.6 6.5-2.4 1.7-1.6 2.8-4 2.8-6.4 0-2.4-1.1-4.7-2.8-6.3-1.7-1.8-4.1-2.6-6.5-2.4zM75.9 86.6c-1.2-1.9-3-3.4-5.3-3.9-2.2-.5-4.5-.3-6.5 .9-2 1.1-3.5 3-4.1 5.2-.7 2.2-.4 4.6 .6 6.5l17.7 30.9-17.5 29.5c-1.2 2-1.6 4.5-1.1 6.8 .7 2.3 2.1 4.1 4.1 5.3 2 1.2 4.4 1.6 6.7 .9 2.2-.5 4.2-1.9 5.4-3.9l20.1-34.1q.7-.9 .9-2.1 .3-1.1 .3-2.3 0-1.2-.3-2.2-.2-1.2-.8-2.2z" />
+      <path fill={`url(#${gradient})`} d="m84.3 5.1q3.7-1.5 7.7-2.6 3.9-1 7.9-1.6 4-.5 8.1-.6 4 0 8 .5 20.7 2.4 37.1 17.7 .1 .1 .4 .3 .1 0 .2 0 0 0 .2 0 0 0 .1 0 0 0 .1 0 5.2-1.4 10.7-1.9 5.4-.4 10.7 .1 5.5 .4 10.7 1.9 5.2 1.3 10.1 3.6l.6 .4 1.6 .8q5.2 2.5 9.7 6.1 4.7 3.4 8.6 7.7 3.8 4.3 6.9 9.2 3 4.8 5.2 10.2 4.3 10.5 4.3 22.1 .2 2.1 0 4.2-.1 2.2-.2 4.3-.3 2.1-.7 4.3-.4 2.1-.9 4.1 0 .2 0 .4 0 .2 0 .5 0 .1 .1 .4 .1 .1 .3 .3 12.3 12.6 16.3 30 6 29.7-12.2 53.5l-1.9 2.2q-3 3.5-6.5 6.4-3.4 3.1-7.3 5.5-3.8 2.4-8.1 4.2-4.1 1.9-8.5 3.2-.3 0-.4 .2-.3 0-.4 .1-.1 .1-.3 .4 0 .1-.1 .3c-2.7 7.7-5.3 14.2-10.2 20.7-12.5 16.5-30.8 25.5-51.5 25.5q-24.6-.1-43.6-18.1-.2-.1-.4-.2-.2-.1-.4-.1-.2 0-.3 0-.3 0-.4 0c-5.4 1.7-10.9 1.9-16.7 1.9q-3.5 0-7-.5-3.4-.4-6.9-1.2-3.3-.8-6.6-2-3.3-1.2-6.4-2.8-3.3-1.6-6.4-3.6-3-2-5.8-4.3-3-2.3-5.5-5-2.5-2.6-4.6-5.6c-2.2-2.7-4.3-5.4-5.8-8.5q-.8-1.6-1.6-3.2-.6-1.7-1.3-3.3-.7-1.7-1.2-3.4-.5-1.6-1-3.4-1.1-4-1.6-7.9-.6-4-.6-8 0-4 .6-8 .4-4 1.4-8 0 0 0-.1 0-.1 0-.1 .2-.2 .2-.3 0-.1-.2-.1 0-.2 0-.3 0-.1-.1-.1 0-.2 0-.2-.1-.1-.1-.1-2.4-2.5-4.6-5.2-2.1-2.7-4-5.4-1.7-3-3.2-6-1.5-3.1-2.6-6.3-.8-2-1.3-4.1-.7-2-1.1-4-.4-2.1-.7-4.2-.2-2.2-.4-4.3-.2-2.8-.1-5.6 0-2.8 .3-5.4 .1-2.8 .6-5.6 .4-2.8 1.1-5.5 7-23.1 26.9-36.3 4.3-2.9 8.2-4.5 4.5-1.9 9-3.2 .2 0 .3-.1 .1-.2 .3-.3 .1 0 .1-.3 .1-.1 .1-.2 1-3.1 2.2-6 1-2.9 2.5-5.7 1.5-3 3.2-5.6 1.7-2.7 3.7-5.1 2.5-3.2 5.3-5.9 3-2.8 6.1-5.4 3.2-2.4 6.8-4.4 3.5-2 7.2-3.5zm48.3 146.4c-2.3 .1-4.4 1-6 2.8-1.5 1.6-2.4 3.7-2.4 5.9 0 2.3 .9 4.4 2.4 6.2 1.6 1.6 3.7 2.5 6 2.6h50.4c2.4 .1 4.8-.6 6.5-2.4 1.7-1.6 2.8-4 2.8-6.4 0-2.4-1.1-4.7-2.8-6.3-1.7-1.8-4.1-2.6-6.5-2.4zm-56.7-64.9c-1.2-1.9-3-3.4-5.3-3.9-2.2-.5-4.5-.3-6.5 .9-2 1.1-3.5 3-4.1 5.2-.7 2.2-.4 4.6 .6 6.5l17.7 30.9-17.5 29.5c-1.2 2-1.6 4.5-1.1 6.8 .7 2.3 2.1 4.1 4.1 5.3 2 1.2 4.4 1.6 6.7 .9 2.2-.5 4.2-1.9 5.4-3.9l20.1-34.1q.7-.9 .9-2.1 .3-1.1 .3-2.3 0-1.2-.3-2.2-.2-1.2-.8-2.2z" />
     </Mark>
   );
 }
+
+/** Codex cloud gradient stops, top to bottom, exactly as in the supplied SVG. */
+export const CODEX_GRADIENT = ["#b1a7ff", "#7a9dff", "#3941ff"] as const;
 
 /** Cursor: BB plugins/provider-acp/icons/cursor.svg (Cursor cube). */
 function CursorMark({ className }: { className?: string }) {
@@ -131,10 +165,10 @@ function DevinMark({ className }: { className?: string }) {
  * the host only looks a mark up when it draws that provider.
  */
 export const PROVIDER_MARKS: readonly ProviderMark[] = [
-  { providerId: "claude-code", label: "Claude Code", token: "--bbp-brand-claude", fallback: "--warning-text", source: "BB plugins/provider-claude-code/icons/claude-code.svg (Anthropic spark)", icon: ClaudeCodeMark },
-  { providerId: "codex", label: "Codex", token: "--bbp-brand-codex", fallback: "--success", source: "BB plugins/provider-codex/icons/codex.svg (OpenAI knot)", icon: CodexMark },
-  { providerId: "acp-cursor", label: "Cursor", token: "--bbp-brand-cursor", fallback: "--foreground", source: "BB plugins/provider-acp/icons/cursor.svg (Cursor cube)", icon: CursorMark },
-  { providerId: "acp-grok", label: "Grok Build", token: "--bbp-brand-grok", fallback: "--foreground", source: "BB plugins/provider-acp/icons/grok.svg (xAI mark)", icon: GrokMark },
-  { providerId: "acp-opencode", label: "opencode", token: "--bbp-brand-opencode", fallback: "--foreground", source: "BB plugins/provider-acp/icons/opencode.svg (nested squares)", icon: OpencodeMark },
-  { providerId: "acp-devin", label: "Devin", token: "--bbp-brand-devin", fallback: "--foreground", source: "plugins/devin/assets/devin.svg (Devin knot)", icon: DevinMark },
+  { providerId: "claude-code", label: "Claude Code", token: "--bbp-brand-claude", fallback: "--warning-text", paint: "token", source: "BB plugins/provider-claude-code/icons/claude-code.svg (Anthropic spark)", icon: ClaudeCodeMark },
+  { providerId: "codex", label: "Codex", token: "--bbp-brand-codex", fallback: "--timeline-accent", paint: "artwork", source: "OpenAI Codex app icon, SVG supplied by Erwin (Codex cloud with the prompt)", icon: CodexMark },
+  { providerId: "acp-cursor", label: "Cursor", token: "--bbp-brand-cursor", fallback: "--foreground", paint: "token", source: "BB plugins/provider-acp/icons/cursor.svg (Cursor cube)", icon: CursorMark },
+  { providerId: "acp-grok", label: "Grok Build", token: "--bbp-brand-grok", fallback: "--foreground", paint: "token", source: "BB plugins/provider-acp/icons/grok.svg (xAI mark)", icon: GrokMark },
+  { providerId: "acp-opencode", label: "opencode", token: "--bbp-brand-opencode", fallback: "--foreground", paint: "token", source: "BB plugins/provider-acp/icons/opencode.svg (nested squares)", icon: OpencodeMark },
+  { providerId: "acp-devin", label: "Devin", token: "--bbp-brand-devin", fallback: "--foreground", paint: "token", source: "plugins/devin/assets/devin.svg (Devin knot)", icon: DevinMark },
 ];
