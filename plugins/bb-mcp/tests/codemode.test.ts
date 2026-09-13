@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { isReadPath, makeDispatch, runCode, sdkCall, SDK_PATHS } from "../codemode";
 import { ToolError } from "../config";
+import { SDK_VERSION, SIGNAL_PATHS } from "../sdk-api";
+import { parseSdk, render } from "../scripts/generate-sdk-api.mjs";
 import type { Store } from "../store";
 
 const paths = ["projects.list", "threads.get", "threads.interactions.list", "missing.method", "threads.list", "threads.spawn", "ops.run", "ops.get"];
@@ -13,8 +15,8 @@ const sdk = {
 
 const storeStub = {
   get: () => undefined,
-  run: async (input: { kind: string; threadId?: string | null }, _k: unknown, _p: unknown, dispatch: () => Promise<Record<string, unknown>>) => {
-    const response = await dispatch();
+  run: async (input: { kind: string; threadId?: string | null }, _k: unknown, _p: unknown, dispatch: (op: { id: string }) => Promise<Record<string, unknown>>) => {
+    const response = await dispatch({ id: "op_1" });
     return { id: "op_1", kind: input.kind, call: (input as { call?: string }).call, projectId: null, hostId: null, threadId: typeof response.threadId === "string" ? response.threadId : input.threadId ?? null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response };
   },
 } as unknown as Store;
@@ -148,29 +150,31 @@ describe("sdkCall", () => {
 // Catches drift between the advertised/exposed surface and the bundled SDK
 // types — a missing method or a renamed signal declaration shows up here.
 describe("SDK surface coverage", () => {
-  const dts = readFileSync(new URL("../node_modules/@get-bb/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts", import.meta.url), "utf8");
-  const bodies = new Map<string, string>();
-  for (const m of dts.matchAll(/interface (\w+)[^\n{]*\{([\s\S]*?)\n\}/g)) bodies.set(m[1], m[2]!);
-  const declared: string[] = [];
-  const signalPaths = new Set<string>();
-  const walk = (prefix: string, body: string) => {
-    for (const m of body.matchAll(/^\s{4}(\w+): (\w+Area);/gm)) walk(prefix + m[1] + ".", bodies.get(m[2]) ?? "");
-    for (const m of body.matchAll(/^\s{4}(\w+)\(([\s\S]{0,300}?)\)\s*:/gm)) {
-      const path = prefix + m[1];
-      declared.push(path);
-      const argsText = m[2];
-      if (/signal\?/.test(argsText)) { signalPaths.add(path); continue; }
-      const typeName = argsText.match(/\w+\??\s*:\s*(\w+)/)?.[1];
-      if (typeName && /signal\?:/.test(bodies.get(typeName) ?? "")) signalPaths.add(path);
-    }
-  };
-  for (const m of (bodies.get("BbSdkAreas") ?? "").matchAll(/^\s{4}(\w+): (\w+Area);/gm)) walk(m[1] + ".", bodies.get(m[2]) ?? "");
-  for (const m of (bodies.get("BbSdk") ?? "").matchAll(/^\s{4}(\w+): (\w+Area);/gm)) walk(m[1] + ".", bodies.get(m[2]) ?? "");
-  // subscribe returns a live unsubscribe function and is intentionally not exposed.
-  const expected = [...new Set(declared)].filter(p => p !== "subscribe").sort();
+  const sdkDir = new URL("../node_modules/@get-bb/plugin-sdk/", import.meta.url);
+  const dts = readFileSync(new URL("bundled-types/bb-plugin-sdk.d.ts", sdkDir), "utf8");
+  const parsed = parseSdk(dts);
   it("exposes every declared SDK method", () => {
     const exposed = SDK_PATHS.filter(p => !p.startsWith("ops.") && p !== "approve").sort();
-    expect(exposed).toEqual(expected);
+    expect(exposed).toEqual([...parsed.paths].sort());
+    expect(exposed).not.toContain("subscribe");
+    expect(exposed).not.toContain("experimental_desktopBrowsers.subscribe");
+  });
+  it("covers the 0.43.x additions", () => {
+    for (const p of ["threads.getPluginMetadata", "threads.updatePluginMetadata", "threads.context", "system.uiPreferences.list", "system.uiPreferences.set", "system.uiPreferences.reset",
+      "environments.list", "environments.delete", "hosts.experimental_create", "hosts.experimental_suspend", "hosts.experimental_resume", "hosts.experimental_retryCleanup", "hosts.experimental_listProviders", "hosts.experimental_getEnrollmentCommand"])
+      expect(SDK_PATHS).toContain(p);
+    expect(SDK_PATHS.filter(p => p === "theme.set")).toHaveLength(1);
+  });
+  it("injects signal exactly where the SDK declares it", () => {
+    expect([...SIGNAL_PATHS]).toEqual(parsed.signalPaths);
+    expect(SIGNAL_PATHS).toContain("threads.getPluginMetadata");
+    expect(SIGNAL_PATHS).not.toContain("threads.updatePluginMetadata".replace("update", "files.write"));
+    expect(SIGNAL_PATHS).not.toContain("files.write");
+    expect(SIGNAL_PATHS).not.toContain("environments.delete");
+  });
+  it("sdk-api.ts matches the installed SDK (run `npm run sdk-api` after `bb plugin types`)", () => {
+    expect(SDK_VERSION).toBe(JSON.parse(readFileSync(new URL("package.json", sdkDir), "utf8")).version);
+    expect(readFileSync(new URL("../sdk-api.ts", import.meta.url), "utf8")).toBe(render());
   });
 });
 
@@ -213,6 +217,15 @@ describe("read-only verbs", () => {
     expect(isReadPath("threads.listRunning")).toBe(true);
     expect(isReadPath("hosts.cloneDefaultPath")).toBe(true);
     expect(isReadPath("plugins.catalog.installPlan")).toBe(true);
+  });
+  it("classifies the 0.43.x surfaces", () => {
+    for (const p of ["threads.context", "threads.getPluginMetadata", "system.uiPreferences.list", "environments.list", "environments.listProviders",
+      "hosts.experimental_listProviders", "system.machineEnvironment", "theme.resolve", "experimental_desktopBrowsers.listTabs", "experimental_desktopBrowsers.captureTab"])
+      expect(isReadPath(p), p).toBe(true);
+    for (const p of ["threads.updatePluginMetadata", "system.uiPreferences.set", "system.uiPreferences.reset", "environments.delete", "hosts.experimental_create",
+      "hosts.experimental_suspend", "hosts.experimental_resume", "hosts.experimental_retryCleanup", "hosts.experimental_getEnrollmentCommand", "system.replaceMachineEnvironment",
+      "threads.interactions.resolve", "experimental_desktopBrowsers.acquireControl", "experimental_desktopBrowsers.importCookies"])
+      expect(isReadPath(p), p).toBe(false);
   });
 });
 
