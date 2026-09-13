@@ -14,8 +14,7 @@
 .sp-menu-item { display: flex; align-items: center; border-radius: 4px; padding: 6px 8px; line-height: 1.4; cursor: pointer; user-select: none; outline: none; }
 .sp-menu-item[data-highlighted] { color: var(--foreground); background: var(--state-hover, var(--muted)); }
 .sp-document { flex: 1; overflow: auto; min-height: 100px; padding: 24px 0 70px; }
-.scratchpad-editor { --bn-font-family: var(--font-sans, sans-serif); --bn-colors-editor-background: var(--background); --bn-colors-editor-text: var(--foreground); --bn-colors-menu-background: var(--popover, var(--background)); --bn-colors-menu-text: var(--foreground); --bn-colors-hovered-background: var(--state-hover, var(--muted)); --bn-colors-hovered-text: var(--foreground); --bn-colors-border: var(--border); --bn-colors-shadow: #0002; }
-.scratchpad-editor .bn-editor { background: transparent; color: var(--foreground); font-family: inherit; font-size: 15px; line-height: 1.65; max-width: 850px; margin: 0 auto; padding-inline: 42px 30px; min-height: 120px; }
+.scratchpad-editor .bn-editor { background: transparent; color: var(--foreground); font-family: inherit; font-size: 12px; line-height: 1.5; max-width: 850px; margin: 0 auto; padding-inline: 56px 30px; min-height: 120px; }
 .scratchpad-editor .bn-editor:focus-visible { outline: none; }
 .sp-banner { background: var(--muted); padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 12px; }
 .sp-banner > .sp-button { margin-left: 8px; }
@@ -29,5 +28,5 @@
 .sp-preview-body { overflow: auto; padding-block: 12px; }
 .sp-loading { padding: 24px; gap: 12px; }
 .scratchpad-editor .bn-suggestion-menu { max-height: min(55dvh, 440px); overflow-y: auto; }
-@media (max-width: 600px) { .sp-topbar { padding: 10px 12px; gap: 4px; } .sp-document { padding-top: 18px; } .scratchpad-editor .bn-editor { padding-inline: 34px 16px; } .sp-button { min-height: 36px; } }
+@media (max-width: 600px) { .sp-topbar { padding: 10px 12px; gap: 4px; } .sp-document { padding-top: 18px; } .scratchpad-editor .bn-editor { padding-inline: 56px 16px; } .sp-button { min-height: 36px; } }
 @media (pointer: coarse) { .sp-icon-button { width: 44px; height: 44px; } .sp-menu-item { min-height: 44px; } }

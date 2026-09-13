@@ -1,0 +1,134 @@
+/* BlockNote copies this class onto its menu portal. Keep every override scoped
+   to it so BB's own controls and other editors retain their styling. */
+.scratchpad-editor.bn-root[data-color-scheme] {
+  --bn-font-family: var(--font-sans, sans-serif);
+  --bn-colors-editor-background: var(--background);
+  --bn-colors-editor-text: var(--foreground);
+  --bn-colors-menu-background: var(--popover, var(--background));
+  --bn-colors-menu-text: var(--popover-foreground, var(--foreground));
+  --bn-colors-tooltip-background: var(--popover, var(--background));
+  --bn-colors-tooltip-text: var(--popover-foreground, var(--foreground));
+  --bn-colors-hovered-background: var(--state-hover, var(--muted));
+  --bn-colors-hovered-text: var(--foreground);
+  --bn-colors-selected-background: var(--accent);
+  --bn-colors-selected-text: var(--accent-foreground);
+  --bn-colors-disabled-background: var(--muted);
+  --bn-colors-disabled-text: var(--muted-foreground);
+  --bn-colors-side-menu: var(--muted-foreground);
+  --bn-colors-border: var(--border);
+  --bn-colors-shadow: #0002;
+  --bn-border-radius: 6px;
+  font-family: var(--bn-font-family);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Ariakit's stock CSS hardcodes these colors instead of using BlockNote's
+   variables. Override its surfaces and interaction states for both themes. */
+.scratchpad-editor.bn-root :is(.bn-ak-menu, .bn-ak-popover, .bn-ak-toolbar, .bn-ak-tooltip) {
+  background: var(--bn-colors-menu-background);
+  color: var(--bn-colors-menu-text);
+  border: 1px solid var(--bn-colors-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 18px var(--bn-colors-shadow);
+  padding: 4px;
+  font-family: var(--bn-font-family);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.scratchpad-editor.bn-root :is(.bn-ak-menu-item, .bn-ak-select-item) {
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.scratchpad-editor.bn-root :is(.bn-ak-menu-item, .bn-ak-select-item):is(:hover, :active, [aria-selected="true"], [data-active-item], [data-active], [aria-expanded="true"]) {
+  background: var(--bn-colors-hovered-background);
+  color: var(--bn-colors-hovered-text);
+  padding-block: 6px;
+}
+
+.scratchpad-editor.bn-root .bn-ak-group-label {
+  padding: 6px 8px 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.4;
+  font-weight: 500;
+  opacity: 1;
+}
+
+.scratchpad-editor.bn-root .bn-suggestion-menu {
+  width: min(280px, calc(100vw - 32px));
+}
+
+.scratchpad-editor.bn-root .bn-ak-suggestion-menu-item-title { font-size: 12px; font-weight: 400; }
+.scratchpad-editor.bn-root .bn-ak-suggestion-menu-item-subtitle { color: var(--muted-foreground); font-size: 11px; }
+.scratchpad-editor.bn-root .bn-ak-suggestion-menu-item-section[data-position="left"] { padding: 0; }
+.scratchpad-editor.bn-root .bn-ak-suggestion-menu-item-section[data-position="right"] > div {
+  color: var(--muted-foreground);
+  background: var(--muted);
+  box-shadow: none;
+  font-size: 10px;
+}
+.scratchpad-editor.bn-root :is(.bn-ak-menu-item, .bn-ak-select-item, .bn-ak-button) svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.scratchpad-editor.bn-root .bn-ak-button {
+  background: transparent;
+  color: var(--muted-foreground);
+  border: 1px solid transparent;
+  border-radius: 5px;
+  box-shadow: none;
+  padding: 5px 6px;
+  font-family: var(--bn-font-family);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.scratchpad-editor.bn-root .bn-ak-button:is(:hover, :active, [data-active], [data-selected], [aria-expanded="true"]) {
+  color: var(--foreground);
+  background: var(--state-hover, var(--muted));
+  box-shadow: none;
+  padding-block: 5px;
+}
+.scratchpad-editor.bn-root .bn-side-menu .bn-ak-button { padding: 3px; }
+.scratchpad-editor.bn-root .bn-ak-separator { border-color: var(--bn-colors-border); }
+.scratchpad-editor.bn-root .bn-ak-tooltip { padding: 5px 8px; font-size: 11px; }
+.scratchpad-editor.bn-root .bn-ak-input {
+  color: var(--foreground);
+  background: var(--background);
+  border: 1px solid var(--bn-colors-border);
+  border-radius: 5px;
+  box-shadow: none;
+  font-family: var(--bn-font-family);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 6px 8px;
+}
+.scratchpad-editor.bn-root .bn-ak-input::placeholder { color: var(--muted-foreground); }
+.scratchpad-editor.bn-root :is(.bn-ak-button, .bn-ak-input, .bn-ak-popover):is(:focus-visible, [data-focus-visible]) {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* The host resets anchor decoration, so explicitly style document links. */
+.scratchpad-editor.bn-root :is(.bn-inline-content a[href], .bn-ak-link) {
+  color: var(--file-accent, var(--primary));
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.scratchpad-editor.bn-root :is(.bn-inline-content a[href], .bn-ak-link):hover { text-decoration-thickness: 2px; }
+.scratchpad-editor.bn-root .bn-inline-content a[href]:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 2px; }
+.scratchpad-editor.bn-root .bn-editor input[type="checkbox"] { accent-color: var(--primary); }
+
+@media (pointer: coarse) {
+  .scratchpad-editor.bn-root :is(.bn-ak-menu-item, .bn-ak-select-item) { min-height: 44px; }
+  .scratchpad-editor.bn-root .bn-ak-toolbar .bn-ak-button { min-height: 36px; }
+}

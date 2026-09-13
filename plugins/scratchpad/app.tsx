@@ -4,6 +4,7 @@ import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/ariakit";
 import "@blocknote/ariakit/style.css";
 import "./style.css";
+import "./editor-theme.css";
 import type { rpcContract } from "./contract";
 import { CHANNEL, documentSchema, type Note, type NoteDocument, type Scope } from "./model";
 import { editorSchema, type NoteBlock } from "./schema";
