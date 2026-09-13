@@ -125,7 +125,9 @@ The SDK has no request ledger, so the plugin adds two functions:
   `call`+`args`+scope replays the stored receipt (a concurrent retry joins the
   in-flight dispatch); a changed payload under the same key is
   `idempotency_conflict`. Ledgered calls intentionally run without the
-  request's abort signal: they must survive client disconnects.
+  request's abort signal: they must survive client disconnects. Calls that
+  return credentials or enrollment secrets are refused (`invalid_arguments`)
+  rather than recorded in plaintext.
 - When the ledgered call is `threads.spawn` or `threads.fork`, the plugin
   seeds `{ operationId }` into the new thread's `bb-mcp` plugin-metadata
   namespace, merged over the caller's own `args.pluginMetadata` (caller keys

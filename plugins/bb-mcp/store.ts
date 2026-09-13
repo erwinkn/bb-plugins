@@ -56,7 +56,7 @@ export function createStore(bb: BbPluginApi) {
   // ops.run refused them. Keep the literals in sync with codemode's
   // READ_BLOCKED. Reconciled rows carry call: "reconciled" and survive.
   db.prepare(`UPDATE operations SET body = json_set(body, '$.response', json('null'))
-    WHERE (json_extract(body, '$.call') IS NULL OR json_extract(body, '$.call') IN ('plugins.token', 'plugins.getSettings', 'system.config'))
+    WHERE (json_extract(body, '$.call') IS NULL OR json_extract(body, '$.call') IN ('plugins.token', 'plugins.getSettings', 'system.config', 'hosts.experimental_getEnrollmentCommand'))
       AND json_extract(body, '$.response') IS NOT NULL`).run();
   const inflight = new Map<string, Promise<Operation>>();
   let disposed = false;

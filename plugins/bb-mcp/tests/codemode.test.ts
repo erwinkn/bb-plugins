@@ -217,7 +217,17 @@ describe("ops dispatch", () => {
     await d("threads.spawn", explicit);
     expect(spawn.mock.calls[1]?.[0]).not.toHaveProperty("pluginMetadata");
     await expect(d("ops.run", { call: "threads.spawn", args: { ...explicit, pluginMetadata: ["nope"] } })).rejects.toMatchObject({ code: "invalid_arguments" });
+    // Structured-cloneable non-plain objects must fail too, not spread to {}.
+    await expect(d("ops.run", { call: "threads.spawn", args: { ...explicit, pluginMetadata: new Date() } })).rejects.toMatchObject({ code: "invalid_arguments" });
+    await expect(d("ops.run", { call: "threads.spawn", args: { ...explicit, pluginMetadata: new Map([["k", 1]]) } })).rejects.toMatchObject({ code: "invalid_arguments" });
     expect(spawn).toHaveBeenCalledTimes(2);
+  });
+  it("ops.run refuses to ledger calls that return credentials or enrollment secrets", async () => {
+    const enroll = vi.fn(async () => ({ command: "bb enroll --token secret" }));
+    const d = makeDispatch({ ...sdk, hosts: { experimental_getEnrollmentCommand: enroll } }, storeStub, () => {});
+    await expect(d("ops.run", { call: "hosts.experimental_getEnrollmentCommand", args: { hostId: "h" } })).rejects.toMatchObject({ code: "invalid_arguments" });
+    await expect(d("ops.run", { call: "plugins.token", args: {} })).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(enroll).not.toHaveBeenCalled();
   });
 });
 
@@ -250,12 +260,17 @@ describe("read-only ops.get", () => {
     const store = {
       get: (id: string) => id === "op_secret"
         ? { id, kind: "plugins.token", call: "plugins.token", projectId: null, hostId: null, threadId: null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { token: "secret" } }
-        : { id, kind: "create", call: "threads.spawn", projectId: null, hostId: null, threadId: "thr_1", state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { threadId: "thr_1" } },
+        : id === "op_enroll"
+          ? { id, kind: "enroll", call: "hosts.experimental_getEnrollmentCommand", projectId: null, hostId: null, threadId: null, state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { command: "bb enroll --token secret" } }
+          : { id, kind: "create", call: "threads.spawn", projectId: null, hostId: null, threadId: "thr_1", state: "accepted" as const, createdAt: 1, updatedAt: 1, response: { threadId: "thr_1" } },
     } as unknown as Store;
     const ro = makeDispatch(sdk, store, () => {}, undefined, true);
     const secret = await ro("ops.get", { operationId: "op_secret" }) as Record<string, unknown>;
     expect(secret.response).toBeNull();
     expect(secret.responseRedacted).toBeTruthy();
+    const enroll = await ro("ops.get", { operationId: "op_enroll" }) as Record<string, unknown>;
+    expect(enroll.response).toBeNull();
+    expect(enroll.responseRedacted).toBeTruthy();
     const plain = await ro("ops.get", { operationId: "op_plain" }) as Record<string, unknown>;
     expect(plain.response).toEqual({ threadId: "thr_1" });
     const full = makeDispatch(sdk, store, () => {});

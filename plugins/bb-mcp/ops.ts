@@ -12,7 +12,10 @@ export function seedOperationMetadata(callPath: string, args: unknown, operation
   if (typeof args !== "object" || Array.isArray(args)) return args;
   const a = args as Record<string, unknown>;
   const seed = a.pluginMetadata === undefined ? {} : a.pluginMetadata;
-  if (seed === null || typeof seed !== "object" || Array.isArray(seed))
+  // Structured clone can deliver non-plain objects (Date, Map): they would
+  // spread to {} and silently drop the caller's metadata, so reject them.
+  const proto = typeof seed === "object" && seed !== null ? Object.getPrototypeOf(seed) : undefined;
+  if (proto !== Object.prototype && proto !== null)
     throw new ToolError("invalid_arguments", "pluginMetadata must be a plain JSON object.");
   return { ...a, pluginMetadata: { ...(seed as Record<string, unknown>), operationId } };
 }

@@ -34,7 +34,9 @@ const READ_VERBS = new Set([
 // by full path.
 const READ_PATHS = new Set(["theme.resolve"]);
 // Reads that still leak credentials or host configuration stay execute-only.
-const READ_BLOCKED = new Set(["plugins.token", "plugins.getSettings", "system.config"]);
+// Membership also drives the ledger: ops.run refuses to record them and
+// ops.get redacts their recorded responses under bb_read.
+const READ_BLOCKED = new Set(["plugins.token", "plugins.getSettings", "system.config", "hosts.experimental_getEnrollmentCommand"]);
 export function isReadPath(path: string): boolean {
   if (READ_BLOCKED.has(path)) return false;
   return READ_PATHS.has(path) || READ_VERBS.has(path.split(".").at(-1)!);
