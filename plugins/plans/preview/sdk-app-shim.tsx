@@ -22,6 +22,7 @@ import type {
   BbContext,
   BbNavigate,
   DiffProps,
+  ExperimentalIconProps,
   MarkdownProps,
   PluginAppDefinition,
   PluginAppSetup,
@@ -203,6 +204,18 @@ export function UrlLink(props: React.ComponentProps<"a">) {
   return <a {...props} />;
 }
 
+/** Placeholder glyph; the real host draws its registry icon for `name`. */
+export function experimental_Icon({ name, className, style, "aria-hidden": ariaHidden, "aria-label": ariaLabel }: ExperimentalIconProps) {
+  const Registered = registeredIcons.get(name);
+  if (Registered) return <Registered className={className} />;
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden={ariaHidden} aria-label={ariaLabel} data-icon={name}>
+      <circle cx="12" cy="12" r="8" />
+    </svg>
+  );
+}
+const registeredIcons = new Map<string, ComponentType<{ className?: string }>>();
+
 /* ---------- registration capture ---------- */
 
 export interface CapturedRegistrations {
@@ -228,6 +241,7 @@ export function definePluginApp(setup: PluginAppSetup): PluginAppDefinition {
     ),
     composer: { customize: () => {} },
     contentScripts: { register: () => {} },
+    experimental_icons: { register: ({ name, component }: { name: string; component: ComponentType<{ className?: string }> }) => { registeredIcons.set(name, component); } },
     experimental_sidebarFooter: { register: () => undefined },
   };
   setup(app as never);

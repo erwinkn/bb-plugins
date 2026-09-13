@@ -333,7 +333,7 @@ export function PlanDocument({
     { label: "Ask", icon: "MessageSquare", key: "A", className: "text-primary", props: commitProps("ask") },
     ...(onAnnotate
       ? [
-          { label: "Redline", icon: "Strikethrough", key: "D", className: "text-destructive", props: commitProps("redline") } satisfies SelectionAction,
+          { label: "Redline", icon: "plans-strikethrough", key: "D", className: "text-destructive", props: commitProps("redline") } satisfies SelectionAction,
           { label: "Looks good", icon: "CircleCheck", key: "G", className: "text-success", props: commitProps("looksGood") } satisfies SelectionAction,
         ]
       : []),
