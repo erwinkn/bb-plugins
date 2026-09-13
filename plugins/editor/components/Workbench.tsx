@@ -82,6 +82,8 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const [treeWidth, setTreeWidth] = useState(readTreeWidth);
   const width = useElementWidth(rootRef);
   const [tree, setTree] = useState<TreeState>(EMPTY_TREE);
+  const entriesRef = useRef<readonly FlatEntry[]>(EMPTY_TREE.entries);
+  entriesRef.current = tree.entries;
   const [quickOpen, setQuickOpen] = useState(false);
   const [themePicker, setThemePicker] = useState<{ current: string | null } | null>(null);
   const [themePreview, setThemePreview] = useState<string | null>(null);
@@ -164,7 +166,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           if (generation !== treeGeneration.current) return false;
           const message = error instanceof Error ? error.message : "Could not list files";
           if (quiet) {
-            setTree((current) => (current.entries.length === 0 ? { ...current, isLoading: false, error: message } : current));
+            setTree((current) =>
+              current.entries.length === 0 ? { ...current, isLoading: false, error: message } : { ...current, isLoading: false },
+            );
             toast.error(message);
             return false;
           }
@@ -235,6 +239,20 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       // reflected in the tree; a rescan always reloads.
       if (!notice.rescan && notice.changes.length > 0 && notice.changes.every((change) => isOwnMutationEcho(change.path))) return;
       void loadTree({ quiet: true });
+      // The root listing covers only the top level, so a directory the tree
+      // holds that a change landed in is relisted too — a rescan, which lost
+      // the detail, relists them all. One a delete in this batch covers is
+      // gone; skip it.
+      const listed = new Set<string>();
+      for (const entry of entriesRef.current) if (entry.kind === "directory" && entry.deferred !== true) listed.add(entry.path);
+      const deleted = notice.changes.filter((change) => change.type === "delete").map((change) => change.path.replace(/\\/g, "/"));
+      const affected = notice.rescan
+        ? listed
+        : new Set(notice.changes.map((change) => splitPath(change.path.replace(/\\/g, "/")).directory));
+      for (const dir of affected) {
+        if (dir === "" || !listed.has(dir) || deleted.some((gone) => dir === gone || dir.startsWith(`${gone}/`))) continue;
+        loadDirectory(dir);
+      }
     }, 300);
   });
 
