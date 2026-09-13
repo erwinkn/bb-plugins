@@ -101,6 +101,8 @@ export interface ReorderDndHandlers {
 
 export interface ReorderDndOptions {
   collisionDetection?: CollisionDetection;
+  /** Reports whether a drag session is active; Escape is ignored when not. */
+  isActive?: () => boolean;
 }
 
 export function useReorderDnd(
@@ -136,14 +138,16 @@ export function useReorderDnd(
     },
     [onDragEnd, suppressPostDragClick],
   );
+  const isActive = options?.isActive;
   const onEscape = useCallback<KeyboardEventHandler<HTMLElement>>(
     (event) => {
       if (event.defaultPrevented) return;
       if (event.code !== "Escape" && event.key !== "Escape") return;
+      if (!isActive?.()) return;
       event.preventDefault();
       handleDragCancel();
     },
-    [handleDragCancel],
+    [handleDragCancel, isActive],
   );
   return {
     consumeClickSuppression,

@@ -1275,6 +1275,103 @@ describe("activity sidebar", () => {
       expect(slot.getByRole("alert").textContent).toContain("depth limit"),
     );
   });
+  it("keeps a newer reparent when an earlier overlapping request fails", async () => {
+    let rejectFirst!: (error: Error) => void;
+    const setParent = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ ok: boolean }>((_, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockResolvedValue({ ok: true });
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads, projects },
+      rpc: { setParent },
+    });
+    const childrenOf = (title: string) =>
+      slot.queryAllByRole("list", {
+        name: (name) => name.startsWith(`Children of ${title}`),
+      });
+    const reparentViaMenu = async (target: string) => {
+      fireEvent.contextMenu(
+        slot.container.querySelector('[data-sidebar-thread-id="child"]')!,
+      );
+      const menu = await slot.findByRole("menu", {
+        name: "Actions for Blocked child",
+      });
+      const trigger = within(menu).getByRole("menuitem", {
+        name: "Make child of…",
+      });
+      fireEvent.pointerMove(trigger);
+      fireEvent.keyDown(trigger, { key: "ArrowRight" });
+      const subMenu = await waitFor(() =>
+        within(document.body)
+          .getAllByRole("menu")
+          .find((candidate) => !candidate.hasAttribute("aria-label")),
+      );
+      fireEvent.click(within(subMenu!).getByRole("menuitem", { name: target }));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    };
+    await reparentViaMenu("Read reply");
+    expect(childrenOf("Read reply")).toHaveLength(1);
+    await reparentViaMenu("New reply");
+    expect(childrenOf("New reply")).toHaveLength(1);
+    expect(childrenOf("Read reply")).toHaveLength(0);
+    // The earlier request fails late; the newer override must survive.
+    await act(async () => rejectFirst(new Error("offline")));
+    expect(childrenOf("New reply")).toHaveLength(1);
+    await waitFor(() =>
+      expect(slot.getByRole("alert").textContent).toContain("offline"),
+    );
+  });
+  it("offers every valid candidate parent without truncating the list", async () => {
+    const many = [
+      thread({ id: "source", title: "Source", projectId: "project-1" }),
+      ...Array.from({ length: 40 }, (_, index) =>
+        thread({
+          id: `candidate-${index}`,
+          title: `Candidate ${index}`,
+          projectId: "project-1",
+          updatedAt: index,
+        }),
+      ),
+    ];
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads: many, projects },
+    });
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-sidebar-thread-id="source"]')!,
+    );
+    const menu = await slot.findByRole("menu", { name: "Actions for Source" });
+    const trigger = within(menu).getByRole("menuitem", {
+      name: "Make child of…",
+    });
+    fireEvent.pointerMove(trigger);
+    fireEvent.keyDown(trigger, { key: "ArrowRight" });
+    const subMenu = await waitFor(() =>
+      within(document.body)
+        .getAllByRole("menu")
+        .find((candidate) => !candidate.hasAttribute("aria-label")),
+    );
+    expect(within(subMenu!).getAllByRole("menuitem")).toHaveLength(40);
+    // The oldest candidate is the first a cap would drop.
+    expect(
+      within(subMenu!).getByRole("menuitem", { name: "Candidate 0" }),
+    ).toBeTruthy();
+  });
+  it("does not swallow the click after Escape when no drag is active", async () => {
+    const slot = mount();
+    const row = slot.container.querySelector(
+      '[data-sidebar-thread-id="unread"]',
+    )!;
+    fireEvent.keyDown(row, { key: "Escape" });
+    fireEvent.click(row);
+    expect(props.onNavigate).toHaveBeenCalledOnce();
+  });
   it("opens a child's menu after a long press and suppresses the release click", async () => {
     const slot = mount();
     const row = slot.container.querySelector(

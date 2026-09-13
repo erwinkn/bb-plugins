@@ -339,7 +339,10 @@ export function useThreadDnd({
         onDragOver: handleDragOver,
         onDragStart: handleDragStart,
       },
-      { collisionDetection },
+      {
+        collisionDetection,
+        isActive: () => activeIdRef.current != null,
+      },
     );
 
   useEffect(

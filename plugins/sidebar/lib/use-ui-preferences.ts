@@ -138,6 +138,63 @@ function changedKeys(previous: Mirror, next: Mirror): SyncedKey[] {
   return keys;
 }
 
+const newer = <E extends { revision: number }>(a: E, b: E): E =>
+  a.revision > b.revision ? a : b;
+
+// Snapshots can arrive out of order (a slow read answering after a realtime
+// update), so merge per key and never roll a key back to an older revision.
+function mergeSnapshot(
+  current: SyncedPreferences | null,
+  next: SyncedPreferences,
+): SyncedPreferences {
+  if (!current) return next;
+  return {
+    "sidebar.organizationMode": newer(
+      current["sidebar.organizationMode"],
+      next["sidebar.organizationMode"],
+    ),
+    "sidebar.chronologicalSort": newer(
+      current["sidebar.chronologicalSort"],
+      next["sidebar.chronologicalSort"],
+    ),
+    "sidebar.sortDirection": newer(
+      current["sidebar.sortDirection"],
+      next["sidebar.sortDirection"],
+    ),
+    "sidebar.collapsedSections": newer(
+      current["sidebar.collapsedSections"],
+      next["sidebar.collapsedSections"],
+    ),
+    "sidebar.collapsedProjects": newer(
+      current["sidebar.collapsedProjects"],
+      next["sidebar.collapsedProjects"],
+    ),
+  };
+}
+
+// The mirror only advances once the host acknowledges a value; pending keys
+// keep their local value on top of any host snapshot until then.
+function advanceMirror(ack: Mirror, key: SyncedKey, next: Mirror): Mirror {
+  switch (key) {
+    case "sidebar.organizationMode":
+      return { ...ack, groupBy: next.groupBy };
+    case "sidebar.chronologicalSort":
+      return { ...ack, sortBy: next.sortBy };
+    case "sidebar.sortDirection":
+      return { ...ack, sortDirection: next.sortDirection };
+    case "sidebar.collapsedSections":
+      return { ...ack, pinnedCollapsed: next.pinnedCollapsed };
+    case "sidebar.collapsedProjects":
+      return { ...ack, collapsedProjects: next.collapsedProjects };
+  }
+}
+
+function pendingMirror(ack: Mirror, pending: Map<SyncedKey, Mirror>): Mirror {
+  let target = ack;
+  for (const [key, next] of pending) target = advanceMirror(target, key, next);
+  return target;
+}
+
 /**
  * Keeps grouping, date sort, sort direction, and the collapsed Pinned and
  * project groups in step with BB's synced sidebar preferences. BB is the
@@ -152,23 +209,72 @@ export function useUiPreferences(onError: (error: unknown) => void) {
   const state = useClientState();
   const host = useRef<SyncedPreferences | null>(null);
   // The plugin-side values the host last agreed with. A local change is a
-  // difference from this; applying a host snapshot resets it.
+  // difference from this; it only advances once a write is acknowledged.
   const mirror = useRef<Mirror | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
   const errorRef = useRef(onError);
   errorRef.current = onError;
-  // Writes run one at a time so revisions chain correctly.
+  // Writes run one at a time so revisions chain correctly. Local values
+  // whose write has not been acknowledged stay pending and are retried on
+  // the next host snapshot instead of being silently dropped.
   const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const pending = useRef(new Map<SyncedKey, Mirror>());
 
-  const apply = useCallback((next: SyncedPreferences) => {
-    host.current = next;
-    updateState((current) => {
-      const target = mirrorOf(next, current);
-      mirror.current = target;
-      return applyMirror(current, target);
-    });
-  }, []);
+  const flushPending = useCallback(() => {
+    if (!host.current || !mirror.current) return;
+    for (const [key, next] of pending.current) {
+      queue.current = queue.current.then(async () => {
+        if (!pending.current.has(key)) return;
+        const attempt = async (retry: boolean): Promise<void> => {
+          if (!host.current || !mirror.current) return;
+          try {
+            const entry = await rpc.call(
+              "uiPreferences.write",
+              writeFor(key, host.current, mirror.current, next),
+            );
+            host.current = {
+              ...host.current,
+              [entry.key]: { revision: entry.revision, value: entry.value },
+            };
+            pending.current.delete(key);
+            mirror.current = advanceMirror(mirror.current, key, next);
+          } catch (cause) {
+            if (!retry) {
+              errorRef.current(cause);
+              return;
+            }
+            // Another client changed this key first: retry once against
+            // its revision, keeping the local change on top.
+            try {
+              host.current = mergeSnapshot(
+                host.current,
+                await rpc.call("uiPreferences.read", null),
+              );
+            } catch {
+              return;
+            }
+            await attempt(false);
+          }
+        };
+        await attempt(true);
+      });
+    }
+  }, [rpc]);
+
+  const apply = useCallback(
+    (next: SyncedPreferences) => {
+      const merged = mergeSnapshot(host.current, next);
+      host.current = merged;
+      updateState((current) => {
+        const agreed = mirrorOf(merged, current);
+        mirror.current = agreed;
+        return applyMirror(current, pendingMirror(agreed, pending.current));
+      });
+      flushPending();
+    },
+    [flushPending],
+  );
   const read = useCallback(
     () =>
       rpc
@@ -209,43 +315,11 @@ export function useUiPreferences(onError: (error: unknown) => void) {
   const projectionKey = JSON.stringify(projection);
   useEffect(() => {
     if (!host.current || !mirror.current) return;
-    const previous = mirror.current;
     const next = projectionOf(stateRef.current);
-    const keys = changedKeys(previous, next);
-    if (!keys.length) return;
-    mirror.current = next;
-    for (const key of keys) {
-      queue.current = queue.current.then(async () => {
-        const attempt = async (retry: boolean): Promise<void> => {
-          if (!host.current) return;
-          try {
-            const entry = await rpc.call(
-              "uiPreferences.write",
-              writeFor(key, host.current, previous, next),
-            );
-            host.current = {
-              ...host.current,
-              [entry.key]: { revision: entry.revision, value: entry.value },
-            };
-          } catch (cause) {
-            if (!retry) {
-              errorRef.current(cause);
-              return;
-            }
-            // Another client changed this key first: retry once against
-            // its revision, keeping the local change on top.
-            try {
-              host.current = await rpc.call("uiPreferences.read", null);
-            } catch {
-              return;
-            }
-            await attempt(false);
-          }
-        };
-        await attempt(true);
-      });
-    }
+    for (const key of changedKeys(mirror.current, next))
+      pending.current.set(key, next);
+    flushPending();
     // The projection key captures every field this effect compares.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectionKey, rpc]);
+  }, [projectionKey, rpc, flushPending]);
 }

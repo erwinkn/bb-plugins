@@ -227,7 +227,7 @@ function ThreadsList(props: PluginThreadListProps) {
         .call("setParent", { threadId, parentThreadId })
         .catch((cause) => {
           setParentOverrides((current) => {
-            if (!current.has(threadId)) return current;
+            if (current.get(threadId) !== parentThreadId) return current;
             const next = new Map(current);
             next.delete(threadId);
             return next;
@@ -315,7 +315,6 @@ function ThreadsList(props: PluginThreadListProps) {
             !isThreadWithinSubtree(dndLookup, threadId, candidate.id),
         )
         .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, 30)
         .map((candidate) => ({
           id: candidate.id,
           title: threadTitle(candidate),

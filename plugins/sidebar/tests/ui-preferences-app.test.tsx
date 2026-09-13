@@ -38,14 +38,21 @@ const hostDefaults = (): SyncedPreferences => ({
 });
 type Host = SyncedPreferences;
 
-function mount(host: Host, options: { failWrites?: number } = {}) {
+function mount(
+  host: Host,
+  options: { failWrites?: number; readError?: { current: Error | null } } = {},
+) {
   let failures = options.failWrites ?? 0;
+  const readError = options.readError ?? { current: null };
   const slot = renderSdkSlot(app.threadLists[0], props, {
     sidebarThreads: { threads, projects },
     rpc: {
       listArchived: async () => [],
       getLibrary: async () => ({ revision: 0, ids: [] }),
-      "uiPreferences.read": async () => host,
+      "uiPreferences.read": async () => {
+        if (readError.current) throw readError.current;
+        return host;
+      },
       "uiPreferences.write": async (raw: unknown) => {
         const input = raw as {
           key: keyof Host;
@@ -254,5 +261,57 @@ describe("synced sidebar preferences", () => {
     expect(current().groupBy).toBe("project");
     expect(slot.getByRole("region", { name: "One" })).toBeTruthy();
     expect(slot.queryByRole("alert")).toBeNull();
+  });
+
+  it("ignores a read snapshot older than a revision it already applied", async () => {
+    const host = hostDefaults();
+    const slot = mount(host);
+    await waitFor(() => expect(reads(slot)).toBe(1));
+    await slot.behavior.emitRealtime("ui-preferences-changed", {
+      key: "sidebar.sortDirection",
+      revision: 3,
+      value: "ascending",
+    });
+    await waitFor(() => expect(current().sortDirection).toBe("ascending"));
+    // The next read still answers with the older snapshot; the newer
+    // revision already applied must not be rolled back.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(reads(slot)).toBe(2));
+    await settle();
+    expect(current().sortDirection).toBe("ascending");
+    expect(host["sidebar.sortDirection"]).toEqual(entry("default"));
+    expect(writes(slot)).toEqual([]);
+  });
+
+  it("keeps an unacknowledged change pending and retries it on the next read", async () => {
+    const host = hostDefaults();
+    const readError = { current: null as Error | null };
+    const slot = mount(host, { failWrites: 1, readError });
+    await waitFor(() => expect(reads(slot)).toBe(1));
+    readError.current = new Error("offline");
+    await chooseDisplayOption(slot, "Oldest first");
+    // The write and its recovery read both fail; the local change stays.
+    await waitFor(() => expect(writes(slot)).toHaveLength(1));
+    await settle();
+    expect(current().sortDirection).toBe("ascending");
+    // A later host snapshot must not drop the pending local value, and the
+    // retry writes it against the fresh revision.
+    readError.current = null;
+    host["sidebar.sortDirection"] = entry("descending", 5);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(writes(slot)).toHaveLength(2));
+    expect(writes(slot)[1]).toEqual({
+      key: "sidebar.sortDirection",
+      value: "ascending",
+      expectedRevision: 5,
+    });
+    // Mount read, the failed recovery read, and the focus read.
+    await waitFor(() => expect(reads(slot)).toBe(3));
+    expect(host["sidebar.sortDirection"]).toEqual(entry("ascending", 6));
+    expect(current().sortDirection).toBe("ascending");
   });
 });

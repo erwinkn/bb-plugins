@@ -314,8 +314,7 @@ by the plugin.
 ## Local installation
 
 Requires BB 0.43.1 or later and Plugin SDK 0.4.87 or later. The saved-flag
-mirror uses per-thread plugin metadata, which arrived in BB 0.43.1; every other
-feature also works on BB 0.43.0.
+mirror uses per-thread plugin metadata, which arrived in BB 0.43.1.
 
 ```sh
 cd plugins/sidebar
