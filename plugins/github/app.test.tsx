@@ -235,6 +235,29 @@ describe("open pull request bridge", () => {
     expect(requestOpenPullRequest({ url: "https://github.com/get-bb/bb/pull/5", threadId: null })).toBe(false);
   });
 
+  it("opens the panel in the pane when the request names the thread already in view", async () => {
+    // The sidebar chip's case: the route is this thread, so the overlay's
+    // fallback would only ever openUrl. The mounted pane must get the
+    // request first regardless of listener registration order (browsers run
+    // at-target window listeners in registration order, capture or not).
+    window.history.replaceState(null, "", "/projects/proj-1/threads/thr-1");
+    const openUrl = vi.fn(() => true);
+    const overlaySlot = renderSlot(overlay, {}, { openUrl });
+    const openThreadPanel = vi.fn(() => true);
+    const headerSlot = renderSlot(
+      headerAction,
+      { threadId: "thr-1", projectId: "proj-1", isCompactViewport: false },
+      { rpc: { listPullRequests: () => ({ links: [], environmentId: null }) }, openThreadPanel },
+    );
+    await act(async () => {});
+    expect(requestOpenPullRequest({ url: "https://github.com/get-bb/bb/pull/6", threadId: "thr-1" })).toBe(true);
+    expect(openThreadPanel).toHaveBeenCalledWith({ actionId: "pull", title: "GitHub PR", params: { url: "https://github.com/get-bb/bb/pull/6" } });
+    expect(openUrl).not.toHaveBeenCalled();
+    expect(overlaySlot.navigateCalls).toEqual([]);
+    headerSlot.lifecycle.unmount();
+    overlaySlot.lifecycle.unmount();
+  });
+
   it("header action wins over the overlay for the thread in view", async () => {
     const openUrl = vi.fn(() => true);
     const overlaySlot = renderSlot(overlay, {}, { openUrl });

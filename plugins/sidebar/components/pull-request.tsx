@@ -195,7 +195,7 @@ const entryClass =
 
 /**
  * The row's pull request indicator. One PR keeps the plain icon-and-number
- * link; several collapse into an icon with a count badge, coloured by the
+ * link; several collapse into an icon with a plain count, coloured by the
  * most attention-worthy state, that opens a picker. Both keep the press
  * away from the row (selection, drag, and the long-press menu) and call
  * `onOpen` with the chosen URL.
@@ -243,7 +243,9 @@ export function PullRequestsChip({
         className={chipClass}
       >
         <PullRequestIcon pullRequest={pullRequest} />
-        <span className="tabular-nums">#{pullRequest.number}</span>
+        <span className={`tabular-nums ${pullRequestColorClass(pullRequest)}`}>
+          #{pullRequest.number}
+        </span>
       </span>
     );
   }
@@ -293,7 +295,7 @@ export function PullRequestsChip({
           <span
             aria-hidden="true"
             data-pull-request-count=""
-            className={`flex h-3.5 min-w-3.5 items-center justify-center rounded-full px-0.5 text-[10px] font-semibold leading-none tabular-nums ring-1 ring-inset ring-current ${pullRequestColorClass(primary)}`}
+            className={`tabular-nums ${pullRequestColorClass(primary)}`}
           >
             {pullRequests.length}
           </span>
@@ -350,7 +352,9 @@ export function PullRequestsChip({
                     className={entryClass}
                   >
                     <PullRequestIcon pullRequest={pullRequest} />
-                    <span className="shrink-0 tabular-nums">
+                    <span
+                      className={`shrink-0 tabular-nums ${pullRequestColorClass(pullRequest)}`}
+                    >
                       #{pullRequest.number}
                     </span>
                     <span className="min-w-0 flex-1 truncate">

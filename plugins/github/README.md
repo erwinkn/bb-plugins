@@ -112,14 +112,18 @@ How a request reaches the panel (`lib/open-pull-request.ts`):
    with `{ url, threadId, element }`, where `threadId` comes from the route
    (`/projects/:p/threads/:t` or `/threads/:t`) and `element` is the anchor.
 2. Every mounted `experimental_threadHeaderAction` registers itself as a
-   viewer target. A capture-phase listener picks the pane whose header is
+   viewer target. One window listener picks the pane whose header is
    closest to the clicked element (split layouts), else the pane with that
    thread id, else the only pane, and calls
    `useBbNavigate().openThreadPanel({ actionId: "pull", params: { url } })`.
-3. The `experimental_appOverlay` listens in the bubble phase. If no pane took
-   the request and a thread id is known, it navigates to that thread and
-   parks the URL; the header action opens the tab when it mounts. Without a
-   thread id it calls `openUrl`, honoring the client's browser preference.
+3. The `experimental_appOverlay` registers a fallback the same listener
+   calls when no pane took the request. If a thread id is known, it
+   navigates to that thread and parks the URL; the header action opens the
+   tab when it mounts. Without a thread id it calls `openUrl`, honoring the
+   client's browser preference. The fallback is a direct call, not a second
+   window listener: browsers run at-target listeners in registration order
+   regardless of the capture flag, so a separately registered overlay
+   listener could claim a request before a pane it belongs to.
 4. If nothing prevented the event's default, the content script opens the URL
    in a new tab, the same `window.open(url, "_blank", "noopener,noreferrer")`
    BB's browser build uses.

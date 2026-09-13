@@ -17,13 +17,15 @@
  *   window.dispatchEvent(event);
  *   if (!event.defaultPrevented) { /* nothing could show it; open externally *\/ }
  *
- * Handling order (DOM at-target phase: capture listeners run before bubble
- * listeners on the same target):
- *   1. the header-action registry (capture) picks the mounted thread pane
- *      that should show the PR and opens its panel tab;
- *   2. the app overlay (bubble) sees an unhandled event and, when a thread id
- *      is known, navigates to that thread and parks the URL so the header
- *      action opens the tab once it mounts; without a thread id it opens the
+ * Handling order, all inside the registry's one window listener so it does
+ * not depend on DOM listener ordering (at the target phase browsers run
+ * window listeners in registration order, capture flag or not — a separate
+ * overlay listener registered first would steal requests meant for a pane):
+ *   1. the mounted thread panes: `pickViewerTarget` chooses the one that
+ *      should show the PR and opens its panel tab;
+ *   2. the app overlay's registered fallback runs next on an unhandled
+ *      request: with a thread id it navigates there and parks the URL so the
+ *      header action opens the tab once it mounts; without one it opens the
  *      URL with BB's browser preference;
  *   3. the dispatcher falls back to an external open when nobody prevented
  *      the default.
@@ -124,27 +126,52 @@ export function pickViewerTarget(detail: OpenPullRequestDetail, targets: readonl
 const targets = new Set<ViewerTarget>();
 let listening = false;
 
+/**
+ * Who handles a request no pane took — the app overlay's router. A direct
+ * call, not a second window listener, so it deterministically runs after the
+ * pane targets within the same dispatch.
+ */
+export type OpenPullRequestFallback = (detail: OpenPullRequestDetail) => boolean;
+let fallback: OpenPullRequestFallback | null = null;
+
 function onRequest(event: Event) {
   if (event.defaultPrevented) return;
   const detail = detailOf(event);
   if (detail === null) return;
   const target = pickViewerTarget(detail, [...targets]);
-  if (target !== null && target.open(detail.url)) event.preventDefault();
+  if (target !== null && target.open(detail.url)) {
+    event.preventDefault();
+    return;
+  }
+  if (fallback?.(detail)) event.preventDefault();
+}
+
+// The listener is up while a pane target or the overlay fallback exists.
+function updateListening() {
+  const needed = targets.size > 0 || fallback !== null;
+  if (needed === listening) return;
+  listening = needed;
+  if (needed) window.addEventListener(OPEN_PULL_REQUEST_EVENT, onRequest, { capture: true });
+  else window.removeEventListener(OPEN_PULL_REQUEST_EVENT, onRequest, { capture: true });
 }
 
 /** Mounted by every header action; the first registration installs the listener. */
 export function registerViewerTarget(target: ViewerTarget): () => void {
   targets.add(target);
-  if (!listening) {
-    listening = true;
-    window.addEventListener(OPEN_PULL_REQUEST_EVENT, onRequest, { capture: true });
-  }
+  updateListening();
   return () => {
     targets.delete(target);
-    if (targets.size === 0 && listening) {
-      listening = false;
-      window.removeEventListener(OPEN_PULL_REQUEST_EVENT, onRequest, { capture: true });
-    }
+    updateListening();
+  };
+}
+
+/** Mounted once by the app overlay; also installs the listener on its own. */
+export function registerOpenPullRequestFallback(handler: OpenPullRequestFallback): () => void {
+  fallback = handler;
+  updateListening();
+  return () => {
+    if (fallback === handler) fallback = null;
+    updateListening();
   };
 }
 
@@ -160,9 +187,11 @@ export function takePendingOpen(threadId: string): string | null {
   return url;
 }
 
-/** Test hook: forget every target and parked request. */
+/** Test hook: forget every target, the fallback, and parked requests. */
 export function resetOpenPullRequestBridge(): void {
   for (const target of [...targets]) registerViewerTarget(target)();
   targets.clear();
+  fallback = null;
+  updateListening();
   pending.clear();
 }
