@@ -32,6 +32,7 @@ function state(answers: AnswerState[] = []): ThreadState {
     answers,
     summary: null,
     submissions: [],
+    openRoundId: null,
   };
 }
 

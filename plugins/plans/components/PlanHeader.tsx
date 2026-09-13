@@ -22,6 +22,7 @@ import { COARSE_POINTER_COMPACT_ICON_BUTTON_CLASS } from "@/components/ui/coarse
 import { cn } from "@/lib/utils";
 import type { Plan, PlanVersion } from "../contract";
 import { latestVersion, sortedVersions } from "../lib/plan-model";
+import { STATUS_TINT } from "./StatusBadge";
 import { compactRelativeTime, formatDateTime, formatRelativeTime } from "../lib/time";
 
 
@@ -111,7 +112,7 @@ export function PlanHeader({
             title="Switch view"
             className="h-8 w-auto min-w-0 shrink-0 gap-1 border-transparent bg-transparent px-1.5 text-muted-foreground hover:text-foreground"
           >
-            <SelectValue><Icon name={view === "document" ? "ListTodo" : view === "changes" ? "Code" : "MessageSquare"} className="size-4" aria-hidden /></SelectValue>
+            <SelectValue><Icon name={view === "document" ? "ListTodo" : view === "changes" ? "Code" : "MessageSquare"} className="size-4" style={view === "document" ? { color: STATUS_TINT[plan.status] } : undefined} aria-hidden /></SelectValue>
           </SelectTrigger>
           <SelectContent align="end">
             {views.map((item) => (

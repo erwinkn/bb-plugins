@@ -1,3 +1,4 @@
+import { AGENT_AVATAR_CLASS, AGENT_DOT_CLASS, AGENT_TEXT_CLASS } from "./agent-accent";
 import { EMPTY_TRANSCRIPT, transcriptSnapshotSchema, withLiveTranscript, type TranscriptSnapshot } from "./live-transcript.ts";
 // Voice page: logical voice sessions inside bb. The home lists sessions (one
 // per logical conversation, spanning every physical call that continued it).
@@ -307,12 +308,12 @@ function SpeechRow({ row }: { row: Extract<Row, { kind: "speech" }> }) {
   const you = row.who === "you";
   return (
     <div className={cn("flex gap-3 rounded-md px-3 py-3", you ? "bg-muted/40" : "bg-transparent")}>
-      <span className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full", you ? "bg-muted text-muted-foreground" : "bg-primary/15 text-primary")}>
+      <span className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full", you ? "bg-muted text-muted-foreground" : AGENT_AVATAR_CLASS)}>
         <span className="scale-75">{you ? <MicIcon slashed={false} /> : <WaveformIcon live={false} />}</span>
       </span>
       <div className="min-w-0 flex-1">
         <span className="flex items-baseline gap-2">
-          <span className={cn("text-xs font-semibold", you ? "text-foreground" : "text-primary")}>{you ? "You" : "Ada"}</span>
+          <span className={cn("text-xs font-semibold", you ? "text-foreground" : AGENT_TEXT_CLASS)}>{you ? "You" : "Ada"}</span>
           <span className="text-xs tabular-nums text-muted-foreground">{fmtTime(row.ts)}</span>
         </span>
         <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">{row.text}</p>
@@ -358,7 +359,7 @@ function ActionRow({ row, plugins }: { row: Extract<Row, { kind: "action" }>; pl
           </span>
         ) : null}
         {object ? <span className="min-w-0 truncate text-muted-foreground">· {object}</span> : null}
-        {pending ? <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" /> : null}
+        {pending ? <span className={cn("size-1.5 shrink-0 animate-pulse rounded-full", AGENT_DOT_CLASS)} /> : null}
         <Chevron />
       </summary>
       <div className="mb-1 mt-1 space-y-1 pl-7">
@@ -562,12 +563,12 @@ function MessageRow({ message }: { message: ConversationMessage }) {
   const delivery = message.unfinished && message.who === "you" ? "Transcript incomplete" : message.partial && message.delivery === "unknown" ? null : describeDelivery(message.delivery);
   return (
     <div className={cn("flex gap-3 rounded-md px-3 py-3", you ? "bg-muted/40" : "bg-transparent")} data-message-id={message.id} aria-busy={message.partial || undefined}>
-      <span className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full", you ? "bg-muted text-muted-foreground" : "bg-primary/15 text-primary")}>
+      <span className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full", you ? "bg-muted text-muted-foreground" : AGENT_AVATAR_CLASS)}>
         <span className="scale-75">{you ? <MicIcon slashed={false} /> : <WaveformIcon live={false} />}</span>
       </span>
       <div className="min-w-0 flex-1">
         <span className="flex flex-wrap items-baseline gap-2">
-          <span className={cn("text-xs font-semibold", you ? "text-foreground" : "text-primary")}>{you ? "You" : "Ada"}</span>
+          <span className={cn("text-xs font-semibold", you ? "text-foreground" : AGENT_TEXT_CLASS)}>{you ? "You" : "Ada"}</span>
           <span className="text-xs tabular-nums text-muted-foreground">{fmtTime(message.ts)}</span>
           <KindChip kind={message.kind} />
           {delivery ? <span className={cn("text-[10px]", message.delivery === "interrupted" ? "text-destructive" : "text-muted-foreground")} title={message.attributedByWindow ? "Playback state inferred from the reply that was being spoken" : undefined}>{delivery}</span> : null}
@@ -867,7 +868,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
           <>
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-border bg-card px-3.5 py-2.5">
               <div className="flex min-w-0 items-center gap-2.5">
-                {isSelectedLive ? <span className="size-2.5 shrink-0 animate-pulse rounded-full bg-primary" /> : null}
+                {isSelectedLive ? <span className={cn("size-2.5 shrink-0 animate-pulse rounded-full", AGENT_DOT_CLASS)} /> : null}
                 <div className="min-w-0 leading-tight">
                   <div className="truncate text-sm font-medium text-foreground">{current?.title ?? "Voice session"}</div>
                   <div className="text-xs text-muted-foreground">
@@ -977,7 +978,7 @@ function SessionHistoryPanel({ active, showConversation }: { active: boolean; sh
                     </span>
                     {isLive(session) ? (
                       <span className="flex shrink-0 items-center" title="Live session">
-                        <span aria-hidden="true" className="size-2 animate-pulse rounded-full bg-primary" />
+                        <span aria-hidden="true" className={cn("size-2 animate-pulse rounded-full", AGENT_DOT_CLASS)} />
                         <span className="sr-only">Live session</span>
                       </span>
                     ) : null}

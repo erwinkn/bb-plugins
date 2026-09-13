@@ -558,7 +558,7 @@ describe("thread status and prompt", () => {
     expect(slot.queryByText("Plan ready for your review.")).toBeNull();
     expect(slot.getByTitle(title)).toBe(slot.getByRole("group", { name: `Review ${title}` }));
     expect(slot.queryByText(title)).toBeNull();
-    expect(slot.getByRole("group", { name: `Review ${title}` }).textContent).toBe(`${reviewSummary}SkipOpen`);
+    expect(slot.getByRole("group", { name: `Review ${title}` }).textContent).toBe(`${reviewSummary}OpenSkipOpen`);
     fireEvent.click(slot.getByRole("button", { name: "Open" }));
     expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "openThreadPanel", options: expect.objectContaining({ params: { threadId: "thr_1", planId: "plan-1" } }) }));
     expect(skipped).toBe(false);
@@ -574,7 +574,31 @@ describe("thread status and prompt", () => {
         payload: { planId: "plan-1", versionId: "v1", title: "Full scheduling title", versionNumber: 1 } },
       submit: async () => {}, cancel: async () => {},
     }, { rpc: fakeBackend([]).rpc });
-    expect(slot.getByTitle("Full scheduling title").textContent).toBe("SkipOpen");
+    expect(slot.getByTitle("Full scheduling title").textContent).toBe("OpenSkipOpen");
+  });
+
+  it("shows an open status chip with the attention tint while the plan waits", async () => {
+    slot = render(app.pendingInteractions[0]!, {
+      interaction: { id: "i1", threadId: "thr_1", title: "Plan: Scheduling", createdAt: now, expiresAt: null,
+        payload: { planId: "plan-1", versionId: "v1", title: "Scheduling", versionNumber: 1 } },
+      submit: async () => {}, cancel: async () => {},
+    }, { rpc: fakeBackend([makePlan()]).rpc });
+    const chip = slot.getByText("Open", { selector: "[data-status]" });
+    expect(chip.getAttribute("data-status")).toBe("open");
+    // Status is carried by the label; the tint only reinforces it.
+    expect(chip.textContent).toBe("Open");
+    expect(slot.getByRole("button", { name: "Open" })).not.toBe(chip);
+  });
+
+  it("switches the chip to approved once the live plan is approved", async () => {
+    slot = render(app.pendingInteractions[0]!, {
+      interaction: { id: "i1", threadId: "thr_1", title: "Plan: Scheduling", createdAt: now, expiresAt: null,
+        payload: { planId: "plan-1", versionId: "v1", title: "Scheduling", versionNumber: 1 } },
+      submit: async () => {}, cancel: async () => {},
+    }, { rpc: fakeBackend([makePlan({ status: "approved" })]).rpc });
+    const chip = await slot.findByText("Approved", { selector: "[data-status]" });
+    expect(chip.getAttribute("data-status")).toBe("approved");
+    expect(slot.queryByText("Open", { selector: "[data-status]" })).toBeNull();
   });
 });
 

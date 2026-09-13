@@ -1,3 +1,4 @@
+import { AGENT_DOT_CLASS } from "./agent-accent";
 import { WorkerSettings } from "./worker-settings.tsx";
 // bb-plugin-voice-mode — frontend registration.
 //
@@ -41,10 +42,10 @@ function SidebarLiveIndicator() {
         className={cn(
           "size-2 rounded-full",
           connecting
-            ? "bg-primary animate-pulse"
+            ? `${AGENT_DOT_CLASS} animate-pulse`
             : muted
               ? "bg-destructive"
-              : "bg-primary",
+              : AGENT_DOT_CLASS,
         )}
       />
       {connecting ? "\u2026" : elapsed ?? ""}

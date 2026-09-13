@@ -16,6 +16,7 @@ test("Devin retains its provider ID and uses a native icon and public ACP launch
     displayName: "Devin", command: "/custom/devin", args: ["acp"], env: {},
   });
   assert.equal(provider.capabilities.fork, "none");
+  assert.deepEqual(provider.strings?.iconTint, { light: "oklch(0.53 0.2 295)", dark: "oklch(0.68 0.18 295)" });
 });
 
 test("executable setting re-registers one provider; invalid settings preserve it", async (t) => {

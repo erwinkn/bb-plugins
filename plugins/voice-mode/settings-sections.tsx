@@ -1,3 +1,4 @@
+import { DONE_DOT_CLASS } from "./agent-accent";
 import { PromptEditor } from "./prompt-editor";
 import { HostIcon } from "./lib/host-icon";
 export { PromptEditor } from "./prompt-editor";
@@ -251,7 +252,7 @@ export function CredentialCard({ liveEngine = false }: { liveEngine?: boolean })
           <span
             className={cn(
               "size-2 shrink-0 rounded-full",
-              status && status.effective !== "none" ? "bg-primary" : "bg-destructive/80",
+              status && status.effective !== "none" ? DONE_DOT_CLASS : "bg-destructive/80",
             )}
           />
           <span className="text-sm text-foreground">{status ? statusText : "Checking…"}</span>

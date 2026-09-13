@@ -132,6 +132,8 @@ export interface ServiceDeps {
   log: BbPluginApi["log"];
   publish: (signal: ChangeSignal) => void;
   deliverToWaiter?: (submission: Submission, commit: () => void) => Promise<boolean>;
+  /** The round whose native prompt is open for the thread, if any. */
+  openRound?: (threadId: string) => string | null;
   now?: () => number;
   newId?: (prefix: string) => string;
 }
@@ -160,6 +162,7 @@ export class QuestionsService {
       answers: this.store.listAnswers(threadId),
       summary: await this.getSummary(threadId),
       submissions: this.store.listSubmissions(threadId, LIMITS.submissionsListed),
+      openRoundId: this.deps.openRound?.(threadId) ?? null,
     };
   }
 

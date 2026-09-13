@@ -18,12 +18,22 @@ export interface HoldPersistence {
   unmark(threadId: string, roundId: string): void;
 }
 
+/** Fired when a round's prompt opens or closes for any reason (submit, dismissal, stop, abort). */
+export type PromptChangeListener = (threadId: string, roundId: string, open: boolean) => void;
+
 /** The native prompt controls attention, not answer delivery. No holds survive reload. */
 export class QuestionInteractions {
   private active = new Map<string, WaitingRound>();
-  constructor(private readonly bb: BbPluginApi, private readonly persistence?: HoldPersistence) {}
+  constructor(
+    private readonly bb: BbPluginApi,
+    private readonly persistence?: HoldPersistence,
+    private readonly onPromptChange?: PromptChangeListener,
+  ) {}
 
   has(threadId: string): boolean { return this.active.has(threadId); }
+
+  /** The round whose prompt is open in this process, if any. */
+  openRound(threadId: string): string | null { return this.active.get(threadId)?.round.id ?? null; }
 
   async wait(round: Round, signal?: AbortSignal): Promise<Submission | PluginInteractionResult> {
     const entry = this.start(round, true, signal);
@@ -46,6 +56,7 @@ export class QuestionInteractions {
     signal?.addEventListener("abort", onAbort, { once: true });
     const entry: WaitingRound = { round, attached, stop, done: Promise.resolve({ outcome: "cancelled", reason: "request-aborted" }) };
     this.active.set(round.threadId, entry);
+    this.onPromptChange?.(round.threadId, round.id, true);
     entry.done = this.prompt(entry).then((result) => {
       // A dismissal ends the hold for good. Stops, aborts, reloads, and
       // archive interruptions keep the marker so unarchive can reopen it.
@@ -53,7 +64,11 @@ export class QuestionInteractions {
       return result;
     }).finally(() => {
       signal?.removeEventListener("abort", onAbort);
-      if (this.active.get(round.threadId) === entry) this.active.delete(round.threadId);
+      if (this.active.get(round.threadId) === entry) {
+        this.active.delete(round.threadId);
+        // Whatever ended the prompt, the thread no longer waits on this round.
+        this.onPromptChange?.(round.threadId, round.id, false);
+      }
     });
     return entry;
   }

@@ -2,7 +2,7 @@
 // only host theme tokens. The question controls compose these.
 import type React from "react";
 import { useCallback, useImperativeHandle, useLayoutEffect, useRef } from "react";
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, CSSProperties, HTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 
@@ -134,6 +134,55 @@ export function TextArea({
         resize();
       }}
     />
+  );
+}
+
+/**
+ * Role hues from the theme plugin with BB fallbacks. Glyphs need 3:1 on both
+ * canvases; chip text needs 4.5:1, so amber text always uses BB's `-text`
+ * token and green leans on the foreground when `--success` is too light.
+ */
+export const ATTENTION_TINT = "var(--bbp-attention, var(--warning-text))";
+export const DONE_TINT = "var(--bbp-done, color-mix(in oklch, var(--success) 65%, var(--foreground)))";
+
+export type ChipTone = "done" | "pending" | "neutral";
+
+function chipStyle(tone: ChipTone): CSSProperties | undefined {
+  const tint = tone === "done" ? DONE_TINT : tone === "pending" ? ATTENTION_TINT : null;
+  if (tint === null) return undefined;
+  return {
+    color: tone === "pending" ? "var(--warning-text)" : DONE_TINT,
+    borderColor: `color-mix(in oklab, ${tint} 35%, transparent)`,
+    backgroundColor: `color-mix(in oklab, ${tint} 10%, transparent)`,
+  };
+}
+
+/** Small counter chip; the text carries the meaning, the tone only reinforces it. */
+export function Chip({ tone = "neutral", className, children, ...props }: HTMLAttributes<HTMLSpanElement> & { tone?: ChipTone }) {
+  return (
+    <span
+      data-tone={tone}
+      className={cn(
+        "inline-flex h-[18px] shrink-0 items-center gap-1 rounded-full border px-1.5 text-[11px] font-medium leading-none tabular-nums",
+        tone === "neutral" && "border-[var(--border)] text-[var(--subtle-foreground)]",
+        className,
+      )}
+      style={chipStyle(tone)}
+      {...props}
+    >
+      {children}
+    </span>
+  );
+}
+
+/** Answered-over-total: green with a check once every answer is submitted, amber while some are missing. */
+export function CountChip({ done, total, className }: { done: number; total: number; className?: string }) {
+  const complete = total > 0 && done >= total;
+  return (
+    <Chip tone={complete ? "done" : "pending"} className={className}>
+      {complete ? <Icon name="Check" className="size-3" aria-hidden /> : null}
+      {done}/{total}
+    </Chip>
   );
 }
 

@@ -156,10 +156,11 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = new QuestionsStore(db);
+  const publish = (signal: ChangeSignal) => bb.realtime.publish(REALTIME_CHANNEL, signal);
   const interactions = new QuestionInteractions(bb, {
     mark: (round) => store.setOpenHold(round.threadId, round.id, Date.now()),
     unmark: (threadId, roundId) => store.clearOpenHold(threadId, roundId),
-  });
+  }, (threadId, roundId, open) => publish({ threadId, kind: open ? "prompt-opened" : "prompt-closed", roundId }));
   const asking = new Set<string>();
   function claimAsk(threadId: string): () => void {
     if (asking.has(threadId) || interactions.has(threadId)) throw new QuestionsError("This thread already has a Questions request in progress.");
@@ -169,8 +170,9 @@ export default async function plugin(bb: BbPluginApi) {
   const service = new QuestionsService(store, {
     sdk: bb.sdk,
     log: bb.log,
-    publish: (signal: ChangeSignal) => bb.realtime.publish(REALTIME_CHANNEL, signal),
+    publish,
     deliverToWaiter: (submission, commit) => interactions.deliverToWaiter(submission, commit),
+    openRound: (threadId) => interactions.openRound(threadId),
   });
   const recovered = service.recoverStalePending();
   if (recovered > 0) bb.log.warn(`${recovered} submission(s) were pending at startup and are now uncertain`);

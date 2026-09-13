@@ -1,4 +1,5 @@
 import type { PluginProviderDeclaration } from "@get-bb/plugin-sdk";
+import { ROLE_TINTS } from "./role-tints";
 
 // Keep the ID used by the previous custom ACP entry and saved thread references.
 export const PROVIDER_ID = "acp-devin";
@@ -13,6 +14,9 @@ export function devinProvider(command: string): PluginProviderDeclaration {
       signInHint: "Run `devin auth login` on the machine to sign in.",
       expiredHint: "Your Devin CLI session expired. Run `devin auth login`, then reload.",
       installUrl: "https://docs.devin.ai/work-with-devin/devin-cli",
+      // Agent purple (the theme plugin's `--bbp-agent` pair); BB accepts
+      // literal colors only here and renders them with light-dark().
+      iconTint: { light: ROLE_TINTS.agent.light, dark: ROLE_TINTS.agent.dark },
     },
     experimental_bridgeOptions: {
       acpDialect: "generic",

@@ -8,7 +8,9 @@ export const REALTIME_CHANNEL = "questions-changed";
 /** Message directive name: `::questions{round="rnd_…"}`. */
 export const DIRECTIVE_NAME = "questions";
 
-export type ChangeKind = "round-created" | "answers" | "submission" | "summary";
+/** `prompt-opened` / `prompt-closed` follow the native prompt's lifetime: a
+ * round waits for the user only while its prompt is open. */
+export type ChangeKind = "round-created" | "answers" | "submission" | "summary" | "prompt-opened" | "prompt-closed";
 export interface ChangeSignal {
   threadId: string;
   kind: ChangeKind;
@@ -192,6 +194,8 @@ export const threadStateSchema = z.object({
   answers: z.array(answerStateSchema),
   summary: summarySchema.nullable(),
   submissions: z.array(submissionSchema),
+  /** The round whose native prompt is open right now, if any. */
+  openRoundId: z.string().nullable(),
 });
 export type ThreadState = z.infer<typeof threadStateSchema>;
 

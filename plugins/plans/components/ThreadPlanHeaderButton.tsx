@@ -7,7 +7,7 @@ import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@/components/ui/coarse-
 import { cn } from "@/lib/utils";
 import { usePlanList } from "../hooks/usePlanList";
 import { STATUS_LABEL } from "../lib/plan-model";
-import { StatusDot } from "./StatusBadge";
+import { STATUS_TINT, StatusDot } from "./StatusBadge";
 
 export const REVIEW_ACTION_ID = "review-plan";
 export const PLAN_SUBMITTED = "plan-submitted";
@@ -61,7 +61,7 @@ export function ThreadPlanHeaderButton({ threadId, isCompactViewport }: PluginTh
     >
       {isCompactViewport ? (
         <span className="relative inline-flex">
-          <Icon name="ListTodo" aria-hidden />
+          <Icon name="ListTodo" style={{ color: STATUS_TINT[plan.status] }} aria-hidden />
           <StatusDot status={plan.status} className="absolute -right-0.5 -top-0.5" />
         </span>
       ) : (

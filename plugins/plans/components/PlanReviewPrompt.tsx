@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { useBbNavigate, type PluginPendingInteractionProps } from "@get-bb/plugin-sdk/app";
 import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
+import { usePlanList } from "../hooks/usePlanList";
+import type { PlanStatus } from "../lib/plan-model";
+import { STATUS_TINT, StatusChip } from "./StatusBadge";
 import { REVIEW_ACTION_ID } from "./ThreadPlanHeaderButton";
 
 interface PromptPayload {
@@ -32,6 +36,10 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
   const navigate = useBbNavigate();
   const [isReleasing, setReleasing] = useState(false);
   const payload = readPayload(interaction.payload);
+  // The prompt outlives an approval made in the panel until the agent picks
+  // it up, so the status follows the live list rather than the payload.
+  const list = usePlanList(interaction.threadId);
+  const status: PlanStatus = list.plans?.find((plan) => plan.id === payload?.planId)?.status ?? "open";
 
   const open = () => {
     if (payload === null) return;
@@ -45,12 +53,17 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
   // The host carries the review heading; the body explains the revision.
   // Inline-size containment keeps the host's min-content fieldset from growing
   // to the unbroken title's width before the ellipsis can take effect.
+  // The status shares the action row so the prompt stays as short on phones.
   return (
     <div role="group" aria-label={payload ? `Review ${payload.title}` : "Review"} title={payload?.title}
       style={{ contain: "inline-size" }}
       className="flex min-w-0 flex-col gap-2">
       {payload?.reviewSummary && <p className="line-clamp-3 min-w-0 break-words text-sm text-foreground">{payload.reviewSummary}</p>}
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <span className="mr-auto inline-flex min-w-0 items-center gap-1.5">
+          <Icon name="ListTodo" className="size-3.5 shrink-0" style={{ color: STATUS_TINT[status] }} aria-hidden />
+          <StatusChip status={status} />
+        </span>
         <Button
           type="button"
           variant="ghost"

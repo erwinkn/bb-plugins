@@ -16,7 +16,8 @@ import {
 } from "@/lib/model";
 import { type QuestionsController, type SubmitOutcome, useQuestions } from "@/hooks/useQuestions";
 import { subscribeRequestedRound, takeRequestedRound } from "@/lib/panel-navigation";
-import { Hint, IconButton, PanelButton } from "./primitives";
+import { ATTENTION_TINT, Chip, CountChip, Hint, IconButton, PanelButton } from "./primitives";
+import { Icon } from "@/components/ui/icon";
 import { QuestionEditor } from "./QuestionEditor";
 
 type Tab = { kind: "round"; roundId: string } | { kind: "summary" };
@@ -258,7 +259,8 @@ export function QuestionsPanel({ threadId, params }: PluginThreadPanelProps) {
 
   return (
     <div className="@container flex h-full min-h-0 flex-col bg-background text-[13px] leading-[1.45] text-foreground">
-      <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pl-2 pr-1.5">
+      <div className="flex h-9 shrink-0 items-center gap-1.5 border-b border-border pl-2.5 pr-1.5">
+        <Icon name="MessageQuestion" className="size-3.5 shrink-0" style={{ color: ATTENTION_TINT }} aria-hidden />
         <div role="tablist" aria-label="Rounds" className="flex h-full min-w-0 items-center gap-0.5 overflow-x-auto">
           {controller.rounds.map((round) => {
             const done = round.questions.filter((question) => controller.statusOf(question.id) === "done").length;
@@ -276,9 +278,7 @@ export function QuestionsPanel({ threadId, params }: PluginThreadPanelProps) {
                 onClick={() => setTab({ kind: "round", roundId: round.id })}
               >
                 Round {round.number}
-                <span className="font-normal tabular-nums text-[var(--subtle-foreground)]">
-                  {done}/{round.questions.length}
-                </span>
+                <CountChip done={done} total={round.questions.length} />
               </button>
             );
           })}
@@ -293,7 +293,7 @@ export function QuestionsPanel({ threadId, params }: PluginThreadPanelProps) {
             onClick={() => setTab({ kind: "summary" })}
           >
             Summary
-            <span className="font-normal tabular-nums text-[var(--subtle-foreground)]">{openCount} open</span>
+            <Chip tone={openCount > 0 ? "pending" : "done"}>{openCount} open</Chip>
           </button>
         </div>
       </div>

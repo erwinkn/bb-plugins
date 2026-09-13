@@ -10,7 +10,8 @@ import { type AnswerState, type ChangeSignal, type Round, REALTIME_CHANNEL, canS
 import { useQuestions } from "@/hooks/useQuestions";
 import { requestRound, takeRequestedRound } from "@/lib/panel-navigation";
 import { cn } from "@/lib/utils";
-import { Hint, PanelButton } from "./primitives";
+import { ATTENTION_TINT, CountChip, Hint, PanelButton } from "./primitives";
+import { Icon } from "@/components/ui/icon";
 import { QuestionEditor } from "./QuestionEditor";
 import { reportOutcome } from "./QuestionsPanel";
 
@@ -24,9 +25,12 @@ function RoundCard({ threadId, round, answers, cancel }: { threadId: string; rou
   }).length;
   return (
     <div className={cancel ? "flex items-center justify-end gap-2" : "my-1 flex max-w-[720px] flex-wrap items-center gap-2 rounded-md border border-border bg-[var(--surface-raised)] px-2.5 py-1.5 text-[12px] text-muted-foreground"}>
-      {!cancel && <><span className="text-foreground">
-        Round {round.number} — {round.questions.length} question{round.questions.length === 1 ? "" : "s"} ({submitted}/{round.questions.length})
+      {!cancel && <>
+      <Icon name="MessageQuestion" className="size-3.5 shrink-0" style={{ color: ATTENTION_TINT }} aria-hidden />
+      <span className="text-foreground">
+        Round {round.number} — {round.questions.length} question{round.questions.length === 1 ? "" : "s"}
       </span>
+      <CountChip done={submitted} total={round.questions.length} />
       <span className="flex-1" /></>}
       {cancel && <PanelButton small onClick={() => void cancel().catch((error) => toast.error(String(error)))}>Cancel</PanelButton>}
       <PanelButton

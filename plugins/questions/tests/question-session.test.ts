@@ -5,7 +5,7 @@ import { type ThreadState, emptyAnswer } from "../lib/model";
 
 function backend(threadId: string) {
   const state: ThreadState = {
-    threadId, summary: null, submissions: [], answers: [],
+    threadId, summary: null, submissions: [], answers: [], openRoundId: null,
     rounds: [{ id: "r", threadId, number: 1, mode: "inline", intro: null, createdAt: 1,
       questions: [{ id: "q", title: "Question?", help: null, select: null, options: [], cites: [], attachments: false, references: false, confidence: false }] }],
   };

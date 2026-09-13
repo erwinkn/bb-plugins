@@ -112,6 +112,37 @@ describe("Questions backend", () => {
     expect(h.send).not.toHaveBeenCalled();
   });
 
+  it("reports the open prompt in state and signals its close on cancel", async () => {
+    const h = await setup();
+    const publish = vi.spyOn(h.bb.realtime, "publish");
+    const call = h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Cancel me?" }] }, { threadId: "t", projectId: "proj_t" });
+    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
+    const roundId = (await h.state()).rounds[0]!.id;
+    expect((await h.state()).openRoundId).toBe(roundId);
+    expect(publish).toHaveBeenCalledWith("questions-changed", { threadId: "t", kind: "prompt-opened", roundId });
+    h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
+    expect(await call).toMatchObject({ isError: true });
+    // The question is still unanswered, yet nothing waits on the user any more.
+    expect((await h.state()).openRoundId).toBeNull();
+    expect(publish).toHaveBeenCalledWith("questions-changed", { threadId: "t", kind: "prompt-closed", roundId });
+  });
+
+  it("clears the open prompt from state when the round is submitted", async () => {
+    const h = await setup();
+    const publish = vi.spyOn(h.bb.realtime, "publish");
+    const call = h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Submit me?" }] }, { threadId: "t", projectId: "proj_t" });
+    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
+    const round = (await h.state()).rounds[0]!;
+    expect((await h.state()).openRoundId).toBe(round.id);
+    const q = round.questions[0]!;
+    await h.save(q, { ...emptyAnswer(), text: "Done" });
+    await h.submit([q.id]);
+    expect(JSON.parse(await call as string).answers[0].answer.text).toBe("Done");
+    expect((await h.state()).openRoundId).toBeNull();
+    expect(publish).toHaveBeenCalledWith("questions-changed", { threadId: "t", kind: "prompt-closed", roundId: round.id });
+    expect(h.harness.pendingInteractions).toHaveLength(0);
+  });
+
   it("renews a detached prompt hourly and stops after user dismissal", async () => {
     const h = await setup();
     await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });

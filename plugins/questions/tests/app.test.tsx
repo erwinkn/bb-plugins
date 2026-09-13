@@ -67,6 +67,7 @@ function backend(initial: Partial<ThreadState> = {}) {
     answers: [],
     summary: null,
     submissions: [],
+    openRoundId: null,
     ...initial,
   };
   const calls: { method: string; input: unknown }[] = [];
@@ -680,7 +681,9 @@ describe("Message directive", () => {
     const server = backend({ rounds: [round("r1", 1, Array.from({ length: 6 }, (_, i) => question(`q${i + 1}`)))] });
     const slot = mountDirective(server, "r1");
     const button = await slot.findByRole("button", { name: "Open" });
-    expect(slot.getByText("Round 1 — 6 questions (0/6)")).toBeTruthy();
+    expect(slot.getByText("Round 1 — 6 questions")).toBeTruthy();
+    const counter = slot.getByText("0/6");
+    expect(counter.getAttribute("data-tone")).toBe("pending");
     fireEvent.click(button);
     expect(slot.inspection.navigateCalls.at(-1)).toMatchObject({ method: "openThreadPanel" });
   });
@@ -691,10 +694,12 @@ describe("Message directive", () => {
       answers: [answer("q1", "r1", { ...emptyAnswer(), text: "Draft" }, 1)],
     });
     const slot = mountDirective(server, "r1");
-    await slot.findByText("Round 1 — 1 question (0/1)");
+    await slot.findByText("Round 1 — 1 question");
+    expect((await slot.findByText("0/1")).getAttribute("data-tone")).toBe("pending");
     server.state.answers[0]!.submitted = { ...emptyAnswer(), text: "Sent" };
     await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
-    await slot.findByText("Round 1 — 1 question (1/1)");
+    // Complete: the counter turns green and gains a check, the text still says it.
+    expect((await slot.findByText("1/1")).getAttribute("data-tone")).toBe("done");
   });
 
   it("opens the panel without params and selects the older round it was asked for", async () => {
@@ -816,7 +821,7 @@ describe("Header control", () => {
   }
 
   it("keeps the launcher after a failed refresh", async () => {
-    const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])], openRoundId: "r1" });
     const original = server.handlers.questions_state;
     let fail = false;
     server.handlers.questions_state = async () => { if (fail) throw new Error("offline"); return original(); };
@@ -828,14 +833,16 @@ describe("Header control", () => {
     expect(openThreadPanel).toHaveBeenCalledTimes(1);
   });
   it("shows the open count, opens the panel on click, and auto-opens once per new round", async () => {
-    const server = backend({ rounds: [round("r1", 1, [question("q1"), question("q2")])] });
+    const server = backend({ rounds: [round("r1", 1, [question("q1"), question("q2")])], openRoundId: "r1" });
     const { slot, openThreadPanel } = mountHeader(server);
     const button = await slot.findByRole("button", { name: "Questions, 2 open" });
     fireEvent.click(button);
     expect(openThreadPanel).toHaveBeenCalledTimes(1);
+    // Only the round whose prompt is open counts; round 1 is no longer waiting.
     server.state.rounds.push(round("r2", 2, [question("q3")]));
+    server.state.openRoundId = "r2";
     await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r2" });
-    await slot.findByRole("button", { name: "Questions, 3 open" });
+    await slot.findByRole("button", { name: "Questions, 1 open" });
     await waitFor(() => expect(openThreadPanel).toHaveBeenCalledTimes(2));
     // No params: the host keys tabs by action + params, and a second params
     // value would open a second Questions tab.
@@ -847,13 +854,41 @@ describe("Header control", () => {
   });
 
   it("does not open the panel for an inline round", async () => {
-    const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])], openRoundId: "r1" });
     const { slot, openThreadPanel } = mountHeader(server);
     await slot.findByRole("button", { name: "Questions, 1 open" });
-    server.state.rounds.push(round("r2", 2, [question("q2")], "inline"));
+    server.state.rounds.push(round("r2", 2, [question("q2"), question("q3")], "inline"));
+    server.state.openRoundId = "r2";
     await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r2" });
     await slot.findByRole("button", { name: "Questions, 2 open" });
     expect(openThreadPanel).not.toHaveBeenCalled();
+  });
+
+  it("disappears as soon as the prompt is cancelled, even with answers missing", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1"), question("q2")])], openRoundId: "r1" });
+    const { slot } = mountHeader(server);
+    await slot.findByRole("button", { name: "Questions, 2 open" });
+    server.state.openRoundId = null;
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "prompt-closed", roundId: "r1" });
+    await waitFor(() => expect(slot.container.querySelector("button")).toBeNull());
+  });
+
+  it("disappears once the round is submitted", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])], openRoundId: "r1" });
+    const { slot } = mountHeader(server);
+    await slot.findByRole("button", { name: "Questions, 1 open" });
+    server.state.answers.push(answer("q1", "r1", null, 1, { ...emptyAnswer(), text: "Sent" }));
+    server.state.openRoundId = null;
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "prompt-closed", roundId: "r1" });
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
+    await waitFor(() => expect(slot.container.querySelector("button")).toBeNull());
+  });
+
+  it("renders nothing for answered history without an open prompt", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
+    const { slot } = mountHeader(server);
+    await waitFor(() => expect(server.calls.some((call) => call.method === "questions_state")).toBe(true));
+    expect(slot.container.querySelector("button")).toBeNull();
   });
 
   it("renders nothing for a thread without questions", async () => {

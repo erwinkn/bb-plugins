@@ -1,10 +1,13 @@
-// Thread header control: shows how many questions are open and opens the
-// Questions panel. A new round opens the panel once; a reload never does.
+// Thread header control: while a round's native prompt is open, shows how
+// many of its questions still need an answer and opens the Questions panel.
+// Submitting, cancelling, or stopping the prompt removes the entry. A new
+// round opens the panel once; a reload never does.
 import { useEffect, useRef, useState } from "react";
 import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../server";
 import { Icon } from "@/components/ui/icon";
+import { ATTENTION_TINT } from "./primitives";
 import { type ChangeSignal, REALTIME_CHANNEL, answerStatus } from "@/lib/model";
 import { cn } from "@/lib/utils";
 import { requestRound, takeRequestedRound } from "@/lib/panel-navigation";
@@ -53,16 +56,16 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
     rpc.call("questions_state", { threadId: forThread }).then(
       (state) => {
         if (!mounted.current || seq !== requestSeq.current || forThread !== threadId) return;
-        const answers = new Map(state.answers.map((item) => [item.questionId, item]));
-        let openCount = 0;
-        let total = 0;
-        for (const round of state.rounds) {
-          for (const question of round.questions) {
-            total += 1;
-            if (answerStatus(answers.get(question.id)) !== "done") openCount += 1;
-          }
+        // Only the round whose prompt is open counts: a submitted or dismissed
+        // round no longer waits on the user even if answers are missing.
+        const waiting = state.rounds.find((round) => round.id === state.openRoundId) ?? null;
+        if (waiting === null) {
+          setCounts(null);
+        } else {
+          const answers = new Map(state.answers.map((item) => [item.questionId, item]));
+          const openCount = waiting.questions.filter((question) => answerStatus(answers.get(question.id)) !== "done").length;
+          setCounts({ open: openCount, total: waiting.questions.length });
         }
-        setCounts({ open: openCount, total });
         // Only a panel round opens the panel; inline rounds stay in the thread.
         const created = openRoundId ? state.rounds.find((round) => round.id === openRoundId) : undefined;
         if (created && created.mode === "panel" && rememberOpened(forThread, created.id)) open(created.id);
@@ -89,7 +92,7 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
       )}
       onClick={() => open()}
     >
-      <Icon name="MessageQuestion" className="size-3.5" />
+      <Icon name="MessageQuestion" className="size-3.5" style={{ color: ATTENTION_TINT }} aria-hidden />
       {isCompactViewport ? null : <span>Questions</span>}
       {counts.open > 0 ? <span className="tabular-nums text-[var(--subtle-foreground)]">{counts.open}{isCompactViewport ? "" : " open"}</span> : null}
     </button>
