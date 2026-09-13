@@ -113,7 +113,10 @@ times; never check out another branch there, and never run `git rebase` or
    (`git status`, `git pull --ff-only`), then spawns a child thread with the
    brief: plugin directory, expected behavior, and verification commands. The
    child works directly in `~/Code/bb-plugins/plugins/<name>` and may run
-   `npm run typecheck`, `npm test`, and `npm run build` there.
+   `npm run typecheck`, `npm test`, and `npm run build` there. Spawn children
+   with `--permission-mode full`: with `accept-edits`, the child's first file
+   edits still stop for approval, and permission mode can only be raised
+   afterwards through a follow-up message, which queues behind that approval.
 3. The child reports back with the files changed and what it verified. It does
    not commit.
 4. The orchestrator reviews the diff, runs `bb plugin build
