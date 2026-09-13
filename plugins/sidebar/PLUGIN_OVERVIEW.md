@@ -46,8 +46,8 @@
   type).
 - `lib/library.ts`: the ancestor rule that counts descendants of members as
   saved.
-- `lib/library-store.ts`: key-value library document and archive/delete
-  cleanup.
+- `lib/library-store.ts`: key-value library document, archive/delete
+  cleanup, and the saved flag mirrored into thread plugin metadata.
 - `lib/use-library.ts`: library loading, local cache, and realtime refresh.
 - `lib/project-schema.ts`, `lib/project-contract.ts`, `lib/projects-rpc.ts`,
   `lib/use-projects.ts`: project inventory (folders, hosts) and management RPC

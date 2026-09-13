@@ -29,10 +29,13 @@ export default function plugin(bb: BbPluginApi) {
       return result;
     },
   });
-  bb.events.on("thread.archived", () =>
-    bb.realtime.publish("archives-changed", {}),
-  );
-  bb.events.on("thread.deleted", () =>
-    bb.realtime.publish("archives-changed", {}),
-  );
+  // Every change to the archive set invalidates the frontend's list, including
+  // restores made outside the plugin (BB's own UI, the CLI, other clients).
+  for (const event of [
+    "thread.archived",
+    "thread.unarchived",
+    "thread.deleted",
+  ] as const) {
+    bb.events.on(event, () => bb.realtime.publish("archives-changed", {}));
+  }
 }

@@ -265,6 +265,15 @@ actions marks the thread; **Remove from Library** unmarks it. Each save
 covers the whole family — children of a saved thread count as saved,
 including children created later — so one action keeps a family together.
 
+Each save is mirrored into the thread's plugin metadata as
+`{ saved: true, savedAt }` in the `sidebar` namespace, and the keys are removed
+when the thread leaves the library by unsave or archive (a deleted thread takes
+its metadata with it). The flag is informational for other plugins and agents
+that read thread metadata; the key-value list stays the index and the flag is
+never read back to rebuild it. Entries saved before the flag existed receive
+it once, on the first start after the upgrade. A failed metadata write is
+logged and does not affect the library.
+
 Saved threads leave the active view in every scope. The **Library** scope
 lists saved families instead, with live statuses, sorting, grouping, and
 Show more as usual; while another scope is selected, a status icon on the
@@ -294,7 +303,9 @@ by the plugin.
 
 ## Local installation
 
-Requires BB 0.42.1 or later and Plugin SDK 0.4.47 or later.
+Requires BB 0.43.1 or later and Plugin SDK 0.4.87 or later. The saved-flag
+mirror uses per-thread plugin metadata, which arrived in BB 0.43.1; every other
+feature also works on BB 0.43.0.
 
 ```sh
 cd plugins/sidebar
@@ -340,6 +351,8 @@ active threads. Restore a thread before using pin, read, or split actions.
 
 The backend reads visible archives in pages of 200 through BB's public SDK only
 while the setting is enabled. Hidden background threads stay hidden. The list
-refreshes on archive and delete events, plugin restores, sidebar membership
-changes, and reconnection. Failed loads show a Retry button; active threads
+refreshes on BB's archive, unarchive, and delete events, plugin restores,
+sidebar membership changes, and reconnection. A thread restored outside the
+plugin leaves the Archived section without a reload; it does not rejoin the
+library. Failed loads show a Retry button; active threads
 remain available.
