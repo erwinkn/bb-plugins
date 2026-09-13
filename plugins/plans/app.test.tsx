@@ -110,8 +110,8 @@ function fakeBackend(initial: Plan[]) {
       setDeliveryMode: ({ id, mode }: { id: string; mode: Plan["deliveryMode"] }) => {
         const plan = get(id); plan.deliveryMode = mode; return plan;
       },
-      deliveryStatus: () => [] as Array<{ id: string; kind: string; state: "pending" | "failed" | "dropped" | "delivered"; attempts: number; nextAttemptAt: number }>,
-      annotationDeliveryStatus: () => [] as Array<{ id: string; annotationId: string; kind: string; state: "pending" | "failed" | "dropped" | "delivered"; attempts: number; nextAttemptAt: number }>,
+      deliveryStatus: () => [] as Array<{ id: string; kind: string; state: "pending" | "failed" | "dropped" | "cancelled" | "delivered"; attempts: number; nextAttemptAt: number }>,
+      annotationDeliveryStatus: () => [] as Array<{ id: string; annotationId: string; kind: string; state: "pending" | "failed" | "dropped" | "cancelled" | "delivered"; attempts: number; nextAttemptAt: number }>,
       remove: ({ id }: { id: string }) => {
         plans.delete(id);
         return { ok: true as const };
@@ -416,6 +416,17 @@ describe("live review", { timeout: 30000 }, () => {
     expect(slot.getByText("2 open")).toBeTruthy();
   });
 
+  it("labels annotations from a cancelled queued message without counting them as failures", async () => {
+    const backend = fakeBackend([makePlan({ comments: [comment({ number: 1 })] })]);
+    const item = { id: "outbox-1", annotationId: "c1", kind: "annotation", state: "cancelled" as const, attempts: 0, nextAttemptAt: now };
+    slot = render(threadAction, { threadId: "thr_1", params: null }, { rpc: { ...backend.rpc, deliveryStatus: () => [item], annotationDeliveryStatus: () => [item] } });
+    await showComments();
+    const label = await slot.findByText("Not delivered · cancelled");
+    expect(label.closest("article")!.textContent).toContain("#1");
+    expect(slot.getByText("1 open")).toBeTruthy();
+    expect(slot.queryByText(/not delivered$/)).toBeNull();
+  });
+
   it("changes the delivery mode with checked menu items", async () => {
     const backend = fakeBackend([makePlan()]);
     slot = render(threadAction, { threadId: "thr_1", params: null }, { rpc: backend.rpc });
@@ -627,6 +638,15 @@ it("shows a dropped approval without claiming delivery", async () => {
     ...backend.rpc, deliveryStatus: () => [{ id: "approval", kind: "approved", state: "dropped", attempts: 0, nextAttemptAt: 0 }],
   } });
   await slot.findByText("Approval not delivered. The linked thread is archived or deleted.");
+  expect(slot.queryByText("Approval sent to the thread")).toBeNull();
+});
+
+it("shows a cancelled approval without claiming delivery", async () => {
+  const backend = fakeBackend([makePlan({ status: "approved" })]);
+  slot = render(threadAction, { threadId: "thr_1", params: null }, { rpc: {
+    ...backend.rpc, deliveryStatus: () => [{ id: "approval", kind: "approved", state: "cancelled", attempts: 0, nextAttemptAt: 0 }],
+  } });
+  await slot.findByText(/Approval not delivered · cancelled/);
   expect(slot.queryByText("Approval sent to the thread")).toBeNull();
 });
 

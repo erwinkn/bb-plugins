@@ -3,7 +3,7 @@ import type { ReviewEvent } from "../lib/message";
 import type { PlanStore } from "./store";
 
 export interface OutboxItem {
-  id: string; planId: string; event: ReviewEvent; state: "pending" | "queued" | "delivered" | "dropped";
+  id: string; planId: string; event: ReviewEvent; state: "pending" | "queued" | "delivered" | "dropped" | "cancelled";
   attempts: number; nextAttemptAt: number; createdAt: number; deliveredAt?: number;
 }
 interface Row { id: string; plan_id: string; payload: string; state: OutboxItem["state"]; attempts: number; next_attempt_at: number }

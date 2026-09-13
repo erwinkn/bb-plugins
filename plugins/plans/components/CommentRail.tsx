@@ -27,6 +27,8 @@ export interface CommentActions {
 interface CommentRailProps {
   comments: PlanComment[];
   failedAnnotations?: ReadonlySet<string>;
+  /** In a queued message the user deleted before dispatch; not resent. */
+  cancelledAnnotations?: ReadonlySet<string>;
   anchors: AnchorMap;
   activeCommentId: string | null;
   onActivate: (commentId: string | null) => void;
@@ -48,6 +50,7 @@ interface CommentRailProps {
 export function CommentRail({
   comments,
   failedAnnotations,
+  cancelledAnnotations,
   anchors,
   activeCommentId,
   onActivate,
@@ -91,6 +94,7 @@ export function CommentRail({
                 <CommentCard
                   comment={comment}
                   failed={failedAnnotations?.has(comment.id) ?? false}
+                  cancelled={cancelledAnnotations?.has(comment.id) ?? false}
                   anchor={anchors[comment.id]}
                   isActive={comment.id === activeCommentId}
                   isHovered={comment.id === hoveredCommentId}
@@ -206,6 +210,7 @@ function anchorNote(anchor: QuoteMatch | undefined): string | null {
 interface CommentCardProps {
   comment: PlanComment;
   failed: boolean;
+  cancelled: boolean;
   anchor?: QuoteMatch;
   isActive: boolean;
   isHovered: boolean;
@@ -215,7 +220,7 @@ interface CommentCardProps {
   canEdit: boolean;
 }
 
-function CommentCard({ comment, failed, anchor, isActive, isHovered, onActivate, onHover, actions, canEdit }: CommentCardProps) {
+function CommentCard({ comment, failed, cancelled, anchor, isActive, isHovered, onActivate, onHover, actions, canEdit }: CommentCardProps) {
   const [isEditing, setEditing] = useState(false);
   const [body, setBody] = useState(comment.body);
   const [isBusy, setBusy] = useState(false);
@@ -331,7 +336,7 @@ function CommentCard({ comment, failed, anchor, isActive, isHovered, onActivate,
         <span className="tabular-nums">#{comment.number}</span>
         <KindBadge kind={kind} />
         <span className="rounded border border-border px-1 text-[11px]">
-          {withdrawn ? "Withdrawn" : failed ? "Not delivered · retrying" : stateLabel(comment)}
+          {withdrawn ? "Withdrawn" : failed ? "Not delivered · retrying" : cancelled ? "Not delivered · cancelled" : stateLabel(comment)}
         </span>
         <span aria-hidden>·</span>
         <time dateTime={new Date(comment.createdAt).toISOString()}>

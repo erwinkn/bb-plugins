@@ -5,6 +5,7 @@ import { addAnnotationSchema, agentReplySchema, bodySchema, createSchema, delive
 import { createStore } from "./server/store";
 import { createOutbox } from "./server/outbox";
 import { LiveSession, type SessionOptions } from "./server/session";
+import { createMetadata } from "./server/metadata";
 import type { ReviewEvent } from "./lib/message";
 
 export type PlanServiceOptions = SessionOptions;
@@ -17,6 +18,7 @@ const annotationEvent = (item: PlanComment): ReviewEvent => ({
 export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions = {}) {
   const store = createStore(bb);
   const outbox = createOutbox(store);
+  const metadata = createMetadata(bb, store);
   const sessions = new Map<string, LiveSession>();
   const session = (id: string) => {
     let value = sessions.get(id);
@@ -56,6 +58,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       createdAt: now, updatedAt: now, versions: [{ id: randomUUID(), number: 1, markdown, createdAt: now, source }], comments: [],
     }));
     bb.realtime.publish("plan-submitted", { id: plan.id, threadId: plan.threadId });
+    void metadata.sync(plan.id);
     return plan;
   };
   const addAnnotation = (input: z.input<typeof addAnnotationSchema>) => {
@@ -100,6 +103,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     const version = { id: randomUUID(), number: plan.versions.at(-1)!.number + 1, markdown, summary, resolves: [...new Set(addressed.map((item) => item.id))], source: "agent" as const, createdAt: Date.now() };
     plan.versions.push(version);
     mutate(plan, () => { for (const item of addressed) settle(planId, item); });
+    void metadata.sync(planId);
     return { planId, versionId: version.id, versionNumber: version.number };
   };
   const reply = (input: z.input<typeof agentReplySchema>) => {
@@ -173,7 +177,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     plan.status = "approved"; plan.approvalRequestId = requestId;
     const version = plan.versions.at(-1)!;
     const saved = mutate(plan, () => { outbox.add(id, { kind: "approved", versionId: version.id, versionNumber: version.number }); });
-    session(id).release(); return saved;
+    session(id).release(); void metadata.sync(id); return saved;
   };
   const setDeliveryMode = (input: { id: string; mode: Plan["deliveryMode"] }) => {
     const { id, mode } = z.object({ id: idSchema, mode: deliveryModeSchema }).parse(input);
@@ -195,13 +199,15 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
         store.db.prepare("DELETE FROM plans WHERE id = ?").run(id);
       })();
       await live.dispose();
-      sessions.delete(id); store.changed(id); return { ok: true as const };
+      sessions.delete(id); store.changed(id);
+      if (plan.threadId) void metadata.clear(plan.threadId, id);
+      return { ok: true as const };
     } catch (error) { live.resume(); throw error; }
   };
   const deliveryStatus = ({ id }: { id: string }) => {
     get({ id });
     return outbox.list(id).filter((item) => item.state !== "delivered" || item.event.kind === "approved").map((item) => ({
-      id: item.id, kind: item.event.kind, state: item.state === "dropped" || item.state === "delivered" ? item.state : item.attempts ? "failed" as const : "pending" as const, attempts: item.attempts, nextAttemptAt: item.nextAttemptAt,
+      id: item.id, kind: item.event.kind, state: item.state === "dropped" || item.state === "cancelled" || item.state === "delivered" ? item.state : item.attempts ? "failed" as const : "pending" as const, attempts: item.attempts, nextAttemptAt: item.nextAttemptAt,
     }));
   };
   const annotationDeliveryStatus = ({ id }: { id: string }) => {
@@ -227,8 +233,16 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
   bb.events.on("message.dispatched", ({ entry }) => {
     for (const plan of store.all()) if (plan.threadId === entry.threadId) session(plan.id).dispatched(entry.id, entry.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
   });
+  bb.events.on("message.cancelled", ({ entry }) => {
+    for (const plan of store.all()) if (plan.threadId === entry.threadId && plan.delivery.queuedMessageId === entry.id) session(plan.id).cancelled(entry.id);
+  });
+  bb.events.on("thread.unarchived", ({ thread }) => {
+    for (const plan of store.all()) if (plan.threadId === thread.id) session(plan.id).unarchived();
+  });
+  /** The thread's active plan from metadata, confirmed against the database. */
+  const activePlan = ({ threadId }: { threadId: string }) => metadata.read(idSchema.parse(threadId));
   for (const plan of store.all()) session(plan.id).resume();
-  bb.onDispose(async () => { await Promise.all([...sessions.values()].map((live) => live.dispose())); });
+  bb.onDispose(async () => { await Promise.all([...[...sessions.values()].map((live) => live.dispose()), metadata.settled()]); });
   const rpc = { list, get, create: (input: z.input<typeof createSchema>) => create(input), addAnnotation, withdrawAnnotation, resolveAnnotation, replyToAnnotation, updateAnnotation, approve, setDeliveryMode, remove, deliveryStatus, annotationDeliveryStatus };
-  return { ...rpc, rpc, submit, update, reply, handoff, version };
+  return { ...rpc, rpc, submit, update, reply, handoff, version, activePlan, metadataSettled: metadata.settled };
 }

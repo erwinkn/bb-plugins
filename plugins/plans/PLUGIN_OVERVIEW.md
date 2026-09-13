@@ -31,9 +31,11 @@ The plugin does not control native provider plan modes.
 
 ## Requirements and storage
 
-Requires BB 0.42.1 or later.
+Requires BB 0.43.1 or later.
 No separate account or service is required.
 The plugin database stores plans, versions, annotations with replies, and an outbox of events.
+Each submit, update, and approval writes `{ activePlanId, status, version }` to the thread's plugin metadata under the `plans` namespace.
+The database stays authoritative and every lookup confirms that the plan belongs to the thread.
 Delivered and dropped rows stay until the plan is deleted.
 Migration runs for all plans at plugin start.
 It drops old pending deliveries and moves their unsent annotations to the outbox.
@@ -47,6 +49,8 @@ If the provider rejects steering, the plugin sends that message with `queue-if-a
 The selected mode stays unchanged, and the panel shows a notice.
 The plugin drops feedback for an archived or deleted thread and shows a notice in the panel.
 It does not replay that feedback after the thread is restored.
+When the thread is unarchived, it clears the notice and restores the review prompt for an open plan.
+A queued message deleted from the thread queue marks its batch cancelled: the cards show **Not delivered · cancelled**, nothing is resent, and the review prompt returns.
 Draft text stays in the browser.
 Agent work uses the thread's provider account.
 

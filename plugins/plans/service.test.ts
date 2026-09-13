@@ -13,8 +13,18 @@ async function setup(send = vi.fn<Send>(async () => sent()), options: Parameters
   const update = vi.fn<BbPluginApi["sdk"]["threads"]["queuedMessages"]["update"]>(async () => entry());
   const listQueue = vi.fn(async () => [entry()]);
   const deleteQueue = vi.fn(async () => ({ ok: true as const }));
+  /** Thread plugin metadata by thread ID, as the server would keep it for the plans namespace. */
+  const metadata: Record<string, Record<string, unknown>> = {};
+  const getPluginMetadata = async ({ threadId }: { threadId: string }) => ({ ...(metadata[threadId] ?? {}) });
+  const updatePluginMetadata = async ({ threadId, set, remove }: { threadId: string; set?: Record<string, unknown>; remove?: string[] }) => {
+    const namespace = (metadata[threadId] ??= {});
+    Object.assign(namespace, set ?? {});
+    for (const key of remove ?? []) delete namespace[key];
+    if (!Object.keys(namespace).length) delete metadata[threadId];
+    return { ...namespace };
+  };
   const host = createFakePluginHost({ pluginId: "plans", sdk: {
-    threads: { get: async () => makeThreadResponse({ id: "thread-1", projectId: "project-1", environmentId: "env-1" }), send, queuedMessages: { update, list: listQueue, delete: deleteQueue } },
+    threads: { get: async () => makeThreadResponse({ id: "thread-1", projectId: "project-1", environmentId: "env-1" }), send, queuedMessages: { update, list: listQueue, delete: deleteQueue }, getPluginMetadata, updatePluginMetadata },
     projects: { get: async () => ({ id: "project-1", name: "Test project" }) },
     environments: { get: async () => ({ id: "env-1", path: "/workspace", hostId: "host-1" }) },
     files: { read: async () => ({ content: "# File plan\nKeep schedules.", contentEncoding: "utf8" }) },
@@ -25,7 +35,7 @@ async function setup(send = vi.fn<Send>(async () => sent()), options: Parameters
   const plan = await rpc("create", { title: "A plan", markdown: "# A plan\n\nKeep the existing data.", threadId: "thread-1" });
   const annotate = (body = "Keep schedules too.", kind = "comment") => rpc("addAnnotation", { id: plan.id, quote: "existing data", body, kind });
   const tool = (name: string, input: unknown, threadId = "thread-1") => host.harness.behavior.callAgentTool(name, input, { threadId });
-  return { ...host, rpc, plan, send, update, listQueue, deleteQueue, annotate, tool };
+  return { ...host, rpc, plan, send, update, listQueue, deleteQueue, annotate, tool, metadata };
 }
 beforeEach(() => vi.useFakeTimers());
 afterEach(async () => {
@@ -643,4 +653,109 @@ it("requires a comment or question body with the contract message", () => {
   for (const kind of ["comment", "ask"]) {
     expect(() => addAnnotationSchema.parse({ id: "plan", quote: "data", kind, body: " " })).toThrow("Write a comment or question before saving.");
   }
+});
+
+describe("bb 0.43 capabilities", () => {
+  it("points thread metadata at the plan on submit, update and approval, and moves it on remove", async () => {
+    const { tool, rpc, plan: first, metadata, harness } = await setup();
+    await tick(0);
+    expect(metadata["thread-1"]).toEqual({ activePlanId: first.id, status: "open", version: 1 });
+    const submitted = JSON.parse(await tool("plans_submit", { title: "New", markdown: "New plan" }) as string);
+    await tick(0);
+    expect(metadata["thread-1"]).toEqual({ activePlanId: submitted.planId, status: "open", version: 1 });
+    await tool("plans_update", { planId: submitted.planId, markdown: "Second draft", summary: "Edit" }); await tick(0);
+    expect(metadata["thread-1"]).toEqual({ activePlanId: submitted.planId, status: "open", version: 2 });
+    const plan = await rpc("get", { id: submitted.planId });
+    await rpc("approve", { id: plan.id, requestId: "approval", versionId: plan.versions.at(-1)!.id }); await tick();
+    expect(metadata["thread-1"]).toEqual({ activePlanId: plan.id, status: "approved", version: 2 });
+    expect(harness.inspection.sdk.callsTo("threads.updatePluginMetadata").at(-1)![0]).toMatchObject({ threadId: "thread-1", pluginId: "plans" });
+    await rpc("remove", { id: plan.id }); await tick(0);
+    expect(metadata["thread-1"]).toEqual({ activePlanId: first.id, status: "open", version: 1 });
+    await rpc("remove", { id: first.id }); await tick(0);
+    expect(metadata["thread-1"]).toBeUndefined();
+    expect(harness.inspection.sdk.callsTo("threads.updatePluginMetadata").at(-1)![0]).toMatchObject({ remove: ["activePlanId", "status", "version"] });
+  });
+  it("keeps the plan document when a metadata write fails", async () => {
+    const { tool, rpc, harness } = await setup();
+    harness.inspection.sdk.stub("threads.updatePluginMetadata", async () => { throw new Error("metadata offline"); });
+    const submitted = JSON.parse(await tool("plans_submit", { title: "New", markdown: "New plan" }) as string);
+    await tick(0);
+    expect((await rpc("get", { id: submitted.planId })).title).toBe("New");
+    expect(harness.inspection.logEntries.some((entry) => /metadata.*not updated/.test(entry.message))).toBe(true);
+  });
+  it("resolves bb plans get without an ID through the pointer and verifies ownership in the database", async () => {
+    const { harness, plan, metadata } = await setup(); await tick(0);
+    const result = await harness.behavior.runCli(["get"], { threadId: "thread-1" });
+    expect(result.exitCode).toBe(0); expect(JSON.parse(result.stdout).id).toBe(plan.id);
+    // A pointer another client wrote for a plan that belongs to a different thread is ignored.
+    metadata["thread-2"] = { activePlanId: plan.id, status: "open", version: 1 };
+    const foreign = await harness.behavior.runCli(["get"], { threadId: "thread-2" });
+    expect(foreign.exitCode).toBe(1); expect(foreign.stderr).toContain("No active plan");
+    metadata["thread-1"] = { activePlanId: 42 };
+    expect((await harness.behavior.runCli(["get"], { threadId: "thread-1" })).exitCode).toBe(1);
+    expect((await harness.behavior.runCli(["get"], {})).stderr).toContain("Pass a plan ID");
+  });
+  it("marks a cancelled queued batch as not delivered, resends nothing, and restores the review prompt", async () => {
+    const send = vi.fn<Send>(async () => ({ ok: true, delivery: "queued", queuedMessage: entry() }));
+    const { annotate, harness, rpc, plan, tool, bb } = await setup(send);
+    await tool("plans_handoff", { planId: plan.id });
+    await annotate(); await tick();
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+    await harness.behavior.emitThreadEvent("message.cancelled", { entry: entry("other-row") });
+    expect((await rpc("get", { id: plan.id })).delivery.queuedMessageId).toBe("queue-1");
+    await harness.behavior.emitThreadEvent("message.cancelled", { entry: entry() });
+    const cancelled = await rpc("get", { id: plan.id });
+    expect(cancelled.delivery).toMatchObject({ queuedMessageId: null, itemIds: [] });
+    expect(cancelled.comments[0]!.deliveredAt).toBeNull();
+    expect(bb.storage.database().prepare("SELECT state FROM outbox").all()).toEqual([{ state: "cancelled" }]);
+    expect(await harness.behavior.callRpc("annotationDeliveryStatus", { id: plan.id })).toEqual([expect.objectContaining({ state: "cancelled", annotationId: cancelled.comments[0]!.id })]);
+    expect(harness.inspection.pendingInteractions).toHaveLength(1);
+    await tick(600_000); expect(send).toHaveBeenCalledTimes(1);
+    await annotate("Later"); await tick();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(send.mock.calls[1])).toContain("Later");
+    expect(JSON.stringify(send.mock.calls[1])).not.toContain("Keep schedules too.");
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+  });
+  it("treats a row cancelled during an append as not delivered and sends only the new batch", async () => {
+    const send = vi.fn<Send>().mockResolvedValueOnce({ ok: true, delivery: "queued", queuedMessage: entry() }).mockResolvedValue({ ok: true, delivery: "queued", queuedMessage: entry("queue-2") });
+    const { annotate, harness, update, bb, rpc, plan } = await setup(send);
+    await annotate("First"); await tick();
+    let fail!: () => void;
+    update.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = () => reject(new Error("Queue row not found")); }));
+    await annotate("Second"); await tick();
+    expect(update).toHaveBeenCalledTimes(1);
+    await harness.behavior.emitThreadEvent("message.cancelled", { entry: entry() });
+    fail(); await tick();
+    expect(bb.storage.database().prepare("SELECT state FROM outbox ORDER BY rowid").all()).toEqual([{ state: "cancelled" }, { state: "queued" }]);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(send.mock.calls[1])).toContain("Second");
+    expect(JSON.stringify(send.mock.calls[1])).not.toContain("First");
+    const after = await rpc("get", { id: plan.id });
+    expect(after.comments.map((item) => item.deliveredAt)).toEqual([null, null]);
+    expect(after.delivery.queuedMessageId).toBe("queue-2");
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+  });
+  it("clears the unavailable notice and restores the prompt on unarchive without replaying dropped feedback", async () => {
+    const { annotate, harness, rpc, plan, send, tool } = await setup();
+    const getThread = vi.fn(async () => makeThreadResponse({ id: "thread-1", archivedAt: 1 }));
+    harness.inspection.sdk.stub("threads.get", getThread);
+    await tool("plans_handoff", { planId: plan.id });
+    await annotate(); await tick();
+    expect((await rpc("get", { id: plan.id })).delivery.notice).toContain("archived or deleted");
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+    getThread.mockResolvedValue(makeThreadResponse({ id: "thread-1" }));
+    await harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "other" }) });
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+    await harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "thread-1" }) });
+    const restored = await rpc("get", { id: plan.id });
+    expect(restored.delivery.notice).toBeNull();
+    expect(restored.comments[0]!.deliveredAt).toBeNull();
+    expect(harness.inspection.pendingInteractions).toHaveLength(1);
+    await tick(600_000); expect(send).not.toHaveBeenCalled();
+    await rpc("approve", { id: plan.id, requestId: "approval", versionId: plan.versions[0]!.id }); await tick();
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+    await harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "thread-1" }) });
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+  });
 });
