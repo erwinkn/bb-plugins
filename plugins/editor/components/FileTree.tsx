@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ancestorsOf, buildTree, filterTree, type FlatEntry, type TreeNode } from "@/lib/file-tree";
+import { ancestorsOf, buildTree, filterTree, type FlatEntry, type LinkInfo, type TreeNode } from "@/lib/file-tree";
 import { copyText } from "@/lib/editor-commands";
 import { cn } from "@/lib/utils";
 import { ContextMenu, type MenuState } from "./ContextMenu";
@@ -396,7 +396,7 @@ function Rows(props: RowsProps) {
                   else onOpenFile(node.path, { newTab: event.metaKey || event.ctrlKey });
                 }}
                 data-path={node.path}
-                title={node.path}
+                title={rowTitle(node)}
                 aria-current={isActive ? "true" : undefined}
                 style={{ paddingLeft: 6 + level * INDENT_PER_LEVEL_PX }}
                 className={cn(
@@ -420,6 +420,7 @@ function Rows(props: RowsProps) {
                   )}
                 </span>
                 <span className="truncate">{node.name}</span>
+                {node.link !== null ? <LinkBadge link={node.link} directory={isDirectory} /> : null}
               </button>
               {isDirectory ? (
                 <div className="absolute top-0 right-1 flex h-6 items-center gap-0.5 opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
@@ -445,6 +446,33 @@ function Rows(props: RowsProps) {
         );
       })}
     </>
+  );
+}
+
+/** The row's hover text: its path, and for a symbolic link what it points at. */
+function rowTitle(node: TreeNode): string {
+  if (node.link === null) return node.path;
+  return `${node.path} \u2022 ${node.link.broken ? "Broken symbolic link" : "Symbolic link"} \u2192 ${node.link.target}`;
+}
+
+/**
+ * VS Code's explorer decoration for a symbolic link: \u2937 at the row's end,
+ * or ? for one whose target is missing. A folder's badge yields to the
+ * hover actions drawn over the same spot.
+ */
+function LinkBadge({ link, directory }: { link: LinkInfo; directory: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      data-link={link.broken ? "broken" : "symlink"}
+      className={cn(
+        "ml-auto shrink-0 pl-1 text-xs leading-none",
+        link.broken ? "text-destructive" : "text-muted-foreground",
+        directory && "transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
+      )}
+    >
+      {link.broken ? "?" : "\u2937"}
+    </span>
   );
 }
 

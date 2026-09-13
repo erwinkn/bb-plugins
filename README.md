@@ -1052,6 +1052,13 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
 - **Ask:** let a plugin read its own stored-but-undeclared setting keys (or a `storedKeys` list) so migrations can warn or adapt.
 - **Status:** not filed. Suggested title: `Expose stored-but-undeclared plugin setting keys for migration checks`.
 
+### Host directory listings and file reads do not report symbolic links (2026-09-13)
+
+- **Where:** `bb.sdk.hosts.directory` (host daemon listing) and `bb.sdk.files.read` on BB 0.42.x.
+- **Symptom:** The daemon lists a symlink under its target's kind (`file` or `directory`) with no link flag or target, and a file read follows the link without saying so. The editor plugin can mark links only for workspaces on the local host, where it reads the directory itself; on a remote host they show as plain entries.
+- **Ask:** add `isSymbolicLink` (and ideally the link target, plus a broken marker for a dangling link) to directory entries, and a `symlinkTarget`/`realPath` to file read results, the way VS Code's file stat carries a `SymbolicLink` type bit alongside `File`/`Directory`.
+- **Status:** not filed. Suggested title: `Report symbolic links in host directory listings and file reads`.
+
 ### `threads.send` racing a queue-drain turn start returns HTTP 500 (2026-09-13)
 
 - **Where:** BB 0.43.1, plugin SDK `threads.send` (`mode: "queue-if-active"`)

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import path from "node:path";
@@ -138,6 +138,8 @@ test("tree lists one level locally, prefetches the next, and search scans the fi
   writeFileSync(path.join(root, "src", "index.ts"), "");
   writeFileSync(path.join(root, "src", "deep", "nested.ts"), "");
   writeFileSync(path.join(root, "readme.md"), "");
+  symlinkSync("src", path.join(root, "src-link"));
+  symlinkSync("missing.md", path.join(root, "broken.md"));
 
   const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
   t.after(() => harness.lifecycle.dispose());
@@ -146,11 +148,16 @@ test("tree lists one level locally, prefetches the next, and search scans the fi
   const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
   // The level below the root resolved ahead of its expand: `src` is no
   // longer deferred and its rows are already here. `src/deep` stays lazy.
+  // A symlinked directory resolves the same way and keeps its link.
   assert.deepEqual(listing.entries, [
+    { path: "broken.md", kind: "file", link: { target: "missing.md", broken: true } },
     { path: "readme.md", kind: "file" },
     { path: "src", kind: "directory" },
+    { path: "src-link", kind: "directory", link: { target: "src" } },
     { path: "src/deep", kind: "directory", deferred: true },
     { path: "src/index.ts", kind: "file" },
+    { path: "src-link/deep", kind: "directory", deferred: true },
+    { path: "src-link/index.ts", kind: "file" },
   ]);
   const inner = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source, subpath: "src" }));
   assert.deepEqual(inner.entries, [
@@ -161,6 +168,11 @@ test("tree lists one level locally, prefetches the next, and search scans the fi
   // Search sees files in directories the tree never listed.
   const found = rpcContract.search.output.parse(await harness.behavior.callRpc("search", { source, query: "nested" }));
   assert.deepEqual(found.matches, [{ path: "src/deep/nested.ts" }]);
+  // Opening a dangling link names the missing target instead of a raw error.
+  assert.deepEqual(await harness.behavior.callRpc("read", { path: "broken.md", source }), {
+    kind: "unsupported",
+    reason: "This symbolic link's target is missing: missing.md",
+  });
 });
 
 test("tree and search go through the daemon for another host's workspace", async (t) => {

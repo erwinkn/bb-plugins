@@ -8,13 +8,14 @@
  * it searches its own index (`listLocalFiles`).
  *
  * Skipped entirely: VS Code's default `files.exclude` (`.git`, `.hg`,
- * `.svn`, `.DS_Store`, `Thumbs.db`). Directory symlinks list as deferred
- * folders only when their target stays inside the workspace.
+ * `.svn`, `.DS_Store`, `Thumbs.db`). Symlinks carry their target; directory
+ * symlinks list as deferred folders only when their target stays inside the
+ * workspace, and a dangling link lists as a broken file.
  */
-import { opendir, realpath, stat } from "node:fs/promises";
+import { opendir, readlink, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Stats } from "node:fs";
-import type { FlatEntry } from "./file-tree.js";
+import type { FlatEntry, LinkInfo } from "./file-tree.js";
 
 const EXCLUDED_NAMES = new Set([".git", ".hg", ".svn", ".DS_Store", "Thumbs.db"]);
 
@@ -56,17 +57,39 @@ export async function listLocalTree(rootPath: string, subpath: string): Promise<
       continue;
     }
     if (dirent.isSymbolicLink()) {
-      // Only links that stay inside the workspace are listed; one that points
-      // elsewhere would let file operations reach its target.
-      let target;
+      // A link lists with its target text so the tree can mark it. One whose
+      // target is missing lists as broken; only links that stay inside the
+      // workspace list otherwise, since one that points elsewhere would let
+      // file operations reach its target.
+      const absolute = path.join(real, dirent.name);
+      let link: LinkInfo;
       try {
-        const absolute = path.join(real, dirent.name);
+        link = { target: await readlink(absolute) };
+      } catch {
+        continue;
+      }
+      let target: Stats;
+      try {
         target = await stat(absolute);
+      } catch (error) {
+        // A target that does not resolve lists as broken; one that cannot be
+        // stat'd at all (a permission, say) tells us nothing — skip it.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "ELOOP") continue;
+        // A dangling link still points somewhere: one that would land outside
+        // the workspace stays unlisted like one whose target exists.
+        if (!isInside(root, path.resolve(path.dirname(absolute), link.target))) continue;
+        entries.push({ path: relative, kind: "file", link: { ...link, broken: true } });
+        continue;
+      }
+      try {
         if (!isInside(root, await realpath(absolute))) continue;
       } catch {
-        continue; // dangling
+        continue;
       }
-      entries.push(target.isDirectory() ? { path: relative, kind: "directory", deferred: true } : { path: relative, kind: "file" });
+      entries.push(
+        target.isDirectory() ? { path: relative, kind: "directory", deferred: true, link } : { path: relative, kind: "file", link },
+      );
       continue;
     }
     if (dirent.isFile()) entries.push({ path: relative, kind: "file" });

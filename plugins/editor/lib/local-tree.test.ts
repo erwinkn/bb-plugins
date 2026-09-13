@@ -20,6 +20,7 @@ async function fixture(): Promise<string> {
   await writeFile(path.join(root, "node_modules", "pkg", "index.js"), "");
   await symlink(path.join(root, "src"), path.join(root, "src-link"));
   await symlink(path.join(root, "missing"), path.join(root, "dangling"));
+  await symlink(path.join(os.homedir(), "editor-tree-missing"), path.join(root, "dangling-escape"));
   await symlink(os.homedir(), path.join(root, "escape"));
   await symlink(path.join(root, "src", "index.ts"), path.join(root, "index-link.ts"));
   await symlink("/etc/hosts", path.join(root, "leak.txt"));
@@ -33,10 +34,12 @@ test("listLocalTree lists one level, includes dotfiles, hides VCS internals, and
   t.after(() => rm(root, { recursive: true, force: true }));
   const entries = await listLocalTree(root, "");
   const byPath = new Map(entries.map((entry) => [entry.path, entry]));
-  assert.deepEqual(
-    entries.filter((entry) => entry.kind === "directory"),
-    [".github", "node_modules", "src", "src-link"].map((entry) => ({ path: entry, kind: "directory", deferred: true })),
-  );
+  assert.deepEqual(entries.filter((entry) => entry.kind === "directory"), [
+    { path: ".github", kind: "directory", deferred: true },
+    { path: "node_modules", kind: "directory", deferred: true },
+    { path: "src", kind: "directory", deferred: true },
+    { path: "src-link", kind: "directory", deferred: true, link: { target: path.join(root, "src") } },
+  ]);
   assert.ok(byPath.has(".env"));
   assert.ok(byPath.has(".gitignore"));
   // One level only: a directory's contents wait for its own listing.
@@ -44,11 +47,23 @@ test("listLocalTree lists one level, includes dotfiles, hides VCS internals, and
   assert.ok(!byPath.has("src/index.ts"));
   assert.ok(!byPath.has(".git"));
   assert.ok(!byPath.has(".DS_Store"));
-  // A symlink inside the workspace lists; one that leaves it lists nothing.
+  // A symlink inside the workspace lists with its target; one that leaves
+  // the workspace lists nothing; a dangling one lists as broken.
   assert.ok(!byPath.has("escape"));
   assert.deepEqual(await listLocalTree(root, "escape"), []);
-  assert.deepEqual(byPath.get("index-link.ts"), { path: "index-link.ts", kind: "file" });
+  assert.deepEqual(byPath.get("index-link.ts"), {
+    path: "index-link.ts",
+    kind: "file",
+    link: { target: path.join(root, "src", "index.ts") },
+  });
   assert.ok(!byPath.has("leak.txt"));
+  assert.deepEqual(byPath.get("dangling"), {
+    path: "dangling",
+    kind: "file",
+    link: { target: path.join(root, "missing"), broken: true },
+  });
+  // A dangling link that would land outside stays unlisted too.
+  assert.ok(!byPath.has("dangling-escape"));
   // Each deferred directory lists one level on request, with
   // workspace-relative paths and its own directories deferred.
   const inner = await listLocalTree(root, "node_modules");
@@ -56,7 +71,10 @@ test("listLocalTree lists one level, includes dotfiles, hides VCS internals, and
   const deeper = await listLocalTree(root, "node_modules/pkg");
   assert.deepEqual(deeper, [{ path: "node_modules/pkg/index.js", kind: "file" }]);
   const linked = await listLocalTree(root, "src-link");
-  assert.deepEqual(linked, [{ path: "src-link/index.ts", kind: "file" }, { path: "src-link/loop", kind: "directory", deferred: true }]);
+  assert.deepEqual(linked, [
+    { path: "src-link/index.ts", kind: "file" },
+    { path: "src-link/loop", kind: "directory", deferred: true, link: { target: root } },
+  ]);
 });
 
 test("listLocalFiles walks everything the search index needs, once per real directory", async (t) => {
@@ -72,6 +90,22 @@ test("listLocalFiles walks everything the search index needs, once per real dire
   // A link cycle terminates instead of recursing forever.
   const filesAgain = await listLocalFiles(root);
   assert.deepEqual(filesAgain.sort(), files.sort());
+});
+
+test("buildTree carries a symbolic link's target through to the node", () => {
+  const nodes = buildTree([
+    { path: "src-link", kind: "directory", deferred: true, link: { target: "/repo/src" } },
+    { path: "broken", kind: "file", link: { target: "/repo/missing", broken: true } },
+    { path: "plain.ts", kind: "file" },
+  ]);
+  assert.deepEqual(
+    nodes.map((node) => [node.name, node.link]),
+    [
+      ["src-link", { target: "/repo/src" }],
+      ["broken", { target: "/repo/missing", broken: true }],
+      ["plain.ts", null],
+    ],
+  );
 });
 
 test("buildTree carries deferred through to the node", () => {
