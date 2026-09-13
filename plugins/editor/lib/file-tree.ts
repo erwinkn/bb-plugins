@@ -117,10 +117,12 @@ export function mergeListing(
   return out;
 }
 
-/** Whether two flat listings hold the same paths with the same kinds and deferred flags. */
+/** Whether two flat listings hold the same paths with the same kinds and deferred and link state. */
 export function sameEntries(left: readonly FlatEntry[], right: readonly FlatEntry[]): boolean {
   if (left.length !== right.length) return false;
-  const key = (entry: FlatEntry) => `${entry.kind === "directory" ? "d" : "f"}${entry.deferred === true ? "!" : ""}${entry.path}`;
+  // Serialized fields cannot blur, however odd a path or link target is.
+  const key = (entry: FlatEntry) =>
+    JSON.stringify([entry.path, entry.kind, entry.deferred === true, entry.link?.target ?? null, entry.link?.broken === true]);
   const keys = new Set(left.map(key));
   return right.every((entry) => keys.has(key(entry)));
 }

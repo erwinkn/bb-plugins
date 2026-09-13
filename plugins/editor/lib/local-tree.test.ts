@@ -20,6 +20,7 @@ async function fixture(): Promise<string> {
   await writeFile(path.join(root, "node_modules", "pkg", "index.js"), "");
   await symlink(path.join(root, "src"), path.join(root, "src-link"));
   await symlink(path.join(root, "missing"), path.join(root, "dangling"));
+  await symlink(path.join(os.homedir(), "editor-tree-missing"), path.join(root, "dangling-escape"));
   await symlink(os.homedir(), path.join(root, "escape"));
   await symlink(path.join(root, "src", "index.ts"), path.join(root, "index-link.ts"));
   await symlink("/etc/hosts", path.join(root, "leak.txt"));
@@ -61,6 +62,8 @@ test("listLocalTree lists one level, includes dotfiles, hides VCS internals, and
     kind: "file",
     link: { target: path.join(root, "missing"), broken: true },
   });
+  // A dangling link that would land outside stays unlisted too.
+  assert.ok(!byPath.has("dangling-escape"));
   // Each deferred directory lists one level on request, with
   // workspace-relative paths and its own directories deferred.
   const inner = await listLocalTree(root, "node_modules");

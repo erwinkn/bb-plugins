@@ -76,6 +76,9 @@ export async function listLocalTree(rootPath: string, subpath: string): Promise<
         // stat'd at all (a permission, say) tells us nothing — skip it.
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "ELOOP") continue;
+        // A dangling link still points somewhere: one that would land outside
+        // the workspace stays unlisted like one whose target exists.
+        if (!isInside(root, path.resolve(path.dirname(absolute), link.target))) continue;
         entries.push({ path: relative, kind: "file", link: { ...link, broken: true } });
         continue;
       }

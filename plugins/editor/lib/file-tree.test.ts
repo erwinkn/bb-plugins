@@ -141,6 +141,25 @@ test("sameEntries compares listings by path, kind, and deferred flag", () => {
   assert.equal(sameEntries(a, [{ path: "src", kind: "directory" }, { path: "src/a.ts", kind: "file" }]), false);
   assert.equal(sameEntries(a, [{ path: "src", kind: "directory", deferred: true }]), false);
   assert.equal(sameEntries(a, [{ path: "src", kind: "file", deferred: true }, { path: "src/a.ts", kind: "file" }]), false);
+  // A link's target and broken flag count too.
+  assert.equal(
+    sameEntries(
+      [{ path: "a.ts", kind: "file", link: { target: "b.ts" } }],
+      [{ path: "a.ts", kind: "file", link: { target: "c.ts" } }],
+    ),
+    false,
+  );
+  assert.equal(
+    sameEntries(
+      [{ path: "a.ts", kind: "file", link: { target: "b.ts" } }],
+      [{ path: "a.ts", kind: "file", link: { target: "b.ts", broken: true } }],
+    ),
+    false,
+  );
+  assert.equal(
+    sameEntries([{ path: "a.ts", kind: "file" }], [{ path: "a.ts", kind: "file", link: { target: "b.ts" } }]),
+    false,
+  );
 });
 
 test("ancestorsOf lists each containing directory, nearest last", () => {
