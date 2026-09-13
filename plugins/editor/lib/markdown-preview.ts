@@ -15,7 +15,9 @@ import type { FileSessionSource } from "./file-session";
 const INLINE = /(!?)\[([^\]]*)\]\(\s*(<[^>]*>|[^)\s]+)((?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*)\)/g;
 const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
 /** A link definition line; `[^` labels are footnotes, which have no path to rewrite. */
-const DEFINITION = /^(\s{0,3}\[(?!\^)[^\]]*\]:\s*)(<[^>]*>|[^)\s]+)(.*)$/;
+const DEFINITION = /^\s{0,3}\[((?!\^)[^\]]*)\]:\s*(<[^>]*>|[^)\s]+)(.*)$/;
+/** A reference use: `![text][label]`, `[label][]`, or the `[label]` shortcut — not `[text](inline)`. */
+const REFERENCE = /(!?)\[([^\]]*)\](?:\[([^\]]*)\])?(?!\()/g;
 
 /** BB's document binding for a source it can serve: a thread's environment or its storage. */
 export interface MarkdownPreviewDocument {
@@ -54,6 +56,27 @@ export function hasMarkdownImage(markdown: string): boolean {
 
 export function rewriteMarkdownPaths(markdown: string, { filePath, baseUrl }: PathRewrite): string {
   const directory = filePath.split(/[\\/]/).slice(0, -1);
+  // A definition's destination is rewritten for the syntax that references
+  // it: a label used only by images takes the lease URL, anything else the
+  // root-relative link. Labels fold like CommonMark's: case and runs of
+  // whitespace inside them are insignificant.
+  const linkLabels = new Set<string>();
+  const imageLabels = new Set<string>();
+  let scanFence: string | null = null;
+  for (const line of markdown.split("\n")) {
+    const opening = FENCE.exec(line);
+    if (opening !== null) {
+      const marker = opening[1]!;
+      if (scanFence === null) scanFence = marker;
+      else if (marker[0] === scanFence[0] && marker.length >= scanFence.length) scanFence = null;
+      continue;
+    }
+    if (scanFence !== null || DEFINITION.test(line)) continue;
+    for (const match of line.matchAll(REFERENCE)) {
+      const label = (match[3] || match[2])!.trim().toLowerCase().replace(/\s+/g, " ");
+      (match[1] === "!" ? imageLabels : linkLabels).add(label);
+    }
+  }
   let fence: string | null = null;
   return markdown
     .split("\n")
@@ -68,12 +91,17 @@ export function rewriteMarkdownPaths(markdown: string, { filePath, baseUrl }: Pa
       if (fence !== null) return line;
       const definition = DEFINITION.exec(line);
       if (definition !== null) {
-        const [, prefix, rawTarget, rest] = definition;
+        const [whole, label, rawTarget, rest] = definition;
         const target = rawTarget.startsWith("<") ? rawTarget.slice(1, -1) : rawTarget;
         const resolved = resolveRelative(directory, target);
         if (resolved === null) return line;
+        const head = whole.slice(0, whole.length - rawTarget.length - rest.length);
+        const key = label.trim().toLowerCase().replace(/\s+/g, " ");
+        if (baseUrl !== null && imageLabels.has(key) && !linkLabels.has(key)) {
+          return `${head}${baseUrl}/${resolved.map(encodeURIComponent).join("/")}${rest}`;
+        }
         const link = resolved.join("/");
-        return `${prefix}${/[\s()]/.test(link) ? `<${link}>` : link}${rest}`;
+        return `${head}${/[\s()]/.test(link) ? `<${link}>` : link}${rest}`;
       }
       return line.replace(INLINE, (whole, bang: string, text: string, rawTarget: string, title: string) => {
         const image = bang === "!";

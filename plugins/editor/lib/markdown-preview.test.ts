@@ -25,6 +25,10 @@ test("link definitions resolve against the document's directory", () => {
   assert.equal(rewriteMarkdownPaths("[n]: child.md", at), "[n]: docs/guide/child.md");
   assert.equal(rewriteMarkdownPaths('  [n]: <../a b.md> "Title"', at), '  [n]: <docs/a b.md> "Title"');
   assert.equal(rewriteMarkdownPaths("[next][n]\n\n[n]: child.md", at), "[next][n]\n\n[n]: docs/guide/child.md");
+  // A label only images use takes the lease, so the rendered <img> loads.
+  assert.equal(rewriteMarkdownPaths("![logo][l]\n\n[l]: img/logo.png", at), "![logo][l]\n\n[l]: /preview/abc/docs/guide/img/logo.png");
+  // A label a plain link also uses stays a root-relative file path.
+  assert.equal(rewriteMarkdownPaths("[a][l] ![b][l]\n\n[l]: img/logo.png", at), "[a][l] ![b][l]\n\n[l]: docs/guide/img/logo.png");
   // Footnotes, remote destinations and escapes are not link targets.
   for (const source of ["[^n]: a note", "[n]: https://example.com", "[n]: /absolute.md", "[n]: ../../../outside.md"]) {
     assert.equal(rewriteMarkdownPaths(source, at), source, source);
