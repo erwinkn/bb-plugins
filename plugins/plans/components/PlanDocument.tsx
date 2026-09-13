@@ -26,7 +26,7 @@ import {
   type HighlightEntry,
 } from "../lib/highlight-registry";
 import { stateLabel } from "../lib/plan-model";
-import { KindBadge, kindOf } from "./CommentKind";
+import { CommentBody, KindBadge, kindOf } from "./CommentKind";
 import {
   definedContext,
   indexTextNodes,
@@ -529,7 +529,7 @@ function CommentTooltip({ comment, position }: { comment: PlanComment; position:
           <KindBadge kind={kind} />
           {kind === "comment" || comment.body ? <span>{stateLabel(comment)}</span> : null}
         </div>
-        {comment.body ? <p className="whitespace-pre-wrap break-words leading-5">{comment.body}</p> : null}
+        {comment.body ? <CommentBody body={comment.body} className="leading-5" /> : null}
       </div>
     </div>
   );

@@ -8,7 +8,7 @@ import { isDelivered, stateLabel } from "../lib/plan-model";
 import { formatRelativeTime } from "../lib/time";
 import type { QuoteContext, QuoteMatch } from "../lib/quote-anchor";
 import type { AnchorMap } from "./PlanDocument";
-import { KindBadge, kindOf, Quote } from "./CommentKind";
+import { CommentBody, KindBadge, kindOf, Quote } from "./CommentKind";
 
 export interface PendingComment extends QuoteContext {
   versionId?: string;
@@ -328,9 +328,7 @@ function CommentCard({ comment, failed, cancelled, anchor, isActive, isHovered, 
           </div>
         </form>
       ) : comment.body ? (
-        <p className="whitespace-pre-wrap break-words text-sm leading-5">
-          {comment.body}
-        </p>
+        <CommentBody body={comment.body} className="text-sm leading-5" />
       ) : null}
       <div className="flex min-h-7 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
         <span className="tabular-nums">#{comment.number}</span>
@@ -373,7 +371,7 @@ function CommentCard({ comment, failed, cancelled, anchor, isActive, isHovered, 
             <span>{item.author === "agent" ? "Agent" : "You"}</span>
             <time dateTime={new Date(item.createdAt).toISOString()}>{formatRelativeTime(item.createdAt)}</time>
           </div>
-          <p className="whitespace-pre-wrap break-words">{item.body}</p>
+          <CommentBody body={item.body} />
         </div>
       ))}
       {actionable && !isEditing ? (

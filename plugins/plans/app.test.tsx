@@ -183,6 +183,22 @@ describe("comments", () => {
     expect(slot.getByRole("button", { name: "Show this passage in the plan" })).toBeTruthy();
   }, 15000);
 
+  it("routes comment and reply bodies through the host Markdown renderer", async () => {
+    const backend = fakeBackend([makePlan({
+      comments: [comment({
+        body: "# Details\n\n```sh\nnpm test\n```",
+        replies: [{ id: "r1", author: "agent", body: "## Answer\n\nShip it.", createdAt: now, deliveredAt: now }],
+      })],
+    })]);
+    slot = render(threadAction, { threadId: "thr_1", params: { planId: "plan-1" } }, { rpc: backend.rpc });
+    await showComments();
+    const card = document.querySelector("article")!;
+    const blocks = card.querySelectorAll('[data-testid="bb-markdown"]');
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]!.textContent).toContain("npm test");
+    expect(blocks[1]!.textContent).toContain("## Answer");
+  }, 15000);
+
   it("saves a pending comment that predates selection context without sending undefined fields", async () => {
     const backend = fakeBackend([makePlan()]);
     window.localStorage.setItem(

@@ -1,3 +1,4 @@
+import { Markdown } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import type { PlanComment } from "../contract";
@@ -41,5 +42,18 @@ export function KindBadge({ kind }: { kind: CommentKind }) {
       {style.icon ? <Icon name={style.icon} className="size-3" aria-hidden /> : null}
       {style.label}
     </span>
+  );
+}
+
+/**
+ * A comment or reply body. It renders through the host Markdown renderer like
+ * the plan itself; code blocks scroll inside the card instead of widening it.
+ */
+export function CommentBody({ body, className }: { body: string; className?: string }) {
+  return (
+    <Markdown
+      content={body}
+      className={cn("min-w-0 break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto", className)}
+    />
   );
 }

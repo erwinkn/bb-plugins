@@ -489,6 +489,42 @@ describe("activating a comment from the document", () => {
     expect(onHoverComment).toHaveBeenLastCalledWith(null);
   });
 
+  it("renders the hovered comment's body as Markdown in the tooltip", async () => {
+    const onHoverComment = vi.fn();
+    const noted = { ...saved, body: "# Why\n\nIt is load-bearing." };
+    const { content, rerender } = renderDocument({ markdown, comments: [noted], onHoverComment });
+    caretTarget = textNodeContaining(content(), "existing");
+    caretTarget.offset += 2;
+
+    fireEvent.pointerMove(screen.getByText(/Keep the existing data/), { clientX: 10, clientY: 10, pointerType: "mouse" });
+    await act(nextFrame);
+    expect(onHoverComment).toHaveBeenLastCalledWith("keep");
+
+    const rect = { top: 40, left: 20, width: 80, height: 16, bottom: 56, right: 100, x: 20, y: 40, toJSON() {} } as DOMRect;
+    const boundsSpy = vi.spyOn(Range.prototype, "getBoundingClientRect").mockReturnValue(rect);
+    Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
+    const rectsSpy = vi.spyOn(Range.prototype, "getClientRects").mockReturnValue([rect] as unknown as DOMRectList);
+    rerender(
+      <PlanDocument
+        markdown={markdown}
+        comments={[noted]}
+        activeCommentId={null}
+        hoveredCommentId="keep"
+        onHoverComment={onHoverComment}
+        canComment
+        pendingQuote={null}
+        onQuote={vi.fn()}
+        onActivateComment={vi.fn()}
+        onAnchorsChange={vi.fn()}
+        onPendingMatch={vi.fn()}
+      />,
+    );
+    const tooltip = screen.getByRole("tooltip");
+    expect(within(tooltip).getByRole("heading", { name: "Why" })).toBeTruthy();
+    boundsSpy.mockRestore();
+    rectsSpy.mockRestore();
+  });
+
   it("paints a rail-hovered redline in its emphasized tier without a tooltip", () => {
     renderDocument({
       markdown,
@@ -784,6 +820,54 @@ it("returns focus to Approve after cancelling its dialog", async () => {
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   expect(document.activeElement).toBe(approve);
+});
+
+/* ---------- 8. comment bodies render as Markdown ---------- */
+
+describe("comment Markdown", () => {
+  const actions = { update: vi.fn(), remove: vi.fn(), resolve: vi.fn(), reply: vi.fn() };
+
+  it("renders a comment's body as Markdown in the rail, including a fenced code block", () => {
+    const saved = comment({
+      quote: "existing data",
+      body: "# Details\n\nKeep the cache.\n\n```ts\nconst ttl = 60\n```",
+    });
+    render(
+      <CommentRail
+        comments={[saved]}
+        anchors={{}}
+        activeCommentId={null}
+        onActivate={vi.fn()}
+        actions={actions}
+        canEdit={false}
+        pending={null}
+      />,
+    );
+    const card = screen.getByRole("article");
+    expect(within(card).getByRole("heading", { name: "Details" })).toBeTruthy();
+    expect(card.querySelector("pre code")?.textContent).toContain("const ttl = 60");
+  });
+
+  it("renders a reply's body as Markdown", () => {
+    const saved = comment({
+      quote: "existing data",
+      body: "Why this?",
+      replies: [{ id: "r1", author: "agent", body: "# Reason\n\nIt caches.", createdAt: 1, deliveredAt: 1 }],
+    });
+    render(
+      <CommentRail
+        comments={[saved]}
+        anchors={{}}
+        activeCommentId={null}
+        onActivate={vi.fn()}
+        actions={actions}
+        canEdit={false}
+        pending={null}
+      />,
+    );
+    const card = screen.getByRole("article");
+    expect(within(card).getByRole("heading", { name: "Reason" })).toBeTruthy();
+  });
 });
 
 describe("shortcut cheat sheet platform labels", () => {
