@@ -468,7 +468,7 @@ function LinkBadge({ link, directory }: { link: LinkInfo; directory: boolean }) 
       className={cn(
         "ml-auto shrink-0 pl-1 text-xs leading-none",
         link.broken ? "text-destructive" : "text-muted-foreground",
-        directory && "transition-opacity group-hover/row:opacity-0",
+        directory && "transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
       )}
     >
       {link.broken ? "?" : "\u2937"}

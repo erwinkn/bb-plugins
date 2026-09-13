@@ -71,7 +71,11 @@ export async function listLocalTree(rootPath: string, subpath: string): Promise<
       let target: Stats;
       try {
         target = await stat(absolute);
-      } catch {
+      } catch (error) {
+        // A target that does not resolve lists as broken; one that cannot be
+        // stat'd at all (a permission, say) tells us nothing — skip it.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR" && code !== "ELOOP") continue;
         entries.push({ path: relative, kind: "file", link: { ...link, broken: true } });
         continue;
       }
