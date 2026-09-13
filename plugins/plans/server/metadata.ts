@@ -27,6 +27,9 @@ export function createMetadata(bb: BbPluginApi, store: PlanStore) {
       bb.log.warn(`Plan metadata for thread ${threadId} not updated: ${String(error)}`);
     });
     chains.set(threadId, next);
+    // Drop the entry once the chain drains; a newer write for the thread has
+    // already replaced it, so only delete when this is still the current one.
+    void next.then(() => { if (chains.get(threadId) === next) chains.delete(threadId); });
     return next;
   };
   /** Point the thread at this plan. Best effort; the plan document is already saved. */

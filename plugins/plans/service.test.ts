@@ -683,6 +683,25 @@ describe("bb 0.43 capabilities", () => {
     expect((await rpc("get", { id: submitted.planId })).title).toBe("New");
     expect(harness.inspection.logEntries.some((entry) => /metadata.*not updated/.test(entry.message))).toBe(true);
   });
+  it("does not return from submit until the metadata pointer write completes", async () => {
+    const { tool, harness } = await setup();
+    const written: Record<string, unknown> = {};
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    harness.inspection.sdk.stub("threads.updatePluginMetadata", async ({ set, remove }: { set?: Record<string, unknown>; remove?: string[] }) => {
+      await gate; Object.assign(written, set ?? {}); for (const key of remove ?? []) delete written[key]; return { ...written };
+    });
+    harness.inspection.sdk.stub("threads.getPluginMetadata", async () => ({ ...written }));
+    let done = false;
+    const pending = tool("plans_submit", { title: "T", markdown: "M" }).then((result) => { done = true; return result; });
+    await tick(10_000);
+    expect(done).toBe(false);
+    release();
+    const submitted = JSON.parse(String(await pending));
+    const got = await harness.behavior.runCli(["get"], { threadId: "thread-1" });
+    expect(got.exitCode).toBe(0);
+    expect(JSON.parse(got.stdout).id).toBe(submitted.planId);
+  });
   it("resolves bb plans get without an ID through the pointer and verifies ownership in the database", async () => {
     const { harness, plan, metadata } = await setup(); await tick(0);
     const result = await harness.behavior.runCli(["get"], { threadId: "thread-1" });
@@ -765,6 +784,18 @@ describe("bb 0.43 capabilities", () => {
     expect(saved.delivery.queuedMessageId).toBe("queue-1");
     expect(bb.storage.database().prepare("SELECT state FROM outbox").all()).toEqual([{ state: "queued" }]);
     expect(harness.inspection.pendingInteractions).toHaveLength(0);
+  });
+  it("clears the cancelled label once the annotation is edited and redelivered", async () => {
+    const send = vi.fn<Send>().mockResolvedValueOnce({ ok: true, delivery: "queued", queuedMessage: entry() }).mockResolvedValue(sent());
+    const { annotate, harness, rpc, plan } = await setup(send);
+    const added = await annotate("First"); await tick();
+    await harness.behavior.emitThreadEvent("message.cancelled", { entry: entry() });
+    expect(await harness.behavior.callRpc("annotationDeliveryStatus", { id: plan.id }))
+      .toEqual([expect.objectContaining({ state: "cancelled", annotationId: added.comments[0]!.id })]);
+    await rpc("updateAnnotation", { id: plan.id, annotationId: added.comments[0]!.id, body: "Second" });
+    await tick();
+    expect(await harness.behavior.callRpc("annotationDeliveryStatus", { id: plan.id })).toEqual([]);
+    expect((await rpc("get", { id: plan.id })).comments[0]!.deliveredAt).not.toBeNull();
   });
   it("clears the unavailable notice and restores the prompt on unarchive without replaying dropped feedback", async () => {
     const { annotate, harness, rpc, plan, send, tool } = await setup();
