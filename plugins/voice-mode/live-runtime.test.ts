@@ -54,6 +54,8 @@ async function fixture() {
       output: async ({ threadId }: Any) => ({ output: world.outputs.get(threadId) ?? null }),
       list: async (args: Any) => world.list ? world.list(args) : [...world.threads.values()].filter(t => (!args.parentThreadId || t.parentThreadId === args.parentThreadId) && (args.hasParent !== false || !t.parentThreadId) && !!t.archivedAt === !!args.archived && (args.includeHidden || t.visibility !== "hidden")).slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 100)),
       events: { list: async ({ threadId, afterSeq, order, limit, beforeSeq, types }: Any) => {
+        // BB 0.43 rejects pages over 100 rows with HTTP 400.
+        if (+(limit ?? 100) > 100) throw new Error("HTTP 400: Thread event limit cannot exceed 100");
         const events = (world.events.get(threadId) ?? []).filter(e => (!afterSeq || e.seq > +afterSeq) && (!beforeSeq || e.seq < +beforeSeq) && (!types || types.includes(e.type)));
         return (order === "desc" ? [...events].reverse() : events).slice(0, +(limit ?? 100));
       } },
@@ -1416,4 +1418,17 @@ test("lifecycle events rely on interaction.pending and re-read only the inbox's 
   assert.equal(h.runtime.store.inbox("conversation").find(item => item.id === prompt.id)!.status, "resolved");
   await h.restart();
   assert.ok(h.world.interactionLists > 0, "startup and reconnect still read the full list");
+});
+
+test("delivery reconciliation reads the latest 200 events in pages BB accepts", async t => {
+  const h = await fixture(); t.after(h.close);
+  h.world.send = async () => new Promise(() => {});
+  const sent = await h.run("message_thread", message);
+  assert.equal(sent.status, "unknown");
+  const body = "Check the build\nSpoken request: Please check the build";
+  const events = Array.from({ length: 250 }, (_, n) => ({ id: `e${n + 1}`, threadId: "build", scope: { kind: "thread" }, seq: n + 1, type: "item/completed", createdAt: h.now() + n,
+    data: { item: { id: `item-${n + 1}`, type: "userMessage", content: [{ type: "text", text: n === 59 ? body : `noise ${n}` }] } } }));
+  h.world.events.set("build", events);
+  await h.runtime.watches.reconcileUnknown("build");
+  assert.equal(h.runtime.operations.get(sent.operationId)!.status, "running", "the match in a later page is found");
 });

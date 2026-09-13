@@ -14,6 +14,8 @@ export function interactionData(interaction: Interaction) {
   return { id: interaction.id, kind: interaction.payload.kind, status: interaction.status,
     createdAt: interaction.createdAt, payload: interaction.payload };
 }
+const EVENT_PAGE = 100;
+const UNKNOWN_DELIVERY_WINDOW = 200;
 export class Watches {
   private chain: Promise<unknown> = Promise.resolve();
   constructor(readonly bb: BbPluginApi, readonly store: LiveStore, readonly operations: Operations) {}
@@ -192,16 +194,29 @@ export class Watches {
       return { operationId: row.id, correlation };
     });
   }
+  // BB 0.43 caps one events.list page at 100 rows.
   private async eventsAfter(threadId: string, cursor: number): Promise<StoredEvent[]> {
     const all: StoredEvent[] = [];
     for (;;) {
-      const page = await this.bb.sdk.threads.events.list({ threadId, afterSeq: String(cursor), order: "asc", limit: "200" });
+      const page = await this.bb.sdk.threads.events.list({ threadId, afterSeq: String(cursor), order: "asc", limit: String(EVENT_PAGE) });
       if (!page.length) return all;
       all.push(...page); const next = page.at(-1)!.seq;
       if (next <= cursor) throw new Error("Thread event cursor did not advance");
       cursor = next;
-      if (page.length < 200) return all;
+      if (page.length < EVENT_PAGE) return all;
     }
+  }
+  /** The newest `count` events, newest first, read in pages of EVENT_PAGE. */
+  private async latestEvents(threadId: string, count: number): Promise<StoredEvent[]> {
+    const all: StoredEvent[] = [];
+    let beforeSeq: number | undefined;
+    while (all.length < count) {
+      const page = await this.bb.sdk.threads.events.list({ threadId, order: "desc", limit: String(Math.min(EVENT_PAGE, count - all.length)), ...(beforeSeq === undefined ? {} : { beforeSeq: String(beforeSeq) }) });
+      if (!page.length) break;
+      all.push(...page); beforeSeq = page.at(-1)!.seq;
+      if (page.length < EVENT_PAGE) break;
+    }
+    return all;
   }
   /**
    * `listInteractions` reads every interaction on the thread to create prompts and
@@ -283,7 +298,7 @@ export class Watches {
         this.store.db.prepare("UPDATE voice_operations SET queued_message_id = ? WHERE id = ?").run(matches[0].id, row.id);
         this.operations.finish(row.id, "queued", { queuedMessageId: matches[0].id, reconciled: true }); continue;
       }
-      const events = await this.bb.sdk.threads.events.list({ threadId: row.target_thread_id, order: "desc", limit: "200" });
+      const events = await this.latestEvents(row.target_thread_id, UNKNOWN_DELIVERY_WINDOW);
       const sent = events.filter(e => e.createdAt >= row.created_at && (e.type === "item/started" || e.type === "item/completed") && userMessageBody(e.data) === row.body);
       const distinct = new Set(sent.map(e => (e.data as { item: { id: string } }).item.id));
       if (distinct.size === 1) {
