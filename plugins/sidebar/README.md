@@ -66,6 +66,16 @@ Project view nests children within the same project.
 If a parent is missing, archived, or hidden by a status filter, its visible
 children appear as separate roots. Cross-project children appear under their
 own project in Project view. Parent names appear in the hover info card.
+
+Rows can be nested by dragging, mirroring BB's own sidebar: after a short
+movement (4 px with a mouse, a 200 ms hold with touch), holding a row over the
+center of another row for a moment arms a nest drop — the target highlights and
+collapsed children expand. Dropping on a status or project group detaches the
+thread to top level; dropping on the Pinned group pins it, and dropping a
+pinned thread elsewhere unpins it. Nesting a pinned thread unpins it first.
+Self, descendant, and archived targets are refused, and Escape cancels. A row
+menu offers the same moves without dragging: **Make child of…** lists valid
+parents, and nested threads get **Move to top level**.
 If a parent's title is absent from the sidebar data, opening the info card
 fetches only that thread's title, without loading the archive list. A failed
 lookup shows Unavailable and retries when the card is reopened.

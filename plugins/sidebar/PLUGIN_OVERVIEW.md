@@ -63,6 +63,18 @@
 - `lib/spaces-store.ts`: key-value catalog with revision checks, realtime
   signals, and the `bb activity` export/import CLI.
 - `lib/use-spaces.ts`: catalog loading, local cache, realtime refresh, and saves.
+- `lib/nesting-contract.ts`: `setParent` RPC; reparents and unpins a pinned
+  source first, mirroring bb's own unpin-then-reparent.
+- `lib/thread-dnd.ts`: pure drag decision logic ported from bb's sidebar
+  (activation, center-band nesting, rejection states); group drops replace bb's
+  section moves.
+- `lib/use-reorder-dnd.ts`: bb's sensor setup, click suppression, vertical-axis
+  lock, and Escape cancel (mouse 4 px, touch 200 ms hold); the keyboard sensor
+  is replaced by menu actions.
+- `lib/use-thread-dnd.ts`, `lib/thread-dnd-context.ts`: drag session state
+  (armed nest target, group hover, dwell expansion) shared with rows and group
+  containers.
+- `components/thread-drag-overlay.tsx`: the floating row card while dragging.
 - `tests/`: policy and public SDK frontend tests.
 
 See `README.md` for status definitions and draft limitations.

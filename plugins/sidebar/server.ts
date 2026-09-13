@@ -6,12 +6,24 @@ import { registerLibrary } from "./lib/library-store";
 import { registerProjects } from "./lib/projects-rpc";
 import { registerSpaces } from "./lib/spaces-store";
 import { registerUiPreferences } from "./lib/ui-preferences-store";
+import { nestingContract } from "./lib/nesting-contract";
 
 export default function plugin(bb: BbPluginApi) {
   registerSpaces(bb);
   registerLibrary(bb);
   registerProjects(bb);
   registerUiPreferences(bb);
+  bb.rpc.register(nestingContract, {
+    setParent: async ({ threadId, parentThreadId }) => {
+      if (parentThreadId !== null) {
+        const thread = await bb.sdk.threads.get({ threadId });
+        if (thread.pinnedAt !== null)
+          await bb.sdk.threads.unpin({ threadId });
+      }
+      await bb.sdk.threads.update({ threadId, parentThreadId });
+      return { ok: true as const };
+    },
+  });
   bb.rpc.register(archiveContract, {
     parentTitle: async ({ threadId }) =>
       threadTitle(await bb.sdk.threads.get({ threadId })),

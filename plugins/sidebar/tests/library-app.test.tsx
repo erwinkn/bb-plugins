@@ -10,7 +10,7 @@ import {
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { parseState, updateState } from "../lib/client-state";
 import type { LibraryDoc } from "../lib/library-schema";
-import { thread } from "./fixtures";
+import { thread, visibleStatus } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 const localStorage = window.localStorage;
@@ -255,7 +255,7 @@ describe("library scope", () => {
     updateState((state) => ({ ...state, spaceId: "library" }));
     const slot = mount(fake, { activeThreadId: "keep" });
     await tick();
-    expect(slot.getByRole("status").textContent).toContain(
+    expect(visibleStatus(slot)?.textContent).toContain(
       "outside this scope",
     );
     fireEvent.click(slot.getByRole("button", { name: "Show all projects" }));

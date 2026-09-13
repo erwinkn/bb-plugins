@@ -1,3 +1,4 @@
+import { useDraggable, useDroppable } from "@dnd-kit/core";
 import * as Menu from "@radix-ui/react-context-menu";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -23,11 +24,27 @@ import { PullRequestIcon } from "./pull-request";
 import { StatusIcon } from "./status-icon";
 import { ArchiveIcon } from "./archive-icon";
 import { ThreadInfo } from "./thread-info";
+import { HostIcon } from "../lib/host-icon";
+import { getThreadRowDroppableId } from "../lib/thread-dnd";
+import type { ThreadNestTargetState } from "../lib/thread-dnd";
+import { useThreadDndState } from "../lib/thread-dnd-context";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
 
 // Overflowing text fades out at the right edge instead of showing an ellipsis.
 export const fadeClass =
   "overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,#000_calc(100%_-_1.25rem),transparent)]";
+
+// Ring language mirrors bb's sidebar nest states (ThreadRow.tsx, MIT).
+const NEST_TARGET_STATE_CLASS: Record<ThreadNestTargetState, string> = {
+  valid: "bg-accent text-accent-foreground ring-1 ring-inset ring-ring",
+  blocked: "ring-1 ring-inset ring-destructive/60",
+  unchanged: "ring-1 ring-inset ring-border",
+};
+
+export interface ThreadRowNesting {
+  candidates: readonly { id: string; title: string }[];
+  onSetParent: (parentThreadId: string | null) => void;
+}
 
 export function ThreadRow({
   thread,
@@ -42,6 +59,7 @@ export function ThreadRow({
   now,
   sortBy,
   libraryAction,
+  nesting,
   onNavigate,
   onError,
 }: {
@@ -63,6 +81,7 @@ export function ThreadRow({
    * saved ancestor.
    */
   libraryAction: "save" | "remove" | null;
+  nesting?: ThreadRowNesting;
   onNavigate: () => void;
   onError: (error: unknown) => void;
 }) {
@@ -97,6 +116,21 @@ export function ThreadRow({
     }
   }, [editing]);
   const longPress = useLongPressMenu(menuOpen);
+  const dnd = useThreadDndState();
+  const dndEnabled = dnd !== null && !thread.isArchived;
+  const draggable = useDraggable({ id: thread.id, disabled: !dndEnabled });
+  const droppable = useDroppable({
+    id: getThreadRowDroppableId(thread.id),
+    disabled: !dndEnabled,
+  });
+  const nestTargetState =
+    dnd?.nestTarget?.threadId === thread.id ? dnd.nestTarget.state : null;
+  const setRowRef = (node: HTMLAnchorElement | null) => {
+    rowRef.current = node;
+    draggable.setNodeRef(node);
+    draggable.setActivatorNodeRef(node);
+    droppable.setNodeRef(node);
+  };
   // A long press can produce a click on release. Keep keyboard and BB shortcut
   // clicks (detail === 0) available, but require a fresh pointer press otherwise.
   const suppressClick = useRef(false);
@@ -115,7 +149,7 @@ export function ThreadRow({
   return (
     <li data-thread-node={thread.id} className="min-w-0">
       <div
-        className={`group relative flex min-w-0 items-center rounded-md ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
+        className={`group relative flex min-w-0 items-center rounded-md ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"} ${nestTargetState ? NEST_TARGET_STATE_CLASS[nestTargetState] : ""} ${draggable.isDragging ? "opacity-50" : ""}`}
       >
         {editing ? (
           <form
@@ -186,10 +220,13 @@ export function ThreadRow({
           >
             <Menu.Trigger asChild>
               <a
-                ref={rowRef}
+                ref={setRowRef}
+                {...(dndEnabled ? draggable.listeners : {})}
+                {...(dndEnabled ? { "aria-roledescription": "draggable" } : {})}
                 {...(!thread.isArchived ? splitProps : {})}
                 {...longPress}
                 href={`/projects/${encodeURIComponent(thread.projectId)}/threads/${encodeURIComponent(thread.id)}`}
+                draggable={false}
                 data-sidebar-thread-shortcut-target=""
                 data-sidebar-thread-id={thread.id}
                 aria-current={active ? "page" : undefined}
@@ -227,6 +264,7 @@ export function ThreadRow({
                 onClick={(event) => {
                   event.preventDefault();
                   if (suppressClick.current && event.detail !== 0) return;
+                  if (dnd?.consumeClickSuppression()) return;
                   open(event.metaKey || event.ctrlKey);
                 }}
                 className="flex min-w-0 flex-1 select-none flex-col rounded-md py-2 pr-2 text-left no-underline outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -370,6 +408,43 @@ export function ThreadRow({
                   >
                     {thread.isPinned ? "Unpin" : "Pin"}
                   </Menu.Item>
+                  {nesting && nesting.candidates.length > 0 && (
+                    <Menu.Sub>
+                      <Menu.SubTrigger className={menuItemClass}>
+                        <span className="min-w-0 flex-1">Make child of…</span>
+                        <HostIcon name="ChevronRight" className="size-3.5 shrink-0" />
+                      </Menu.SubTrigger>
+                      <Menu.Portal>
+                        <Menu.SubContent
+                          {...scope}
+                          sideOffset={4}
+                          className="z-50 max-h-64 min-w-48 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+                        >
+                          {nesting.candidates.map((candidate) => (
+                            <Menu.Item
+                              key={candidate.id}
+                              className={menuItemClass}
+                              onSelect={() =>
+                                nesting.onSetParent(candidate.id)
+                              }
+                            >
+                              <span className={`min-w-0 flex-1 ${fadeClass}`}>
+                                {candidate.title}
+                              </span>
+                            </Menu.Item>
+                          ))}
+                        </Menu.SubContent>
+                      </Menu.Portal>
+                    </Menu.Sub>
+                  )}
+                  {nesting && thread.parentThreadId && (
+                    <Menu.Item
+                      className={menuItemClass}
+                      onSelect={() => nesting.onSetParent(null)}
+                    >
+                      Move to top level
+                    </Menu.Item>
+                  )}
                   {libraryAction && (
                     <Menu.Item
                       className={menuItemClass}
