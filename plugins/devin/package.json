@@ -33,6 +33,6 @@
   "scripts": {
     "build": "bb plugin build",
     "typecheck": "tsc --noEmit",
-    "test": "node --import ./test-runtime.mjs --import tsx --test provider.test.ts usage.test.ts models.test.ts model-cache.test.ts && node --import ./test-runtime.mjs --import tsx bridge.test.ts"
+    "test": "node --import ./test-runtime.mjs --import tsx --test provider.test.ts usage.test.ts models.test.ts model-cache.test.ts write-shim.test.ts && node --import ./test-runtime.mjs --import tsx bridge.test.ts"
   }
 }

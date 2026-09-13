@@ -909,14 +909,19 @@ later. Remove an entry when the upstream fix ships.
   ACP prose page "File System" shows `"result": null` in its example, which
   contradicts the schema and is the likely origin of the SDK behavior.
 - **Fix:** in the SDK, return `{}` (`responder.result({})`). A strict local
-  test failed with `null` and passed with `{}`. The plugin cannot work around
-  this: its wrappers see only runtime-to-bridge lines, and the SDK's `fs`
-  client capabilities are fixed to `true`. Optionally report the docs example
-  to the ACP project.
+  test failed with `null` and passed with `{}`. The plugin's supported hooks
+  cannot reach the agent wire — its wrappers see only runtime-to-bridge lines,
+  and the SDK's `fs` client capabilities are fixed to `true` — so the `devin`
+  plugin instead rewrites the launch spec's `acpLaunchSpec` to spawn
+  `devin acp` through a small stdio proxy that repairs that one response
+  (`plugins/devin/write-shim.ts`). Optionally report the docs example to the
+  ACP project.
 - **Status:** filed as [BB #3453](https://github.com/get-bb/bb/issues/3453) on
   2026-09-11, including live confirmation from Devin threads. The earlier
   reproduction used the SDK bridge with a scripted ACP peer. Rechecked
-  2026-09-12: SDK 0.4.87 (BB 0.43.1) still answers with `null`.
+  2026-09-12: SDK 0.4.87 (BB 0.43.1) still answers with `null`. Worked around
+  2026-09-13 in the `devin` plugin with a launch-spec stdio shim; the built-in
+  ACP provider and other plugins still have the bug.
 
 
 ### Voice operator isolation and managed workspace primitives

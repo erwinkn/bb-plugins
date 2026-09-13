@@ -136,9 +136,16 @@ while importing its code.
 - [BB #3453](https://github.com/get-bb/bb/issues/3453) is still open and still
   present in SDK 0.4.87: the bundled ACP bridge answers `fs/write_text_file`
   with `result: null` (`handleFsWriteTextFile` in `provider-bridge-acp.js`),
-  so Devin `write` and `edit` tool results keep reading
-  `Failed to write file '<path>': Parse error` although the file is written.
-  The plugin cannot work around this. See the repository README for details.
+  which the ACP schema forbids, so Devin reported
+  `Failed to write file '<path>': Parse error` although the file was written.
+  The plugin works around it at the wire level: a bridge wrapper rewrites the
+  launch spec to spawn `devin acp` through a small stdio proxy
+  (`write-shim.ts`, installed into the bridge data dir on start) that turns
+  `result: null` into `result: {}` on `fs/write_text_file` responses only.
+  Everything else passes through unchanged. When BB fixes #3453 the shim stays
+  correct — an object result is forwarded untouched. The built-in ACP provider
+  keeps the bug; only this plugin's `acp-devin` threads are covered. See the
+  repository README for details.
 
 The native SVG mark is a vector adaptation of the Devin documentation favicon
 used in the earlier local plugin. This is a personal provider integration, not
