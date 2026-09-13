@@ -412,12 +412,24 @@ function SpaceDetail({
     <section aria-labelledby={`space-${space.id}-heading`}>
       {back}
       <div className="flex items-center gap-2">
+        <HostIcon
+          name="Layers"
+          fallback="GridView"
+          className="size-4 shrink-0 text-[var(--bbp-file,var(--timeline-accent))]"
+        />
         <h2
           id={`space-${space.id}-heading`}
           className={`${headingClass} min-w-0 flex-1 truncate`}
         >
           {space.name}
         </h2>
+        <span
+          aria-hidden="true"
+          data-space-project-count={space.projectIds.length}
+          className="shrink-0 rounded bg-muted px-1 text-[10px] leading-4 tabular-nums text-muted-foreground"
+        >
+          {space.projectIds.length}
+        </span>
         <RowMenu label={`Space actions: ${space.name}`}>
           <Menu.Item
             className={menuItemClass}

@@ -15,6 +15,14 @@ const chevron = (
   />
 );
 
+const layers = (
+  <HostIcon
+    name="Layers"
+    fallback="GridView"
+    className="size-3.5 shrink-0 text-[var(--bbp-file,var(--timeline-accent))]"
+  />
+);
+
 const bookmark = (
   <svg
     aria-hidden="true"
@@ -79,6 +87,7 @@ export function ScopeMenu({
         title="Choose which threads to show"
         className="flex min-w-0 flex-1 items-center gap-1 rounded px-2 py-1 text-left text-sm font-medium outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
       >
+        {scope.kind === "space" && layers}
         <span className="min-w-0 truncate">{label}</span>
         {librarySignal && scope.kind !== "library" && (
           <StatusIcon status={librarySignal} size="small" />
@@ -114,6 +123,7 @@ export function ScopeMenu({
               value={space.id}
               className={menuItemClass}
             >
+              {layers}
               <span className="min-w-0 flex-1 truncate">{space.name}</span>
               <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
             </Menu.RadioItem>

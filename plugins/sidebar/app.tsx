@@ -40,13 +40,20 @@ import {
   SpacesPage,
 } from "./components/spaces-page";
 import { NewThreadButton } from "./components/new-thread-button";
-import { ThreadRow, fadeClass } from "./components/thread-row";
+import {
+  ThreadRow,
+  fadeClass,
+  type ProviderIconRecord,
+} from "./components/thread-row";
+import { ProjectGlyph } from "./components/project-glyph";
+import { ProjectHueStyle } from "./lib/project-hue";
 import { ThreadChildren } from "./components/thread-children";
 import { ThreadRoots } from "./components/thread-roots";
 import { ThreadDragOverlay } from "./components/thread-drag-overlay";
 import { DraftObserver } from "./components/draft-observer";
 import { HostIcon } from "./lib/host-icon";
 import { StatusIcon } from "./components/status-icon";
+import { ArchiveIcon } from "./components/archive-icon";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
 import {
   buildThreadTree,
@@ -67,9 +74,36 @@ import {
   useThreadDndState,
 } from "./lib/thread-dnd-context";
 
+/**
+ * The count chip on a group header. Muted by default; Needs Attention turns
+ * amber while it holds rows. Decorative: the rows below carry the meaning.
+ */
+export function GroupCount({
+  count,
+  attention = false,
+}: {
+  count: number;
+  attention?: boolean;
+}) {
+  const alert = attention && count > 0;
+  return (
+    <span
+      aria-hidden="true"
+      data-group-count={count}
+      data-group-count-tone={alert ? "attention" : "muted"}
+      className={`shrink-0 rounded px-1 text-[10px] leading-4 tabular-nums ${alert ? "bg-[var(--surface-attention)] font-medium text-[var(--warning-text)]" : "bg-muted text-muted-foreground"}`}
+    >
+      {count}
+    </span>
+  );
+}
+
 function Group({
   id,
   title,
+  icon,
+  count,
+  attention = false,
   children,
   archive = false,
   wrapHeader = (header) => header,
@@ -77,6 +111,12 @@ function Group({
 }: {
   id: string;
   title: string;
+  /** Tinted glyph before the title. */
+  icon?: ReactNode;
+  /** Rows in the group; shown as a chip before the chevron. */
+  count?: number;
+  /** Colors the count chip while it is non-zero. */
+  attention?: boolean;
   archive?: boolean;
   children: ReactNode;
   /** Wraps the header button, e.g. in a context menu. */
@@ -107,9 +147,21 @@ function Group({
       }
       className="mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
     >
+      {icon && (
+        <span
+          aria-hidden="true"
+          data-group-icon=""
+          className="flex size-3.5 shrink-0 items-center justify-center"
+        >
+          {icon}
+        </span>
+      )}
       <span className="min-w-0 flex-1 truncate text-left font-medium">
         {title}
       </span>
+      {count !== undefined && (
+        <GroupCount count={count} attention={attention} />
+      )}
       <HostIcon
         name="ChevronDown"
         fallback="ArrowDown"
@@ -340,6 +392,9 @@ function ThreadsList(props: PluginThreadListProps) {
   const providerNames = new Map(
     providers.map((provider) => [provider.id, provider.displayName]),
   );
+  const providerRecords = new Map<string, ProviderIconRecord>(
+    providers.map((provider) => [provider.id, provider]),
+  );
   const titles = new Map(
     [...threads, ...archives.threads].map((thread) => [
       thread.id,
@@ -506,6 +561,9 @@ function ThreadsList(props: PluginThreadListProps) {
         showProject={showProject}
         singleLine={singleLine}
         provider={providerNames.get(thread.providerId) ?? thread.providerId}
+        providerRecord={
+          providerRecords.get(thread.providerId) ?? { id: thread.providerId }
+        }
         parent={
           thread.parentThreadId ? titles.get(thread.parentThreadId) : undefined
         }
@@ -599,6 +657,7 @@ function ThreadsList(props: PluginThreadListProps) {
           {MOBILE_SIDEBAR_SCROLL_CSS}
         </style>
       )}
+      <ProjectHueStyle />
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
           <ScopeMenu
@@ -700,7 +759,18 @@ function ThreadsList(props: PluginThreadListProps) {
             ) : (
               <>
                 {pinned.length > 0 && (
-                  <Group id="pinned" title="Pinned">
+                  <Group
+                    id="pinned"
+                    title="Pinned"
+                    count={pinned.length}
+                    icon={
+                      <HostIcon
+                        name="Pin"
+                        fallback="Star"
+                        className="size-3.5 text-[var(--bbp-file,var(--timeline-accent))]"
+                      />
+                    }
+                  >
                     <ul aria-label="Pinned threads" className="m-0 list-none p-0">
                       {pinned.map((entry) => row(entry))}
                     </ul>
@@ -719,7 +789,14 @@ function ThreadsList(props: PluginThreadListProps) {
                         rows.length + (s === "draft" ? newDrafts.length : 0);
                       if (!count) return null;
                       return (
-                        <Group key={s} id={`status:${s}`} title={STATUS_LABEL[s]}>
+                        <Group
+                          key={s}
+                          id={`status:${s}`}
+                          title={STATUS_LABEL[s]}
+                          count={count}
+                          attention={s === "attention"}
+                          icon={<StatusIcon status={s} size="small" />}
+                        >
                           <ThreadRoots
                             label={STATUS_LABEL[s]}
                             pageSize={s === "done" ? 10 : 5}
@@ -757,6 +834,13 @@ function ThreadsList(props: PluginThreadListProps) {
                             key={project.id}
                             id={`project:${project.id}`}
                             title={project.name}
+                            count={rows.length + drafts.length}
+                            icon={
+                              <ProjectGlyph
+                                name={project.name}
+                                neutral={project.isPersonal}
+                              />
+                            }
                             wrapHeader={(header) =>
                               !project.known ? (
                                 header
@@ -824,7 +908,13 @@ function ThreadsList(props: PluginThreadListProps) {
                         ) : null;
                       })}
                 {archived.length > 0 && (
-                  <Group id="archive" title="Archived" archive>
+                  <Group
+                    id="archive"
+                    title="Archived"
+                    archive
+                    count={archived.length}
+                    icon={<ArchiveIcon />}
+                  >
                     <ThreadRoots
                       label="Archived"
                       pageSize={10}

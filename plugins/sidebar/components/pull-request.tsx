@@ -32,18 +32,24 @@ export function pullRequestSummary(pullRequest: PluginSidebarPullRequest) {
   return `${STATE_LABEL[pullRequest.state]} pull request #${pullRequest.number}${attention ? `, ${attention}` : ""}`;
 }
 
-function colorOf(pullRequest: PluginSidebarPullRequest) {
+/**
+ * Chip colors on the theme plugin's roles with BB fallbacks: merged purple
+ * (agent), open green (done), closed red (error), draft amber (edit), and an
+ * open pull request that needs you in the attention amber. The glyph shape
+ * differs per state as well.
+ */
+export function pullRequestColorClass(pullRequest: PluginSidebarPullRequest) {
   switch (pullRequest.state) {
     case "merged":
-      return "text-violet-600 dark:text-violet-400";
+      return "text-[var(--bbp-agent,var(--pr-merged))]";
     case "closed":
-      return "text-red-600 dark:text-red-400";
+      return "text-[var(--bbp-error,var(--destructive-text))]";
     case "draft":
-      return "text-[var(--subtle-foreground)]";
+      return "text-[var(--bbp-edit,var(--warning-text))]";
     default:
       return NEEDS_YOU.has(pullRequest.attention)
-        ? "text-[var(--warning-text)]"
-        : "text-[var(--success)]";
+        ? "text-[var(--bbp-attention,var(--warning-text))]"
+        : "text-[var(--bbp-done,var(--success))]";
   }
 }
 
@@ -58,13 +64,14 @@ export function PullRequestIcon({
     <svg
       role="img"
       aria-label={pullRequestSummary(pullRequest)}
+      data-pull-request-state={pullRequest.state}
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={`size-3.5 shrink-0 ${colorOf(pullRequest)} ${className}`}
+      className={`size-3.5 shrink-0 ${pullRequestColorClass(pullRequest)} ${className}`}
     >
       <circle cx="4" cy="3.5" r="1.75" />
       <circle cx="4" cy="12.5" r="1.75" />

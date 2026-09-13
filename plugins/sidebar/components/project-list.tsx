@@ -12,6 +12,8 @@ import {
   ProjectRemoveForm,
   ProjectRenameForm,
 } from "./project-forms";
+import { ProjectGlyph } from "./project-glyph";
+import { ProjectHueStyle } from "../lib/project-hue";
 
 type RowEdit = { kind: "rename" | "folder" | "remove"; id: string };
 
@@ -205,6 +207,7 @@ export function ProjectList({
   );
   return (
     <div>
+      <ProjectHueStyle />
       {projects.error && (
         <div role="alert" className="mb-1 px-1 text-xs text-destructive">
           Cannot load projects.
@@ -250,6 +253,10 @@ export function ProjectList({
               )}
               <div className="min-w-0 flex-1 px-1">
                 <div className="flex items-center gap-2">
+                  <ProjectGlyph
+                    name={projectLabel(project)}
+                    neutral={project.isPersonal}
+                  />
                   <span data-project-name="" className="min-w-0 truncate">
                     {projectLabel(project)}
                   </span>

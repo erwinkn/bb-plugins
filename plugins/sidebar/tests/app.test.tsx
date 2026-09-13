@@ -425,7 +425,8 @@ describe("activity sidebar", () => {
       expect(
         marker.querySelector("[data-icon]")?.getAttribute("aria-hidden"),
       ).toBe("true");
-      expect(marker.parentElement?.firstElementChild?.textContent).toBe("Old thread 0");
+      // The provider glyph leads the title line; the title follows it.
+      expect(marker.parentElement?.children[1]?.textContent).toBe("Old thread 0");
       fireEvent.click(target);
       expect(slot.inspection.navigateCalls).toContainEqual({
         method: "toThread",
@@ -600,7 +601,7 @@ describe("activity sidebar", () => {
           // The marker ends the title line; nesting never moves it.
           expect(marker.classList.contains("absolute")).toBe(false);
           expect(marker.style.left).toBe("");
-          expect(marker.parentElement?.firstElementChild?.textContent).toBe(
+          expect(marker.parentElement?.children[1]?.textContent).toBe(
             "Test thread",
           );
           expect(marker.parentElement?.lastElementChild).toBe(marker);
@@ -1722,7 +1723,7 @@ describe("activity sidebar", () => {
         } else {
           const marker = within(row).getByRole("img", { name: label });
           if (id === "unread") {
-            expect(marker.querySelector(".bg-sky-600")).not.toBeNull();
+            expect(marker.querySelector("[data-status-dot='unread']")).not.toBeNull();
             expect(marker.querySelector("svg")).toBeNull();
           } else {
             expect(marker.querySelector("svg")).not.toBeNull();
@@ -1757,7 +1758,7 @@ describe("activity sidebar", () => {
       vi.useRealTimers();
     }
   });
-  it("uses plain group labels and status icons for attention, draft, and working, plus unread dots", () => {
+  it("uses group labels with a glyph and count, and status icons for attention, draft, and working, plus unread dots", () => {
     const slot = mount();
     act(() => {
       recordDraft("thread:done", true);
@@ -1765,9 +1766,11 @@ describe("activity sidebar", () => {
     });
     for (const group of slot.getAllByRole("region")) {
       const header = group.querySelector(":scope > button")!;
-      expect(header.textContent).toBe(group.getAttribute("aria-label"));
+      // The accessible name stays the plain label: glyph and count are decorative.
+      expect(slot.getByRole("button", { name: group.getAttribute("aria-label")! })).toBe(header);
       expect(header.hasAttribute("title")).toBe(false);
-      expect(header.querySelectorAll("[data-icon]")).toHaveLength(1);
+      expect(header.querySelector("[data-group-icon]")).not.toBeNull();
+      expect(header.querySelector("[data-group-count]")?.getAttribute("aria-hidden")).toBe("true");
       expect(
         header.querySelector("[data-icon='ChevronDown']"),
       ).not.toBeNull();

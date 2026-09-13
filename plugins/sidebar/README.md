@@ -131,16 +131,22 @@ whole-sidebar scroll option, so compact mode applies a small CSS adapter to
 BB's `data-sidebar` regions. It applies only while this list is mounted and
 does not change host inline styles. Check this host layout after BB upgrades.
 
-Rows have two lines. The first line shows the title with the status marker
-at its right end. The second line shows muted metadata: the pull request for
-the thread's branch when BB reports one, then the project name, then the
-branch. Under a project header the project name is omitted, because it would
+Rows have two lines. The first line shows the provider's glyph (BB's
+`experimental_ProviderIcon` for the thread's `providerId`, so plugin-registered
+artwork and tints apply), the title, and the status marker at its right end.
+The second line shows muted metadata: the pull request for the thread's branch
+when BB reports one, then the project name, then a git-branch glyph in the file
+blue and the branch. Under a project header the project name is omitted, because it would
 repeat the header; pinned rows keep it. Rows under **No project** have no
 project metadata at all, so they collapse to a single line: the title, the
 status marker, and the age. The age for the selected date sits at the right end of
 that line and refreshes each minute. The pull request shows a state-colored
-icon and its number: green for open, amber for an open pull request that
-needs you, violet for merged, red for closed, and muted for a draft. Metadata
+icon and its number: green for open, attention amber for an open pull request
+that needs you, purple for merged, red for closed, and edit amber for a draft.
+The chip is a link (by role, since the row itself is a link): it underlines on
+hover, and clicking it or pressing Enter opens the pull request through BB's
+URL opener, which follows the client's in-app or external browser preference,
+without selecting the row; a host without that opener gets a new tab. Metadata
 that does not fit fades out before the age instead of showing an ellipsis;
 the title fades before the status marker. The provider, the full branch, and
 the pull request title appear in an instant info card to the right on hover
@@ -158,8 +164,14 @@ Touch keeps tap-to-open and long-press actions, without a hover card.
 Working rows have a green spinner; unread rows have a
 blue dot. Needs Attention rows have an amber alert icon. Draft rows, including
 new-thread drafts, have a violet dashed-circle icon. Done rows have no status
-icon. Child arrows stay separate from status icons. Group headers have plain labels and
-centered collapse chevrons, with no status icons, counts, or hover descriptions.
+icon. Child arrows stay separate from status icons and use the agent purple. Needs
+Attention rows also get BB's attention surface wash behind the whole row.
+Group headers show a glyph, the label, a count chip, and the collapse chevron,
+with no hover descriptions. The glyph is the group's status icon, a pin for
+Pinned, the archive box for Archived, or a folder in the project's identity
+color for a project. The chip counts the rows in the group; it is muted except
+on Needs Attention, where it turns amber while non-zero. Glyph and chip are
+decorative, so the header's accessible name stays the plain label.
 The status menu retains its colored icons. Archived has a neutral archive-box
 icon in the menu and the row's right-aligned status position. The layout uses BB's theme tokens.
 
@@ -167,7 +179,11 @@ Active rows use BB's native open, split, rename, pin, read, and archive actions 
 the attributes needed for BB's thread navigation shortcuts. Right-click a row
 on desktop or hold it for 450 ms on mobile to open its actions. Scrolling,
 releasing early, or cancelling the touch cancels the hold. With keyboard focus
-on a row, press Shift+F10 or the Menu key. While a touch menu is open, a temporary
+on a row, press Shift+F10 or the Menu key. On a mouse or trackpad
+(`pointer: fine`), hovering a row swaps its status marker, or the empty slot of
+a Done row, for an Archive control; on archived rows it is Unarchive. Clicking
+it archives or restores through the same RPC as the menu action and does not
+open the thread. Touch viewports keep the marker and the long press. While a touch menu is open, a temporary
 selection guard prevents the native hold from selecting background text. It is
 removed on close or unmount; desktop menus are unchanged.
 Select Rename to edit the thread name in the row. Save or Enter applies the
@@ -367,3 +383,26 @@ sidebar membership changes, and reconnection. A thread restored outside the
 plugin leaves the Archived section without a reload; it does not rejoin the
 library. Failed loads show a Retry button; active threads
 remain available.
+
+## Color
+
+Colors follow the theme plugin's palette roles with BB's own tokens as
+fallbacks, written as `var(--bbp-x, var(<BB token>))` so the look degrades to
+BB's defaults when the BB Color palette is not selected: attention amber
+(`--bbp-attention` / `--warning-text`), unread and files blue (`--bbp-file` /
+`--timeline-accent`), working and open green (`--bbp-done` / `--success`),
+errors and closed red (`--bbp-error` / `--destructive-text`), agents, child
+arrows, drafts, and merged purple (`--bbp-agent` / `--pr-merged`), and draft
+pull requests in the edit amber (`--bbp-edit` / `--warning-text`). Every status
+keeps its own shape, so color never carries it alone; colored text only uses
+BB's `-text` tokens.
+
+Each project has an identity color: a deterministic hue from its name on an
+eight-step wheel (`lib/project-hue.tsx`). It tints the folder glyph on project
+headers and on the Spaces page project list, and draws a 2px accent at the left
+of a row wherever the row also shows the project name (status view, Pinned,
+Library). The color is BB's file blue with only the hue replaced through CSS
+relative color syntax, so lightness and chroma follow BB's light and dark
+palettes; browsers without relative colors keep the plain blue. Tailwind never
+sees these values, so no custom theme colors or literal oklch appear in
+classes.

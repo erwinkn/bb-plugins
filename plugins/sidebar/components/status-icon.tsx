@@ -1,10 +1,16 @@
 import type { Status } from "../lib/status";
 
-const COLOR: Record<Status, string> = {
-  attention: "text-[var(--warning-text)]",
-  unread: "text-sky-600 dark:text-sky-400",
-  working: "text-[var(--success)]",
-  draft: "text-violet-600 dark:text-violet-400",
+/**
+ * Status colors follow the theme plugin's palette roles with BB's own tokens
+ * as fallbacks: attention amber, unread file blue, working done green, draft
+ * agent purple. Done stays subtle. Each status also has its own shape, so
+ * color never carries the status alone.
+ */
+export const STATUS_COLOR_CLASS: Record<Status, string> = {
+  attention: "text-[var(--bbp-attention,var(--warning-text))]",
+  unread: "text-[var(--bbp-file,var(--timeline-accent))]",
+  working: "text-[var(--bbp-done,var(--success))]",
+  draft: "text-[var(--bbp-agent,var(--pr-merged))]",
   done: "text-[var(--subtle-foreground)]",
 };
 
@@ -20,13 +26,14 @@ export function StatusIcon({
   return (
     <svg
       aria-hidden="true"
+      data-status-icon={status}
       viewBox="0 0 20 20"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={`${size === "small" ? "size-3.5" : "size-4"} shrink-0 ${COLOR[status]} ${status === "working" ? "motion-safe:animate-spin" : ""} ${className}`}
+      className={`${size === "small" ? "size-3.5" : "size-4"} shrink-0 ${STATUS_COLOR_CLASS[status]} ${status === "working" ? "motion-safe:animate-spin" : ""} ${className}`}
     >
       {status === "attention" && (
         <>

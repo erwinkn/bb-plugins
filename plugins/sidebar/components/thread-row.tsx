@@ -4,9 +4,11 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   useRpc,
   useBbNavigate,
+  experimental_ProviderIcon as ProviderIcon,
   experimental_useSidebarThreadActions,
   experimental_useSidebarThreadPullRequest,
   experimental_useSidebarThreadSplit,
+  type ExperimentalProviderIconProps,
   type PluginSidebarThread,
 } from "@get-bb/plugin-sdk/app";
 import {
@@ -20,7 +22,7 @@ import type { libraryContract } from "../lib/library-contract";
 import { menuItemClass } from "./menus";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { relativeAge } from "../lib/time";
-import { PullRequestIcon } from "./pull-request";
+import { PullRequestIcon, pullRequestSummary } from "./pull-request";
 import { StatusIcon } from "./status-icon";
 import { ArchiveIcon } from "./archive-icon";
 import { ThreadInfo } from "./thread-info";
@@ -29,6 +31,15 @@ import { getThreadRowDroppableId } from "../lib/thread-dnd";
 import type { ThreadNestTargetState } from "../lib/thread-dnd";
 import { useThreadDndState } from "../lib/thread-dnd-context";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
+import { useFinePointer } from "../lib/use-fine-pointer";
+import { projectHueStep } from "../lib/project-hue";
+
+/** The provider record `experimental_ProviderIcon` reads artwork from. */
+export type ProviderIconRecord = ExperimentalProviderIconProps["provider"];
+
+// Palette roles with BB fallbacks (see plugins/theme/README.md).
+const FILE_COLOR_CLASS = "text-[var(--bbp-file,var(--timeline-accent))]";
+const AGENT_COLOR_CLASS = "text-[var(--bbp-agent,var(--pr-merged))]";
 
 // Overflowing text fades out at the right edge instead of showing an ellipsis.
 export const fadeClass =
@@ -52,6 +63,7 @@ export function ThreadRow({
   project,
   showProject,
   provider,
+  providerRecord,
   parent,
   depth = 0,
   children,
@@ -75,6 +87,11 @@ export function ThreadRow({
    */
   singleLine?: boolean;
   provider: string;
+  /**
+   * The host's provider record for the glyph left of the title; an id-only
+   * record still resolves plugin-registered artwork and the host fallback.
+   */
+  providerRecord?: ProviderIconRecord;
   parent?: string;
   depth?: number;
   children?: ReactNode;
@@ -122,6 +139,10 @@ export function ThreadRow({
     }
   }, [editing]);
   const longPress = useLongPressMenu(menuOpen);
+  // Desktop hover swaps the status marker for an archive control. Touch
+  // viewports keep the marker and reach actions through the long press.
+  const finePointer = useFinePointer();
+  const [hovered, setHovered] = useState(false);
   const dnd = useThreadDndState();
   const dndEnabled = dnd !== null && !thread.isArchived;
   const draggable = useDraggable({ id: thread.id, disabled: !dndEnabled });
@@ -146,6 +167,24 @@ export function ThreadRow({
   const { pullRequest } = experimental_useSidebarThreadPullRequest(thread.id);
   const title = threadTitle(thread);
   const branch = thread.environment?.branchName;
+  // The project accent only appears where the project name does, so a row
+  // under its own project header stays plain.
+  const accentStep = showProject && !singleLine ? projectHueStep(project) : null;
+  const showArchiveControl = finePointer && hovered && !menuOpen;
+  const toggleArchived = () => {
+    void rpc
+      .call(thread.isArchived ? "restoreThread" : "archiveTree", {
+        threadId: thread.id,
+      })
+      .catch(onError);
+  };
+  const openPullRequest = () => {
+    if (!pullRequest) return;
+    // BB's browser preference (in-app browser or external); a host without
+    // the URL opener gets a plain new tab.
+    if (!navigate.openUrl(pullRequest.url))
+      window.open(pullRequest.url, "_blank", "noopener,noreferrer");
+  };
   const timestamp = sortBy === "created" ? thread.createdAt : thread.updatedAt;
   const age = (
     <time
@@ -164,8 +203,19 @@ export function ThreadRow({
   return (
     <li data-thread-node={thread.id} className="min-w-0">
       <div
-        className={`group relative flex min-w-0 items-center rounded-md ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"} ${nestTargetState ? NEST_TARGET_STATE_CLASS[nestTargetState] : ""} ${draggable.isDragging ? "opacity-50" : ""}`}
+        data-thread-status={thread.isArchived ? "archived" : status}
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
+        className={`group relative flex min-w-0 items-center rounded-md ${active ? "bg-accent text-accent-foreground" : `${status === "attention" && !thread.isArchived ? "bg-[var(--surface-attention)]" : ""} hover:bg-accent/60`} ${nestTargetState ? NEST_TARGET_STATE_CLASS[nestTargetState] : ""} ${draggable.isDragging ? "opacity-50" : ""}`}
       >
+        {accentStep !== null && (
+          <span
+            aria-hidden="true"
+            data-project-accent=""
+            data-project-hue={accentStep}
+            className="absolute bottom-1.5 left-0 top-1.5 w-0.5 rounded-full bg-current"
+          />
+        )}
         {editing ? (
           <form
             aria-label="Rename thread"
@@ -297,7 +347,7 @@ export function ThreadRow({
                     strokeWidth="1.5"
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    className={`absolute ${singleLine ? "top-2.5" : "top-3"} size-3 text-[var(--subtle-foreground)]`}
+                    className={`absolute ${singleLine ? "top-2.5" : "top-3"} size-3 ${AGENT_COLOR_CLASS}`}
                     style={{ left: `${0.5 + (depth - 1) * 1.5}rem` }}
                   >
                     <path d="M3 3v5a2 2 0 0 0 2 2h8m-3-3 3 3-3 3" />
@@ -305,11 +355,45 @@ export function ThreadRow({
                 )}
                 <span className="flex min-w-0 items-center gap-2">
                   <span
+                    data-thread-provider={thread.providerId}
+                    className="flex size-3.5 shrink-0 items-center justify-center text-[var(--subtle-foreground)]"
+                  >
+                    <ProviderIcon
+                      providerKind="agent"
+                      provider={providerRecord ?? { id: thread.providerId }}
+                      fallback="Code"
+                      aria-hidden
+                      className="size-3.5"
+                    />
+                  </span>
+                  <span
                     className={`min-w-0 flex-1 text-sm leading-5 ${fadeClass} ${thread.isUnread || active ? "font-semibold" : "font-medium"}`}
                   >
                     {title}
                   </span>
-                  {(thread.isArchived || status !== "done") && (
+                  {showArchiveControl ? (
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      data-thread-archive-action={thread.isArchived ? "unarchive" : "archive"}
+                      aria-label={thread.isArchived ? "Unarchive thread" : "Archive thread"}
+                      title={thread.isArchived ? "Unarchive" : "Archive"}
+                      // Keep the press away from drag, split, and long press.
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        toggleArchived();
+                      }}
+                      className="flex size-4 shrink-0 items-center justify-center rounded text-[var(--subtle-foreground)] hover:bg-accent hover:text-foreground"
+                    >
+                      <HostIcon
+                        name={thread.isArchived ? "ArchiveRestore" : "Archive"}
+                        fallback="PackageReceive"
+                        className="size-3.5"
+                      />
+                    </span>
+                  ) : (thread.isArchived || status !== "done") && (
                     <span
                       role="img"
                       aria-label={thread.isArchived ? "Archived" : STATUS_LABEL[status]}
@@ -318,7 +402,8 @@ export function ThreadRow({
                       {thread.isArchived ? <ArchiveIcon /> : status === "unread" ? (
                         <span
                           aria-hidden="true"
-                          className="size-1.5 rounded-full bg-sky-600 dark:bg-sky-400"
+                          data-status-dot="unread"
+                          className="size-1.5 rounded-full bg-[var(--bbp-file,var(--timeline-accent))]"
                         />
                       ) : (
                         <StatusIcon status={status} />
@@ -332,11 +417,32 @@ export function ThreadRow({
                     <span
                       className={`flex min-w-0 flex-1 items-center gap-1 ${fadeClass}`}
                     >
-                      {thread.parentThreadId && !nested ? "↳ " : ""}
+                      {thread.parentThreadId && !nested && (
+                        <span aria-hidden="true" className={AGENT_COLOR_CLASS}>
+                          ↳
+                        </span>
+                      )}
                       {pullRequest && (
+                        // The row itself is a link, so the chip is a link by
+                        // role rather than a nested anchor.
                         <span
+                          role="link"
+                          tabIndex={0}
                           data-thread-pull-request=""
-                          className="flex shrink-0 items-center gap-1"
+                          aria-label={`${pullRequestSummary(pullRequest)}: ${pullRequest.title}`}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openPullRequest();
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            openPullRequest();
+                          }}
+                          className="flex shrink-0 cursor-pointer items-center gap-1 rounded underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           <PullRequestIcon pullRequest={pullRequest} />
                           <span className="tabular-nums">
@@ -355,7 +461,17 @@ export function ThreadRow({
                           {(pullRequest || showProject) && (
                             <span aria-hidden="true">·</span>
                           )}
-                          <span className="shrink-0">{branch}</span>
+                          <span
+                            data-thread-branch=""
+                            className="flex shrink-0 items-center gap-1"
+                          >
+                            <HostIcon
+                              name="GitBranch"
+                              fallback="Fork"
+                              className={`size-3 shrink-0 ${FILE_COLOR_CLASS}`}
+                            />
+                            {branch}
+                          </span>
                         </>
                       )}
                     </span>
