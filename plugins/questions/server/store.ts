@@ -55,6 +55,7 @@ export const MIGRATIONS = [
     updated_at INTEGER NOT NULL
   )`,
   `UPDATE rounds SET mode = 'panel' WHERE mode = 'notebook'`,
+  `ALTER TABLE submissions ADD COLUMN queued_message_id TEXT`,
 ];
 
 interface RoundRow {
@@ -86,6 +87,7 @@ interface SubmissionRow {
   error: string | null;
   created_at: number;
   settled_at: number | null;
+  queued_message_id: string | null;
 }
 
 export class StoredDataError extends Error {
@@ -153,6 +155,7 @@ function rowToSubmission(row: SubmissionRow): Submission {
     error: row.error,
     createdAt: row.created_at,
     settledAt: row.settled_at,
+    queuedMessageId: row.queued_message_id,
   };
 }
 
@@ -364,7 +367,7 @@ export class QuestionsStore {
       .prepare<[string, number], SubmissionRow>(
         `SELECT * FROM submissions s WHERE thread_id = ? AND (
           rowid IN (SELECT rowid FROM submissions WHERE thread_id = s.thread_id ORDER BY created_at DESC, rowid DESC LIMIT ?)
-          OR (state IN ('pending', 'uncertain', 'failed') AND EXISTS (
+          OR (state IN ('pending', 'uncertain', 'failed', 'cancelled') AND EXISTS (
             SELECT 1 FROM json_each(s.question_ids_json) old_question
             WHERE NOT EXISTS (
               SELECT 1 FROM submissions newer, json_each(newer.question_ids_json) new_question
@@ -383,12 +386,14 @@ export class QuestionsStore {
     threadId: string;
     submission: Submission;
     state: "sent" | "queued";
+    /** BB's queued row id when `state` is queued, so a later cancellation can be matched. */
+    queuedMessageId?: string | null;
     settledAt: number;
   }): void {
     const settle = this.db.transaction(() => {
       this.db
-        .prepare("UPDATE submissions SET state = ?, error = NULL, settled_at = ? WHERE id = ? AND thread_id = ?")
-        .run(input.state, input.settledAt, input.submission.id, input.threadId);
+        .prepare("UPDATE submissions SET state = ?, error = NULL, settled_at = ?, queued_message_id = ? WHERE id = ? AND thread_id = ?")
+        .run(input.state, input.settledAt, input.queuedMessageId ?? null, input.submission.id, input.threadId);
       for (const questionId of input.submission.questionIds) {
         const answer = input.submission.snapshot[questionId];
         if (!answer) continue;
@@ -428,6 +433,49 @@ export class QuestionsStore {
     this.db
       .prepare("UPDATE submissions SET state = ?, error = ?, settled_at = ? WHERE id = ? AND thread_id = ?")
       .run(input.state, input.error, input.settledAt, input.submissionId, input.threadId);
+  }
+
+  /**
+   * The user removed the queued message before the agent received it. The
+   * submission becomes cancelled with its frozen snapshot intact, and its
+   * answers stop counting as submitted unless a newer submission already
+   * re-sent them. Nothing is re-sent here.
+   */
+  cancelQueued(threadId: string, queuedMessageId: string, now: number): Submission | null {
+    return this.db.transaction((): Submission | null => {
+      const row = this.db
+        .prepare<[string, string], SubmissionRow>(
+          "SELECT * FROM submissions WHERE thread_id = ? AND queued_message_id = ? AND state = 'queued'",
+        )
+        .get(threadId, queuedMessageId);
+      if (!row) return null;
+      this.db
+        .prepare("UPDATE submissions SET state = 'cancelled', error = ?, settled_at = ? WHERE id = ?")
+        .run("The queued message was removed before the agent received it.", now, row.id);
+      this.db
+        .prepare(
+          `UPDATE answers SET submitted_json = NULL, submitted_at = NULL, submission_id = NULL, updated_at = ?
+           WHERE thread_id = ? AND submission_id = ?`,
+        )
+        .run(now, threadId, row.id);
+      return this.getSubmission(threadId, row.id);
+    })();
+  }
+
+  /** Attachments frozen in any submission of this question, in case the draft dropped them since. */
+  submissionAttachments(threadId: string, questionId: string): Answer["attachments"] {
+    const rows = this.db
+      .prepare<[string, string], { snapshot_json: string }>(
+        `SELECT snapshot_json FROM submissions WHERE thread_id = ?
+         AND EXISTS (SELECT 1 FROM json_each(question_ids_json) WHERE value = ?)`,
+      )
+      .all(threadId, questionId);
+    const attachments: Answer["attachments"] = [];
+    for (const row of rows) {
+      const parsed = answerSchema.safeParse((JSON.parse(row.snapshot_json) as Record<string, unknown>)[questionId]);
+      if (parsed.success) attachments.push(...parsed.data.attachments);
+    }
+    return attachments;
   }
 
   /**

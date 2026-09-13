@@ -59,6 +59,8 @@ export interface QuestionsController {
   clear(questionId: string): void;
   flush(): Promise<void>;
   submit(roundId: string): Promise<SubmitOutcome>;
+  /** Restore a cancelled submission's frozen answers as drafts and submit its round again. */
+  resubmit(submission: Submission): Promise<SubmitOutcome>;
   uploadAttachment(questionId: string, file: File): Promise<void>;
   attachmentPreview(questionId: string, path: string): Promise<string | null>;
   searchPaths(query: string): Promise<PathSearch>;
@@ -199,6 +201,19 @@ export function useQuestions(threadId: string): QuestionsController {
     [finishSubmit, rpc, store, session, threadId],
   );
 
+  const resubmit = useCallback(
+    async (submission: Submission): Promise<SubmitOutcome> => {
+      const round = store.rounds.find((item) => item.questions.some((question) => submission.questionIds.includes(question.id)));
+      if (!round) return { kind: "nothing" };
+      for (const question of round.questions) {
+        const frozen = submission.snapshot[question.id];
+        if (frozen) store.edit(question.id, () => frozen);
+      }
+      return submit(round.id);
+    },
+    [store, submit],
+  );
+
   const uploadAttachment = useCallback(
     (questionId: string, file: File) => {
       const job = session.uploadQueue.then(async () => {
@@ -278,6 +293,7 @@ export function useQuestions(threadId: string): QuestionsController {
     clear: (questionId) => store.clear(questionId),
     flush: () => store.flush(),
     submit,
+    resubmit,
     uploadAttachment,
     attachmentPreview,
     searchPaths,

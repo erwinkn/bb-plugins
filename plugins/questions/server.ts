@@ -176,6 +176,11 @@ export default async function plugin(bb: BbPluginApi) {
     await interactions.release(thread.id);
     store.deleteThread(thread.id);
   });
+  // The user deleted a queued message from the thread's queue: answers it
+  // carried never reached the agent. Mark them, never re-send.
+  bb.events.on("message.cancelled", ({ entry }) => {
+    service.cancelQueued(entry.threadId, entry.id);
+  });
 
   async function ask(threadId: string, projectId: string, input: unknown, signal?: AbortSignal, delivery: "provider" | "message" = "provider") {
     const detached = delivery === "message" || await isNonBlocking(threadId);

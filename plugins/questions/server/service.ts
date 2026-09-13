@@ -392,7 +392,11 @@ export class QuestionsService {
     }
     const known = this.store.getAnswer(threadId, question.id);
     const knownAttachments = new Map<string, Answer["attachments"][number]>();
-    for (const item of [...(known?.draft?.attachments ?? []), ...(known?.submitted?.attachments ?? [])]) {
+    for (const item of [
+      ...(known?.draft?.attachments ?? []),
+      ...(known?.submitted?.attachments ?? []),
+      ...this.store.submissionAttachments(threadId, question.id),
+    ]) {
       knownAttachments.set(item.path, item);
     }
     // Attachments enter through uploadAttachment only; a draft may keep or
@@ -558,6 +562,20 @@ export class QuestionsService {
   }
 
   /**
+   * BB removed a queued message before dispatch. Only a submission that was
+   * queued under that exact row changes; the answers become drafts again and
+   * the user decides whether to resubmit. Never re-sends.
+   */
+  cancelQueued(threadId: string, queuedMessageId: string): Submission | null {
+    const submission = this.store.cancelQueued(threadId, queuedMessageId, this.now());
+    if (submission === null) return null;
+    this.deps.log.info(`submission ${submission.id} cancelled: queued message ${queuedMessageId} was removed`);
+    this.deps.publish({ threadId, kind: "submission", submissionId: submission.id });
+    this.deps.publish({ threadId, kind: "answers" });
+    return submission;
+  }
+
+  /**
    * Freeze, record, then send. The outbox row exists before the send so a
    * crash mid-flight leaves an uncertain row instead of a silent loss or a
    * silent duplicate.
@@ -640,13 +658,20 @@ export class QuestionsService {
       const waiting = await this.deps.deliverToWaiter?.(submission, () => {
         this.store.settleDelivered({ threadId: input.threadId, submission, state: "sent", settledAt: this.now() });
       });
-      const response = waiting ? { delivery: "sent" } : await this.deps.sdk.threads.send({
+      const response = waiting ? { delivery: "sent" as const } : await this.deps.sdk.threads.send({
         threadId: input.threadId,
         mode: "queue-if-active",
         input: parts,
       });
-      const state = response.delivery === "queued" ? "queued" : "sent";
-      if (!waiting) this.store.settleDelivered({ threadId: input.threadId, submission, state, settledAt: this.now() });
+      if (!waiting) {
+        this.store.settleDelivered({
+          threadId: input.threadId,
+          submission,
+          state: response.delivery === "queued" ? "queued" : "sent",
+          queuedMessageId: response.delivery === "queued" ? response.queuedMessage.id : null,
+          settledAt: this.now(),
+        });
+      }
     } catch (error) {
       const classified = classifySendError(error);
       this.deps.log.warn(

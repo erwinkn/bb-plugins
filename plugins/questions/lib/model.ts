@@ -134,6 +134,8 @@ export const SUBMISSION_STATES = [
   "queued",
   "uncertain",
   "failed",
+  /** The queued message was removed before the agent received it. */
+  "cancelled",
 ] as const;
 export type SubmissionState = (typeof SUBMISSION_STATES)[number];
 
@@ -147,6 +149,8 @@ export const submissionSchema = z.object({
   error: z.string().nullable(),
   createdAt: z.number(),
   settledAt: z.number().nullable(),
+  /** BB's queued-message row when delivery was queued; matched on message.cancelled. */
+  queuedMessageId: z.string().nullable(),
 });
 export type Submission = z.infer<typeof submissionSchema>;
 
@@ -319,13 +323,14 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
- * Failed or uncertain attempts that still own the latest attempt for at
- * least one of their questions. A later successful send of other questions
- * never hides them; an attempt fully superseded by newer ones is not listed.
+ * Failed, uncertain, or cancelled attempts that still own the latest attempt
+ * for at least one of their questions. A later successful send of other
+ * questions never hides them; an attempt fully superseded by newer ones is
+ * not listed.
  */
 export function actionableFailures(submissions: Submission[]): Submission[] {
   return submissions.filter((submission) => {
-    if (submission.state !== "uncertain" && submission.state !== "failed") return false;
+    if (submission.state !== "uncertain" && submission.state !== "failed" && submission.state !== "cancelled") return false;
     return submission.questionIds.some(
       (questionId) =>
         !submissions.some(

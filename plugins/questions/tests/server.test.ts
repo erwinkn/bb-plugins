@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { createFakePluginHost, makePluginAgentConfigurationContext, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
+import { createFakePluginHost, makePluginAgentConfigurationContext, makeQueueEntry, makeThreadResponse, experimental_scanPublicSdkOnly } from "@get-bb/plugin-sdk/testing";
 import type { PluginAgentConfigurationContext } from "@get-bb/plugin-sdk";
 import plugin from "../server";
 import { MIGRATIONS, QuestionsStore } from "../server/store";
 import { QuestionsService } from "../server/service";
 import { QuestionInteractions } from "../server/interactions";
 import { INSTRUCTION_CHARS, summaryInstructions } from "../server/agent-instructions";
-import { LIMITS, emptyAnswer, threadStateSchema, type Answer, type Question, type Submission } from "../lib/model";
+import { LIMITS, actionableFailures, emptyAnswer, threadStateSchema, type Answer, type Question, type Submission } from "../lib/model";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 const ids = new Map<string, string>();
@@ -209,7 +209,7 @@ describe("Questions backend", () => {
     const submission: Submission = {
       id: uuid("expiry-gap"), threadId: "t", state: "pending", questionIds: [q.id],
       snapshot: { [q.id]: { ...emptyAnswer(), text: "Late answer" } },
-      error: null, createdAt: 1, settledAt: null,
+      error: null, createdAt: 1, settledAt: null, queuedMessageId: null,
     };
     expire({ outcome: "cancelled", reason: "timeout" });
     const confirmed = vi.fn();
@@ -424,7 +424,7 @@ describe("Questions backend", () => {
     const submitted = { ...emptyAnswer(), text: "Original answer" };
     const h = await setup(({ bb }) => {
       const db = bb.storage.database();
-      bb.storage.migrate(db, MIGRATIONS.slice(0, -1));
+      bb.storage.migrate(db, MIGRATIONS.slice(0, MIGRATIONS.findIndex((statement) => statement.includes("mode = 'panel'"))));
       db.prepare("INSERT INTO rounds VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         .run("legacy", "t", "proj_t", 1, "notebook", "Keep this", "[]", 123);
       db.prepare("INSERT INTO answers VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -726,6 +726,37 @@ describe("Questions backend", () => {
     expect(summaryInstructions({})).toBeNull();
     expect(summaryInstructions(null)).toBeNull();
     expect(summaryInstructions({ summary: "just a string" })).toBeNull();
+  });
+
+  it("cancels a queued submission when its message is removed and lets the user resubmit", async () => {
+    const h = await setup();
+    const round = await h.ask([{ title: "Queued?" }]);
+    const q = round.questions[0]!;
+    await h.save(q, { ...emptyAnswer(), text: "Queued answer" });
+    h.send.mockImplementationOnce(async () => ({ ok: true, delivery: "queued", queuedMessage: makeQueueEntry({ id: "qm_1", threadId: "t" }) }) as { ok: boolean; delivery: string });
+    const first = await h.submit([q.id], "queued");
+    expect(first.submission).toMatchObject({ state: "queued", queuedMessageId: "qm_1" });
+    expect((await h.state()).answers[0]!.submitted?.text).toBe("Queued answer");
+
+    await h.harness.behavior.emitThreadEvent("message.cancelled", { entry: makeQueueEntry({ id: "qm_other", threadId: "t" }) });
+    await h.harness.behavior.emitThreadEvent("message.cancelled", { entry: makeQueueEntry({ id: "qm_1", threadId: "other" }) });
+    expect((await h.state()).submissions[0]!.state).toBe("queued");
+
+    await h.harness.behavior.emitThreadEvent("message.cancelled", { entry: makeQueueEntry({ id: "qm_1", threadId: "t" }) });
+    let state = await h.state();
+    expect(state.submissions[0]).toMatchObject({ state: "cancelled", error: expect.stringContaining("removed before the agent"), snapshot: { [q.id]: { text: "Queued answer" } } });
+    expect(state.answers[0]).toMatchObject({ submitted: null, submissionId: null, submittedAt: null, draft: { text: "Queued answer" } });
+    expect(actionableFailures(state.submissions).map((item) => item.state)).toEqual(["cancelled"]);
+    expect(h.send).toHaveBeenCalledTimes(1);
+    await h.harness.behavior.emitThreadEvent("message.cancelled", { entry: makeQueueEntry({ id: "qm_1", threadId: "t" }) });
+    expect((await h.state()).submissions).toHaveLength(1);
+
+    const again = await h.submit([q.id], "resent");
+    expect(again.submission.state).toBe("sent");
+    expect(h.send).toHaveBeenCalledTimes(2);
+    state = await h.state();
+    expect(actionableFailures(state.submissions)).toEqual([]);
+    expect(state.answers[0]!.submissionId).toBe(uuid("resent"));
   });
 
   it("uses only public SDK imports", async () => {
