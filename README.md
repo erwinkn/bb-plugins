@@ -42,7 +42,7 @@ editing, JSON storage outside Git, revision history, and agent tools. See
 
 ## Install
 
-Use BB 0.42.1 or later. The bb server needs Git, npm, and GitHub access to this
+Use BB 0.43.1 or later. The bb server needs Git, npm, and GitHub access to this
 private repository. Configure Git authentication on that machine; do not put a
 token in the repository URL.
 

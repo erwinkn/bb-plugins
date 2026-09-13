@@ -100,3 +100,17 @@ test("database survives reload and retains a bounded history", async () => {
   assert.equal(restored!.list().length, 1);
   await reloaded.harness.dispose();
 });
+
+test("empty notes for maximum-length environment IDs can be stored and read", async () => {
+  const fake = createFakePluginHost({ pluginId: "scratchpad" });
+  try {
+    const store = createStore(fake.bb);
+    for (const length of [194, 195, 200]) {
+      const environmentId = "e".repeat(length);
+      const opened = store.open({ ...scope, environmentId });
+      assert.equal(opened.environmentId, environmentId);
+      assert.ok(opened.document[0].id.length <= 200);
+      assert.deepEqual(store.get(environmentId), opened);
+    }
+  } finally { await fake.harness.dispose(); }
+});

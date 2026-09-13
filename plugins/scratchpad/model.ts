@@ -81,7 +81,7 @@ export const markdownSchema = z.string().trim().min(1).max(100_000);
 export const editSchema = z.object({ expectedRevision: revision, blockId: id, markdown: markdownSchema.nullable() });
 
 export function emptyDocument(environmentId: string): NoteDocument {
-  return [{ id: `empty-${environmentId}`, type: "paragraph", props: { textColor: "default", backgroundColor: "default", textAlignment: "left" }, content: [], children: [] }];
+  return [{ id: `empty-${environmentId.slice(0, 194)}`, type: "paragraph", props: { textColor: "default", backgroundColor: "default", textAlignment: "left" }, content: [], children: [] }];
 }
 
 /** A targeted edit preserves all unrelated blocks, their IDs and formatting. */

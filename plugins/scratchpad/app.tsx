@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { definePluginApp, useBbNavigate, useRealtime, useRealtimeConnectionState, useRpc, type PluginThreadHeaderActionProps, type PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/ariakit";
@@ -71,10 +71,12 @@ function LoadedPad({ threadId, initial }: { threadId: string; initial: { scope: 
   const connection = useRealtimeConnectionState();
   const [history, setHistory] = useState<Omit<Note, "document">[] | null>(null);
   const [preview, setPreview] = useState<Note | null>(null);
+  const previewRequest = useRef(0);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const refresh = useCallback(() => {
-    void rpc.call("get", target).then((note) => session.receive(note), (error) => session.report(error));
+    void rpc.call("get", target).then((note) => session.receive(note), (error) => session.reportRefresh(error));
   }, [rpc, target, session]);
   useRealtime(CHANNEL, (payload) => {
     if ((payload as { environmentId?: string } | null)?.environmentId === target.environmentId) refresh();
@@ -90,12 +92,27 @@ function LoadedPad({ threadId, initial }: { threadId: string; initial: { scope: 
     const hide = () => { if (document.visibilityState === "hidden") void session.flush(); };
     window.addEventListener("focus", focus); window.addEventListener("beforeunload", unload); document.addEventListener("visibilitychange", hide);
     return () => {
+      previewRequest.current++;
       clearInterval(timer); window.removeEventListener("focus", focus); window.removeEventListener("beforeunload", unload); document.removeEventListener("visibilitychange", hide);
       void session.flush(); session.dispose();
     };
   }, [refresh, session]);
+  const viewPreview = (note: Note | null) => {
+    previewRequest.current++; setPreviewLoading(false); setPreview(note);
+  };
+  const loadPreview = async (revision: number) => {
+    const request = ++previewRequest.current;
+    // Hide the previous revision immediately so it cannot be restored while
+    // the user's newly selected revision is still loading.
+    setPreview(null); setPreviewLoading(true);
+    try {
+      const note = await rpc.call("version", { ...target, revision });
+      if (request === previewRequest.current) setPreview(note);
+    } catch (error) { if (request === previewRequest.current) session.report(error); }
+    finally { if (request === previewRequest.current) setPreviewLoading(false); }
+  };
   const showHistory = async () => {
-    if (history) { setHistory(null); setPreview(null); return; }
+    if (history) { setHistory(null); viewPreview(null); return; }
     try { setHistory(await rpc.call("history", target)); } catch (error) { session.report(error); }
   };
   const restore = async () => {
@@ -105,7 +122,7 @@ function LoadedPad({ threadId, initial }: { threadId: string; initial: { scope: 
       const result = await rpc.call("restore", { ...target, revision: preview.revision, expectedRevision: state.note.revision });
       session.receive(result.note);
       if (!result.ok) setNotice("The scratchpad changed. Review the latest version before restoring.");
-      else { setPreview(null); setHistory(null); setNotice("Revision restored. The previous version is still in history."); }
+      else { viewPreview(null); setHistory(null); setNotice("Revision restored. The previous version is still in history."); }
     } catch (error) { session.report(error); } finally { setBusy(false); }
   };
   const exportMarkdown = async () => {
@@ -131,24 +148,23 @@ function LoadedPad({ threadId, initial }: { threadId: string; initial: { scope: 
       </DropdownMenu>
     </div>
     {state.storageWarning && <div className="sp-banner" role="alert">This browser cannot keep a recovery draft. Keep this panel open until your changes are saved.</div>}
-    {state.error && <div className="sp-banner" role="alert">{state.error}<button className="sp-button" onClick={() => { refresh(); void session.flush(); }}>Retry</button></div>}
+    {(state.error || state.refreshError) && <div className="sp-banner" role="alert">{state.error || state.refreshError}<button className="sp-button" onClick={() => { refresh(); void session.flush(); }}>Retry</button></div>}
     {notice && <div className="sp-banner" role="status">{notice}<button className="sp-button" onClick={() => setNotice(null)}>Dismiss</button></div>}
     {state.conflict && <div className="sp-banner sp-conflict" role="alert">
       <strong>The scratchpad changed while you were editing.</strong><span>Your draft is safe below. Review the latest saved version before choosing which to keep.</span>
-      <div className="sp-actions"><button className="sp-button" onClick={() => setPreview(state.conflict)}>Review latest</button>
-        <button className="sp-button" onClick={() => { session.useLatest(); setPreview(null); }}>Use latest</button>
-        <button className="sp-button" onClick={() => { session.keepDraft(); setPreview(null); }}>Save my draft instead</button></div>
+      <div className="sp-actions"><button className="sp-button" onClick={() => viewPreview(state.conflict)}>Review latest</button>
+        <button className="sp-button" onClick={() => { session.useLatest(); viewPreview(null); }}>Use latest</button>
+        <button className="sp-button" onClick={() => { session.keepDraft(); viewPreview(null); }}>Save my draft instead</button></div>
     </div>}
     {history && <div className="sp-history" aria-label="Revision history">
       <div className="sp-history-label">Latest {history.length} revisions</div>
-      <div className="sp-history-list">{history.map((item) => <button className="sp-button" key={item.revision} onClick={() => {
-        void rpc.call("version", { ...target, revision: item.revision }).then(setPreview, (error) => session.report(error));
-      }}>Revision {item.revision} · {item.author} · {new Date(item.updatedAt).toLocaleString()}</button>)}</div>
+      <div className="sp-history-list">{history.map((item) => <button className="sp-button" key={item.revision} onClick={() => { void loadPreview(item.revision); }}>Revision {item.revision} · {item.author} · {new Date(item.updatedAt).toLocaleString()}</button>)}</div>
     </div>}
+    {previewLoading && <div className="sp-banner" role="status">Loading revision…<button className="sp-button" onClick={() => viewPreview(null)}>Cancel</button></div>}
     {preview && <div className="sp-preview">
       <div className="sp-preview-header"><strong>Saved revision {preview.revision}</strong><div className="sp-actions">
         {!state.conflict && <button className="sp-button" disabled={state.dirty || state.saving || busy || preview.revision === state.note.revision} onClick={restore}>Restore this revision</button>}
-        <button className="sp-button" onClick={() => setPreview(null)}>Close preview</button></div></div>
+        <button className="sp-button" onClick={() => viewPreview(null)}>Close preview</button></div></div>
       <div className="sp-preview-body"><RichEditor key={`preview-${preview.revision}`} document={preview.document} readOnly /></div>
     </div>}
     <div className="sp-document" onKeyDown={(event) => {

@@ -4,7 +4,7 @@ type Draft = { baseRevision: number; document: NoteDocument };
 export interface DraftStorage { read(): Draft | null; write(draft: Draft | null): void }
 export interface SessionState {
   note: Note; document: NoteDocument; dirty: boolean; saving: boolean;
-  conflict: Note | null; error: string | null; storageWarning: boolean; editorEpoch: number;
+  conflict: Note | null; error: string | null; refreshError: string | null; storageWarning: boolean; editorEpoch: number;
 }
 const equal = (a: NoteDocument, b: NoteDocument) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -15,9 +15,10 @@ export class NoteSession {
   private listeners = new Set<() => void>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private inFlight: Promise<void> | null = null;
+  private pendingSnapshot: Note | null = null;
   private disposed = false;
   constructor(note: Note, private save: (revision: number, document: NoteDocument) => Promise<WriteResult>, private storage: DraftStorage) {
-    this.state = { note, document: note.document, dirty: false, saving: false, conflict: null, error: null, storageWarning: false, editorEpoch: 0 };
+    this.state = { note, document: note.document, dirty: false, saving: false, conflict: null, error: null, refreshError: null, storageWarning: false, editorEpoch: 0 };
     try {
       const draft = storage.read();
       if (draft && !equal(draft.document, note.document)) {
@@ -46,7 +47,14 @@ export class NoteSession {
   }
   schedule() { clearTimeout(this.timer); if (!this.disposed) this.timer = setTimeout(() => { void this.flush(); }, 650); }
   receive(note: Note) {
-    if (this.state.saving || note.revision <= Math.max(this.state.note.revision, this.state.conflict?.revision ?? -1)) return;
+    if (this.state.refreshError) this.update({ refreshError: null });
+    // Reconcile after the save response establishes our acknowledged revision.
+    // This also prevents our own realtime echo from conflicting with newer typing.
+    if (this.state.saving) {
+      if (!this.pendingSnapshot || note.revision > this.pendingSnapshot.revision) this.pendingSnapshot = note;
+      return;
+    }
+    if (note.revision <= Math.max(this.state.note.revision, this.state.conflict?.revision ?? -1)) return;
     if (this.state.dirty && !equal(this.state.document, note.document)) this.update({ conflict: note });
     else {
       this.update({ note, document: note.document, dirty: false, conflict: null, error: null, editorEpoch: this.state.editorEpoch + 1 });
@@ -54,6 +62,7 @@ export class NoteSession {
     }
   }
   report(error: unknown) { this.update({ error: error instanceof Error ? error.message : String(error) }); }
+  reportRefresh(error: unknown) { this.update({ refreshError: error instanceof Error ? error.message : String(error) }); }
   flush = (): Promise<void> => {
     clearTimeout(this.timer);
     if (this.inFlight) return this.inFlight;
@@ -67,6 +76,8 @@ export class NoteSession {
       this.persist();
     }).catch((error) => this.report(error)).finally(() => {
       this.inFlight = null; this.update({ saving: false });
+      const pending = this.pendingSnapshot; this.pendingSnapshot = null;
+      if (pending) this.receive(pending);
       if (this.state.dirty && !this.state.conflict && !this.state.error) this.schedule();
     });
     return this.inFlight;

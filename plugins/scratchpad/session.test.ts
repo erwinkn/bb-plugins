@@ -58,3 +58,49 @@ test("BlockNote's optional table fields become strict JSON before reaching BB RP
   session.change(table); await session.flush();
   assert.ok(submitted); assert.equal(session.getSnapshot().error, null); assert.equal(session.getSnapshot().dirty, false); session.dispose();
 });
+
+test("successful refresh clears a transient read error at the same revision without hiding a save failure", async () => {
+  const session = new NoteSession(note(0, ""), async () => { throw new Error("Save failed"); }, storage());
+  session.reportRefresh(new Error("Refresh failed"));
+  assert.equal(session.getSnapshot().refreshError, "Refresh failed");
+  session.receive(note(0, ""));
+  assert.equal(session.getSnapshot().refreshError, null);
+  session.change(document("mine")); await session.flush();
+  session.reportRefresh(new Error("Refresh failed")); session.receive(note(0, ""));
+  assert.equal(session.getSnapshot().refreshError, null);
+  assert.equal(session.getSnapshot().error, "Save failed");
+  assert.equal(session.getSnapshot().dirty, true); session.dispose();
+});
+
+test("the newest peer snapshot received during a save is applied immediately after acknowledgement", async () => {
+  let complete!: (result: WriteResult) => void;
+  const session = new NoteSession(note(0, ""), () => new Promise((resolve) => { complete = resolve; }), storage());
+  session.change(document("mine")); const saving = session.flush();
+  session.receive(note(3, "latest peer")); session.receive(note(2, "older peer"));
+  complete({ ok: true, note: note(1, "mine") }); await saving;
+  assert.equal(session.getSnapshot().note.revision, 3);
+  assert.deepEqual(session.getSnapshot().document, document("latest peer"));
+  assert.equal(session.getSnapshot().conflict, null); session.dispose();
+});
+
+test("our own save echo does not conflict with newer typing", async () => {
+  let complete!: (result: WriteResult) => void;
+  const session = new NoteSession(note(0, ""), () => new Promise((resolve) => { complete = resolve; }), storage());
+  session.change(document("first")); const saving = session.flush();
+  session.change(document("second")); session.receive(note(1, "first"));
+  complete({ ok: true, note: note(1, "first") }); await saving;
+  assert.equal(session.getSnapshot().conflict, null);
+  assert.equal(session.getSnapshot().dirty, true);
+  assert.deepEqual(session.getSnapshot().document, document("second")); session.dispose();
+});
+
+test("a peer snapshot received during a save conflicts with newer local typing after acknowledgement", async () => {
+  let complete!: (result: WriteResult) => void;
+  const session = new NoteSession(note(0, ""), () => new Promise((resolve) => { complete = resolve; }), storage());
+  session.change(document("first")); const saving = session.flush();
+  session.change(document("second")); session.receive(note(2, "peer"));
+  complete({ ok: true, note: note(1, "first") }); await saving;
+  assert.equal(session.getSnapshot().conflict?.revision, 2);
+  assert.equal(session.getSnapshot().dirty, true);
+  assert.deepEqual(session.getSnapshot().document, document("second")); session.dispose();
+});
