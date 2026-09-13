@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ancestorsOf, buildTree, filterTree, fuzzyScore, mergeListing } from "./file-tree";
+import { ancestorsOf, buildTree, filterTree, fuzzyScore, mergeListing, sameEntries } from "./file-tree";
 
 test("buildTree nests flat paths and sorts directories before files", () => {
   const tree = buildTree([
@@ -66,6 +66,72 @@ test("mergeListing drops a deleted direct child but keeps its unrelated siblings
     { path: "src", kind: "directory" },
     { path: "src/kept.ts", kind: "file" },
   ]);
+});
+
+test("mergeListing drops deeper entries that hung below a deleted child", () => {
+  const merged = mergeListing(
+    [
+      { path: "src", kind: "directory" },
+      { path: "src/gone", kind: "directory" },
+      { path: "src/gone/deep.ts", kind: "file" },
+      { path: "src/kept", kind: "directory" },
+      { path: "src/kept/deep.ts", kind: "file" },
+    ],
+    "src",
+    [{ path: "src/kept", kind: "directory" }],
+  );
+  assert.deepEqual(merged, [
+    { path: "src", kind: "directory" },
+    { path: "src/kept", kind: "directory" },
+    { path: "src/kept/deep.ts", kind: "file" },
+  ]);
+});
+
+test("mergeListing drops descendants of a child that is a file now", () => {
+  const merged = mergeListing(
+    [
+      { path: "src", kind: "directory" },
+      { path: "src/a.ts", kind: "file" },
+    ],
+    "",
+    [{ path: "src", kind: "file" }],
+  );
+  assert.deepEqual(merged, [{ path: "src", kind: "file" }]);
+});
+
+test("a root merge replaces the top level and keeps expanded subtrees", () => {
+  const merged = mergeListing(
+    [
+      { path: "src", kind: "directory", deferred: true },
+      { path: "src/lib", kind: "directory" },
+      { path: "src/lib/util.ts", kind: "file" },
+      { path: "gone", kind: "directory" },
+      { path: "gone/deep.ts", kind: "file" },
+      { path: "old.ts", kind: "file" },
+    ],
+    "",
+    [
+      { path: "src", kind: "directory", deferred: true },
+      { path: "new.ts", kind: "file" },
+    ],
+  );
+  assert.deepEqual(merged, [
+    { path: "src", kind: "directory", deferred: true },
+    { path: "new.ts", kind: "file" },
+    { path: "src/lib", kind: "directory" },
+    { path: "src/lib/util.ts", kind: "file" },
+  ]);
+});
+
+test("sameEntries compares listings by path, kind, and deferred flag", () => {
+  const a = [
+    { path: "src", kind: "directory", deferred: true },
+    { path: "src/a.ts", kind: "file" },
+  ] as const;
+  assert.equal(sameEntries(a, [...a].reverse()), true);
+  assert.equal(sameEntries(a, [{ path: "src", kind: "directory" }, { path: "src/a.ts", kind: "file" }]), false);
+  assert.equal(sameEntries(a, [{ path: "src", kind: "directory", deferred: true }]), false);
+  assert.equal(sameEntries(a, [{ path: "src", kind: "file", deferred: true }, { path: "src/a.ts", kind: "file" }]), false);
 });
 
 test("ancestorsOf lists each containing directory, nearest last", () => {
