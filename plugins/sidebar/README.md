@@ -87,7 +87,7 @@ Each missing project keeps its own group until BB supplies its name.
 The display menu switches between Status and Project grouping and shows or hides
 each status. **Archived** is the last option under **Show statuses**, below **Done**.
 Status groups keep the order above. Project groups sort by
-name. Pins, roots, and siblings follow the selected date sort.
+name, except **No project**, which always closes the list above Archived. Pins, roots, and siblings follow the selected date sort.
 Children in each family stay below their parent. A child's timestamp or pin does not
 move its parent. New-thread drafts have no thread timestamp and appear after dated
 threads in their group. Groups can collapse. There is no thread search field.
@@ -135,7 +135,9 @@ Rows have two lines. The first line shows the title with the status marker
 at its right end. The second line shows muted metadata: the pull request for
 the thread's branch when BB reports one, then the project name, then the
 branch. Under a project header the project name is omitted, because it would
-repeat the header; pinned rows keep it. The age for the selected date sits at the right end of
+repeat the header; pinned rows keep it. Rows under **No project** have no
+project metadata at all, so they collapse to a single line: the title, the
+status marker, and the age. The age for the selected date sits at the right end of
 that line and refreshes each minute. The pull request shows a state-colored
 icon and its number: green for open, amber for an open pull request that
 needs you, violet for merged, red for closed, and muted for a draft. Metadata
