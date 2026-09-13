@@ -135,6 +135,11 @@ times; never check out another branch there, and never run `git rebase` or
    with `--permission-mode full`: with `accept-edits`, the child's first file
    edits still stop for approval, and permission mode can only be raised
    afterwards through a follow-up message, which queues behind that approval.
+   Spawn every child on the Linux checkout environment `env_kdfdhsjp6x`
+   (path `/home/exedev/Code/bb-plugins`), not on `env_pepnyn24rr`, whose
+   registered path is the Mac checkout: Devin enforces file writes against
+   the registered environment path, so a child on the Mac-path environment
+   cannot write anything on this host.
    Children never run on Claude Fable. Implementation children run on Devin
    SWE-2 at high reasoning: `--provider acp-devin --model
    'devin-family:%5B%22swe-2%22%2C262000%2C%22%22%5D' --reasoning-level high`
