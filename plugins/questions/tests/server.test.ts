@@ -759,6 +759,91 @@ describe("Questions backend", () => {
     expect(state.answers[0]!.submissionId).toBe(uuid("resent"));
   });
 
+  it("reopens only the held round's prompt when its thread is unarchived", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
+    const requestInput = h.bb.ui.requestInput;
+    let settle!: (result: Awaited<ReturnType<typeof requestInput>>) => void;
+    let calls = 0;
+    h.bb.ui.requestInput = (request, options) => ++calls === 1
+      ? new Promise((resolve) => { settle = resolve; })
+      : requestInput(request, options);
+    await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Held?" }] }, { threadId: "t", projectId: "proj_t" });
+    const held = (await h.state()).rounds[0]!;
+    // A later round that never held a prompt must stay quiet on unarchive.
+    await h.ask([{ title: "Never held?" }]);
+
+    // Archiving an active thread interrupts the open prompt like a stop does.
+    settle({ outcome: "cancelled", reason: "thread-stopped" });
+    const store = new QuestionsStore(h.bb.storage.database());
+    expect(store.getOpenHoldRound("t")).toBe(held.id);
+
+    // Emit until the hold teardown finishes and the unarchive reopens it.
+    await vi.waitFor(async () => {
+      await h.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+      expect(h.harness.pendingInteractions).toHaveLength(1);
+    });
+    expect(h.harness.pendingInteractions[0]!.payload).toEqual({ roundId: held.id });
+
+    // Unarchiving again while the hold is alive does not duplicate it.
+    await h.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+    expect(h.harness.pendingInteractions).toHaveLength(1);
+
+    // A user dismissal ends the hold; later unarchives reopen nothing.
+    h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
+    await vi.waitFor(() => expect(store.getOpenHoldRound("t")).toBeNull());
+    await h.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+    expect(h.harness.pendingInteractions).toHaveLength(0);
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it("does not reopen the prompt once the held round was submitted", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
+    const requestInput = h.bb.ui.requestInput;
+    let settle!: (result: Awaited<ReturnType<typeof requestInput>>) => void;
+    let calls = 0;
+    h.bb.ui.requestInput = (request, options) => ++calls === 1
+      ? new Promise((resolve) => { settle = resolve; })
+      : requestInput(request, options);
+    await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Held?" }] }, { threadId: "t", projectId: "proj_t" });
+    const q = (await h.state()).rounds[0]!.questions[0]!;
+    await h.save(q, { ...emptyAnswer(), text: "Answered while archived" });
+
+    settle({ outcome: "cancelled", reason: "thread-stopped" });
+    await h.submit([q.id], "archived-answer");
+    expect(h.send).toHaveBeenCalledTimes(1);
+    const store = new QuestionsStore(h.bb.storage.database());
+    expect(store.getOpenHoldRound("t")).toBeNull();
+
+    await h.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+    expect(h.harness.pendingInteractions).toHaveLength(0);
+  });
+
+  it("keeps the open-hold marker across a reload so unarchive can still reopen it", async () => {
+    const h = await setup();
+    await h.harness.behavior.setSettings({ nonBlockingProviders: (await h.bb.sdk.threads.get({ threadId: "t" })).providerId });
+    const requestInput = h.bb.ui.requestInput;
+    let settle!: (result: Awaited<ReturnType<typeof requestInput>>) => void;
+    let calls = 0;
+    h.bb.ui.requestInput = (request, options) => ++calls === 1
+      ? new Promise((resolve) => { settle = resolve; })
+      : requestInput(request, options);
+    await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Held?" }] }, { threadId: "t", projectId: "proj_t" });
+    const held = (await h.state()).rounds[0]!;
+
+    settle({ outcome: "cancelled", reason: "thread-stopped" });
+    const store = new QuestionsStore(h.bb.storage.database());
+    expect(store.getOpenHoldRound("t")).toBe(held.id);
+    const replacement = await h.harness.lifecycle.reload(plugin);
+    hosts.push(replacement);
+    expect(replacement.harness.pendingInteractions).toHaveLength(0);
+
+    await replacement.harness.behavior.emitThreadEvent("thread.unarchived", { thread: makeThreadResponse({ id: "t" }) });
+    expect(replacement.harness.pendingInteractions).toHaveLength(1);
+    expect(replacement.harness.pendingInteractions[0]!.payload).toEqual({ roundId: held.id });
+  });
+
   it("uses only public SDK imports", async () => {
     const result = experimental_scanPublicSdkOnly(new URL("..", import.meta.url).pathname, { allow: [
       /^react(?:-dom)?(?:\/.*)?$/, /^@radix-ui\//,

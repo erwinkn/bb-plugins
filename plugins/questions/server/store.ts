@@ -56,6 +56,11 @@ export const MIGRATIONS = [
   )`,
   `UPDATE rounds SET mode = 'panel' WHERE mode = 'notebook'`,
   `ALTER TABLE submissions ADD COLUMN queued_message_id TEXT`,
+  `CREATE TABLE IF NOT EXISTS open_holds (
+    thread_id TEXT PRIMARY KEY,
+    round_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
 ];
 
 interface RoundRow {
@@ -168,7 +173,7 @@ export class QuestionsStore {
 
   deleteThread(threadId: string): void {
     this.db.transaction(() => {
-      for (const table of ["answers", "submissions", "rounds", "summaries"]) {
+      for (const table of ["answers", "submissions", "rounds", "summaries", "open_holds"]) {
         this.db.prepare(`DELETE FROM ${table} WHERE thread_id = ?`).run(threadId);
       }
     })();
@@ -386,6 +391,8 @@ export class QuestionsStore {
     threadId: string;
     submission: Submission;
     state: "sent" | "queued";
+    /** The round this submission completes; its open hold, if any, ends. */
+    roundId: string;
     /** BB's queued row id when `state` is queued, so a later cancellation can be matched. */
     queuedMessageId?: string | null;
     settledAt: number;
@@ -394,6 +401,9 @@ export class QuestionsStore {
       this.db
         .prepare("UPDATE submissions SET state = ?, error = NULL, settled_at = ?, queued_message_id = ? WHERE id = ? AND thread_id = ?")
         .run(input.state, input.settledAt, input.queuedMessageId ?? null, input.submission.id, input.threadId);
+      this.db
+        .prepare("DELETE FROM open_holds WHERE thread_id = ? AND round_id = ?")
+        .run(input.threadId, input.roundId);
       for (const questionId of input.submission.questionIds) {
         const answer = input.submission.snapshot[questionId];
         if (!answer) continue;
@@ -460,6 +470,35 @@ export class QuestionsStore {
         .run(now, threadId, row.id);
       return this.getSubmission(threadId, row.id);
     })();
+  }
+
+  // Open holds record which round's prompt is open, so an unarchive can
+  // reopen that prompt only — never a fresh prompt for every round that
+  // still has unsubmitted answers. A thread holds at most one prompt.
+
+  getOpenHoldRound(threadId: string): string | null {
+    const row = this.db
+      .prepare<[string], { round_id: string }>("SELECT round_id FROM open_holds WHERE thread_id = ?")
+      .get(threadId);
+    return row?.round_id ?? null;
+  }
+
+  setOpenHold(threadId: string, roundId: string, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO open_holds (thread_id, round_id, created_at) VALUES (?, ?, ?)
+         ON CONFLICT(thread_id) DO UPDATE SET round_id = excluded.round_id, created_at = excluded.created_at`,
+      )
+      .run(threadId, roundId, now);
+  }
+
+  /** Without a round id, drops whatever hold the thread has. */
+  clearOpenHold(threadId: string, roundId?: string): void {
+    if (roundId === undefined) {
+      this.db.prepare("DELETE FROM open_holds WHERE thread_id = ?").run(threadId);
+    } else {
+      this.db.prepare("DELETE FROM open_holds WHERE thread_id = ? AND round_id = ?").run(threadId, roundId);
+    }
   }
 
   /** Attachments frozen in any submission of this question, in case the draft dropped them since. */

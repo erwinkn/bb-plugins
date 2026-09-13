@@ -639,6 +639,7 @@ export class QuestionsService {
     if (prepared.outcome !== "submitted") return prepared;
 
     const submission = prepared.submission;
+    const roundId = findQuestion(rounds, submission.questionIds[0]!)!.round.id;
     const message = buildSubmissionMessage(rounds, submission.snapshot, submission.questionIds, submission.id);
     const parts: Parameters<ServiceDeps["sdk"]["threads"]["send"]>[0]["input"] = [
       { type: "text", text: message.text, mentions: [] },
@@ -656,7 +657,7 @@ export class QuestionsService {
     ];
     try {
       const waiting = await this.deps.deliverToWaiter?.(submission, () => {
-        this.store.settleDelivered({ threadId: input.threadId, submission, state: "sent", settledAt: this.now() });
+        this.store.settleDelivered({ threadId: input.threadId, submission, state: "sent", roundId, settledAt: this.now() });
       });
       const response = waiting ? { delivery: "sent" as const } : await this.deps.sdk.threads.send({
         threadId: input.threadId,
@@ -669,6 +670,7 @@ export class QuestionsService {
           submission,
           state: response.delivery === "queued" ? "queued" : "sent",
           queuedMessageId: response.delivery === "queued" ? response.queuedMessage.id : null,
+          roundId,
           settledAt: this.now(),
         });
       }

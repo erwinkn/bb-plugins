@@ -157,7 +157,10 @@ export default async function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = new QuestionsStore(db);
-  const interactions = new QuestionInteractions(bb);
+  const interactions = new QuestionInteractions(bb, {
+    mark: (round) => store.setOpenHold(round.threadId, round.id, Date.now()),
+    unmark: (threadId, roundId) => store.clearOpenHold(threadId, roundId),
+  });
   const asking = new Set<string>();
   function claimAsk(threadId: string): () => void {
     if (asking.has(threadId) || interactions.has(threadId)) throw new QuestionsError("This thread already has a Questions request in progress.");
@@ -180,6 +183,26 @@ export default async function plugin(bb: BbPluginApi) {
   // carried never reached the agent. Mark them, never re-send.
   bb.events.on("message.cancelled", ({ entry }) => {
     service.cancelQueued(entry.threadId, entry.id);
+  });
+  // A thread back from the archive reopens only the prompt that was open
+  // when it went away — never a fresh prompt for every unanswered round.
+  bb.events.on("thread.unarchived", ({ thread }) => {
+    if (interactions.has(thread.id)) return;
+    const roundId = store.getOpenHoldRound(thread.id);
+    if (roundId === null) return;
+    const round = store.getRound(thread.id, roundId);
+    const submitted = round !== null && round.questions.every(
+      (question) => store.getAnswer(thread.id, question.id)?.submitted != null,
+    );
+    if (round === null || submitted) {
+      store.clearOpenHold(thread.id);
+      return;
+    }
+    try {
+      interactions.hold(round);
+    } catch (error) {
+      bb.log.warn(`Questions could not restore the open prompt for round ${roundId}: ${errorMessage(error)}`);
+    }
   });
 
   async function ask(threadId: string, projectId: string, input: unknown, signal?: AbortSignal, delivery: "provider" | "message" = "provider") {
