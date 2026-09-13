@@ -736,6 +736,36 @@ describe("bb 0.43 capabilities", () => {
     expect(after.delivery.queuedMessageId).toBe("queue-2");
     expect(harness.inspection.pendingInteractions).toHaveLength(0);
   });
+  it("marks a batch cancelled when its queue row is deleted before the pointer is saved", async () => {
+    const send = vi.fn<Send>();
+    const { annotate, harness, rpc, plan, bb } = await setup(send);
+    send.mockImplementationOnce(async () => {
+      // The row exists server-side while send() is in flight; deleting it emits
+      // message.cancelled before deliver() can persist the pointer.
+      await harness.behavior.emitThreadEvent("message.cancelled", { entry: entry() });
+      return { ok: true, delivery: "queued", queuedMessage: entry() };
+    });
+    await annotate(); await tick();
+    const saved = await rpc("get", { id: plan.id });
+    expect(saved.delivery).toMatchObject({ queuedMessageId: null, itemIds: [] });
+    expect(saved.comments[0]!.deliveredAt).toBeNull();
+    expect(bb.storage.database().prepare("SELECT state FROM outbox").all()).toEqual([{ state: "cancelled" }]);
+    expect(harness.inspection.pendingInteractions).toHaveLength(1);
+    await tick(600_000); expect(send).toHaveBeenCalledTimes(1);
+  });
+  it("ignores a cancellation for an unrelated row while a send is in flight", async () => {
+    const send = vi.fn<Send>();
+    const { annotate, harness, rpc, plan, bb } = await setup(send);
+    send.mockImplementationOnce(async () => {
+      await harness.behavior.emitThreadEvent("message.cancelled", { entry: entry("other-row") });
+      return { ok: true, delivery: "queued", queuedMessage: entry() };
+    });
+    await annotate(); await tick();
+    const saved = await rpc("get", { id: plan.id });
+    expect(saved.delivery.queuedMessageId).toBe("queue-1");
+    expect(bb.storage.database().prepare("SELECT state FROM outbox").all()).toEqual([{ state: "queued" }]);
+    expect(harness.inspection.pendingInteractions).toHaveLength(0);
+  });
   it("clears the unavailable notice and restores the prompt on unarchive without replaying dropped feedback", async () => {
     const { annotate, harness, rpc, plan, send, tool } = await setup();
     const getThread = vi.fn(async () => makeThreadResponse({ id: "thread-1", archivedAt: 1 }));

@@ -234,7 +234,9 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     for (const plan of store.all()) if (plan.threadId === entry.threadId) session(plan.id).dispatched(entry.id, entry.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
   });
   bb.events.on("message.cancelled", ({ entry }) => {
-    for (const plan of store.all()) if (plan.threadId === entry.threadId && plan.delivery.queuedMessageId === entry.id) session(plan.id).cancelled(entry.id);
+    // The deleted row can belong to an in-flight send whose pointer is not yet
+    // persisted, so every session on the thread matches for itself.
+    for (const plan of store.all()) if (plan.threadId === entry.threadId) sessions.get(plan.id)?.cancelled(entry.id);
   });
   bb.events.on("thread.unarchived", ({ thread }) => {
     for (const plan of store.all()) if (plan.threadId === thread.id) session(plan.id).unarchived();
