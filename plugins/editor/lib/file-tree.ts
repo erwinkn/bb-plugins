@@ -1,10 +1,18 @@
 export type EntryKind = "file" | "directory";
 
+/** A symbolic link's target as written in the link; `broken` when nothing is there. */
+export interface LinkInfo {
+  target: string;
+  broken?: true;
+}
+
 export interface FlatEntry {
   path: string;
   kind: EntryKind;
   /** Directory whose contents are not listed yet (see the `tree` RPC). */
   deferred?: true;
+  /** Set for a symbolic link; `kind` is then its target's kind. */
+  link?: LinkInfo;
 }
 
 export interface TreeNode {
@@ -14,10 +22,12 @@ export interface TreeNode {
   children: TreeNode[];
   /** Contents not listed yet; expanding the node requests them. */
   deferred: boolean;
+  /** The symbolic link this entry is, or null for a regular entry. */
+  link: LinkInfo | null;
 }
 
 export function buildTree(entries: readonly FlatEntry[]): TreeNode[] {
-  const root: TreeNode = { path: "", name: "", kind: "directory", children: [], deferred: false };
+  const root: TreeNode = { path: "", name: "", kind: "directory", children: [], deferred: false, link: null };
   const byPath = new Map<string, TreeNode>([["", root]]);
 
   const directoryAt = (path: string): TreeNode => {
@@ -25,7 +35,7 @@ export function buildTree(entries: readonly FlatEntry[]): TreeNode[] {
     if (existing !== undefined) return existing;
     const separator = path.lastIndexOf("/");
     const parent = directoryAt(separator === -1 ? "" : path.slice(0, separator));
-    const node: TreeNode = { path, name: path.slice(separator + 1), kind: "directory", children: [], deferred: false };
+    const node: TreeNode = { path, name: path.slice(separator + 1), kind: "directory", children: [], deferred: false, link: null };
     byPath.set(path, node);
     parent.children.push(node);
     return node;
@@ -35,13 +45,15 @@ export function buildTree(entries: readonly FlatEntry[]): TreeNode[] {
     const path = normalize(entry.path);
     if (path === "") continue;
     if (entry.kind === "directory") {
-      directoryAt(path).deferred = entry.deferred === true;
+      const node = directoryAt(path);
+      node.deferred = entry.deferred === true;
+      node.link = entry.link ?? null;
       continue;
     }
     if (byPath.has(path)) continue;
     const separator = path.lastIndexOf("/");
     const parent = directoryAt(separator === -1 ? "" : path.slice(0, separator));
-    const node: TreeNode = { path, name: path.slice(separator + 1), kind: "file", children: [], deferred: false };
+    const node: TreeNode = { path, name: path.slice(separator + 1), kind: "file", children: [], deferred: false, link: entry.link ?? null };
     byPath.set(path, node);
     parent.children.push(node);
   }
@@ -78,7 +90,10 @@ export function mergeListing(
   const direct = new Set(
     listing.filter((entry) => entry.path.startsWith(prefix) && depth(entry.path) === 1).map((entry) => entry.path),
   );
-  const out: FlatEntry[] = [{ path: subpath, kind: "directory" }, ...listing];
+  // The directory resolves, keeping what its own listing said about it (a
+  // symbolic link's target) since the level below does not describe it.
+  const { deferred: _deferred, ...self } = entries.find((entry) => entry.path === subpath) ?? { path: subpath, kind: "directory" as const };
+  const out: FlatEntry[] = [{ ...self, kind: "directory" }, ...listing];
   const seen = new Set(out.map((entry) => entry.path));
   for (const entry of entries) {
     if (entry.path === subpath || seen.has(entry.path)) continue;

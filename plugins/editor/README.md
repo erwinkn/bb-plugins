@@ -12,6 +12,14 @@ own tab; its side, width and last file are retained. The New thread screen has
 the same tab for the project's default checkout. File links this plugin claims
 open in the same editor. `⌘S` saves, `⌘F` finds.
 
+A symbolic link shows VS Code's ⤷ badge at the end of its row, and its hover
+text names the target; one whose target is missing shows ? instead and opens
+to a notice naming the missing target. The link is otherwise the file or
+folder it points at: opening it reads the target and saving writes through to
+it. Links whose target lies outside the workspace are
+not listed. On a remote host BB's directory listing does not report links, so
+they show as plain entries there.
+
 Icons come from `@pierre/trees`, the set BB's own trees use. The editor uses
 Geist Mono and Shiki highlighting through Pierre; there are no language
 services (completions, diagnostics, folding, minimap). **Theme…** in the Files

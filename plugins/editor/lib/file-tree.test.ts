@@ -52,6 +52,15 @@ test("mergeListing replaces direct children, resolves the directory, and keeps d
   ]);
 });
 
+test("mergeListing keeps the resolved directory's own link info", () => {
+  const merged = mergeListing(
+    [{ path: "src-link", kind: "directory", deferred: true, link: { target: "/repo/src" } }],
+    "src-link",
+    [{ path: "src-link/index.ts", kind: "file" }],
+  );
+  assert.deepEqual(merged[0], { path: "src-link", kind: "directory", link: { target: "/repo/src" } });
+});
+
 test("mergeListing drops a deleted direct child but keeps its unrelated siblings", () => {
   const merged = mergeListing(
     [

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, readlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -150,7 +150,14 @@ export const rpcContract = defineRpcContract({
     input: z.object({ source: sourceSchema, subpath: z.string().optional() }).strict(),
     output: z.object({
       root: z.string(),
-      entries: z.array(z.object({ path: z.string(), kind: z.enum(["file", "directory"]), deferred: z.literal(true).optional() })),
+      entries: z.array(
+        z.object({
+          path: z.string(),
+          kind: z.enum(["file", "directory"]),
+          deferred: z.literal(true).optional(),
+          link: z.object({ target: z.string(), broken: z.literal(true).optional() }).optional(),
+        }),
+      ),
     }),
   },
   /**
@@ -469,7 +476,8 @@ export default async function plugin(bb: BbPluginApi) {
     dirs.forEach((dir, index) => {
       const level = levels[index];
       if (level === null || level.length > PREFETCH_DIR_MAX_ENTRIES || level.length > budget) return;
-      out[out.indexOf(dir)] = { path: dir.path, kind: "directory" };
+      const { deferred: _deferred, ...resolved } = dir;
+      out[out.indexOf(dir)] = resolved;
       out.push(...level);
       budget -= level.length;
     });
@@ -523,6 +531,17 @@ export default async function plugin(bb: BbPluginApi) {
    * host is BB's primary host (or none, for thread storage) and the path
    * exists here. Anything else is read through BB's daemon.
    */
+  /** The target of a symbolic link at `absolute` that resolves to nothing; null for any other path. */
+  async function brokenLinkTarget(absolute: string): Promise<string | null> {
+    try {
+      if (!(await lstat(absolute)).isSymbolicLink()) return null;
+      if (existsSync(absolute)) return null;
+      return await readlink(absolute);
+    } catch {
+      return null;
+    }
+  }
+
   async function isLocalWorkspace(target: { rootPath: string; hostId?: string }): Promise<boolean> {
     if (target.hostId !== undefined && target.hostId !== (await primaryHost())) return false;
     try {
@@ -820,7 +839,16 @@ export default async function plugin(bb: BbPluginApi) {
 
     async read({ path: filePath, source }) {
       const target = await resolveTarget(source, filePath);
-      const file = await bb.sdk.files.read(target);
+      let file;
+      try {
+        file = await bb.sdk.files.read(target);
+      } catch (error) {
+        // A dangling symbolic link reads as a missing path; name the link
+        // instead, the way the tree marks it.
+        const link = (await isLocalWorkspace(target)) ? await brokenLinkTarget(target.path) : null;
+        if (link === null) throw error;
+        return { kind: "unsupported" as const, reason: `This symbolic link's target is missing: ${link}` };
+      }
       if (file.contentEncoding !== "utf8") return { kind: "unsupported" as const, reason: "This file is not text" };
       if (file.sizeBytes > MAX_EDITABLE_BYTES) {
         return {
