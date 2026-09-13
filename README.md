@@ -46,6 +46,14 @@ Automations. See [Hide plugin nav menus](plugins/remove-plugin-ellipsis/README.m
 editing, JSON storage outside Git, revision history, and agent tools. See
 [Scratchpad](plugins/scratchpad/README.md).
 
+`github` (plugin id `github-prs`) forks BB's official GitHub plugin and adds
+several linked pull requests per thread, a GitHub PR side panel that lists
+them and shows a read-only PR overview, agent tools and a `bb github link`
+CLI, and a content script that opens GitHub PR links in that panel instead of
+the browser. See [GitHub](plugins/github/README.md) for the link policy, the
+interception hack, and the `bb-plugins:open-pull-request` event other plugins
+can dispatch.
+
 ## Install
 
 Use BB 0.43.1 or later. The bb server needs Git, npm, and GitHub access to this

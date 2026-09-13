@@ -1,0 +1,224 @@
+/**
+ * Thread ⇄ pull request links.
+ *
+ * The plugin SQLite table `thread_pull_requests` is the source of truth. Every
+ * change publishes `pull-requests-changed {threadId}` for the app and mirrors
+ * the thread's list into its plugin metadata (`pullRequests`) so agents and
+ * other plugins can read it through `bb.sdk.threads.getPluginMetadata`.
+ *
+ * Automatic links come from BB's own branch lookup
+ * (`bb.sdk.environments.pullRequest`, the same `gh pr view` the sidebar chip
+ * uses): the PR of the thread environment's branch is linked with source
+ * `branch` the first time it is seen. Manual links come from the agent tools,
+ * the CLI, and the panel (`agent` / `user`), and from "Review with agent"
+ * spawns (`spawn`).
+ */
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import {
+  PULL_REQUESTS_CHANGED,
+  threadPullRequestSchema,
+  type LinkSource,
+  type MetadataPullRequest,
+  type ThreadPullRequest,
+} from "../contract";
+import { parsePullRequestUrl, pullRequestUrl, type PullRequestRef } from "../lib/pull-request-url";
+
+/** Appended to the plugin's single ordered migration list in server.ts. */
+export const LINK_MIGRATIONS = [
+  `CREATE TABLE IF NOT EXISTS thread_pull_requests (
+     thread_id TEXT NOT NULL,
+     repo TEXT NOT NULL,
+     number INTEGER NOT NULL,
+     url TEXT NOT NULL,
+     source TEXT NOT NULL,
+     title TEXT,
+     state TEXT,
+     linked_at TEXT NOT NULL,
+     PRIMARY KEY (thread_id, repo, number)
+   )`,
+  `CREATE INDEX IF NOT EXISTS thread_pull_requests_by_pull ON thread_pull_requests (repo, number)`,
+];
+
+/** Thread metadata key holding the mirrored list. */
+export const METADATA_KEY = "pullRequests";
+
+export interface LinkInput extends PullRequestRef {
+  threadId: string;
+  source: LinkSource;
+  title?: string | null;
+  state?: string | null;
+}
+
+export interface LinkStoreDeps {
+  /** Best-effort title and state lookup for manual links; null when unknown. */
+  describePull?: (ref: PullRequestRef) => Promise<{ title: string; state: string } | null>;
+}
+
+interface Row {
+  thread_id: string;
+  repo: string;
+  number: number;
+  url: string;
+  source: string;
+  title: string | null;
+  state: string | null;
+  linked_at: string;
+}
+
+function decode(row: Row): ThreadPullRequest {
+  return threadPullRequestSchema.parse({
+    threadId: row.thread_id,
+    repo: row.repo,
+    number: Number(row.number),
+    url: row.url,
+    source: row.source,
+    title: row.title,
+    state: row.state,
+    linkedAt: row.linked_at,
+  });
+}
+
+export function toMetadata(link: ThreadPullRequest): MetadataPullRequest {
+  return { repo: link.repo, number: link.number, url: link.url, source: link.source, title: link.title };
+}
+
+export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
+  // server.ts runs the migrations: one ordered list per database.
+  const db = bb.storage.database();
+
+  const list = (threadId: string): ThreadPullRequest[] =>
+    (db
+      .prepare("SELECT * FROM thread_pull_requests WHERE thread_id = ? ORDER BY linked_at DESC, number DESC")
+      .all(threadId) as Row[]).map(decode);
+
+  const get = (threadId: string, ref: PullRequestRef): ThreadPullRequest | null => {
+    const row = db
+      .prepare("SELECT * FROM thread_pull_requests WHERE thread_id = ? AND repo = ? AND number = ?")
+      .get(threadId, ref.repo, ref.number) as Row | undefined;
+    return row === undefined ? null : decode(row);
+  };
+
+  /** Thread ids linked to one PR, oldest link first (the nav panel's ⚡ pills). */
+  const threadsFor = (ref: PullRequestRef): Array<{ threadId: string; linkedAt: string }> =>
+    (db
+      .prepare("SELECT thread_id, linked_at FROM thread_pull_requests WHERE repo = ? AND number = ? ORDER BY linked_at ASC")
+      .all(ref.repo, ref.number) as Array<{ thread_id: string; linked_at: string }>).map((row) => ({
+      threadId: row.thread_id,
+      linkedAt: row.linked_at,
+    }));
+
+  const allPullLinks = (): ThreadPullRequest[] =>
+    (db.prepare("SELECT * FROM thread_pull_requests ORDER BY linked_at ASC").all() as Row[]).map(decode);
+
+  // One metadata write chain per thread keeps the mirror at the newest state
+  // (the plans plugin uses the same shape). Best effort: SQLite already holds
+  // the truth, a failed mirror only delays what agents see.
+  const chains = new Map<string, Promise<void>>();
+  const mirror = (threadId: string): Promise<void> => {
+    const next = (chains.get(threadId) ?? Promise.resolve())
+      .then(async () => {
+        const links = list(threadId).map(toMetadata);
+        if (links.length === 0) await bb.sdk.threads.updatePluginMetadata({ threadId, remove: [METADATA_KEY] });
+        else await bb.sdk.threads.updatePluginMetadata({ threadId, set: { [METADATA_KEY]: links } });
+      })
+      .catch((error: unknown) => {
+        bb.log.warn(`pull request metadata for thread ${threadId} not updated: ${String(error)}`);
+      });
+    chains.set(threadId, next);
+    void next.then(() => {
+      if (chains.get(threadId) === next) chains.delete(threadId);
+    });
+    return next;
+  };
+  const changed = (threadId: string) => {
+    bb.realtime.publish(PULL_REQUESTS_CHANGED, { threadId });
+    void mirror(threadId);
+  };
+
+  /**
+   * Record a link. An existing link keeps its original source and time; its
+   * title and state are refreshed when the caller knows newer values.
+   */
+  const link = (input: LinkInput): { link: ThreadPullRequest; created: boolean } => {
+    const ref = { repo: input.repo, number: input.number };
+    const existing = get(input.threadId, ref);
+    if (existing !== null) {
+      const title = input.title ?? existing.title;
+      const state = input.state ?? existing.state;
+      if (title !== existing.title || state !== existing.state) {
+        db.prepare("UPDATE thread_pull_requests SET title = ?, state = ? WHERE thread_id = ? AND repo = ? AND number = ?")
+          .run(title, state, input.threadId, ref.repo, ref.number);
+        changed(input.threadId);
+      }
+      return { link: get(input.threadId, ref)!, created: false };
+    }
+    db.prepare(
+      `INSERT INTO thread_pull_requests (thread_id, repo, number, url, source, title, state, linked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      input.threadId, ref.repo, ref.number, pullRequestUrl(ref), input.source,
+      input.title ?? null, input.state ?? null, new Date().toISOString(),
+    );
+    changed(input.threadId);
+    bb.log.info(`linked ${ref.repo}#${ref.number} to thread ${input.threadId} (${input.source})`);
+    return { link: get(input.threadId, ref)!, created: true };
+  };
+
+  /** Manual link: fills in title and state when the lookup succeeds. */
+  const linkDescribed = async (input: LinkInput): Promise<{ link: ThreadPullRequest; created: boolean }> => {
+    let described: { title: string; state: string } | null = null;
+    if (deps.describePull !== undefined && input.title === undefined) {
+      try {
+        described = await deps.describePull({ repo: input.repo, number: input.number });
+      } catch (error) {
+        bb.log.warn(`could not describe ${input.repo}#${input.number}: ${String(error)}`);
+      }
+    }
+    return link({ ...input, ...(described ?? {}) });
+  };
+
+  const unlink = (threadId: string, ref: PullRequestRef): boolean => {
+    const result = db
+      .prepare("DELETE FROM thread_pull_requests WHERE thread_id = ? AND repo = ? AND number = ?")
+      .run(threadId, ref.repo, ref.number);
+    if (result.changes === 0) return false;
+    changed(threadId);
+    return true;
+  };
+
+  const removeThread = (threadId: string): void => {
+    const result = db.prepare("DELETE FROM thread_pull_requests WHERE thread_id = ?").run(threadId);
+    if (result.changes > 0) bb.realtime.publish(PULL_REQUESTS_CHANGED, { threadId });
+  };
+
+  /**
+   * Ask BB core for the PR of the thread's branch and link it with source
+   * `branch`. Returns the thread's environment id for the viewer's file links.
+   * Silent on lookup failures: `unavailable` (no gh, non-GitHub remote) and
+   * `absent` are normal outcomes, not errors.
+   */
+  const refreshBranch = async (threadId: string): Promise<{ environmentId: string | null; link: ThreadPullRequest | null }> => {
+    let environmentId: string | null = null;
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (thread.deletedAt || !thread.environmentId) return { environmentId: null, link: null };
+      environmentId = thread.environmentId;
+      const result = await bb.sdk.environments.pullRequest({ environmentId });
+      if (result.outcome !== "available") return { environmentId, link: null };
+      const ref = parsePullRequestUrl(result.pullRequest.url);
+      if (ref === null) return { environmentId, link: null };
+      return {
+        environmentId,
+        link: link({ threadId, ...ref, source: "branch", title: result.pullRequest.title, state: result.pullRequest.state }).link,
+      };
+    } catch (error) {
+      bb.log.debug(`branch pull request lookup for thread ${threadId} failed: ${String(error)}`);
+      return { environmentId, link: null };
+    }
+  };
+
+  const settled = () => Promise.all(chains.values()).then(() => undefined);
+
+  return { list, get, threadsFor, allPullLinks, link, linkDescribed, unlink, removeThread, refreshBranch, mirror, settled };
+}
+export type LinkStore = ReturnType<typeof createLinkStore>;
