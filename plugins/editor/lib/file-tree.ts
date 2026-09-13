@@ -78,7 +78,9 @@ export function mergeListing(
   const prefix = subpath === "" ? "" : `${subpath}/`;
   const isDirectChild = (entryPath: string) =>
     entryPath.startsWith(prefix) && entryPath.slice(prefix.length).split("/").length === 1;
-  const direct = new Set(listing.filter((entry) => isDirectChild(entry.path)).map((entry) => entry.path));
+  // Only a directory keeps descendants: a child relisted as a file drops
+  // whatever a stale listing held below it.
+  const direct = new Set(listing.filter((entry) => entry.kind === "directory" && isDirectChild(entry.path)).map((entry) => entry.path));
   const out: FlatEntry[] = subpath === "" ? [...listing] : [{ path: subpath, kind: "directory" }, ...listing];
   const seen = new Set(out.map((entry) => entry.path));
   for (const entry of entries) {

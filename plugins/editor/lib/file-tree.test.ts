@@ -87,6 +87,18 @@ test("mergeListing drops deeper entries that hung below a deleted child", () => 
   ]);
 });
 
+test("mergeListing drops descendants of a child that is a file now", () => {
+  const merged = mergeListing(
+    [
+      { path: "src", kind: "directory" },
+      { path: "src/a.ts", kind: "file" },
+    ],
+    "",
+    [{ path: "src", kind: "file" }],
+  );
+  assert.deepEqual(merged, [{ path: "src", kind: "file" }]);
+});
+
 test("a root merge replaces the top level and keeps expanded subtrees", () => {
   const merged = mergeListing(
     [

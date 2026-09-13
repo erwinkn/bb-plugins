@@ -215,7 +215,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         ownMutations.current.delete(mutated);
         continue;
       }
-      if (normalized === mutated || normalized.startsWith(`${mutated}/`)) return true;
+      // Only the path the mutation itself rewrote echoes back; a change
+      // below it in the window is something else and must still reload.
+      if (normalized === mutated) return true;
     }
     return false;
   }, []);
