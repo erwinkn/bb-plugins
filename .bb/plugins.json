@@ -38,6 +38,10 @@
     {
       "name": "remove-plugin-ellipsis",
       "source": "./plugins/remove-plugin-ellipsis"
+    },
+    {
+      "name": "scratchpad",
+      "source": "./plugins/scratchpad"
     }
   ]
 }
