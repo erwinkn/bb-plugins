@@ -153,6 +153,40 @@ Sessions that used a coordinator also have Coordinator history, a read-only time
 
 See [the architecture](docs/architecture.md) and [the RPC contract](live-runtime-notes.md).
 
+## Thread metadata and BB events
+
+Voice Mode requires BB 0.43.1 because it seeds thread plugin metadata; the rest
+of the plugin works on BB 0.43.0. Every worker or visible thread Voice spawns
+carries this object in the thread's `voice-mode` metadata namespace:
+
+| Key | Value |
+| --- | --- |
+| `version` | `1` |
+| `conversationId` | The voice conversation that created the thread. |
+| `operationId` | The voice operation whose receipt records the launch. |
+| `profileId` | The worker profile name it launched with. |
+| `handoff.sourceThreadId` | For a handoff, the source thread. |
+| `handoff.contextBoundary` | The source event sequence at which the copied context ends. |
+
+The metadata is provenance for other plugins and agents. Voice validates it on
+read and never uses it for authorization; the operation store stays authoritative
+for receipts, delivery, task, and inbox state. Handoff details such as message
+count and truncation remain in the operation receipt.
+
+Voice subscribes to `thread.unarchived` and `message.cancelled` in addition to
+the lifecycle, interaction, and dispatch events. Unarchiving a watched thread
+drops any unspoken archived notice, reports the return, and restores the task
+status. Cancelling a queued message that Ada sent closes its operation as
+cancelled, updates the task's queued count, and reports it once. Prompts reach
+the inbox through `interaction.pending`; lifecycle events re-read only the
+inbox's own open prompts, while call start, reconnect, and explicit refreshes
+still list every interaction.
+
+Generic icons (microphone, stop, refresh, settings, chevrons) come from BB's icon
+registry through `lib/host-icon.tsx`, typed against `lib/host-icon-names.ts`,
+which `scripts/host-icon-names.mjs` regenerates on each BB upgrade. The
+waveform, action glyphs, and the back arrow stay custom.
+
 ## Check changes
 
 Run `npm run typecheck`, `npm test`, and `npm run build:check` in this directory.
