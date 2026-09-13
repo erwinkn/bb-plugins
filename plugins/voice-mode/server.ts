@@ -1018,11 +1018,15 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async recordUsage({ model, sessionId, usage }) {
       const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+      const detail = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
       const inDetails = (usage.input_token_details ?? {}) as Record<string, unknown>;
       const outDetails = (usage.output_token_details ?? {}) as Record<string, unknown>;
       const cachedDetails = (inDetails.cached_tokens_details ?? {}) as Record<string, unknown>;
       // Delegated live backends report Responses-style flat usage instead of
-      // the realtime token_details shape; map it onto the same columns.
+      // the realtime token_details shape; map it onto the same columns. Only
+      // an absent text_tokens field falls back to the flat count: an audio-only
+      // realtime turn reports text_tokens 0, and its audio is already counted
+      // in the audio columns.
       const flatIn = num(usage.input_tokens);
       const flatOut = num(usage.output_tokens);
       const flatCached = num((usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens);
@@ -1034,11 +1038,11 @@ export default async function plugin(bb: BbPluginApi) {
         Date.now(),
         model ?? configuredModel,
         sessionId,
-        num(inDetails.text_tokens) || flatIn - flatCached,
+        detail(inDetails.text_tokens) ?? Math.max(0, flatIn - flatCached),
         num(inDetails.audio_tokens),
-        num(cachedDetails.text_tokens) || flatCached,
+        detail(cachedDetails.text_tokens) ?? flatCached,
         num(cachedDetails.audio_tokens),
-        num(outDetails.text_tokens) || flatOut,
+        detail(outDetails.text_tokens) ?? flatOut,
         num(outDetails.audio_tokens),
       );
       return { ok: true as const };
