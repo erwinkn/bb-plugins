@@ -687,6 +687,39 @@ describe("activity sidebar", () => {
     },
   );
 
+  it.each([1, 10])(
+    "removes root paging controls when an expanded project shrinks to a thread count of %i",
+    (count) => {
+      updateState((state) => ({ ...state, groupBy: "project" }));
+      const threads = Array.from({ length: 12 }, (_, i) =>
+        thread({ id: `root-${i}` }),
+      );
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: { threads, projects },
+      });
+      const list = slot.getByRole("list", { name: "One threads" });
+      const more = within(list).getByRole("button", { name: /^Show more/ });
+      expect(more.getAttribute("aria-expanded")).toBe("false");
+      fireEvent.click(more);
+      expect(list.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(12);
+      expect(
+        within(list)
+          .getByRole("button", { name: /^Show fewer/ })
+          .getAttribute("aria-expanded"),
+      ).toBe("true");
+
+      threads.splice(count);
+      const Component = app.threadLists[0].component;
+      slot.rerender(<Component {...props} />);
+      expect(list.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(
+        count,
+      );
+      expect(
+        within(list).queryByRole("button", { name: /^Show (more|fewer)/ }),
+      ).toBeNull();
+    },
+  );
+
   it("keeps a selected family visible beyond a thousand project roots and counts new drafts in the page", () => {
     updateState((state) => ({
       ...state,
@@ -930,6 +963,20 @@ describe("activity sidebar", () => {
     expect(
       within(list).getAllByRole("button", { name: /New thread draft/ }),
     ).toHaveLength(2);
+    expect(
+      within(list).getByRole("button", { name: "Show fewer Draft threads" }),
+    ).toBeTruthy();
+
+    roots.pop();
+    const Component = app.threadLists[0].component;
+    slot.rerender(<Component {...props} />);
+    expect(list.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(3);
+    expect(
+      within(list).getAllByRole("button", { name: /New thread draft/ }),
+    ).toHaveLength(2);
+    expect(
+      within(list).queryByRole("button", { name: /^Show (more|fewer)/ }),
+    ).toBeNull();
   });
 
   it("keeps a selected descendant's family visible beyond a thousand roots", () => {
@@ -1040,6 +1087,41 @@ describe("activity sidebar", () => {
       expect(rowCount()).toBe(3);
     },
   );
+  it.each([1, 3])(
+    "removes child paging controls when an expanded family shrinks to a child count of %i",
+    (count) => {
+      const threads = [
+        thread({ id: "parent", title: "Parent" }),
+        ...Array.from({ length: 5 }, (_, i) =>
+          thread({ id: `child-${i}`, parentThreadId: "parent" }),
+        ),
+      ];
+      const slot = renderSlot(app.threadLists[0], props, {
+        sidebarThreads: { threads, projects },
+      });
+      const list = slot.getByRole("list", { name: "Children of Parent" });
+      const more = within(list).getByRole("button", { name: /^Show more/ });
+      expect(more.getAttribute("aria-expanded")).toBe("false");
+      fireEvent.click(more);
+      expect(list.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(5);
+      expect(
+        within(list)
+          .getByRole("button", { name: /^Show fewer/ })
+          .getAttribute("aria-expanded"),
+      ).toBe("true");
+
+      threads.splice(count + 1);
+      const Component = app.threadLists[0].component;
+      slot.rerender(<Component {...props} />);
+      expect(list.querySelectorAll("[data-sidebar-thread-id]")).toHaveLength(
+        count,
+      );
+      expect(
+        within(list).queryByRole("button", { name: /^Show (more|fewer)/ }),
+      ).toBeNull();
+    },
+  );
+
   it("caps nesting at children and grandchildren without losing deeper threads", () => {
     const slot = renderSlot(app.threadLists[0], props, {
       sidebarThreads: {

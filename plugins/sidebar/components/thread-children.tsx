@@ -47,7 +47,7 @@ export function ThreadChildren({
     (_, index) => index < limit || index === activeIndex,
   );
   const remaining = items.length - shown.length;
-  const expanded = limit > CHILD_PAGE_SIZE;
+  const expanded = limit > CHILD_PAGE_SIZE && items.length > CHILD_PAGE_SIZE;
   const buttonClass =
     "flex min-h-8 items-center gap-2 rounded px-2 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent hover:text-foreground active:bg-accent focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-11";
   const collapse = () => setLimit(CHILD_PAGE_SIZE);

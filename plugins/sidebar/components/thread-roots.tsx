@@ -32,7 +32,7 @@ export function ThreadRoots({
   const shownDrafts = drafts.slice(0, Math.max(0, limit - nodes.length));
   const remaining =
     nodes.length + drafts.length - shown.length - shownDrafts.length;
-  const expanded = limit > pageSize;
+  const expanded = limit > pageSize && nodes.length + drafts.length > pageSize;
   const collapse = () => setLimit(pageSize);
   const buttonClass =
     "flex min-h-8 items-center gap-2 rounded px-2 text-xs text-[var(--subtle-foreground)] outline-none hover:bg-accent hover:text-foreground active:bg-accent focus-visible:ring-2 focus-visible:ring-ring max-md:min-h-11";
