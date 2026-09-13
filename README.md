@@ -942,6 +942,73 @@ Status: recorded 2026-09-12; no upstream issue filed. Suggested issue title:
 `Account Pooler: adapters for Cursor, OpenCode, and Grok Build`.
 File in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Theming and color hooks
+
+The Theme plugin (`plugins/theme`) colors BB's tool glyphs, chat code blocks,
+mention pills, Markdown headings and provider marks through a `bb.themes`
+stylesheet and an `experimental_providerIcon` registration. Verified against
+BB 0.43.1 / SDK 0.4.87: none of those surfaces has a token or attribute meant
+for theming, so `themes/color.css` keys on DOM contracts (`data-icon` glyph
+names, `data-timeline-row-id`, `data-plan-step-status`,
+`data-markdown-preview`, `.bb-code-highlight`) and
+`plugins/theme/host-contract.test.ts` greps the installed bundle for each
+string after every BB upgrade. Six host changes would replace those rules:
+
+- **Row kind and status attributes.** In
+  `apps/app/src/components/thread/timeline/ThreadTimelineRows.tsx`, on the
+  element that already carries `data-timeline-row-id`, add
+  `data-timeline-row-kind`, `data-timeline-work-kind` and
+  `data-timeline-row-status`. Makes every `[data-timeline-row-id]
+  [data-icon="…"]` selector in `color.css` unnecessary and lets a palette tint
+  failed rows and turn rows without knowing icon names.
+- **Chat code tokens in the documented palette.** Move the sugar-high `--sh-*`
+  tokens from `apps/app/src/components/ui/markdown-code-highlight.css` into
+  `apps/app/src/components/ui/theme.css` so built-in, custom and plugin
+  palettes all carry chat code colors, and ship a vivid variant. Our
+  `.bb-code-highlight` override block becomes a plain token block, or goes
+  away if the vivid variant is adopted.
+- **Per-kind glyph and pill tokens.** Have `TimelineLeadingIcon` in
+  `apps/app/src/components/thread/timeline/TimelineRowHeader.tsx` read
+  `--glyph-command`, `--glyph-file`, `--glyph-edit`, `--glyph-web`,
+  `--glyph-agent`, `--glyph-attention` and `--glyph-error`, and split the
+  `--pill-*` tokens in `theme.css` into `--pill-thread-*` and `--pill-file-*`.
+  Replaces every glyph rule and the pill block, and closes the gap that file
+  pills currently share the purple thread tint because there is one pill
+  token set.
+- **Role surface tokens.** For the user bubble in
+  `apps/app/src/components/ui/ConversationMessageContent.tsx` (`rounded-xl
+  border-border-seam bg-surface-recessed`), add `--surface-user-message` and a
+  `data-message-role` attribute; `data-message-column` sits on both roles, so
+  it cannot distinguish them. We ship no rule for this today because there is
+  no hook.
+- **Brand tints for bundled providers.** `plugins/provider-pi` declares
+  `strings.iconTint`; `plugins/provider-claude-code`, `plugins/provider-codex`
+  and the ACP presets in `plugins/provider-acp` do not. Declaring one per
+  provider would make the inline marks in `plugins/theme/app.tsx` optional
+  rather than the only way to get a colored provider chip.
+- **Presentation tint for core rows.** `experimental_timelineRenderer`
+  (`packages/plugin-sdk/src/app-contract.ts`) reaches only a provider plugin's
+  own row kinds. A `timelineDecorator` slot, or a settings-level tool-row tint
+  map, would let a plugin tint claude-code and codex rows without a palette
+  pick, replacing the glyph rules for users who keep BB's default palette.
+
+Known gaps that stay until then: glyph names are a code contract, so a BB
+redesign that renames a row icon drops that tint silently in the app (only the
+contract test notices); settled rows keep BB's `opacity-40`, which mutes the
+reasoning tint along with the row; and several surfaces have no hook at all:
+timeline row header text and status badges, the user and assistant bubble
+roles, the composer model and permission chips, right-panel thread info rows,
+the host tab strip, and "Worked for" turn rows.
+
+Status: recorded 2026-09-13; no upstream issues filed. Suggested issue titles:
+`Timeline rows: expose kind and status data attributes`,
+`Promote the sugar-high --sh-* tokens into theme.css`,
+`Per-kind glyph and pill color tokens`,
+`User message surface token and data-message-role`,
+`Declare iconTint for bundled providers`, and
+`Let plugins decorate core timeline rows`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this

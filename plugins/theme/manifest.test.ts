@@ -34,7 +34,11 @@ describe("bb.themes manifest", () => {
     for (const theme of themes) expect(theme.css).toBe(THEME_CSS);
     expect(existsSync(join(root, THEME_CSS))).toBe(true);
     expect(existsSync(join(root, manifest.bb.server))).toBe(true);
-    expect(manifest.bb.app).toBeUndefined();
+  });
+
+  it("ships the provider-mark frontend entry", () => {
+    expect(manifest.bb.app).toBe("./app.tsx");
+    expect(existsSync(join(root, "app.tsx"))).toBe(true);
   });
 
   it("uses code theme names BB accepts", () => {

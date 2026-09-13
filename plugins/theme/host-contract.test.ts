@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { findBbInstall, readBundleFiles } from "./lib/bb-install";
+import { findBbInstall, readBundledProviderPluginFiles, readBundleFiles } from "./lib/bb-install";
 import { HOST_ANCHORS, PLAN_STEP_GLYPHS, TIMELINE_GLYPHS } from "./lib/host-contract";
 
 const css = readFileSync(join(import.meta.dirname, "themes", "color.css"), "utf8");
@@ -50,10 +50,11 @@ describe("installed BB bundle", () => {
 
   const js = readBundleFiles(install, ".js");
   const cssFiles = readBundleFiles(install, ".css");
+  const providerPlugins = readBundledProviderPluginFiles(install);
 
   for (const anchor of HOST_ANCHORS) {
     it(`still has ${anchor.source}`, () => {
-      const files = anchor.bundle === "js" ? js : cssFiles;
+      const files = anchor.bundle === "js" ? js : anchor.bundle === "css" ? cssFiles : providerPlugins;
       const missing = anchor.mustContain.filter((needle) => ![...files.values()].some((text) => text.includes(needle)));
       expect(missing, `${anchor.because}\nBB ${install.version} at ${install.root} no longer contains: ${missing.join(" | ")}`).toEqual([]);
     });

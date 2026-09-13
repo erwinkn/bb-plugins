@@ -1,0 +1,140 @@
+/**
+ * Provider brand marks drawn as inline SVG so they can carry a color (BB's own
+ * provider logos render as `currentColor` masks). Registered through
+ * `app.slots.experimental_providerIcon` in `app.tsx`; disabling the plugin
+ * falls back to BB's masks.
+ *
+ * The artwork is the official monochrome mark each provider ships, taken
+ * verbatim from BB 0.43.1's bundled provider plugins (`plugins/provider-*\/
+ * icons/*.svg` in the BB source) or, for Devin, from our own provider plugin
+ * (`plugins/devin/assets/devin.svg`). Nothing is redrawn: only the color
+ * changes. Providers whose mark is not available here keep BB's mask.
+ *
+ * Each mark's color is a `--bbp-brand-*` token from `themes/color.css`
+ * (light and dark values) with a BB token as the fallback so the mark still
+ * reads sensibly when the BB Color palette is not selected. Brands with a
+ * known accent (Anthropic terracotta, OpenAI green) use it; monochrome brands
+ * (Cursor, xAI, opencode, Devin) render at full ink strength until an
+ * official accent is supplied.
+ */
+import type { ComponentType, ReactNode } from "react";
+
+export interface ProviderMark {
+  /** BB provider id (declaration id, not plugin id). */
+  providerId: string;
+  /** Provider display name, for docs. */
+  label: string;
+  /** Color token defined in themes/color.css for light and dark. */
+  token: `--bbp-brand-${string}`;
+  /** BB token (defined in both modes) used when the palette is not selected. */
+  fallback: `--${string}`;
+  /** Where the artwork comes from. */
+  source: string;
+  icon: ComponentType<{ className?: string }>;
+}
+
+/** Inline color value: brand token with a BB fallback. */
+export function markColor(token: string, fallback: string): string {
+  return `var(${token}, var(${fallback}))`;
+}
+
+interface MarkProps {
+  className?: string;
+  viewBox: string;
+  color: string;
+  fillRule?: "evenodd" | "nonzero";
+  clipRule?: "evenodd" | "nonzero";
+  children: ReactNode;
+}
+
+function Mark({ className, viewBox, color, fillRule, clipRule, children }: MarkProps) {
+  return (
+    <svg
+      viewBox={viewBox}
+      className={className}
+      style={{ color }}
+      fill="currentColor"
+      fillRule={fillRule}
+      clipRule={clipRule}
+      aria-hidden="true"
+      focusable="false"
+      data-bbp-provider-mark=""
+    >
+      {children}
+    </svg>
+  );
+}
+
+/** Claude Code: BB plugins/provider-claude-code/icons/claude-code.svg (Anthropic spark). */
+function ClaudeCodeMark({ className }: { className?: string }) {
+  return (
+    <Mark className={className} viewBox="0 0 149 149" color={markColor("--bbp-brand-claude", "--warning-text")}>
+      <path d="M29.05 98.54L58.19 82.19L58.68 80.77L58.19 79.98H56.77L51.9 79.68L35.25 79.23L20.81 78.63L6.82 77.88L3.3 77.13L0 72.78L0.340004 70.61L3.3 68.62L7.54 68.99L16.91 69.63L30.97 70.6L41.17 71.2L56.28 72.77H58.68L59.02 71.8L58.2 71.2L57.56 70.6L43.01 60.74L27.26 50.32L19.01 44.32L14.55 41.28L12.3 38.43L11.33 32.21L15.38 27.75L20.82 28.12L22.21 28.49L27.72 32.73L39.49 41.84L54.86 53.16L57.11 55.03L58.01 54.39L58.12 53.94L57.11 52.25L48.75 37.14L39.83 21.77L35.86 15.4L34.81 11.58C34.44 10.01 34.17 8.69 34.17 7.08L38.78 0.820007L41.33 0L47.48 0.820007L50.07 3.07001L53.89 11.81L60.08 25.57L69.68 44.28L72.49 49.83L73.99 54.97L74.55 56.54H75.52V55.64L76.31 45.1L77.77 32.16L79.19 15.51L79.68 10.82L82 5.2L86.61 2.16L90.21 3.88L93.17 8.12L92.76 10.86L91 22.3L87.55 40.22L85.3 52.22H86.61L88.11 50.72L94.18 42.66L104.38 29.91L108.88 24.85L114.13 19.26L117.5 16.6H123.87L128.56 23.57L126.46 30.77L119.9 39.09L114.46 46.14L106.66 56.64L101.79 65.04L102.24 65.71L103.4 65.6L121.02 61.85L130.54 60.13L141.9 58.18L147.04 60.58L147.6 63.02L145.58 68.01L133.43 71.01L119.18 73.86L97.96 78.88L97.7 79.07L98 79.44L107.56 80.34L111.65 80.56H121.66L140.3 81.95L145.17 85.17L148.09 89.11L147.6 92.11L140.1 95.93L129.98 93.53L106.36 87.91L98.26 85.89H97.14V86.56L103.89 93.16L116.26 104.33L131.75 118.73L132.54 122.29L130.55 125.1L128.45 124.8L114.84 114.56L109.59 109.95L97.7 99.94H96.91V100.99L99.65 105L114.12 126.75L114.87 133.42L113.82 135.59L110.07 136.9L105.95 136.15L97.48 124.26L88.74 110.87L81.69 98.87L80.83 99.36L76.67 144.17L74.72 146.46L70.22 148.18L66.47 145.33L64.48 140.72L66.47 131.61L68.87 119.72L70.82 110.27L72.58 98.53L73.63 94.63L73.56 94.37L72.7 94.48L63.85 106.63L50.39 124.82L39.74 136.22L37.19 137.23L32.77 134.94L33.18 130.85L35.65 127.21L50.39 108.46L59.28 96.84L65.02 90.13L64.98 89.16H64.64L25.49 114.58L18.52 115.48L15.52 112.67L15.89 108.06L17.31 106.56L29.08 98.46L29.04 98.5L29.05 98.54Z" />
+    </Mark>
+  );
+}
+
+/** Codex: BB plugins/provider-codex/icons/codex.svg (OpenAI knot). */
+function CodexMark({ className }: { className?: string }) {
+  return (
+    <Mark className={className} viewBox="0 0 24 24" color={markColor("--bbp-brand-codex", "--success")} fillRule="evenodd">
+      <path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.8956zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" />
+    </Mark>
+  );
+}
+
+/** Cursor: BB plugins/provider-acp/icons/cursor.svg (Cursor cube). */
+function CursorMark({ className }: { className?: string }) {
+  return (
+    <Mark className={className} viewBox="0 0 24 24" color={markColor("--bbp-brand-cursor", "--foreground")}>
+      <path d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23" />
+    </Mark>
+  );
+}
+
+/** Grok Build: BB plugins/provider-acp/icons/grok.svg (xAI mark). */
+function GrokMark({ className }: { className?: string }) {
+  return (
+    <Mark className={className} viewBox="0.36 0.5 33.33 32" color={markColor("--bbp-brand-grok", "--foreground")}>
+      <path d="M13.2371 21.0407L24.3186 12.8506C24.8619 12.4491 25.6384 12.6057 25.8973 13.2294C27.2597 16.5185 26.651 20.4712 23.9403 23.1851C21.2297 25.8989 17.4581 26.4941 14.0108 25.1386L10.2449 26.8843C15.6463 30.5806 22.2053 29.6665 26.304 25.5601C29.5551 22.3051 30.562 17.8683 29.6205 13.8673L29.629 13.8758C28.2637 7.99809 29.9647 5.64871 33.449 0.844576C33.5314 0.730667 33.6139 0.616757 33.6964 0.5L29.1113 5.09055V5.07631L13.2343 21.0436" />
+      <path d="M10.9503 23.0313C7.07343 19.3235 7.74185 13.5853 11.0498 10.2763C13.4959 7.82722 17.5036 6.82767 21.0021 8.2971L24.7595 6.55998C24.0826 6.07017 23.215 5.54334 22.2195 5.17313C17.7198 3.31926 12.3326 4.24192 8.67479 7.90126C5.15635 11.4239 4.0499 16.8403 5.94992 21.4622C7.36924 24.9165 5.04257 27.3598 2.69884 29.826C1.86829 30.7002 1.0349 31.5745 0.36364 32.5L10.9474 23.0341" />
+    </Mark>
+  );
+}
+
+/** opencode: BB plugins/provider-acp/icons/opencode.svg (nested squares). */
+function OpencodeMark({ className }: { className?: string }) {
+  return (
+    <Mark className={className} viewBox="-72 -42 384 384" color={markColor("--bbp-brand-opencode", "--foreground")}>
+      <path d="M180 240H60V120H180V240Z" fillOpacity="0.45" />
+      <path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" />
+    </Mark>
+  );
+}
+
+/** Devin: plugins/devin/assets/devin.svg (Devin knot). */
+function DevinMark({ className }: { className?: string }) {
+  return (
+    <Mark className={className} viewBox="0 0 192 192" color={markColor("--bbp-brand-devin", "--foreground")}>
+      <path d="M62 22 93 40V61Q94 79 111 67L130 61 162 80V115L131 133 112 122Q96 113 93 134V153L62 171 31 153V117L62 99 78 108Q97 117 99 97 99 78 80 83L62 93 31 75V40Z" />
+    </Mark>
+  );
+}
+
+/**
+ * Agent providers configured on this install, by BB provider id: BB 0.43.1's
+ * bundled claude-code, codex and acp-cursor, the ACP presets acp-grok and
+ * acp-opencode (`server/dist/builtin-plugins/provider-acp`), and our Devin
+ * plugin (`acp-devin`). BB's `pi` already ships a tinted mask, and the
+ * acp-hermes-agent / acp-omp presets are not configured here, so those keep
+ * BB's artwork. Registering an id that is not configured would be harmless:
+ * the host only looks a mark up when it draws that provider.
+ */
+export const PROVIDER_MARKS: readonly ProviderMark[] = [
+  { providerId: "claude-code", label: "Claude Code", token: "--bbp-brand-claude", fallback: "--warning-text", source: "BB plugins/provider-claude-code/icons/claude-code.svg (Anthropic spark)", icon: ClaudeCodeMark },
+  { providerId: "codex", label: "Codex", token: "--bbp-brand-codex", fallback: "--success", source: "BB plugins/provider-codex/icons/codex.svg (OpenAI knot)", icon: CodexMark },
+  { providerId: "acp-cursor", label: "Cursor", token: "--bbp-brand-cursor", fallback: "--foreground", source: "BB plugins/provider-acp/icons/cursor.svg (Cursor cube)", icon: CursorMark },
+  { providerId: "acp-grok", label: "Grok Build", token: "--bbp-brand-grok", fallback: "--foreground", source: "BB plugins/provider-acp/icons/grok.svg (xAI mark)", icon: GrokMark },
+  { providerId: "acp-opencode", label: "opencode", token: "--bbp-brand-opencode", fallback: "--foreground", source: "BB plugins/provider-acp/icons/opencode.svg (nested squares)", icon: OpencodeMark },
+  { providerId: "acp-devin", label: "Devin", token: "--bbp-brand-devin", fallback: "--foreground", source: "plugins/devin/assets/devin.svg (Devin knot)", icon: DevinMark },
+];

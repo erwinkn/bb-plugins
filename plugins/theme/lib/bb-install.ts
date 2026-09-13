@@ -77,6 +77,27 @@ export function readBundleFiles(install: BbInstall, extension: ".js" | ".css"): 
 }
 
 /**
+ * The server bundles of BB's bundled provider plugins
+ * (`server/dist/builtin-plugins/provider-*\/dist/*.js`), where the agent
+ * provider ids this install can run are declared.
+ */
+export function readBundledProviderPluginFiles(install: BbInstall): Map<string, string> {
+  const files = new Map<string, string>();
+  const pluginsDir = join(install.root, "server", "dist", "builtin-plugins");
+  if (!existsSync(pluginsDir)) return files;
+  for (const plugin of readdirSync(pluginsDir)) {
+    if (!plugin.startsWith("provider-")) continue;
+    const dist = join(pluginsDir, plugin, "dist");
+    if (!existsSync(dist)) continue;
+    for (const name of readdirSync(dist)) {
+      if (!name.endsWith(".js")) continue;
+      files.set(`${plugin}/${name}`, readFileSync(join(dist, name), "utf8"));
+    }
+  }
+  return files;
+}
+
+/**
  * Code theme names BB ships as lazy chunks (`assets/<name>-<hash>.js`), which
  * is the registry `bb.themes[].codeTheme` names resolve against.
  */

@@ -9,11 +9,12 @@
   },
   "bb": {
     "name": "Theme",
-    "description": "Unified BB themes: a colored app palette (tool glyphs, code blocks, mention pills, headings) paired with each code theme.",
+    "description": "Unified BB themes: a colored app palette (tool glyphs, code blocks, mention pills, headings) paired with each code theme, plus tinted provider marks.",
     "branding": {
       "icon": "Palette"
     },
     "server": "./server.ts",
+    "app": "./app.tsx",
     "skills": [],
     "themes": [
       {
@@ -368,7 +369,12 @@
   },
   "devDependencies": {
     "@get-bb/plugin-sdk": "0.4.87",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "typescript": "^5.7.0",
     "vitest": "^3.2.0"
   }

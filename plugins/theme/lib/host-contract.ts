@@ -12,8 +12,8 @@
 export interface HostAnchor {
   /** BB source file (repo-relative) that owns the fact. */
   source: string;
-  /** Which bundle files to search. */
-  bundle: "js" | "css";
+  /** Which bundle files to search: frontend chunks, or the bundled provider plugins' server bundles. */
+  bundle: "js" | "css" | "provider-plugins";
   /** Substrings that must all appear somewhere in those bundle files. */
   mustContain: readonly string[];
   /** What color.css paints from this fact. */
@@ -51,7 +51,26 @@ export const PLAN_STEP_GLYPHS: readonly { status: string; glyph: string }[] = [
   { status: "failed", glyph: "X" },
 ];
 
+/**
+ * Agent provider ids `app.tsx` registers marks for that BB itself declares
+ * (bundled provider plugins and the ACP presets). `acp-devin` is ours
+ * (`plugins/devin`) and is not pinned here.
+ */
+export const BB_PROVIDER_IDS: readonly string[] = ["claude-code", "codex", "pi", "acp-cursor", "acp-grok", "acp-opencode", "acp-hermes-agent", "acp-omp"];
+
 export const HOST_ANCHORS: readonly HostAnchor[] = [
+  {
+    source: "apps/app/src/components/plugin/ProviderIcon.tsx",
+    bundle: "js",
+    mustContain: ['"data-provider-logo":', ".providerIcons.push({providerKind:", "providerKind===`all`"],
+    because: "Provider icons resolve a plugin `experimental_providerIcon` registration by kind and id before falling back to the masked logo; app.tsx registers agent marks through that slot.",
+  },
+  {
+    source: "server/dist/builtin-plugins/provider-{claude-code,codex,pi,acp}",
+    bundle: "provider-plugins",
+    mustContain: BB_PROVIDER_IDS.map((id) => `"${id}"`),
+    because: "The marks are keyed by these provider ids; a renamed or dropped bundled provider would leave a mark that never shows.",
+  },
   {
     source: "apps/app/src/components/ui/markdown-code-highlight.css",
     bundle: "css",

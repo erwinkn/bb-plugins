@@ -2,7 +2,8 @@
 
 Unified BB themes: one colored app palette paired with each code theme, so a
 single pick in Settings → Appearance (or `bb theme set`) sets both BB's chrome
-and its code colors. Plugin id: `theme`.
+and its code colors, plus colored provider marks that show whenever the plugin
+is enabled. Plugin id: `theme`.
 
 BB allows one palette at a time, and a palette carries its own code theme pair.
 This plugin therefore ships one `bb.themes` entry per code pair, all pointing at
@@ -66,6 +67,40 @@ their tint recedes with them.
 Light glyphs sit at oklch L≈0.50–0.55 (at least 3:1 on white), dark glyphs at
 L≈0.72–0.78. Check both modes in BB's Theme Preview plugin after changes.
 
+## Provider marks
+
+BB draws provider logos as `currentColor` masks, so the model and provider
+pickers, the metadata panel and the sidebar thread rows show every agent in
+gray. `app.tsx` registers `experimental_providerIcon` for each agent provider
+configured on this install, with the provider's official mark drawn inline
+(`lib/provider-marks.tsx`). The artwork is taken verbatim from BB 0.43.1's
+bundled provider plugins (`plugins/provider-*/icons/*.svg` in the BB source)
+and, for Devin, from `plugins/devin/assets/devin.svg`; only the color changes.
+The host draws the marks wherever it draws a provider icon and wherever a
+plugin renders `experimental_ProviderIcon`. The composer chip shows BB's
+lightning glyph instead of the provider while fast mode is on. Disabling the
+plugin restores BB's masks.
+
+| Provider id | Artwork | Color token | Value | Fallback without the palette |
+| --- | --- | --- | --- | --- |
+| `claude-code` | Anthropic spark | `--bbp-brand-claude` | Anthropic terracotta `#D97757` | `--warning-text` |
+| `codex` | OpenAI knot | `--bbp-brand-codex` | OpenAI green `#10A37F` | `--success` |
+| `acp-cursor` | Cursor cube | `--bbp-brand-cursor` | `--ink` (monochrome brand) | `--foreground` |
+| `acp-grok` | xAI mark | `--bbp-brand-grok` | `--ink` (monochrome brand) | `--foreground` |
+| `acp-opencode` | opencode squares | `--bbp-brand-opencode` | `--ink` (monochrome brand) | `--foreground` |
+| `acp-devin` (our plugin) | Devin knot | `--bbp-brand-devin` | `--ink` (monochrome brand) | `--foreground` |
+
+Both brand accents clear 3:1 on the white canvas and more on the dark one, so
+they are used as-is in both modes. Cursor, xAI, opencode and Devin ship
+monochrome marks and no accent is known to us, so they render at full ink
+strength (black on light, near-white on dark) rather than an invented hue;
+to add one, set the token's light and dark values in `themes/color.css`.
+BB's `pi` provider already declares its own violet tint, and the
+`acp-hermes-agent` / `acp-omp` presets are not configured here, so those keep
+BB's artwork. `provider-icons.test.tsx` renders every mark, checks the
+fallback tokens exist in both of BB's mode blocks, and computes each color's
+contrast against BB's light and dark canvases (3:1 minimum).
+
 ## Upgrade check
 
 `themes/color.css` styles host surfaces through BB DOM contracts: the
@@ -76,10 +111,13 @@ block in the stylesheet names the BB 0.43.1 source file it relies on.
 
 `lib/host-contract.ts` lists those contracts with exact strings from the
 installed app bundle (including the row-kind → glyph mappings, such as
-``case`file-change`:return`EditFile` ``). `host-contract.test.ts` locates the
-running BB install (`BB_APP_DIR`, then the `bb` binary, then the global npm
-root), greps `app/dist/assets/*.js` and `*.css` for every string, and also
-checks that the stylesheet tints exactly the glyphs the list pins.
+``case`file-change`:return`EditFile` ``), the provider-icon slot lookup, and
+the agent provider ids declared by BB's bundled provider plugins.
+`host-contract.test.ts` locates the running BB install (`BB_APP_DIR`, then the
+`bb` binary, then the global npm root), greps `app/dist/assets/*.js` and
+`*.css` (and `server/dist/builtin-plugins/provider-*/dist/*.js` for the ids)
+for every string, and also checks that the stylesheet tints exactly the glyphs
+the list pins.
 `manifest.test.ts` checks that every entry's stylesheet exists and every code
 theme name is one the installed BB ships as a chunk. After a BB upgrade, run
 `npm test`; a failure names the BB source file to re-read and the string that
@@ -87,9 +125,11 @@ disappeared. Without a BB install the bundle checks are skipped.
 
 ## Layout
 
-- `package.json` holds the generated `bb.themes` list and the empty server
-  entry BB requires; there is no frontend.
-- `themes/color.css` is the palette and every host-surface rule.
+- `package.json` holds the generated `bb.themes` list, the empty server
+  entry BB requires, and the `app.tsx` frontend entry.
+- `themes/color.css` is the palette and every host-surface rule, including
+  the `--bbp-brand-*` tokens.
+- `app.tsx` registers the provider marks from `lib/provider-marks.tsx`.
 - `lib/theme-pairs.ts` is the pair catalog, `scripts/sync-manifest.mjs`
   writes it into the manifest, `lib/host-contract.ts` and `lib/bb-install.ts`
   back the tests.
