@@ -186,10 +186,20 @@ describe("ops", () => {
     expect(one.id).toBe(two.id);
     const spawnArgs = harness.inspection.sdk.callsTo("threads.spawn");
     expect(spawnArgs).toHaveLength(1);
-    expect(spawnArgs[0]?.[0]).toMatchObject({ permissionMode: "auto", executionInputSources: { permissionMode: "client-preference" } });
+    expect(spawnArgs[0]?.[0]).toMatchObject({ permissionMode: "auto", executionInputSources: { permissionMode: "client-preference" }, pluginMetadata: { operationId: one.id } });
     expect(one).toMatchObject({ state: "accepted", kind: "create", threadId: t.id, response: { projectId: "proj_allowed" } });
     expect(getOp(store, { operationId: one.id })).toMatchObject({ id: one.id, state: "accepted" });
     await expect(runOp(store, { ...args, args: { projectId: "proj_other" } }, call)).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+  it("a malformed pluginMetadata seed fails the receipt before dispatch and frees the key", async () => {
+    const { bb, store, harness } = storeHost();
+    const call = (p: string, a: unknown) => sdkCall(bb.sdk, p, a);
+    const bad = await runOp(store, { key: "k2", call: "threads.spawn", args: { ...spawnCall.args, pluginMetadata: "nope" } }, call);
+    expect(bad).toMatchObject({ state: "failed", error: { code: "invalid_arguments" } });
+    expect(harness.inspection.sdk.callsTo("threads.spawn")).toHaveLength(0);
+    const good = await runOp(store, { key: "k2", call: "threads.spawn", args: { ...spawnCall.args, pluginMetadata: { ticket: "42" } } }, call);
+    expect(good.state).toBe("accepted");
+    expect(harness.inspection.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({ pluginMetadata: { ticket: "42", operationId: good.id } });
   });
   it("reconcileOp verifies the thread before accepting an unknown op", async () => {
     const { bb, store, harness } = storeHost();
@@ -242,7 +252,8 @@ describe("MCP transport", () => {
     expect(second.structuredContent).toMatchObject({ data: { result: { id: (first.structuredContent as { data: { result: { id: string } } }).data.result.id } } });
     const spawnArgs = harness.inspection.sdk.callsTo("threads.spawn");
     expect(spawnArgs).toHaveLength(1);
-    expect(spawnArgs[0]?.[0]).toMatchObject({ permissionMode: "auto", executionInputSources: { permissionMode: "client-preference" } });
+    const opId = (first.structuredContent as { data: { result: { id: string } } }).data.result.id;
+    expect(spawnArgs[0]?.[0]).toMatchObject({ permissionMode: "auto", executionInputSources: { permissionMode: "client-preference" }, pluginMetadata: { operationId: opId } });
   });
   it("requires header auth and rejects foreign origins and hosts", async () => {
     const { bb, harness } = host(); plugin(bb);

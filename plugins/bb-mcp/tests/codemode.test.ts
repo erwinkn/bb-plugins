@@ -203,6 +203,22 @@ describe("ops dispatch", () => {
   it("ops.get rejects missing operations", async () => {
     await expect(dispatch("ops.get", { operationId: "op_none" })).rejects.toMatchObject({ code: "not_found" });
   });
+  it("ops.run seeds the receipt id into spawned and forked threads' plugin metadata", async () => {
+    const spawn = vi.fn(async (_args: unknown) => ({ id: "thr_new" }));
+    const fork = vi.fn(async (_args: unknown) => ({ id: "thr_fork" }));
+    const d = makeDispatch({ threads: { spawn, fork, get: sdk.threads.get } }, storeStub, () => {});
+    const explicit = { projectId: "p", permissionMode: "full" };
+    await d("ops.run", { call: "threads.spawn", args: { ...explicit, pluginMetadata: { ticket: "42", operationId: "caller-supplied" } } });
+    expect(spawn.mock.calls[0]?.[0]).toMatchObject({ projectId: "p", pluginMetadata: { ticket: "42", operationId: "op_1" } });
+    await d("ops.run", { call: "threads.fork", args: { threadId: "thr_x" } });
+    expect(fork.mock.calls[0]?.[0]).toMatchObject({ threadId: "thr_x", pluginMetadata: { operationId: "op_1" } });
+    // Other calls and direct (unledgered) spawns are untouched.
+    await d("ops.run", { call: "threads.get", args: { threadId: "thr_1" } });
+    await d("threads.spawn", explicit);
+    expect(spawn.mock.calls[1]?.[0]).not.toHaveProperty("pluginMetadata");
+    await expect(d("ops.run", { call: "threads.spawn", args: { ...explicit, pluginMetadata: ["nope"] } })).rejects.toMatchObject({ code: "invalid_arguments" });
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("makeDispatch validation", () => {

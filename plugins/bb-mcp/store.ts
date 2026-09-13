@@ -107,14 +107,16 @@ export function createStore(bb: BbPluginApi) {
       })();
     },
     list: () => (db.prepare("SELECT body FROM operations ORDER BY rowid DESC").all() as {body: string}[]).map(r => JSON.parse(r.body) as Operation),
-    async run(input: Parameters<typeof claim>[0], key: string | undefined, payload: unknown, dispatch: () => Promise<Record<string, unknown>>): Promise<Operation> {
+    // dispatch receives the claimed receipt so the call can carry its id
+    // (ops.run seeds it into spawned threads' plugin metadata).
+    async run(input: Parameters<typeof claim>[0], key: string | undefined, payload: unknown, dispatch: (op: Operation) => Promise<Record<string, unknown>>): Promise<Operation> {
       const { op, fresh } = claim(input, key, payload);
       if (!fresh) return inflight.get(op.id) ?? op;
       // Defer dispatch so the promise is registered before concurrent callers join.
       const pending = Promise.resolve().then(async () => {
         try {
           if (disposed) throw new Error("disposed");
-          const response = await dispatch();
+          const response = await dispatch(op);
           const accepted: Operation = { ...op, state: "accepted", response, threadId: typeof response.threadId === "string" ? response.threadId : op.threadId, updatedAt: Date.now() };
           if (!disposed) save(accepted);
           return disposed ? { ...op, state: "outcome_unknown" as const } : accepted;

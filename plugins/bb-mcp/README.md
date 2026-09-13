@@ -1,17 +1,22 @@
 # BB MCP
 
 Remote control of BB from Grok Bot, Executor or another MCP client, for
-trusted personal use. Version 0.4.0 exposes a single code-mode tool,
-`bb_execute`, whose `bb` global mirrors the complete BB SDK: threads,
-threadSections, projects, environments, files, terminals, hosts, providers,
-plugins, system, skills, status, theme and guide. There is no plugin-side
-permission layer; the endpoint grants the plugin's own owner-level access and
-must only be reachable by systems you trust.
+trusted personal use. Version 0.5.0 exposes a code-mode tool, `bb_execute`,
+whose `bb` global mirrors the complete BB SDK 0.4.87: threads (including
+per-thread plugin metadata and context usage), threadSections, projects,
+environments (including list and delete), files, terminals, hosts (including
+the experimental machine-provider operations), providers, plugins, system
+(including synced UI preferences), skills, status, theme,
+experimental_desktopBrowsers and guide, plus a read-only twin `bb_read`. There
+is no plugin-side permission layer; the endpoint grants the plugin's own
+owner-level access and must only be reachable by systems you trust.
 
 ## Connect
 
-Requires BB 0.42.1 / Plugin SDK 0.4.47 and configured coding providers.
-Provider and infrastructure usage retains its normal costs.
+Requires BB 0.43.1 / Plugin SDK 0.4.87 and configured coding providers. The
+0.43.1 floor comes from thread plugin metadata: `bb.ops.run` seeds it on every
+spawn, and BB 0.43.0 has neither the routes nor the table. Provider and
+infrastructure usage retains its normal costs.
 
 ```sh
 bb plugin install git:https://github.com/erwinkn/bb-plugins.git@main --plugin bb-mcp --yes
@@ -33,7 +38,7 @@ The settings are `appUrl`, `endpointUrl` and optional `defaultHostId`.
 Former project/host/provider scopes, permission ceilings and quota settings
 are retired and ignored. Credentials, settings values and the operation
 database are preserved on upgrade. Refresh/reconnect the MCP client after
-upgrading so it discards the removed per-operation tools.
+upgrading so it picks up the new tool descriptions and method listing.
 
 ## Code mode
 
@@ -51,7 +56,43 @@ stays readable). It is annotated read-only so MCP clients can auto-approve
 it — prefer it for monitoring and discovery flows, and keep `bb_execute`
 for work dispatch. Client-side, configure your orchestrator to auto-approve
 whichever of the two you use; server-side there is no per-call approval
-layer by design.
+layer by design. Reads that return credentials or enrollment secrets
+(`plugins.token`, `plugins.getSettings`, `system.config`,
+`hosts.experimental_getEnrollmentCommand`) stay execute-only.
+
+### BB 0.43.x surfaces
+
+The method listing is generated from the SDK's bundled declarations, so the
+0.43.x additions are available without wrappers. Under `bb_read`:
+
+- `threads.getPluginMetadata({ threadId, pluginId? })` reads a plugin's
+  per-thread JSON namespace; `pluginId` defaults to `bb-mcp`. Any client,
+  plugin or the thread's own agent can write any namespace, so treat values
+  as untrusted input and never as authorization.
+- `threads.context({ threadId })` returns context-window usage
+  (`usage.usedTokens`, `usage.modelContextWindow`, `usage.estimated`, an
+  optional provider snapshot) or `usage: null`.
+- `system.uiPreferences.list()` returns the synced `sidebar.*` preferences
+  with their revisions.
+- `environments.list({ projectId?, hostId?, ... })`,
+  `environments.listProviders()`, `hosts.experimental_listProviders()` and
+  `system.machineEnvironment()` (variable names only; BB redacts values).
+
+Under `bb_execute` only:
+
+- `threads.updatePluginMetadata({ threadId, pluginId?, set?, remove? })` —
+  a shallow atomic patch, 256 KiB per namespace, returning the full result.
+- `system.uiPreferences.set({ key, value, expectedRevision })` (compare-and-
+  swap; a stale revision fails with HTTP 409) and `reset({ key })`.
+- `environments.delete({ environmentId })` and the machine-host operations
+  `hosts.experimental_create`, `experimental_suspend`, `experimental_resume`,
+  `experimental_retryCleanup` and `experimental_getEnrollmentCommand`, which
+  create or change real infrastructure.
+- `threads.spawn` and `threads.fork` accept `pluginMetadata` to seed the
+  `bb-mcp` namespace of the new thread. Forks never inherit metadata.
+
+Metadata updates emit no event and BB does not add metadata to thread DTOs
+or prompts; poll `getPluginMetadata` when you need it.
 
 Successful results contain `{"data":{"result":...,"logs":[...]}}`. The result
 is the SDK's raw shape — `list` methods return bare arrays, reads return their
@@ -85,6 +126,17 @@ The SDK has no request ledger, so the plugin adds two functions:
   in-flight dispatch); a changed payload under the same key is
   `idempotency_conflict`. Ledgered calls intentionally run without the
   request's abort signal: they must survive client disconnects.
+- When the ledgered call is `threads.spawn` or `threads.fork`, the plugin
+  seeds `{ operationId }` into the new thread's `bb-mcp` plugin-metadata
+  namespace, merged over the caller's own `args.pluginMetadata` (caller keys
+  are kept; `operationId` is always the receipt id). The receipt fingerprint
+  uses the caller's arguments, so replays are unaffected, and a malformed
+  `pluginMetadata` (anything but a plain object) records a `failed` receipt
+  before dispatch. Read it back with
+  `bb.threads.getPluginMetadata({ threadId })`; BB also attributes the thread
+  to this plugin (`originPluginId: "bb-mcp"`) whenever a seed is present.
+  The operation database stays authoritative for receipt state; the seed is
+  provenance only.
 - `bb.ops.get({operationId})` reads a stored receipt.
 
 `bb.approve({ threadId, interactionId, decision, grantedPermissions? })`
@@ -159,11 +211,18 @@ npm test
 npm run build
 ```
 
+After a BB upgrade, `bb plugin types` repins the SDK; then run
+`npm install` and `npm run sdk-api` to regenerate `sdk-api.ts` (the exposed
+method listing and the paths whose arguments accept `signal`) from the
+bundled declarations, and commit the diff. Tests fail while the file is
+stale. `bb mcp status` reports the SDK version the listing came from.
+
 Tests cover the sandbox bridge (composition, error propagation, timeout kill),
-the SDK path dispatch, the durable-ops ledger (dedupe, outcome_unknown,
-reconcile) and the MCP transport (auth, Host/Origin checks, `bb_execute`
-end-to-end). `tests/live-client.mjs` performs calls with an in-memory
-credential against a live BB.
+the SDK path dispatch, the generated listing against the installed SDK, the
+read-only classification, the durable-ops ledger (dedupe, outcome_unknown,
+reconcile, metadata seeding) and the MCP transport (auth, Host/Origin checks,
+`bb_execute` end-to-end). `tests/live-client.mjs` performs calls with an
+in-memory credential against a live BB.
 
 ## Upstream feedback desired in BB
 
