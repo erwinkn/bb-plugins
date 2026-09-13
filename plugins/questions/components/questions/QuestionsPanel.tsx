@@ -122,6 +122,21 @@ function SummaryView({ controller, onJump }: { controller: QuestionsController; 
 
 function SubmissionNotice({ controller, submission }: { controller: QuestionsController; submission: Submission }) {
   const labels = submission.questionIds.map((id) => controller.labels.get(id) ?? id).join(", ");
+  if (submission.state === "cancelled") {
+    return (
+      <div role="alert" className="mx-3 mt-2.5 rounded-md border border-border bg-[var(--surface-raised)] px-2.5 py-2 text-[12px] text-foreground">
+        <div className="font-medium">Answers to {labels} were not delivered.</div>
+        <div className="mt-0.5 text-muted-foreground">
+          The queued message was removed before the agent received it. Your answers are kept as drafts; Resubmit sends them exactly as they were submitted.
+        </div>
+        <div className="mt-1.5">
+          <PanelButton small disabled={controller.submitting} onClick={() => void controller.resubmit(submission).then(reportOutcome)}>
+            Resubmit
+          </PanelButton>
+        </div>
+      </div>
+    );
+  }
   return (
     <div role="alert" className="mx-3 mt-2.5 rounded-md border border-[var(--surface-destructive-border)] bg-[var(--surface-destructive)] px-2.5 py-2 text-[12px] text-foreground">
       <div className="font-medium">
