@@ -3,6 +3,7 @@ import type { Collision } from "@dnd-kit/core";
 import {
   NEST_BAND_FRACTION,
   PINNED_NEST_BAND_FRACTION,
+  ThreadDndProjectionGate,
   applyDetachDecision,
   buildThreadDndLookup,
   getThreadGroupDroppableId,
@@ -372,5 +373,45 @@ describe("applyDetachDecision", () => {
     applyDetachDecision({ activeId: "a", unpin: true }, reparent, setPinned, onError);
     await vi.waitFor(() => expect(onError).toHaveBeenCalled());
     expect(reparent).not.toHaveBeenCalled();
+  });
+
+  it("skips the delayed detach when a newer reparent superseded it", async () => {
+    let release!: () => void;
+    const setPinned = vi.fn(
+      () => new Promise<unknown>((resolve) => (release = () => resolve(null))),
+    );
+    const reparent = vi.fn();
+    applyDetachDecision(
+      { activeId: "a", unpin: true },
+      reparent,
+      setPinned,
+      vi.fn(),
+      () => true,
+    );
+    release();
+    await vi.waitFor(() => expect(setPinned).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reparent).not.toHaveBeenCalled();
+  });
+});
+
+describe("ThreadDndProjectionGate", () => {
+  it("always propagates a clear transition after fresh input", () => {
+    const gate = new ThreadDndProjectionGate();
+    expect(gate.allow(null, "row:a:valid")).toBe(true);
+    gate.noteInput(new Event("pointermove"));
+    // The armed row highlight must clear when the pointer leaves for a
+    // group with no drop decision.
+    expect(gate.allow("row:a:valid", null)).toBe(true);
+    expect(gate.allow(null, null)).toBe(true);
+  });
+
+  it("still damps duplicate non-null targets", () => {
+    const gate = new ThreadDndProjectionGate();
+    expect(gate.allow(null, "row:a:valid")).toBe(true);
+    expect(gate.allow("row:a:valid", "row:a:valid")).toBe(false);
+    gate.noteInput(new Event("pointermove"));
+    expect(gate.allow("row:a:valid", "row:a:valid")).toBe(false);
+    expect(gate.allow("row:a:valid", "row:b:valid")).toBe(true);
   });
 });

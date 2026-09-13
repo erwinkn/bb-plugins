@@ -172,13 +172,17 @@ export function applyDetachDecision(
   reparent: (threadId: string, parentThreadId: string | null) => void,
   setPinned: (threadId: string, pinned: boolean) => Promise<unknown>,
   onError: (error: unknown) => void,
+  isSuperseded?: () => boolean,
 ): void {
   if (!decision.unpin) {
     reparent(decision.activeId, null);
     return;
   }
   void setPinned(decision.activeId, false)
-    .then(() => reparent(decision.activeId, null))
+    .then(() => {
+      // A newer reparent may have run while the unpin was in flight.
+      if (!isSuperseded?.()) reparent(decision.activeId, null);
+    })
     .catch(onError);
 }
 
@@ -315,7 +319,13 @@ export class ThreadDndProjectionGate {
   }
 
   allow(currentKey: string | null, nextKey: string | null): boolean {
-    if (nextKey === this.currentKey || nextKey === currentKey) return false;
+    // A null target clears the highlight; it must always propagate even
+    // though noteInput already reset currentKey to null.
+    if (
+      nextKey !== null &&
+      (nextKey === this.currentKey || nextKey === currentKey)
+    )
+      return false;
     this.currentKey = nextKey;
     return true;
   }

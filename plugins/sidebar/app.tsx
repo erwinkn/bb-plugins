@@ -285,6 +285,14 @@ function ThreadsList(props: PluginThreadListProps) {
             reparent,
             (threadId, pinned) => actions.setPinned(threadId, pinned),
             report,
+            () => {
+              let superseded = false;
+              setParentOverrides((current) => {
+                superseded = current.has(decision.activeId);
+                return current;
+              });
+              return superseded;
+            },
           );
           return;
         case "pin":
