@@ -23,7 +23,7 @@ import {
   useMenuItemHover,
 } from "./menu-item-hover.js";
 import { LIST_HOVER_TRANSITION } from "./motion.js";
-import { Icon } from "../../components/ui/icon.js";
+import { Icon } from "../host-icon";
 
 const MENU_ITEM_NEUTRAL_STATE_CLASS =
   "focus:bg-state-hover focus:text-foreground data-[last-hovered]:bg-state-hover data-[last-hovered]:text-foreground";

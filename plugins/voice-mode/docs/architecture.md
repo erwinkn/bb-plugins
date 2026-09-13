@@ -93,7 +93,10 @@ remain attached after acceptance, recovery, and later messages. No migration is
 needed: `receipt_json` stores the typed `ThreadHandoff` record. Source history is
 bounded, and concurrent source work can continue after the snapshot. BB's native
 fork API cannot provide a provider-independent handoff relationship; Voice owns
-that metadata until an upstream handoff API exists.
+that metadata until an upstream handoff API exists. Since BB 0.43.1 every spawn
+also seeds the thread's `voice-mode` plugin metadata (`thread-metadata.ts`) with
+the conversation, operation, profile, and, for a handoff, the source thread and
+context boundary, so the provenance is visible on the thread itself.
 `queued_messages` reads a thread's queue through `queuedMessages.list` and remembers
 each ID; `send_now` (steer), `delete`, and `edit` (optimistic `expectedUpdatedAt`)
 are effects on a remembered ID. When the item came from this conversation, the
@@ -104,6 +107,14 @@ ordinals to option values before any SDK call. Provider questions resolve with a
 `user_answer` resolution; Questions-plugin rounds are read and answered through
 `bb.sdk.plugins.callRpc` with one draft per question and one submit. Watches describe
 interactions before the transaction so rounds reach the inbox with their questions.
+Lifecycle events (`thread.active`, `thread.idle`, `thread.failed`, `thread.archived`)
+no longer list a thread's interactions: prompts arrive through `interaction.pending`
+and only the inbox's open prompts are re-read, since BB has no resolved event.
+Call start, reconnect, subscription refreshes, and the first read after a spawn
+still list everything. `thread.unarchived` resolves unspoken archived notices,
+adds an unarchived milestone, and re-derives the task status. `message.cancelled`
+closes the matching voice operation as cancelled, refreshes the task's queued
+count, and adds one milestone per watching conversation.
 `spaces-bridge.ts` switches the Threads sidebar of the sidebar plugin:
 it reads that plugin's cached space catalog and client state from local storage,
 resolves a spoken name with the same ranked matching, writes `spaceId` the way the

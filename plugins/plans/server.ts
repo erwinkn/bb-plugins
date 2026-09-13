@@ -60,7 +60,7 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
   bb.agents.registerTool({
     name: "plans_update", description: "Update the latest plan with exact-match edits or full Markdown and a summary. The resolves field sets each named annotation to addressed, including asks." + toolBehavior,
     presentation: { label: { pending: "Updating plan", completed: "Plan updated" } }, parameters: updateSchema,
-    execute(input, { threadId }) { owns(input.planId, threadId); return JSON.stringify(service.update(input)); },
+    async execute(input, { threadId }) { owns(input.planId, threadId); return JSON.stringify(await service.update(input)); },
   });
   bb.agents.registerTool({
     name: "plans_reply", description: "Reply to an annotation by number or ID. An ask becomes answered by default. With resolve=false, keep its current state, including answered or addressed. For a comment or redline, keep the state by default; resolve=true sets addressed." + toolBehavior,
@@ -88,7 +88,7 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
       { name: "update", summary: "Update a plan from a file", usage: "bb plans update <plan> <file> --summary <text> [--resolve #n ...]" },
       { name: "reply", summary: "Reply to an annotation", usage: "bb plans reply <plan> <#n> <text> [--no-resolve]" },
       { name: "handoff", summary: "Open the review prompt and end the turn", usage: "bb plans handoff <plan>" },
-      { name: "get", summary: "Read a plan or stored version", usage: "bb plans get <plan> [--version-id <id>]" },
+      { name: "get", summary: "Read a plan or stored version; no ID reads the thread's active plan", usage: "bb plans get [plan] [--version-id <id>]" },
       { name: "list", summary: "List ten plans for a thread", usage: "bb plans list [offset] [--thread <id>]" },
       { name: "review", summary: "Annotate or approve another thread's plan", usage: 'bb plans review <plan> [--comment "quote::body"] [--ask "quote::body"] [--redline "quote"] [--looks-good "quote"] [--approve]' },
     ],
@@ -97,13 +97,23 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
         const flags = parseFlags(argv); const [command, ...args] = flags.positional;
         let result: unknown;
         if (command === "list" && args.length <= 1) result = service.list({ threadId: flags.thread ?? ctx.threadId, offset: z.coerce.number().int().nonnegative().parse(args[0] ?? 0) });
-        else if (command === "get" && args.length === 1) result = flags.version ? service.version({ id: args[0]!, versionId: flags.version }) : service.get({ id: args[0]! });
+        else if (command === "get" && args.length <= 1) {
+          let id = args[0];
+          if (id === undefined) {
+            // After context loss: the thread's metadata pointer names the active plan.
+            if (!ctx.threadId) throw new Error("Pass a plan ID, or run this from the plan's BB thread.");
+            const active = await service.activePlan({ threadId: ctx.threadId });
+            if (!active) throw new Error("No active plan is recorded for this thread. Use bb plans list.");
+            id = active.id;
+          }
+          result = flags.version ? service.version({ id, versionId: flags.version }) : service.get({ id });
+        }
         else if (command === "submit" && args.length >= 1 && args.length <= 2 && ctx.threadId) {
           result = await service.submit({ title: args[1] ?? "Plan", markdown: await readFile(args[0]!, ctx), threadId: ctx.threadId });
         } else if (command === "update" && args.length === 2) {
           owns(args[0]!, ctx.threadId);
           if (!flags.summary) throw new Error("update needs --summary <text>.");
-          result = service.update({ planId: args[0]!, markdown: await readFile(args[1]!, ctx), summary: flags.summary, resolves: flags.resolves });
+          result = await service.update({ planId: args[0]!, markdown: await readFile(args[1]!, ctx), summary: flags.summary, resolves: flags.resolves });
         } else if (command === "reply" && args.length === 3) {
           owns(args[0]!, ctx.threadId);
           result = service.reply({ planId: args[0]!, annotation: args[1]!, body: args[2]!, resolve: flags.noResolve ? false : undefined });
@@ -117,8 +127,8 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
           // Validate the whole batch before any annotations are saved.
           const inputs = flags.annotations.map((item) => addAnnotationSchema.parse({ id: plan.id, ...item }));
           for (const input of inputs) service.addAnnotation(input);
-          result = flags.approve ? service.approve({ id: plan.id, requestId: randomUUID(), versionId: plan.versions.at(-1)!.id }) : service.get({ id: plan.id });
-        } else throw new Error("Usage: bb plans submit <file> [title], update <plan> <file> --summary <text>, reply <plan> <#n> <text>, handoff <plan>, get <plan>, list [offset], or review <plan> [annotations] [--approve].");
+          result = flags.approve ? await service.approve({ id: plan.id, requestId: randomUUID(), versionId: plan.versions.at(-1)!.id }) : service.get({ id: plan.id });
+        } else throw new Error("Usage: bb plans submit <file> [title], update <plan> <file> --summary <text>, reply <plan> <#n> <text>, handoff <plan>, get [plan], list [offset], or review <plan> [annotations] [--approve].");
         const stdout = JSON.stringify(result, null, 2);
         if (Buffer.byteLength(stdout) > 900_000) throw new Error("This result is too large for the CLI. Open the plan in the Plans panel.");
         return { exitCode: 0, stdout };

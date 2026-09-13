@@ -5,6 +5,7 @@
 import React, { useEffect, useState, useSyncExternalStore } from "react";
 import { voiceAgent } from "./voice-agent";
 import { cn } from "@/lib/utils";
+import { HostIcon } from "./lib/host-icon";
 
 export function WaveformIcon({ live }: { live: boolean }) {
   return (
@@ -22,24 +23,23 @@ export function WaveformIcon({ live }: { live: boolean }) {
   );
 }
 
+/** The host microphone; muted adds a diagonal slash over it (the registry has no MicOff). */
 export function MicIcon({ slashed }: { slashed: boolean }) {
   return (
-    <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden>
-      <rect x="6" y="1.8" width="4" height="7" rx="2" fill="currentColor" stroke="none" />
-      <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0" />
-      <path d="M8 12v2.2" />
-      {slashed ? <path d="M2.5 2.5l11 11" strokeWidth="1.6" /> : null}
-    </svg>
+    <span className="relative inline-flex size-4 shrink-0 items-center justify-center" aria-hidden>
+      <HostIcon name="Mic" className="size-4" />
+      {slashed ? (
+        <svg viewBox="0 0 16 16" className="absolute inset-0 size-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+          <path d="M2.5 2.5l11 11" />
+        </svg>
+      ) : null}
+    </span>
   );
 }
 
-/** A rounded stop square — ends the voice session. */
+/** The host stop square, filled — ends the voice session. */
 export function StopIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="size-3.5" fill="currentColor" aria-hidden>
-      <rect x="4" y="4" width="8" height="8" rx="1.6" />
-    </svg>
-  );
+  return <HostIcon name="Square" className="size-3.5 fill-current" />;
 }
 
 export function formatElapsed(ms: number): string {

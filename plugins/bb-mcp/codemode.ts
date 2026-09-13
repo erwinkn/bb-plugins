@@ -2,6 +2,7 @@ import { Worker } from "node:worker_threads";
 import { ToolError } from "./config";
 import { errorView, type Store } from "./store";
 import { approveInteraction, getOp, runOp } from "./ops";
+import { SDK_METHODS, SDK_VERSION, SIGNAL_PATHS as SIGNAL_PATH_LIST } from "./sdk-api";
 
 export const EXECUTE_TOOL = "bb_execute";
 export const READ_TOOL = "bb_read";
@@ -23,12 +24,22 @@ const READ_VERBS = new Set([
   "childSummary", "resolveMentions", "timeline", "timelineTurnSummaryDetails",
   "storageFiles", "storageLocation", "storagePaths", "render", "directory", "getContent", "listFiles",
   "repositoryStars",
+  // 0.43.x: thread context usage, plugin metadata reads, environment and
+  // machine provider catalogs, desktop browser inspection. machineEnvironment
+  // lists variable names only — BB redacts values server-side.
+  "context", "getPluginMetadata", "listProviders", "experimental_listProviders", "machineEnvironment",
+  "listInstances", "listTabs", "listImportSources", "captureTab",
 ]);
+// Reads whose verb is a mutation elsewhere (interactions.resolve) are listed
+// by full path.
+const READ_PATHS = new Set(["theme.resolve"]);
 // Reads that still leak credentials or host configuration stay execute-only.
-const READ_BLOCKED = new Set(["plugins.token", "plugins.getSettings", "system.config"]);
+// Membership also drives the ledger: ops.run refuses to record them and
+// ops.get redacts their recorded responses under bb_read.
+const READ_BLOCKED = new Set(["plugins.token", "plugins.getSettings", "system.config", "hosts.experimental_getEnrollmentCommand"]);
 export function isReadPath(path: string): boolean {
   if (READ_BLOCKED.has(path)) return false;
-  return READ_VERBS.has(path.split(".").at(-1)!);
+  return READ_PATHS.has(path) || READ_VERBS.has(path.split(".").at(-1)!);
 }
 
 // The per-call signal overrides the request signal: runCode passes its
@@ -55,8 +66,8 @@ const EXEC_SOURCE_FIELDS = ["providerId", "model", "reasoningLevel", "serviceTie
 
 // Methods whose args declare `signal?: AbortSignal` in the bundled SDK types.
 // Injecting it anywhere else fails strict arg validation (files.write rejected
-// the key). Regenerate from bb-plugin-sdk.d.ts when the SDK version changes.
-const SIGNAL_PATHS = new Set(["environments.diff","environments.diffBranches","environments.diffFile","environments.diffFiles","environments.diffPatch","environments.get","environments.pullRequest","environments.paths","environments.status","files.read","files.list","files.listPaths","files.createPreview","hosts.directory","hosts.get","hosts.cloneDefaultPath","hosts.list","hosts.pathsExist","hosts.pickFolder","hosts.providerCliStatus","projects.attachments.read","projects.branches","projects.commands","projects.defaultExecutionOptions","projects.fileContent","projects.files","projects.get","projects.list","projects.paths","projects.promptHistory","projects.sidebarBootstrap","plugins.checkUpdates","plugins.catalog.installPlan","plugins.catalog.search","plugins.catalog.status","plugins.marketplaces.list","plugins.marketplaces.refresh","plugins.getSettings","plugins.getSource","plugins.list","plugins.listUpdateResults","providers.list","providers.models","skills.getContent","skills.list","skills.listFiles","skills.registry.detail","skills.registry.entries","skills.registry.get","skills.registry.repositoryStars","skills.registry.search","status.get","system.attention","system.config","system.executionOptions","system.cliSkillsStatus","system.transcribeVoice","system.providerStates","system.usageLimits","system.version","terminals.get","terminals.list","terminals.output","theme.get","theme.catalog","threadSections.list","threads.childSummary","threads.conversationOutline","threads.count","threads.defaultExecutionOptions","threads.events.list","threads.events.wait","threads.get","threads.queue.list","threads.interactions.get","threads.interactions.list","threads.list","threads.listRunning","threads.output","threads.promptHistory","threads.queuedMessages.list","threads.resolveMentions","threads.search","threads.tabs.get","threads.timeline","threads.timelineTurnSummaryDetails","threads.storageFiles","threads.storageLocation","threads.storagePaths","threads.wait"]);
+// the key). Generated into sdk-api.ts by `npm run sdk-api`.
+const SIGNAL_PATHS = new Set(SIGNAL_PATH_LIST);
 
 // Lookup failures propagate: spawning with a guessed mode is worse than
 // erroring — BB's own default may be a remembered "accept-edits".
@@ -295,186 +306,11 @@ export async function runCode(opts: { code: string; paths: string[]; dispatch: D
   } finally { if (!slotOwned) releaseSlot(); }
 }
 
-// Generated from @get-bb/plugin-sdk's bundled bb-plugin-sdk.d.ts. Regenerate if
-// the SDK version changes; the sandbox exposes exactly these paths plus bb.ops.
-// tests/codemode.test.ts "SDK surface coverage" fails when this drifts.
-export const SDK_API = `
-environments.archiveThreads(args: EnvironmentActionArgs): Promise<EnvironmentArchiveThreadsResult>;
-environments.commit(args: EnvironmentCommitArgs): Promise<EnvironmentCommitResult>;
-environments.diff(args: EnvironmentDiffArgs): Promise<EnvironmentDiffResult>;
-environments.diffBranches(args: EnvironmentDiffBranchesArgs): Promise<EnvironmentDiffBranchesResult>;
-environments.diffFile(args: EnvironmentDiffFileArgs): Promise<EnvironmentDiffFileResult>;
-environments.diffFiles(args: EnvironmentDiffArgs): Promise<EnvironmentDiffFilesResult>;
-environments.diffPatch(args: EnvironmentDiffPatchArgs): Promise<EnvironmentDiffPatchResult>;
-environments.get(args: EnvironmentGetArgs): Promise<EnvironmentGetResult>;
-environments.pullRequest(args: EnvironmentGetArgs): Promise<EnvironmentPullRequestResult>;
-environments.markPullRequestDraft(args: EnvironmentActionArgs): Promise<EnvironmentMarkPullRequestDraftResult>;
-environments.markPullRequestReady(args: EnvironmentActionArgs): Promise<EnvironmentMarkPullRequestReadyResult>;
-environments.mergePullRequest(args: EnvironmentPullRequestMergeArgs): Promise<EnvironmentMergePullRequestResult>;
-environments.paths(args: EnvironmentPathsArgs): Promise<EnvironmentPathsResult>;
-environments.status(args: EnvironmentStatusArgs): Promise<EnvironmentStatusResult>;
-environments.update(args: EnvironmentUpdateArgs): Promise<EnvironmentUpdateResult>;
-files.read(args: FileReadArgs): Promise<FileReadResult>;
-files.write(args: FileWriteArgs): Promise<FileWriteResult>;
-files.list(args: FileListArgs): Promise<FileListResult>;
-files.listPaths(args: PathListArgs): Promise<PathListResult>;
-files.mkdir(args: FileMkdirArgs): Promise<FileMkdirResult>;
-files.move(args: FileMoveArgs): Promise<FileMoveResult>;
-files.remove(args: FileRemoveArgs): Promise<FileRemoveResult>;
-files.createPreview(args: FilePreviewArgs): Promise<FilePreviewResult>;
-hosts.createJoinCode(): Promise<HostCreateJoinCodeResult>;
-hosts.delete(args: HostDeleteArgs): Promise<HostDeleteResult>;
-hosts.directory(args: HostDirectoryArgs): Promise<HostDirectoryResult>;
-hosts.get(args: HostGetArgs): Promise<HostGetResult>;
-hosts.cloneDefaultPath(args: HostCloneDefaultPathArgs): Promise<HostCloneDefaultPathResult>;
-hosts.installProviderCli(args: HostProviderCliInstallArgs): Promise<HostProviderCliInstallResult>;
-hosts.list(args?: HostListArgs): Promise<HostListResult>;
-hosts.pathsExist(args: HostPathsExistArgs): Promise<HostPathsExistResult>;
-hosts.pickFolder(args: HostPickFolderArgs): Promise<HostPickFolderResult>;
-hosts.providerCliStatus(args: HostGetArgs): Promise<HostProviderCliStatusResult>;
-hosts.retryUpdate(args: HostRetryUpdateArgs): Promise<HostRetryUpdateResult>;
-hosts.update(args: HostUpdateArgs): Promise<HostUpdateResult>;
-projects.attachments.copy(args: ProjectAttachmentCopyArgs): Promise<void>;
-projects.attachments.read(args: ProjectAttachmentReadArgs): Promise<ProjectAttachmentReadResult>;
-projects.attachments.upload(args: ProjectAttachmentUploadArgs): Promise<ProjectAttachmentUploadResult>;
-projects.branches(args: ProjectBranchesArgs): Promise<ProjectBranchesResult>;
-projects.commands(args: ProjectCommandsArgs): Promise<ProjectCommandsResult>;
-projects.create(args: ProjectCreateArgs): Promise<ProjectCreateResult>;
-projects.defaultExecutionOptions(args: ProjectDefaultExecutionOptionsArgs): Promise<ProjectDefaultExecutionOptionsResult>;
-projects.delete(args: ProjectDeleteArgs): Promise<ProjectDeleteResult>;
-projects.fileContent(args: ProjectFileContentArgs): Promise<ProjectFileContentResult>;
-projects.files(args: ProjectFilesArgs): Promise<ProjectFilesResult>;
-projects.get(args: ProjectGetArgs): Promise<ProjectGetResult>;
-projects.list(args?: ProjectListArgs): Promise<ProjectListResult>;
-projects.paths(args: ProjectPathsArgs): Promise<ProjectPathsResult>;
-projects.promptHistory(args: ProjectPromptHistoryArgs): Promise<ProjectPromptHistoryResult>;
-projects.reorder(args: ProjectReorderArgs): Promise<ProjectReorderResult>;
-projects.sidebarBootstrap(args?: ProjectSidebarBootstrapArgs): Promise<ProjectSidebarBootstrapResult>;
-projects.sources.add(args: ProjectSourceAddArgs): Promise<ProjectSourceAddResult>;
-projects.sources.delete(args: ProjectSourceDeleteArgs): Promise<ProjectSourceDeleteResult>;
-projects.sources.update(args: ProjectSourceUpdateArgs): Promise<ProjectSourceUpdateResult>;
-projects.update(args: ProjectUpdateArgs): Promise<ProjectUpdateResult>;
-plugins.applyUpdate(args: PluginIdArgs): Promise<PluginApplyUpdateResult>;
-plugins.checkUpdates(args?: PluginCheckUpdatesArgs): Promise<PluginCheckUpdatesResult>;
-plugins.catalog.install(args: PluginCatalogInstallArgs): Promise<PluginInstallResult>;
-plugins.catalog.installPlan(args: PluginCatalogInstallPlanArgs): Promise<PluginCatalogInstallPlanResult>;
-plugins.catalog.search(args: PluginCatalogSearchArgs): Promise<PluginCatalogSearchResult>;
-plugins.catalog.status(args?: PluginCatalogStatusArgs): Promise<PluginCatalogStatusResult>;
-plugins.marketplaces.add(args: PluginMarketplaceAddArgs): Promise<PluginMarketplaceAddResult>;
-plugins.marketplaces.list(args?: PluginMarketplaceListArgs): Promise<PluginMarketplaceListResult>;
-plugins.marketplaces.refresh(args?: PluginMarketplaceRefreshArgs): Promise<PluginMarketplaceRefreshResult>;
-plugins.marketplaces.remove(args: PluginMarketplaceRemoveArgs): Promise<PluginMarketplaceRemoveResult>;
-plugins.disable(args: PluginIdArgs): Promise<PluginDisableResult>;
-plugins.enable(args: PluginIdArgs): Promise<PluginEnableResult>;
-plugins.getSettings(args: PluginGetSettingsArgs): Promise<PluginGetSettingsResult>;
-plugins.getSource(args: PluginGetSourceArgs): Promise<PluginGetSourceResult>;
-plugins.install(args: PluginInstallArgs): Promise<PluginInstallResult>;
-plugins.list(args?: PluginListArgs): Promise<PluginListResult>;
-plugins.listUpdateResults(args?: PluginListUpdateResultsArgs): Promise<PluginCheckUpdatesResult>;
-plugins.reload(args?: PluginReloadArgs): Promise<PluginReloadResult>;
-plugins.remove(args: PluginIdArgs): Promise<PluginRemoveResult>;
-plugins.token(args: PluginTokenArgs): Promise<PluginTokenResult>;
-plugins.updateSettings(args: PluginSettingsUpdateArgs): Promise<PluginUpdateSettingsResult>;
-providers.list(args?: ProviderListArgs): Promise<ProviderListResult>;
-providers.models(args?: ProviderModelsArgs): Promise<ProviderModelsResult>;
-skills.getContent(args: SkillContentArgs): Promise<SkillContentResponse>;
-skills.list(args: SkillListArgs): Promise<SkillListResponse>;
-skills.listFiles(args: SkillIdentityArgs): Promise<SkillFilesResponse>;
-skills.registry.detail(args: RegistrySkillSourceArgs): Promise<RegistrySkillDetail>;
-skills.registry.entries(args: RegistrySkillEntriesArgs): Promise<RegistrySkillEntriesResponse>;
-skills.registry.get(args: RegistrySkillIdArgs): Promise<RegistrySkill>;
-skills.registry.install(args: RegistrySkillInstallArgs): Promise<RegistrySkillInstallResponse>;
-skills.registry.repositoryStars(args: RegistryRepositoryArgs): Promise<RegistryRepositoryStars>;
-skills.registry.search(args?: RegistrySkillsSearchArgs): Promise<RegistrySkillsPage>;
-skills.remove(args: SkillDeleteArgs): Promise<{ deletedPath: string }>;
-skills.update(args: SkillUpdateArgs): Promise<{ filePath: string; revision: string }>;
-status.get(args?: StatusGetArgs): Promise<StatusResult>;
-system.attention(args?: SystemAttentionArgs): Promise<SystemAttentionResult>;
-system.config(args?: SystemConfigArgs): Promise<SystemConfigResult>;
-system.executionOptions(args?: SystemExecutionOptionsArgs): Promise<SystemExecutionOptionsResult>;
-system.cliSkillsStatus(args?: SystemCliSkillsStatusArgs): Promise<SystemCliSkillsStatusResult>;
-system.installCliSkills(args: SystemInstallCliSkillsArgs): Promise<SystemInstallCliSkillsResult>;
-system.reloadConfig(): Promise<SystemReloadConfigResult>;
-system.transcribeVoice(args: SystemVoiceTranscriptionArgs): Promise<SystemVoiceTranscriptionResult>;
-system.updateExperiments(args: Experiments): Promise<SystemUpdateExperimentsResult>;
-system.updateGeneralSettings(args: AppSettings): Promise<SystemUpdateGeneralSettingsResult>;
-system.updateKeyboardSettings(args: AppKeybindingOverrides): Promise<SystemUpdateKeyboardSettingsResult>;
-system.providerStates(args?: SystemProviderStatesArgs): Promise<SystemProviderStatesResult>;
-system.usageLimits(args?: SystemUsageLimitsArgs): Promise<SystemUsageLimitsResult>;
-system.version(args?: SystemVersionArgs): Promise<SystemVersionResult>;
-terminals.close(args: TerminalCloseArgs): Promise<TerminalCloseResult>;
-terminals.create(args: TerminalCreateArgs): Promise<TerminalCreateResult>;
-terminals.get(args: TerminalGetArgs): Promise<TerminalGetResult>;
-terminals.input(args: TerminalInputArgs): Promise<TerminalInputResult>;
-terminals.list(args: TerminalListArgs): Promise<TerminalListResult>;
-terminals.output(args: TerminalOutputArgs): Promise<TerminalOutputResult>;
-terminals.rename(args: TerminalRenameArgs): Promise<TerminalRenameResult>;
-terminals.restart(args: TerminalRestartArgs): Promise<TerminalRestartResult>;
-terminals.resize(args: TerminalResizeArgs): Promise<TerminalResizeResult>;
-theme.get(args?: ThemeGetArgs): Promise<ThemeGetResult>;
-theme.catalog(args?: ThemeCatalogArgs): Promise<ThemeCatalogResult>;
-theme.set(selection: ThemeSetInput): Promise<ThemeSetResult>;
-threadSections.create(args: CreateThreadSectionRequest): Promise<ThreadSectionCreateResult>;
-threadSections.delete(args: DeleteThreadSectionRequest): Promise<ThreadSectionDeleteResult>;
-threadSections.list(args?: ThreadSectionListArgs): Promise<ThreadSectionListResult>;
-threadSections.update(args: UpdateThreadSectionRequest): Promise<ThreadSectionUpdateResult>;
-threads.archive(args: ThreadActionArgs): Promise<ThreadArchiveResult>;
-threads.archiveAll(args: ThreadActionArgs): Promise<ThreadArchiveAllResult>;
-threads.childSummary(args: ThreadStatusArgs): Promise<ThreadChildSummaryResult>;
-threads.compact(args: ThreadActionArgs): Promise<ThreadCompactResult>;
-threads.cancelPlan(args: ThreadActionArgs): Promise<ThreadBannerActionResult>;
-threads.clearContext(args: ThreadActionArgs): Promise<ThreadBannerActionResult>;
-threads.clearGoal(args: ThreadActionArgs): Promise<ThreadBannerActionResult>;
-threads.conversationOutline(args: ThreadStatusArgs): Promise<ThreadConversationOutlineResult>;
-threads.count(args?: ThreadCountArgs): Promise<ThreadCountResult>;
-threads.defaultExecutionOptions(args: ThreadStatusArgs): Promise<ThreadDefaultExecutionOptionsResult>;
-threads.delete(args: ThreadDeleteArgs): Promise<ThreadDeleteResult>;
-threads.editMessage(args: ThreadEditMessageArgs): Promise<ThreadEditMessageResult>;
-threads.events.list(args: ThreadEventsListArgs): Promise<ThreadEventsListResult>;
-threads.events.wait(args: ThreadEventWaitArgs): Promise<ThreadEventWaitResult>;
-threads.fork(args: ThreadForkArgs): Promise<ThreadForkResult>;
-threads.get(args: ThreadGetArgs): Promise<ThreadGetResult>;
-threads.queue.list(args?: ThreadQueueListArgs): Promise<ThreadQueueListResult>;
-threads.interactions.cancel(args: ThreadInteractionTargetArgs): Promise<ThreadInteractionCancelResult>;
-threads.interactions.get(args: ThreadInteractionGetArgs): Promise<ThreadInteractionGetResult>;
-threads.interactions.list(args: ThreadInteractionListArgs): Promise<ThreadInteractionListResult>;
-threads.interactions.resolve(args: ThreadInteractionResolveArgs): Promise<ThreadInteractionResolveResult>;
-threads.interactions.respond(args: ThreadInteractionRespondArgs): Promise<ThreadInteractionRespondResult>;
-threads.list(args?: ThreadListArgs): Promise<ThreadListResult>;
-threads.listRunning(args?: { signal?: AbortSignal }): Promise<ThreadRunningResult>;
-threads.markRead(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
-threads.markUnread(args: ThreadActionArgs): Promise<ThreadReadStateResult>;
-threads.open(args: ThreadOpenArgs): Promise<ThreadOpenResult>;
-threads.paneAction(args: ThreadPaneActionArgs): Promise<ThreadPaneActionResult>;
-threads.output(args: ThreadOutputArgs): Promise<ThreadOutputResponse>;
-threads.pin(args: ThreadActionArgs): Promise<ThreadMutationResult>;
-threads.promptHistory(args: ThreadPromptHistoryArgs): Promise<ThreadPromptHistoryResult>;
-threads.queuedMessages.create(args: ThreadQueuedMessageCreateArgs): Promise<ThreadQueuedMessageCreateResult>;
-threads.queuedMessages.delete(args: ThreadQueuedMessageTargetArgs): Promise<ThreadQueuedMessageDeleteResult>;
-threads.queuedMessages.list(args: ThreadQueuedMessageArgs): Promise<ThreadQueuedMessagesResult>;
-threads.queuedMessages.reorder(args: ThreadQueuedMessageReorderArgs): Promise<ThreadQueuedMessageReorderResult>;
-threads.queuedMessages.send(args: ThreadQueuedMessageSendArgs): Promise<ThreadQueuedMessageSendResult>;
-threads.queuedMessages.setGroupBoundary(args: ThreadQueuedMessageGroupBoundaryArgs): Promise<ThreadQueuedMessageGroupBoundaryResult>;
-threads.queuedMessages.update(args: ThreadQueuedMessageUpdateArgs): Promise<ThreadQueuedMessageUpdateResult>;
-threads.reorderPinned(args: ThreadPinOrderArgs): Promise<ThreadPinOrderResult>;
-threads.resolveMentions(args: ThreadResolveMentionsArgs): Promise<ThreadResolveMentionsResult>;
-threads.retry(args: ThreadRetryArgs): Promise<ThreadRetryResult>;
-threads.search(args: ThreadSearchArgs): Promise<ThreadSearchResult>;
-threads.send(args: ThreadSendArgs): Promise<ThreadSendResult>;
-threads.spawn(args: ThreadSpawnArgs): Promise<ThreadSpawnResult>;
-threads.stop(args: ThreadActionArgs): Promise<ThreadStopResult>;
-threads.tabs.get(args: ThreadStatusArgs): Promise<ThreadTabsResult>;
-threads.tabs.update(args: ThreadTabsUpdateArgs): Promise<ThreadTabsUpdateResult>;
-threads.timeline(args: ThreadTimelineArgs): Promise<ThreadTimelineResult>;
-threads.timelineTurnSummaryDetails(args: ThreadTimelineTurnSummaryDetailsArgs): Promise<ThreadTimelineTurnSummaryDetailsResult>;
-threads.storageFiles(args: ThreadStorageFilesArgs): Promise<ThreadStorageFilesResult>;
-threads.storageLocation(args: ThreadStatusArgs): Promise<ThreadStorageLocationResult>;
-threads.storagePaths(args: ThreadStoragePathsArgs): Promise<ThreadStoragePathsResult>;
-threads.unarchive(args: ThreadActionArgs): Promise<ThreadUnarchiveResult>;
-threads.unpin(args: ThreadActionArgs): Promise<ThreadMutationResult>;
-threads.update(args: ThreadUpdateArgs): Promise<ThreadMutationResult>;
-threads.wait(args: ThreadWaitArgs): Promise<ThreadWaitResult>;
-guide.render(args?: GuideRenderArgs): GuideRenderResult;
+// The method listing is generated into sdk-api.ts from @get-bb/plugin-sdk's
+// bundled bb-plugin-sdk.d.ts (`npm run sdk-api` after `bb plugin types`); the
+// sandbox exposes exactly those paths plus bb.ops and bb.approve.
+// tests/codemode.test.ts "SDK surface coverage" fails when it drifts.
+export const SDK_API = `${SDK_METHODS}
 interface OperationResult {
   id: string; kind: string; projectId: string | null; hostId: string | null;
   threadId: string | null; related?: { threadId: string; projectId: string; hostId: string | null }[];
@@ -498,10 +334,12 @@ declare const bb: BbSdk & { ops: BbOps; approve(args: ApproveArgs): Promise<unkn
 declare function setTimeout(fn: () => void, ms: number): unknown;
 declare function clearTimeout(handle: unknown): void;`;
 
-export const SDK_PATHS = SDK_API.split("\n")
+// Overloads (theme.set) declare one path twice; the sandbox exposes it once.
+export const SDK_PATHS = [...new Set(SDK_API.split("\n")
   .map(line => line.match(/^([\w.]+)\(/)?.[1])
-  .filter((p): p is string => !!p)
+  .filter((p): p is string => !!p))]
   .concat(["ops.run", "ops.get", "approve"]);
+export { SDK_VERSION };
 
 // The dispatch whitelist: only declared SDK methods can be invoked through
 // sdkCall — anything else (constructor, toString, subscribe, ad-hoc function
@@ -515,7 +353,7 @@ export const EXECUTE_DESCRIPTION = `Run JavaScript against the complete BB SDK i
 Global \`bb\` mirrors the BB SDK method-for-method (bb.threads.get calls sdk.threads.get, and so on). Each resolves to the SDK result or throws an Error with a string \`.code\` (e.g. not_found, invalid_arguments, bb_error). Argument and result types are the BB SDK's own; BB validates server-side and errors are descriptive. \`bb.guide.render()\` returns BB's usage guide. Methods returning live handles (e.g. \`subscribe\`) are not exposed. Args accept the SDK's standard \`signal\` option implicitly: cancelling this call aborts inner waits.
 
 The SDK has no durable dispatch, so \`bb.ops\` adds it:
-- ops.run({ call: "threads.spawn", args, key?, kind?, threadId?, projectId? }) runs one SDK call inside a recorded receipt. Reusing \`key\` with the same call+args replays the stored receipt instead of dispatching again; a different payload is idempotency_conflict. state "outcome_unknown" means BB may have committed; inspect BB (threads.get/list) before retrying under a new key. Calls that return credentials or configuration (plugins.token, plugins.getSettings, system.config) are refused — call them directly; a receipt would only persist the secret.
+- ops.run({ call: "threads.spawn", args, key?, kind?, threadId?, projectId? }) runs one SDK call inside a recorded receipt. Reusing \`key\` with the same call+args replays the stored receipt instead of dispatching again; a different payload is idempotency_conflict. state "outcome_unknown" means BB may have committed; inspect BB (threads.get/list) before retrying under a new key. Calls that return credentials or configuration (plugins.token, plugins.getSettings, system.config) are refused — call them directly; a receipt would only persist the secret. When the call is threads.spawn or threads.fork, the new thread's bb-mcp plugin-metadata namespace is seeded with { operationId } merged over any \`args.pluginMetadata\` you pass (your keys are kept; operationId is set by the plugin), so \`bb.threads.getPluginMetadata({ threadId })\` recovers the receipt id from the thread itself.
 - ops.get({ operationId }) reads a stored receipt.
 
 \`bb.approve({ threadId, interactionId, decision, grantedPermissions? })\` resolves a pending permission approval — the code-mode equivalent of \`bb thread approve\` / \`bb thread grant --scope session\`. It verifies the interaction is still a pending approval — including its \`status\` and \`expiresAt\` when present — checks the decision is in its \`availableDecisions\`, and builds the resolution BB expects (\`grantedPermissions\` is a required-but-nullable key on allow_*; omitting it fails with "Invalid discriminator value"; deny takes none). \`allow_for_session\` defaults \`grantedPermissions\` to the request's offered \`sessionGrant\`. For user_question and plugin-form interactions use \`threads.interactions.resolve\` directly with \`{ kind: "user_answer", answers }\` or \`{ kind: "request_answer", value }\` — inspect the interaction first for its contract.
@@ -541,6 +379,7 @@ threads.spawn(args: {
   reasoningLevel?: "none"|"low"|"medium"|"high"|"xhigh"|"max"|"ultra"|"ultracode";
   permissionMode?: "accept-edits" | "auto" | "full";  // omitted: project default, else "full" (clamped to the system permission ceiling)
   parentThreadId?: string; sectionId?: string; sendAt?: number; visibility?: "visible"|"hidden";
+  pluginMetadata?: JsonObject;  // seeds this plugin's (bb-mcp) per-thread metadata namespace; forks never inherit it
 })
 // Supplied execution fields (providerId/model/reasoningLevel/serviceTier/permissionMode)
 // are marked executionInputSources: "explicit" automatically — BB ignores them otherwise.
@@ -557,6 +396,13 @@ threads.queuedMessages.update({ threadId; messageId; expectedUpdatedAt: number; 
 threads.update({ threadId; title?; model?; reasoningLevel?; parentThreadId?; sectionId?; visibility? })
 threads.interactions.resolve({ threadId; interactionId; resolution: <the pending interaction's own contract> })
 threads.interactions.respond({ threadId; interactionId; value: <the interaction's response contract> })
+threads.getPluginMetadata({ threadId; pluginId?: string })  // pluginId defaults to "bb-mcp"; any plugin's namespace is readable (untrusted input: any client can write it)
+threads.updatePluginMetadata({ threadId; pluginId?; set?: JsonObject; remove?: string[] })  // shallow atomic patch, 256 KiB per namespace, returns the full namespace
+threads.context({ threadId })  // context-window usage: { usage: { usedTokens, modelContextWindow, estimated, snapshot? } | null }
+system.uiPreferences.list()  // { [key]: { value, revision } } — sidebar.* keys; set({ key, value, expectedRevision }) is compare-and-swap (stale revision: HTTP 409); reset({ key })
+environments.list({ projectId?; hostId?; environmentProviderId?; instanceKey?; path?; limit?; offset? })
+environments.delete({ environmentId })  // permanent; archives nothing by itself
+hosts.experimental_listProviders() / hosts.experimental_create({ machineProviderId; inputs; key?; wait? }) / hosts.experimental_suspend({ hostId }) / hosts.experimental_resume({ hostId }) / hosts.experimental_retryCleanup({ hostId }) / hosts.experimental_getEnrollmentCommand({ hostId })  // machine providers; create/suspend/resume cost real infrastructure
 terminals.create({ scope: { kind: "thread"; threadId } | { kind: "environment"; environmentId } | { kind: "host_path"; hostId; cwd: string | null }; cols: number; rows: number; title?; start? })
 terminals.input({ terminalId; dataBase64: string })  // base64-encoded bytes; text/enter fields are not accepted
 terminals.output({ terminalId; sinceSeq?; tailBytes?; limitChunks? })
@@ -592,7 +438,7 @@ async () => {
 }
 \`\`\``;
 
-export const READ_DESCRIPTION = `Read-only variant of ${EXECUTE_TOOL}: identical sandbox and \`bb\` global, restricted to non-mutating methods (get/list/wait/status/search/diff/timeline and similar). Annotated read-only so MCP clients can auto-approve it; a mutating call fails with not_read_method — use ${EXECUTE_TOOL} for those. Prefer this tool for monitoring, discovery and reporting flows.
+export const READ_DESCRIPTION = `Read-only variant of ${EXECUTE_TOOL}: identical sandbox and \`bb\` global, restricted to non-mutating methods (get/list/wait/status/search/diff/timeline/context/getPluginMetadata/uiPreferences.list and similar). Annotated read-only so MCP clients can auto-approve it; a mutating call fails with not_read_method — use ${EXECUTE_TOOL} for those. Credential-bearing reads (plugins.token, plugins.getSettings, system.config, hosts.experimental_getEnrollmentCommand) stay execute-only. Prefer this tool for monitoring, discovery and reporting flows.
 
 \`\`\`ts
 ${SDK_API}

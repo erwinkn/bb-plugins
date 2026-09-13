@@ -12,7 +12,7 @@ it("lets the compact machine drawer handle its backdrop before dismissing usage"
     dispatchEvent() { return true; },
   }));
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-    ok: true, result: { machines: [{ id: "host", displayName: "Test machine", status: "connected", providers: [], error: null }] },
+    ok: true, result: { machines: [{ id: "host", displayName: "Test machine", status: "connected", machineProvider: null, providers: [], error: null }] },
   }))));
   const app = await loadPluginApp(() => import("./app"));
   const item = app.experimentalSidebarFooterItems[0];

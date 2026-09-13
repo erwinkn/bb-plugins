@@ -28,6 +28,7 @@ import { Operations, hash, type EffectInput } from "./operations.ts";
 import { LIVE_EFFECTS, liveToolArgs, type LiveTool } from "./live-tools.ts";
 import { resolvePermissionMode } from "./permission-mode.ts";
 import { Watches, interactionData, tail, threadName, type Thread } from "./watches.ts";
+import { voiceThreadMetadata } from "./thread-metadata.ts";
 import { readNamedWorkerSettings, resolveWorkerModel, type NamedWorkerSettings } from "./worker-profiles.ts";
 import { assembleWorkerPrompt } from "./worker-prompt.ts";
 import { queryTokens, rank, resolveName } from "./target-matching.ts";
@@ -510,7 +511,9 @@ export class LiveRuntime {
         if (latest.deletedAt || latest.archivedAt || latest.environmentId !== source.environmentId || latest.projectId !== source.projectId) throw new Error("The handoff source changed while preparing context. Read the source again before creating a handoff.");
       }
       if (context) this.operations.finish(row.id, "accepted", { handoff: context.handoff });
-      thread = await this.sdkEffect(input, () => this.bb.sdk.threads.spawn({ projectId: project.id, title: args.title,
+      const pluginMetadata = voiceThreadMetadata({ conversationId: input.conversationId, operationId: row.id, profileId: profile.name,
+        ...(source && context ? { handoff: { sourceThreadId: source.id, contextBoundary: context.handoff.sourceSeqEnd } } : {}) });
+      thread = await this.sdkEffect(input, () => this.bb.sdk.threads.spawn({ projectId: project.id, title: args.title, pluginMetadata,
         ...(context ? { input: [context.input, { type: "text", text: prompt, mentions: [] }] } : { prompt }),
         environment: placement.environment.type === "reuse" ? placement.environment : { type: "host", hostId: host.id, workspace: placement.environment },
         ...execution, ...(permissionMode ? { permissionMode } : {}), visibility: worker ? "hidden" : "visible" }));

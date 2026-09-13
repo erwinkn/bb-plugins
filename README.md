@@ -36,9 +36,13 @@ compact](plugins/provider-usage-compact/README.md) for installation and rollback
 `remove-plugin-ellipsis` hides the ellipsis button on plugin sidebar rows, including
 Automations. See [Hide plugin nav menus](plugins/remove-plugin-ellipsis/README.md).
 
+`scratchpad` adds a shared rich-text document per worktree, with BlockNote
+editing, JSON storage outside Git, revision history, and agent tools. See
+[Scratchpad](plugins/scratchpad/README.md).
+
 ## Install
 
-Use BB 0.42.1 or later. The bb server needs Git, npm, and GitHub access to this
+Use BB 0.43.1 or later. The bb server needs Git, npm, and GitHub access to this
 private repository. Configure Git authentication on that machine; do not put a
 token in the repository URL.
 
@@ -923,14 +927,19 @@ later. Remove an entry when the upstream fix ships.
   ACP prose page "File System" shows `"result": null` in its example, which
   contradicts the schema and is the likely origin of the SDK behavior.
 - **Fix:** in the SDK, return `{}` (`responder.result({})`). A strict local
-  test failed with `null` and passed with `{}`. The plugin cannot work around
-  this: its wrappers see only runtime-to-bridge lines, and the SDK's `fs`
-  client capabilities are fixed to `true`. Optionally report the docs example
-  to the ACP project.
+  test failed with `null` and passed with `{}`. The plugin's supported hooks
+  cannot reach the agent wire — its wrappers see only runtime-to-bridge lines,
+  and the SDK's `fs` client capabilities are fixed to `true` — so the `devin`
+  plugin instead rewrites the launch spec's `acpLaunchSpec` to spawn
+  `devin acp` through a small stdio proxy that repairs that one response
+  (`plugins/devin/write-shim.ts`). Optionally report the docs example to the
+  ACP project.
 - **Status:** filed as [BB #3453](https://github.com/get-bb/bb/issues/3453) on
   2026-09-11, including live confirmation from Devin threads. The earlier
   reproduction used the SDK bridge with a scripted ACP peer. Rechecked
-  2026-09-12: SDK 0.4.87 (BB 0.43.1) still answers with `null`.
+  2026-09-12: SDK 0.4.87 (BB 0.43.1) still answers with `null`. Worked around
+  2026-09-13 in the `devin` plugin with a launch-spec stdio shim; the built-in
+  ACP provider and other plugins still have the bug.
 
 
 ### Voice operator isolation and managed workspace primitives
@@ -1042,3 +1051,33 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
 - **Symptom:** bb-mcp 0.4 removed the legacy scope/ceiling settings (`projectIds`, `hostIds`, `providerIds`, `permissionMode`, rate limits). Upgraded installs silently gain owner-level access, and there is no API to detect it: `bb.settings.define` only serves declared keys and `plugins.getSettings` filters values to the current schema.
 - **Ask:** let a plugin read its own stored-but-undeclared setting keys (or a `storedKeys` list) so migrations can warn or adapt.
 - **Status:** not filed. Suggested title: `Expose stored-but-undeclared plugin setting keys for migration checks`.
+
+### `threads.send` racing a queue-drain turn start returns HTTP 500 (2026-09-13)
+
+- **Where:** BB 0.43.1, plugin SDK `threads.send` (`mode: "queue-if-active"`)
+  issued while a queued message was draining onto the same thread.
+- **Symptom:** the send fails `HTTP 500` with
+  `ThreadLifecycleEventNotAppliedError: no transition for run.started from status active`.
+  The dispatch resolved as a turn start while the drain's `run.started` had
+  already flipped the thread to `active` inside the same window.
+- **Ask:** queue or re-resolve the send instead of 500ing — the caller cannot
+  distinguish "permanently refused" from "lost a sub-second race", so every
+  queued-mode sender needs its own uncertain-state handling.
+- **Observed by:** the questions plugin's outbox marked the submission
+  `uncertain` and kept the frozen snapshot, so no data was lost.
+- **Status:** not filed. Suggested title: `Queue a send that loses the race
+  with a queue-drain turn start instead of returning 500`.
+
+### Codex `thread/resume` does not apply updated `developerInstructions` (2026-09-13)
+
+- **Where:** BB 0.43.1 `provider-codex` → codex app-server `thread/resume`.
+- **Symptom:** BB recomposes per-turn instructions (including
+  `bb.agents.configure` dynamic contributions backed by
+  `thread_plugin_metadata`) and the bridge sends them as
+  `developerInstructions` on `thread/resume`, but the resumed codex session
+  keeps its original context — the rollout gains no new developer item and the
+  model cannot see post-start instruction updates.
+- **Impact:** per-thread plugin instructions (via `bb.agents.configure`) only
+  reach Codex at `thread/start`; updates set later never surface.
+- **Status:** not filed. Suggested title: `Apply updated developerInstructions
+  on thread/resume (or document that resume keeps the original context)`.

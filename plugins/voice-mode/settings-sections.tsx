@@ -1,4 +1,5 @@
 import { PromptEditor } from "./prompt-editor";
+import { HostIcon } from "./lib/host-icon";
 export { PromptEditor } from "./prompt-editor";
 // bb-plugin-voice-mode — polished settings sections.
 //
@@ -110,12 +111,7 @@ const selectClass =
   "block w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground disabled:opacity-60";
 
 function RefreshIcon() {
-  return (
-    <svg viewBox="0 0 16 16" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
-      <path d="M13.7 2.5V5H11.2" />
-    </svg>
-  );
+  return <HostIcon name="ArrowReloadHorizontal" fallback="RotateCcw" className="size-4" />;
 }
 
 /**
@@ -148,10 +144,12 @@ interface CredentialStatus {
 }
 
 /**
- * Shows which credential Ada is using, and — only when both an API key and a
- * ChatGPT subscription are available — lets the user pick between them.
+ * Shows which credential Ada is using, and — only when both an API key (stored
+ * here or supplied through OPENAI_API_KEY) and a ChatGPT subscription are
+ * available — lets the user pick between them. The environment key counts so
+ * a pinned subscription can always be switched back to a key that still works.
  */
-function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
+export function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
   const rpc = useRpc<typeof rpcContract>();
   const [status, setStatus] = useState<CredentialStatus | null>(null);
 
@@ -171,8 +169,9 @@ function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
   const statusText = (() => {
     switch (status?.effective) {
       case "apiKey":
-      case "env":
         return "Using your OpenAI API key";
+      case "env":
+        return "Using the OPENAI_API_KEY environment variable";
       case "subscription":
         return "Using your ChatGPT subscription";
       default:
@@ -180,7 +179,8 @@ function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
     }
   })();
 
-  const canChoose = !!status && status.hasApiKey && status.subscriptionAvailable;
+  const keyAvailable = !!status && (status.hasApiKey || status.envKeyPresent);
+  const canChoose = keyAvailable && !!status && status.subscriptionAvailable;
   const chooserValue: "apiKey" | "subscription" =
     status?.preference === "subscription" ? "subscription" : "apiKey";
 
@@ -222,13 +222,15 @@ function CredentialCard({ liveEngine = false }: { liveEngine?: boolean }) {
           className={selectClass}
         >
           <option value="subscription">ChatGPT subscription</option>
-          <option value="apiKey">OpenAI API key</option>
+          <option value="apiKey">{status?.hasApiKey ? "OpenAI API key" : "OpenAI API key (OPENAI_API_KEY)"}</option>
         </select>
-        <div>
-          <Button type="button" variant="outline" size="sm" onClick={() => void removeKey()}>
-            Remove API key
-          </Button>
-        </div>
+        {status?.hasApiKey ? (
+          <div>
+            <Button type="button" variant="outline" size="sm" onClick={() => void removeKey()}>
+              Remove API key
+            </Button>
+          </div>
+        ) : null}
         {liveKeyWarning ? <p className="text-xs italic text-amber-600 dark:text-amber-500">{liveKeyWarning}</p> : null}
       </div>
     );
