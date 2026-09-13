@@ -1,0 +1,222 @@
+/*
+ * BB Color — the app palette shared by every theme this plugin contributes.
+ *
+ * Adds color to glyphs, code tokens, mention pills, and heading accents on top
+ * of BB's default look. The neutral ramp (--canvas, --ink, borders, text tiers)
+ * is deliberately untouched: prose stays neutral, color marks roles.
+ *
+ * Six roles, six hues (see README.md):
+ *   files / reads / search / links  blue 250   --bbp-file    (= --timeline-accent)
+ *   commands / terminal / tools     teal 200   --bbp-command
+ *   web fetch                       cyan 230   --bbp-web
+ *   edits / attention / plans       amber      --bbp-edit, --bbp-attention
+ *   done / approved / passing       green 155  --bbp-done
+ *   errors / failed / removed       red 22-28  --bbp-error   (= --destructive-text)
+ *   agents / threads / delegation   purple 295 --bbp-agent   (= --pr-merged)
+ *
+ * Every hue has a light and a dark value. Light glyphs sit at L≈0.50–0.55
+ * (≥ 3:1 on white), dark glyphs at L≈0.72–0.78. Colored text only appears
+ * through the `-text` style values (≥ 4.5:1).
+ *
+ * Host-surface rules below depend on BB DOM contracts; each selector names the
+ * BB 0.43.1 source file it relies on, and host-contract.test.ts greps the
+ * installed app bundle for the same strings so a BB upgrade that renames one
+ * fails the test instead of silently dropping the color.
+ *
+ * Keep selectors shallow and never use `:has()` (BB's theme.css documents the
+ * whole-subtree restyle cost on large threads).
+ */
+
+/* ---------------------------------------------------------------------------
+ * Role tokens
+ * BB's own chromatic tokens are referenced where their light value already
+ * clears 3:1 for a glyph; the others get explicit oklch values in BB's style.
+ * Source: apps/app/src/components/ui/theme.css (light block ~441-463,
+ * dark block ~675-693).
+ * ------------------------------------------------------------------------ */
+:root,
+.light {
+  --bbp-file: var(--timeline-accent); /* oklch(0.55 0.1 250), ~5.0:1 on white */
+  --bbp-command: oklch(0.52 0.11 200);
+  --bbp-web: oklch(0.52 0.11 230);
+  --bbp-edit: var(--warning-text); /* oklch(0.55 0.14 50) */
+  --bbp-attention: oklch(0.58 0.14 80);
+  --bbp-done: oklch(0.52 0.14 155);
+  --bbp-error: var(--destructive-text); /* oklch(0.45 0.19 25.86) */
+  --bbp-agent: var(--pr-merged); /* oklch(0.53 0.2 295) */
+  /* Reasoning rows: the agent hue, receded so "thinking" reads quieter. */
+  --bbp-thinking: color-mix(in oklch, var(--bbp-agent) 70%, var(--muted-foreground));
+}
+
+.dark {
+  --bbp-file: var(--timeline-accent); /* oklch(0.72 0.09 250) */
+  --bbp-command: oklch(0.75 0.11 200);
+  --bbp-web: oklch(0.75 0.11 230);
+  --bbp-edit: var(--warning); /* oklch(0.75 0.16 50) */
+  --bbp-attention: var(--attention); /* oklch(0.8 0.15 80) */
+  --bbp-done: var(--success); /* oklch(0.74 0.15 155) */
+  --bbp-error: var(--destructive-text); /* oklch(0.65 0.16 22) */
+  --bbp-agent: var(--pr-merged); /* oklch(0.68 0.18 295) */
+  --bbp-thinking: color-mix(in oklch, var(--bbp-agent) 70%, var(--muted-foreground));
+}
+
+/* ---------------------------------------------------------------------------
+ * Chat code blocks (sugar-high)
+ * Source: apps/app/src/components/ui/markdown-code-highlight.css. BB scopes a
+ * self-contained `--sh-*` palette to `.bb-code-highlight`; these blocks
+ * override it with one distinct hue per token class at chroma 0.13–0.17.
+ * Identifiers, punctuation, and comments keep BB's neutral tiers.
+ * ------------------------------------------------------------------------ */
+.bb-code-highlight {
+  --sh-keyword: oklch(0.5 0.17 18); /* rose */
+  --sh-string: oklch(0.47 0.13 150); /* green */
+  --sh-class: oklch(0.5 0.14 250); /* blue: types, numbers */
+  --sh-property: oklch(0.47 0.13 200); /* teal: property access */
+  --sh-entity: oklch(0.47 0.15 292); /* purple: calls, functions */
+  --sh-jsxliterals: oklch(0.5 0.14 50); /* amber: JSX text */
+}
+
+.dark .bb-code-highlight {
+  --sh-keyword: oklch(0.76 0.15 18);
+  --sh-string: oklch(0.8 0.13 150);
+  --sh-class: oklch(0.78 0.13 250);
+  --sh-property: oklch(0.8 0.12 200);
+  --sh-entity: oklch(0.8 0.14 292);
+  --sh-jsxliterals: oklch(0.82 0.14 50);
+}
+
+/* ---------------------------------------------------------------------------
+ * Timeline row glyphs
+ * The leading icon of a tool row is `<Icon name=... className="... text-muted-
+ * foreground">` (apps/app/src/components/thread/timeline/TimelineRowHeader.tsx,
+ * TimelineLeadingIcon). Every host icon carries `data-icon="<name>"`
+ * (packages/shared-ui/src/components/ui/icon.tsx), and every timeline row
+ * carries `data-timeline-row-id` (apps/app/src/components/thread/timeline/
+ * ThreadTimelineRows.tsx). Glyph names per row kind come from
+ * packages/thread-view/src/timeline-work-row-glyph.ts (fallbackGlyphForWorkRow,
+ * explorationIntentGlyph, workRowGlyph) and, for system rows,
+ * ThreadTimelineRows.tsx systemOperationLeadingIcon.
+ *
+ * Settled rows are dimmed by BB (`opacity-40`), so the tint recedes with them.
+ * ------------------------------------------------------------------------ */
+
+/* Files, reads, listings, searches, image views: blue. */
+[data-timeline-row-id] [data-icon="FileText"],
+[data-timeline-row-id] [data-icon="Folder"],
+[data-timeline-row-id] [data-icon="Search"],
+[data-timeline-row-id] [data-icon="File"] {
+  color: var(--bbp-file);
+}
+
+/* Commands, tools, extensions (MCP), thread provisioning: teal. */
+[data-timeline-row-id] [data-icon="Terminal"],
+[data-timeline-row-id] [data-icon="Puzzle"] {
+  color: var(--bbp-command);
+}
+
+/* Web fetch: cyan-blue. */
+[data-timeline-row-id] [data-icon="Globe"] {
+  color: var(--bbp-web);
+}
+
+/* File edits: amber. */
+[data-timeline-row-id] [data-icon="EditFile"] {
+  color: var(--bbp-edit);
+}
+
+/* Plans, skills, approvals, questions: attention amber. */
+[data-timeline-row-id] [data-icon="ListTodo"],
+[data-timeline-row-id] [data-icon="Zap"],
+[data-timeline-row-id] [data-icon="Lock"],
+[data-timeline-row-id] [data-icon="CircleQuestion"] {
+  color: var(--bbp-attention);
+}
+
+/* Delegation, background agents, parent changes: purple. */
+[data-timeline-row-id] [data-icon="UserRoundPlus"],
+[data-timeline-row-id] [data-icon="UserRound"] {
+  color: var(--bbp-agent);
+}
+
+/* Reasoning: the agent hue, receded. */
+[data-timeline-row-id] [data-icon="AiBrain01"] {
+  color: var(--bbp-thinking);
+}
+
+/* Interrupted thread: red. */
+[data-timeline-row-id] [data-icon="AlertCircle"] {
+  color: var(--bbp-error);
+}
+
+/* Compaction (CircleArrowShrink) and context clear (Clean) stay neutral on
+ * purpose: housekeeping, not work. */
+
+/* ---------------------------------------------------------------------------
+ * Plan step lists
+ * Source: apps/app/src/components/thread/timeline/PresentationWorkRowBodies.tsx
+ * (`data-plan-step-status` on each <li>, PLAN_STEP_ICON: Square/Check/X).
+ * ------------------------------------------------------------------------ */
+[data-plan-step-status="active"] [data-icon="Square"] {
+  color: var(--bbp-file);
+}
+
+[data-plan-step-status="completed"] [data-icon="Check"] {
+  color: var(--bbp-done);
+}
+
+[data-plan-step-status="failed"] [data-icon="X"] {
+  color: var(--bbp-error);
+}
+
+/* ---------------------------------------------------------------------------
+ * Mention pills
+ * Source: apps/app/src/components/ui/theme.css (`--pill-*`, documented as
+ * override-able) consumed by apps/app/src/app.css `.prompt-mention-pill`.
+ * Thread mentions and "Message from <child>" rows read as agents. Every pill
+ * kind shares the tokens (file pills included) until BB adds per-kind tokens.
+ * ------------------------------------------------------------------------ */
+:root,
+.light {
+  --pill-icon: var(--bbp-agent);
+  --pill-foreground: color-mix(in oklch, var(--ink) 70%, var(--bbp-agent));
+  --pill-surface-border: color-mix(in oklch, var(--bbp-agent) 32%, var(--border));
+  --pill-surface: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--bbp-agent) 6%, var(--canvas)),
+    color-mix(in oklch, var(--bbp-agent) 9%, var(--canvas))
+  );
+  --pill-surface-selected: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--bbp-agent) 14%, var(--canvas)),
+    color-mix(in oklch, var(--bbp-agent) 17%, var(--canvas))
+  );
+  --pill-surface-selected-border: color-mix(in oklch, var(--bbp-agent) 45%, var(--border));
+}
+
+.dark {
+  --pill-icon: var(--bbp-agent);
+  --pill-foreground: color-mix(in oklch, var(--ink) 72%, var(--bbp-agent));
+  --pill-surface-border: color-mix(in oklch, var(--bbp-agent) 30%, var(--border));
+  --pill-surface: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--bbp-agent) 14%, var(--canvas)),
+    color-mix(in oklch, var(--bbp-agent) 11%, var(--canvas))
+  );
+  --pill-surface-selected: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--bbp-agent) 24%, var(--canvas)),
+    color-mix(in oklch, var(--bbp-agent) 20%, var(--canvas))
+  );
+  --pill-surface-selected-border: color-mix(in oklch, var(--bbp-agent) 45%, var(--border));
+}
+
+/* ---------------------------------------------------------------------------
+ * Markdown headings
+ * Source: apps/app/src/components/ui/markdown-preview.tsx (`data-markdown-
+ * preview` on the rendered root; MarkdownH1/MarkdownH2 are `text-foreground`).
+ * h1/h2 lean toward the file blue; h3 and below stay neutral.
+ * ------------------------------------------------------------------------ */
+[data-markdown-preview] h1,
+[data-markdown-preview] h2 {
+  color: color-mix(in oklch, var(--ink) 76%, var(--bbp-file));
+}

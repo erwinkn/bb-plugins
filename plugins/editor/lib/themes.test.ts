@@ -28,12 +28,10 @@ test("every theme a pair names is one the code view can resolve", () => {
   }
 });
 
-test("package.json contributes exactly the pairs as BB themes", () => {
-  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { bb: { themes: unknown } };
-  assert.deepEqual(
-    manifest.bb.themes,
-    THEME_PAIRS.map((pair) => ({ id: pair.id, name: pair.label, css: "./themes/default.css", codeTheme: { dark: pair.dark, light: pair.light } })),
-  );
+test("package.json contributes no BB themes; the theme plugin owns them", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { bb: { themes?: unknown } };
+  assert.equal(manifest.bb.themes, undefined);
+  assert.ok(!existsSync(path.join(import.meta.dirname, "..", "themes")));
 });
 
 test("themeNameFor picks the mode's theme and BB's default pair", () => {

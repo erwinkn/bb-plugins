@@ -22,6 +22,12 @@ project selections shared by every client. See
 BB-matched syntax colors, a code theme picker, and an editable Changes tab.
 Both tabs share file buffers and safe saves. See [Editor](plugins/editor/README.md).
 
+`theme` contributes unified BB themes: a colored app palette (tinted tool
+glyphs, fuller chat code colors, purple thread pills, heading accents) paired
+with each code theme, one pick for chrome and code. Its tests grep the installed
+BB bundle for every host selector the stylesheet relies on. See
+[Theme](plugins/theme/README.md).
+
 `devin` adds **Devin** as a provider, with a native icon, sign-in
 help, executable setting, account usage, and live ACP model catalog. It preserves the provider
 ID `acp-devin`. See [Devin provider](plugins/devin/README.md) for configuration,

@@ -1,0 +1,375 @@
+{
+  "name": "bb-plugin-theme",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "bb": ">=0.43.1",
+    "bbPluginSdk": ">=0.4.87"
+  },
+  "bb": {
+    "name": "Theme",
+    "description": "Unified BB themes: a colored app palette (tool glyphs, code blocks, mention pills, headings) paired with each code theme.",
+    "branding": {
+      "icon": "Palette"
+    },
+    "server": "./server.ts",
+    "skills": [],
+    "themes": [
+      {
+        "id": "color-pierre",
+        "name": "Pierre",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "pierre-dark",
+          "light": "pierre-light"
+        }
+      },
+      {
+        "id": "color-pierre-soft",
+        "name": "Pierre Soft",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "pierre-dark-soft",
+          "light": "pierre-light-soft"
+        }
+      },
+      {
+        "id": "color-pierre-vibrant",
+        "name": "Pierre Vibrant",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "pierre-dark-vibrant",
+          "light": "pierre-light-vibrant"
+        }
+      },
+      {
+        "id": "color-github",
+        "name": "GitHub",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "github-dark",
+          "light": "github-light"
+        }
+      },
+      {
+        "id": "color-github-default",
+        "name": "GitHub Default",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "github-dark-default",
+          "light": "github-light-default"
+        }
+      },
+      {
+        "id": "color-github-dimmed",
+        "name": "GitHub Dimmed",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "github-dark-dimmed",
+          "light": "github-light-default"
+        }
+      },
+      {
+        "id": "color-github-high-contrast",
+        "name": "GitHub High Contrast",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "github-dark-high-contrast",
+          "light": "github-light-high-contrast"
+        }
+      },
+      {
+        "id": "color-vs-code",
+        "name": "VS Code",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "dark-plus",
+          "light": "light-plus"
+        }
+      },
+      {
+        "id": "color-one",
+        "name": "One",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "one-dark-pro",
+          "light": "one-light"
+        }
+      },
+      {
+        "id": "color-catppuccin-mocha",
+        "name": "Catppuccin Mocha",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "catppuccin-mocha",
+          "light": "catppuccin-latte"
+        }
+      },
+      {
+        "id": "color-catppuccin-macchiato",
+        "name": "Catppuccin Macchiato",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "catppuccin-macchiato",
+          "light": "catppuccin-latte"
+        }
+      },
+      {
+        "id": "color-catppuccin-frappe",
+        "name": "Catppuccin Frappé",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "catppuccin-frappe",
+          "light": "catppuccin-latte"
+        }
+      },
+      {
+        "id": "color-ayu",
+        "name": "Ayu",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "ayu-dark",
+          "light": "ayu-light"
+        }
+      },
+      {
+        "id": "color-ayu-mirage",
+        "name": "Ayu Mirage",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "ayu-mirage",
+          "light": "ayu-light"
+        }
+      },
+      {
+        "id": "color-everforest",
+        "name": "Everforest",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "everforest-dark",
+          "light": "everforest-light"
+        }
+      },
+      {
+        "id": "color-gruvbox-hard",
+        "name": "Gruvbox Hard",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "gruvbox-dark-hard",
+          "light": "gruvbox-light-hard"
+        }
+      },
+      {
+        "id": "color-gruvbox-medium",
+        "name": "Gruvbox Medium",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "gruvbox-dark-medium",
+          "light": "gruvbox-light-medium"
+        }
+      },
+      {
+        "id": "color-gruvbox-soft",
+        "name": "Gruvbox Soft",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "gruvbox-dark-soft",
+          "light": "gruvbox-light-soft"
+        }
+      },
+      {
+        "id": "color-kanagawa-wave",
+        "name": "Kanagawa Wave",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "kanagawa-wave",
+          "light": "kanagawa-lotus"
+        }
+      },
+      {
+        "id": "color-kanagawa-dragon",
+        "name": "Kanagawa Dragon",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "kanagawa-dragon",
+          "light": "kanagawa-lotus"
+        }
+      },
+      {
+        "id": "color-material",
+        "name": "Material",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "material-theme",
+          "light": "material-theme-lighter"
+        }
+      },
+      {
+        "id": "color-material-ocean",
+        "name": "Material Ocean",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "material-theme-ocean",
+          "light": "material-theme-lighter"
+        }
+      },
+      {
+        "id": "color-material-palenight",
+        "name": "Material Palenight",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "material-theme-palenight",
+          "light": "material-theme-lighter"
+        }
+      },
+      {
+        "id": "color-material-darker",
+        "name": "Material Darker",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "material-theme-darker",
+          "light": "material-theme-lighter"
+        }
+      },
+      {
+        "id": "color-min",
+        "name": "Min",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "min-dark",
+          "light": "min-light"
+        }
+      },
+      {
+        "id": "color-night-owl",
+        "name": "Night Owl",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "night-owl",
+          "light": "night-owl-light"
+        }
+      },
+      {
+        "id": "color-rose-pine",
+        "name": "Rosé Pine",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "rose-pine",
+          "light": "rose-pine-dawn"
+        }
+      },
+      {
+        "id": "color-rose-pine-moon",
+        "name": "Rosé Pine Moon",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "rose-pine-moon",
+          "light": "rose-pine-dawn"
+        }
+      },
+      {
+        "id": "color-solarized",
+        "name": "Solarized",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "solarized-dark",
+          "light": "solarized-light"
+        }
+      },
+      {
+        "id": "color-vitesse",
+        "name": "Vitesse",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "vitesse-dark",
+          "light": "vitesse-light"
+        }
+      },
+      {
+        "id": "color-vitesse-black",
+        "name": "Vitesse Black",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "vitesse-black",
+          "light": "vitesse-light"
+        }
+      },
+      {
+        "id": "color-slack",
+        "name": "Slack",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "slack-dark",
+          "light": "slack-ochin"
+        }
+      },
+      {
+        "id": "color-tokyo-night",
+        "name": "Tokyo Night",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "tokyo-night",
+          "light": "pierre-light"
+        }
+      },
+      {
+        "id": "color-dracula-soft",
+        "name": "Dracula Soft",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "dracula-soft",
+          "light": "pierre-light"
+        }
+      },
+      {
+        "id": "color-aurora-x",
+        "name": "Aurora X",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "aurora-x",
+          "light": "pierre-light"
+        }
+      },
+      {
+        "id": "color-synthwave-84",
+        "name": "Synthwave '84",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "synthwave-84",
+          "light": "pierre-light"
+        }
+      },
+      {
+        "id": "color-horizon",
+        "name": "Horizon",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "pierre-dark",
+          "light": "horizon-bright"
+        }
+      },
+      {
+        "id": "color-snazzy",
+        "name": "Snazzy",
+        "css": "./themes/color.css",
+        "codeTheme": {
+          "dark": "pierre-dark",
+          "light": "snazzy-light"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "sync": "node --experimental-strip-types scripts/sync-manifest.mjs"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.87",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}

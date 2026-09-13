@@ -1,7 +1,8 @@
 /**
  * Predefined dark/light pairs shared by Files, Changes, and plugin settings.
- * Choosing one in the plugin changes only its code colors. The pairs are
- * also available separately in BB's app-theme menu via `bb.themes`.
+ * Choosing one in the plugin changes only its code colors. The same pairs are
+ * offered app-wide, paired with a colored BB palette, by the `theme` plugin
+ * (`plugins/theme/lib/theme-pairs.ts`); keep the two lists in step.
  *
  * Every name here is one BB's own code-theme registry resolves (Pierre's
  * family plus Shiki's bundled VS Code themes). The same themes ship as lazy

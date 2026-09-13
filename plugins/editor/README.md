@@ -26,7 +26,11 @@ services (completions, diagnostics, folding, minimap). **Theme…** in the Files
 menu and **Extensions → Editor → Code theme** save one selection for both
 tabs. **Follow BB** (default) uses BB's current code colors; the other choices
 (Pierre, GitHub, VS Code, Catppuccin, Tokyo Night, …) use their light or dark
-variant to match BB's mode and never change BB's global theme.
+variant to match BB's mode and never change BB's global theme. To change BB's
+global code theme (and give the app a colored palette at the same time), pick
+one of the `theme` plugin's entries in Settings → Appearance; with **Follow
+BB** the Files, Changes and diff views then use that pair through
+`experimental_useCodeTheme`. The editor itself contributes no `bb.themes`.
 
 A `.md` file opens as a rendered preview; the pencil button switches to the
 editor and back, per file, for the page's life. The preview follows the shared
