@@ -56,7 +56,8 @@ The plugin SQLite table `thread_pull_requests` is the source of truth. Every
 change publishes the realtime signal `pull-requests-changed {threadId}` and
 mirrors the list into the thread's plugin metadata under `pullRequests`
 (`bb.sdk.threads.getPluginMetadata({ threadId, pluginId: "github-prs" })`), one
-entry per PR with `repo`, `number`, `url`, `source`, `title`.
+entry per PR with `repo`, `number`, `url`, `source`, `title`, and the last-seen
+`state` (added in 0.4.0; entries mirrored earlier lack it).
 
 Sources:
 
@@ -155,6 +156,15 @@ opened the tab, or the app navigated to the thread and will open it on
 arrival. It is false only when this plugin is not loaded, so the caller keeps
 its old behavior as the fallback. Linked PRs for a thread are readable
 without RPC through the thread's plugin metadata (`github-prs.pullRequests`).
+
+The Threads sidebar reads that metadata for its row chips. A plugin app only
+receives its own realtime signals, so it cannot subscribe to
+`pull-requests-changed`; instead every link change also calls the sidebar's
+`pullRequestsChanged` RPC (`bb.sdk.plugins.callRpc`, plugin id `sidebar`)
+once the metadata mirror has landed. The sidebar republishes the bump on its
+own channel and refetches. The call is best effort and fails silently when
+the sidebar is not installed; a sidebar running against an older copy of this
+plugin still gets its chips on list refresh and reconnection.
 
 ## Tests
 

@@ -52,6 +52,13 @@ export interface LinkInput extends PullRequestRef {
 export interface LinkStoreDeps {
   /** Best-effort title and state lookup for manual links; null when unknown. */
   describePull?: (ref: PullRequestRef) => Promise<{ title: string; state: string } | null>;
+  /**
+   * Runs after every link change once the metadata mirror settled. The
+   * sidebar uses it to refresh its chips: a plugin app cannot subscribe to
+   * another plugin's realtime channel, so the bump reaches it through its
+   * own RPC. Best effort; errors here are swallowed.
+   */
+  notifyChanged?: (threadId: string) => void;
 }
 
 interface Row {
@@ -79,7 +86,7 @@ function decode(row: Row): ThreadPullRequest {
 }
 
 export function toMetadata(link: ThreadPullRequest): MetadataPullRequest {
-  return { repo: link.repo, number: link.number, url: link.url, source: link.source, title: link.title };
+  return { repo: link.repo, number: link.number, url: link.url, source: link.source, title: link.title, state: link.state };
 }
 
 export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
@@ -132,7 +139,13 @@ export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
   };
   const changed = (threadId: string) => {
     bb.realtime.publish(PULL_REQUESTS_CHANGED, { threadId });
-    void mirror(threadId);
+    void mirror(threadId).then(() => {
+      try {
+        deps.notifyChanged?.(threadId);
+      } catch {
+        /* notification is best effort */
+      }
+    });
   };
 
   /**

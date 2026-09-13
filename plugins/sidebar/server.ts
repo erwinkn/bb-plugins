@@ -8,6 +8,7 @@ import { registerSnoozes } from "./lib/snooze-store";
 import { registerSidebarCli } from "./lib/sidebar-cli";
 import { registerSpaces } from "./lib/spaces-store";
 import { registerUiPreferences } from "./lib/ui-preferences-store";
+import { registerPullRequests } from "./lib/pull-requests-store";
 import { nestingContract } from "./lib/nesting-contract";
 
 export default function plugin(bb: BbPluginApi) {
@@ -18,6 +19,7 @@ export default function plugin(bb: BbPluginApi) {
   registerSidebarCli(bb, { spaces, snoozes });
   registerProjects(bb);
   registerUiPreferences(bb);
+  registerPullRequests(bb);
   bb.rpc.register(nestingContract, {
     setParent: async ({ threadId, parentThreadId }) => {
       if (parentThreadId !== null) {

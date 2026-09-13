@@ -72,6 +72,9 @@ async function load(options: { branchPull?: PullOutcome; environmentPath?: strin
         get: async () => ({ id: "env-1", path: options.environmentPath ?? null, hostId: "host-1" }),
         pullRequest: async () => branchPull,
       },
+      plugins: {
+        callRpc: async () => ({ ok: true }),
+      },
     },
   });
   await plugin(host.bb);
@@ -95,11 +98,32 @@ describe("pull request links", () => {
 
     await harness.callRpc("listPullRequests", { threadId: "thr-1" });
     expect(metadata.get("thr-1")?.pullRequests).toEqual([
-      { repo: "other/repo", number: 9, url: "https://github.com/other/repo/pull/9", source: "agent", title: "Elsewhere" },
-      { repo: "acme/widgets", number: 7, url: "https://github.com/acme/widgets/pull/7", source: "agent", title: "Widget polish" },
+      { repo: "other/repo", number: 9, url: "https://github.com/other/repo/pull/9", source: "agent", title: "Elsewhere", state: "merged" },
+      { repo: "acme/widgets", number: 7, url: "https://github.com/acme/widgets/pull/7", source: "agent", title: "Widget polish", state: "draft" },
     ]);
     expect(changes()).toBe(2);
     expect(harness.inspection.sdk.callsTo("threads.updatePluginMetadata").length).toBeGreaterThanOrEqual(2);
+    // Every change nudges the sidebar through its `pullRequestsChanged` RPC
+    // once the metadata mirror settled, so its chips refetch fresh data.
+    await vi.waitFor(() =>
+      expect(harness.inspection.sdk.callsTo("plugins.callRpc")).toHaveLength(2),
+    );
+    expect(harness.inspection.sdk.callsTo("plugins.callRpc")).toEqual([
+      [
+        expect.objectContaining({
+          pluginId: "sidebar",
+          method: "pullRequestsChanged",
+          input: { threadId: "thr-1" },
+        }),
+      ],
+      [
+        expect.objectContaining({
+          pluginId: "sidebar",
+          method: "pullRequestsChanged",
+          input: { threadId: "thr-1" },
+        }),
+      ],
+    ]);
   });
 
   it("resolves a bare number against the checkout's origin remote", async () => {
@@ -130,7 +154,7 @@ describe("pull request links", () => {
     await harness.callRpc("listPullRequests", { threadId: "thr-4" });
     expect(changes()).toBe(1); // already linked, nothing new to announce
     expect(metadata.get("thr-4")?.pullRequests).toEqual([
-      { repo: "acme/widgets", number: 53, url: "https://github.com/acme/widgets/pull/53", source: "branch", title: "Icon script" },
+      { repo: "acme/widgets", number: 53, url: "https://github.com/acme/widgets/pull/53", source: "branch", title: "Icon script", state: "open" },
     ]);
   });
 

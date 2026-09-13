@@ -1,7 +1,13 @@
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import * as Menu from "@radix-ui/react-context-menu";
 import * as Popover from "@radix-ui/react-popover";
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   useRpc,
   useBbNavigate,
@@ -30,7 +36,12 @@ import {
 import { menuItemClass } from "./menus";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { relativeAge } from "../lib/time";
-import { PullRequestIcon, pullRequestSummary } from "./pull-request";
+import {
+  mergePullRequests,
+  pullRequestRepo,
+  PullRequestsChip,
+} from "./pull-request";
+import type { LinkedPullRequest } from "../lib/pull-requests-schema";
 import { StatusIcon } from "./status-icon";
 import { ArchiveIcon } from "./archive-icon";
 import { ThreadInfo } from "./thread-info";
@@ -90,6 +101,7 @@ export function ThreadRow({
   singleLine = false,
   libraryAction,
   nesting,
+  linkedPullRequests,
   snooze,
   onNavigate,
   onError,
@@ -123,6 +135,8 @@ export function ThreadRow({
    */
   libraryAction: "save" | "remove" | null;
   nesting?: ThreadRowNesting;
+  /** The thread's github-prs links, merged with the branch PR for the chip. */
+  linkedPullRequests?: readonly LinkedPullRequest[];
   /** Snooze state and presets; omitted rows (archives) offer no snooze. */
   snooze?: ThreadRowSnooze;
   onNavigate: () => void;
@@ -189,7 +203,16 @@ export function ThreadRow({
   const { splitProps, isAvailable } = experimental_useSidebarThreadSplit(
     thread.id,
   );
-  const { pullRequest } = experimental_useSidebarThreadPullRequest(thread.id);
+  const { pullRequest: branchPullRequest } =
+    experimental_useSidebarThreadPullRequest(thread.id);
+  // The chip covers the union of the branch PR and the github-prs links.
+  const pullRequests = useMemo(
+    () => mergePullRequests(branchPullRequest, linkedPullRequests),
+    [branchPullRequest, linkedPullRequests],
+  );
+  const threadRepo = branchPullRequest
+    ? pullRequestRepo(branchPullRequest.url)
+    : null;
   const title = threadTitle(thread);
   const branch = thread.environment?.branchName;
   // The project accent only appears where the project name does, so a row
@@ -214,20 +237,19 @@ export function ThreadRow({
       })
       .catch(onError);
   };
-  const openPullRequest = () => {
-    if (!pullRequest) return;
+  const openPullRequest = (url: string) => {
     // The github-prs plugin, when loaded, takes the request and shows the PR
     // in its thread panel; it calls preventDefault to say so.
     const request = new CustomEvent("bb-plugins:open-pull-request", {
       cancelable: true,
-      detail: { url: pullRequest.url, threadId: thread.id },
+      detail: { url, threadId: thread.id },
     });
     window.dispatchEvent(request);
     if (request.defaultPrevented) return;
     // Otherwise BB's browser preference (in-app browser or external); a host
     // without the URL opener gets a plain new tab.
-    if (!navigate.openUrl(pullRequest.url))
-      window.open(pullRequest.url, "_blank", "noopener,noreferrer");
+    if (!navigate.openUrl(url))
+      window.open(url, "_blank", "noopener,noreferrer");
   };
   const timestamp = sortBy === "created" ? thread.createdAt : thread.updatedAt;
   const age = (
@@ -352,7 +374,7 @@ export function ThreadRow({
             project={project}
             provider={provider}
             parent={parent}
-            pullRequest={pullRequest}
+            pullRequest={pullRequests[0] ?? null}
             disabled={menuOpen}
           >
             <Menu.Trigger asChild>
@@ -520,43 +542,24 @@ export function ThreadRow({
                           ↳
                         </span>
                       )}
-                      {pullRequest && (
-                        // The row itself is a link, so the chip is a link by
-                        // role rather than a nested anchor.
-                        <span
-                          role="link"
-                          tabIndex={0}
-                          data-thread-pull-request=""
-                          aria-label={`${pullRequestSummary(pullRequest)}: ${pullRequest.title}`}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            openPullRequest();
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Enter" && event.key !== " ") return;
-                            event.preventDefault();
-                            event.stopPropagation();
-                            openPullRequest();
-                          }}
-                          className="flex shrink-0 cursor-pointer items-center gap-1 rounded underline-offset-2 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          <PullRequestIcon pullRequest={pullRequest} />
-                          <span className="tabular-nums">
-                            #{pullRequest.number}
-                          </span>
-                        </span>
+                      {pullRequests.length > 0 && (
+                        <PullRequestsChip
+                          pullRequests={pullRequests}
+                          threadRepo={threadRepo}
+                          onOpen={openPullRequest}
+                        />
                       )}
                       {showProject && (
                         <>
-                          {pullRequest && <span aria-hidden="true">·</span>}
+                          {pullRequests.length > 0 && (
+                            <span aria-hidden="true">·</span>
+                          )}
                           <span className="shrink-0">{project}</span>
                         </>
                       )}
                       {branch && (
                         <>
-                          {(pullRequest || showProject) && (
+                          {(pullRequests.length > 0 || showProject) && (
                             <span aria-hidden="true">·</span>
                           )}
                           <span

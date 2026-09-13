@@ -591,7 +591,28 @@ export default async function plugin(bb: BbPluginApi) {
     const state = detail.isDraft === true && String(detail.state ?? "") === "OPEN" ? "draft" : String(detail.state ?? "").toLowerCase();
     return { title: String(detail.title ?? ""), state };
   }
-  const links = createLinkStore(bb, { describePull });
+  const links = createLinkStore(bb, {
+    describePull,
+    // A plugin app only receives its own realtime signals, so the Threads
+    // sidebar cannot hear `pull-requests-changed`. It exposes a
+    // `pullRequestsChanged` RPC instead, which republishes on its own
+    // channel; the bump lands after the metadata mirror so a refetch sees
+    // the new list. Best effort: the call fails when it is not installed.
+    notifyChanged: (threadId) => {
+      try {
+        void bb.sdk.plugins
+          .callRpc({
+            pluginId: "sidebar",
+            method: "pullRequestsChanged",
+            input: { threadId },
+            outputSchema: z.object({ ok: z.literal(true) }),
+          })
+          .catch(() => {});
+      } catch {
+        /* sidebar absent */
+      }
+    },
+  });
 
   bb.events.on("thread.deleted", ({ thread }) => {
     links.removeThread(thread.id);

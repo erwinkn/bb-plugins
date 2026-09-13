@@ -120,7 +120,7 @@ export type ThreadPullRequest = z.infer<typeof threadPullRequestSchema>;
 
 /** The `pullRequests` entry mirrored into thread plugin metadata. */
 export const metadataPullRequestSchema = z
-  .object({ repo: repoNameSchema, number: itemNumberSchema, url: z.string(), source: linkSourceSchema, title: z.string().nullable() })
+  .object({ repo: repoNameSchema, number: itemNumberSchema, url: z.string(), source: linkSourceSchema, title: z.string().nullable(), state: z.string().nullable() })
   .strict();
 export type MetadataPullRequest = z.infer<typeof metadataPullRequestSchema>;
 

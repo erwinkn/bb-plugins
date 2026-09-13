@@ -134,21 +134,33 @@ does not change host inline styles. Check this host layout after BB upgrades.
 Rows have two lines. The first line shows the provider's glyph (BB's
 `experimental_ProviderIcon` for the thread's `providerId`, so plugin-registered
 artwork and tints apply), the title, and the status marker at its right end.
-The second line shows muted metadata: the pull request for the thread's branch
-when BB reports one, then the project name, then a git-branch glyph in the same
+The second line shows muted metadata: the pull request indicator when the
+thread has one, then the project name, then a git-branch glyph in the same
 muted color as the text and the same size as the pull request glyph, and the
 branch. Under a project header the project name is omitted, because it would
 repeat the header; pinned rows keep it. Rows under **No project** have no
 project metadata at all, so they collapse to a single line: the title, the
 status marker, and the age. The age for the selected date sits at the right end of
-that line and refreshes each minute. The pull request shows a state-colored
-icon and its number: green for open, attention amber for an open pull request
-that needs you, purple for merged, red for closed, and edit amber for a draft.
-The chip is a link (by role, since the row itself is a link): it underlines on
-hover, and clicking it or pressing Enter opens the pull request without
-selecting the row. The click first dispatches a cancelable
+that line and refreshes each minute. The pull request indicator covers the
+union of the branch PR BB reports and the pull requests the github-prs plugin
+(`plugins/github`) linked to the thread, deduplicated by URL with the live
+branch entry winning. A linked PR shows its last-seen state: green for open,
+purple for merged, red for closed, edit amber for a draft, and an
+unrecognised or missing state reads as open. The branch PR additionally shows
+attention amber when an open pull request needs you. With one pull request
+the chip is a state-colored icon and its number, a link by role since the row
+itself is a link: it underlines on hover, and clicking it or pressing Enter
+opens the pull request without selecting the row. With several it collapses
+into the icon and a small count badge, coloured by the most attention-worthy
+state (needs-you open, then open, draft, merged, closed); clicking it opens a
+small popover listing each pull request with its state icon, number, and
+title, plus the repo when it differs from the thread's — or whenever the list
+mixes repos and no branch PR names one. Picking an entry opens that pull
+request. The badge, the chip, and the entries are keyboard reachable, keep
+the press away from the row's selection, drag, and long-press menu, and work
+with a tap on touch viewports. The click first dispatches a cancelable
 `bb-plugins:open-pull-request` CustomEvent on `window` with
-`{ url, threadId }`; the github-prs plugin (`plugins/github`), when loaded,
+`{ url, threadId }`; the github-prs plugin, when loaded,
 shows the pull request in its thread panel and calls `preventDefault`. When
 nothing takes the event, the sidebar opens the URL through BB's URL opener,
 which follows the client's in-app or external browser preference; a host
@@ -157,7 +169,17 @@ that does not fit fades out before the age instead of showing an ellipsis;
 the title fades before the status marker. The provider, the full branch, and
 the pull request title appear in an instant info card to the right on hover
 or keyboard focus. The pull request lookup uses BB's per-row sidebar hook, so
-BB owns its polling and staleness rules.
+BB owns its polling and staleness rules. The linked pull requests come from
+the `github-prs.pullRequests` thread metadata, read in one bulk
+`linkedPullRequests` RPC for the whole visible list rather than one call per
+row. A plugin app only receives its own realtime signals and BB emits no
+metadata-change event, so the GitHub plugin bumps the sidebar's
+`pullRequestsChanged` RPC on every link change (after the metadata mirror
+lands, and harmlessly absent when the sidebar is not installed); the server
+republishes `linked-pull-requests-changed` and the list refetches just that
+thread. The whole map is also re-read on mount, when the listed threads
+change, and on every realtime reconnection, since plugin signals are
+ephemeral.
 The card uses a 14 px title and 12 px details, with visible labels and values
 aligned in two columns. The branch and parent stay fully readable. Labels,
 provider, and dates use BB's subtle text color; status and values use the normal
