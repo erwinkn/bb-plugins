@@ -65,6 +65,13 @@ npm test
 npm run build
 ```
 
+Plugins that store thread plugin metadata (sidebar, questions, plans,
+voice-mode, bb-mcp) require BB 0.43.1; the others work on BB 0.43.0. This
+instance runs BB from a global npm install under the user systemd unit
+`bb-app.service`; upgrade with `npm install -g bb-app@latest` and
+`systemctl --user restart bb-app`, never with `npx bb-app@latest` while the
+unit is enabled.
+
 The earlier Hello proof plugin and general branding experiment have been
 removed from the current collection. Their prior commits and release tags stay
 in Git history.
@@ -230,7 +237,11 @@ BB 0.42.1 / SDK 0.4.47 accepts model and reasoning overrides in
 Expose sticky next-turn updates for both, with provider validation and native
 host/parent ceilings, without sending a dummy message or restarting work.
 The MCP supports those fields on create/send and reports the standalone gap.
-Tracked in [BB #3401](https://github.com/get-bb/bb/issues/3401).
+Filed automatically as [BB #3401](https://github.com/get-bb/bb/issues/3401)
+and closed by the owner on 2026-09-10 as not planned, because the auto-filed
+text had not been reviewed. Rechecked 2026-09-12: BB 0.43.1 / SDK 0.4.87 still
+has no `permissionMode` or `serviceTier` on `threads.update`. Candidate for
+refiling after review.
 
 ### MCP code-mode boundary
 
@@ -259,10 +270,15 @@ BB 0.42.1 / SDK 0.4.47 does not accept caller idempotency keys on public
 response, leaving an ambiguous crash/reload boundary. Core should atomically
 deduplicate requests and expose durable request lookup. The MCP plugin retains
 `outcome_unknown` records and requires reconciliation instead of redispatch.
-Tracked in [BB #3396](https://github.com/get-bb/bb/issues/3396).
+Filed automatically as [BB #3396](https://github.com/get-bb/bb/issues/3396)
+and closed by the owner on 2026-09-10 as not planned, because the auto-filed
+text had not been reviewed. Rechecked 2026-09-12: BB 0.43.1 / SDK 0.4.87 still
+has no idempotency key on `threads.spawn` or `threads.send`. Candidate for
+refiling after review.
 
 MCP monitoring also reconciles pending plugin prompts through the interactions
-API while [BB #3397](https://github.com/get-bb/bb/issues/3397) is outstanding.
+API; [BB #3397](https://github.com/get-bb/bb/issues/3397) was fixed in BB 0.43.0
+by [PR #3398](https://github.com/get-bb/bb/pull/3398).
 Data-preserving source changes remain necessary for this populated plugin;
 the related source-rebind request is
 [BB #2297](https://github.com/get-bb/bb/issues/2297). Follow the stable-clone
@@ -788,6 +804,67 @@ Status: recorded here; no upstream issue filed.
 Suggested issue title: `Connect: detect listening dev-server ports and offer one-click or automatic sharing`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Thread plugin metadata: change events and frontend access
+
+BB 0.43.1 adds per-thread plugin metadata (`threads.getPluginMetadata` and
+`updatePluginMetadata`, seedable on spawn and fork). A metadata update emits
+no plugin lifecycle event and no realtime notification, and plugin frontends
+cannot read it: thread panel props, sidebar thread rows, and plugin realtime
+omit it, so a plugin needs its own RPC plus its own realtime signal. Add a
+`thread.pluginMetadata.updated` event and a frontend read path.
+
+Status: recorded 2026-09-12; no upstream issue filed. Suggested issue title:
+`Emit an event and expose a frontend read path for thread plugin metadata`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
+### Synced UI preferences: frontend access for plugins
+
+BB 0.43.0 syncs sidebar preferences through `system.uiPreferences` with
+compare-and-swap revisions and a `ui-preferences-changed` realtime message.
+Only the backend SDK can read or write them. A plugin frontend has no hook and
+no core realtime feed, so a thread-list replacement that wants to honour the
+user's grouping and sort must proxy through plugin RPC and poll on focus.
+
+Status: recorded 2026-09-12; no upstream issue filed. Suggested issue title:
+`Expose synced UI preferences to plugin frontends`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
+### Plugin thread lists: nesting primitive and keyboard nesting
+
+BB 0.43.0 adds drag-to-nest in the native sidebar (dnd-kit, `threads.update`
+with `parentThreadId`). Plugin thread lists inherit none of it: the plugin
+sidebar action API has open, pin, read, rename, archive, and delete, but no
+reparent or section move, and there is no shared row DnD primitive. Native
+also has no keyboard or mobile "make child of" action.
+
+Status: recorded 2026-09-12; the Threads plugin ports the native behaviour
+instead. Suggested issue title: `Expose thread nesting to plugin thread lists
+and add a keyboard nest action`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
+### Enumerable host icon names
+
+`experimental_Icon` renders host icons by name with a fallback, but the SDK
+exports no list or literal union of valid names. This collection generates one
+from bb source with `scripts/host-icon-names.mjs`. Already reported upstream
+as [BB #1859](https://github.com/get-bb/bb/issues/1859), open.
+
+### Account Pooler coverage for ACP providers
+
+The bundled Account Pooler proxies only Claude and Codex. Checked 2026-09-12
+against bb 0.43.0 and the vendors' documentation: bb can inject environment
+into any ACP agent, so a pooler could reach Cursor (documented endpoint and
+auth-token overrides; API keys feasible, OAuth refresh undocumented), Grok
+Build (API-key mode only), and OpenCode (per underlying provider; ChatGPT
+through the existing Codex adapter). Devin has no base-URL or token override,
+but Cognition permits copying its credentials file between the user's own
+machines, so only credential distribution would work there. Hermes needs an
+auth override it does not offer.
+
+Status: recorded 2026-09-12; no upstream issue filed. Suggested issue title:
+`Account Pooler: adapters for Cursor, OpenCode, and Grok Build`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this
@@ -838,7 +915,8 @@ later. Remove an entry when the upstream fix ships.
   to the ACP project.
 - **Status:** filed as [BB #3453](https://github.com/get-bb/bb/issues/3453) on
   2026-09-11, including live confirmation from Devin threads. The earlier
-  reproduction used the SDK bridge with a scripted ACP peer.
+  reproduction used the SDK bridge with a scripted ACP peer. Rechecked
+  2026-09-12: SDK 0.4.87 (BB 0.43.1) still answers with `null`.
 
 
 ### Voice operator isolation and managed workspace primitives
@@ -902,8 +980,14 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
 - **Fix:** call `emitPluginInteractionPending(thread, interaction)` in
   `requestPluginInteraction` after the row is created, and consider bumping
   `latestAttentionAt` when a pending interaction is created on an idle thread.
-- **Status:** filed as [BB #3397](https://github.com/get-bb/bb/issues/3397),
-  `Plugin prompts created with bb.ui.requestInput do not emit interaction.pending`.
+- **Status:** the missing event was fixed in BB 0.43.0 by
+  [PR #3398](https://github.com/get-bb/bb/pull/3398) for
+  [BB #3397](https://github.com/get-bb/bb/issues/3397); verified 2026-09-12 in
+  the 0.43.0 server bundle, where `requestPluginInteraction` now emits it. Not
+  fixed: the **Related** item above. `latestAttentionAt` still does not advance
+  when a plugin prompt becomes pending on an idle thread, so the thread is not
+  marked unread. Kept for that half; suggested issue title: `Mark a thread
+  unread when a plugin prompt becomes pending`.
 
 
 ### `threads.interactions.resolve` rejects valid decisions (2026-09-11)
