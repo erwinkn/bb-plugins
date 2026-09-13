@@ -50,7 +50,7 @@ export class LiveSession {
       const version = plan.versions.at(-1)!;
       try {
         const result = await this.bb.ui.requestInput({
-          threadId: plan.threadId, rendererId: "plan-review", title: version.reviewHeading ?? plan.title,
+          threadId: plan.threadId, rendererId: "plan-review", title: `Plan: ${version.reviewHeading ?? plan.title}`,
           payload: { planId: plan.id, versionId: version.id, title: plan.title, versionNumber: version.number, reviewSummary: version.reviewSummary },
           timeoutMs: Math.min(this.options.interactionChunkMs ?? 3_600_000, 3_600_000),
         }, { signal: controller.signal });

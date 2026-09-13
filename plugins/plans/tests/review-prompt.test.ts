@@ -24,7 +24,7 @@ it("falls back to the full plan title without changing storage or payload identi
   expect(plan.title).toBe(title);
   expect(harness.inspection.pendingInteractions).toHaveLength(1);
   expect(harness.inspection.pendingInteractions[0]).toMatchObject({
-    threadId: "thread-1", rendererId: "plan-review", title, timeoutMs: 3_600_000,
+    threadId: "thread-1", rendererId: "plan-review", title: `Plan: ${title}`, timeoutMs: 3_600_000,
     payload: { planId: plan.id, versionId: plan.versions[0]!.id, title, versionNumber: 1 },
   });
 });

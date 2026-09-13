@@ -551,15 +551,15 @@ describe("thread status and prompt", () => {
     const title = "Refine Pulse scheduling: TaskScope, LoopBinding, single Task wait";
     const reviewSummary = "Give each task one wait and preserve schedules across restarts.";
     slot = render(app.pendingInteractions[0]!, {
-      interaction: { id: "i1", threadId: "thr_1", title: "Pulse scheduling", createdAt: now, expiresAt: null,
+      interaction: { id: "i1", threadId: "thr_1", title: "Plan: Pulse scheduling", createdAt: now, expiresAt: null,
         payload: { planId: "plan-1", versionId: "v1", title, versionNumber: 1, reviewSummary } },
       submit, cancel: async () => { skipped = true; },
     }, { rpc: fakeBackend([]).rpc });
     expect(slot.queryByText("Plan ready for your review.")).toBeNull();
     expect(slot.getByTitle(title)).toBe(slot.getByRole("group", { name: `Review ${title}` }));
     expect(slot.queryByText(title)).toBeNull();
-    expect(slot.getByRole("group", { name: `Review ${title}` }).textContent).toBe(`${reviewSummary}SkipOpen review`);
-    fireEvent.click(slot.getByRole("button", { name: "Open review" }));
+    expect(slot.getByRole("group", { name: `Review ${title}` }).textContent).toBe(`${reviewSummary}SkipOpen`);
+    fireEvent.click(slot.getByRole("button", { name: "Open" }));
     expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "openThreadPanel", options: expect.objectContaining({ params: { threadId: "thr_1", planId: "plan-1" } }) }));
     expect(skipped).toBe(false);
     expect(submit).not.toHaveBeenCalled();
@@ -570,11 +570,11 @@ describe("thread status and prompt", () => {
 
   it("omits the description for legacy payloads while retaining the full title accessibly", () => {
     slot = render(app.pendingInteractions[0]!, {
-      interaction: { id: "legacy", threadId: "thr_1", title: "Scheduling", createdAt: now, expiresAt: null,
+      interaction: { id: "legacy", threadId: "thr_1", title: "Plan: Scheduling", createdAt: now, expiresAt: null,
         payload: { planId: "plan-1", versionId: "v1", title: "Full scheduling title", versionNumber: 1 } },
       submit: async () => {}, cancel: async () => {},
     }, { rpc: fakeBackend([]).rpc });
-    expect(slot.getByTitle("Full scheduling title").textContent).toBe("SkipOpen review");
+    expect(slot.getByTitle("Full scheduling title").textContent).toBe("SkipOpen");
   });
 });
 

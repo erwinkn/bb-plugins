@@ -22,11 +22,12 @@ Prepare a complete Markdown plan.
 Include the result, scope, steps, and checks.
 State open questions clearly.
 Call `plans_submit {title, markdown, reviewHeading, reviewSummary}`.
-Write an informative `reviewHeading` of a few words, at most 40 characters,
-such as “Pulse scheduling refinements”. Write `reviewSummary` as one sentence,
+Write an informative `reviewHeading` of a few words, at most 34 characters,
+such as “Pulse scheduling refinements”. The prompt adds “Plan: ” automatically;
+leave that prefix out of the field. Long headings use an ellipsis. Write `reviewSummary` as one sentence,
 at most 240 characters, explaining what to review, such as “Give each task one
 wait and preserve its schedule across restarts.” Avoid generic “plan ready” copy.
-The tool saves the plan and puts a review prompt on the thread.
+The tool saves the plan and puts a review prompt with **Open** and **Skip** on the thread.
 It returns the plan and version IDs at once.
 End your turn without implementation.
 
@@ -92,7 +93,7 @@ Manual **Resolve** sets **addressed** and sends no message.
 Each edit creates a stored version, and the panel follows the latest text.
 The user can compare any two versions.
 The review fields are optional and version-scoped. Omitting them on submit or
-update uses the full plan title with a visual ellipsis and no description.
+update uses “Plan: <full title>” with a visual ellipsis and no description.
 Omitting them on handoff preserves the latest revision's values; passing `null`
 clears a value. Handoff changes only that revision's review copy, not earlier
 versions or its Markdown. Do not repeat the full title in the description.

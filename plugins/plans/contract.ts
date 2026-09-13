@@ -30,14 +30,15 @@ export const deliveryModeSchema = z.enum(["queue-if-active", "steer-if-active"])
 export const annotationKindSchema = z.enum(["comment", "ask", "redline", "looksGood"]);
 const singleLine = (limit: number) => z.string().transform((value) => value.replace(/\s+/gu, " ").trim()).pipe(z.string().min(1).max(limit));
 export const reviewCopyShape = {
-  reviewHeading: singleLine(40).nullable().optional().describe("Short review heading: a few words, at most 40 characters. Null falls back to the full plan title, visually ellipsized."),
+  reviewHeading: singleLine(34).nullable().optional().describe("Short review heading: a few words, at most 34 characters. The prompt adds 'Plan: ' automatically. Null falls back to the full plan title, visually ellipsized."),
   reviewSummary: singleLine(240).nullable().optional().describe("One sentence describing this revision for the review prompt, at most 240 characters. Null omits the description. Distinct from the update change-log summary."),
 };
 export const versionSchema = z.object({
   id: idSchema, number: z.number().int().positive(), markdown: markdownSchema, createdAt: z.number(),
   source: z.enum(["agent", "user"]).default("user"), summary: z.string().max(10_000).default(""),
   resolves: z.array(idSchema).default([]),
-  reviewHeading: reviewCopyShape.reviewHeading.default(null),
+  // Preserve headings saved before the input cap reserved space for the 'Plan: ' prefix.
+  reviewHeading: singleLine(40).nullable().default(null),
   reviewSummary: reviewCopyShape.reviewSummary.default(null),
 });
 export const replySchema = z.object({

@@ -33,8 +33,8 @@ Existing sessions may need to restart or resume to receive new tools.
    The tool returns at once on every harness.
    The agent ends its turn.
 2. Open **Plans** from the prompt or the **Plan** header button.
-   The prompt shows the agent's short review heading and one-sentence description,
-   then **Open review** and **Skip**. Long headings use an ellipsis; descriptions
+   The prompt shows **Plan: &lt;review heading&gt;** and the agent's one-sentence description,
+   then **Open** and **Skip**. Long headings use an ellipsis; descriptions
    wrap to at most three lines. The full plan name stays in the accessible label
    and tooltip. Plans hides both host provenance rows for this review card.
    It gives the thread the **needs attention** state.
@@ -93,17 +93,20 @@ Feedback arrives as thread messages.
 | `plans_reply {planId, annotation, body, resolve}` | Answer an ask or comment on an annotation. For asks, `resolve` defaults to true. |
 | `plans_handoff {planId, reviewHeading?, reviewSummary?}` | Restore the review prompt, optionally revising the latest version's review copy. Returns `waiting` or `queued`. |
 
-Supply `reviewHeading` as a few informative words (maximum **40 characters**),
+Supply `reviewHeading` as a few informative words (maximum **34 characters**),
 for example **Pulse scheduling refinements**, and `reviewSummary` as one sentence
 (maximum **240 characters**), for example **Give each task one wait and preserve
 its schedule across restarts.** Whitespace is normalized to a single line on input.
-Keep this copy about the review, without generic “plan ready” phrasing.
+The prompt adds `Plan: ` automatically; leave that prefix out of `reviewHeading`.
+The 34-character limit reserves space for the prefix. Keep this copy about the
+review, without generic “plan ready” phrasing.
 The existing update `summary` remains the version's change log; `reviewSummary`
 is separate reader-facing copy.
 
 Both review fields are optional and stored on each version. New submissions and
-updates without them fall back to the full plan title (visually ellipsized) and
-no description. Older stored versions get the same defaults. Handoff preserves
+updates without them fall back to **Plan: &lt;full title&gt;** (visually ellipsized) and
+no description. Older stored versions get the same defaults; previously saved
+headings up to 40 characters remain supported. Handoff preserves
 omitted fields and saves supplied fields on the latest version without creating
 a Markdown revision; pass `null` to clear a field. Earlier versions keep their
 own copy. Updating a version refreshes an already-visible prompt; it does not

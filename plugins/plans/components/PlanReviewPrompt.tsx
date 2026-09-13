@@ -65,7 +65,7 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
           Skip
         </Button>
         <Button type="button" size="sm" className="h-11 sm:h-8" onClick={open} disabled={payload === null}>
-          Open review
+          Open
         </Button>
       </div>
     </div>

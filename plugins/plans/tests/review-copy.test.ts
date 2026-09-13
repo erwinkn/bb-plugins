@@ -43,7 +43,7 @@ it.each(["tool", "cli", "rpc"] as const)("persists revision copy through %s subm
   const { planId } = await invoke("submit", { title, markdown: "# Scheduling", reviewHeading: "Pulse scheduling", reviewSummary: "Give each task one wait." });
   const first = (await get(planId)).versions[0]!;
   expect(first).toMatchObject({ reviewHeading: "Pulse scheduling", reviewSummary: "Give each task one wait." });
-  expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title: "Pulse scheduling", payload: { title, reviewSummary: "Give each task one wait.", versionId: first.id } });
+  expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title: "Plan: Pulse scheduling", payload: { title, reviewSummary: "Give each task one wait.", versionId: first.id } });
   await invoke("update", { planId, markdown: "# Scheduling\nRestore bindings.", summary: "Changed bindings", reviewHeading: "Restore schedules", reviewSummary: "Keep schedules after a restart." });
   let plan = await get(planId);
   expect(plan.title).toBe(title);
@@ -51,20 +51,20 @@ it.each(["tool", "cli", "rpc"] as const)("persists revision copy through %s subm
   expect(plan.versions[0]).toEqual(first);
   expect(plan.versions[1]).toMatchObject({ summary: "Changed bindings", reviewHeading: "Restore schedules", reviewSummary: "Keep schedules after a restart." });
   expect(harness.inspection.pendingInteractions).toHaveLength(1);
-  expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title: "Restore schedules", payload: { versionId: plan.versions[1]!.id, reviewSummary: "Keep schedules after a restart." } });
+  expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title: "Plan: Restore schedules", payload: { versionId: plan.versions[1]!.id, reviewSummary: "Keep schedules after a restart." } });
   await invoke("handoff", { planId, reviewHeading: "Restart recovery", reviewSummary: "Restore schedules and keep each task waiting once." });
   plan = await get(planId);
   expect(plan.versions).toHaveLength(2);
   expect(plan.versions[0]).toEqual(first);
   expect(plan.versions[1]).toMatchObject({ reviewHeading: "Restart recovery", reviewSummary: "Restore schedules and keep each task waiting once." });
   const interaction = harness.inspection.pendingInteractions[0]!;
-  expect(interaction).toMatchObject({ title: "Restart recovery", payload: { title, reviewSummary: plan.versions[1]!.reviewSummary } });
+  expect(interaction).toMatchObject({ title: "Plan: Restart recovery", payload: { title, reviewSummary: plan.versions[1]!.reviewSummary } });
   await invoke("handoff", { planId });
   expect(harness.inspection.pendingInteractions[0]!.id).toBe(interaction.id);
   const replacement = await reload();
   expect((await get(planId)).versions).toEqual(plan.versions);
   await invoke("handoff", { planId });
-  expect(replacement.inspection.pendingInteractions[0]).toMatchObject({ title: "Restart recovery" });
+  expect(replacement.inspection.pendingInteractions[0]).toMatchObject({ title: "Plan: Restart recovery" });
 });
 
 it("uses legacy fallbacks, supports clearing, and does not carry stale copy to a new revision", async () => {
@@ -78,13 +78,26 @@ it("uses legacy fallbacks, supports clearing, and does not carry stale copy to a
   harness = await reload();
   expect((await get(plan.id)).versions[0]).toMatchObject({ reviewHeading: null, reviewSummary: null });
   await invoke("handoff", { planId: plan.id });
-  expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title, payload: { title, reviewSummary: null } });
+  expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title: `Plan: ${title}`, payload: { title, reviewSummary: null } });
   await invoke("handoff", { planId: plan.id, reviewHeading: "New heading", reviewSummary: "New description." });
   await invoke("handoff", { planId: plan.id, reviewHeading: null, reviewSummary: null });
-  expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title, payload: { reviewSummary: null } });
+  expect(harness.inspection.pendingInteractions[0]).toMatchObject({ title: `Plan: ${title}`, payload: { reviewSummary: null } });
   await invoke("handoff", { planId: plan.id, reviewHeading: "New heading", reviewSummary: "Old revision description." });
   await invoke("update", { planId: plan.id, markdown: "New revision", summary: "Change log only" });
   expect((await get(plan.id)).versions[1]).toMatchObject({ reviewHeading: null, reviewSummary: null, summary: "Change log only" });
+});
+
+it("preserves previously saved 40-character headings after reload and revision updates", async () => {
+  const { bb, harness, get, invoke, reload } = setup();
+  const plan = await harness.behavior.callRpc("create", { title, markdown: "Previous content", threadId: "thread-1" }) as Plan;
+  const legacyHeading = "x".repeat(40);
+  plan.versions[0]!.reviewHeading = legacyHeading;
+  bb.storage.database().prepare("UPDATE plans SET body = ? WHERE id = ?").run(JSON.stringify(plan), plan.id);
+  const replacement = await reload();
+  await invoke("handoff", { planId: plan.id });
+  expect(replacement.inspection.pendingInteractions[0]).toMatchObject({ title: `Plan: ${legacyHeading}` });
+  await invoke("update", { planId: plan.id, markdown: "New content", summary: "Updated content" });
+  expect((await get(plan.id)).versions[0]!.reviewHeading).toBe(legacyHeading);
 });
 
 it.each(["tool", "cli", "rpc"] as const)("validates %s review copy before changing saved history", async (mode) => {
@@ -92,8 +105,10 @@ it.each(["tool", "cli", "rpc"] as const)("validates %s review copy before changi
   const { planId } = await invoke("submit", { title, markdown: "Scheduling", reviewHeading: "  Pulse\n scheduling ", reviewSummary: " One\n sentence. " });
   const plan = await get(planId);
   expect(plan.versions[0]).toMatchObject({ reviewHeading: "Pulse scheduling", reviewSummary: "One sentence." });
-  await expect(invoke("update", { planId, markdown: "Changed", summary: "Edit", reviewHeading: "x".repeat(41) })).rejects.toThrow();
+  await expect(invoke("update", { planId, markdown: "Changed", summary: "Edit", reviewHeading: "x".repeat(35) })).rejects.toThrow();
   await expect(invoke("handoff", { planId, reviewSummary: "x".repeat(241) })).rejects.toThrow();
   await expect(invoke("handoff", { planId, reviewHeading: "   " })).rejects.toThrow();
   expect(await get(planId)).toEqual(plan);
+  await invoke("handoff", { planId, reviewHeading: "x".repeat(34) });
+  expect((await get(planId)).versions[0]!.reviewHeading).toBe("x".repeat(34));
 });

@@ -44,7 +44,7 @@ function parseFlags(argv: string[]): Flags {
 
 export type PluginOptions = PlanServiceOptions;
 const toolBehavior = " Returns at once by design. After you finish the plan changes, call plans_handoff and end your turn. Feedback arrives as thread messages. Implement only after approval.";
-const reviewCopyHelp = " Supply reviewHeading (a few words, max 40 characters) and reviewSummary (one sentence, max 240 characters) for the review card. Both are optional; null clears a field.";
+const reviewCopyHelp = " Supply reviewHeading (a few words, max 34 characters; the prompt adds 'Plan: ' automatically) and reviewSummary (one sentence, max 240 characters) for the review card. Both are optional; null clears a field.";
 export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
   const service = createPlanService(bb, options);
   bb.rpc.register(plansContract, service.rpc);
