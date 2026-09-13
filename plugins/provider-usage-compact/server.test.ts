@@ -21,6 +21,7 @@ describe("provider usage backend", () => {
               name: "M4",
               type: "persistent",
               status: "connected",
+              machineProviderId: "local",
               maxPermissionMode: "full",
               lastSeenAt: 1,
               lastRejectedProtocolVersion: null,
@@ -32,11 +33,25 @@ describe("provider usage backend", () => {
               name: "Intel",
               type: "persistent",
               status: "disconnected",
+              machineProviderId: null,
               maxPermissionMode: "full",
               lastSeenAt: 1,
               lastRejectedProtocolVersion: null,
               createdAt: 1,
               updatedAt: 1,
+            },
+          ],
+          experimental_listProviders: async () => [
+            {
+              id: "local",
+              displayName: "This machine",
+              description: "The bb server host.",
+              icon: " Laptop ",
+              logoUrl: null,
+              pluginId: "local-machines",
+              acceptsEmptyInputs: true,
+              supportsSuspend: false,
+              inputs: null,
             },
           ],
         },
@@ -92,6 +107,7 @@ describe("provider usage backend", () => {
           id: "host-m4",
           displayName: "M4",
           status: "connected",
+          machineProvider: { id: "local", logoUrl: null, icon: "Laptop" },
           error: null,
           providers: [
             {
@@ -133,6 +149,7 @@ describe("provider usage backend", () => {
           id: "host-intel",
           displayName: "Intel",
           status: "disconnected",
+          machineProvider: null,
           error: null,
           providers: [
             {
@@ -161,6 +178,7 @@ describe("provider usage backend", () => {
       ],
     });
     expect(host.harness.sdk.callsTo("hosts.list")).toEqual([[]]);
+    expect(host.harness.sdk.callsTo("hosts.experimental_listProviders")).toEqual([[]]);
     expect(host.harness.sdk.callsTo("providers.list")).toEqual([
       [{ hostId: "host-m4", capability: "usage" }],
       [{ hostId: "host-intel", capability: "usage" }],
@@ -207,7 +225,7 @@ describe("provider usage backend", () => {
       sdk: {
         hosts: {
           list: async () => [
-            { id: "host-m4", name: "M4", status: "connected" },
+            { id: "host-m4", name: "M4", status: "connected", machineProviderId: "modal" },
             { id: "host-m5", name: "M5", status: "connected" },
           ],
         },
@@ -223,10 +241,32 @@ describe("provider usage backend", () => {
       },
     });
     plugin(host.bb);
-    await host.harness.behavior.callRpc("getUsage", {
-      force: false,
-      machineIds: null,
-      maxAgeMs: 30 * 60_000,
+    // Without the experimental machine-provider listing, hosts keep an id-only record.
+    await expect(
+      host.harness.behavior.callRpc("getUsage", {
+        force: false,
+        machineIds: null,
+        maxAgeMs: 30 * 60_000,
+      }),
+    ).resolves.toEqual({
+      machines: [
+        {
+          id: "host-m4",
+          displayName: "M4",
+          status: "connected",
+          machineProvider: { id: "modal", logoUrl: null, icon: null },
+          providers: [],
+          error: null,
+        },
+        {
+          id: "host-m5",
+          displayName: "M5",
+          status: "connected",
+          machineProvider: null,
+          providers: [],
+          error: null,
+        },
+      ],
     });
 
     await host.harness.behavior.emitThreadEvent("thread.idle", {

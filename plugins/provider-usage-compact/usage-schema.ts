@@ -45,10 +45,17 @@ export const usageProviderSchema = z.strictObject({
   usage: z.nullable(providerUsageSchema),
 });
 
+export const usageMachineProviderSchema = z.strictObject({
+  id: nonemptyStringSchema,
+  logoUrl: z.nullable(nonemptyStringSchema),
+  icon: z.nullable(nonemptyStringSchema),
+});
+
 export const usageMachineSchema = z.strictObject({
   id: nonemptyStringSchema,
   displayName: nonemptyStringSchema,
   status: z.enum(["connected", "disconnected"]),
+  machineProvider: z.nullable(usageMachineProviderSchema),
   providers: z.array(usageProviderSchema),
   error: z.nullable(nonemptyStringSchema),
 });
@@ -66,6 +73,7 @@ export type ProviderUsage = z.infer<typeof providerUsageSchema>;
 export type UsageWindow = z.infer<typeof usageWindowSchema>;
 export type UsageProvider = z.infer<typeof usageProviderSchema>;
 export type UsageMachine = z.infer<typeof usageMachineSchema>;
+export type UsageMachineProvider = z.infer<typeof usageMachineProviderSchema>;
 export type UsageSnapshot = z.infer<typeof usageSnapshotSchema>;
 
 export function providerUsageTone(
