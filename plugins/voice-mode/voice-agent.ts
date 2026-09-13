@@ -2104,7 +2104,16 @@ export class VoiceAgent {
       dc.send(JSON.stringify({ type, event_id: id, delegation_id: delegationId, content: chunk }));
       return id;
     });
-    while (this.liveAppends.size > 300) this.liveAppends.delete(this.liveAppends.keys().next().value!);
+    // An open offer's chunk ids must survive until acked: evicting one leaves
+    // pendingAppends non-empty forever, so the offer never closes and every
+    // later update is blocked. Stale ids from closed offers keep their old tag
+    // and stay evictable; the map may exceed 300 only while an offer is open.
+    const offerTag = this.openOffer ? `offer:${this.openOffer.id}` : null;
+    while (this.liveAppends.size > 300) {
+      const oldest = this.liveAppends.keys().next().value!;
+      if (this.liveAppends.get(oldest) === offerTag) break;
+      this.liveAppends.delete(oldest);
+    }
     return ids;
   }
 

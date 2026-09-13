@@ -1220,14 +1220,14 @@ test("gpt-live-1: assistant speech does not settle an utterance the user is stil
   assert.equal(finishes().length, 1, "an exchange finishes once");
 });
 
-async function liveOfferFixture(t: TestContext) {
+async function liveOfferFixture(t: TestContext, summary = "Build finished. " + "x".repeat(2000), expectedChunks = 2) {
   const f = await liveVoiceFixture(t, undefined, {
     createCall: () => ({ sdp: "answer", engine: "live", sessionId: "sess_live" }),
-    nextUpdateBatch: (() => { let offered = false; return () => { if (offered) return null; offered = true; return { offerId: "offer", items: [{ summary: "Build finished. " + "x".repeat(2000) }], asOf: 123 }; }; })(),
+    nextUpdateBatch: (() => { let offered = false; return () => { if (offered) return null; offered = true; return { offerId: "offer", items: [{ summary }], asOf: 123 }; }; })(),
   }, "live", "live");
   f.tick(2000); await settleVoice(); f.tick(2000); await settleVoice();
   const chunks = f.dc.sent.filter(event => event.type === "session.commentary.append" && String(event.event_id).startsWith("live_offer_offer_"));
-  assert.equal(chunks.length, 2, "a long update is appended in two chunks, both tagged with the offer");
+  assert.equal(chunks.length, expectedChunks, "the update is appended in chunks, all tagged with the offer");
   assert.equal(JSON.parse(chunks.map(chunk => chunk.content).join("")).offerId, "offer");
   const closes = () => f.rpcCalls.filter(call => call.method === "closeOffer");
   assert.equal(closes().length, 0);
@@ -1248,4 +1248,13 @@ test("gpt-live-1: a failed chunk closes the update as not delivered even after a
   assert.deepEqual(f.closes().map(call => call.args.outcome), ["not_delivered"]);
   f.dc.emit("session.commentary.appended", { client_event_id: f.chunks[1].event_id }); await settleVoice();
   assert.equal(f.closes().length, 1, "the surviving chunk's ack cannot resurrect the offer as delivered");
+});
+
+test("gpt-live-1: an update larger than the append ledger still closes once every chunk is acknowledged", async t => {
+  // More than 300 chunks overflows the liveAppends bound; the offer's own ids must not be evicted.
+  const f = await liveOfferFixture(t, "x".repeat(430_000), 308);
+  assert.ok(f.chunks.length > 300);
+  for (const chunk of f.chunks) f.dc.emit("session.commentary.appended", { client_event_id: chunk.event_id });
+  await settleVoice();
+  assert.deepEqual(f.closes().map(call => call.args.outcome), ["delivered"]);
 });
