@@ -36,6 +36,7 @@ import { ThreadRow, fadeClass } from "./components/thread-row";
 import { ThreadChildren } from "./components/thread-children";
 import { ThreadRoots } from "./components/thread-roots";
 import { DraftObserver } from "./components/draft-observer";
+import { HostIcon } from "./lib/host-icon";
 import { StatusIcon } from "./components/status-icon";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "./lib/mobile-sidebar-scroll";
 import {
@@ -83,19 +84,11 @@ function Group({
       <span className="min-w-0 flex-1 truncate text-left font-medium">
         {title}
       </span>
-      <svg
-        data-group-chevron=""
-        aria-hidden="true"
-        viewBox="0 0 16 16"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      <HostIcon
+        name="ChevronDown"
+        fallback="ArrowDown"
         className={`size-4 shrink-0 ${closed ? "-rotate-90" : ""}`}
-      >
-        <path d="m4.5 6.25 3.5 3.5 3.5-3.5" />
-      </svg>
+      />
     </button>
   );
   return (

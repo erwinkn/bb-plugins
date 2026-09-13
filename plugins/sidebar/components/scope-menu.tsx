@@ -3,22 +3,16 @@ import { useRef } from "react";
 import type { SpaceCatalog } from "../lib/space-schema";
 import { LIBRARY_SCOPE_ID, scopeLabel, type Scope } from "../lib/spaces";
 import type { Status } from "../lib/status";
+import { HostIcon } from "../lib/host-icon";
 import { MenuContent, menuItemClass } from "./menus";
 import { StatusIcon } from "./status-icon";
 
 const chevron = (
-  <svg
-    aria-hidden="true"
-    viewBox="0 0 16 16"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth="1.5"
-    strokeLinecap="round"
-    strokeLinejoin="round"
+  <HostIcon
+    name="ChevronDown"
+    fallback="ArrowDown"
     className="size-3.5 shrink-0 text-muted-foreground"
-  >
-    <path d="m4.5 6.25 3.5 3.5 3.5-3.5" />
-  </svg>
+  />
 );
 
 const bookmark = (

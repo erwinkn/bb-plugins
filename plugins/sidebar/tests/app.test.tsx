@@ -297,7 +297,9 @@ describe("activity sidebar", () => {
       hidden: true,
     });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
-    expect(toggle.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    expect(
+      toggle.querySelector("[data-icon]")?.getAttribute("aria-hidden"),
+    ).toBe("true");
     fireEvent.click(toggle);
 
     await waitFor(() =>
@@ -355,7 +357,9 @@ describe("activity sidebar", () => {
         '[data-sidebar-thread-id="old-0"]',
       )!;
       const marker = within(target as HTMLElement).getByRole("img", { name: "Archived" });
-      expect(marker.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+      expect(
+        marker.querySelector("[data-icon]")?.getAttribute("aria-hidden"),
+      ).toBe("true");
       expect(marker.parentElement?.firstElementChild?.textContent).toBe("Old thread 0");
       fireEvent.click(target);
       expect(slot.inspection.navigateCalls).toContainEqual({
@@ -1432,8 +1436,10 @@ describe("activity sidebar", () => {
       const header = group.querySelector(":scope > button")!;
       expect(header.textContent).toBe(group.getAttribute("aria-label"));
       expect(header.hasAttribute("title")).toBe(false);
-      expect(header.querySelectorAll("svg")).toHaveLength(1);
-      expect(header.querySelector("[data-group-chevron]")).not.toBeNull();
+      expect(header.querySelectorAll("[data-icon]")).toHaveLength(1);
+      expect(
+        header.querySelector("[data-icon='ChevronDown']"),
+      ).not.toBeNull();
     }
     const working = slot.container.querySelector(
       '[data-sidebar-thread-id="working"]',

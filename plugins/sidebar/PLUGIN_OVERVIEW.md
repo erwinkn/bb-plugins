@@ -6,6 +6,10 @@
 - `lib/client-state.ts`: versioned per-client preferences, archive visibility,
   and draft flags.
 - `lib/mobile-sidebar-scroll.ts`: scoped mobile whole-sidebar scroll styles.
+- `lib/host-icon-names.ts`: the icon names bb ships, generated from the pinned
+  bb tag by `scripts/host-icon-names.mjs`; do not edit by hand.
+- `lib/host-icon.tsx`: `experimental_Icon` wrapper typed against those names
+  with a fallback.
 - `components/draft-observer.tsx`: public composer-state observation.
 - `components/thread-row.tsx`: native thread navigation and actions.
 - `components/pull-request.tsx`: pull request icon and summary text.
