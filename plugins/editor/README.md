@@ -22,10 +22,12 @@ variant to match BB's mode and never change BB's global theme.
 
 A `.md` file opens as a rendered preview; the pencil button switches to the
 editor and back, per file, for the page's life. The preview follows the shared
-buffer. Relative images load through a short-lived lease for the workspace
-root; relative links to files under the root open in the same pane. In
-Changes, the eye button in the file row renders the new side, and its links
-open in the Files tab.
+buffer. For a thread's workspace or storage, BB's document binding resolves
+relative images and links from the document's directory. Elsewhere (a host
+path, or a project checkout with no thread) relative images load through a
+short-lived lease for the workspace root; relative links to files under the
+root open in the same pane. In Changes, the eye button in the file row
+renders the new side, and its links open in the Files tab.
 
 HTML files (`.html` and `.htm`) open with BB's built-in preview in file tabs.
 The same pencil button switches to the editor. This preview shows the saved

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Markdown, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { FileSessionSource } from "@/lib/file-session";
-import { anchorSlug, hasMarkdownImage, headingSlug, rewriteMarkdownPaths, workspacePathFromHref } from "@/lib/markdown-preview";
+import { anchorSlug, documentFor, hasMarkdownImage, headingSlug, rewriteMarkdownPaths, rootRelativeFromHref, workspacePathFromHref } from "@/lib/markdown-preview";
 
 /** Renew a lease this long before it expires, so an image never loads from a dead one. */
 const LEASE_RENEWAL_MARGIN_MS = 60_000;
@@ -24,16 +24,22 @@ export interface MarkdownPreviewProps {
 }
 
 /**
- * A Markdown document rendered in BB's chat typography. Relative images load
+ * A Markdown document rendered in BB's chat typography. A source BB can bind
+ * to a document — a thread's workspace or storage — renders through BB's
+ * document binding, which resolves relative images and links from the
+ * document's directory, confined to the root, and serves the images itself.
+ * A source BB cannot bind (a host path, or a workspace with no thread, such
+ * as the New thread Files tab) keeps the older path: relative images load
  * through a temporary preview lease for the workspace root, requested only
- * when the document has one and renewed before it lapses. Relative links are
- * resolved from the document's directory; BB renders them as file links, and
- * a plain click on one opens that file here.
+ * when the document has one and renewed before it lapses, and relative links
+ * are rewritten root-relative so BB renders them as file links. Either way a
+ * plain click on a file under the root opens that file here.
  */
 export function MarkdownPreview({ source, path, relativePath, rootPath, content, onOpenPath }: MarkdownPreviewProps) {
   const rpc = useRpc<typeof rpcContract>();
   const [lease, setLease] = useState<Lease | null>(null);
-  const needsLease = hasMarkdownImage(content);
+  const document = useMemo(() => documentFor(source, rootPath, relativePath), [source, rootPath, relativePath]);
+  const needsLease = document === null && hasMarkdownImage(content);
 
   useEffect(() => {
     if (!needsLease) return;
@@ -60,15 +66,16 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
   }, [needsLease, path, rpc, source]);
 
   const rendered = useMemo(
-    () => rewriteMarkdownPaths(content, { filePath: relativePath, baseUrl: lease?.baseUrl ?? null }),
-    [content, lease, relativePath],
+    () => (document !== null ? content : rewriteMarkdownPaths(content, { filePath: relativePath, baseUrl: lease?.baseUrl ?? null })),
+    [content, document, lease, relativePath],
   );
 
-  // BB renders the links itself: a file link opens in a new tab, and an
-  // anchor would open the app root. A plain click on a file under the root
-  // opens it here instead, and an anchor scrolls to its heading. The
+  // BB renders the links itself: a file link opens BB's preview panel (or a
+  // new tab), and an anchor would open the app root. A plain click on a file
+  // under the root opens it here instead, and an anchor scrolls to its
+  // heading; BB's headings carry no ids, so the slug is matched by text. The
   // listener is native and in the capture phase, so it runs before the
-  // host's handler.
+  // host's React handler on the anchor.
   const container = useRef<HTMLDivElement | null>(null);
   const openPath = useRef(onOpenPath);
   openPath.current = onOpenPath;
@@ -92,7 +99,9 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
       }
       const open = openPath.current;
       if (open === null) return;
-      const target = workspacePathFromHref(href, rootPath);
+      // A bound document's links arrive as `file:` hrefs; a rewritten link is
+      // already root-relative.
+      const target = workspacePathFromHref(href, rootPath) ?? rootRelativeFromHref(href);
       if (target === null) return;
       event.preventDefault();
       event.stopPropagation();
@@ -104,7 +113,7 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
 
   return (
     <div ref={container} className="absolute inset-0 overflow-auto bg-background" data-testid="markdown-preview">
-      <Markdown content={rendered} className="mx-auto max-w-3xl px-6 py-5" />
+      <Markdown content={rendered} className="mx-auto max-w-3xl px-6 py-5" experimental_document={document ?? undefined} />
     </div>
   );
 }
