@@ -13,14 +13,21 @@ function fixture() {
       .bb-sidebar-hover-actions { display: flex; }
       [data-plugin-nav-sidebar-accessory] { opacity: 0; }
     </style>
+    <div data-sidebar-navigation-item="__bb__/new-thread">
+      <button type="button">New thread</button>
+    </div>
     <div data-sidebar-navigation-item="__bb__/automations">
       <button type="button">Automations</button>
-      <div class="bb-sidebar-hover-actions">automations menu</div>
+      <div class="bb-sidebar-hover-actions" data-sidebar-hover-actions-mobile="always">
+        <button type="button" aria-label="Automations panel options" aria-haspopup="menu"></button>
+      </div>
     </div>
     <div data-sidebar-navigation-item="voice-mode/sessions">
       <button type="button">Voice</button>
-      <span data-plugin-nav-sidebar-accessory="">live</span>
-      <div class="bb-sidebar-hover-actions">voice menu</div>
+      <span data-plugin-nav-sidebar-accessory="" class="bb-sidebar-hover-actions-fade">live</span>
+      <div class="bb-sidebar-hover-actions" data-sidebar-hover-actions-mobile="always">
+        <button type="button" aria-label="Voice panel options" aria-haspopup="menu"></button>
+      </div>
     </div>
     <div data-sidebar-navigation-item="notes/home">
       <button type="button">Notes</button>
@@ -64,6 +71,8 @@ describe("plugin nav menus", () => {
       expect(displayOf('[data-sidebar-navigation-item="__bb__/automations"] > .bb-sidebar-hover-actions')).toBe("none");
       expect(displayOf('[data-sidebar-navigation-item="voice-mode/sessions"] > .bb-sidebar-hover-actions')).toBe("none");
       expect(displayOf('[data-sidebar-navigation-item="notes/home"] > .bb-sidebar-hover-actions')).toBe("none");
+      expect(displayOf('[data-sidebar-navigation-item="voice-mode/sessions"] > button')).toBe("inline-block");
+      expect(displayOf('[data-sidebar-navigation-item="__bb__/new-thread"] > button')).toBe("inline-block");
       expect(displayOf('[data-sidebar-thread-id="thr_1"] > .bb-sidebar-hover-actions')).toBe("flex");
       expect(displayOf('[data-plugin-nav-customize-item] > .bb-sidebar-hover-actions')).toBe("flex");
       expect(opacityOf("[data-plugin-nav-sidebar-accessory]")).toBe("1");
