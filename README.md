@@ -90,9 +90,13 @@ feature branches or pull requests for routine work.
 - The orchestrator is the only agent that runs Git commands: pull, add,
   commit, push, stash, checkout. Child threads never touch Git.
 - The user talks to the orchestrator. For a change to a plugin, the
-  orchestrator spawns a child thread on the main checkout with a scoped brief,
-  the child implements and reports back, and the orchestrator verifies,
-  reloads, and commits.
+  orchestrator spawns a child thread on the main checkout with the full task,
+  the child investigates, implements, and reports back, and the orchestrator
+  verifies, reloads, and commits. The orchestrator does not diagnose or look
+  for the solution itself before delegating: the child owns the whole
+  problem, from finding the cause to verifying the fix.
+- When a child has reported and its work is committed or reverted, the
+  orchestrator archives the child thread.
 - The orchestrator stays available while a child works, so it can relay
   questions to the user or discuss design points, but by default quick changes
   are hand-off, implement, reload, commit.
