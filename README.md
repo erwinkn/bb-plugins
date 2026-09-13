@@ -1028,3 +1028,33 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
 - **Symptom:** bb-mcp 0.4 removed the legacy scope/ceiling settings (`projectIds`, `hostIds`, `providerIds`, `permissionMode`, rate limits). Upgraded installs silently gain owner-level access, and there is no API to detect it: `bb.settings.define` only serves declared keys and `plugins.getSettings` filters values to the current schema.
 - **Ask:** let a plugin read its own stored-but-undeclared setting keys (or a `storedKeys` list) so migrations can warn or adapt.
 - **Status:** not filed. Suggested title: `Expose stored-but-undeclared plugin setting keys for migration checks`.
+
+### `threads.send` racing a queue-drain turn start returns HTTP 500 (2026-09-13)
+
+- **Where:** BB 0.43.1, plugin SDK `threads.send` (`mode: "queue-if-active"`)
+  issued while a queued message was draining onto the same thread.
+- **Symptom:** the send fails `HTTP 500` with
+  `ThreadLifecycleEventNotAppliedError: no transition for run.started from status active`.
+  The dispatch resolved as a turn start while the drain's `run.started` had
+  already flipped the thread to `active` inside the same window.
+- **Ask:** queue or re-resolve the send instead of 500ing — the caller cannot
+  distinguish "permanently refused" from "lost a sub-second race", so every
+  queued-mode sender needs its own uncertain-state handling.
+- **Observed by:** the questions plugin's outbox marked the submission
+  `uncertain` and kept the frozen snapshot, so no data was lost.
+- **Status:** not filed. Suggested title: `Queue a send that loses the race
+  with a queue-drain turn start instead of returning 500`.
+
+### Codex `thread/resume` does not apply updated `developerInstructions` (2026-09-13)
+
+- **Where:** BB 0.43.1 `provider-codex` → codex app-server `thread/resume`.
+- **Symptom:** BB recomposes per-turn instructions (including
+  `bb.agents.configure` dynamic contributions backed by
+  `thread_plugin_metadata`) and the bridge sends them as
+  `developerInstructions` on `thread/resume`, but the resumed codex session
+  keeps its original context — the rollout gains no new developer item and the
+  model cannot see post-start instruction updates.
+- **Impact:** per-thread plugin instructions (the questions summary) only reach
+  Codex at `thread/start`; updates set later never surface.
+- **Status:** not filed. Suggested title: `Apply updated developerInstructions
+  on thread/resume (or document that resume keeps the original context)`.
