@@ -7,18 +7,21 @@ import { experimental_captureBridgeJsonRpcOutput, experimental_runBridgeConforma
 import { experimental_acpProviderBridge } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import { withDevinModels } from "./model-bridge";
 import { withDevinUsage } from "./usage-bridge";
+import { withDevinWriteShim } from "./write-shim";
 import { buildDevinModels } from "./models";
 const raw = { families: [{ family_uid: "test", family_label: "Test", variants: [
   { model_uid: "test-medium", label: "Test Medium", max_context_tokens: 1000 },
   { model_uid: "test-high-priority", label: "Test High Fast", max_context_tokens: 1000 },
 ] }] };
 const catalog = buildDevinModels(raw);
-const experimental_providerBridge = withDevinUsage(withDevinModels(experimental_acpProviderBridge, async () => raw));
+const experimental_providerBridge = withDevinUsage(withDevinModels(withDevinWriteShim(experimental_acpProviderBridge), async () => raw));
 
 async function checkBridge() {
   const cwd = mkdtempSync(join(tmpdir(), "bb-devin-conformance-"));
+  const dataDir = mkdtempSync(join(tmpdir(), "bb-devin-bridge-data-"));
   const capture = experimental_captureBridgeJsonRpcOutput();
   try {
+  experimental_providerBridge.start?.({ pluginId: "devin", dataDir, tempDir: cwd });
   const report = await experimental_runBridgeConformance({
     providerId: "acp-devin",
     transport: { send: experimental_providerBridge.handleLine, takeMessages: capture.takeMessages },
