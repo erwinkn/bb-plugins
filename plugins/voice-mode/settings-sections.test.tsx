@@ -9,7 +9,7 @@ for (const [name, value] of Object.entries({ window: dom.window, document: dom.w
 const { installTestPluginRuntime, renderSlot } = await import("@get-bb/plugin-sdk/testing/app");
 const { act, fireEvent, within } = await import("@testing-library/react");
 installTestPluginRuntime();
-const { AudioSettings, MicLevelMeter, PromptEditor } = await import("./settings-sections.tsx");
+const { AudioSettings, CredentialCard, MicLevelMeter, PromptEditor } = await import("./settings-sections.tsx");
 after(() => dom.window.close());
 
 test("a microphone test stopped before permission resolves releases the late stream", async () => {
@@ -161,4 +161,34 @@ for(const width of [390,1200])test(`prompt controls retain width constraints at 
   try{const ui=within(slot.container);const editor=await ui.findByRole("textbox",{name:"Worker prompt"});assert.ok(editor.classList.contains("min-w-0"));assert.ok(editor.classList.contains("w-full"));
     assert.ok(ui.getByRole("button",{name:"Save"}).parentElement!.classList.contains("flex-wrap"));assert.equal(slot.container.querySelector("pre")!.classList.contains("whitespace-pre-wrap"),true);
   }finally{slot.lifecycle.unmount();}
+});
+
+test("an environment API key offers the credential switch when the subscription is pinned", async () => {
+  const saved: unknown[] = [];
+  const status = { effective: "subscription", preference: "subscription", hasApiKey: false, envKeyPresent: true, subscriptionAvailable: true };
+  const slot = renderSlot({ component: CredentialCard }, { liveEngine: true }, { rpc: {
+    getCredentialStatus: () => status,
+    setConfig: (args: unknown) => { saved.push(args); return { ok: true }; },
+  } });
+  try {
+    const ui = within(slot.container);
+    const select = await ui.findByRole("combobox") as HTMLSelectElement;
+    assert.equal(select.value, "subscription");
+    assert.equal(ui.queryByRole("button", { name: "Remove API key" }), null, "only a stored key can be removed");
+    assert.match(ui.getByText(/gpt-live-1 requires an OpenAI API key/).textContent ?? "", /subscription only covers realtime/);
+    fireEvent.change(select, { target: { value: "apiKey" } });
+    await act(async () => { await Promise.resolve(); });
+    assert.deepEqual(saved, [{ credentialPreference: "apiKey" }]);
+  } finally { slot.lifecycle.unmount(); }
+});
+
+test("without any API key the credential card only reports the subscription", async () => {
+  const slot = renderSlot({ component: CredentialCard }, {}, { rpc: {
+    getCredentialStatus: () => ({ effective: "subscription", preference: "subscription", hasApiKey: false, envKeyPresent: false, subscriptionAvailable: true }),
+  } });
+  try {
+    const ui = within(slot.container);
+    await ui.findByText("Using your ChatGPT subscription");
+    assert.equal(ui.queryByRole("combobox"), null);
+  } finally { slot.lifecycle.unmount(); }
 });
