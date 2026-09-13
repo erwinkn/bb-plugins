@@ -143,7 +143,6 @@ function LoadedPad({ threadId, initial }: { threadId: string; initial: { scope: 
     <div className="sp-document" onKeyDown={(event) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void session.flush(); }
     }}><RichEditor key={state.editorEpoch} document={state.document} onChange={(document) => session.change(document)} /></div>
-    <div className="sp-footer"><span>Ideas, discoveries, and next steps</span><span>Revision {state.note.revision}</span></div>
   </div>;
 }
 function ScratchpadPanel({ threadId }: PluginThreadPanelProps) {
