@@ -3,7 +3,7 @@ import type { ComponentType } from "react";
 import { toast } from "sonner";
 import { experimental_useCodeTheme, useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
-import { mergeListing, splitPath, type FlatEntry } from "@/lib/file-tree";
+import { mergeListing, sameEntries, splitPath, type FlatEntry } from "@/lib/file-tree";
 import { useElementWidth } from "@/lib/use-element-width";
 import type { EditorPrefs } from "@/lib/editor-options";
 import {
@@ -23,7 +23,7 @@ import { ResizeHandle } from "./ResizeHandle";
 import { ThemePicker } from "./ThemePicker";
 import { themeNameFor } from "@/lib/themes";
 import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
-import { useFileWatch } from "@/lib/file-watch";
+import { useFileWatch, type FileChange } from "@/lib/file-watch";
 import { previewKind } from "@/lib/file-preview";
 
 export type Surface = "opener" | "panel";
@@ -59,6 +59,8 @@ interface PendingNavigation {
 }
 const COMPACT_BREAKPOINT_PX = 420;
 const HISTORY_LIMIT = 50;
+/** How long a change notice may still be the echo of our own mutation. */
+const MUTATION_ECHO_WINDOW_MS = 2000;
 
 export function Workbench({ surface, source, initialPath, workspaceKey, label, prefs, onSetPref, Original }: WorkbenchProps) {
   const rpc = useRpc<typeof rpcContract>();
@@ -131,23 +133,48 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const listingRequests = useRef(new Set<string>());
   // A refresh starts a new generation; in-flight results from before it are dropped.
   const treeGeneration = useRef(0);
-  const loadTree = useCallback(() => {
-    treeGeneration.current += 1;
-    const generation = treeGeneration.current;
-    listingRequests.current.clear();
-    setTree((current) => ({ ...current, isLoading: true, error: null }));
-    return rpc
-      .call("tree", { source })
-      .then((result) => {
-        if (generation !== treeGeneration.current) return;
-        setTree({ entries: result.entries, root: result.root, isLoading: false, error: null });
-      })
-      .catch((error: unknown) => {
-        if (generation !== treeGeneration.current) return;
-        treeRequested.current = false;
-        setTree({ ...EMPTY_TREE, error: error instanceof Error ? error.message : "Could not list files" });
-      });
-  }, [rpc, source]);
+  /**
+   * Resolves true when a listing was applied. A quiet reload happens in the
+   * background — no spinner, and a failure toasts rather than replacing the
+   * tree with an error. Either way the response merges into the entries the
+   * tree has, so levels a reload does not cover stay on screen.
+   */
+  const loadTree = useCallback(
+    (options?: { quiet?: boolean }) => {
+      treeGeneration.current += 1;
+      const generation = treeGeneration.current;
+      listingRequests.current.clear();
+      const quiet = options?.quiet === true;
+      if (!quiet) setTree((current) => ({ ...current, isLoading: true, error: null }));
+      return rpc
+        .call("tree", { source })
+        .then((result) => {
+          if (generation !== treeGeneration.current) return false;
+          setTree((current) => {
+            const entries = mergeListing(current.entries, "", result.entries);
+            // An identical merge leaves the tree untouched — no re-render.
+            if (current.root === result.root && current.error === null && sameEntries(current.entries, entries)) {
+              return current.isLoading ? { ...current, isLoading: false } : current;
+            }
+            return { entries, root: result.root, isLoading: false, error: null };
+          });
+          return true;
+        })
+        .catch((error: unknown) => {
+          if (generation !== treeGeneration.current) return false;
+          const message = error instanceof Error ? error.message : "Could not list files";
+          if (quiet) {
+            setTree((current) => (current.entries.length === 0 ? { ...current, isLoading: false, error: message } : current));
+            toast.error(message);
+            return false;
+          }
+          treeRequested.current = false;
+          setTree({ ...EMPTY_TREE, error: message });
+          return false;
+        });
+    },
+    [rpc, source],
+  );
 
   const loadDirectory = useCallback(
     (subpath: string) => {
@@ -172,13 +199,40 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   // A file that appeared or went away changes the tree; an edit does not.
   // The open files themselves are re-read by the watch hook.
   const treeReload = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The batched change notices waiting for the debounce. */
+  const pendingNotice = useRef<{ rescan: boolean; changes: FileChange[] }>({ rescan: false, changes: [] });
+  /** Paths a mutation of ours just rewrote; the watcher's echo of them must not reload the tree again. */
+  const ownMutations = useRef(new Map<string, number>());
+  const noteOwnMutation = useCallback((paths: readonly string[]) => {
+    const now = Date.now();
+    for (const path of paths) ownMutations.current.set(path, now);
+  }, []);
+  const isOwnMutationEcho = useCallback((changedPath: string): boolean => {
+    const normalized = changedPath.replace(/\\/g, "/");
+    const now = Date.now();
+    for (const [mutated, at] of ownMutations.current) {
+      if (now - at > MUTATION_ECHO_WINDOW_MS) {
+        ownMutations.current.delete(mutated);
+        continue;
+      }
+      if (normalized === mutated || normalized.startsWith(`${mutated}/`)) return true;
+    }
+    return false;
+  }, []);
   useFileWatch(source, (event) => {
     if (!treeRequested.current) return;
     if (event.kind === "changed" && event.changes.every((change) => change.type === "update")) return;
+    if (event.kind === "rescan") pendingNotice.current.rescan = true;
+    else pendingNotice.current.changes.push(...event.changes);
     if (treeReload.current !== null) clearTimeout(treeReload.current);
     treeReload.current = setTimeout(() => {
       treeReload.current = null;
-      void loadTree();
+      const notice = pendingNotice.current;
+      pendingNotice.current = { rescan: false, changes: [] };
+      // A notice that only echoes our own just-applied mutations is already
+      // reflected in the tree; a rescan always reloads.
+      if (!notice.rescan && notice.changes.length > 0 && notice.changes.every((change) => isOwnMutationEcho(change.path))) return;
+      void loadTree({ quiet: true });
     }, 300);
   });
 
@@ -223,13 +277,21 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         return;
       }
       if (paneRef.current?.isDirty()) {
-        setPendingOpen(pending);
-        if (compact) setTreeOpen(false);
-        return;
+        if (prefs.autoSave !== "off") {
+          // Auto save owns the save: start it and move on. The session's
+          // queue carries the write through after the pane switches, and a
+          // failure stays on the file's session for its next open.
+          void paneRef.current.save();
+        } else {
+          // Manual mode: navigating away is where unsaved work would die.
+          setPendingOpen(pending);
+          if (compact) setTreeOpen(false);
+          return;
+        }
       }
       navigateTo(pending);
     },
-    [activePath, compact, navigateTo],
+    [activePath, compact, navigateTo, prefs.autoSave],
   );
 
   const guardedShow = useCallback(
@@ -263,11 +325,11 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const createEntry = useCallback(
     async (path: string, kind: CreateKind) => {
       await rpc.call("create", { path, source, kind });
-      await loadTree();
+      if (await loadTree({ quiet: true })) noteOwnMutation([path]);
       if (kind === "file") guardedShow(path, { record: true });
       else toast.success(`Created ${path}/`);
     },
-    [guardedShow, loadTree, rpc, source],
+    [guardedShow, loadTree, noteOwnMutation, rpc, source],
   );
 
   const renameEntry = useCallback(
@@ -292,9 +354,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         entry === path ? newPath : kind === "directory" && entry.startsWith(prefix) ? `${newPath}/${entry.slice(prefix.length)}` : entry;
       setHistory((current) => ({ ...current, paths: current.paths.map(renamed) }));
       if (movesOpenFile && activePath !== null) show(renamed(activePath), { record: false });
-      await loadTree();
+      if (await loadTree({ quiet: true })) noteOwnMutation([path, newPath]);
     },
-    [activePath, loadTree, rpc, show, source],
+    [activePath, loadTree, noteOwnMutation, rpc, show, source],
   );
 
   const deleteEntry = useCallback(
@@ -312,7 +374,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         if (gone) setActivePath(activePath);
         throw error;
       }
-      await loadTree();
+      if (await loadTree({ quiet: true })) noteOwnMutation([path]);
       // Deleted paths leave history; the index stays on the same entry.
       setHistory((current) => {
         const paths = current.paths.filter((entry) => !removed(entry));
