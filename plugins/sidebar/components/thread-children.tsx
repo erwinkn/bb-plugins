@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   CHILD_PAGE_SIZE,
   MAX_NESTING_DEPTH,
@@ -13,15 +13,28 @@ export function ThreadChildren({
   depth,
   activeThreadId,
   renderRow,
+  expandSignal = 0,
 }: {
   nodes: ThreadNode[];
   parentTitle: string;
   depth: number;
   activeThreadId: string | null;
   renderRow: (node: ThreadNode, depth: number) => ReactNode;
+  /**
+   * Bumped by a drag dwell on this parent (bb expands the hovered thread's
+   * children after the same delay). Only the rising edge expands; Show less
+   * still collapses afterwards.
+   */
+  expandSignal?: number;
 }) {
   const id = useId();
   const [limit, setLimit] = useState(CHILD_PAGE_SIZE);
+  const lastExpandSignal = useRef(expandSignal);
+  useEffect(() => {
+    if (expandSignal === lastExpandSignal.current) return;
+    lastExpandSignal.current = expandSignal;
+    setLimit(Number.MAX_SAFE_INTEGER);
+  }, [expandSignal]);
   const flat = depth === MAX_NESTING_DEPTH;
   const relationship = flat ? "descendants" : "children";
   const items = flat ? flattenDescendants(nodes) : nodes;

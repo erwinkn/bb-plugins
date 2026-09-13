@@ -3,6 +3,7 @@ import * as Menu from "@radix-ui/react-context-menu";
 import type { Space } from "../lib/space-schema";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
+import { HostIcon } from "../lib/host-icon";
 import { menuItemClass } from "./menus";
 
 export type ProjectHeaderAction = "new-thread" | "rename" | "remove" | "manage";
@@ -66,9 +67,11 @@ export function ProjectHeaderMenu({
             <Menu.Sub>
               <Menu.SubTrigger className={menuItemClass}>
                 <span className="flex-1">Spaces</span>
-                <span aria-hidden="true" className="text-muted-foreground">
-                  ›
-                </span>
+                <HostIcon
+                  name="ChevronRight"
+                  fallback="ArrowRight"
+                  className="size-3.5 shrink-0 text-muted-foreground"
+                />
               </Menu.SubTrigger>
               <Menu.Portal>
                 <Menu.SubContent

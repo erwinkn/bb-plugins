@@ -101,6 +101,29 @@ export function DisplayMenu() {
         </Menu.RadioGroup>
         <Menu.Separator className="my-1 h-px bg-border" />
         <Menu.Label className="px-2 py-1 text-xs text-muted-foreground">
+          Order
+        </Menu.Label>
+        <Menu.RadioGroup
+          value={state.sortDirection}
+          onValueChange={(sortDirection) =>
+            updateState((current) => ({
+              ...current,
+              sortDirection:
+                sortDirection === "ascending" ? "ascending" : "descending",
+            }))
+          }
+        >
+          {(["descending", "ascending"] as const).map((value) => (
+            <Menu.RadioItem key={value} value={value} className={menuItemClass}>
+              <span className="flex-1">
+                {value === "ascending" ? "Oldest first" : "Newest first"}
+              </span>
+              <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
+            </Menu.RadioItem>
+          ))}
+        </Menu.RadioGroup>
+        <Menu.Separator className="my-1 h-px bg-border" />
+        <Menu.Label className="px-2 py-1 text-xs text-muted-foreground">
           Show statuses
         </Menu.Label>
         {STATUSES.map((status) => (

@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { parseState, updateState } from "../lib/client-state";
 import type { Space, SpaceCatalog } from "../lib/space-schema";
-import { thread } from "./fixtures";
+import { thread, visibleStatus } from "./fixtures";
 
 const app = await loadPluginApp(() => import("../app"));
 const localStorage = window.localStorage;
@@ -228,7 +228,7 @@ describe("spaces", () => {
     // The pinned parent stays, its outside child is gone, and the inside child
     // of an outside parent is a root.
     expect(rows(slot)).toEqual(["p1-root", "p1-child-of-p2"]);
-    expect(slot.getByRole("status").textContent).toContain(
+    expect(visibleStatus(slot)?.textContent).toContain(
       "outside this scope",
     );
     expect(
@@ -239,7 +239,7 @@ describe("spaces", () => {
     expect(scopeButton(slot).getAttribute("aria-label")).toBe(
       "Threads: All projects",
     );
-    expect(slot.queryByRole("status")).toBeNull();
+    expect(visibleStatus(slot)).toBeUndefined();
     expect(rows(slot)).toHaveLength(4);
   });
 
@@ -354,10 +354,10 @@ describe("spaces", () => {
     expect(scopeButton(slot).getAttribute("aria-label")).toBe(
       "Threads: All projects",
     );
-    expect(slot.getByRole("status").textContent).toContain("no longer exists");
+    expect(visibleStatus(slot)?.textContent).toContain("no longer exists");
     expect(rows(slot)).toHaveLength(4);
     fireEvent.click(slot.getByRole("button", { name: "Dismiss" }));
-    expect(slot.queryByRole("status")).toBeNull();
+    expect(visibleStatus(slot)).toBeUndefined();
     // Garbage payloads are ignored.
     await slot.behavior.emitRealtime("spaces-changed", { nope: true });
     expect(JSON.parse(localStorage.getItem(CACHE_KEY)!)).toEqual({
@@ -451,7 +451,7 @@ describe("spaces", () => {
       ...server(),
       getSpaces: () => new Promise<SpaceCatalog>((r) => (resolve = r)),
     });
-    expect(pending.getByRole("status").textContent).toBe("Loading spaces…");
+    expect(visibleStatus(pending)?.textContent).toBe("Loading spaces…");
     expect(rows(pending)).toHaveLength(0);
     await act(async () => resolve(initial));
     expect(rows(pending)).toEqual(["p1-root", "p1-child-of-p2"]);

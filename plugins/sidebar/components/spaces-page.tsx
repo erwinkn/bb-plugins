@@ -15,6 +15,7 @@ import { useCompact } from "../lib/use-compact";
 import { useLongPressMenu } from "../lib/use-long-press-menu";
 import { useProjects } from "../lib/use-projects";
 import { useSpaces } from "../lib/use-spaces";
+import { HostIcon } from "../lib/host-icon";
 import { InlineForm, NameField } from "./inline-form";
 import { menuItemClass } from "./menus";
 import {
@@ -53,9 +54,11 @@ const subtleClass = "text-xs text-muted-foreground";
 const navRowClass =
   "relative flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring";
 const chevron = (
-  <span aria-hidden="true" className="text-muted-foreground">
-    ›
-  </span>
+  <HostIcon
+    name="ChevronRight"
+    fallback="ArrowRight"
+    className="size-4 shrink-0 text-muted-foreground"
+  />
 );
 
 type SpaceEdit = "rename" | "delete";
@@ -236,9 +239,14 @@ export function SpacesPage({ subPath }: PluginNavPanelProps) {
     <button
       type="button"
       onClick={() => go("")}
-      className="mb-2 -ml-1 rounded px-1 py-0.5 text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+      className="mb-2 -ml-1 flex items-center gap-1 rounded px-1 py-0.5 text-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
     >
-      ‹ Spaces
+      <HostIcon
+        name="ChevronLeft"
+        fallback="ArrowTurnBackward"
+        className="size-4 shrink-0"
+      />
+      Spaces
     </button>
   );
 

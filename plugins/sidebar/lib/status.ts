@@ -9,6 +9,8 @@ export const STATUSES = [
 ] as const;
 export type Status = (typeof STATUSES)[number];
 export type SortBy = "updated" | "created";
+/** Newest first is the default; ascending shows the oldest thread first. */
+export type SortDirection = "descending" | "ascending";
 export const STATUS_LABEL: Record<Status, string> = {
   attention: "Needs Attention",
   unread: "Unread",
@@ -66,11 +68,13 @@ export function compareThreads(
   a: PluginSidebarThread,
   b: PluginSidebarThread,
   sortBy: SortBy = "updated",
+  direction: SortDirection = "descending",
 ): number {
   const field = sortBy === "created" ? "createdAt" : "updatedAt";
+  // Pins lead in both directions; only the date order flips.
   return (
     Number(b.isPinned) - Number(a.isPinned) ||
-    b[field] - a[field] ||
+    (direction === "ascending" ? a[field] - b[field] : b[field] - a[field]) ||
     a.id.localeCompare(b.id)
   );
 }

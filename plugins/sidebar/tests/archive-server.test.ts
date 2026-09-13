@@ -109,6 +109,7 @@ describe("archive API", () => {
               ...makeThreadResponse({ id: "old", archivedAt: 123 }),
               environmentName: null,
               environmentBranchName: null,
+              environmentProviderId: null,
               environmentWorkspaceDisplayKind: "other",
             },
           ],
@@ -135,6 +136,52 @@ describe("archive API", () => {
       await expect(
         host.harness.behavior.callRpc("restoreThread", { threadId: "" }),
       ).rejects.toThrow();
+    } finally {
+      await host.harness.lifecycle.dispose();
+    }
+  });
+});
+
+describe("archive change signals", () => {
+  it.each(["thread.archived", "thread.unarchived", "thread.deleted"] as const)(
+    "invalidates the archive list on %s",
+    async (event) => {
+      const host = createFakePluginHost({
+        sdk: { threads: { updatePluginMetadata: async () => ({}) } },
+      });
+      plugin(host.bb);
+      try {
+        host.harness.inspection.realtimeSignals.length = 0;
+        await host.harness.emitThreadEvent(event, {
+          thread: makeThreadResponse({ id: "moved" }),
+        });
+        expect(
+          host.harness.inspection.realtimeSignals.filter(
+            (signal) => signal.channel === "archives-changed",
+          ),
+        ).toEqual([{ channel: "archives-changed", payload: {} }]);
+      } finally {
+        await host.harness.lifecycle.dispose();
+      }
+    },
+  );
+
+  it("does not put a restored thread back into the library", async () => {
+    const host = createFakePluginHost({
+      sdk: { threads: { updatePluginMetadata: async () => ({}) } },
+    });
+    plugin(host.bb);
+    try {
+      await host.harness.behavior.callRpc("save", { threadId: "kept" });
+      await host.harness.emitThreadEvent("thread.archived", {
+        thread: makeThreadResponse({ id: "kept" }),
+      });
+      await host.harness.emitThreadEvent("thread.unarchived", {
+        thread: makeThreadResponse({ id: "kept" }),
+      });
+      await expect(
+        host.harness.behavior.callRpc("getLibrary", null),
+      ).resolves.toMatchObject({ ids: [] });
     } finally {
       await host.harness.lifecycle.dispose();
     }

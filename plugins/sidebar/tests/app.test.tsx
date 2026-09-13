@@ -12,7 +12,7 @@ import {
   renderSlot as renderSdkSlot,
 } from "@get-bb/plugin-sdk/testing/app";
 import { parseState, updateState, recordDraft } from "../lib/client-state";
-import { thread } from "./fixtures";
+import { thread, visibleStatus } from "./fixtures";
 
 const splitOverride = vi.hoisted(() => ({ enabled: false, drag: vi.fn() }));
 const renameOverride = vi.hoisted(() => ({ handler: null as null | ((id: string, title: string) => Promise<void>) }));
@@ -297,7 +297,9 @@ describe("activity sidebar", () => {
       hidden: true,
     });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
-    expect(toggle.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    expect(
+      toggle.querySelector("[data-icon]")?.getAttribute("aria-hidden"),
+    ).toBe("true");
     fireEvent.click(toggle);
 
     await waitFor(() =>
@@ -355,7 +357,9 @@ describe("activity sidebar", () => {
         '[data-sidebar-thread-id="old-0"]',
       )!;
       const marker = within(target as HTMLElement).getByRole("img", { name: "Archived" });
-      expect(marker.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+      expect(
+        marker.querySelector("[data-icon]")?.getAttribute("aria-hidden"),
+      ).toBe("true");
       expect(marker.parentElement?.firstElementChild?.textContent).toBe("Old thread 0");
       fireEvent.click(target);
       expect(slot.inspection.navigateCalls).toContainEqual({
@@ -1184,6 +1188,190 @@ describe("activity sidebar", () => {
       ]);
     },
   );
+  it("reparents a nested thread through the row menu and detaches to top level", async () => {
+    const setParent = vi.fn().mockResolvedValue({ ok: true });
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads, projects },
+      rpc: { setParent },
+    });
+    const childrenOf = (title: string) =>
+      slot.queryAllByRole("list", {
+        name: (name) => name.startsWith(`Children of ${title}`),
+      });
+    expect(childrenOf("Blocked child")).toHaveLength(0);
+
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-sidebar-thread-id="child"]')!,
+    );
+    const menu = await slot.findByRole("menu", {
+      name: "Actions for Blocked child",
+    });
+    // Its own parent must not be offered as a candidate.
+    const trigger = within(menu).getByRole("menuitem", {
+      name: "Make child of…",
+    });
+    fireEvent.pointerMove(trigger);
+    fireEvent.keyDown(trigger, { key: "ArrowRight" });
+    const subMenu = await waitFor(() =>
+      within(document.body)
+        .getAllByRole("menu")
+        .find((candidate) => !candidate.hasAttribute("aria-label")),
+    );
+    expect(
+      within(subMenu!).queryByRole("menuitem", { name: "Running parent" }),
+    ).toBeNull();
+    fireEvent.click(
+      within(subMenu!).getByRole("menuitem", { name: "Read reply" }),
+    );
+    expect(setParent).toHaveBeenCalledWith({
+      threadId: "child",
+      parentThreadId: "done",
+    });
+    // The local override nests the row immediately.
+    expect(childrenOf("Read reply")).toHaveLength(1);
+
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-sidebar-thread-id="child"]')!,
+    );
+    const menu2 = await slot.findByRole("menu", {
+      name: "Actions for Blocked child",
+    });
+    fireEvent.click(
+      within(menu2).getByRole("menuitem", { name: "Move to top level" }),
+    );
+    expect(setParent).toHaveBeenLastCalledWith({
+      threadId: "child",
+      parentThreadId: null,
+    });
+    expect(childrenOf("Read reply")).toHaveLength(0);
+  });
+  it("rolls back the local nesting when setParent fails", async () => {
+    const setParent = vi.fn().mockRejectedValue(new Error("depth limit"));
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads, projects },
+      rpc: { setParent },
+    });
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-sidebar-thread-id="child"]')!,
+    );
+    const menu = await slot.findByRole("menu", {
+      name: "Actions for Blocked child",
+    });
+    fireEvent.click(
+      within(menu).getByRole("menuitem", { name: "Move to top level" }),
+    );
+    expect(setParent).toHaveBeenCalledWith({
+      threadId: "child",
+      parentThreadId: null,
+    });
+    await waitFor(() =>
+      expect(
+        slot.container.querySelector(
+          '[data-thread-children-depth="1"] [data-sidebar-thread-id="child"]',
+        ),
+      ).toBeTruthy(),
+    );
+    await waitFor(() =>
+      expect(slot.getByRole("alert").textContent).toContain("depth limit"),
+    );
+  });
+  it("keeps a newer reparent when an earlier overlapping request fails", async () => {
+    let rejectFirst!: (error: Error) => void;
+    const setParent = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ ok: boolean }>((_, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockResolvedValue({ ok: true });
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads, projects },
+      rpc: { setParent },
+    });
+    const childrenOf = (title: string) =>
+      slot.queryAllByRole("list", {
+        name: (name) => name.startsWith(`Children of ${title}`),
+      });
+    const reparentViaMenu = async (target: string) => {
+      fireEvent.contextMenu(
+        slot.container.querySelector('[data-sidebar-thread-id="child"]')!,
+      );
+      const menu = await slot.findByRole("menu", {
+        name: "Actions for Blocked child",
+      });
+      const trigger = within(menu).getByRole("menuitem", {
+        name: "Make child of…",
+      });
+      fireEvent.pointerMove(trigger);
+      fireEvent.keyDown(trigger, { key: "ArrowRight" });
+      const subMenu = await waitFor(() =>
+        within(document.body)
+          .getAllByRole("menu")
+          .find((candidate) => !candidate.hasAttribute("aria-label")),
+      );
+      fireEvent.click(within(subMenu!).getByRole("menuitem", { name: target }));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    };
+    await reparentViaMenu("Read reply");
+    expect(childrenOf("Read reply")).toHaveLength(1);
+    await reparentViaMenu("New reply");
+    expect(childrenOf("New reply")).toHaveLength(1);
+    expect(childrenOf("Read reply")).toHaveLength(0);
+    // The earlier request fails late; the newer override must survive.
+    await act(async () => rejectFirst(new Error("offline")));
+    expect(childrenOf("New reply")).toHaveLength(1);
+    await waitFor(() =>
+      expect(slot.getByRole("alert").textContent).toContain("offline"),
+    );
+  });
+  it("offers every valid candidate parent without truncating the list", async () => {
+    const many = [
+      thread({ id: "source", title: "Source", projectId: "project-1" }),
+      ...Array.from({ length: 40 }, (_, index) =>
+        thread({
+          id: `candidate-${index}`,
+          title: `Candidate ${index}`,
+          projectId: "project-1",
+          updatedAt: index,
+        }),
+      ),
+    ];
+    const slot = renderSlot(app.threadLists[0], props, {
+      sidebarThreads: { threads: many, projects },
+    });
+    fireEvent.contextMenu(
+      slot.container.querySelector('[data-sidebar-thread-id="source"]')!,
+    );
+    const menu = await slot.findByRole("menu", { name: "Actions for Source" });
+    const trigger = within(menu).getByRole("menuitem", {
+      name: "Make child of…",
+    });
+    fireEvent.pointerMove(trigger);
+    fireEvent.keyDown(trigger, { key: "ArrowRight" });
+    const subMenu = await waitFor(() =>
+      within(document.body)
+        .getAllByRole("menu")
+        .find((candidate) => !candidate.hasAttribute("aria-label")),
+    );
+    expect(within(subMenu!).getAllByRole("menuitem")).toHaveLength(40);
+    // The oldest candidate is the first a cap would drop.
+    expect(
+      within(subMenu!).getByRole("menuitem", { name: "Candidate 0" }),
+    ).toBeTruthy();
+  });
+  it("does not swallow the click after Escape when no drag is active", async () => {
+    const slot = mount();
+    const row = slot.container.querySelector(
+      '[data-sidebar-thread-id="unread"]',
+    )!;
+    fireEvent.keyDown(row, { key: "Escape" });
+    fireEvent.click(row);
+    expect(props.onNavigate).toHaveBeenCalledOnce();
+  });
   it("opens a child's menu after a long press and suppresses the release click", async () => {
     const slot = mount();
     const row = slot.container.querySelector(
@@ -1432,8 +1620,10 @@ describe("activity sidebar", () => {
       const header = group.querySelector(":scope > button")!;
       expect(header.textContent).toBe(group.getAttribute("aria-label"));
       expect(header.hasAttribute("title")).toBe(false);
-      expect(header.querySelectorAll("svg")).toHaveLength(1);
-      expect(header.querySelector("[data-group-chevron]")).not.toBeNull();
+      expect(header.querySelectorAll("[data-icon]")).toHaveLength(1);
+      expect(
+        header.querySelector("[data-icon='ChevronDown']"),
+      ).not.toBeNull();
     }
     const working = slot.container.querySelector(
       '[data-sidebar-thread-id="working"]',
@@ -1665,6 +1855,7 @@ describe("activity sidebar", () => {
               id: "env",
               name: "Local",
               branchName: "feature/activity",
+              providerId: null,
               workspaceDisplayKind: "managed-worktree",
             },
           }),
@@ -1733,6 +1924,7 @@ describe("activity sidebar", () => {
               id: "env",
               name: "Local",
               branchName: "feat/prod-step",
+              providerId: null,
               workspaceDisplayKind: "managed-worktree",
             },
           }),
@@ -1815,6 +2007,7 @@ describe("activity sidebar", () => {
               id: "env",
               name: "Local",
               branchName: "feature/activity",
+              providerId: null,
               workspaceDisplayKind: "managed-worktree",
             },
           }),
@@ -1908,6 +2101,7 @@ describe("activity sidebar", () => {
               id: "env",
               name: "Review workspace",
               branchName: branch,
+              providerId: null,
               workspaceDisplayKind: "managed-worktree",
             },
             host: { id: "host", name: "Review machine" },
@@ -2156,7 +2350,7 @@ describe("activity sidebar", () => {
     const slot = renderSlot(app.threadLists[0], props, {
       sidebarThreads: { status: "loading" },
     });
-    expect(slot.getByRole("status").textContent).toBe("Loading threads…");
+    expect(visibleStatus(slot)?.textContent).toBe("Loading threads…");
     slot.unmount();
     const failed = renderSlot(app.threadLists[0], props, {
       sidebarThreads: { status: "error" },

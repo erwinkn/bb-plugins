@@ -1,5 +1,16 @@
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 
+// dnd-kit mounts a visually-hidden aria-live="assertive" role="status" region
+// for drag announcements; the sidebar's own status elements never set
+// aria-live, so this picks the user-visible message.
+export function visibleStatus(slot: {
+  getAllByRole(role: string): HTMLElement[];
+}): HTMLElement | undefined {
+  return slot
+    .getAllByRole("status")
+    .find((element) => !element.hasAttribute("aria-live"));
+}
+
 export function thread(
   overrides: Partial<PluginSidebarThread> = {},
 ): PluginSidebarThread {

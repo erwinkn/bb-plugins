@@ -6,11 +6,23 @@
 - `lib/client-state.ts`: versioned per-client preferences, archive visibility,
   and draft flags.
 - `lib/mobile-sidebar-scroll.ts`: scoped mobile whole-sidebar scroll styles.
+- `lib/host-icon-names.ts`: the icon names bb ships, generated from the pinned
+  bb tag by `scripts/host-icon-names.mjs`; do not edit by hand.
+- `lib/host-icon.tsx`: `experimental_Icon` wrapper typed against those names
+  with a fallback.
 - `components/draft-observer.tsx`: public composer-state observation.
 - `components/thread-row.tsx`: native thread navigation and actions.
 - `components/pull-request.tsx`: pull request icon and summary text.
 - `components/thread-children.tsx`: child previews, expansion, and two-level nesting.
-- `components/menus.tsx`: grouping, date sorting, and status visibility controls.
+- `components/menus.tsx`: grouping, date sorting, order, and status visibility
+  controls.
+- `lib/ui-preferences-schema.ts`: the five BB sidebar preferences the plugin
+  mirrors, shared by server and frontend.
+- `lib/ui-preferences-contract.ts`, `lib/ui-preferences-store.ts`: read and
+  compare-and-swap write RPCs over `bb.sdk.system.uiPreferences`, with a
+  realtime signal per write.
+- `lib/use-ui-preferences.ts`: applies BB's preferences to client state on
+  mount, focus, and reconnect, and writes local changes through.
 - `components/spaces-page.tsx`: the Spaces `navPanel` page (route
   `/plugins/<id>/spaces`, sub-paths `new`, `projects`, `<spaceId>`): the
   spaces list, the New space form, a space's heading actions, and the All
@@ -38,8 +50,8 @@
   type).
 - `lib/library.ts`: the ancestor rule that counts descendants of members as
   saved.
-- `lib/library-store.ts`: key-value library document and archive/delete
-  cleanup.
+- `lib/library-store.ts`: key-value library document, archive/delete
+  cleanup, and the saved flag mirrored into thread plugin metadata.
 - `lib/use-library.ts`: library loading, local cache, and realtime refresh.
 - `lib/project-schema.ts`, `lib/project-contract.ts`, `lib/projects-rpc.ts`,
   `lib/use-projects.ts`: project inventory (folders, hosts) and management RPC
@@ -51,6 +63,18 @@
 - `lib/spaces-store.ts`: key-value catalog with revision checks, realtime
   signals, and the `bb activity` export/import CLI.
 - `lib/use-spaces.ts`: catalog loading, local cache, realtime refresh, and saves.
+- `lib/nesting-contract.ts`: `setParent` RPC; reparents and unpins a pinned
+  source first, mirroring bb's own unpin-then-reparent.
+- `lib/thread-dnd.ts`: pure drag decision logic ported from bb's sidebar
+  (activation, center-band nesting, rejection states); group drops replace bb's
+  section moves.
+- `lib/use-reorder-dnd.ts`: bb's sensor setup, click suppression, vertical-axis
+  lock, and Escape cancel (mouse 4 px, touch 200 ms hold); the keyboard sensor
+  is replaced by menu actions.
+- `lib/use-thread-dnd.ts`, `lib/thread-dnd-context.ts`: drag session state
+  (armed nest target, group hover, dwell expansion) shared with rows and group
+  containers.
+- `components/thread-drag-overlay.tsx`: the floating row card while dragging.
 - `tests/`: policy and public SDK frontend tests.
 
 See `README.md` for status definitions and draft limitations.

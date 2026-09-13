@@ -39,9 +39,11 @@ A pinned child appears as a root here only when it has no available pinned ances
 Each thread appears once. Child previews and Show more work as in other families.
 Archived threads stay hidden until you enable Archived in Threads display options.
 The display menu offers **Date updated**
-(the default) and **Date created**, both newest first. The choice applies in
+(the default) and **Date created**, and an **Order** of **Newest first** (the
+default) or **Oldest first**. The choice applies in
 both Status and Project views and stays when you switch views or reload.
-The sort uses BB's `updatedAt` or `createdAt`, not attention events.
+The sort uses BB's `updatedAt` or `createdAt`, not attention events. Pinned
+threads lead their group in both orders.
 Children appear below their parent, with an inset arrow inside each child row
 instead of a connecting line outside the rows. Each parent initially shows three
 children. Show more reveals three more at a time; Show less restores the preview.
@@ -64,6 +66,16 @@ Project view nests children within the same project.
 If a parent is missing, archived, or hidden by a status filter, its visible
 children appear as separate roots. Cross-project children appear under their
 own project in Project view. Parent names appear in the hover info card.
+
+Rows can be nested by dragging, mirroring BB's own sidebar: after a short
+movement (4 px with a mouse, a 200 ms hold with touch), holding a row over the
+center of another row for a moment arms a nest drop — the target highlights and
+collapsed children expand. Dropping on a status or project group detaches the
+thread to top level; dropping on the Pinned group pins it, and dropping a
+pinned thread elsewhere unpins it. Nesting a pinned thread unpins it first.
+Self, descendant, and archived targets are refused, and Escape cancels. A row
+menu offers the same moves without dragging: **Make child of…** lists valid
+parents, and nested threads get **Move to top level**.
 If a parent's title is absent from the sidebar data, opening the info card
 fetches only that thread's title, without loading the archive list. A failed
 lookup shows Unavailable and retries when the card is reopened.
@@ -80,7 +92,32 @@ Children in each family stay below their parent. A child's timestamp or pin does
 move its parent. New-thread drafts have no thread timestamp and appear after dated
 threads in their group. Groups can collapse. There is no thread search field.
 Old saved project filters from before spaces are ignored.
-Preferences stay on this client. Sorting and grouping do not change thread state.
+Sorting and grouping do not change thread state.
+
+Grouping, the date sort, the order, and the collapsed state of the Pinned
+group and of each project group follow BB's synced sidebar preferences, so
+they match the native sidebar and every other client:
+
+| Plugin setting | BB preference |
+| --- | --- |
+| Group by Project / Status | `sidebar.organizationMode` `project` / `chronological` |
+| Date updated / Date created | `sidebar.chronologicalSort` `updated` / `created` |
+| Newest first / Oldest first | `sidebar.sortDirection` `descending` / `ascending` |
+| Pinned group collapsed | `pinned` in `sidebar.collapsedSections` |
+| Project group collapsed | the project id in `sidebar.collapsedProjects` |
+
+BB's chronological and machine modes both show Status grouping. An
+alphabetical or manual BB sort keeps the plugin's last date sort until you
+pick one here. The plugin reads the preferences when the list mounts, when the
+connection returns, and when the window regains focus, because BB's own
+clients write them without a signal that reaches a plugin. Each change here is
+written through with BB's per-key revision; a write that races another client
+is retried once against the fresh value, and a second failure is reported.
+Entries the plugin does not show, such as other collapsed projects or the
+Threads section, are preserved. Hidden statuses, collapsed status groups,
+archive visibility, expanded archives, spaces, and the library stay on this
+client. localStorage remains the cache and the fallback while BB is
+unreachable.
 If browser storage rejects a write, this tab keeps its unsaved preferences and
 draft flags in memory. It retries on the next local update, even if the value
 does not change. Until that write succeeds, this tab's unsaved snapshot takes
@@ -238,6 +275,15 @@ actions marks the thread; **Remove from Library** unmarks it. Each save
 covers the whole family — children of a saved thread count as saved,
 including children created later — so one action keeps a family together.
 
+Each save is mirrored into the thread's plugin metadata as
+`{ saved: true, savedAt }` in the `sidebar` namespace, and the keys are removed
+when the thread leaves the library by unsave or archive (a deleted thread takes
+its metadata with it). The flag is informational for other plugins and agents
+that read thread metadata; the key-value list stays the index and the flag is
+never read back to rebuild it. Entries saved before the flag existed receive
+it once, on the first start after the upgrade. A failed metadata write is
+logged and does not affect the library.
+
 Saved threads leave the active view in every scope. The **Library** scope
 lists saved families instead, with live statuses, sorting, grouping, and
 Show more as usual; while another scope is selected, a status icon on the
@@ -267,7 +313,8 @@ by the plugin.
 
 ## Local installation
 
-Requires BB 0.42.1 or later and Plugin SDK 0.4.47 or later.
+Requires BB 0.43.1 or later and Plugin SDK 0.4.87 or later. The saved-flag
+mirror uses per-thread plugin metadata, which arrived in BB 0.43.1.
 
 ```sh
 cd plugins/sidebar
@@ -282,7 +329,7 @@ Select **Threads** in **Settings → Appearance → Sidebar** if BB does not sel
 it automatically. The selection is per client. Use `bb plugin dev` for live
 development. To remove it, run `bb plugin remove sidebar`.
 
-Tests cover status precedence, date sorting in both views, navigation, storage validation,
+Tests cover status precedence, date sorting in both views, synced preferences, navigation, storage validation,
 draft text and attachments, fallback UI, a disconnected realtime connection, space
 filtering and editing, the Spaces page, project management through BB's API,
 the space catalog RPC, and the spaces CLI.
@@ -313,6 +360,8 @@ active threads. Restore a thread before using pin, read, or split actions.
 
 The backend reads visible archives in pages of 200 through BB's public SDK only
 while the setting is enabled. Hidden background threads stay hidden. The list
-refreshes on archive and delete events, plugin restores, sidebar membership
-changes, and reconnection. Failed loads show a Retry button; active threads
+refreshes on BB's archive, unarchive, and delete events, plugin restores,
+sidebar membership changes, and reconnection. A thread restored outside the
+plugin leaves the Archived section without a reload; it does not rejoin the
+library. Failed loads show a Retry button; active threads
 remain available.

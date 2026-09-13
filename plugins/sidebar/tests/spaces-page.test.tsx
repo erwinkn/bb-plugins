@@ -194,7 +194,7 @@ async function mountPage(
 const spaceRows = (slot: ReturnType<typeof renderSlot>) =>
   within(slot.getByRole("navigation", { name: "Spaces" }))
     .getAllByRole("listitem")
-    .map((item) => item.textContent?.replace("⋮⋮", "").replace("›", "").trim());
+    .map((item) => item.textContent?.replace("⋮⋮", "").trim());
 const projectRows = (slot: ReturnType<typeof renderSlot>) =>
   Array.from(
     slot
@@ -551,7 +551,7 @@ describe("spaces page", () => {
     const slot = await mountPage("fresh", rpc);
     const section = slot.getByRole("region", { name: "Space" });
     expect(section.textContent).toContain("Loading space…");
-    fireEvent.click(within(section).getByRole("button", { name: "‹ Spaces" }));
+    fireEvent.click(within(section).getByRole("button", { name: "Spaces" }));
     expect(lastNavigation(slot)).toMatchObject({ options: { subPath: "" } });
   });
 
@@ -976,7 +976,7 @@ describe("spaces page", () => {
     fireEvent.keyDown(detail.getByRole("menu", { hidden: true }), {
       key: "Escape",
     });
-    fireEvent.click(detail.getByRole("button", { name: "‹ Spaces" }));
+    fireEvent.click(detail.getByRole("button", { name: "Spaces" }));
     expect(lastNavigation(detail)).toEqual({
       method: "toPluginPanel",
       path: "spaces",
@@ -1007,7 +1007,7 @@ describe("spaces page", () => {
       ),
     ).toEqual([
       "New thread",
-      "Spaces›",
+      "Spaces",
       "Rename…",
       "Manage spaces…",
       "Remove…",
