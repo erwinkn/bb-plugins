@@ -65,8 +65,11 @@ export function ChevronIcon({ className, open }: IconProps & { open: boolean }) 
 }
 
 /**
- * A file's icon from the `@pierre/trees` set, coloured the way BB's own file
- * trees colour it. Files the set does not know get its plain document icon.
+ * A file's icon from the `@pierre/trees` set, tinted by its BB Color role
+ * (lib/file-icons.ts): the `--bbp-*` hue when that palette is selected,
+ * otherwise a BB token legible in both modes. Tokens with no role, such as
+ * Markdown, keep the colour the parent sets. Files the set does not know get
+ * BB's plain document icon.
  */
 export function FileIcon({ path, className }: { path: string; className?: string }) {
   const glyph = fileGlyph(path);
@@ -77,6 +80,7 @@ export function FileIcon({ path, className }: { path: string; className?: string
       className={cn("size-3.5 shrink-0", className)}
       style={glyph.color === null ? undefined : { color: glyph.color }}
       data-file-icon={glyph.token}
+      data-file-role={glyph.role}
       aria-hidden
       dangerouslySetInnerHTML={{ __html: glyph.body }}
     />

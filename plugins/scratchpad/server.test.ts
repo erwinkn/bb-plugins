@@ -4,6 +4,7 @@ import { createFakePluginHost, makeThreadResponse } from "@get-bb/plugin-sdk/tes
 import plugin from "./server";
 import { createStore } from "./store";
 import { documentSchema, emptyDocument, type Note, type Scope, type WriteResult } from "./model";
+import { GRAMMAR_IDS, GRAMMAR_REVISION, grammarRoute } from "./grammars";
 
 const scope: Scope = { environmentId: "env_one", projectId: "proj_one", projectName: "Project", environmentName: "Worktree", path: "/tmp/worktree", branch: "feature" };
 const document = (text: string) => { const blocks = emptyDocument("env_one"); blocks[0].content = [{ type: "text", text, styles: {} }]; return blocks; };
@@ -113,4 +114,31 @@ test("empty notes for maximum-length environment IDs can be stored and read", as
       assert.deepEqual(store.get(environmentId), opened);
     }
   } finally { await fake.harness.dispose(); }
+});
+
+test("code blocks are stored as typed and grammars are served as JSON over the plugin's HTTP routes", async () => {
+  const { harness } = host();
+  try {
+    await harness.callRpc("open", { threadId: "thr_one" });
+    const blocks = emptyDocument("env_one");
+    blocks[0] = { id: "code-1", type: "codeBlock", props: { language: "TypeScript" }, content: [{ type: "text", text: "const a = 1;", styles: {} }], children: [] };
+    const saved = await harness.callRpc("save", { ...target, expectedRevision: 0, document: blocks }) as WriteResult;
+    assert.equal(saved.ok, true);
+    assert.deepEqual((await harness.callRpc("get", target) as Note).document, blocks);
+
+    assert.equal(harness.registrations.httpRoutes.length, 0);
+    const first = await harness.callRpc("grammars", null) as { baseUrl: string };
+    assert.equal(first.baseUrl, `/api/v1/plugins/scratchpad/http/grammars/${GRAMMAR_REVISION}`);
+    assert.equal(harness.registrations.httpRoutes.length, GRAMMAR_IDS.length);
+    assert.deepEqual(await harness.callRpc("grammars", null), first);
+    assert.equal(harness.registrations.httpRoutes.length, GRAMMAR_IDS.length);
+
+    const response = await harness.fetchHttp("GET", grammarRoute("typescript"));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/json");
+    assert.match(response.headers.get("cache-control") ?? "", /immutable/);
+    const grammars = await response.json() as { name: string; aliases?: string[] }[];
+    assert.equal(grammars[0]?.name, "typescript");
+    assert.ok(grammars[0]?.aliases?.includes("ts"));
+  } finally { await harness.dispose(); }
 });

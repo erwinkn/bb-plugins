@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { test } from "node:test";
-import { fileGlyph, spriteSymbols, TOKEN_COLORS } from "./file-icons.js";
+import { fileGlyph, ROLE_COLORS, roleColor, spriteSymbols, TOKEN_ROLES } from "./file-icons.js";
 
 test("common files resolve to the tokens BB's tree uses", () => {
   const token = (file: string) => fileGlyph(file)?.token;
@@ -29,30 +27,36 @@ test("common files resolve to the tokens BB's tree uses", () => {
   assert.equal(token("no-extension"), "default");
 });
 
-test("every glyph has a viewBox, markup and a colour or a deliberate muted token", () => {
-  const muted = new Set(["font", "nextjs", "stylelint"]);
+test("every sprite token has a role, and every glyph has a viewBox and markup", () => {
   for (const [id, symbol] of spriteSymbols()) {
     if (!id.startsWith("file-tree-builtin-")) continue;
     const token = id.slice("file-tree-builtin-".length);
     assert.match(symbol.viewBox, /^0 0 \d+ \d+$/, id);
     assert.ok(symbol.body.includes("<path"), id);
-    assert.ok(TOKEN_COLORS[token] !== undefined || muted.has(token), `${token} has no colour`);
+    assert.ok(TOKEN_ROLES[token] !== undefined, `${token} has no role`);
   }
-  assert.equal(fileGlyph("a.ttf")?.color, null);
-  assert.equal(fileGlyph("a.ts")?.color, "light-dark(#1a85d4, #69b1ff)");
+  const sprite = new Set([...spriteSymbols().keys()].filter((id) => id.startsWith("file-tree-builtin-")).map((id) => id.slice("file-tree-builtin-".length)));
+  for (const token of Object.keys(TOKEN_ROLES)) assert.ok(sprite.has(token), `${token} is not in the sprite`);
 });
 
-test("the copied palette matches the installed @pierre/trees stylesheet", () => {
-  const source = readFileSync(
-    path.join(import.meta.dirname, "..", "node_modules", "@pierre", "trees", "dist", "style.js"),
-    "utf8",
-  );
-  const pairs = [...source.matchAll(/--trees-file-icon-color-([a-z]+):\s*var\(\s*--trees-file-icon-[a-z]+,\s*var\(--trees-icon-([a-z]+)\)/g)];
-  assert.ok(pairs.length >= 50);
-  for (const [, token, palette] of pairs) assert.equal(TOKEN_COLORS[token!], palette, token);
-  assert.equal(Object.keys(TOKEN_COLORS).length, pairs.length);
-  const swatches = Object.fromEntries([...source.matchAll(/--trees-icon-([a-z]+):\s*(light-dark\([^)]*\))/g)].map((m) => [m[1], m[2]]));
-  assert.equal(fileGlyph("a.ts")?.color, swatches["blue"]);
-  assert.equal(fileGlyph("a.md")?.color, swatches["green"]);
-  assert.equal(fileGlyph(".gitignore")?.color, swatches["vermilion"]);
+test("extensions map to the BB Color roles: source blue, languages amber-orange, styles purple, data amber, shell teal, images cyan, prose muted", () => {
+  const role = (file: string) => fileGlyph(file)?.role;
+  for (const file of ["a.ts", "a.tsx", "a.js", "a.jsx", "a.mjs"]) assert.equal(role(file), "file", file);
+  for (const file of ["a.rs", "a.py", "a.go"]) assert.equal(role(file), "edit", file);
+  for (const file of ["a.css", "a.scss", "a.sass"]) assert.equal(role(file), "agent", file);
+  for (const file of ["a.json", "a.yaml", "a.yml", "a.toml"]) assert.equal(role(file), "attention", file);
+  for (const file of ["a.sh", "a.bash", "Dockerfile", "package.json", ".gitignore"]) assert.equal(role(file), "command", file);
+  for (const file of ["a.png", "a.jpg", "a.svg"]) assert.equal(role(file), "web", file);
+  for (const file of ["README.md", "notes.txt", "Makefile", "a.zip"]) assert.equal(role(file), "subtle", file);
+});
+
+test("colours are role tokens with a BB fallback; subtle glyphs inherit the text colour", () => {
+  for (const [role, color] of Object.entries(ROLE_COLORS)) {
+    assert.match(color, new RegExp(`^var\\(--bbp-${role}, var\\(--[a-z-]+\\)\\)$`), role);
+  }
+  assert.equal(roleColor("subtle"), null);
+  assert.equal(fileGlyph("a.ts")?.color, "var(--bbp-file, var(--timeline-accent))");
+  assert.equal(fileGlyph("a.rs")?.color, "var(--bbp-edit, var(--warning-text))");
+  assert.equal(fileGlyph("README.md")?.color, null);
+  assert.equal(fileGlyph("a.ttf")?.color, null);
 });

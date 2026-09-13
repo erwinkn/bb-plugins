@@ -10,4 +10,6 @@ export const rpcContract = defineRpcContract({
   version: { input: targetSchema.extend({ revision }), output: noteSchema },
   restore: { input: targetSchema.extend({ revision, expectedRevision: revision }), output: writeResultSchema },
   export: { input: targetSchema, output: z.object({ markdown: z.string(), note: noteSchema }) },
+  /** Where the code-block grammars are served from; the URLs stay valid for the plugin's life. */
+  grammars: { input: z.null(), output: z.object({ baseUrl: z.string() }) },
 });

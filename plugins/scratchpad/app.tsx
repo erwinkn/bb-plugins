@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { definePluginApp, useBbNavigate, useRealtime, useRealtimeConnectionState, useRpc, type PluginThreadHeaderActionProps, type PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, experimental_useCodeTheme, useRealtime, useRealtimeConnectionState, useRpc, type PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
+import { SyntaxHighlightingExtension } from "@blocknote/core";
 import { useCreateBlockNote } from "@blocknote/react";
 import { BlockNoteView } from "@blocknote/ariakit";
 import "@blocknote/ariakit/style.css";
@@ -7,15 +8,13 @@ import "./style.css";
 import "./editor-theme.css";
 import type { rpcContract } from "./contract";
 import { CHANNEL, documentSchema, type Note, type NoteDocument, type Scope } from "./model";
+import { codeThemeName } from "./code-theme";
 import { editorSchema, type NoteBlock } from "./schema";
 import { NoteSession, type DraftStorage } from "./session";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 
 const ACTION = "scratchpad";
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
-function NotebookIcon() {
-  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><rect x="5" y="3" width="15" height="18" rx="2"/><path d="M9 3v18M3 7h4M3 12h4M3 17h4M12 8h5M12 12h5"/></svg>;
-}
 function HistoryIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.7 7M3 4v7h7M12 7v5l3 2"/></svg>;
 }
@@ -51,13 +50,48 @@ function useDarkMode() {
   }, []);
   return dark;
 }
+/** Shiki and its regex engine load only once a code block needs them. */
+const highlighterModule = () => import("./highlighter");
+/**
+ * Keeps the highlighter on BB's active code theme (light or dark, and whichever
+ * theme is picked in Settings). Returns a counter that advances when the theme
+ * changes after the first one was applied: existing highlights are baked into
+ * the editor's decorations, so the caller re-creates the editor to repaint
+ * them. The first theme does not bump it, so opening the panel never remounts.
+ */
+function useCodeHighlighting(): number {
+  const rpc = useRpc<typeof rpcContract>();
+  const { theme } = experimental_useCodeTheme();
+  const themeKey = theme === null ? null : codeThemeName(theme);
+  const [epoch, setEpoch] = useState(0);
+  const applied = useRef<string | null>(null);
+  useEffect(() => {
+    if (theme === null) return;
+    let cancelled = false;
+    void highlighterModule().then(async (highlighter) => {
+      highlighter.configureGrammars(() => rpc.call("grammars", null).then((result) => result.baseUrl));
+      const name = await highlighter.applyCodeTheme(theme);
+      if (cancelled) return;
+      if (applied.current !== null && applied.current !== name) setEpoch((n) => n + 1);
+      applied.current = name;
+    }).catch((error: unknown) => { console.warn("scratchpad: code highlighting is unavailable", error); });
+    return () => { cancelled = true; };
+    // `theme` is a fresh object each time BB reports; the hash tells real changes apart.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themeKey, rpc]);
+  return epoch;
+}
 function RichEditor({ document, onChange, readOnly = false }: { document: NoteDocument; onChange?: (document: NoteDocument) => void; readOnly?: boolean }) {
   const dark = useDarkMode();
+  const themeEpoch = useCodeHighlighting();
   const editor = useCreateBlockNote({
     schema: editorSchema, initialContent: document as NoteBlock[],
     placeholders: { default: "Jot down an idea, or type / for more…" },
     domAttributes: { editor: { "aria-label": readOnly ? "Saved scratchpad preview" : "Scratchpad document", role: "textbox", "aria-multiline": "true" } },
-  });
+    // Highlights code blocks; the block's `language` prop is passed to Shiki as
+    // typed (a fence such as ```ts sets it), and unknown names stay plain.
+    extensions: [SyntaxHighlightingExtension({ createHighlighter: () => highlighterModule().then((highlighter) => highlighter.createHighlighter()) })],
+  }, [themeEpoch]);
   return <BlockNoteView className="scratchpad-editor" editor={editor} theme={dark ? "dark" : "light"} editable={!readOnly}
     onChange={onChange ? () => onChange(editor.document as NoteDocument) : undefined} />;
 }
@@ -186,13 +220,7 @@ function ScratchpadPanel({ threadId }: PluginThreadPanelProps) {
   if (!opened || opened.threadId !== threadId) return <div className="scratchpad sp-loading" role="status">Opening scratchpad…</div>;
   return <LoadedPad key={`${threadId}:${opened.scope.environmentId}`} threadId={threadId} initial={opened} />;
 }
-function HeaderAction({ isCompactViewport }: PluginThreadHeaderActionProps) {
-  const navigate = useBbNavigate();
-  return <button className="sp-header-action" title="Open scratchpad" aria-label="Open scratchpad" onClick={() => navigate.openThreadPanel({ actionId: ACTION, title: "Scratchpad" })}>
-    <NotebookIcon />{!isCompactViewport && <span>Scratchpad</span>}
-  </button>;
-}
 export default definePluginApp((app) => {
+  // The panel tab is the only entry point: no permanent button in the thread header.
   app.slots.threadPanelAction({ id: ACTION, title: "Scratchpad", icon: "FileText", layout: "flush", component: ScratchpadPanel });
-  app.slots.experimental_threadHeaderAction({ id: "scratchpad", title: "Scratchpad", component: HeaderAction });
 });

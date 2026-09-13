@@ -1,14 +1,28 @@
 # Scratchpad
 
-One shared BlockNote document per BB environment, available from **Scratchpad**
-in the thread header or **+ → Scratchpad** in the right panel. Threads using
-the same environment share notes. Separate environments have separate notes,
+One shared BlockNote document per BB environment, opened from **+ →
+Scratchpad** in the right panel (there is no button in the thread header).
+Threads using the same environment share notes. Separate environments have separate notes,
 even if they happen to point to the same physical directory.
 
 Edit rendered text with the formatting menu, Markdown shortcuts, or `/` menu.
 Headings, checklists, nested lists, quotes, tables, dividers, colors, and code
 blocks are supported. Media uploads are not included. Changes autosave after
 650 ms; Ctrl/Cmd+S saves immediately. The panel follows BB's light/dark theme.
+
+Code blocks are highlighted with BB's active code theme, light or dark, the
+same colours as the chat and the editor plugin (`experimental_useCodeTheme`).
+The language is the fence name, so ```` ```ts ```` or a Markdown append with a
+fenced block sets it; there is no language menu on the block. Supported:
+TypeScript, TSX, JavaScript, JSX, JSON, JSONC, YAML, TOML, shell (`sh`,
+`bash`, `zsh`), Python, Rust, Go, CSS, SCSS, HTML, Markdown, SQL, diff and
+Dockerfile, with their usual short names (`grammars.ts`). Other names render
+as plain text. Highlighting only decorates the view: the stored JSON, the
+`language` prop included, is unchanged. Shiki and its regex engine load the
+first time a code block is on screen, and each grammar is fetched once from
+the plugin server's HTTP routes rather than shipped in the app bundle. A
+theme change re-creates the editor so existing blocks repaint; the current
+text is kept, the cursor position is not.
 
 JSON is stored in BB's plugin SQLite database at
 `<bb-data-dir>/plugins/scratchpad/data.db`, outside the worktree and Git.
@@ -75,6 +89,12 @@ bb plugin install path:/absolute/worktree/plugins/scratchpad --yes
 bb plugin dev /absolute/worktree/plugins/scratchpad
 ```
 
-BlockNote 0.54.2 (core, React, Ariakit, server utilities) is MPL-2.0.
+`npm test` covers the store and RPC (`server.test.ts`), the save queue
+(`session.test.ts`), the grammar catalogue against the installed Shiki
+packages (`grammars.test.ts`), the theme conversion (`code-theme.test.ts`) and
+the app's entry points (`app.test.ts`).
+
+BlockNote 0.54.2 (core, React, Ariakit, server utilities) is MPL-2.0. Shiki
+4.4.3 (`@shikijs/core`, `@shikijs/engine-javascript`, `@shikijs/langs`) is MIT.
 No XL packages or hosted collaboration service are used. Agent Markdown
 conversion uses BlockNote's server utilities; JSON is always the stored format.

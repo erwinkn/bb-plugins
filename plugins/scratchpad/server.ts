@@ -5,6 +5,8 @@ import { rpcContract } from "./contract";
 import { documentSchema, editSchema, emptyDocument, id, markdownSchema, replaceBlock, revision, type NoteDocument, type Scope } from "./model";
 import { editorSchema } from "./schema";
 import { createStore } from "./store";
+import { GRAMMAR_IDS, GRAMMAR_REVISION, grammarRoute } from "./grammars";
+import { GRAMMAR_SOURCES } from "./grammar-sources";
 export { rpcContract } from "./contract";
 
 export default function plugin(bb: BbPluginApi) {
@@ -35,7 +37,26 @@ export default function plugin(bb: BbPluginApi) {
   const check = async (target: { threadId: string; environmentId: string }) => {
     await scopeFor(target.threadId, target.environmentId); return target.environmentId;
   };
+  // Code-block grammars for the editor's highlighter (highlighter.ts), served
+  // through the plugin's own HTTP routes so they never land in app.js. The
+  // path carries the grammar package version, so browsers may cache a file
+  // for a year and a package upgrade still reaches them.
+  let grammarsBaseUrl: string | null = null;
+  const grammars = () => {
+    if (grammarsBaseUrl === null) {
+      for (const id of GRAMMAR_IDS) {
+        const load = GRAMMAR_SOURCES[id];
+        if (load === undefined) throw new Error(`No grammar source for ${id}.`);
+        bb.http.route("GET", grammarRoute(id), async () => new Response(JSON.stringify((await load()).default), {
+          headers: { "content-type": "application/json", "cache-control": "public, max-age=31536000, immutable" },
+        }));
+      }
+      grammarsBaseUrl = `/api/v1/plugins/${bb.pluginId}/http/grammars/${GRAMMAR_REVISION}`;
+    }
+    return { baseUrl: grammarsBaseUrl };
+  };
   bb.rpc.register(rpcContract, {
+    grammars: () => grammars(),
     open: ({ threadId }) => open(threadId),
     get: async (input) => store.get(await check(input)),
     save: async (input) => store.save(await check(input), input.expectedRevision, input.document, "You"),

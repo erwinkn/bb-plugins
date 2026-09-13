@@ -132,3 +132,22 @@
   .scratchpad-editor.bn-root :is(.bn-ak-menu-item, .bn-ak-select-item) { min-height: 44px; }
   .scratchpad-editor.bn-root .bn-ak-toolbar .bn-ak-button { min-height: 36px; }
 }
+
+/* Code blocks. BlockNote paints them as a fixed dark slab with white text in
+   both modes; here the surface is BB-neutral and the tokens come from BB's
+   active code theme through Shiki (highlighter.ts), so the block matches the
+   chat's code in light and dark. `--prosemirror-highlight` is the theme's
+   default foreground, set on the block by the highlighter once it has run. */
+.scratchpad-editor.bn-root .bn-block-content[data-content-type="codeBlock"] {
+  color: var(--prosemirror-highlight, var(--foreground));
+  background-color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.scratchpad-editor.bn-root .bn-block-content[data-content-type="codeBlock"] > pre {
+  padding: 12px 14px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: inherit;
+}

@@ -20,7 +20,12 @@ it. Links whose target lies outside the workspace are
 not listed. On a remote host BB's directory listing does not report links, so
 they show as plain entries there.
 
-Icons come from `@pierre/trees`, the set BB's own trees use. The editor uses
+Icons come from `@pierre/trees`, the set BB's own trees use, tinted by file
+kind with the `theme` plugin's roles: TypeScript and JavaScript blue, Rust,
+Python and Go amber-orange, stylesheets purple, JSON and YAML amber, shell and
+tooling files teal, images cyan, Markdown and plain text untinted. Each tint
+is `var(--bbp-<role>, var(<BB token>))`, so without a BB Color palette the
+icons fall back to BB's own tokens in both modes. The editor uses
 Geist Mono and Shiki highlighting through Pierre; there are no language
 services (completions, diagnostics, folding, minimap). **Theme…** in the Files
 menu and **Extensions → Editor → Code theme** save one selection for both
@@ -178,7 +183,7 @@ once.
   `ResizeHandle.tsx` and `MarkdownPreview.tsx`.
 - `lib/file-session.ts` holds buffers, hashes, save queues, drafts and view
   ownership. `lib/pierre-theme.ts` adapts BB's code theme; `lib/file-icons.ts`
-  resolves `@pierre/trees` icons.
+  resolves `@pierre/trees` icons and maps their tokens to colour roles.
 - `server.ts` resolves sources, reads and writes through the SDK, lists and
   reads Git comparisons, and serves the Pierre assets. `host.ts` watches files.
 

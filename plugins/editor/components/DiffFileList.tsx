@@ -11,6 +11,7 @@ import type { DiffEntry, DiffTarget } from "@/lib/diff-contract";
 import { changeLabel, targetKey, unavailableReason } from "@/lib/diff-view-state";
 import { splitPath } from "@/lib/file-tree";
 import { FileIcon, RefreshGlyph } from "./icons";
+import { ROLE_COLORS } from "@/lib/file-icons";
 
 export interface DiffFileListProps {
   threadId: string;
@@ -143,10 +144,12 @@ function Row({
 }
 
 /**
- * What the row says on its right: the changed line counts for an ordinary
- * edit, an A or D in the same colors for a file that is new or gone,
- * and the words for anything else, because "renamed" or "no comparison"
- * matters more than a count.
+ * What the row says on its right: a letter for the kind of change in the
+ * colour of that kind (A green for a new file, D red for one that is gone, M
+ * amber for an edit) with the changed line counts after the M, and the words
+ * for anything else, because "renamed" or "no comparison" matters more than a
+ * count. The letter carries the meaning and the colour repeats it, so the
+ * kind still reads without colour.
  */
 function ChangeMark({ entry, unavailable, label }: { entry: DiffEntry; unavailable: boolean; label: string }) {
   if (unavailable) return <span className="shrink-0 text-[11px] text-subtle-foreground">no comparison</span>;
@@ -159,16 +162,22 @@ function ChangeMark({ entry, unavailable, label }: { entry: DiffEntry; unavailab
   if (entry.changeKind !== "modified" || entry.origin !== "tracked") {
     return <span className="shrink-0 text-[11px] text-subtle-foreground">{label}</span>;
   }
-  if (entry.additions === 0 && entry.deletions === 0) {
-    return <span className="shrink-0 text-[11px] text-subtle-foreground">{label.toLowerCase()}</span>;
-  }
+  // The edit hue of the BB Color palette; `--warning-text` is BB's amber text
+  // token, legible at 4.5:1 in both modes when that palette is not selected.
+  const modified = (
+    <span className="font-medium" style={{ color: ROLE_COLORS.edit }} role="img" aria-label={label} title={label}>
+      M
+    </span>
+  );
   return (
-    <span
-      className="flex shrink-0 items-center gap-1 font-mono text-[11px]"
-      aria-label={`${entry.additions} lines added, ${entry.deletions} lines removed`}
-    >
-      {entry.additions > 0 ? <span className="text-success-foreground">+{entry.additions}</span> : null}
-      {entry.deletions > 0 ? <span className="text-destructive">&minus;{entry.deletions}</span> : null}
+    <span className="flex shrink-0 items-center gap-1 font-mono text-[11px]">
+      {modified}
+      {entry.additions > 0 || entry.deletions > 0 ? (
+        <span className="flex items-center gap-1" aria-label={`${entry.additions} lines added, ${entry.deletions} lines removed`}>
+          {entry.additions > 0 ? <span className="text-success-foreground">+{entry.additions}</span> : null}
+          {entry.deletions > 0 ? <span className="text-destructive">&minus;{entry.deletions}</span> : null}
+        </span>
+      ) : null}
     </span>
   );
 }
