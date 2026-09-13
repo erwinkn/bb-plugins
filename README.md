@@ -82,73 +82,80 @@ in Git history.
 
 ### Development topology
 
-This repository is developed by one **PM thread per plugin**. PM threads live
-in the pinned "Plugin PMs" section of the `bb-plugins` project and are
-long-lived. Each PM has a persistent managed-worktree environment — its desk.
-For a change to its plugin, the PM works in that environment directly or
-spawns child threads that **reuse** it; children never get a separate
-worktree for the same plugin, and only one thread works on a plugin at a
-time. The PM is the only agent that performs git operations in its worktree.
+This repository is developed from the **main checkout** at `~/Code/bb-plugins`
+by one **orchestrator thread** (Claude Code) plus short-lived child threads.
+There are no permanent per-plugin PM threads, no managed worktrees, and no
+feature branches or pull requests for routine work.
 
-Cross-plugin work goes through an orchestrator thread, which dispatches to
-the relevant PMs instead of editing plugin code itself. Ping a PM directly
-for single-plugin work; ask the orchestrator when a change spans plugins.
+- The orchestrator is the only agent that runs Git commands: pull, add,
+  commit, push, stash, checkout. Child threads never touch Git.
+- The user talks to the orchestrator. For a change to a plugin, the
+  orchestrator spawns a child thread on the main checkout with a scoped brief,
+  the child implements and reports back, and the orchestrator verifies,
+  reloads, and commits.
+- The orchestrator stays available while a child works, so it can relay
+  questions to the user or discuss design points, but by default quick changes
+  are hand-off, implement, reload, commit.
+- One child per plugin at a time. Parallel children are fine when they touch
+  different plugins; the orchestrator sequences commits so each commit is one
+  coherent change.
 
 ### The daily loop
 
-Normal state: each plugin installs from the main checkout's path —
-`path:~/Code/bb-plugins/plugins/<name>` — not a `git:` ref. The running plugin
-tracks whatever the checkout contains; `git pull --ff-only` +
-`bb plugin build <path>` + `bb plugin reload <name>` picks up landed changes.
-The main checkout stays on `main`: never check out a feature branch there and
-never run `git rebase` or `git reset --hard` in it while a PM has unmerged
-work.
+Every plugin installs from the main checkout's path —
+`path:~/Code/bb-plugins/plugins/<name>` — never a `git:` ref. The running plugin
+tracks whatever the checkout contains. The checkout stays on `main` at all
+times; never check out another branch there, and never run `git rebase` or
+`git reset --hard` in it.
 
-Trivial changes — docs, comments, small fixes that need no review — may be
-committed directly on `main` in the main checkout. Everything else:
+1. The user describes the change to the orchestrator.
+2. The orchestrator confirms the checkout is clean and on `main`
+   (`git status`, `git pull --ff-only`), then spawns a child thread with the
+   brief: plugin directory, expected behavior, and verification commands. The
+   child works directly in `~/Code/bb-plugins/plugins/<name>` and may run
+   `npm run typecheck`, `npm test`, and `npm run build` there.
+3. The child reports back with the files changed and what it verified. It does
+   not commit.
+4. The orchestrator reviews the diff, runs `bb plugin build
+   ~/Code/bb-plugins/plugins/<name>` and `bb plugin reload <name>` (or keeps
+   `bb plugin dev <path>` running for live rebuild+reload), and the user checks
+   the live behavior — desktop and mobile when the UI changes.
+5. If it is good, the orchestrator commits on `main` and pushes to `origin`
+   directly. If not, the orchestrator sends follow-up instructions to the same
+   child, or reverts the working tree with `git checkout -- <paths>` when the
+   change is abandoned.
 
-1. In the PM worktree, fetch `origin`, create the feature branch from
-   `origin/main`, and implement. Run `bb plugin dev
-   <pm-worktree>/plugins/<name>` there for live rebuild+reload.
-2. Point the running install at the PM worktree in place:
-   `bb plugin install path:<pm-worktree>/plugins/<name> --yes`. A path→path
-   move retains the plugin ID, settings, secrets, schedules, and stored data.
-   Verify the new source, then test the changed behavior in BB — desktop and
-   mobile checks when the UI changes. Keep the worktree until the install
-   moves off it — deleting the source path breaks a path install.
-3. Commit, push the branch, and open a **draft** PR against `main`. Record
-   the tested commit, checks, and live evidence in the PR.
-4. Keep the PR draft until the human explicitly requests ready-for-review —
-   passing checks and live verification do not authorize it. Before marking
-   ready, strip temporary work files (plans, review notes, prototypes,
-   preview HTML) from the PR diff and from content sent to review agents;
-   reviewers read the PR and extra content costs credits. Monitor checks and
-   review comments, fix findings, push, rebuild, and repeat verification
-   until the latest commit is clean.
-5. Return the PR to the user for the merge decision — never merge or enable
-   auto-merge. Leave the PM worktree installed while the PR is open.
-6. After the user merges: confirm the merge on GitHub (a squash merge makes
-   a new commit, so the branch SHA is not the final verification target),
-   `git pull` the main checkout, move the install back with
-   `bb plugin install path:~/Code/bb-plugins/plugins/<name> --yes`, rebuild,
-   and verify the running plugin.
+Keeping the Git state healthy is the orchestrator's job:
 
-If the change is abandoned, move the install back to the main checkout path
-before abandoning the branch. Testing in the normal BB instance affects the
-plugin used for daily work until it returns to the main checkout.
+- Commit only files that belong to the change; leave unrelated working-tree
+  changes alone and ask the user about anything unexpected.
+- Never leave a half-applied change in the checkout across sessions: either
+  commit it or revert it before ending the turn.
+- Run `git pull --ff-only` before each new piece of work. If the pull is not a
+  fast-forward, stop and report; do not rebase or reset.
+- Do not use `git stash` as long-term storage. Stash only to pull and pop
+  immediately.
+- Trivial doc and comment fixes may be made by the orchestrator itself without
+  a child thread, under the same commit rules.
 
-For a plugin that is not installed yet, the local commands are:
+Larger or riskier changes (cross-plugin refactors, anything the user wants
+reviewed before it runs in the daily instance) may still use a feature branch
+and a draft PR, but only when the user asks for it. In that case the branch is
+created in a separate clone or worktree, never in the main checkout, and the
+install stays on the main checkout path until merge.
+
+For a plugin that is not installed yet:
 
 ```sh
-bb plugin install path:/absolute/worktree/plugins/PLUGIN --yes
-bb plugin dev /absolute/worktree/plugins/PLUGIN
+bb plugin install path:/home/exedev/Code/bb-plugins/plugins/PLUGIN --yes
+bb plugin dev /home/exedev/Code/bb-plugins/plugins/PLUGIN
 ```
 
 Why not `git:`: a `git:` source cannot move in place — switching between
 `git:` and `path:` needs a remove/install cycle, which deletes settings and
 secrets (`data.db` survives only by courtesy; back it up). Tracking the
-checkout path keeps every feature iteration a single in-place move and keeps
-`bb plugin dev` available at all times.
+checkout path keeps `bb plugin dev` available and makes reload the only step
+between an edit and the running plugin.
 
 ### Source switches and data preservation
 
@@ -157,7 +164,7 @@ Use `bb plugin source <id> --json` to inspect the installed source and
 not fetch path installations. Check the current CLI help when changing refs.
 Preserve settings and data; `bb plugin remove` deletes plugin settings,
 secrets, and schedules and is not a source-switch command. Coordinate with
-the owning PM before replacing an installation its threads are testing.
+the orchestrator before replacing an installation a child thread is testing.
 
 BB 0.42.1 has no in-place Git-ref switch in its CLI or plugin API, and
 installing the same plugin ID from a different ref is refused. Path installs
@@ -293,7 +300,7 @@ fallback above until a managed Git/path switch exists.
 BB 0.42.1 maps one plugin ID to one installed source globally, so two threads
 cannot live-test the same plugin concurrently — a `path:` move during one
 thread's verification affects every client. This is the structural limit the
-PM-per-plugin topology in this repository works around by serializing
+one-child-per-plugin rule in this repository works around by serializing
 verification per plugin. Expose an install-source scope (per environment or
 per thread) or a dedicated test channel so parallel work on one plugin is
 possible. Related: the source-rebind request in
