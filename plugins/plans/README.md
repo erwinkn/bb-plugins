@@ -33,7 +33,7 @@ Existing sessions may need to restart or resume to receive new tools.
    The tool returns at once on every harness.
    The agent ends its turn.
 2. Open **Plans** from the prompt or the **Plan** header button.
-   The prompt says **Plan ready for your review** and offers **Open** and **Skip**.
+   The prompt uses the plan title (shortened for long names) and offers **Open review** and **Skip**.
    It gives the thread the **needs attention** state.
 3. Select text to add an annotation.
    Each saved annotation enters message delivery at once.

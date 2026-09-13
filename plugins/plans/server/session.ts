@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { renderMessage } from "../lib/message";
+import { reviewPromptTitle } from "../lib/review-prompt";
 import type { PlanStore } from "./store";
 import type { Outbox, OutboxItem } from "./outbox";
 
@@ -48,7 +49,7 @@ export class LiveSession {
       const version = plan.versions.at(-1)!;
       try {
         const result = await this.bb.ui.requestInput({
-          threadId: plan.threadId, rendererId: "plan-review", title: `Review plan: ${plan.title}`,
+          threadId: plan.threadId, rendererId: "plan-review", title: reviewPromptTitle(plan.title),
           payload: { planId: plan.id, versionId: version.id, title: plan.title, versionNumber: version.number },
           timeoutMs: Math.min(this.options.interactionChunkMs ?? 3_600_000, 3_600_000),
         }, { signal: controller.signal });

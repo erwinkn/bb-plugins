@@ -229,6 +229,20 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### Compact plugin interaction prompts
+
+BB 0.43.1 / SDK 0.4.87 lets plugins supply an interaction title and React body,
+but always supplies the outer card, heading, and separate “Requested by” row.
+`PluginInteractionRequest` and `pendingInteraction` expose no compact/flush
+layout or header-action slot. Plans can remove its nested card and redundant
+copy, but cannot put its two actions beside the host title or compact the
+attribution. Add a compact interaction variant with responsive header actions
+and inline plugin attribution, retaining accessible controls on mobile.
+
+Status: plugin cleanup implemented here; no upstream issue filed.
+Suggested issue title: `Add a compact layout for plugin interaction prompts`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Provider-independent thread handoffs
 
 Expose a native handoff operation that atomically reuses the source environment,

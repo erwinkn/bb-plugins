@@ -107,7 +107,7 @@ describe("live plan review backend", () => {
     const result = JSON.parse(await tool("plans_submit", { title: "New", markdown: "New plan" }) as string);
     expect(result.status).toBe("submitted"); expect(result.instruction).toContain("End your turn");
     expect(harness.inspection.pendingInteractions).toHaveLength(1);
-    expect(harness.inspection.pendingInteractions[0]).toMatchObject({ rendererId: "plan-review", title: "Review plan: New", timeoutMs: 3_600_000 });
+    expect(harness.inspection.pendingInteractions[0]).toMatchObject({ rendererId: "plan-review", title: "New", timeoutMs: 3_600_000 });
     await harness.behavior.emitThreadEvent("message.queued", { entry: makeQueueEntry({ threadId: "thread-1", waitingOn: { kind: "interaction" } }) });
     expect(harness.inspection.pendingInteractions).toHaveLength(0);
     const handoff = JSON.parse(String(await tool("plans_handoff", { planId: result.planId })));
