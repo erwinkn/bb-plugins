@@ -545,13 +545,15 @@ describe("thread status and prompt", () => {
   it("opens review without resolving the prompt and cancels only on Skip", async () => {
     let skipped = false;
     const submit = vi.fn(async () => {});
+    const title = "Refine Pulse scheduling: TaskScope, LoopBinding, single Task wait";
     slot = render(app.pendingInteractions[0]!, {
-      interaction: { id: "i1", threadId: "thr_1", title: "Review plan", createdAt: now, expiresAt: null,
-        payload: { planId: "plan-1", versionId: "v1", title: "Plan", versionNumber: 1 } },
+      interaction: { id: "i1", threadId: "thr_1", title: "Plan ready", createdAt: now, expiresAt: null,
+        payload: { planId: "plan-1", versionId: "v1", title, versionNumber: 1 } },
       submit, cancel: async () => { skipped = true; },
     }, { rpc: fakeBackend([]).rpc });
     expect(slot.queryByText("Plan ready for your review.")).toBeNull();
-    expect(slot.getByRole("group", { name: "Review Plan" }).textContent).toBe("SkipOpen review");
+    expect(slot.getByTitle(title).textContent).toBe(title);
+    expect(slot.getByRole("group", { name: `Review ${title}` }).textContent).toBe(`${title}SkipOpen review`);
     fireEvent.click(slot.getByRole("button", { name: "Open review" }));
     expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "openThreadPanel", options: expect.objectContaining({ params: { threadId: "thr_1", planId: "plan-1" } }) }));
     expect(skipped).toBe(false);

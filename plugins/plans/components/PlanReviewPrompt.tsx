@@ -40,26 +40,33 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
     });
   };
 
-  // BB already renders the title, attribution and card. Only add actions here.
+  // The host heading shares space with the origin label on mobile. Keep the
+  // plan name here, where we can guarantee a single line with CSS ellipsis.
+  // Inline-size containment keeps the host's min-content fieldset from growing
+  // to the unbroken title's width before the ellipsis can take effect.
   return (
     <div role="group" aria-label={payload ? `Review ${payload.title}` : "Plan review"}
-      className="flex flex-wrap items-center justify-end gap-2">
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="h-11 sm:h-8"
-        disabled={isReleasing}
-        onClick={() => {
-          setReleasing(true);
-          void cancel().finally(() => setReleasing(false));
-        }}
-      >
-        Skip
-      </Button>
-      <Button type="button" size="sm" className="h-11 sm:h-8" onClick={open} disabled={payload === null}>
-        Open review
-      </Button>
+      style={{ contain: "inline-size" }}
+      className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+      {payload && <p className="min-w-0 truncate text-sm font-medium sm:flex-1" title={payload.title}>{payload.title}</p>}
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-11 sm:h-8"
+          disabled={isReleasing}
+          onClick={() => {
+            setReleasing(true);
+            void cancel().finally(() => setReleasing(false));
+          }}
+        >
+          Skip
+        </Button>
+        <Button type="button" size="sm" className="h-11 sm:h-8" onClick={open} disabled={payload === null}>
+          Open review
+        </Button>
+      </div>
     </div>
   );
 }

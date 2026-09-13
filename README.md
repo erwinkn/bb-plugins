@@ -233,11 +233,22 @@ AGENTS.md.
 
 BB 0.43.1 / SDK 0.4.87 lets plugins supply an interaction title and React body,
 but always supplies the outer card, heading, and separate “Requested by” row.
+On the BB mobile app, the host also puts a “From <thread title>” origin label
+beside the heading. In a phone screenshot, this squeezed even a shortened plan
+title into five lines; “Requested by Plans” then repeated the attribution below.
+Neither attribution is controlled by the plugin. Plans now uses the fixed
+heading “Plan ready” and places the plan name in a single line with CSS ellipsis
+inside its body to avoid that heading growth.
+The host's renderer fieldset also has the browser default
+`min-width: min-content`, which expanded a no-wrap title past the mobile card;
+Plans contains its body's intrinsic width to allow ellipsis. Set `min-width: 0`
+on that host fieldset so other plugin renderers can shrink correctly too.
 `PluginInteractionRequest` and `pendingInteraction` expose no compact/flush
 layout or header-action slot. Plans can remove its nested card and redundant
 copy, but cannot put its two actions beside the host title or compact the
 attribution. Add a compact interaction variant with responsive header actions
-and inline plugin attribution, retaining accessible controls on mobile.
+and one concise attribution; keep origin labels from squeezing the mobile
+heading into a narrow column, and retain accessible controls on mobile.
 
 Status: plugin cleanup implemented here; no upstream issue filed.
 Suggested issue title: `Add a compact layout for plugin interaction prompts`.

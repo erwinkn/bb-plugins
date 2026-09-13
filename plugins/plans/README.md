@@ -33,7 +33,9 @@ Existing sessions may need to restart or resume to receive new tools.
    The tool returns at once on every harness.
    The agent ends its turn.
 2. Open **Plans** from the prompt or the **Plan** header button.
-   The prompt uses the plan title (shortened for long names) and offers **Open review** and **Skip**.
+   The prompt says **Plan ready**, shows the plan name on one line with an ellipsis
+   when needed, and offers **Open review** and **Skip**. The full name remains
+   available to assistive technology and in the title tooltip.
    It gives the thread the **needs attention** state.
 3. Select text to add an annotation.
    Each saved annotation enters message delivery at once.
