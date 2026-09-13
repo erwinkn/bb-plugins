@@ -1,6 +1,8 @@
 /**
  * Frontend RPC: list({threadId?, offset?}) -> Plan[]; get({id}) -> Plan;
- * create({title, markdown, threadId?, sample?}) -> Plan (source user).
+ * create({title, markdown, threadId?, sample?, reviewHeading?, reviewSummary?}) -> Plan (source user).
+ * submit uses the same input and raises a review prompt; update/handoff mirror
+ * their tool inputs. Review copy is stored on the version, not the plan root.
  * All annotation mutations return Plan:
  * addAnnotation({id, versionId?, quote, body, kind, prefix?, suffix?, position?})
  * uses the selected version or latest, assigns a number/state, and queues feedback.
@@ -26,10 +28,17 @@ const title = z.string().trim().min(1).max(200);
 export const bodySchema = z.string().trim().min(1).max(10_000);
 export const deliveryModeSchema = z.enum(["queue-if-active", "steer-if-active"]);
 export const annotationKindSchema = z.enum(["comment", "ask", "redline", "looksGood"]);
+const singleLine = (limit: number) => z.string().transform((value) => value.replace(/\s+/gu, " ").trim()).pipe(z.string().min(1).max(limit));
+export const reviewCopyShape = {
+  reviewHeading: singleLine(40).nullable().optional().describe("Short review heading: a few words, at most 40 characters. Null falls back to the full plan title, visually ellipsized."),
+  reviewSummary: singleLine(240).nullable().optional().describe("One sentence describing this revision for the review prompt, at most 240 characters. Null omits the description. Distinct from the update change-log summary."),
+};
 export const versionSchema = z.object({
   id: idSchema, number: z.number().int().positive(), markdown: markdownSchema, createdAt: z.number(),
   source: z.enum(["agent", "user"]).default("user"), summary: z.string().max(10_000).default(""),
   resolves: z.array(idSchema).default([]),
+  reviewHeading: reviewCopyShape.reviewHeading.default(null),
+  reviewSummary: reviewCopyShape.reviewSummary.default(null),
 });
 export const replySchema = z.object({
   id: idSchema, author: z.enum(["agent", "user"]), body: bodySchema, createdAt: z.number(),
@@ -77,7 +86,7 @@ export const planSchema = z.object({
 export type Plan = z.infer<typeof planSchema>;
 export type PlanVersion = z.infer<typeof versionSchema>;
 export type PlanComment = z.infer<typeof commentSchema>;
-export const createSchema = z.object({ title, markdown: markdownSchema, threadId: idSchema.optional(), sample: z.boolean().optional() });
+export const createSchema = z.object({ title, markdown: markdownSchema, threadId: idSchema.optional(), sample: z.boolean().optional(), ...reviewCopyShape });
 export const addAnnotationSchema = z.object({
   versionId: idSchema.optional(),
   id: idSchema, quote: z.string().trim().min(1).max(10_000), body: z.string().trim().max(10_000).default(""),
@@ -88,7 +97,9 @@ export const addAnnotationSchema = z.object({
 export const updateSchema = z.object({
   planId: idSchema, edits: z.array(z.object({ old: z.string().min(1), new: z.string() })).min(1).optional(),
   markdown: markdownSchema.optional(), summary: bodySchema, resolves: z.array(idSchema).default([]),
+  ...reviewCopyShape,
 }).refine((value) => (value.edits === undefined) !== (value.markdown === undefined), "Supply edits or markdown, exactly one.");
+export const handoffSchema = z.object({ planId: idSchema, ...reviewCopyShape });
 export const agentReplySchema = z.object({ planId: idSchema, annotation: idSchema, body: bodySchema, resolve: z.boolean().optional() });
 const target = z.object({ id: idSchema, annotationId: idSchema });
 export const deliveryStatusSchema = z.object({
@@ -98,6 +109,9 @@ export const plansContract = defineRpcContract({
   list: { input: z.object({ threadId: idSchema.optional(), offset: z.number().int().nonnegative().optional() }), output: z.array(planSchema) },
   get: { input: z.object({ id: idSchema }), output: planSchema },
   create: { input: createSchema, output: planSchema },
+  submit: { input: createSchema, output: z.object({ status: z.literal("submitted"), planId: idSchema, versionId: idSchema, instruction: z.string() }) },
+  update: { input: updateSchema, output: z.object({ planId: idSchema, versionId: idSchema, versionNumber: z.number().int().positive() }) },
+  handoff: { input: handoffSchema, output: z.object({ planId: idSchema, status: z.enum(["waiting", "queued"]), instruction: z.string() }) },
   addAnnotation: { input: addAnnotationSchema, output: planSchema },
   withdrawAnnotation: { input: target, output: planSchema },
   resolveAnnotation: { input: target, output: planSchema },

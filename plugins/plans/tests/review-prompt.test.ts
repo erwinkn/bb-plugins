@@ -6,7 +6,7 @@ import type { Plan } from "../contract";
 const disposers: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
 
-it("uses a fixed short heading and preserves the full plan title in storage and the body payload", async () => {
+it("falls back to the full plan title without changing storage or payload identity", async () => {
   const { bb, harness } = createFakePluginHost({ pluginId: "plans", sdk: {
     threads: {
       get: async () => makeThreadResponse({ id: "thread-1", projectId: "project-1" }),
@@ -24,7 +24,7 @@ it("uses a fixed short heading and preserves the full plan title in storage and 
   expect(plan.title).toBe(title);
   expect(harness.inspection.pendingInteractions).toHaveLength(1);
   expect(harness.inspection.pendingInteractions[0]).toMatchObject({
-    threadId: "thread-1", rendererId: "plan-review", title: "Plan ready", timeoutMs: 3_600_000,
+    threadId: "thread-1", rendererId: "plan-review", title, timeoutMs: 3_600_000,
     payload: { planId: plan.id, versionId: plan.versions[0]!.id, title, versionNumber: 1 },
   });
 });

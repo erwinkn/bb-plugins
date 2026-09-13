@@ -21,7 +21,11 @@ Read the relevant project context.
 Prepare a complete Markdown plan.
 Include the result, scope, steps, and checks.
 State open questions clearly.
-Call `plans_submit {title, markdown}`.
+Call `plans_submit {title, markdown, reviewHeading, reviewSummary}`.
+Write an informative `reviewHeading` of a few words, at most 40 characters,
+such as “Pulse scheduling refinements”. Write `reviewSummary` as one sentence,
+at most 240 characters, explaining what to review, such as “Give each task one
+wait and preserve its schedule across restarts.” Avoid generic “plan ready” copy.
 The tool saves the plan and puts a review prompt on the thread.
 It returns the plan and version IDs at once.
 End your turn without implementation.
@@ -30,7 +34,7 @@ If the native tool is unavailable, write a UTF-8 Markdown file in this thread's 
 Use the CLI:
 
 ```sh
-bb plans submit ./plan.md 'Plan title'
+bb plans submit ./plan.md 'Plan title' --review-heading 'Pulse scheduling refinements' --review-summary 'Give each task one wait and preserve its schedule across restarts.'
 ```
 
 End your turn after submission.
@@ -61,15 +65,20 @@ On each feedback message:
 1. Reply to each ask with `plans_reply {planId, annotation, body, resolve}`.
    For asks, `resolve` defaults to true and marks the ask answered.
    You can also use this tool to comment on an annotation.
-2. Apply comments and redlines with `plans_update {planId, edits, summary, resolves}`.
+2. Apply comments and redlines with `plans_update {planId, edits, summary, resolves, reviewHeading, reviewSummary}`.
    Use exact-match `{old, new}` edit pairs.
    Each `old` must occur exactly once.
    You can supply full `markdown` instead of `edits`.
    Name the resolved annotation numbers in `resolves`, for example `["#7", "#9"]`.
+   Update the review heading and description for this revision. The required
+   `summary` describes the edit history; `reviewSummary` is the separate sentence
+   shown to the user in the review prompt.
 3. Fold a looks good into the text if it settles an open question.
    Other looks good annotations need no change.
 4. Address general remarks and questions from the thread.
 5. Call `plans_handoff {planId}` at the end of every turn that touched the plan.
+   Optionally pass `reviewHeading` and `reviewSummary` to refine the latest
+   revision's review copy before opening the prompt.
 6. End your turn.
 
 Use `plans_update` for an existing plan.
@@ -82,6 +91,11 @@ User replies do not reopen annotations.
 Manual **Resolve** sets **addressed** and sends no message.
 Each edit creates a stored version, and the panel follows the latest text.
 The user can compare any two versions.
+The review fields are optional and version-scoped. Omitting them on submit or
+update uses the full plan title with a visual ellipsis and no description.
+Omitting them on handoff preserves the latest revision's values; passing `null`
+clears a value. Handoff changes only that revision's review copy, not earlier
+versions or its Markdown. Do not repeat the full title in the description.
 Delivered annotations cannot be edited.
 The user can withdraw them, reply to them, or mark them resolved.
 A withdrawal sends `withdrawn #n` only if the annotation was already delivered.
@@ -141,16 +155,18 @@ The panel shows **Not delivered · retrying**.
 The CLI supports the same actions:
 
 ```text
-bb plans submit <file> [title]
-bb plans update <plan> <file> --summary <text> [--resolve #n ...]
+bb plans submit <file> [title] [--review-heading <text>] [--review-summary <sentence>]
+bb plans update <plan> <file> --summary <text> [--resolve #n ...] [--review-heading <text>] [--review-summary <sentence>]
 bb plans reply <plan> <#n> <text> [--no-resolve]
-bb plans handoff <plan>
+bb plans handoff <plan> [--review-heading <text>] [--review-summary <sentence>]
 bb plans get [plan] [--version-id <id>]
 bb plans list [offset] [--thread <id>]
 bb plans review <plan> --comment "quote::body" --ask "quote::body" --redline "quote" --looks-good "quote" [--approve]
 ```
 
 Quote annotation numbers in shell commands, for example `'#7'`.
+An empty review-copy flag value, such as `--review-summary ''`, clears that field.
+RPC callers can use the same fields on `create`, `submit`, `update`, and `handoff`.
 Use `bb plans get` after context loss.
 Without a plan ID, it returns the thread's active plan from the metadata pointer that each submit, update, and approval writes.
 Add `--version-id` to read the approved version.

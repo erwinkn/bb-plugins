@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { BbPluginApi, PluginCliContext } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { addAnnotationSchema, agentReplySchema, createSchema, idSchema, plansContract, updateSchema } from "./contract";
+import { addAnnotationSchema, agentReplySchema, createSchema, handoffSchema, plansContract, updateSchema } from "./contract";
 import { createPlanService, type PlanServiceOptions } from "./service";
 
 interface Flags {
   positional: string[]; version?: string; thread?: string; summary?: string;
+  reviewHeading?: string | null; reviewSummary?: string | null;
   resolves: string[]; noResolve: boolean; approve: boolean;
   annotations: Array<{ quote: string; body: string; kind: "comment" | "ask" | "redline" | "looksGood" }>;
 }
@@ -22,6 +23,8 @@ function parseFlags(argv: string[]): Flags {
     if (arg === "--version-id") flags.version = take(i++, arg);
     else if (arg === "--thread") flags.thread = take(i++, arg);
     else if (arg === "--summary") flags.summary = take(i++, arg);
+    else if (arg === "--review-heading") flags.reviewHeading = take(i++, arg) || null;
+    else if (arg === "--review-summary") flags.reviewSummary = take(i++, arg) || null;
     else if (arg === "--no-resolve") flags.noResolve = true;
     else if (arg === "--approve") flags.approve = true;
     else if (arg === "--resolve") {
@@ -41,6 +44,7 @@ function parseFlags(argv: string[]): Flags {
 
 export type PluginOptions = PlanServiceOptions;
 const toolBehavior = " Returns at once by design. After you finish the plan changes, call plans_handoff and end your turn. Feedback arrives as thread messages. Implement only after approval.";
+const reviewCopyHelp = " Supply reviewHeading (a few words, max 40 characters) and reviewSummary (one sentence, max 240 characters) for the review card. Both are optional; null clears a field.";
 export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
   const service = createPlanService(bb, options);
   bb.rpc.register(plansContract, service.rpc);
@@ -49,16 +53,16 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
     if (service.get({ id: planId }).threadId !== threadId) throw new Error("This plan belongs to another thread.");
   };
   bb.agents.registerTool({
-    name: "plans_submit", description: "Create a Markdown plan and open its review prompt. This tool returns at once by design. End your turn after calling it. Feedback arrives as thread messages. Implement only after approval.",
+    name: "plans_submit", description: "Create a Markdown plan and open its review prompt. This tool returns at once by design. End your turn after calling it. Feedback arrives as thread messages. Implement only after approval." + reviewCopyHelp,
     presentation: { label: { pending: "Submitting plan", completed: "Plan submitted" } },
-    parameters: createSchema.pick({ title: true, markdown: true }),
+    parameters: createSchema.pick({ title: true, markdown: true, reviewHeading: true, reviewSummary: true }),
     async execute(input, { threadId }) {
       if (!threadId) throw new Error("Submit a plan from a BB thread.");
       return JSON.stringify(await service.submit({ ...input, threadId }));
     },
   });
   bb.agents.registerTool({
-    name: "plans_update", description: "Update the latest plan with exact-match edits or full Markdown and a summary. The resolves field sets each named annotation to addressed, including asks." + toolBehavior,
+    name: "plans_update", description: "Update the latest plan with exact-match edits or full Markdown and a change-log summary. The resolves field sets each named annotation to addressed, including asks." + reviewCopyHelp + " Omitted review fields use the title/no-description fallbacks for the new version." + toolBehavior,
     presentation: { label: { pending: "Updating plan", completed: "Plan updated" } }, parameters: updateSchema,
     async execute(input, { threadId }) { owns(input.planId, threadId); return JSON.stringify(await service.update(input)); },
   });
@@ -68,8 +72,8 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
     execute(input, { threadId }) { owns(input.planId, threadId); return JSON.stringify(service.reply(input)); },
   });
   bb.agents.registerTool({
-    name: "plans_handoff", description: "Restore the plan review prompt. Create no prompt while a plugin message is still queued for the thread; that message already brings the agent back. This tool returns at once by design. End your turn after calling it. Feedback arrives as thread messages. Do not poll.",
-    presentation: { label: { pending: "Opening plan review", completed: "Plan ready for review" } }, parameters: z.object({ planId: idSchema }),
+    name: "plans_handoff", description: "Restore the plan review prompt. Create no prompt while a plugin message is still queued for the thread; that message already brings the agent back. This tool returns at once by design. End your turn after calling it. Feedback arrives as thread messages. Do not poll." + reviewCopyHelp + " Supplied fields update the latest version's review copy; omitted fields keep it.",
+    presentation: { label: { pending: "Opening plan review", completed: "Plan ready for review" } }, parameters: handoffSchema,
     execute(input, { threadId }) { owns(input.planId, threadId); return JSON.stringify(service.handoff(input)); },
   });
   const readFile = async (file: string, ctx: PluginCliContext) => {
@@ -84,10 +88,10 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
   bb.cli.register({
     name: "plans", summary: "Submit and update live plans. Tools return at once; feedback arrives as thread messages.",
     commands: [
-      { name: "submit", summary: "Submit a plan and end the turn", usage: "bb plans submit <file> [title]" },
-      { name: "update", summary: "Update a plan from a file", usage: "bb plans update <plan> <file> --summary <text> [--resolve #n ...]" },
+      { name: "submit", summary: "Submit a plan with review copy and end the turn", usage: "bb plans submit <file> [title] [--review-heading <text>] [--review-summary <sentence>]" },
+      { name: "update", summary: "Update a plan from a file", usage: "bb plans update <plan> <file> --summary <text> [--resolve #n ...] [--review-heading <text>] [--review-summary <sentence>]" },
       { name: "reply", summary: "Reply to an annotation", usage: "bb plans reply <plan> <#n> <text> [--no-resolve]" },
-      { name: "handoff", summary: "Open the review prompt and end the turn", usage: "bb plans handoff <plan>" },
+      { name: "handoff", summary: "Open the review prompt and end the turn", usage: "bb plans handoff <plan> [--review-heading <text>] [--review-summary <sentence>]" },
       { name: "get", summary: "Read a plan or stored version; no ID reads the thread's active plan", usage: "bb plans get [plan] [--version-id <id>]" },
       { name: "list", summary: "List ten plans for a thread", usage: "bb plans list [offset] [--thread <id>]" },
       { name: "review", summary: "Annotate or approve another thread's plan", usage: 'bb plans review <plan> [--comment "quote::body"] [--ask "quote::body"] [--redline "quote"] [--looks-good "quote"] [--approve]' },
@@ -95,6 +99,10 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
     async run(argv, ctx) {
       try {
         const flags = parseFlags(argv); const [command, ...args] = flags.positional;
+        const reviewCopy = { reviewHeading: flags.reviewHeading, reviewSummary: flags.reviewSummary };
+        if ((flags.reviewHeading !== undefined || flags.reviewSummary !== undefined) && !["submit", "update", "handoff"].includes(command ?? "")) {
+          throw new Error("Review copy flags apply to submit, update, and handoff only.");
+        }
         let result: unknown;
         if (command === "list" && args.length <= 1) result = service.list({ threadId: flags.thread ?? ctx.threadId, offset: z.coerce.number().int().nonnegative().parse(args[0] ?? 0) });
         else if (command === "get" && args.length <= 1) {
@@ -109,16 +117,16 @@ export default function plugin(bb: BbPluginApi, options: PluginOptions = {}) {
           result = flags.version ? service.version({ id, versionId: flags.version }) : service.get({ id });
         }
         else if (command === "submit" && args.length >= 1 && args.length <= 2 && ctx.threadId) {
-          result = await service.submit({ title: args[1] ?? "Plan", markdown: await readFile(args[0]!, ctx), threadId: ctx.threadId });
+          result = await service.submit({ title: args[1] ?? "Plan", markdown: await readFile(args[0]!, ctx), threadId: ctx.threadId, ...reviewCopy });
         } else if (command === "update" && args.length === 2) {
           owns(args[0]!, ctx.threadId);
           if (!flags.summary) throw new Error("update needs --summary <text>.");
-          result = await service.update({ planId: args[0]!, markdown: await readFile(args[1]!, ctx), summary: flags.summary, resolves: flags.resolves });
+          result = await service.update({ planId: args[0]!, markdown: await readFile(args[1]!, ctx), summary: flags.summary, resolves: flags.resolves, ...reviewCopy });
         } else if (command === "reply" && args.length === 3) {
           owns(args[0]!, ctx.threadId);
           result = service.reply({ planId: args[0]!, annotation: args[1]!, body: args[2]!, resolve: flags.noResolve ? false : undefined });
         } else if (command === "handoff" && args.length === 1) {
-          owns(args[0]!, ctx.threadId); result = service.handoff({ planId: args[0]! });
+          owns(args[0]!, ctx.threadId); result = service.handoff({ planId: args[0]!, ...reviewCopy });
         } else if (command === "review" && args.length === 1) {
           if (!ctx.threadId) throw new Error("Review a plan from a reviewer thread.");
           const plan = service.get({ id: args[0]! });

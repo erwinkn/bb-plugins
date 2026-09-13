@@ -7,8 +7,10 @@ import { ThreadPlanHeaderButton, REVIEW_ACTION_ID } from "./components/ThreadPla
 import { ThreadPlanPanel } from "./components/ThreadPlanPanel";
 import { PlanReviewPrompt } from "./components/PlanReviewPrompt";
 import { PLUGIN_ICONS } from "./components/ui/plugin-icons";
+import { mountPromptPresentation } from "./lib/prompt-presentation";
 
 export default definePluginApp((app) => {
+  app.contentScripts.register({ id: "review-prompt-presentation", mount: mountPromptPresentation });
   // Glyphs bb does not ship; everything else renders from the host registry.
   for (const icon of PLUGIN_ICONS) app.experimental_icons.register(icon);
 

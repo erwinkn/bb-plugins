@@ -231,24 +231,38 @@ AGENTS.md.
 
 ### Compact plugin interaction prompts
 
-BB 0.43.1 / SDK 0.4.87 lets plugins supply an interaction title and React body,
-but always supplies the outer card, heading, and separate “Requested by” row.
-On the BB mobile app, the host also puts a “From <thread title>” origin label
-beside the heading. In a phone screenshot, this squeezed even a shortened plan
-title into five lines; “Requested by Plans” then repeated the attribution below.
-Neither attribution is controlled by the plugin. Plans now uses the fixed
-heading “Plan ready” and places the plan name in a single line with CSS ellipsis
-inside its body to avoid that heading growth.
-The host's renderer fieldset also has the browser default
-`min-width: min-content`, which expanded a no-wrap title past the mobile card;
-Plans contains its body's intrinsic width to allow ellipsis. Set `min-width: 0`
-on that host fieldset so other plugin renderers can shrink correctly too.
-`PluginInteractionRequest` and `pendingInteraction` expose no compact/flush
-layout or header-action slot. Plans can remove its nested card and redundant
-copy, but cannot put its two actions beside the host title or compact the
-attribution. Add a compact interaction variant with responsive header actions
-and one concise attribution; keep origin labels from squeezing the mobile
-heading into a narrow column, and retain accessible controls on mobile.
+Verified in BB 0.43.1 / SDK 0.4.87 and the installed frontend bundles (which
+omit source maps; the symbols below identify the shipped components):
+
+- `workspace-checkout-display-BY4OfVwL.js`, `F0`, the plugin request renderer
+  (`plugin-interaction-shell`): always inserts a paragraph before the renderer.
+  It says “Requested by <pluginId>” for cancellable plugin requests, or “The agent
+  asks through <pluginId>” for provider requests. The plugin ID comes from the
+  interaction origin, not a description or title field.
+- The same bundle's `A$`, the shared interaction shell: renders “From <title>”
+  when expanded and given `sourceThread`. Its origin link takes up to 40% of the
+  header while the expanded heading uses `whitespace-normal`.
+- `SplitWorkspaceRoute-DkpKauH2.js`, `Wd`, the propagated-child interaction
+  renderer: supplies `sourceThread: {href, title: childTitle}` and the child's
+  thread ID. Direct-thread rendering omits `sourceThread`. Changing the plan's
+  request title cannot remove either attribution; changing its thread ID would
+  change routing and ownership.
+
+On Erwin's phone, that origin link squeezed a shortened heading into five lines,
+then “Requested by Plans” repeated attribution below. Plans now hides both rows
+with a disposable content-script stylesheet scoped to
+`data-request-kind="plans/plan-review"` and the shell's DOM markers, while keeping
+the real interaction origin and thread ID. It also ellipsizes the host heading.
+This is a tested DOM fallback, not an SDK presentation contract; changed host
+markup can bring the labels back. An unstyled host `fieldset` additionally uses
+`min-width: min-content`; Plans contains its body's intrinsic width to avoid
+mobile overflow.
+
+Requested host change: add compact/provenance presentation options to
+`PluginPendingInteractionRegistration`, pass them to the plugin request renderer
+and shared shell to omit both attribution elements, and allow an ellipsized
+heading with responsive actions. Set `min-width: 0` on the renderer fieldset.
+The current request/registration typings expose none of those options.
 
 Status: plugin cleanup implemented here; no upstream issue filed.
 Suggested issue title: `Add a compact layout for plugin interaction prompts`.

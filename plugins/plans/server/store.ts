@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 export const PLAN_CONTENT_LIMIT = 2_000_000;
 export function planContentBytes(plan: Plan): number {
   const bytes = (text: string) => Buffer.byteLength(text);
-  return plan.versions.reduce((total, version) => total + bytes(version.markdown) + bytes(version.summary) + version.resolves.reduce((sum, id) => sum + bytes(id), 0), 0)
+  return plan.versions.reduce((total, version) => total + bytes(version.markdown) + bytes(version.summary) + bytes(version.reviewHeading ?? "") + bytes(version.reviewSummary ?? "") + version.resolves.reduce((sum, id) => sum + bytes(id), 0), 0)
     + plan.comments.reduce((total, item) => total + bytes(item.body) + bytes(item.quote) + item.replies.reduce((sum, reply) => sum + bytes(reply.body), 0), 0);
 }
 

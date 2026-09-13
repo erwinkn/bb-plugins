@@ -22,7 +22,7 @@ const threadAction = app.threadPanelActions[0]!;
 
 let now = 1_700_000_000_000;
 function version(number: number, markdown = `# Plan\n\nStep ${number}.`): PlanVersion {
-  return { id: `v${number}`, number, markdown, createdAt: now + number, source: "user", summary: "", resolves: [] };
+  return { id: `v${number}`, number, markdown, createdAt: now + number, source: "user", summary: "", resolves: [], reviewHeading: null, reviewSummary: null };
 }
 function makePlan(overrides: Partial<Plan> = {}): Plan {
   return planSchema.parse({
@@ -63,6 +63,9 @@ function fakeBackend(initial: Plan[]) {
   return {
     plans,
     rpc: {
+      submit: () => { throw new Error("Use the real backend harness for submission tests."); },
+      update: () => { throw new Error("Use the real backend harness for update tests."); },
+      handoff: () => { throw new Error("Use the real backend harness for handoff tests."); },
       list: ({ threadId }: { threadId?: string; offset?: number }) =>
         [...plans.values()].filter((plan) => !threadId || plan.threadId === threadId),
       get: ({ id }: { id: string }) => get(id),
@@ -546,14 +549,16 @@ describe("thread status and prompt", () => {
     let skipped = false;
     const submit = vi.fn(async () => {});
     const title = "Refine Pulse scheduling: TaskScope, LoopBinding, single Task wait";
+    const reviewSummary = "Give each task one wait and preserve schedules across restarts.";
     slot = render(app.pendingInteractions[0]!, {
-      interaction: { id: "i1", threadId: "thr_1", title: "Plan ready", createdAt: now, expiresAt: null,
-        payload: { planId: "plan-1", versionId: "v1", title, versionNumber: 1 } },
+      interaction: { id: "i1", threadId: "thr_1", title: "Pulse scheduling", createdAt: now, expiresAt: null,
+        payload: { planId: "plan-1", versionId: "v1", title, versionNumber: 1, reviewSummary } },
       submit, cancel: async () => { skipped = true; },
     }, { rpc: fakeBackend([]).rpc });
     expect(slot.queryByText("Plan ready for your review.")).toBeNull();
-    expect(slot.getByTitle(title).textContent).toBe(title);
-    expect(slot.getByRole("group", { name: `Review ${title}` }).textContent).toBe(`${title}SkipOpen review`);
+    expect(slot.getByTitle(title)).toBe(slot.getByRole("group", { name: `Review ${title}` }));
+    expect(slot.queryByText(title)).toBeNull();
+    expect(slot.getByRole("group", { name: `Review ${title}` }).textContent).toBe(`${reviewSummary}SkipOpen review`);
     fireEvent.click(slot.getByRole("button", { name: "Open review" }));
     expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "openThreadPanel", options: expect.objectContaining({ params: { threadId: "thr_1", planId: "plan-1" } }) }));
     expect(skipped).toBe(false);
@@ -561,6 +566,15 @@ describe("thread status and prompt", () => {
     fireEvent.click(slot.getByRole("button", { name: "Skip" }));
     await waitFor(() => expect(skipped).toBe(true));
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("omits the description for legacy payloads while retaining the full title accessibly", () => {
+    slot = render(app.pendingInteractions[0]!, {
+      interaction: { id: "legacy", threadId: "thr_1", title: "Scheduling", createdAt: now, expiresAt: null,
+        payload: { planId: "plan-1", versionId: "v1", title: "Full scheduling title", versionNumber: 1 } },
+      submit: async () => {}, cancel: async () => {},
+    }, { rpc: fakeBackend([]).rpc });
+    expect(slot.getByTitle("Full scheduling title").textContent).toBe("SkipOpen review");
   });
 });
 

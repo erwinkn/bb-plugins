@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { addAnnotationSchema, agentReplySchema, bodySchema, createSchema, deliveryModeSchema, idSchema, markdownSchema, planSchema, updateSchema, type Plan, type PlanComment } from "./contract";
+import { addAnnotationSchema, agentReplySchema, bodySchema, createSchema, deliveryModeSchema, handoffSchema, idSchema, markdownSchema, planSchema, updateSchema, type Plan, type PlanComment } from "./contract";
 import { createStore } from "./server/store";
 import { createOutbox, type OutboxItem } from "./server/outbox";
 import { LiveSession, type SessionOptions } from "./server/session";
@@ -41,7 +41,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     store.changed(plan.id); session(plan.id).schedule(); return saved;
   };
   const create = async (input: z.input<typeof createSchema>, source: "agent" | "user" = "user") => {
-    const { title, markdown, threadId, sample = false } = createSchema.parse(input);
+    const { title, markdown, threadId, sample = false, reviewHeading, reviewSummary } = createSchema.parse(input);
     if (sample && threadId) throw new Error("Sample plans cannot be linked to a thread.");
     if (!sample && !threadId) throw new Error("Choose a thread for this plan, or create a sample.");
     let projectId: string | null = null;
@@ -55,7 +55,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     const now = Date.now();
     const plan = mutate(planSchema.parse({
       id: randomUUID(), title, threadId: threadId ?? null, projectId, projectName, sample, status: "open",
-      createdAt: now, updatedAt: now, versions: [{ id: randomUUID(), number: 1, markdown, createdAt: now, source }], comments: [],
+      createdAt: now, updatedAt: now, versions: [{ id: randomUUID(), number: 1, markdown, createdAt: now, source, reviewHeading, reviewSummary }], comments: [],
     }));
     bb.realtime.publish("plan-submitted", { id: plan.id, threadId: plan.threadId });
     // Await the pointer write so `bb plans get` right after this call resolves it.
@@ -82,7 +82,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     if (rows.length) outbox.state(rows.map((row) => row.id), "dropped");
   };
   const update = async (input: z.input<typeof updateSchema>) => {
-    const { planId, edits, summary, resolves, markdown: replacement } = updateSchema.parse(input);
+    const { planId, edits, summary, resolves, markdown: replacement, reviewHeading = null, reviewSummary = null } = updateSchema.parse(input);
     const plan = open(planId);
     let markdown = plan.versions.at(-1)!.markdown;
     if (edits) {
@@ -101,9 +101,10 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
       if (item.state === "withdrawn") throw new Error(`Annotation #${item.number} was withdrawn.`);
       item.state = "addressed";
     }
-    const version = { id: randomUUID(), number: plan.versions.at(-1)!.number + 1, markdown, summary, resolves: [...new Set(addressed.map((item) => item.id))], source: "agent" as const, createdAt: Date.now() };
+    const version = { id: randomUUID(), number: plan.versions.at(-1)!.number + 1, markdown, summary, reviewHeading, reviewSummary, resolves: [...new Set(addressed.map((item) => item.id))], source: "agent" as const, createdAt: Date.now() };
     plan.versions.push(version);
     mutate(plan, () => { for (const item of addressed) settle(planId, item); });
+    session(planId).refreshHold();
     await metadata.sync(planId);
     return { planId, versionId: version.id, versionNumber: version.number };
   };
@@ -118,10 +119,20 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     mutate(plan, () => { if (settled) settle(planId, item); });
     return { planId, annotationId: item.id, number: item.number, state: item.state };
   };
-  const handoff = ({ planId }: { planId: string }) => {
-    const plan = open(idSchema.parse(planId));
-    const live = session(planId); live.hold();
-    const status = plan.delivery.queuedMessageId ? "queued" : "waiting";
+  const handoff = (input: z.input<typeof handoffSchema>) => {
+    const { planId, reviewHeading, reviewSummary } = handoffSchema.parse(input);
+    const plan = open(planId);
+    const live = session(planId);
+    const version = plan.versions.at(-1)!;
+    if ((reviewHeading !== undefined && reviewHeading !== version.reviewHeading)
+      || (reviewSummary !== undefined && reviewSummary !== version.reviewSummary)) {
+      if (reviewHeading !== undefined) version.reviewHeading = reviewHeading;
+      if (reviewSummary !== undefined) version.reviewSummary = reviewSummary;
+      mutate(plan);
+      live.release();
+    }
+    live.hold();
+    const status = plan.delivery.queuedMessageId ? "queued" as const : "waiting" as const;
     // waiting: the review prompt is up. queued: a feedback message is still queued and brings the agent back by itself.
     return { planId, status, instruction: handoffInstruction };
   };
@@ -250,6 +261,6 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
   const activePlan = ({ threadId }: { threadId: string }) => metadata.read(idSchema.parse(threadId));
   for (const plan of store.all()) session(plan.id).resume();
   bb.onDispose(async () => { await Promise.all([...[...sessions.values()].map((live) => live.dispose()), metadata.settled()]); });
-  const rpc = { list, get, create: (input: z.input<typeof createSchema>) => create(input), addAnnotation, withdrawAnnotation, resolveAnnotation, replyToAnnotation, updateAnnotation, approve, setDeliveryMode, remove, deliveryStatus, annotationDeliveryStatus };
+  const rpc = { list, get, create: (input: z.input<typeof createSchema>) => create(input), submit, update, handoff, addAnnotation, withdrawAnnotation, resolveAnnotation, replyToAnnotation, updateAnnotation, approve, setDeliveryMode, remove, deliveryStatus, annotationDeliveryStatus };
   return { ...rpc, rpc, submit, update, reply, handoff, version, activePlan, metadataSettled: metadata.settled };
 }

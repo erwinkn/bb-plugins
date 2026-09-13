@@ -8,6 +8,7 @@ interface PromptPayload {
   versionId: string;
   title: string;
   versionNumber: number;
+  reviewSummary: string | null;
 }
 
 function readPayload(payload: unknown): PromptPayload | null {
@@ -17,7 +18,8 @@ function readPayload(payload: unknown): PromptPayload | null {
     typeof record.versionId === "string" &&
     typeof record.title === "string" &&
     typeof record.versionNumber === "number"
-    ? { planId: record.planId, versionId: record.versionId, title: record.title, versionNumber: record.versionNumber }
+    ? { planId: record.planId, versionId: record.versionId, title: record.title, versionNumber: record.versionNumber,
+        reviewSummary: typeof record.reviewSummary === "string" && record.reviewSummary.trim() ? record.reviewSummary : null }
     : null;
 }
 
@@ -40,15 +42,14 @@ export function PlanReviewPrompt({ interaction, cancel }: PluginPendingInteracti
     });
   };
 
-  // The host heading shares space with the origin label on mobile. Keep the
-  // plan name here, where we can guarantee a single line with CSS ellipsis.
+  // The host carries the review heading; the body explains the revision.
   // Inline-size containment keeps the host's min-content fieldset from growing
   // to the unbroken title's width before the ellipsis can take effect.
   return (
-    <div role="group" aria-label={payload ? `Review ${payload.title}` : "Plan review"}
+    <div role="group" aria-label={payload ? `Review ${payload.title}` : "Review"} title={payload?.title}
       style={{ contain: "inline-size" }}
-      className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-      {payload && <p className="min-w-0 truncate text-sm font-medium sm:flex-1" title={payload.title}>{payload.title}</p>}
+      className="flex min-w-0 flex-col gap-2">
+      {payload?.reviewSummary && <p className="line-clamp-3 min-w-0 break-words text-sm text-foreground">{payload.reviewSummary}</p>}
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
         <Button
           type="button"

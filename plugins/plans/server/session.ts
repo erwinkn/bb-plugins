@@ -32,6 +32,8 @@ export class LiveSession {
     this.controller?.abort(); this.controller = undefined;
     clearTimeout(this.holdTimer);
   }
+  /** Refresh an already-visible prompt without creating one during agent work. */
+  refreshHold() { if (this.controller) { this.release(); this.hold(); } }
   hold() {
     const plan = this.store.get(this.id);
     if (this.disposed || plan.status === "approved" || !plan.threadId || this.controller) return;
@@ -48,8 +50,8 @@ export class LiveSession {
       const version = plan.versions.at(-1)!;
       try {
         const result = await this.bb.ui.requestInput({
-          threadId: plan.threadId, rendererId: "plan-review", title: "Plan ready",
-          payload: { planId: plan.id, versionId: version.id, title: plan.title, versionNumber: version.number },
+          threadId: plan.threadId, rendererId: "plan-review", title: version.reviewHeading ?? plan.title,
+          payload: { planId: plan.id, versionId: version.id, title: plan.title, versionNumber: version.number, reviewSummary: version.reviewSummary },
           timeoutMs: Math.min(this.options.interactionChunkMs ?? 3_600_000, 3_600_000),
         }, { signal: controller.signal });
         if (controller.signal.aborted || this.disposed || result.outcome === "submitted" || result.reason === "user") break;

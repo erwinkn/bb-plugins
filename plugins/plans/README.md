@@ -33,9 +33,10 @@ Existing sessions may need to restart or resume to receive new tools.
    The tool returns at once on every harness.
    The agent ends its turn.
 2. Open **Plans** from the prompt or the **Plan** header button.
-   The prompt says **Plan ready**, shows the plan name on one line with an ellipsis
-   when needed, and offers **Open review** and **Skip**. The full name remains
-   available to assistive technology and in the title tooltip.
+   The prompt shows the agent's short review heading and one-sentence description,
+   then **Open review** and **Skip**. Long headings use an ellipsis; descriptions
+   wrap to at most three lines. The full plan name stays in the accessible label
+   and tooltip. Plans hides both host provenance rows for this review card.
    It gives the thread the **needs attention** state.
 3. Select text to add an annotation.
    Each saved annotation enters message delivery at once.
@@ -86,11 +87,33 @@ Feedback arrives as thread messages.
 
 | Tool | Use |
 | --- | --- |
-| `plans_submit {title, markdown}` | Save a new plan and start the review prompt. Returns the plan and version IDs. |
-| `plans_update {planId, edits, summary, resolves}` | Edit the current plan with exact-match `{old, new}` pairs. Each `old` must occur exactly once. |
-| `plans_update {planId, markdown, summary, resolves}` | Replace the full Markdown. Use this instead of `edits`. |
+| `plans_submit {title, markdown, reviewHeading?, reviewSummary?}` | Save a new plan and start the review prompt. Returns the plan and version IDs. |
+| `plans_update {planId, edits, summary, resolves, reviewHeading?, reviewSummary?}` | Edit the current plan with exact-match `{old, new}` pairs. Each `old` must occur exactly once. |
+| `plans_update {planId, markdown, summary, resolves, reviewHeading?, reviewSummary?}` | Replace the full Markdown. Use this instead of `edits`. |
 | `plans_reply {planId, annotation, body, resolve}` | Answer an ask or comment on an annotation. For asks, `resolve` defaults to true. |
-| `plans_handoff {planId}` | Restore the review prompt. Return a status line: `waiting` when the prompt is up, `queued` when a feedback message is still queued. |
+| `plans_handoff {planId, reviewHeading?, reviewSummary?}` | Restore the review prompt, optionally revising the latest version's review copy. Returns `waiting` or `queued`. |
+
+Supply `reviewHeading` as a few informative words (maximum **40 characters**),
+for example **Pulse scheduling refinements**, and `reviewSummary` as one sentence
+(maximum **240 characters**), for example **Give each task one wait and preserve
+its schedule across restarts.** Whitespace is normalized to a single line on input.
+Keep this copy about the review, without generic “plan ready” phrasing.
+The existing update `summary` remains the version's change log; `reviewSummary`
+is separate reader-facing copy.
+
+Both review fields are optional and stored on each version. New submissions and
+updates without them fall back to the full plan title (visually ellipsized) and
+no description. Older stored versions get the same defaults. Handoff preserves
+omitted fields and saves supplied fields on the latest version without creating
+a Markdown revision; pass `null` to clear a field. Earlier versions keep their
+own copy. Updating a version refreshes an already-visible prompt; it does not
+raise a new prompt when none is active. Handoff leaves the prompt absent while
+feedback is queued, and returns immediately.
+
+The RPC contract exposes `create` and `submit` with the same optional review fields,
+plus `update` and `handoff` with their tool inputs. `create` saves without raising
+a prompt; `submit` saves and raises it. `get` and `list` return the fields on each
+version. Existing callers can omit them.
 
 Each submit, update, and approval also writes a pointer into the thread's plugin metadata under the `plans` namespace: `{ activePlanId, status, version }`.
 The database stays authoritative.
@@ -115,16 +138,18 @@ Implement only after the `approved` message.
 The CLI supports the same flow:
 
 ```text
-bb plans submit <file> [title]
-bb plans update <plan> <file> --summary <text> [--resolve #n ...]
+bb plans submit <file> [title] [--review-heading <text>] [--review-summary <sentence>]
+bb plans update <plan> <file> --summary <text> [--resolve #n ...] [--review-heading <text>] [--review-summary <sentence>]
 bb plans reply <plan> <#n> <text> [--no-resolve]
-bb plans handoff <plan>
+bb plans handoff <plan> [--review-heading <text>] [--review-summary <sentence>]
 bb plans get [plan] [--version-id <id>]
 bb plans list [offset] [--thread <id>]
 bb plans review <plan> --comment "quote::body" --ask "quote::body" --redline "quote" --looks-good "quote" [--approve]
 ```
 
 Quote annotation numbers in shell commands, for example `'#7'`.
+Quote review copy too. An empty flag value, such as `--review-summary ''`, clears
+that field. `--summary` still means the required change log on `update`.
 `review` serves a separate reviewer thread.
 A thread cannot review its own plan.
 Use `bb plans get` after context loss.
