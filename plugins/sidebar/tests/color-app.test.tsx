@@ -329,6 +329,8 @@ describe("pull request link", () => {
   });
   it("opens the pull request through BB's URL opener without selecting the row", () => {
     const openUrl = vi.fn(() => true);
+    const seen = vi.fn();
+    window.addEventListener("bb-plugins:open-pull-request", seen);
     const slot = mount({ sidebarPullRequests: { done: pullRequest("open") }, openUrl });
     const link = within(row(slot, "done")).getByRole("link", { name: "Open pull request #7: Tint the sidebar" });
     expect(link.getAttribute("data-thread-pull-request")).toBe("");
@@ -338,12 +340,41 @@ describe("pull request link", () => {
     // Still no nested anchor inside the row link.
     expect(row(slot, "done").querySelector("a")).toBeNull();
     fireEvent.click(link);
+    // The event went out unhandled (nobody called preventDefault), so the
+    // URL opener runs as before.
+    expect(seen).toHaveBeenCalledTimes(1);
+    window.removeEventListener("bb-plugins:open-pull-request", seen);
     expect(openUrl).toHaveBeenCalledWith("https://github.com/example/bb/pull/7");
     expect(slot.inspection.navigateCalls).toEqual([{ method: "openUrl", url: "https://github.com/example/bb/pull/7" }]);
     expect(slot.inspection.sidebarActionCalls).toEqual([]);
     expect(props.onNavigate).not.toHaveBeenCalled();
     fireEvent.keyDown(link, { key: "Enter" });
     expect(openUrl).toHaveBeenCalledTimes(2);
+  });
+  it("hands the pull request to the github-prs plugin when it takes the event", () => {
+    const openUrl = vi.fn(() => true);
+    const details: unknown[] = [];
+    const take = (event: Event) => {
+      details.push((event as CustomEvent).detail);
+      event.preventDefault();
+    };
+    window.addEventListener("bb-plugins:open-pull-request", take);
+    try {
+      const slot = mount({ sidebarPullRequests: { done: pullRequest("open") }, openUrl });
+      const link = within(row(slot, "done")).getByRole("link", { name: "Open pull request #7: Tint the sidebar" });
+      fireEvent.click(link);
+      fireEvent.keyDown(link, { key: "Enter" });
+      expect(details).toEqual([
+        { url: "https://github.com/example/bb/pull/7", threadId: "done" },
+        { url: "https://github.com/example/bb/pull/7", threadId: "done" },
+      ]);
+      expect(openUrl).not.toHaveBeenCalled();
+      expect(slot.inspection.navigateCalls).toEqual([]);
+      expect(slot.inspection.sidebarActionCalls).toEqual([]);
+      expect(props.onNavigate).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("bb-plugins:open-pull-request", take);
+    }
   });
   it("falls back to a new tab when the host declines the URL", () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);

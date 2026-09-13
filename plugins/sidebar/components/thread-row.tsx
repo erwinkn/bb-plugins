@@ -216,8 +216,16 @@ export function ThreadRow({
   };
   const openPullRequest = () => {
     if (!pullRequest) return;
-    // BB's browser preference (in-app browser or external); a host without
-    // the URL opener gets a plain new tab.
+    // The github-prs plugin, when loaded, takes the request and shows the PR
+    // in its thread panel; it calls preventDefault to say so.
+    const request = new CustomEvent("bb-plugins:open-pull-request", {
+      cancelable: true,
+      detail: { url: pullRequest.url, threadId: thread.id },
+    });
+    window.dispatchEvent(request);
+    if (request.defaultPrevented) return;
+    // Otherwise BB's browser preference (in-app browser or external); a host
+    // without the URL opener gets a plain new tab.
     if (!navigate.openUrl(pullRequest.url))
       window.open(pullRequest.url, "_blank", "noopener,noreferrer");
   };

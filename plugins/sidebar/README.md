@@ -145,9 +145,14 @@ that line and refreshes each minute. The pull request shows a state-colored
 icon and its number: green for open, attention amber for an open pull request
 that needs you, purple for merged, red for closed, and edit amber for a draft.
 The chip is a link (by role, since the row itself is a link): it underlines on
-hover, and clicking it or pressing Enter opens the pull request through BB's
-URL opener, which follows the client's in-app or external browser preference,
-without selecting the row; a host without that opener gets a new tab. Metadata
+hover, and clicking it or pressing Enter opens the pull request without
+selecting the row. The click first dispatches a cancelable
+`bb-plugins:open-pull-request` CustomEvent on `window` with
+`{ url, threadId }`; the github-prs plugin (`plugins/github`), when loaded,
+shows the pull request in its thread panel and calls `preventDefault`. When
+nothing takes the event, the sidebar opens the URL through BB's URL opener,
+which follows the client's in-app or external browser preference; a host
+without that opener gets a new tab. Metadata
 that does not fit fades out before the age instead of showing an ellipsis;
 the title fades before the status marker. The provider, the full branch, and
 the pull request title appear in an instant info card to the right on hover
