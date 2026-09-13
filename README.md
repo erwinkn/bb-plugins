@@ -36,6 +36,10 @@ compact](plugins/provider-usage-compact/README.md) for installation and rollback
 `remove-plugin-ellipsis` hides the ellipsis button on plugin sidebar rows, including
 Automations. See [Hide plugin nav menus](plugins/remove-plugin-ellipsis/README.md).
 
+`scratchpad` adds a shared rich-text document per worktree, with BlockNote
+editing, JSON storage outside Git, revision history, and agent tools. See
+[Scratchpad](plugins/scratchpad/README.md).
+
 ## Install
 
 Use BB 0.42.1 or later. The bb server needs Git, npm, and GitHub access to this

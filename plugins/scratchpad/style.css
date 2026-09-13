@@ -1,0 +1,35 @@
+.scratchpad { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--foreground); background: var(--background); font-family: var(--font-sans, sans-serif); font-size: 13px; }
+.sp-topbar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.sp-context { display: flex; flex: 1; min-width: 100px; flex-direction: column; gap: 3px; }
+.sp-context strong { font-size: 13px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
+.sp-context span, .sp-status, .sp-footer, .sp-history-label { font-size: 11px; color: var(--muted-foreground); }
+.sp-status { white-space: nowrap; }
+.sp-status-warning { color: var(--foreground); font-weight: 600; }
+.sp-button, .sp-header-action { font-family: inherit; font-size: 12px; line-height: 1.4; color: var(--muted-foreground); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; cursor: pointer; }
+.sp-button:hover, .sp-header-action:hover, .sp-button[aria-pressed=true] { color: var(--foreground); background: var(--state-hover, var(--muted)); }
+.sp-button:focus-visible, .sp-header-action:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.sp-button:disabled { opacity: .4; cursor: default; }
+.sp-header-action { display: inline-flex; gap: 6px; align-items: center; padding: 4px 8px; }
+.sp-export { position: relative; }
+.sp-export summary { list-style: none; }
+.sp-export summary::-webkit-details-marker { display: none; }
+.sp-export > div { position: absolute; right: 0; top: calc(100% + 5px); z-index: 30; min-width: 150px; display: flex; flex-direction: column; padding: 5px; background: var(--popover, var(--background)); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 18px #0002; }
+.sp-export .sp-button { text-align: left; }
+.sp-document { flex: 1; overflow: auto; min-height: 100px; padding: 24px 0 70px; }
+.scratchpad-editor { --bn-font-family: var(--font-sans, sans-serif); --bn-colors-editor-background: var(--background); --bn-colors-editor-text: var(--foreground); --bn-colors-menu-background: var(--popover, var(--background)); --bn-colors-menu-text: var(--foreground); --bn-colors-hovered-background: var(--state-hover, var(--muted)); --bn-colors-hovered-text: var(--foreground); --bn-colors-border: var(--border); --bn-colors-shadow: #0002; }
+.scratchpad-editor .bn-editor { background: transparent; color: var(--foreground); font-family: inherit; font-size: 15px; line-height: 1.65; max-width: 850px; margin: 0 auto; padding-inline: 42px 30px; min-height: 120px; }
+.scratchpad-editor .bn-editor:focus-visible { outline: none; }
+.sp-footer { display: flex; justify-content: space-between; gap: 10px; padding: 8px 16px; border-top: 1px solid var(--border); }
+.sp-banner { background: var(--muted); padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.sp-banner > .sp-button { margin-left: 8px; }
+.sp-conflict { display: flex; flex-direction: column; gap: 7px; }
+.sp-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.sp-history { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.sp-history-list { display: flex; flex-direction: column; align-items: start; max-height: 160px; overflow: auto; margin-top: 6px; }
+.sp-history-list .sp-button { text-align: left; }
+.sp-preview { border-bottom: 1px solid var(--border); background: var(--background); max-height: 45%; display: flex; flex-direction: column; }
+.sp-preview-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 8px 16px; gap: 8px; font-size: 12px; }
+.sp-preview-body { overflow: auto; padding-block: 12px; }
+.sp-loading { padding: 24px; gap: 12px; }
+.scratchpad-editor .bn-suggestion-menu { max-height: min(55dvh, 440px); overflow-y: auto; }
+@media (max-width: 600px) { .sp-topbar { padding: 10px 12px; gap: 4px; } .sp-context { min-width: 90px; } .sp-context strong { max-width: 160px; } .sp-document { padding-top: 18px; } .scratchpad-editor .bn-editor { padding-inline: 34px 16px; } .sp-button { min-height: 36px; } .sp-footer { padding-inline: 12px; } }
