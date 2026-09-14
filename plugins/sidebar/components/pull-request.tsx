@@ -243,7 +243,9 @@ export function PullRequestsChip({
         className={chipClass}
       >
         <PullRequestIcon pullRequest={pullRequest} />
-        <span className={`tabular-nums ${pullRequestColorClass(pullRequest)}`}>
+        <span
+          className={`font-normal tabular-nums ${pullRequestColorClass(pullRequest)}`}
+        >
           #{pullRequest.number}
         </span>
       </span>
@@ -295,7 +297,7 @@ export function PullRequestsChip({
           <span
             aria-hidden="true"
             data-pull-request-count=""
-            className={`tabular-nums ${pullRequestColorClass(primary)}`}
+            className={`font-normal tabular-nums ${pullRequestColorClass(primary)}`}
           >
             {pullRequests.length}
           </span>
@@ -353,7 +355,7 @@ export function PullRequestsChip({
                   >
                     <PullRequestIcon pullRequest={pullRequest} />
                     <span
-                      className={`shrink-0 tabular-nums ${pullRequestColorClass(pullRequest)}`}
+                      className={`shrink-0 font-normal tabular-nums ${pullRequestColorClass(pullRequest)}`}
                     >
                       #{pullRequest.number}
                     </span>
