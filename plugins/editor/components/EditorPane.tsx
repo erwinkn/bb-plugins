@@ -14,6 +14,7 @@ import type { MenuItem } from "./ContextMenu";
 import { GoToLine } from "./GoToLine";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { workspaceRoot } from "@/lib/markdown-preview";
+import { baseName, escapesRoot } from "@/lib/file-tree";
 import { indicatorFor, Toolbar } from "./Toolbar";
 import { previewKind } from "@/lib/file-preview";
 
@@ -197,6 +198,12 @@ export function EditorPane({
   const lineCount = useMemo(() => (state?.content ?? "").split("\n").length, [state?.content]);
   const unsupported = state?.load.kind === "unsupported";
   const readOnly = !isEditor || unsupported || state?.draft.kind === "stale";
+  // A file outside the workspace root keeps its absolute path in the
+  // breadcrumb; inside it the breadcrumb is relative to the root. Before the
+  // first read lands `relativePath` is the path as opened, so an absolute one
+  // already shows absolute.
+  const outsideRoot = state !== null && escapesRoot(state.relativePath);
+  const displayPath = outsideRoot ? state?.absolutePath || path : state?.relativePath || path;
 
   // Find, replace and go-to-line need the editor, so they leave the preview
   // and run once it is ready.
@@ -236,7 +243,7 @@ export function EditorPane({
   return (
     <div ref={rootRef} onFocusCapture={() => markEditorActive(active)} onPointerDownCapture={() => markEditorActive(active)} className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
       <Toolbar
-        path={path}
+        path={displayPath}
         indicator={indicatorFor(state, state?.load.kind === "error" || surfaceStatus.kind === "error")}
         canGoBack={history.canBack}
         canGoForward={history.canForward}
@@ -278,17 +285,19 @@ export function EditorPane({
           <MarkdownPreview
             source={source}
             path={path}
-            relativePath={state.relativePath || path}
-            rootPath={workspaceRoot(state.absolutePath, state.relativePath)}
+            // A document outside the root previews against its own directory;
+            // its links stay with BB rather than resolving under the root.
+            relativePath={outsideRoot ? baseName(state.absolutePath || path) : state.relativePath || path}
+            rootPath={outsideRoot ? "" : workspaceRoot(state.absolutePath, state.relativePath)}
             content={state.content}
-            onOpenPath={onOpenPath}
+            onOpenPath={outsideRoot ? null : onOpenPath}
           />
         ) : assets.kind === "ready" && state !== null && state.load.kind === "ready" ? (
           <PierreSurface
             ref={surfaceRef}
             baseUrl={assets.baseUrl}
             viewId={file.viewId}
-            name={state.relativePath || path}
+            name={displayPath}
             content={state.content}
             epoch={state.epoch}
             epochAuthor={state.epochAuthor}

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ancestorsOf, buildTree, filterTree, fuzzyScore, mergeListing, sameEntries } from "./file-tree";
+import { ancestorsOf, baseName, buildTree, escapesRoot, filterTree, fuzzyScore, isAbsolutePath, mergeListing, pathWithinRoot, sameEntries } from "./file-tree";
 
 test("buildTree nests flat paths and sorts directories before files", () => {
   const tree = buildTree([
@@ -180,6 +180,49 @@ test("filterTree keeps matches with their directories and reports which to expan
   assert.equal(filterTree(tree, "src/ui").matchCount, 1);
   assert.deepEqual(filterTree(tree, "nothing-here").nodes, []);
   assert.equal(filterTree(tree, "   ").nodes.length, 2);
+});
+
+test("isAbsolutePath recognizes POSIX, drive and UNC roots, nothing else", () => {
+  assert.equal(isAbsolutePath("/home/exedev/x.ts"), true);
+  assert.equal(isAbsolutePath("C:\\work"), true);
+  assert.equal(isAbsolutePath("C:/work"), true);
+  assert.equal(isAbsolutePath("\\\\server\\share"), true);
+  assert.equal(isAbsolutePath("src/a.ts"), false);
+  assert.equal(isAbsolutePath("./a.ts"), false);
+  assert.equal(isAbsolutePath(""), false);
+});
+
+test("escapesRoot marks absolute paths and '..' climbs, not plain relatives", () => {
+  assert.equal(escapesRoot("a/b.ts"), false);
+  assert.equal(escapesRoot(""), false);
+  assert.equal(escapesRoot("../x.ts"), true);
+  assert.equal(escapesRoot("a/../b.ts"), true);
+  assert.equal(escapesRoot("/x.ts"), true);
+  assert.equal(escapesRoot("C:\\x.ts"), true);
+});
+
+test("pathWithinRoot maps an absolute path under the root and refuses others", () => {
+  assert.equal(pathWithinRoot("/w", "/w/a/b.ts"), "a/b.ts");
+  assert.equal(pathWithinRoot("/w/", "/w/a.ts"), "a.ts");
+  // The root itself and siblings are not files inside it.
+  assert.equal(pathWithinRoot("/w", "/w"), null);
+  assert.equal(pathWithinRoot("/w", "/w2/a.ts"), null);
+  assert.equal(pathWithinRoot("/w", "/other/a.ts"), null);
+  assert.equal(pathWithinRoot("", "/w/a.ts"), null);
+  // A relative path is already root-relative and passes through.
+  assert.equal(pathWithinRoot("/w", "a/b.ts"), "a/b.ts");
+  assert.equal(pathWithinRoot("", "a/b.ts"), "a/b.ts");
+  // Windows roots accept either separator and compare case-insensitively.
+  assert.equal(pathWithinRoot("C:\\Work", "c:/work/src/a.ts"), "src/a.ts");
+  assert.equal(pathWithinRoot("C:\\Work", "D:\\work\\a.ts"), null);
+  assert.equal(pathWithinRoot("\\\\srv\\share", "\\\\srv\\share\\a.ts"), "a.ts");
+});
+
+test("baseName takes the last segment across separators", () => {
+  assert.equal(baseName("/a/b/c.ts"), "c.ts");
+  assert.equal(baseName("C:\\x\\y.ts"), "y.ts");
+  assert.equal(baseName("c.ts"), "c.ts");
+  assert.equal(baseName("/a/b/"), "b");
 });
 
 test("fuzzyScore requires every character in order and prefers name matches", () => {

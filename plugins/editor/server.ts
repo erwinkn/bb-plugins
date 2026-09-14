@@ -521,9 +521,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  /** The host that holds a resolved target's files, or null when none can watch it. */
-  async function hostOf(target: { rootPath: string; hostId?: string }): Promise<string | null> {
-    return target.hostId ?? primaryHost();
+  /** The host that holds a resolved target's root, or null when none can watch it. */
+  async function hostOf(target: { rootPath: string; hostId?: string; rootHostId?: string }): Promise<string | null> {
+    return target.rootHostId ?? target.hostId ?? primaryHost();
   }
 
   /**
@@ -542,13 +542,19 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function isLocalWorkspace(target: { rootPath: string; hostId?: string }): Promise<boolean> {
-    if (target.hostId !== undefined && target.hostId !== (await primaryHost())) return false;
+  async function isLocalWorkspace(target: { rootPath: string; hostId?: string; rootHostId?: string }): Promise<boolean> {
+    const rootHost = target.rootHostId ?? target.hostId;
+    if (rootHost !== undefined && rootHost !== (await primaryHost())) return false;
     try {
       return statSync(target.rootPath).isDirectory();
     } catch {
       return false;
     }
+  }
+
+  /** Whether `target`'s file is on this machine: its host is BB's primary host (or none). */
+  async function isLocalFile(target: { hostId?: string }): Promise<boolean> {
+    return target.hostId === undefined || target.hostId === (await primaryHost());
   }
 
   async function threadStorageRoot(): Promise<string> {
@@ -561,15 +567,19 @@ export default async function plugin(bb: BbPluginApi) {
   async function resolveTarget(
     source: FileSource,
     filePath: string,
-  ): Promise<{ path: string; rootPath: string; hostId?: string }> {
-    // Host files are addressed by absolute path; every other kind is relative
-    // to a workspace root and must stay inside it.
-    if (source.kind !== "host") assertInsideWorkspace(filePath);
+  ): Promise<{ path: string; rootPath: string; hostId?: string; rootHostId?: string }> {
+    // Host files are addressed by absolute path. Every other kind takes a
+    // workspace-relative path, but an absolute path still resolves verbatim:
+    // a file link may name a path outside the workspace, and opening it must
+    // not move the workspace's tree.
+    const absolute = pathApiFor(filePath).isAbsolute(filePath);
     if (source.kind === "thread-storage") {
+      assertInsideWorkspace(filePath);
       if (source.threadId === null) throw new Error("This thread-storage file has no thread");
       const rootPath = path.join(await threadStorageRoot(), source.threadId);
       return { path: path.join(rootPath, filePath), rootPath };
     }
+    if (source.kind === "workspace" && !absolute) assertInsideWorkspace(filePath);
     if (source.environmentId === null && source.kind === "workspace") {
       if (source.projectId === null) throw new Error("This file has no environment or project");
       const project = await bb.sdk.projects.get({ projectId: source.projectId });
@@ -578,24 +588,66 @@ export default async function plugin(bb: BbPluginApi) {
           ? (project.sources.find((entry) => entry.isDefault) ?? project.sources[0])
           : project.sources.find((entry) => entry.hostId === source.experimental_hostId);
       if (checkout === undefined) throw new Error("This project has no matching source checkout");
-      return { path: path.join(checkout.path, filePath), rootPath: checkout.path, hostId: checkout.hostId };
+      return { path: absolute ? filePath : path.join(checkout.path, filePath), rootPath: checkout.path, hostId: checkout.hostId };
     }
-    if (source.environmentId === null) throw new Error("This file has no environment to resolve it against");
+    if (source.environmentId === null) {
+      // A host file with no environment to anchor it roots at its own
+      // directory; a relative path has nothing to resolve against at all.
+      if (source.kind === "host" && absolute) {
+        return {
+          path: filePath,
+          rootPath: pathApiFor(filePath).dirname(filePath),
+          ...(source.experimental_hostId ? { hostId: source.experimental_hostId } : {}),
+        };
+      }
+      throw new Error("This file has no environment to resolve it against");
+    }
     const environment = await bb.sdk.environments.get({ environmentId: source.environmentId });
     if (source.kind === "host") {
-      const api = pathApiFor(filePath);
+      // A host source's workspace is the environment's checkout, the root the
+      // tree, search and watch calls share. The file itself may be anywhere
+      // on its host; only a relative path resolves inside the workspace.
+      const fileHost = source.experimental_hostId ?? environment.hostId;
+      const rootHost = environment.hostId;
+      if (absolute) {
+        return {
+          path: filePath,
+          rootPath: environment.path ?? pathApiFor(filePath).dirname(filePath),
+          ...(fileHost ? { hostId: fileHost } : {}),
+          ...(rootHost && rootHost !== fileHost ? { rootHostId: rootHost } : {}),
+        };
+      }
+      if (!environment.path) throw new Error("This environment has no workspace path");
+      const api = pathApiFor(environment.path);
       return {
-        path: filePath,
-        rootPath: api.dirname(filePath),
+        path: api.resolve(environment.path, filePath),
+        rootPath: environment.path,
         ...(environment.hostId ? { hostId: environment.hostId } : {}),
       };
     }
     if (!environment.path) throw new Error("This environment has no workspace path");
     return {
-      path: path.join(environment.path, filePath),
+      path: absolute ? filePath : path.join(environment.path, filePath),
       rootPath: environment.path,
       ...(environment.hostId ? { hostId: environment.hostId } : {}),
     };
+  }
+
+  /** Whether `target` is `root` itself or inside it, comparing path segments. */
+  function isInsideRoot(root: string, target: string): boolean {
+    const api = pathApiFor(root);
+    const relative = api.relative(root, target);
+    return relative === "" || (!api.isAbsolute(relative) && !relative.split(/[\\/]/).includes(".."));
+  }
+
+  /**
+   * The root an SDK file call should confine to: the workspace when it holds
+   * the file, else the file's own directory — an absolute path can name a
+   * file outside the workspace root, or on another host entirely.
+   */
+  function confineRoot(target: { path: string; rootPath: string; hostId?: string; rootHostId?: string }): string {
+    const sameHost = target.rootHostId === undefined || target.rootHostId === target.hostId;
+    return sameHost && isInsideRoot(target.rootPath, target.path) ? target.rootPath : pathApiFor(target.path).dirname(target.path);
   }
 
   function relativeTo(root: string, target: string): string {
@@ -780,9 +832,16 @@ export default async function plugin(bb: BbPluginApi) {
     assets: () => assets(),
 
     async watch({ source, clientId }) {
-      // A host file has no workspace root to watch; polling covers it.
-      if (source.kind === "host") return { root: null, ttlMs: WATCH_TTL_MS };
-      const target = await resolveTarget(source, ".");
+      // A host source shares its environment's workspace root; an environment
+      // without a filesystem path has no root to watch, and polling covers
+      // the file.
+      let target;
+      try {
+        target = await resolveTarget(source, ".");
+      } catch (error) {
+        if (source.kind !== "host") throw error;
+        return { root: null, ttlMs: WATCH_TTL_MS };
+      }
       const hostId = await hostOf(target);
       if (hostId === null) return { root: null, ttlMs: WATCH_TTL_MS };
       const entry = watches.register(hostId, target.rootPath, clientId, Date.now() + WATCH_TTL_MS);
@@ -796,8 +855,13 @@ export default async function plugin(bb: BbPluginApi) {
     },
 
     async unwatch({ source, clientId }) {
-      if (source.kind === "host") return null;
-      const target = await resolveTarget(source, ".");
+      let target;
+      try {
+        target = await resolveTarget(source, ".");
+      } catch (error) {
+        if (source.kind !== "host") throw error;
+        return null;
+      }
       const hostId = await hostOf(target);
       if (hostId === null) return null;
       if (watches.unregister(hostId, target.rootPath, clientId)) await syncHost(hostId).catch(() => undefined);
@@ -807,7 +871,9 @@ export default async function plugin(bb: BbPluginApi) {
     async previewBase({ path: filePath, source }) {
       const target = await resolveTarget(source, filePath);
       const lease = await bb.sdk.files.createPreview({
-        rootPath: target.rootPath,
+        // A file outside the workspace previews against its own directory so
+        // its relative assets resolve the way they do on disk.
+        rootPath: confineRoot(target),
         ...(target.hostId === undefined ? {} : { hostId: target.hostId }),
         ttlMs: PREVIEW_LEASE_MS,
       });
@@ -841,11 +907,12 @@ export default async function plugin(bb: BbPluginApi) {
       const target = await resolveTarget(source, filePath);
       let file;
       try {
-        file = await bb.sdk.files.read(target);
+        const { rootHostId: _rootHostId, ...fileArgs } = target;
+        file = await bb.sdk.files.read({ ...fileArgs, rootPath: confineRoot(target) });
       } catch (error) {
         // A dangling symbolic link reads as a missing path; name the link
         // instead, the way the tree marks it.
-        const link = (await isLocalWorkspace(target)) ? await brokenLinkTarget(target.path) : null;
+        const link = (await isLocalFile(target)) ? await brokenLinkTarget(target.path) : null;
         if (link === null) throw error;
         return { kind: "unsupported" as const, reason: `This symbolic link's target is missing: ${link}` };
       }
@@ -932,8 +999,10 @@ export default async function plugin(bb: BbPluginApi) {
       const target = await resolveTarget(source, filePath);
       // Our RPC uses null for an explicit overwrite. BB's file API uses an
       // omitted hash for that operation; null means "create only if absent".
+      const { rootHostId: _rootHostId, ...fileArgs } = target;
       const result = await bb.sdk.files.write({
-        ...target,
+        ...fileArgs,
+        rootPath: confineRoot(target),
         content,
         contentEncoding: "utf8",
         ...(expectedSha256 === null ? {} : { expectedSha256 }),

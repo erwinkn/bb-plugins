@@ -104,7 +104,10 @@ test("read, write, and tree refuse paths that leave the workspace", async (t) =>
   await plugin(bb);
   const source = { kind: "workspace", threadId: null, environmentId: null, projectId: null };
   await assert.rejects(() => harness.behavior.callRpc("read", { path: "../secrets", source }), /cannot contain/);
-  await assert.rejects(() => harness.behavior.callRpc("read", { path: "/etc/passwd", source }), /inside the workspace/);
+  // An absolute path is allowed to resolve — `bb thread open` hands one to a
+  // workspace source — but a source with no environment or project has
+  // nothing to resolve it against.
+  await assert.rejects(() => harness.behavior.callRpc("read", { path: "/etc/passwd", source }), /environment or project/);
   await assert.rejects(
     () => harness.behavior.callRpc("write", { path: "a/../../x", source, content: "", expectedSha256: null }),
     /cannot contain/,
@@ -237,6 +240,128 @@ test("tree and search go through the daemon for another host's workspace", async
   assert.deepEqual(searches, [
     { hostId: "host_remote", path: "/remote/work", query: "a.ts", includeFiles: true, includeDirectories: false, limit: 50 },
   ]);
+});
+
+test("a host source keeps its tree at the environment root, whatever file path opened", async (t) => {
+  const workspace = mkdtempSync(path.join(tmpdir(), "editor-host-root-"));
+  t.after(() => rmSync(workspace, { recursive: true, force: true }));
+  mkdirSync(path.join(workspace, "src"), { recursive: true });
+  writeFileSync(path.join(workspace, "README.md"), "readme");
+  writeFileSync(path.join(workspace, "src", "index.ts"), "code");
+
+  const reads: { path: string; rootPath?: string; hostId?: string }[] = [];
+  const previews: { rootPath: string; hostId?: string }[] = [];
+  const hostCalls: unknown[] = [];
+  const hostEnvironment = { ...environment, hostId: "host_primary", path: workspace };
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "editor",
+    sdk: {
+      system: { config: async () => ({ primaryHostId: "host_primary", dataDir: "/data" }) },
+      environments: { get: async () => hostEnvironment },
+      files: {
+        read: async (args: { path: string; rootPath?: string; hostId?: string }) => {
+          reads.push(args);
+          return { path: args.path, content: "text", contentEncoding: "utf8" as const, sha256: "hash", sizeBytes: 4, mimeType: "text/plain" };
+        },
+        createPreview: async (args: { rootPath: string; hostId?: string }) => {
+          previews.push(args);
+          return { baseUrl: "/api/v1/files/preview/lease1", expiresAtMs: 1_000 };
+        },
+      },
+    },
+    experimental_callHostRpc: async (call) => {
+      hostCalls.push(call.input);
+      const roots = (call.input as { roots: string[] }).roots;
+      return { watching: roots, failed: [] };
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "host" as const, threadId: "thr_x", environmentId: hostEnvironment.id, projectId: hostEnvironment.projectId };
+
+  // The tree lists the environment's checkout — never the opened file's
+  // directory or the plugin process's working directory.
+  const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  assert.equal(listing.root, workspace);
+  assert.deepEqual(listing.entries.map((entry) => entry.path).sort(), ["README.md", "src", "src/index.ts"]);
+
+  // An absolute path inside the root reads confined to the root and reports
+  // a root-relative path.
+  const inside = rpcContract.read.output.parse(
+    await harness.behavior.callRpc("read", { source, path: path.join(workspace, "src", "index.ts") }),
+  );
+  assert.equal(inside.kind, "text");
+  if (inside.kind === "text") {
+    assert.equal(inside.absolutePath, path.join(workspace, "src", "index.ts"));
+    assert.equal(inside.relativePath, "src/index.ts");
+  }
+  assert.deepEqual(reads.at(-1), { path: path.join(workspace, "src", "index.ts"), rootPath: workspace, hostId: "host_primary" });
+
+  // A relative path resolves inside the environment too.
+  await harness.behavior.callRpc("read", { source, path: "README.md" });
+  assert.deepEqual(reads.at(-1), { path: path.join(workspace, "README.md"), rootPath: workspace, hostId: "host_primary" });
+
+  // An absolute path outside the root still opens, confined to its own
+  // directory and reported as escaping the root.
+  const outsidePath = path.join(tmpdir(), "editor-host-outside.txt");
+  const outside = rpcContract.read.output.parse(await harness.behavior.callRpc("read", { source, path: outsidePath }));
+  assert.equal(outside.kind, "text");
+  if (outside.kind === "text") {
+    assert.equal(outside.absolutePath, outsidePath);
+    assert.match(outside.relativePath, /^\.\./);
+  }
+  assert.deepEqual(reads.at(-1), { path: outsidePath, rootPath: path.dirname(outsidePath), hostId: "host_primary" });
+
+  // A Markdown preview leases the file's own directory outside the root, the
+  // workspace root inside it.
+  await harness.behavior.callRpc("previewBase", { source, path: outsidePath });
+  assert.equal(previews.at(-1)?.rootPath, path.dirname(outsidePath));
+  await harness.behavior.callRpc("previewBase", { source, path: path.join(workspace, "README.md") });
+  assert.equal(previews.at(-1)?.rootPath, workspace);
+
+  // The watch registers the environment root on its host.
+  await harness.behavior.callRpc("watch", { source, clientId: "page-1" });
+  assert.deepEqual(hostCalls.at(-1), { roots: [workspace] });
+
+  // After every open the tree's root is still the environment's checkout.
+  const again = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  assert.equal(again.root, workspace);
+  assert.deepEqual(again.entries.map((entry) => entry.path).sort(), ["README.md", "src", "src/index.ts"]);
+});
+
+test("a workspace source opens an absolute path without moving its tree root", async (t) => {
+  const workspace = mkdtempSync(path.join(tmpdir(), "editor-workspace-root-"));
+  t.after(() => rmSync(workspace, { recursive: true, force: true }));
+  writeFileSync(path.join(workspace, "a.ts"), "code");
+  const reads: { path: string; rootPath?: string }[] = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "editor",
+    sdk: {
+      system: { config: async () => ({ primaryHostId: "host_primary", dataDir: "/data" }) },
+      environments: { get: async () => ({ ...environment, hostId: "host_primary", path: workspace }) },
+      files: {
+        read: async (args: { path: string; rootPath?: string }) => {
+          reads.push(args);
+          return { path: args.path, content: "text", contentEncoding: "utf8" as const, sha256: "hash", sizeBytes: 4, mimeType: "text/plain" };
+        },
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace" as const, threadId: "thr_x", environmentId: environment.id, projectId: environment.projectId };
+  // `bb thread open` hands the panel an absolute path; inside the root it
+  // resolves to the workspace-relative name, outside it stays absolute.
+  const inside = rpcContract.read.output.parse(await harness.behavior.callRpc("read", { source, path: path.join(workspace, "a.ts") }));
+  assert.equal(inside.kind, "text");
+  if (inside.kind === "text") assert.equal(inside.relativePath, "a.ts");
+  const outsidePath = path.join(tmpdir(), "editor-workspace-outside.txt");
+  const outside = rpcContract.read.output.parse(await harness.behavior.callRpc("read", { source, path: outsidePath }));
+  assert.equal(outside.kind, "text");
+  if (outside.kind === "text") assert.match(outside.relativePath, /^\.\./);
+  assert.equal(reads.at(-1)?.rootPath, path.dirname(outsidePath));
+  const listing = rpcContract.tree.output.parse(await harness.behavior.callRpc("tree", { source }));
+  assert.equal(listing.root, workspace);
 });
 
 test("plugin uses only public SDK imports and declared packages", () => {

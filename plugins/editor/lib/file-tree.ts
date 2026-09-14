@@ -133,6 +133,38 @@ export function splitPath(path: string): { directory: string; name: string } {
   return { directory: path.slice(0, path.length - name.length).replace(/\/$/, ""), name };
 }
 
+/** Whether `path` is absolute on a POSIX (`/x`) or Windows (`C:\x`, `\\srv`) host. */
+export function isAbsolutePath(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+}
+
+/** Whether a root-relative path climbs out of its root or is absolute. */
+export function escapesRoot(path: string): boolean {
+  return isAbsolutePath(path) || path.split(/[\\/]/).includes("..");
+}
+
+/**
+ * `path` relative to `root` when it sits inside it, else null. A
+ * non-absolute `path` is already root-relative and returns unchanged.
+ * Windows roots compare case-insensitively and accept either separator.
+ */
+export function pathWithinRoot(root: string, path: string): string | null {
+  if (!isAbsolutePath(path)) return path;
+  if (root === "") return null;
+  const windows = /^([A-Za-z]:[\\/]|\\\\)/.test(root);
+  const normalizeSlashes = (value: string) => (windows ? value.replace(/\\/g, "/") : value).replace(/\/+$/, "");
+  const r = normalizeSlashes(root);
+  if (r === "") return null;
+  const p = normalizeSlashes(path);
+  const [rc, pc] = windows ? [r.toLowerCase(), p.toLowerCase()] : [r, p];
+  return pc !== rc && pc.startsWith(`${rc}/`) ? p.slice(r.length + 1) : null;
+}
+
+/** The file name of a host path, across POSIX and Windows separators. */
+export function baseName(path: string): string {
+  return path.split(/[\\/]/).filter((segment) => segment !== "").at(-1) ?? path;
+}
+
 export function ancestorsOf(path: string): string[] {
   const segments = normalize(path).split("/");
   segments.pop();

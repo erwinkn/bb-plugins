@@ -3,7 +3,7 @@ import type { ComponentType } from "react";
 import { toast } from "sonner";
 import { experimental_useCodeTheme, useBbNavigate, useRpc, type PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
-import { mergeListing, sameEntries, splitPath, type FlatEntry } from "@/lib/file-tree";
+import { mergeListing, pathWithinRoot, sameEntries, splitPath, type FlatEntry } from "@/lib/file-tree";
 import { useElementWidth } from "@/lib/use-element-width";
 import type { EditorPrefs } from "@/lib/editor-options";
 import {
@@ -262,15 +262,27 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     void loadTree();
   }, [treeOpen, loadTree]);
 
+  // The open file's place in the tree: a path under the root as a
+  // workspace-relative path; null for a file outside it, which the tree
+  // does not reveal or select.
+  const treePath = useMemo(
+    () => (activePath === null ? null : pathWithinRoot(tree.root, activePath)),
+    [activePath, tree.root],
+  );
+
   const openInTab = useCallback(
     (path: string) => {
       if (source.kind !== "workspace" || source.environmentId === null) return false;
+      // The preview target is workspace-relative: an absolute path inside
+      // the root maps to it, and one outside it stays in this pane.
+      const relative = pathWithinRoot(tree.root, path);
+      if (relative === null || relative === "") return false;
       return navigate.experimental_openFilePreview({
-        target: { kind: "workspace", environmentId: source.environmentId, path },
+        target: { kind: "workspace", environmentId: source.environmentId, path: relative },
         location: null,
       });
     },
-    [navigate, source],
+    [navigate, source, tree.root],
   );
 
   /** Apply a navigation: move in history when it came from Back/Forward, then show the file. */
@@ -355,8 +367,10 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   const renameEntry = useCallback(
     async (path: string, newPath: string, kind: CreateKind) => {
       const prefix = `${path}/`;
+      // The open file counts when its tree path is the renamed one; a file
+      // outside the root is never under a tree entry.
       const movesOpenFile =
-        activePath !== null && (activePath === path || (kind === "directory" && activePath.startsWith(prefix)));
+        treePath !== null && (treePath === path || (kind === "directory" && treePath.startsWith(prefix)));
       // The editor reloads the renamed file from disk, so unsaved edits go to
       // disk first; a failed save (conflict, error) leaves the name alone.
       if (movesOpenFile && paneRef.current?.isDirty()) {
@@ -373,16 +387,16 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       const renamed = (entry: string) =>
         entry === path ? newPath : kind === "directory" && entry.startsWith(prefix) ? `${newPath}/${entry.slice(prefix.length)}` : entry;
       setHistory((current) => ({ ...current, paths: current.paths.map(renamed) }));
-      if (movesOpenFile && activePath !== null) show(renamed(activePath), { record: false });
+      if (movesOpenFile && treePath !== null) show(renamed(treePath), { record: false });
       if (await loadTree({ quiet: true })) noteOwnMutation([path, newPath]);
     },
-    [activePath, loadTree, noteOwnMutation, rpc, show, source],
+    [treePath, loadTree, noteOwnMutation, rpc, show, source],
   );
 
   const deleteEntry = useCallback(
     async (path: string, kind: CreateKind) => {
       const removed = (entry: string) => entry === path || (kind === "directory" && entry.startsWith(`${path}/`));
-      const gone = activePath !== null && removed(activePath);
+      const gone = treePath !== null && removed(treePath);
       // Deleting the open file would take its unsaved edits with it.
       if (gone && paneRef.current?.isDirty()) throw new Error("The open file has unsaved changes; save or discard them first");
       // The editor lets go of the file before the request, so nothing typed
@@ -404,7 +418,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       });
       toast.success(`Deleted ${path}`);
     },
-    [activePath, loadTree, rpc, source],
+    [activePath, treePath, loadTree, rpc, source],
   );
 
   const toggleTree = useCallback(() => {
@@ -444,7 +458,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         label={label || (tree.root === "" ? "Files" : tree.root.split(/[\\/]/).at(-1) || "Files")}
         isLoading={tree.isLoading}
         error={tree.error}
-        activePath={activePath}
+        activePath={treePath}
         onOpenFile={openFile}
         onRefresh={() => void loadTree()}
         onLoadDirectory={loadDirectory}
@@ -511,7 +525,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           onToggleTree={toggleTree}
           onQuickOpen={() => setQuickOpen(true)}
           onOpenInTab={canOpenInTab ? () => void openInTab(activePath) : null}
-          onOpenPath={source.kind === "host" ? null : (path) => openFile(path, { newTab: false })}
+          onOpenPath={(path) => openFile(path, { newTab: false })}
           history={{ canBack: history.index > 0, canForward: history.index < history.paths.length - 1, back: goBack, forward: goForward }}
           onSetPref={onSetPref}
           themePreview={themePreview}
