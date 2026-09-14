@@ -1,15 +1,21 @@
-// The "GitHub PR" thread panel tab: the thread's linked pull requests, and
-// the read-only overview of one of them.
+// The "PRs" thread panel tab: the thread's linked pull requests, and the
+// Cursor-style view of one of them.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRealtime, useRealtimeConnectionState, useRpc, type PluginRpcResult, type PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
+import { useBbNavigate, useRealtime, useRealtimeConnectionState, useRpc, type PluginRpcResult, type PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { PULL_REQUESTS_CHANGED } from "../contract";
 import { parsePullRequestUrl, pullRequestUrl, type PullRequestRef } from "../lib/pull-request-url";
 import { EmptyState } from "./empty-state";
-import { PullDetailView, PullStateBadge } from "./pull-detail";
+import { PullStateBadge } from "./pull-detail";
+import { ThreadPullView } from "./pull-thread-view";
 import { DetailSkeleton, errorText, relativeTime, type Contract } from "./shared";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+
+export const PULL_PANEL_ACTION_ID = "pull";
+/** Tab title for the linked-PR list; a PR tab is titled `PR #<n>` at open time. */
+export const PULL_LIST_PANEL_TITLE = "PRs";
+export const pullTabTitle = (number: number) => `PR #${number}`;
 
 export type ThreadPullRequestList = PluginRpcResult<Contract["listPullRequests"]>;
 type Linked = ThreadPullRequestList["links"][number];
@@ -147,13 +153,15 @@ export function PullRequestsPanel(props: PluginThreadPanelProps) {
 
 function PullRequestsPanelContent({ threadId, params }: PluginThreadPanelProps) {
   const rpc = useRpc<Contract>();
+  const navigate = useBbNavigate();
   const { list, error, refetch } = useThreadPullRequests(threadId);
   const requested = pullRequestFromParams(params);
-  const [selected, setSelected] = useState<PullRequestRef | null>(requested);
-  useEffect(() => {
-    if (requested !== null) setSelected(requested);
-    // Compare by identity, not by object, so a re-render with equal params is a no-op.
-  }, [requested?.repo, requested?.number]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openPullTab = useCallback(
+    (ref: PullRequestRef) => navigate.openThreadPanel({ actionId: PULL_PANEL_ACTION_ID, title: pullTabTitle(ref.number), params: { url: pullRequestUrl(ref) } }),
+    [navigate],
+  );
+  const openListTab = useCallback(() => navigate.openThreadPanel({ actionId: PULL_PANEL_ACTION_ID, title: PULL_LIST_PANEL_TITLE }), [navigate]);
 
   const unlink = (link: Linked) => {
     rpc
@@ -165,18 +173,8 @@ function PullRequestsPanelContent({ threadId, params }: PluginThreadPanelProps) 
       .catch((cause: unknown) => toast.error(errorText(cause)));
   };
 
-  if (selected !== null) {
-    return (
-      <PullDetailView
-        repo={selected.repo}
-        number={selected.number}
-        compact
-        readOnly
-        workspaceEnvironmentId={list?.environmentId ?? null}
-        backLabel="Linked PRs"
-        onBack={() => setSelected(null)}
-      />
-    );
+  if (requested !== null) {
+    return <ThreadPullView repo={requested.repo} number={requested.number} threadId={threadId} environmentId={list?.environmentId ?? null} onOpenList={openListTab} />;
   }
   if (error !== null) return <EmptyState message={error} />;
   if (list === null) return <DetailSkeleton />;
@@ -194,7 +192,7 @@ function PullRequestsPanelContent({ threadId, params }: PluginThreadPanelProps) 
         <div className="overflow-hidden rounded-lg border border-border bg-card">
           <div className="divide-y divide-border">
             {list.links.map((link) => (
-              <LinkedRow key={`${link.repo}#${link.number}`} link={link} onOpen={() => setSelected({ repo: link.repo, number: link.number })} onUnlink={() => unlink(link)} />
+              <LinkedRow key={`${link.repo}#${link.number}`} link={link} onOpen={() => openPullTab(link)} onUnlink={() => unlink(link)} />
             ))}
           </div>
         </div>

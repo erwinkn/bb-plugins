@@ -7,7 +7,7 @@ import { experimental_Diff as Diff, experimental_FileLink as FileLink, UrlLink, 
 import { toast } from "sonner";
 import { EXTERNAL_ATTRIBUTE } from "../lib/link-interception";
 import { EmptyState } from "./empty-state";
-import { Markdown } from "./markdown-lite";
+import { GithubBody } from "./github-html";
 import {
   Avatar,
   DetailSkeleton,
@@ -48,7 +48,7 @@ export function PullStateBadge({ state }: { state: string }) {
   );
 }
 
-const REVIEW_STATE_LABELS: Record<string, string> = {
+export const REVIEW_STATE_LABELS: Record<string, string> = {
   APPROVED: "approved",
   CHANGES_REQUESTED: "requested changes",
   COMMENTED: "commented",
@@ -56,7 +56,7 @@ const REVIEW_STATE_LABELS: Record<string, string> = {
   PENDING: "review requested",
 };
 
-function reviewStateClass(state: string): string {
+export function reviewStateClass(state: string): string {
   if (state === "APPROVED") return "text-green-600 dark:text-green-400";
   if (state === "CHANGES_REQUESTED") return "text-red-600 dark:text-red-400";
   return "text-muted-foreground";
@@ -170,7 +170,7 @@ function FileDiffCard({ environmentId, file, url }: { environmentId: string | nu
   );
 }
 
-function ReviewThreadCard({ thread }: { thread: ReviewThread }) {
+export function ReviewThreadCard({ thread }: { thread: ReviewThread }) {
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-card">
       <p className="flex items-center gap-2 border-b border-border bg-muted/50 px-3 py-1.5 font-mono text-xs text-muted-foreground">
@@ -189,7 +189,7 @@ function ReviewThreadCard({ thread }: { thread: ReviewThread }) {
               <Avatar login={entry.author} size="size-4" />
               <span className="font-medium text-foreground">{entry.author}</span> · {relativeTime(entry.createdAt)}
             </p>
-            <Markdown content={entry.body} className="text-sm" />
+            <GithubBody body={entry.body} bodyHtml={entry.bodyHtml} className="text-sm" />
           </div>
         ))}
       </div>
@@ -198,10 +198,10 @@ function ReviewThreadCard({ thread }: { thread: ReviewThread }) {
 }
 
 type PullTimelineEntry =
-  | { type: "comment"; author: string; body: string; createdAt: string }
-  | { type: "review"; author: string; state: string; body: string; createdAt: string };
+  | { type: "comment"; author: string; body: string; bodyHtml: string | null; createdAt: string }
+  | { type: "review"; author: string; state: string; body: string; bodyHtml: string | null; createdAt: string };
 
-function PullTimeline({ pull }: { pull: PullDetail }) {
+export function PullTimeline({ pull }: { pull: PullDetail }) {
   const entries = useMemo<PullTimelineEntry[]>(() => {
     const merged: PullTimelineEntry[] = [
       ...pull.comments.map((comment) => ({ type: "comment" as const, ...comment })),
@@ -225,7 +225,7 @@ function PullTimeline({ pull }: { pull: PullDetail }) {
             ) : null}
             · {relativeTime(entry.createdAt)}
           </p>
-          {entry.body.length > 0 ? <Markdown content={entry.body} className="text-sm" /> : null}
+          {entry.body.length > 0 || entry.bodyHtml !== null ? <GithubBody body={entry.body} bodyHtml={entry.bodyHtml} className="text-sm" /> : null}
         </div>
       ))}
       {pull.reviewThreads.map((thread, index) => (
@@ -339,7 +339,7 @@ export function PullDetailView({
           opened this pull request · updated {relativeTime(pull.updatedAt)}
         </div>
         <div className="p-4">
-          {pull.body.length > 0 ? <Markdown content={pull.body} className="text-sm" /> : <p className="text-sm text-muted-foreground">(no description)</p>}
+          {pull.body.length > 0 || pull.bodyHtml !== null ? <GithubBody body={pull.body} bodyHtml={pull.bodyHtml} className="text-sm" /> : <p className="text-sm text-muted-foreground">(no description)</p>}
         </div>
       </div>
 

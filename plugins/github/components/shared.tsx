@@ -10,6 +10,7 @@ import { DelayedLoading } from "./ui/delayed-loading";
 import { Skeleton } from "./ui/skeleton";
 
 export type Contract = typeof githubRpcContract;
+export type { MergeMethod } from "../contract";
 export type IssueDetail = PluginRpcResult<Contract["getIssue"]>["issue"];
 export type PullDetail = PluginRpcResult<Contract["getPull"]>["pull"];
 export type PullCheck = PullDetail["checks"][number];

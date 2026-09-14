@@ -29,11 +29,14 @@ const pull = (number: number) => ({
     state: "OPEN",
     author: "octocat",
     body: "",
+    bodyHtml: null,
     url: `https://github.com/get-bb/bb/pull/${number}`,
     createdAt: "2026-08-20T00:00:00.000Z",
     updatedAt: "2026-08-20T00:00:00.000Z",
     baseRefName: "main",
     headRefName: "fix-navigation",
+    baseRefOid: "bbbb2222",
+    headRefOid: "aaaa1111",
     additions: 1,
     deletions: 1,
     changedFiles: 2,
@@ -41,14 +44,17 @@ const pull = (number: number) => ({
     assignees: [],
     reviewDecision: "",
     mergeStateStatus: "CLEAN",
+    mergeable: "MERGEABLE",
+    mergeMethods: ["squash"],
     reviewRequests: [],
     checks: [],
+    commits: [{ sha: "0123456789abcdef0123456789abcdef01234567", message: "Fix the navigation", author: "octocat", committedAt: "2026-08-20T00:00:00.000Z", url: "" }],
     comments: [],
     reviews: [],
     reviewThreads: [],
     files: [
-      { path: "removed.ts", status: "removed", additions: 0, deletions: 1, patch: "@@ -1 +0,0 @@\n-removed" },
-      { path: "modified.ts", status: "modified", additions: 1, deletions: 0, patch: "@@ -0,0 +1 @@\n+added" },
+      { path: "removed.ts", previousPath: null, status: "removed", additions: 0, deletions: 1, patch: "@@ -1 +0,0 @@\n-removed" },
+      { path: "modified.ts", previousPath: null, status: "modified", additions: 1, deletions: 0, patch: "@@ -0,0 +1 @@\n+added" },
     ],
   },
 });
@@ -107,7 +113,8 @@ describe("GitHub app navigation", () => {
 });
 
 describe("GitHub PR panel", () => {
-  it("lists linked pull requests and opens one in the read-only viewer", async () => {
+  it("lists linked pull requests and opens one in its own titled tab", async () => {
+    const openThreadPanel = vi.fn(() => true);
     const slot = renderSlot(
       panel,
       { threadId: "thr-1", params: null },
@@ -117,6 +124,7 @@ describe("GitHub PR panel", () => {
           getPull: (input: unknown) => pull((input as { number: number }).number),
           listLinks: () => ({ links: {} }),
         },
+        openThreadPanel,
       },
     );
     await slot.findByText("Linked pull requests · 2");
@@ -125,15 +133,41 @@ describe("GitHub PR panel", () => {
     expect(slot.getByText("merged")).toBeTruthy();
 
     fireEvent.click(slot.getByLabelText("Open get-bb/bb#42"));
+    expect(openThreadPanel).toHaveBeenCalledWith({
+      actionId: "pull",
+      title: "PR #42",
+      params: { url: "https://github.com/get-bb/bb/pull/42" },
+    });
+    slot.lifecycle.unmount();
+  });
+
+  it("renders the Cursor-style tab view for a PR opened by params", async () => {
+    const slot = renderSlot(
+      panel,
+      { threadId: "thr-1", params: { url: "https://github.com/get-bb/bb/pull/42" } },
+      {
+        rpc: {
+          listPullRequests: () => ({ links: [link(42)], environmentId: "env-1" }),
+          getPull: (input: unknown) => pull((input as { number: number }).number),
+          listLinks: () => ({ links: {} }),
+        },
+      },
+    );
     await slot.findByText("Navigation fix 42");
-    expect(slot.queryByText("Review with agent")).toBeNull();
-    expect(slot.queryByPlaceholderText("Leave a comment…")).toBeNull();
+    expect(slot.getByRole("tab", { name: "Changes 2" })).toBeTruthy();
+    expect(slot.getByRole("tab", { name: "Description" })).toBeTruthy();
+    expect(slot.getByRole("tab", { name: "Commits 1" })).toBeTruthy();
+    expect(slot.getByRole("tab", { name: "Checks" })).toBeTruthy();
+    expect(slot.getByRole("tab", { name: "Reviews" })).toBeTruthy();
+    expect(slot.getByRole("button", { name: "Squash & Merge" })).toBeTruthy();
+    expect(slot.getByLabelText("Open on GitHub").hasAttribute("data-github-open-external")).toBe(true);
     expect(slot.getByText("modified.ts").closest("a")?.getAttribute("href")).toBe("./modified.ts");
     expect(slot.getByText("removed.ts").closest("a")).toBeNull();
-    expect(slot.getByText("Open on GitHub ↗").hasAttribute("data-github-open-external")).toBe(true);
+    expect(slot.queryByText("Review with agent")).toBeNull();
+    expect(slot.queryByPlaceholderText("Leave a comment…")).toBeNull();
 
-    fireEvent.click(slot.getByText("← Linked PRs"));
-    await slot.findByText("Linked pull requests · 2");
+    fireEvent.click(slot.getByRole("tab", { name: "Commits 1" }));
+    await slot.findByText("0123456");
     slot.lifecycle.unmount();
   });
 
@@ -184,13 +218,13 @@ describe("open pull request bridge", () => {
     );
     await slot.findByText("PR · 2");
     expect(requestOpenPullRequest({ url: "https://github.com/get-bb/bb/pull/42", threadId: "thr-1" })).toBe(true);
-    expect(openThreadPanel).toHaveBeenCalledWith({ actionId: "pull", title: "GitHub PR", params: { url: "https://github.com/get-bb/bb/pull/42" } });
+    expect(openThreadPanel).toHaveBeenCalledWith({ actionId: "pull", title: "PR #42", params: { url: "https://github.com/get-bb/bb/pull/42" } });
     // No thread id but a single pane: still handled.
     expect(requestOpenPullRequest({ url: "https://github.com/get-bb/bb/pull/43", threadId: null })).toBe(true);
     // Another thread: not this pane's business.
     expect(requestOpenPullRequest({ url: "https://github.com/get-bb/bb/pull/44", threadId: "thr-2" })).toBe(false);
     fireEvent.click(slot.getByLabelText("2 linked pull requests"));
-    expect(openThreadPanel).toHaveBeenLastCalledWith({ actionId: "pull", title: "GitHub PR", params: { list: true } });
+    expect(openThreadPanel).toHaveBeenLastCalledWith({ actionId: "pull", title: "PRs" });
     slot.lifecycle.unmount();
     expect(requestOpenPullRequest({ url: "https://github.com/get-bb/bb/pull/42", threadId: "thr-1" })).toBe(false);
   });
@@ -221,7 +255,7 @@ describe("open pull request bridge", () => {
       { rpc: { listPullRequests: () => ({ links: [], environmentId: null }) }, openThreadPanel },
     );
     await act(async () => {});
-    expect(openThreadPanel).toHaveBeenCalledWith({ actionId: "pull", title: "GitHub PR", params: { url: "https://github.com/get-bb/bb/pull/5" } });
+    expect(openThreadPanel).toHaveBeenCalledWith({ actionId: "pull", title: "PR #5", params: { url: "https://github.com/get-bb/bb/pull/5" } });
     headerSlot.lifecycle.unmount();
     overlaySlot.lifecycle.unmount();
   });
@@ -251,7 +285,7 @@ describe("open pull request bridge", () => {
     );
     await act(async () => {});
     expect(requestOpenPullRequest({ url: "https://github.com/get-bb/bb/pull/6", threadId: "thr-1" })).toBe(true);
-    expect(openThreadPanel).toHaveBeenCalledWith({ actionId: "pull", title: "GitHub PR", params: { url: "https://github.com/get-bb/bb/pull/6" } });
+    expect(openThreadPanel).toHaveBeenCalledWith({ actionId: "pull", title: "PR #6", params: { url: "https://github.com/get-bb/bb/pull/6" } });
     expect(openUrl).not.toHaveBeenCalled();
     expect(overlaySlot.navigateCalls).toEqual([]);
     headerSlot.lifecycle.unmount();

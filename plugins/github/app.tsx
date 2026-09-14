@@ -15,8 +15,8 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { GithubPanel, PANEL_PATH, PanelHeader } from "./components/github-panel";
 import { OpenPullRequestOverlay } from "./components/open-pull-request-overlay";
-import { PULL_PANEL_ACTION_ID, PullRequestHeaderAction } from "./components/pull-request-header-action";
-import { PullRequestsPanel } from "./components/pull-requests-panel";
+import { PullRequestHeaderAction } from "./components/pull-request-header-action";
+import { PULL_LIST_PANEL_TITLE, PULL_PANEL_ACTION_ID, PullRequestsPanel } from "./components/pull-requests-panel";
 import { mountLinkInterception } from "./lib/link-interception";
 
 export default definePluginApp((app) => {
@@ -33,7 +33,7 @@ export default definePluginApp((app) => {
 
   app.slots.threadPanelAction({
     id: PULL_PANEL_ACTION_ID,
-    title: "GitHub PR",
+    title: PULL_LIST_PANEL_TITLE,
     icon: "Github",
     component: PullRequestsPanel,
   });

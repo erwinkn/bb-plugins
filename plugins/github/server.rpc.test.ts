@@ -107,22 +107,42 @@ beforeEach(() => {
       { name: "queued", status: "QUEUED" },
       { name: "skipped", status: "COMPLETED", conclusion: "SKIPPED" },
     ],
-    comments: [
+    commits: [
       {
-        author: { login: "commenter" },
-        body: "Conversation comment",
-        createdAt: "2026-08-19T14:00:00Z",
-      },
-    ],
-    reviews: [
-      {
-        author: { login: "reviewer" },
-        state: "CHANGES_REQUESTED",
-        body: "Please fix this.",
-        submittedAt: "2026-08-19T15:00:00Z",
+        oid: "0123456789abcdef0123456789abcdef01234567",
+        messageHeadline: "Normalize pull details",
+        committedDate: "2026-08-19T11:00:00Z",
+        authors: [{ login: "bob" }],
       },
     ],
   });
+  const pullRest = JSON.stringify({
+    body_html: "<p>Pull body.</p>",
+    mergeable: true,
+    head: { sha: "aaaa1111" },
+    base: { sha: "bbbb2222" },
+  });
+  const issueComments = JSON.stringify([
+    [
+      {
+        user: { login: "commenter" },
+        body: "Conversation comment",
+        body_html: "<p>Conversation comment</p>",
+        created_at: "2026-08-19T14:00:00Z",
+      },
+    ],
+  ]);
+  const pullReviews = JSON.stringify([
+    [
+      {
+        user: { login: "reviewer" },
+        state: "CHANGES_REQUESTED",
+        body: "Please fix this.",
+        body_html: "<p>Please fix <strong>this</strong>.</p>",
+        submitted_at: "2026-08-19T15:00:00Z",
+      },
+    ],
+  ]);
   const reviewComments = JSON.stringify([
     [
       {
@@ -187,8 +207,14 @@ case "$*" in
   "issue view 7 -R acme/widgets --json labels") printf '%s\n' '{"labels":[{"name":"bug"},{"name":"old"}]}';;
   "issue view 7 -R acme/widgets --json"*) printf '%s\n' '${issueDetail}';;
   "pr view 42 -R acme/widgets --json"*) printf '%s\n' '${pullDetail}';;
-  "api --paginate --slurp repos/acme/widgets/pulls/42/comments?per_page=100") printf '%s\n' '${reviewComments}';;
+  "api repos/acme/widgets/pulls/42 "*) printf '%s\n' '${pullRest}';;
+  "api --paginate --slurp repos/acme/widgets/issues/42/comments?per_page=100 "*) printf '%s\n' '${issueComments}';;
+  "api --paginate --slurp repos/acme/widgets/pulls/42/reviews?per_page=100 "*) printf '%s\n' '${pullReviews}';;
+  "api --paginate --slurp repos/acme/widgets/pulls/42/comments?per_page=100 "*) printf '%s\n' '${reviewComments}';;
   "api --paginate --slurp repos/acme/widgets/pulls/42/files?per_page=100") printf '%s\n' '${pullFiles}';;
+  "api repos/acme/widgets") printf '%s\n' '{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":false}';;
+  "pr merge "*) printf '%s\n' '';;
+  "pr edit "*) printf '%s\n' '';;
   "issue edit "*) printf '%s\n' '[]';;
   *) printf '%s\n' '[]';;
 esac
@@ -366,9 +392,17 @@ describe("github plugin RPC behavior", () => {
         number: 42,
         state: "DRAFT",
         changedFiles: 2,
+        bodyHtml: "<p>Pull body.</p>",
+        mergeable: "MERGEABLE",
+        mergeMethods: ["squash"],
+        baseRefOid: "bbbb2222",
+        headRefOid: "aaaa1111",
+        commits: [{ sha: "0123456789abcdef0123456789abcdef01234567", message: "Normalize pull details", author: "bob" }],
+        comments: [{ author: "commenter", body: "Conversation comment", bodyHtml: "<p>Conversation comment</p>" }],
+        reviews: [{ author: "reviewer", state: "CHANGES_REQUESTED", bodyHtml: "<p>Please fix <strong>this</strong>.</p>" }],
         reviewRequests: ["reviewer", "core-team"],
         checks: [
-          { name: "build", status: "success" },
+          { name: "build", status: "success", durationSeconds: null },
           { name: "legacy", status: "failure" },
           { name: "queued", status: "pending" },
           { name: "skipped", status: "neutral" },

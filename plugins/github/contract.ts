@@ -39,7 +39,11 @@ const itemSchema = z
   .strict();
 const syncResultSchema = z.object({ repos: z.number().int().nonnegative(), items: z.number().int().nonnegative() }).strict();
 const okResultSchema = z.object({ ok: z.literal(true) }).strict();
-const commentSchema = z.object({ author: z.string(), body: z.string(), createdAt: z.string() }).strict();
+const commentSchema = z
+  .object({ author: z.string(), body: z.string(), bodyHtml: z.string().nullable(), createdAt: z.string() })
+  .strict();
+const mergeMethodSchema = z.enum(["merge", "squash", "rebase"]);
+export type MergeMethod = z.infer<typeof mergeMethodSchema>;
 export const threadLinkSchema = z
   .object({
     kind: z.enum(["issue", "pr"]),
@@ -57,11 +61,15 @@ export const pullSchema = z
     state: z.string(),
     author: z.string(),
     body: z.string(),
+    /** GitHub-rendered HTML of `body` (REST `full+json`), when fetched. */
+    bodyHtml: z.string().nullable(),
     url: z.string(),
     createdAt: z.string(),
     updatedAt: z.string(),
     baseRefName: z.string(),
     headRefName: z.string(),
+    baseRefOid: z.string(),
+    headRefOid: z.string(),
     additions: z.number().nonnegative(),
     deletions: z.number().nonnegative(),
     changedFiles: z.number().int().nonnegative(),
@@ -69,12 +77,30 @@ export const pullSchema = z
     assignees: z.array(z.string()),
     reviewDecision: z.string(),
     mergeStateStatus: z.string(),
+    /** MERGEABLE / CONFLICTING / UNKNOWN from the REST pull object. */
+    mergeable: z.string(),
+    /** Merge methods the repository allows, in GitHub's display order. */
+    mergeMethods: z.array(mergeMethodSchema),
     reviewRequests: z.array(z.string()),
     checks: z.array(
-      z.object({ name: z.string(), status: z.enum(["success", "failure", "pending", "neutral"]), url: z.string() }).strict(),
+      z
+        .object({
+          name: z.string(),
+          status: z.enum(["success", "failure", "pending", "neutral"]),
+          url: z.string(),
+          durationSeconds: z.number().nonnegative().nullable(),
+        })
+        .strict(),
+    ),
+    commits: z.array(
+      z.object({ sha: z.string(), message: z.string(), author: z.string(), committedAt: z.string(), url: z.string() }).strict(),
     ),
     comments: z.array(commentSchema),
-    reviews: z.array(z.object({ author: z.string(), state: z.string(), body: z.string(), createdAt: z.string() }).strict()),
+    reviews: z.array(
+      z
+        .object({ author: z.string(), state: z.string(), body: z.string(), bodyHtml: z.string().nullable(), createdAt: z.string() })
+        .strict(),
+    ),
     reviewThreads: z.array(
       z
         .object({
@@ -89,6 +115,7 @@ export const pullSchema = z
       z
         .object({
           path: z.string(),
+          previousPath: z.string().nullable(),
           status: z.string(),
           additions: z.number().nonnegative(),
           deletions: z.number().nonnegative(),
@@ -187,6 +214,26 @@ export const githubRpcContract = defineRpcContract({
       .strict(),
   },
   getPull: { input: itemInputSchema, output: z.object({ pull: pullSchema }).strict() },
+  mergePull: { input: itemInputSchema.extend({ method: mergeMethodSchema }), output: okResultSchema },
+  setPullTitle: { input: itemInputSchema.extend({ title: nonBlankStringSchema }), output: okResultSchema },
+  /** Full file contents for expand-context in the diff viewer; null side when absent/unfetchable. */
+  getPullFile: {
+    input: z
+      .object({
+        repo: repoNameSchema,
+        oldPath: z.string().min(1).nullable(),
+        oldRef: z.string().min(1),
+        newPath: z.string().min(1).nullable(),
+        newRef: z.string().min(1),
+      })
+      .strict(),
+    output: z
+      .object({
+        old: z.object({ path: z.string(), content: z.string() }).strict().nullable(),
+        new: z.object({ path: z.string(), content: z.string() }).strict().nullable(),
+      })
+      .strict(),
+  },
   commentPull: { input: itemInputSchema.extend({ body: nonBlankStringSchema }).strict(), output: okResultSchema },
   commentIssue: { input: itemInputSchema.extend({ body: nonBlankStringSchema }).strict(), output: okResultSchema },
   createIssue: {

@@ -27,11 +27,14 @@ function assertGithubFrontendInference(
         state: string;
         author: string;
         body: string;
+        bodyHtml: string | null;
         url: string;
         createdAt: string;
         updatedAt: string;
         baseRefName: string;
         headRefName: string;
+        baseRefOid: string;
+        headRefOid: string;
         additions: number;
         deletions: number;
         changedFiles: number;
@@ -39,17 +42,28 @@ function assertGithubFrontendInference(
         assignees: string[];
         reviewDecision: string;
         mergeStateStatus: string;
+        mergeable: string;
+        mergeMethods: Array<"merge" | "squash" | "rebase">;
         reviewRequests: string[];
         checks: Array<{
           name: string;
           status: "success" | "failure" | "pending" | "neutral";
           url: string;
+          durationSeconds: number | null;
         }>;
-        comments: Array<{ author: string; body: string; createdAt: string }>;
+        commits: Array<{
+          sha: string;
+          message: string;
+          author: string;
+          committedAt: string;
+          url: string;
+        }>;
+        comments: Array<{ author: string; body: string; bodyHtml: string | null; createdAt: string }>;
         reviews: Array<{
           author: string;
           state: string;
           body: string;
+          bodyHtml: string | null;
           createdAt: string;
         }>;
         reviewThreads: Array<{
@@ -59,11 +73,13 @@ function assertGithubFrontendInference(
           comments: Array<{
             author: string;
             body: string;
+            bodyHtml: string | null;
             createdAt: string;
           }>;
         }>;
         files: Array<{
           path: string;
+          previousPath: string | null;
           status: string;
           additions: number;
           deletions: number;

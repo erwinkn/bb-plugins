@@ -5,13 +5,14 @@
 import { useEffect, useRef } from "react";
 import { useBbNavigate, type PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
 import { registerViewerTarget, takePendingOpen } from "../lib/open-pull-request";
-import { useThreadPullRequests } from "./pull-requests-panel";
+import { parsePullRequestUrl } from "../lib/pull-request-url";
+import { PULL_LIST_PANEL_TITLE, PULL_PANEL_ACTION_ID, pullTabTitle, useThreadPullRequests } from "./pull-requests-panel";
 import { Button } from "./ui/button";
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "./ui/coarse-pointer-sizing";
 import { Icon } from "./ui/icon";
 import { cn } from "../lib/utils";
 
-export const PULL_PANEL_ACTION_ID = "pull";
+export { PULL_PANEL_ACTION_ID };
 
 export function PullRequestHeaderAction({ threadId, isCompactViewport }: PluginThreadHeaderActionProps) {
   const navigate = useBbNavigate();
@@ -21,7 +22,10 @@ export function PullRequestHeaderAction({ threadId, isCompactViewport }: PluginT
   navigateRef.current = navigate;
 
   useEffect(() => {
-    const open = (url: string) => navigateRef.current.openThreadPanel({ actionId: PULL_PANEL_ACTION_ID, title: "GitHub PR", params: { url } });
+    const open = (url: string) => {
+      const ref = parsePullRequestUrl(url);
+      return navigateRef.current.openThreadPanel({ actionId: PULL_PANEL_ACTION_ID, title: ref === null ? PULL_LIST_PANEL_TITLE : pullTabTitle(ref.number), params: { url } });
+    };
     const unregister = registerViewerTarget({ threadId, element: () => element.current, open });
     // A request that arrived before this pane existed (the overlay navigated here).
     const parked = takePendingOpen(threadId);
@@ -40,7 +44,7 @@ export function PullRequestHeaderAction({ threadId, isCompactViewport }: PluginT
           variant="ghost"
           size="sm"
           aria-label={`${count} linked pull request${count === 1 ? "" : "s"}`}
-          onClick={() => navigateRef.current.openThreadPanel({ actionId: PULL_PANEL_ACTION_ID, title: "GitHub PR", params: { list: true } })}
+          onClick={() => navigateRef.current.openThreadPanel({ actionId: PULL_PANEL_ACTION_ID, title: PULL_LIST_PANEL_TITLE })}
           className={cn(isCompactViewport ? COARSE_POINTER_HEADER_ICON_BUTTON_CLASS : "h-7 gap-1.5 px-2 text-xs")}
         >
           <Icon name="Github" aria-hidden />
