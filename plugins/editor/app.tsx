@@ -177,7 +177,7 @@ export default definePluginApp((app) => {
   app.slots.threadPanelAction({
     id: "changes",
     title: "Changes",
-    icon: "GitDiff",
+    icon: "FileDiff",
     layout: "flush",
     component: ThreadChangesPanel,
   });

@@ -10,7 +10,10 @@
     "name": "Editor",
     "description": "Pierre file editor with a Files panel, an editable Changes diff tab, and BB-matched syntax colors.",
     "branding": {
-      "icon": "Code"
+      "logo": {
+        "light": "./assets/logo-light.svg",
+        "dark": "./assets/logo-dark.svg"
+      }
     },
     "server": "./server.ts",
     "host": "./host.ts",
