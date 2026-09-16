@@ -2,18 +2,23 @@ import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import {
   acquireFileSession,
+  configureFileSessions,
   dirtyPaths,
+  flushDirtySessions,
   memoryDraftStore,
   normalizePath,
   peekFileSession,
   refreshOpenFiles,
   resetFileSessions,
   sessionKeyFor,
+  sessionsOverview,
   setDraftStore,
+  setSessionLogger,
   type DraftStore,
   type FileSessionIo,
   type FileSessionSource,
   type ReadResult,
+  type SessionLogFields,
   type WriteResult,
 } from "./file-session";
 
@@ -104,7 +109,18 @@ function open(disk: Disk, path = "a.txt", drafts?: DraftStore) {
 afterEach(() => {
   resetFileSessions();
   setDraftStore(memoryDraftStore());
+  setSessionLogger(null);
+  configureFileSessions({ autoSave: "off", autoSaveDelayMs: 400, retryFailedSaves: true });
 });
+
+/** Wait for a condition the session's own timers produce. */
+async function waitFor(check: () => boolean, tries = 300): Promise<void> {
+  for (let index = 0; index < tries; index++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("timed out waiting for the session");
+}
 
 test("a stale draft requires a choice before edits, saves, or file actions", async () => {
   const drafts = memoryDraftStore();
@@ -532,13 +548,9 @@ test("a file the server cannot edit is reported, not opened", async () => {
 test("a restored draft of an older version cannot be saved without an overwrite", async () => {
   const drafts = memoryDraftStore();
   setDraftStore(drafts);
-  const disk = new Disk("one\n");
-  const first = open(disk);
-  await settle();
-  first.session.setContent("my draft\n", "view-1");
-  first.detach();
-  resetFileSessions();
-  disk.content = "an agent rewrote this\n";
+  // A draft written against "one\n"; the file on disk has moved on.
+  drafts.write(sessionKeyFor(WORKSPACE, "a.txt"), { content: "my draft\n", baseSha256: hash("one\n"), savedAt: 1 });
+  const disk = new Disk("an agent rewrote this\n");
 
   const second = open(disk);
   await settle();
@@ -712,4 +724,242 @@ test("deletion prevents queued auto-save from recreating the file", async () => 
   assert.equal(disk.writes, 0);
   assert.equal(drafts.read(session.key), null);
   assert.equal(session.getSnapshot().load.kind, "unsupported");
+});
+
+// ---------------------------------------------------------------------------
+// Auto save, flush, retry
+// ---------------------------------------------------------------------------
+
+test("auto save writes a dirty buffer shortly after typing, owned by the session", async () => {
+  configureFileSessions({ autoSave: "afterDelay", autoSaveDelayMs: 20 });
+  const disk = new Disk("one\n");
+  const { session } = open(disk);
+  await settle();
+  session.setContent("typed\n", "view-1");
+  assert.equal(disk.writes, 0, "nothing is written synchronously");
+  await waitFor(() => disk.writes === 1);
+  assert.equal(disk.content, "typed\n");
+  assert.equal(session.getSnapshot().save.kind, "clean");
+});
+
+test("a pending auto save survives its view unmounting", async () => {
+  configureFileSessions({ autoSave: "afterDelay", autoSaveDelayMs: 20 });
+  const disk = new Disk("one\n");
+  const { session, detach } = open(disk);
+  await settle();
+  session.setContent("typed\n", "view-1");
+  detach(); // a tab switch, a thread switch, a pane close
+  await waitFor(() => disk.writes === 1);
+  assert.equal(disk.content, "typed\n");
+});
+
+test("auto save writes the latest text once while typing continues", async () => {
+  configureFileSessions({ autoSave: "afterDelay", autoSaveDelayMs: 40 });
+  const disk = new Disk("one\n");
+  const { session } = open(disk);
+  await settle();
+  session.setContent("a\n", "view-1");
+  session.setContent("ab\n", "view-1");
+  session.setContent("abc\n", "view-1");
+  await waitFor(() => disk.writes === 1);
+  assert.deepEqual(disk.written, ["abc\n"]);
+});
+
+test("auto save off writes only on an explicit save or a flush", async () => {
+  configureFileSessions({ autoSave: "off" });
+  const disk = new Disk("one\n");
+  const { session } = open(disk);
+  await settle();
+  session.setContent("typed\n", "view-1");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(disk.writes, 0);
+  await flushDirtySessions({ reason: "test" });
+  assert.equal(disk.content, "typed\n");
+});
+
+test("auto save never settles a conflict on its own", async () => {
+  configureFileSessions({ autoSave: "afterDelay", autoSaveDelayMs: 15 });
+  const disk = new Disk("one\n");
+  const { session } = open(disk);
+  await settle();
+  session.setContent("mine\n", "view-1");
+  disk.content = "theirs\n";
+  await waitFor(() => session.getSnapshot().save.kind === "conflict");
+  assert.equal(disk.writes, 1, "the write that found the conflict ran once");
+  assert.equal(session.getSnapshot().content, "mine\n", "the buffer is never replaced");
+  session.setContent("mine, still typing\n", "view-1");
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(disk.writes, 1, "typing during a conflict does not write");
+  assert.equal(disk.content, "theirs\n");
+});
+
+test("a failed save retries on a backoff until it lands", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"], now: 1_000 });
+  const microtasks = async (turns = 40) => {
+    for (let index = 0; index < turns; index++) await Promise.resolve();
+  };
+  configureFileSessions({ autoSave: "off", retryFailedSaves: true });
+  const disk = new Disk("one\n");
+  const { session } = open(disk);
+  await microtasks();
+  assert.equal(session.getSnapshot().load.kind, "ready");
+  disk.writeError = "the host is offline";
+  session.setContent("two\n", "view-1");
+  const saved = session.save();
+  assert.equal(await saved, false);
+  assert.equal(session.getSnapshot().save.kind, "error");
+
+  // The first retry comes after a second, not at once.
+  t.mock.timers.tick(999);
+  await microtasks();
+  assert.equal(disk.writes, 1);
+  disk.writeError = null;
+  t.mock.timers.tick(1);
+  await microtasks();
+  assert.equal(disk.writes, 2);
+  assert.equal(disk.content, "two\n");
+  assert.equal(session.getSnapshot().save.kind, "clean");
+  t.mock.timers.reset();
+});
+
+test("a failed save retries on a flush, which focus and reconnect drive", async () => {
+  const disk = new Disk("one\n");
+  const { session } = open(disk);
+  await settle();
+  disk.writeError = "offline";
+  session.setContent("two\n", "view-1");
+  assert.equal(await session.save(), false);
+  assert.equal(session.getSnapshot().save.kind, "error");
+  disk.writeError = null;
+  await flushDirtySessions({ reason: "focus" });
+  assert.equal(disk.content, "two\n");
+  assert.equal(session.getSnapshot().save.kind, "clean");
+});
+
+test("flushDirtySessions writes every dirty file and respects its bound", async () => {
+  const disk = new Disk("one\n");
+  const first = open(disk, "a.txt");
+  const second = open(disk, "b.txt");
+  await settle();
+  first.session.setContent("a edited\n", "view-1");
+  second.session.setContent("b edited\n", "view-1");
+  await flushDirtySessions({ reason: "navigate" });
+  assert.equal(disk.writes, 2);
+  assert.deepEqual([...disk.written].sort(), ["a edited\n", "b edited\n"]);
+
+  // A write that will not finish cannot hold the caller: the bound returns.
+  disk.holdWrites = true;
+  first.session.setContent("a again\n", "view-1");
+  const started = Date.now();
+  await flushDirtySessions({ reason: "navigate", timeoutMs: 10 });
+  assert.ok(Date.now() - started < 2000);
+  disk.holdWrites = false;
+  disk.releaseWrites();
+  await settle();
+  assert.equal(disk.content, "a again\n");
+});
+
+test("disposing a session writes its dirty buffer rather than cancelling it", async () => {
+  const disk = new Disk("one\n");
+  const { session } = open(disk);
+  await settle();
+  session.setContent("must not be lost\n", "view-1");
+  resetFileSessions(); // the plugin is going away
+  await settle();
+  assert.equal(disk.writes, 1);
+  assert.equal(disk.content, "must not be lost\n");
+});
+
+test("disposing writes a pending draft to the store at once", async () => {
+  const drafts = memoryDraftStore();
+  const disk = new Disk("one\n");
+  const { session } = open(disk, "a.txt", drafts);
+  await settle();
+  session.setContent("not yet flushed\n", "view-1");
+  // The debounce has not fired; disposal must not drop the draft.
+  resetFileSessions();
+  assert.equal(drafts.read(sessionKeyFor(WORKSPACE, "a.txt"))?.content, "not yet flushed\n");
+});
+
+test("a conflict survives disposal as a draft, never an overwrite", async () => {
+  const drafts = memoryDraftStore();
+  const disk = new Disk("one\n");
+  const { session } = open(disk, "a.txt", drafts);
+  await settle();
+  session.setContent("mine\n", "view-1");
+  disk.content = "theirs\n";
+  assert.equal(await session.save(), false);
+  assert.equal(session.getSnapshot().save.kind, "conflict");
+  resetFileSessions();
+  await settle();
+  assert.equal(disk.writes, 1, "disposal does not write through a conflict");
+  assert.equal(disk.content, "theirs\n");
+  assert.equal(drafts.read(sessionKeyFor(WORKSPACE, "a.txt"))?.content, "mine\n");
+});
+
+test("readDisk returns the file on disk without touching the buffer", async () => {
+  const disk = new Disk("one\n");
+  const { session } = open(disk);
+  await settle();
+  session.setContent("mine\n", "view-1");
+  disk.content = "theirs\n";
+  const result = await session.readDisk();
+  assert.equal(result?.kind, "text");
+  assert.equal(result?.kind === "text" ? result.content : null, "theirs\n");
+  assert.equal(session.getSnapshot().content, "mine\n");
+  assert.equal(session.getSnapshot().sha256, hash("one\n"));
+});
+
+test("the overview names every unsaved or failed file across views", async () => {
+  const disk = new Disk("one\n");
+  const first = open(disk, "a.txt");
+  const second = open(disk, "b.txt");
+  await settle();
+  first.session.setContent("dirty\n", "view-1");
+  assert.deepEqual(sessionsOverview().map((entry) => entry.path), ["a.txt"]);
+  disk.writeError = "the host is not reachable";
+  second.session.setContent("will fail\n", "view-1");
+  await second.session.save();
+  const failed = sessionsOverview().find((entry) => entry.path === "b.txt");
+  assert.equal(failed?.save, "error");
+  assert.equal(failed?.message, "the host is not reachable");
+});
+
+test("an absolute path opened after a relative read is the same session at once", async () => {
+  const disk = new Disk("one\n");
+  const byRelative = acquireFileSession({ source: WORKSPACE, path: "dir/a.txt", io: disk });
+  byRelative.attach("tree");
+  await settle(); // the read taught the registry the workspace root
+  const byAbsolute = acquireFileSession({ source: WORKSPACE, path: "/workspace/dir/a.txt", io: disk });
+  assert.equal(byAbsolute, byRelative);
+  assert.equal(disk.reads, 1, "the alias resolved before any second read");
+  const byRelativeAgain = acquireFileSession({ source: WORKSPACE, path: "/workspace/dir/./a.txt", io: disk });
+  assert.equal(byRelativeAgain, byRelative);
+});
+
+test("dot segments resolve lexically so two spellings share one session", () => {
+  assert.equal(sessionKeyFor(WORKSPACE, "a/./b.txt"), sessionKeyFor(WORKSPACE, "a/b.txt"));
+  assert.equal(sessionKeyFor(WORKSPACE, "a/x/../b.txt"), sessionKeyFor(WORKSPACE, "a/b.txt"));
+  assert.equal(normalizePath("../a.txt"), "../a.txt");
+  assert.equal(normalizePath("/x/../a.txt"), "/a.txt");
+});
+
+test("save lifecycle events carry path, host, source and revision, not content", async () => {
+  const events: { event: string; fields: SessionLogFields }[] = [];
+  setSessionLogger((event, fields) => events.push({ event, fields }));
+  configureFileSessions({ autoSave: "afterDelay", autoSaveDelayMs: 10 });
+  const disk = new Disk("one\n");
+  const { session } = open(disk);
+  await settle();
+  session.setContent("secret content\n", "view-1");
+  await waitFor(() => disk.writes === 1);
+  const names = events.map((entry) => entry.event);
+  assert.ok(names.includes("save-scheduled"), `expected save-scheduled in ${names}`);
+  assert.ok(names.includes("save-started"), `expected save-started in ${names}`);
+  assert.ok(names.includes("save-succeeded"), `expected save-succeeded in ${names}`);
+  const scheduled = events.find((entry) => entry.event === "save-scheduled");
+  assert.equal(scheduled?.fields.path, "a.txt");
+  assert.equal(scheduled?.fields.sourceKind, "workspace");
+  assert.equal(typeof scheduled?.fields.revision, "number");
+  assert.ok(!JSON.stringify(events).includes("secret content"), "no event carries file content");
 });

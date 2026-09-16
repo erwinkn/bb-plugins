@@ -3,6 +3,7 @@ import { Markdown, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { FileSessionSource } from "@/lib/file-session";
 import { anchorSlug, documentFor, hasMarkdownImage, headingSlug, rewriteMarkdownPaths, rootRelativeFromHref, workspacePathFromHref } from "@/lib/markdown-preview";
+import { EditorTabBoundary } from "./EditorTabBoundary";
 
 /** Renew a lease this long before it expires, so an image never loads from a dead one. */
 const LEASE_RENEWAL_MARGIN_MS = 60_000;
@@ -113,7 +114,15 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
 
   return (
     <div ref={container} className="absolute inset-0 overflow-auto bg-background" data-testid="markdown-preview">
-      <Markdown content={rendered} className="mx-auto max-w-3xl px-6 py-5" experimental_document={document ?? undefined} />
+      <EditorTabBoundary
+        fileKey={path}
+        path={path}
+        content={content}
+        phase="markdown-preview"
+        context={{ extension: "md", bytes: content.length, sourceKind: source.kind, host: source.experimental_hostId ?? undefined }}
+      >
+        <Markdown content={rendered} className="mx-auto max-w-3xl px-6 py-5" experimental_document={document ?? undefined} />
+      </EditorTabBoundary>
     </div>
   );
 }

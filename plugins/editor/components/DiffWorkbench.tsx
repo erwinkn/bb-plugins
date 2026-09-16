@@ -12,7 +12,9 @@ import type { EditorPrefs } from "@/lib/editor-options";
 import { NO_SOURCE } from "@/lib/file-session";
 import { useElementWidth } from "@/lib/use-element-width";
 import { useAssets } from "@/lib/use-assets";
-import { useDirtyPaths } from "@/lib/use-file-session";
+import { useDirtyPaths, useSessionConfig, useSessionsOverview } from "@/lib/use-file-session";
+import { flushDirtySessions } from "@/lib/file-session";
+import { useEditorTelemetry } from "@/lib/client-log";
 import { clampTreeWidth } from "@/lib/layout-storage";
 import {
   DEFAULT_TARGET,
@@ -40,6 +42,7 @@ import { NoticeAction, NoticeRow, type SetPref } from "./EditorPane";
 import { DiffFileList } from "./DiffFileList";
 import { EditableDiffPane } from "./EditableDiffPane";
 import { ScopeBar, type ScopePrompt } from "./DiffToolbar";
+import { SaveStatusBar } from "./SaveStatusBar";
 import { ResizeHandle } from "./ResizeHandle";
 import { FolderIcon } from "./icons";
 import { useFileWatch } from "@/lib/file-watch";
@@ -95,6 +98,13 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
   const [assetsNonce, setAssetsNonce] = useState(0);
   const assets = useAssets(assetsNonce);
   const width = useElementWidth(rootRef);
+
+  // Same shared session layer as the Files tab: apply the save preference,
+  // wire the plugin log, and flush pending writes when this tab goes away.
+  useSessionConfig(prefs);
+  useEditorTelemetry(() => ({ phase: "changes-panel", path: selected ?? undefined }));
+  useEffect(() => () => void flushDirtySessions({ reason: "changes-unmount" }), []);
+  const sessionOverview = useSessionsOverview();
 
   const key = targetKey(target);
   const compact = isCompact(width);
@@ -344,6 +354,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
           </>
         )}
       </div>
+      <SaveStatusBar entries={sessionOverview} />
     </div>
   );
 }

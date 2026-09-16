@@ -16,12 +16,13 @@ const DEFAULT_PREFS: EditorPrefs = {
   fontSize: 12,
   wordWrap: false,
   lineNumbers: true,
-  autoSave: "off",
+  // Write-and-forget: a dirty buffer goes to disk shortly after typing stops.
+  autoSave: "afterDelay",
   fileTreeSide: "right",
   bbDiffs: true,
 };
 
-export const AUTO_SAVE_DELAY_MS = 1000;
+export const AUTO_SAVE_DELAY_MS = 400;
 
 /** Effective preferences from the plugin's settings values (untrusted shape). */
 export function prefsFrom(values: Record<string, unknown> | null | undefined): EditorPrefs {
@@ -33,7 +34,12 @@ export function prefsFrom(values: Record<string, unknown> | null | undefined): E
     fontSize: Number.isFinite(fontSize) && fontSize >= 9 && fontSize <= 24 ? Math.round(fontSize) : DEFAULT_PREFS.fontSize,
     wordWrap: bool("wordWrap"),
     lineNumbers: bool("lineNumbers"),
-    autoSave: autoSave === "onBlur" || autoSave === "afterDelay" ? autoSave : "off",
+    // A stored value (including an explicit "off") wins; a missing or
+    // unrecognized one falls to the default. The settings store reports only
+    // effective values, so an explicit "off" cannot be told from the old
+    // default — whoever stored "off" before the switch now gets afterDelay.
+    autoSave:
+      autoSave === "off" || autoSave === "onBlur" || autoSave === "afterDelay" ? autoSave : DEFAULT_PREFS.autoSave,
     fileTreeSide: values?.fileTreeSide === "left" ? "left" : "right",
     bbDiffs: bool("bbDiffs"),
   };

@@ -17,6 +17,7 @@ import {
 } from "@/lib/layout-storage";
 import { cn } from "@/lib/utils";
 import { EditorPane, NoticeAction, NoticeRow, type EditorPaneHandle, type SetPref } from "./EditorPane";
+import { SaveStatusBar } from "./SaveStatusBar";
 import { FileTree, type CreateKind } from "./FileTree";
 import { QuickOpen } from "./QuickOpen";
 import { ResizeHandle } from "./ResizeHandle";
@@ -25,6 +26,9 @@ import { themeNameFor } from "@/lib/themes";
 import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
 import { useFileWatch, type FileChange } from "@/lib/file-watch";
 import { previewKind } from "@/lib/file-preview";
+import { flushDirtySessions } from "@/lib/file-session";
+import { useSessionConfig, useSessionsOverview } from "@/lib/use-file-session";
+import { useEditorTelemetry } from "@/lib/client-log";
 
 export type Surface = "opener" | "panel";
 
@@ -59,6 +63,8 @@ interface PendingNavigation {
 }
 const COMPACT_BREAKPOINT_PX = 420;
 const HISTORY_LIMIT = 50;
+/** Navigation waits at most this long for in-flight writes before switching files. */
+const NAVIGATE_FLUSH_MS = 1500;
 /** How long a change notice may still be the echo of our own mutation. */
 const MUTATION_ECHO_WINDOW_MS = 2000;
 
@@ -97,6 +103,19 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   }, [rpc]);
   const [focusNonce, setFocusNonce] = useState(0);
   const treeRequested = useRef(false);
+
+  // The save scheduler and the retry timers live in the shared sessions;
+  // this workbench only applies the preference and wires the plugin log.
+  useSessionConfig(prefs);
+  useEditorTelemetry(() => ({
+    phase: surface === "opener" ? "file-opener" : "files-panel",
+    path: activePath ?? undefined,
+    sourceKind: source.kind,
+    host: source.experimental_hostId ?? undefined,
+  }));
+  // The panel closing or a thread switch must not take pending writes down.
+  useEffect(() => () => void flushDirtySessions({ reason: "workbench-unmount" }), []);
+  const sessionOverview = useSessionsOverview();
 
   const show = useCallback((path: string, options: { record: boolean }) => {
     setActivePath(path);
@@ -310,16 +329,17 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       }
       if (paneRef.current?.isDirty()) {
         if (prefs.autoSave !== "off") {
-          // Auto save owns the save: start it and move on. The session's
-          // queue carries the write through after the pane switches, and a
-          // failure stays on the file's session for its next open.
-          void paneRef.current.save();
-        } else {
-          // Manual mode: navigating away is where unsaved work would die.
-          setPendingOpen(pending);
-          if (compact) setTreeOpen(false);
+          // The write goes before the switch: wait for the dirty buffers to
+          // land, bounded, so a slow host cannot trap the user on the file.
+          void flushDirtySessions({ reason: "navigate", timeoutMs: NAVIGATE_FLUSH_MS }).then(() => {
+            navigateTo(pending);
+          });
           return;
         }
+        // Manual mode: navigating away is where unsaved work would die.
+        setPendingOpen(pending);
+        if (compact) setTreeOpen(false);
+        return;
       }
       navigateTo(pending);
     },
@@ -540,21 +560,24 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
   return (
     <div
       ref={rootRef}
-      className="relative flex h-full min-h-0 w-full min-w-0 overflow-hidden bg-background text-foreground"
+      className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background text-foreground"
       onKeyDown={onKeyDown}
       data-surface={surface}
     >
-      {treeOnRight ? (
-        <>
-          {editorColumn}
-          {treeColumn}
-        </>
-      ) : (
-        <>
-          {treeColumn}
-          {editorColumn}
-        </>
-      )}
+      <div className="flex min-h-0 min-w-0 flex-1">
+        {treeOnRight ? (
+          <>
+            {editorColumn}
+            {treeColumn}
+          </>
+        ) : (
+          <>
+            {treeColumn}
+            {editorColumn}
+          </>
+        )}
+      </div>
+      <SaveStatusBar entries={sessionOverview} />
       {quickOpen ? (
         <QuickOpen source={source} recentPaths={recentPaths} onOpen={openFile} onClose={() => setQuickOpen(false)} />
       ) : null}

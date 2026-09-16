@@ -378,6 +378,8 @@ test("plugin uses only public SDK imports and declared packages", () => {
       /^@pierre\/diffs(\/|$)/,
       /^@pierre\/trees$/,
       /^esbuild$/,
+      /^vitest(\/|$)/,
+      /^@testing-library\//,
       /^@\//,
     ],
   });
@@ -919,4 +921,62 @@ test("watch reports no root when the host cannot watch, and keeps the registrati
   online = true;
   await harness.behavior.experimental_emitHostWorkerExit("host_remote");
   assert.deepEqual(hostCalls.at(-1), { roots: ["/workspace"] });
+});
+
+test("read refuses binary and oversized files without handing back content", async (t) => {
+  const oversized = 9 * 1024 * 1024;
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "editor",
+    sdk: {
+      environments: { get: async () => environment },
+      system: { config: async () => ({ primaryHostId: "host_remote", dataDir: "/tmp/editor-test" }) },
+      files: {
+        read: async ({ path: filePath }) => {
+          if (filePath.endsWith("blob.bin")) {
+            return { path: filePath, content: "AAEC", contentEncoding: "base64" as const, sha256: "h", sizeBytes: 3, mimeType: "application/octet-stream" };
+          }
+          if (filePath.endsWith("huge.log")) {
+            return { path: filePath, content: "x", contentEncoding: "utf8" as const, sha256: "h", sizeBytes: oversized, mimeType: "text/plain" };
+          }
+          if (filePath.endsWith("gone.txt")) throw new Error("ENOENT: file does not exist");
+          return { path: filePath, content: "text", contentEncoding: "utf8" as const, sha256: "h", sizeBytes: 4, mimeType: "text/plain" };
+        },
+      },
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const source = { kind: "workspace" as const, threadId: null, environmentId: environment.id, projectId: environment.projectId };
+  assert.deepEqual(await harness.behavior.callRpc("read", { path: "blob.bin", source }), {
+    kind: "unsupported",
+    reason: "This file is not text",
+  });
+  assert.deepEqual(await harness.behavior.callRpc("read", { path: "huge.log", source }), {
+    kind: "unsupported",
+    reason: "This file is too large to edit (9 MB)",
+  });
+  // A missing file is a thrown error, not a silent empty document.
+  await assert.rejects(harness.behavior.callRpc("read", { path: "gone.txt", source }), /ENOENT|does not exist/);
+});
+
+test("clientLog forwards browser events to the plugin log without content", async (t) => {
+  const { bb, harness } = createFakePluginHost({ pluginId: "editor" });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const before = harness.inspection.logEntries.length;
+  await harness.behavior.callRpc("clientLog", {
+    level: "error",
+    event: "crash",
+    fields: { phase: "editor", path: "a.ts", bytes: 1024, host: null },
+  });
+  const entries = harness.inspection.logEntries.slice(before);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].level, "error");
+  const line = entries[0].message;
+  assert.match(line, /crash/);
+  assert.match(line, /a\.ts/);
+  // The contract refuses oversized values: file content cannot ride along.
+  await assert.rejects(
+    harness.behavior.callRpc("clientLog", { level: "error", event: "crash", fields: { content: "x".repeat(600) } }),
+  );
 });

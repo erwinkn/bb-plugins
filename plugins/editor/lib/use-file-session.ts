@@ -3,17 +3,22 @@ import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import {
   acquireFileSession,
+  configureFileSessions,
   dirtyPaths,
   peekFileSession,
   sessionKeyFor,
+  sessionsOverview,
   subscribeDirtyPaths,
+  subscribeSessions,
   type FileSession,
   type FileSessionIo,
   type FileSessionSnapshot,
   type FileSessionSource,
   type ReloadOutcome,
+  type SessionOverviewEntry,
   type SessionSeed,
 } from "./file-session";
+import { AUTO_SAVE_DELAY_MS, type EditorPrefs } from "./editor-options";
 
 /** The plugin's `read` and `write` RPC as the session layer's transport. */
 export function useFileSessionIo(): FileSessionIo {
@@ -136,4 +141,31 @@ export function useDirtyPaths(source: FileSessionSource): ReadonlySet<string> {
     [prefix],
   );
   return paths;
+}
+
+/**
+ * Applies the auto-save preference to the session layer. The save timer lives
+ * in the sessions, not in any view, so a pending write outlives the pane that
+ * scheduled it. Call once per mounted workbench; re-applying is idempotent.
+ */
+export function useSessionConfig(prefs: EditorPrefs): void {
+  useEffect(() => {
+    configureFileSessions({
+      // "onBlur" needs no session timer: leaving the editor flushes anyway.
+      autoSave: prefs.autoSave === "afterDelay" ? "afterDelay" : "off",
+      autoSaveDelayMs: AUTO_SAVE_DELAY_MS,
+      retryFailedSaves: true,
+    });
+  }, [prefs.autoSave]);
+}
+
+/**
+ * Every file with unsaved work or a failed save, whichever tab holds it. The
+ * registry is shared, so the indicator a workbench draws covers sessions
+ * whose panes are not mounted.
+ */
+export function useSessionsOverview(): SessionOverviewEntry[] {
+  const [entries, setEntries] = useState<SessionOverviewEntry[]>(() => sessionsOverview());
+  useEffect(() => subscribeSessions(() => setEntries(sessionsOverview())), []);
+  return entries;
 }

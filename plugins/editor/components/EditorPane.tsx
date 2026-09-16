@@ -2,8 +2,10 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState 
 import { toast } from "sonner";
 import type { ComponentType, Ref } from "react";
 import type { PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
-import { AUTO_SAVE_DELAY_MS, lineHeightFor, monoFontFamily, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
+import { lineHeightFor, monoFontFamily, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
+import { exceedsInteractiveLimits } from "@/lib/editor-limits";
+import { flushDirtySessions } from "@/lib/file-session";
 import { useAssets } from "@/lib/use-assets";
 import { useFileSession } from "@/lib/use-file-session";
 import type { FileSessionSnapshot } from "@/lib/file-session";
@@ -17,6 +19,8 @@ import { workspaceRoot } from "@/lib/markdown-preview";
 import { baseName, escapesRoot } from "@/lib/file-tree";
 import { indicatorFor, Toolbar } from "./Toolbar";
 import { previewKind } from "@/lib/file-preview";
+import { EditorTabBoundary } from "./EditorTabBoundary";
+import { PlainTextView } from "./PlainTextView";
 
 /** Buffer-backed previews supported by the editable diff pane. */
 export function hasPreview(path: string): boolean {
@@ -121,14 +125,11 @@ export function EditorPane({
 
   const theme = usePierreTheme(themePreview);
 
-  // Auto save. The timer restarts on every keystroke, so it fires once the
-  // user stops. Only a plain dirty file is saved: a conflict or a failed save
-  // waits for the user, and a save in flight settles itself.
-  useEffect(() => {
-    if (prefs.autoSave !== "afterDelay" || state?.save.kind !== "dirty") return;
-    const timer = setTimeout(() => void save(), AUTO_SAVE_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [prefs.autoSave, save, state?.save.kind, state?.content]);
+  // Auto save lives in the file session itself (`configureFileSessions`), so
+  // a pending write survives this pane unmounting — a tab switch, a thread
+  // switch or the panel closing cannot take the timer down with it.
+  const [comparing, setComparing] = useState<{ key: string; diskContent: string } | null>(null);
+  const [forceEditFor, setForceEditFor] = useState<string | null>(null);
 
   useImperativeHandle(
     ref,
@@ -198,6 +199,20 @@ export function EditorPane({
   const lineCount = useMemo(() => (state?.content ?? "").split("\n").length, [state?.content]);
   const unsupported = state?.load.kind === "unsupported";
   const readOnly = !isEditor || unsupported || state?.draft.kind === "stale";
+  const sessionKey = state?.key ?? null;
+  // Above the render soft limit the editor stays out: the file opens in the
+  // virtualized plain-text view, and the user can still force the editor.
+  const overLimit = state?.load.kind === "ready" ? exceedsInteractiveLimits(state.content) : null;
+  const forceEdit = sessionKey !== null && forceEditFor === sessionKey;
+  // A conflict compare shows the buffer against what is on disk now.
+  const compare = useCallback(() => {
+    const session = file.session;
+    if (session === null || sessionKey === null) return;
+    void session.readDisk().then((result) => {
+      if (result !== null && result.kind === "text") setComparing({ key: sessionKey, diskContent: result.content });
+      else toast.error("Could not read the file on disk");
+    });
+  }, [file.session, sessionKey]);
   // A file outside the workspace root keeps its absolute path in the
   // breadcrumb; inside it the breadcrumb is relative to the root. Before the
   // first read lands `relativePath` is the path as opened, so an absolute one
@@ -264,6 +279,7 @@ export function EditorPane({
         onTakeOver={claimEditor}
         onOverwrite={() => void overwrite()}
         onDiscard={reloadFile}
+        onCompare={compare}
         onRestoreDraft={file.restoreDraft}
         onDiscardDraft={file.discardDraft}
       />
@@ -271,69 +287,134 @@ export function EditorPane({
         <NoticeRow tone="warning">HTML preview shows the saved file. Save to show your changes.</NoticeRow>
       ) : null}
       <div className="relative min-h-0 flex-1">
-        {unsupported ? (
-          <div className="absolute inset-0 overflow-auto bg-background">
-            {Original ? <Original /> : <p className="p-4 text-sm text-muted-foreground">{state.load.reason}</p>}
-          </div>
-        ) : !editing && preview === "html" && Original && state?.load.kind === "ready" ? (
-          <div className="absolute inset-0 overflow-auto bg-background">
-            <Original key={state.sha256} />
-          </div>
-        ) : !editing && preview === "markdown" && state !== null && state.load.kind === "ready" ? (
-          // The preview follows the shared buffer, so unsaved edits from the
-          // Changes tab or an earlier draft show here too.
-          <MarkdownPreview
-            source={source}
-            path={path}
-            // A document outside the root previews against its own directory;
-            // its links stay with BB rather than resolving under the root.
-            relativePath={outsideRoot ? baseName(state.absolutePath || path) : state.relativePath || path}
-            rootPath={outsideRoot ? "" : workspaceRoot(state.absolutePath, state.relativePath)}
-            content={state.content}
-            onOpenPath={outsideRoot ? null : onOpenPath}
-          />
-        ) : assets.kind === "ready" && state !== null && state.load.kind === "ready" ? (
-          <PierreSurface
-            ref={surfaceRef}
-            baseUrl={assets.baseUrl}
-            viewId={file.viewId}
-            name={displayPath}
-            content={state.content}
-            epoch={state.epoch}
-            epochAuthor={state.epochAuthor}
-            readOnly={readOnly}
-            wrap={prefs.wordWrap}
-            lineNumbers={prefs.lineNumbers}
-            fontSize={prefs.fontSize}
-            lineHeight={lineHeightFor(prefs.fontSize)}
-            fontFamily={monoFontFamily()}
-            theme={theme}
-            onChange={setContent}
-            onSave={() => void save()}
-            onFocus={() => {
-              claimEditor();
-              markEditorActive(active);
-            }}
-            onBlur={() => {
-              if (prefs.autoSave === "onBlur" && (file.session?.getSnapshot().save.kind ?? "clean") === "dirty") void save();
-            }}
-            onStatusChange={setSurfaceStatus}
-            className="absolute inset-0"
-          />
-        ) : null}
-        {loading ? (
-          <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">Loading editor…</div>
-        ) : null}
-        {goToLineOpen ? (
-          <GoToLine
-            lineCount={lineCount}
-            onGo={(line, character) => {
-              surfaceRef.current?.goToLine(line, character);
-              surfaceRef.current?.focus({ lineNumber: line, character });
-            }}
-            onClose={() => setGoToLineOpen(false)}
-          />
-        ) : null}
+        <EditorTabBoundary
+          key={sessionKey ?? path}
+          fileKey={sessionKey ?? path}
+          path={displayPath}
+          content={state?.content ?? ""}
+          phase={!editing && preview !== null ? `${preview}-preview` : "editor"}
+          context={{
+            extension: path.includes(".") ? path.split(".").pop() : undefined,
+            bytes: state?.content.length,
+            lines: lineCount,
+            sourceKind: source.kind,
+            host: source.experimental_hostId ?? undefined,
+          }}
+          fontSize={prefs.fontSize}
+          lineHeight={lineHeightFor(prefs.fontSize)}
+          fontFamily={monoFontFamily()}
+        >
+          {unsupported ? (
+            <div className="absolute inset-0 overflow-auto bg-background">
+              {Original ? <Original /> : <p className="p-4 text-sm text-muted-foreground">{state.load.reason}</p>}
+            </div>
+          ) : comparing !== null && comparing.key === sessionKey && state?.load.kind === "ready" ? (
+            <>
+              <NoticeRow tone="warning">
+                Your text on the right, the file on disk on the left.
+                <NoticeAction onClick={() => setComparing(null)}>Back to editing</NoticeAction>
+              </NoticeRow>
+              {assets.kind === "ready" ? (
+                <PierreSurface
+                  key={`compare:${sessionKey}`}
+                  baseUrl={assets.baseUrl}
+                  viewId={`${file.viewId}:compare`}
+                  name={displayPath}
+                  content={state.content}
+                  epoch={state.epoch}
+                  epochAuthor={state.epochAuthor}
+                  oldContent={comparing.diskContent}
+                  readOnly
+                  wrap={prefs.wordWrap}
+                  lineNumbers={prefs.lineNumbers}
+                  fontSize={prefs.fontSize}
+                  lineHeight={lineHeightFor(prefs.fontSize)}
+                  fontFamily={monoFontFamily()}
+                  theme={theme}
+                  onStatusChange={setSurfaceStatus}
+                  className="absolute inset-0 top-8"
+                />
+              ) : null}
+            </>
+          ) : !editing && preview === "html" && Original && state?.load.kind === "ready" ? (
+            <div className="absolute inset-0 overflow-auto bg-background">
+              <Original key={state.sha256} />
+            </div>
+          ) : !editing && preview === "markdown" && state !== null && state.load.kind === "ready" ? (
+            // The preview follows the shared buffer, so unsaved edits from the
+            // Changes tab or an earlier draft show here too.
+            <MarkdownPreview
+              source={source}
+              path={path}
+              // A document outside the root previews against its own directory;
+              // its links stay with BB rather than resolving under the root.
+              relativePath={outsideRoot ? baseName(state.absolutePath || path) : state.relativePath || path}
+              rootPath={outsideRoot ? "" : workspaceRoot(state.absolutePath, state.relativePath)}
+              content={state.content}
+              onOpenPath={outsideRoot ? null : onOpenPath}
+            />
+          ) : assets.kind === "ready" && state !== null && state.load.kind === "ready" ? (
+            overLimit !== null && !forceEdit ? (
+              <>
+                <NoticeRow tone="warning">
+                  {overLimit.reason}. Opened read-only.
+                  <NoticeAction onClick={() => sessionKey !== null && setForceEditFor(sessionKey)}>Open in editor anyway</NoticeAction>
+                </NoticeRow>
+                <PlainTextView
+                  content={state.content}
+                  fontSize={prefs.fontSize}
+                  lineHeight={lineHeightFor(prefs.fontSize)}
+                  fontFamily={monoFontFamily()}
+                  showLineNumbers={prefs.lineNumbers}
+                  className="absolute inset-x-0 bottom-0 top-8 overflow-auto bg-background"
+                />
+              </>
+            ) : (
+              <PierreSurface
+                key={sessionKey}
+                ref={surfaceRef}
+                baseUrl={assets.baseUrl}
+                viewId={file.viewId}
+                name={displayPath}
+                content={state.content}
+                epoch={state.epoch}
+                epochAuthor={state.epochAuthor}
+                readOnly={readOnly}
+                wrap={prefs.wordWrap}
+                lineNumbers={prefs.lineNumbers}
+                fontSize={prefs.fontSize}
+                lineHeight={lineHeightFor(prefs.fontSize)}
+                fontFamily={monoFontFamily()}
+                theme={theme}
+                onChange={setContent}
+                onSave={() => void save()}
+                onFocus={() => {
+                  claimEditor();
+                  markEditorActive(active);
+                }}
+                onBlur={() => {
+                  // Leaving the editor writes dirty buffers, whichever save mode.
+                  void flushDirtySessions({ reason: "editor-blur" });
+                }}
+                onStatusChange={setSurfaceStatus}
+                className="absolute inset-0"
+              />
+            )
+          ) : null}
+          {loading ? (
+            <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">Loading editor…</div>
+          ) : null}
+          {goToLineOpen ? (
+            <GoToLine
+              lineCount={lineCount}
+              onGo={(line, character) => {
+                surfaceRef.current?.goToLine(line, character);
+                surfaceRef.current?.focus({ lineNumber: line, character });
+              }}
+              onClose={() => setGoToLineOpen(false)}
+            />
+          ) : null}
+        </EditorTabBoundary>
       </div>
     </div>
   );
@@ -355,6 +436,7 @@ function Notices({
   onTakeOver,
   onOverwrite,
   onDiscard,
+  onCompare,
   onRestoreDraft,
   onDiscardDraft,
 }: {
@@ -365,6 +447,7 @@ function Notices({
   onTakeOver: () => void;
   onOverwrite: () => void;
   onDiscard: () => void;
+  onCompare: () => void;
   onRestoreDraft: () => void;
   onDiscardDraft: () => void;
 }) {
@@ -373,11 +456,14 @@ function Notices({
   if (state === null) return null;
   if (state.load.kind === "error") return <NoticeRow tone="error">{state.load.message}</NoticeRow>;
   if (state.save.kind === "conflict") {
+    // The buffer stays put; the choice is the user's: the saved base, the
+    // local text and the disk file are three versions until they decide.
     return (
       <NoticeRow tone="error">
         This file changed on disk since you opened it.
-        <NoticeAction onClick={onDiscard}>Reload</NoticeAction>
-        <NoticeAction onClick={onOverwrite}>Overwrite</NoticeAction>
+        <NoticeAction onClick={onOverwrite}>Keep mine</NoticeAction>
+        <NoticeAction onClick={onDiscard}>Take disk version</NoticeAction>
+        <NoticeAction onClick={onCompare}>Compare</NoticeAction>
       </NoticeRow>
     );
   }
@@ -396,6 +482,7 @@ function Notices({
       <NoticeRow tone="warning">
         This file changed on disk while you were editing it. Saving will report a conflict.
         <NoticeAction onClick={onDiscard}>Take the file from disk</NoticeAction>
+        <NoticeAction onClick={onCompare}>Compare</NoticeAction>
       </NoticeRow>
     );
   }

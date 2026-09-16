@@ -40,6 +40,7 @@
     "@radix-ui/react-popover": "^1.1.19",
     "@radix-ui/react-select": "^2.3.3",
     "@radix-ui/react-tooltip": "^1.2.12",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "22.19.15",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
@@ -49,19 +50,23 @@
     "cron-parser": "5.5.0",
     "esbuild": "0.28.2",
     "hono": "4.13.7",
+    "jsdom": "^30.0.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "shiki": "4.4.3",
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.4.0",
     "tsx": "4.23.13",
     "typescript": "5.9.3",
-    "vaul": "^1.1.2"
+    "vaul": "^1.1.2",
+    "vitest": "^5.0.1"
   },
   "private": true,
   "scripts": {
     "build": "npm run build:pierre && bb plugin build",
     "build:pierre": "node scripts/stage-assets.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test lib/*.test.ts server.test.ts host.test.ts",
+    "test": "tsx --test lib/*.test.ts server.test.ts host.test.ts && vitest run",
     "check:assets": "node scripts/check-assets.mjs"
   }
 }

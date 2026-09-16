@@ -126,6 +126,10 @@ export interface FileSession {
   seed(seed: SessionSeed): void;
   /** Write with `expectedSha256`. Resolves true when the text reached disk. */
   save(): Promise<boolean>;
+  /** Save now: cancels a pending auto save and writes if the file is dirty. */
+  flush(): Promise<boolean>;
+  /** Read the file as it is on disk now, without touching the buffer. */
+  readDisk(): Promise<ReadResult | null>;
   /** Write without a hash check, after a reported conflict. */
   overwrite(): Promise<boolean>;
   /** Take the file from disk, dropping any edits. Refuses when the text changed while reading. */
@@ -152,6 +156,46 @@ export interface DraftStore {
   write(key: string, draft: StoredDraft): void;
   remove(key: string): void;
 }
+
+// ---------------------------------------------------------------------------
+// Plugin-wide session configuration and logging
+// ---------------------------------------------------------------------------
+
+export interface SessionLogFields {
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+/** One structured save-lifecycle event. Wired to the plugin log by the app. */
+export type SessionLogger = (event: string, fields: SessionLogFields) => void;
+
+let sessionLogger: SessionLogger | null = null;
+
+/** The app installs this once; tests may install their own. */
+export function setSessionLogger(logger: SessionLogger | null): void {
+  sessionLogger = logger;
+}
+
+export interface SessionConfig {
+  /**
+   * "afterDelay" writes a dirty buffer shortly after the last keystroke, from
+   * the session itself, so the timer survives its views. "off" leaves saving
+   * to explicit actions and to lifecycle flushes.
+   */
+  autoSave: "off" | "afterDelay";
+  autoSaveDelayMs: number;
+  /** A failed write retries with backoff instead of waiting for the user. */
+  retryFailedSaves: boolean;
+}
+
+const sessionConfig: SessionConfig = { autoSave: "off", autoSaveDelayMs: 400, retryFailedSaves: true };
+
+/** The app applies the autoSave preference here; the pane owns no timer. */
+export function configureFileSessions(next: Partial<SessionConfig>): void {
+  Object.assign(sessionConfig, next);
+}
+
+/** Backoff for a failed write: 1 s, 2 s, 5 s, then every 15 s. */
+const RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 15_000] as const;
 
 const DRAFT_PREFIX = "editor:draft:v1:";
 const DRAFT_DEBOUNCE_MS = 400;
@@ -194,11 +238,28 @@ export function sessionKeyFor(source: FileSessionSource, path: string): string {
 /**
  * The path as the server sees it. A backslash is kept: it is a legal character
  * in a POSIX file name, and the server treats it literally, so replacing it
- * could join two different files into one session.
+ * could join two different files into one session. `.` segments and interior
+ * `..` pairs resolve lexically — `a/./b` and `a/../b` are the same file on
+ * disk, so they must be the same session and the same draft. Leading `..`
+ * segments stay: they escape any root the path is relative to.
  */
 export function normalizePath(path: string): string {
   const collapsed = path.replace(/\/{2,}/g, "/").replace(/^\.\//, "");
-  return collapsed.length > 1 && collapsed.endsWith("/") ? collapsed.slice(0, -1) : collapsed;
+  const trimmed = collapsed.length > 1 && collapsed.endsWith("/") ? collapsed.slice(0, -1) : collapsed;
+  if (!/(^|\/)\.\.?($|\/)/.test(trimmed)) return trimmed;
+  const out: string[] = [];
+  for (const segment of trimmed.split("/")) {
+    if (segment === ".") continue;
+    if (segment === "..") {
+      const last = out[out.length - 1];
+      if (last !== undefined && last !== ".." && last !== "") out.pop();
+      else if (!trimmed.startsWith("/")) out.push("..");
+      continue;
+    }
+    out.push(segment);
+  }
+  const joined = out.join("/");
+  return trimmed.startsWith("/") && joined === "" ? "/" : joined;
 }
 
 export function memoryDraftStore(): DraftStore {
@@ -265,6 +326,13 @@ class Session implements FileSession {
   private pendingSeed: SessionSeed | null;
   private draftTimer: ReturnType<typeof setTimeout> | null = null;
   private draftPending = false;
+  /** A scheduled auto save; owned by the session so unmounting a view keeps it. */
+  private autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A scheduled retry of a failed write. */
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempt = 0;
+  /** Lets a write queued by `dispose` run after the session is marked disposed. */
+  private allowDisposedWrite = false;
   /** The disk version the current draft was based on, even after restoration. */
   private draftBaseSha256: string | null = null;
   private loading = false;
@@ -317,6 +385,57 @@ class Session implements FileSession {
 
   getSnapshot(): FileSessionSnapshot {
     return this.snapshot;
+  }
+
+  /** A save-lifecycle event for the plugin log: never carries file content. */
+  private log(event: string, extra: SessionLogFields = {}): void {
+    sessionLogger?.(event, {
+      path: this.snapshot.relativePath || this.path,
+      host: this.source.experimental_hostId ?? null,
+      sourceKind: this.source.kind,
+      revision: this.version,
+      ...extra,
+    });
+  }
+
+  /**
+   * Timers follow the save state. A dirty, idle file gets the auto-save
+   * pause; any other state cancels it. A failed write keeps its retry until
+   * the save leaves the error state, and a clean file resets the backoff.
+   */
+  private syncTimers(): void {
+    if (this.disposed) return;
+    const kind = this.snapshot.save.kind;
+    if (this.autoSaveTimer !== null && kind !== "dirty") {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+    if (this.retryTimer !== null && kind !== "error") {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    if (kind === "clean") this.retryAttempt = 0;
+    if (sessionConfig.autoSave === "afterDelay" && kind === "dirty" && this.autoSaveTimer === null) {
+      this.log("save-scheduled", { delayMs: sessionConfig.autoSaveDelayMs });
+      this.autoSaveTimer = setTimeout(() => {
+        this.autoSaveTimer = null;
+        if (this.snapshot.save.kind !== "dirty") return;
+        void this.save();
+      }, sessionConfig.autoSaveDelayMs);
+    }
+  }
+
+  /** After a failed write: retry with backoff while the error stands. */
+  private scheduleRetry(): void {
+    if (!sessionConfig.retryFailedSaves || this.disposed || this.retryTimer !== null) return;
+    const delayMs = RETRY_DELAYS_MS[Math.min(this.retryAttempt, RETRY_DELAYS_MS.length - 1)] ?? 15_000;
+    this.retryAttempt += 1;
+    this.log("save-retry", { attempt: this.retryAttempt, delayMs });
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.snapshot.save.kind !== "error") return;
+      void this.save();
+    }, delayMs);
   }
 
   subscribe(listener: () => void): () => void {
@@ -442,6 +561,7 @@ class Session implements FileSession {
       } else {
         draftState = { kind: "stale" };
       }
+      this.log(draftState.kind === "restored" ? "draft-restored" : "draft-stale");
     } else if (draft !== null) {
       this.drafts.remove(this.key);
     }
@@ -506,18 +626,37 @@ class Session implements FileSession {
     return this.write(false);
   }
 
+  flush(): Promise<boolean> {
+    if (this.autoSaveTimer !== null) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+    return this.save();
+  }
+
+  readDisk(): Promise<ReadResult | null> {
+    return this.enqueue(async () => {
+      try {
+        return await this.io.read({ path: this.path, source: this.source });
+      } catch {
+        return null;
+      }
+    });
+  }
+
   overwrite(): Promise<boolean> {
     return this.write(true);
   }
 
   private write(force: boolean): Promise<boolean> {
     return this.enqueue(async () => {
-      if (this.disposed || this.snapshot.load.kind !== "ready" || this.snapshot.draft.kind === "stale") return false;
+      if ((this.disposed && !this.allowDisposedWrite) || this.snapshot.load.kind !== "ready" || this.snapshot.draft.kind === "stale") return false;
       // A reported conflict waits for the user: reload, or an explicit
       // overwrite. Auto save must not settle it on its own.
       if (!force && (this.snapshot.save.kind === "conflict" || this.draftBaseSha256 !== this.snapshot.sha256)) {
         if (this.snapshot.save.kind !== "conflict") {
           this.patch({ save: { kind: "conflict", currentSha256: this.snapshot.sha256 }, staleBase: true });
+          this.log("save-conflict", { during: "precheck" });
         }
         return false;
       }
@@ -528,6 +667,7 @@ class Session implements FileSession {
       const version = this.version;
       const content = this.snapshot.content;
       const previousSave = this.snapshot.save;
+      this.log("save-started", { force });
       this.patch({ save: { kind: "saving" } });
       try {
         const result = await this.io.write({
@@ -539,11 +679,13 @@ class Session implements FileSession {
         if (this.disposed) return false;
         if (result.outcome === "conflict") {
           this.patch({ save: { kind: "conflict", currentSha256: result.currentSha256 }, staleBase: true });
+          this.log("save-conflict", { currentSha256: result.currentSha256 });
           return false;
         }
         // Text typed during the write is newer than what reached disk.
         const stillDirty = this.version !== version;
         this.draftBaseSha256 = result.sha256;
+        this.retryAttempt = 0;
         this.patch({
           savedContent: content,
           savedContentSource: "write",
@@ -552,11 +694,16 @@ class Session implements FileSession {
           draft: stillDirty ? this.snapshot.draft : { kind: "none" },
           staleBase: false,
         });
+        this.log("save-succeeded", { stillDirty });
         if (stillDirty) this.persistDraftSoon();
         else this.clearDraft();
         return true;
       } catch (error) {
-        if (!this.disposed) this.patch({ save: previousSave.kind === "conflict" ? previousSave : { kind: "error", message: messageOf(error, "Save failed") } });
+        if (!this.disposed) {
+          this.log("save-error", { message: messageOf(error, "Save failed") });
+          this.patch({ save: previousSave.kind === "conflict" ? previousSave : { kind: "error", message: messageOf(error, "Save failed") } });
+          this.scheduleRetry();
+        }
         return false;
       }
     });
@@ -727,12 +874,35 @@ class Session implements FileSession {
     this.drafts.remove(this.key);
   }
 
+  /**
+   * Disposal flushes, never cancels: the pending draft goes to the store and
+   * a dirty buffer gets one last write through the queue. The hash check
+   * still applies — a conflict stays a conflict rather than overwriting.
+   */
   dispose(): void {
-    this.disposed = true;
-    if (this.draftTimer !== null) {
-      clearTimeout(this.draftTimer);
-      this.draftTimer = null;
+    if (this.disposed) return;
+    this.flushDraft();
+    if (this.autoSaveTimer !== null) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
     }
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    const needsWrite =
+      this.snapshot.load.kind === "ready" &&
+      this.snapshot.save.kind !== "conflict" &&
+      this.snapshot.draft.kind !== "stale" &&
+      (this.snapshot.hasEdits || this.snapshot.save.kind === "error");
+    if (needsWrite) {
+      this.log("save-flush", { reason: "dispose" });
+      this.allowDisposedWrite = true;
+      void this.write(false).finally(() => {
+        this.allowDisposedWrite = false;
+      });
+    }
+    this.disposed = true;
     this.listeners.clear();
   }
 
@@ -741,6 +911,7 @@ class Session implements FileSession {
     const hasEdits = merged.content !== merged.savedContent;
     const unsettled = merged.save.kind === "saving" || merged.save.kind === "error" || merged.save.kind === "conflict";
     this.snapshot = { ...merged, hasEdits, dirty: hasEdits || unsettled };
+    this.syncTimers();
     this.emit();
   }
 
@@ -767,6 +938,13 @@ const sessions = new Map<string, Session>();
  * session that already exists.
  */
 const aliases = new Map<string, string>();
+/**
+ * Workspace roots learned from reads, by source: a session's absolute and
+ * relative paths give the root between them. With the root known, a caller
+ * naming the file by its other form reaches the existing session before any
+ * read lands, not only after.
+ */
+const knownRoots = new Map<string, Set<string>>();
 const registryListeners = new Set<() => void>();
 let idleCounter = 0;
 let defaultDrafts: DraftStore | null = null;
@@ -789,6 +967,18 @@ function recordAliases(session: Session): void {
     if (name === "" || name === session.path) continue;
     const key = sessionKeyFor(session.source, name);
     if (key !== session.key && !sessions.has(key)) aliases.set(key, session.key);
+  }
+  // Learn the workspace root so the other name form resolves before a read.
+  if (absolutePath !== "" && relativePath !== "" && relativePath !== absolutePath) {
+    const suffix = `/${relativePath}`;
+    if (absolutePath.endsWith(suffix)) {
+      const root = absolutePath.slice(0, -suffix.length);
+      if (root !== "") {
+        const roots = knownRoots.get(sourceKeyFor(session.source)) ?? new Set<string>();
+        roots.add(root);
+        knownRoots.set(sourceKeyFor(session.source), roots);
+      }
+    }
   }
 }
 
@@ -854,14 +1044,41 @@ export function peekFileSession(source: FileSessionSource, path: string): FileSe
   return sessions.get(canonicalKey(source, path)) ?? null;
 }
 
-/** The key a file's session is stored under, following a rename alias. */
+function isAbsoluteName(path: string): boolean {
+  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+}
+
+/**
+ * The key a file's session is stored under, following a rename alias and —
+ * through the roots reads have taught us — the other form of the same file's
+ * name: a workspace-relative path and the absolute path share one session and
+ * one draft.
+ */
 function canonicalKey(source: FileSessionSource, path: string): string {
-  const named = sessionKeyFor(source, path);
-  return aliases.get(named) ?? named;
+  const normalized = normalizePath(path);
+  const named = sessionKeyFor(source, normalized);
+  const direct = aliases.get(named);
+  if (direct !== undefined || sessions.has(named)) return direct ?? named;
+  const roots = knownRoots.get(sourceKeyFor(source));
+  if (roots !== undefined) {
+    if (isAbsoluteName(normalized)) {
+      for (const root of roots) {
+        if (!normalized.startsWith(`${root}/`)) continue;
+        const key = sessionKeyFor(source, normalized.slice(root.length + 1));
+        if (sessions.has(key) || aliases.has(key)) return aliases.get(key) ?? key;
+      }
+    } else {
+      for (const root of roots) {
+        const key = sessionKeyFor(source, `${root}/${normalized}`);
+        if (sessions.has(key) || aliases.has(key)) return aliases.get(key) ?? key;
+      }
+    }
+  }
+  return direct ?? named;
 }
 
 /** Listen for any change in any session; for lists that mark unsaved files. */
-function subscribeSessions(listener: () => void): () => void {
+export function subscribeSessions(listener: () => void): () => void {
   registryListeners.add(listener);
   return () => registryListeners.delete(listener);
 }
@@ -882,11 +1099,61 @@ function flushAllDrafts(): void {
   for (const session of sessions.values()) session.flushDraft();
 }
 
+/**
+ * Write every dirty file now, wherever it is open — navigation, a window or
+ * editor blur, the page hiding, or the panel closing call this so unsaved
+ * work does not wait for a view. A conflict or a stale draft still waits for
+ * the user. With `timeoutMs` the promise resolves when the writes settle or
+ * the bound passes, whichever comes first; the writes continue either way.
+ */
+export function flushDirtySessions(options: { timeoutMs?: number; reason?: string } = {}): Promise<void> {
+  const pending: Promise<boolean>[] = [];
+  for (const session of sessions.values()) {
+    const snapshot = session.getSnapshot();
+    if (!snapshot.dirty || snapshot.save.kind === "conflict" || snapshot.draft.kind === "stale") continue;
+    pending.push(session.flush());
+  }
+  if (pending.length === 0) return Promise.resolve();
+  sessionLogger?.("flush", { reason: options.reason ?? "lifecycle", files: pending.length });
+  const settled = Promise.allSettled(pending).then(() => undefined);
+  const timeoutMs = options.timeoutMs;
+  if (timeoutMs === undefined) return settled;
+  return Promise.race([settled, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
+}
+
+/** One open file with unsettled work, for a plugin-wide indicator. */
+export interface SessionOverviewEntry {
+  key: string;
+  path: string;
+  sourceKind: FileSessionSource["kind"];
+  save: SaveState["kind"];
+  /** The save error's message, when there is one. */
+  message: string | null;
+}
+
+/** Every file with unsaved work or a failed save, across all surfaces. */
+export function sessionsOverview(): SessionOverviewEntry[] {
+  const out: SessionOverviewEntry[] = [];
+  for (const session of sessions.values()) {
+    const snapshot = session.getSnapshot();
+    if (!snapshot.dirty) continue;
+    out.push({
+      key: snapshot.key,
+      path: snapshot.relativePath || snapshot.path,
+      sourceKind: snapshot.source.kind,
+      save: snapshot.save.kind,
+      message: snapshot.save.kind === "error" ? snapshot.save.message : null,
+    });
+  }
+  return out;
+}
+
 /** Drop every session. Tests call this between cases. */
 export function resetFileSessions(): void {
   for (const session of sessions.values()) session.dispose();
   sessions.clear();
   aliases.clear();
+  knownRoots.clear();
   registryListeners.clear();
   refreshedAt.clear();
   idleCounter = 0;
@@ -971,14 +1238,26 @@ export function refreshOpenFiles(options: { force?: boolean } = {}): void {
   }
 }
 
+/** Drafts go to the store synchronously; dirty buffers get a last write. */
+function flushOnLeave(reason: string): void {
+  flushAllDrafts();
+  void flushDirtySessions({ reason });
+}
+
 function ensureExternalWatch(): void {
   if (typeof window === "undefined") return;
   if (!watchBound) {
     watchBound = true;
-    window.addEventListener("pagehide", flushAllDrafts);
-    window.addEventListener("focus", () => refreshOpenFiles({ force: true }));
+    window.addEventListener("pagehide", () => flushOnLeave("pagehide"));
+    window.addEventListener("blur", () => flushOnLeave("window-blur"));
+    // Coming back retries a failed write; a reconnect does the same.
+    window.addEventListener("online", () => void flushDirtySessions({ reason: "reconnect" }));
+    window.addEventListener("focus", () => {
+      void flushDirtySessions({ reason: "focus" });
+      refreshOpenFiles({ force: true });
+    });
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") flushAllDrafts();
+      if (document.visibilityState === "hidden") flushOnLeave("hidden");
       else refreshOpenFiles({ force: true });
     });
   }

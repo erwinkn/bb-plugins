@@ -3,6 +3,7 @@ import type { Ref } from "react";
 import type { CodeView, CodeViewItem, CodeViewOptions } from "@pierre/diffs";
 import type { Editor, EditorKeymap } from "@pierre/diffs/edit";
 import { loadPierre, type PierreRuntime } from "@/lib/pierre-loader";
+import { reportCrash } from "@/lib/client-log";
 import {
   applyPierreTheme, CACHE_NAMESPACE, describeError, nextCacheRevision, PIERRE_HOST_CSS, pierreCssVariables,
   synchronizePierreTheme, type PierreThemeInput,
@@ -128,6 +129,33 @@ interface SurfaceState {
 }
 
 /**
+ * Pierre's synchronous entry points — setOptions, setItems, updateItem,
+ * render, cleanUp — run inside React effects, so a throw would escape to the
+ * nearest error boundary and take the pane down. They report a surface error
+ * instead: the pane shows it as a notice, and the tab boundary stays a
+ * backstop for what no catch can reach.
+ */
+function guarded(state: SurfaceState | null, phase: string, run: () => void): void {
+  try {
+    run();
+  } catch (error) {
+    reportCrash({ phase: `pierre:${phase}` }, error);
+    state?.publish({ kind: "error", message: describeError(error), error });
+  }
+}
+
+/** A throwing lookup (getEditor and friends) reports and answers empty. */
+function guardedValue<T>(state: SurfaceState | null, phase: string, run: () => T, fallback: T): T {
+  try {
+    return run();
+  } catch (error) {
+    reportCrash({ phase: `pierre:${phase}` }, error);
+    state?.publish({ kind: "error", message: describeError(error), error });
+    return fallback;
+  }
+}
+
+/**
  * A Pierre file or diff view, editable or read only.
  *
  * The Pierre code lives in a lazily imported bundle (see `lib/pierre-loader.ts`),
@@ -183,13 +211,11 @@ export default function PierreSurface(props: PierreSurfaceProps) {
         );
         created = view;
         const version = nextCacheRevision();
-        const item = buildItem(runtime, props, version);
-        setFileComparison(props.oldContent !== undefined && item.type === "file");
-        stateRef.current = {
+        const provisional: SurfaceState = {
           runtime,
           view,
           docKey: documentKey(props),
-          itemType: item.type,
+          itemType: "file",
           version,
           epoch: props.epoch,
           readOnly: props.readOnly === true,
@@ -197,8 +223,13 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           pendingFocus: null,
           publish,
         };
-        view.setup(host);
-        view.setItems([item]);
+        stateRef.current = provisional;
+        const item = guardedValue(provisional, "buildItem", () => buildItem(runtime, props, version), null);
+        if (item === null) return;
+        provisional.itemType = item.type;
+        setFileComparison(props.oldContent !== undefined && item.type === "file");
+        guarded(provisional, "setup", () => view.setup(host));
+        guarded(provisional, "setItems", () => view.setItems([item]));
         resetScroll(host);
         // setItems schedules rendering. It does not mean that the file, its
         // highlighter, or the editable DOM exists yet. The callbacks below
@@ -212,7 +243,14 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     return () => {
       disposed = true;
       // cleanUp ends the edit session, so the last onChange has already run.
-      created?.cleanUp();
+      // It must not throw through the unmount: a dead surface still reports.
+      if (created !== null) {
+        try {
+          created.cleanUp();
+        } catch (error) {
+          reportCrash({ phase: "pierre:cleanup" }, error);
+        }
+      }
       stateRef.current = null;
     };
   }, [baseUrl]);
@@ -231,11 +269,11 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     const state = stateRef.current;
     if (state === null) return;
     let cancelled = false;
-    state.view.setOptions(buildOptions(state.runtime, latest, stateRef));
+    guarded(state, "setOptions", () => state.view.setOptions(buildOptions(state.runtime, latest, stateRef)));
     void synchronizePierreTheme(state.runtime, props.theme).then(() => {
       if (cancelled || stateRef.current !== state) return;
-      state.view.onThemeChange();
-      state.view.render();
+      guarded(state, "onThemeChange", () => state.view.onThemeChange());
+      guarded(state, "render", () => state.view.render());
       if (state.readyEditor !== null && statusRef.current.kind === "error") state.publish({ kind: "ready" });
     }).catch((error: unknown) => {
       if (cancelled || stateRef.current !== state) return;
@@ -262,10 +300,11 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       state.publish({ kind: "loading" });
       // setItems removes the old record, which ends its edit session and
       // releases its editor and undo history.
-      const item = buildItem(state.runtime, latest.current, state.version);
+      const item = guardedValue(state, "buildItem", () => buildItem(state.runtime, latest.current, state.version), null);
+      if (item === null) return;
       state.itemType = item.type;
       setFileComparison(props.oldContent !== undefined && item.type === "file");
-      state.view.setItems([item]);
+      guarded(state, "setItems", () => state.view.setItems([item]));
       // The scroll container survives the item swap, and Pierre's layout
       // anchor does not resolve across documents, so the previous file's
       // offset would leave this one's first lines above the viewport. A new
@@ -282,7 +321,9 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     state.readOnly = readOnly;
     if (sameMode && (sameEpoch || props.epochAuthor === props.viewId)) return;
     state.version = nextCacheRevision();
-    state.view.updateItem(buildItem(state.runtime, latest.current, state.version, state.itemType));
+    guarded(state, "updateItem", () =>
+      state.view.updateItem(buildItem(state.runtime, latest.current, state.version, state.itemType)),
+    );
   }, [docKey, props.epoch, props.epochAuthor, readOnly, props.viewId]);
 
   useImperativeHandle(
@@ -611,7 +652,7 @@ function resetScroll(host: HTMLDivElement | null): void {
 
 function editorOf(state: SurfaceState | null): Editor | null {
   if (state === null) return null;
-  const editor = (state.view.getEditor(state.docKey) as Editor | undefined) ?? null;
+  const editor = guardedValue(state, "getEditor", () => (state.view.getEditor(state.docKey) as Editor | undefined) ?? null, null);
   return editor === state.readyEditor ? editor : null;
 }
 

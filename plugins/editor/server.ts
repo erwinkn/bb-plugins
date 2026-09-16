@@ -197,6 +197,19 @@ export const rpcContract = defineRpcContract({
     input: fileSchema.extend({ kind: z.enum(["file", "directory"]) }),
     output: z.null(),
   },
+  /**
+   * Frontend telemetry for the plugin log: save lifecycle and crash events.
+   * Fields are scalar metadata only — the contract refuses file content by
+   * capping every value's length.
+   */
+  clientLog: {
+    input: z.object({
+      level: z.enum(["debug", "info", "warn", "error"]),
+      event: z.string().min(1).max(80),
+      fields: z.record(z.string().max(48), z.union([z.string().max(512), z.number(), z.boolean(), z.null()])).optional(),
+    }).strict(),
+    output: z.null(),
+  },
   /** Persist one editor preference from the toolbar menu. */
   setSetting: {
     input: z.discriminatedUnion("key", [
@@ -301,7 +314,7 @@ export default async function plugin(bb: BbPluginApi) {
       type: "select",
       label: "Auto save",
       options: ["off", "onBlur", "afterDelay"],
-      default: "off",
+      default: "afterDelay",
     },
     fileTreeSide: {
       type: "select",
@@ -1052,6 +1065,14 @@ export default async function plugin(bb: BbPluginApi) {
       if (target.path === target.rootPath) throw new Error("The workspace root cannot be deleted");
       const hostId = target.hostId === undefined ? {} : { hostId: target.hostId };
       await bb.sdk.files.remove({ path: target.path, recursive: kind === "directory", ...hostId });
+      return null;
+    },
+
+    clientLog({ level, event, fields }) {
+      const detail = Object.entries(fields ?? {})
+        .map(([key, value]) => `${key}=${typeof value === "string" ? JSON.stringify(value) : String(value)}`)
+        .join(" ");
+      bb.log[level](`client ${event}${detail === "" ? "" : ` ${detail}`}`);
       return null;
     },
 

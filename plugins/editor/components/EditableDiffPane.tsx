@@ -9,7 +9,7 @@ import { toast } from "sonner";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { DiffEntry, DiffTarget } from "@/lib/diff-contract";
-import { AUTO_SAVE_DELAY_MS, lineHeightFor, monoFontFamily, type EditorPrefs } from "@/lib/editor-options";
+import { lineHeightFor, monoFontFamily, type EditorPrefs } from "@/lib/editor-options";
 import { changeLabel, diffSessionSync, targetKey, unavailableReason, type DiffLayout } from "@/lib/diff-view-state";
 import { NO_SOURCE, type FileSessionSnapshot, type FileSessionSource } from "@/lib/file-session";
 import { useFileSession } from "@/lib/use-file-session";
@@ -22,6 +22,10 @@ import { FileBar } from "./DiffToolbar";
 import { indicatorFor } from "./Toolbar";
 import type { MenuItem } from "./ContextMenu";
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
+import { flushDirtySessions } from "@/lib/file-session";
+import { exceedsInteractiveLimits } from "@/lib/editor-limits";
+import { EditorTabBoundary } from "./EditorTabBoundary";
+import { PlainTextView } from "./PlainTextView";
 import { cn } from "@/lib/utils";
 
 /** The text branch of `diffRead`, named so the pane can hold it in state. */
@@ -199,17 +203,28 @@ export function EditableDiffPane({
     setResyncNonce((nonce) => nonce + 1);
   }, [data, state]);
 
-  // Auto save waits for a pause in typing, and re-arms while the text keeps changing.
-  const saveKind = state?.save.kind;
-  useEffect(() => {
-    if (prefs.autoSave !== "afterDelay" || saveKind !== "dirty") return;
-    const timer = setTimeout(save, AUTO_SAVE_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [prefs.autoSave, saveKind, state?.content, save]);
+  // Auto save lives in the file session (`configureFileSessions`), so the
+  // pending write survives this pane unmounting. Still, this pane going away —
+  // the file switch remounts it — writes dirty buffers at once rather than
+  // waiting out the delay.
+  useEffect(() => () => void flushDirtySessions({ reason: "diff-pane-close" }), []);
+
+  // A conflict compare re-points the old side at the file on disk, so the
+  // same surface shows "disk on the left, your text on the right".
+  const [diskCompare, setDiskCompare] = useState<{ key: string; content: string } | null>(null);
+  const sessionKey = state?.key ?? null;
+  const compare = useCallback(() => {
+    const session = file.session;
+    if (session === null || sessionKey === null) return;
+    void session.readDisk().then((result) => {
+      if (result !== null && result.kind === "text") setDiskCompare({ key: sessionKey, content: result.content });
+      else toast.error("Could not read the file on disk");
+    });
+  }, [file.session, sessionKey]);
+  const comparing = diskCompare !== null && diskCompare.key === sessionKey;
+  const [forceEditFor, setForceEditFor] = useState<string | null>(null);
 
   const dirty = state?.dirty === true;
-  const dirtyRef = useRef(dirty);
-  dirtyRef.current = dirty;
   const conflicted = state?.save.kind === "conflict";
   const readOnly = !editable || !isEditor || state?.draft.kind === "stale";
   const indicator = indicatorFor(state, read.kind === "error");
@@ -272,6 +287,11 @@ export function EditableDiffPane({
   const newSide = data === null ? null : editable && state !== null ? state.content : data.newContent;
   const previewable = hasPreview(path) && newSide !== null;
   const showPreview = previewable && previewing;
+  // Above the render soft limit a comparison stays out of the editor: the new
+  // side opens in the virtualized plain-text view instead. The compare and
+  // preview branches come first in the tree; this guards the editor branch.
+  const overLimit = newSide !== null ? exceedsInteractiveLimits(newSide) : null;
+  const forceEdit = sessionKey !== null && forceEditFor === sessionKey;
   // A working file must finish its session load before it can accept edits.
   // Otherwise a slow read exposes the session's initial empty document, and
   // typing into it invalidates the read that would have loaded the file.
@@ -315,52 +335,114 @@ export function EditableDiffPane({
           surfaceRef.current?.focus();
         }}
         onOpenFile={onOpenFile}
+        onCompare={compare}
       />
       <div className="relative min-h-0 flex-1">
-        {showPreview && data !== null && newSide !== null ? (
-          // The new side as it renders, following the shared buffer like the Files tab.
-          <MarkdownPreview
-            source={data.source}
-            path={path}
-            relativePath={data.relativePath || path}
-            rootPath={workspaceRoot(data.absolutePath, data.relativePath)}
-            content={newSide}
-            onOpenPath={onOpenPath}
-          />
-        ) : data !== null && baseUrl !== null && sessionReady ? (
-          <PierreSurface
-            ref={surfaceRef}
-            baseUrl={baseUrl}
-            viewId={viewId}
-            name={path}
-            content={newSide}
-            epoch={state?.epoch ?? 0}
-            epochAuthor={state?.epochAuthor ?? null}
-            oldContent={oldSide}
-            oldName={data.previousPath ?? undefined}
-            readOnly={readOnly}
-            allowRevertHunk={!readOnly}
-            diffStyle={layout}
-            wrap={prefs.wordWrap}
-            lineNumbers={prefs.lineNumbers}
-            expandUnchanged={expandUnchanged}
-            fontSize={prefs.fontSize}
-            lineHeight={lineHeightFor(prefs.fontSize)}
-            fontFamily={monoFontFamily()}
-            theme={theme}
-            onChange={(text) => file.setContent(text)}
-            onSave={save}
-            onFocus={() => {
-              markEditorActive(active);
-              file.claimEditor();
-            }}
-            onBlur={() => {
-              if (prefs.autoSave === "onBlur" && dirtyRef.current) save();
-            }}
-            onStatusChange={setSurfaceStatus}
-            className="absolute inset-0"
-          />
-        ) : null}
+        <EditorTabBoundary
+          key={`${key}:${path}`}
+          fileKey={`${key}:${path}`}
+          path={path}
+          content={newSide ?? ""}
+          phase={showPreview ? "markdown-preview" : "diff"}
+          context={{
+            extension: path.includes(".") ? path.split(".").pop() : undefined,
+            bytes: newSide?.length,
+            sourceKind: data?.source.kind,
+            host: data?.source.experimental_hostId ?? undefined,
+          }}
+          fontSize={prefs.fontSize}
+          lineHeight={lineHeightFor(prefs.fontSize)}
+          fontFamily={monoFontFamily()}
+        >
+          {comparing && data !== null && newSide !== null ? (
+            <>
+              <NoticeRow tone="warning">
+                Your text on the right, the file on disk on the left.
+                <NoticeAction onClick={() => setDiskCompare(null)}>Back to the comparison</NoticeAction>
+              </NoticeRow>
+              {baseUrl !== null ? (
+                <PierreSurface
+                  key={`compare:${sessionKey}`}
+                  baseUrl={baseUrl}
+                  viewId={`${viewId}:compare`}
+                  name={path}
+                  content={newSide}
+                  epoch={state?.epoch ?? 0}
+                  epochAuthor={state?.epochAuthor ?? null}
+                  oldContent={diskCompare.content}
+                  readOnly
+                  diffStyle={layout}
+                  wrap={prefs.wordWrap}
+                  lineNumbers={prefs.lineNumbers}
+                  fontSize={prefs.fontSize}
+                  lineHeight={lineHeightFor(prefs.fontSize)}
+                  fontFamily={monoFontFamily()}
+                  theme={theme}
+                  className="absolute inset-0 top-8"
+                />
+              ) : null}
+            </>
+          ) : showPreview && data !== null && newSide !== null ? (
+            // The new side as it renders, following the shared buffer like the Files tab.
+            <MarkdownPreview
+              source={data.source}
+              path={path}
+              relativePath={data.relativePath || path}
+              rootPath={workspaceRoot(data.absolutePath, data.relativePath)}
+              content={newSide}
+              onOpenPath={onOpenPath}
+            />
+          ) : overLimit !== null && !forceEdit && data !== null ? (
+            <>
+              <NoticeRow tone="warning">
+                {overLimit.reason}. Opened read-only.
+                <NoticeAction onClick={() => sessionKey !== null && setForceEditFor(sessionKey)}>Open in editor anyway</NoticeAction>
+              </NoticeRow>
+              <PlainTextView
+                content={newSide ?? ""}
+                fontSize={prefs.fontSize}
+                lineHeight={lineHeightFor(prefs.fontSize)}
+                fontFamily={monoFontFamily()}
+                showLineNumbers={prefs.lineNumbers}
+                className="absolute inset-x-0 bottom-0 top-8 overflow-auto bg-background"
+              />
+            </>
+          ) : data !== null && baseUrl !== null && sessionReady ? (
+            <PierreSurface
+              ref={surfaceRef}
+              baseUrl={baseUrl}
+              viewId={viewId}
+              name={path}
+              content={newSide}
+              epoch={state?.epoch ?? 0}
+              epochAuthor={state?.epochAuthor ?? null}
+              oldContent={oldSide}
+              oldName={data.previousPath ?? undefined}
+              readOnly={readOnly}
+              allowRevertHunk={!readOnly}
+              diffStyle={layout}
+              wrap={prefs.wordWrap}
+              lineNumbers={prefs.lineNumbers}
+              expandUnchanged={expandUnchanged}
+              fontSize={prefs.fontSize}
+              lineHeight={lineHeightFor(prefs.fontSize)}
+              fontFamily={monoFontFamily()}
+              theme={theme}
+              onChange={(text) => file.setContent(text)}
+              onSave={save}
+              onFocus={() => {
+                markEditorActive(active);
+                file.claimEditor();
+              }}
+              onBlur={() => {
+                // Leaving the editor writes dirty buffers, whichever save mode.
+                void flushDirtySessions({ reason: "editor-blur" });
+              }}
+              onStatusChange={setSurfaceStatus}
+              className="absolute inset-0"
+            />
+          ) : null}
+        </EditorTabBoundary>
         {showPreview ? null : <PaneState read={visibleRead} surface={surfaceStatus} entry={entry} onOpenFile={onOpenFile} />}
       </div>
     </div>
@@ -426,6 +508,7 @@ function Notices({
   onDiscardDraft,
   onTakeOver,
   onOpenFile,
+  onCompare,
 }: {
   read: ReadState;
   state: FileSessionSnapshot | null;
@@ -437,14 +520,16 @@ function Notices({
   onDiscardDraft: () => void;
   onTakeOver: () => void;
   onOpenFile: (() => void) | null;
+  onCompare: () => void;
 }) {
   const rows: React.ReactNode[] = [];
   if (state?.save.kind === "conflict") {
     rows.push(
       <NoticeRow key="conflict" tone="error">
         This file changed on disk since you opened it.
-        <NoticeAction onClick={onReload}>Reload</NoticeAction>
-        <NoticeAction onClick={onOverwrite}>Overwrite</NoticeAction>
+        <NoticeAction onClick={onOverwrite}>Keep mine</NoticeAction>
+        <NoticeAction onClick={onReload}>Take disk version</NoticeAction>
+        <NoticeAction onClick={onCompare}>Compare</NoticeAction>
       </NoticeRow>,
     );
   } else if (state?.save.kind === "error") {
@@ -461,6 +546,7 @@ function Notices({
         This file changed on disk while you were editing it.
         <NoticeAction onClick={onReload}>Reload</NoticeAction>
         <NoticeAction onClick={onSave}>Keep mine</NoticeAction>
+        <NoticeAction onClick={onCompare}>Compare</NoticeAction>
       </NoticeRow>,
     );
   }
