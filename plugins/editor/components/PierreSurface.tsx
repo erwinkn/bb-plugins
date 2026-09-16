@@ -85,6 +85,11 @@ export interface PierreSurfaceProps {
   onFocus?: () => void;
   onBlur?: () => void;
   onStatusChange?: (status: PierreSurfaceStatus) => void;
+  /**
+   * The surface is absolutely positioned and gets its size from this class's
+   * insets — the root sets no height of its own, because a fixed height on an
+   * element offset by `top-*`/`bottom-*` would overflow its container.
+   */
   className?: string;
   ref?: Ref<PierreSurfaceHandle>;
 }
@@ -176,6 +181,9 @@ function guardedValue<T>(state: SurfaceState | null, phase: string, run: () => T
  */
 export default function PierreSurface(props: PierreSurfaceProps) {
   const { baseUrl, className, fontSize, lineHeight, fontFamily, ref } = props;
+  // The document's identity: a change means a different file and the view is
+  // rebuilt from scratch below.
+  const docKey = documentKey(props);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<PierreSurfaceStatus>({ kind: "loading" });
   const [fileComparison, setFileComparison] = useState(false);
@@ -190,6 +198,10 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   const statusRef = useRef(status);
   statusRef.current = status;
 
+  // docKey is a dep so a different document gets a fresh CodeView: reusing
+  // the view via setItems carries its scroll state (cached scrollTop, page
+  // offset, layout anchors) into a document it was never measured for,
+  // which can leave the new file's first lines above the viewport.
   useEffect(() => {
     let disposed = false;
     let created: CodeView | null = null;
@@ -257,7 +269,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       }
       stateRef.current = null;
     };
-  }, [baseUrl]);
+  }, [baseUrl, docKey]);
 
   // Options apply separately from the document. Replacing them must not rebuild
   // the item, or a theme change would reset the scroll position and the caret.
@@ -286,39 +298,15 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     return () => { cancelled = true; };
   }, [optionsKey, status.kind]);
 
-  // The document itself: a different file replaces the item, and everything
-  // else updates it in place.
-  const docKey = documentKey(props);
+  // The document's updates: another author's edit or an editability change
+  // re-seeds the item; a different document remounts the view entirely (the
+  // mount effect above depends on docKey), so this never swaps items.
   const readOnly = props.readOnly === true;
   const highlight = props.highlight !== false;
   useEffect(() => {
     setHovered(null);
     const state = stateRef.current;
     if (state === null) return;
-    if (state.docKey !== docKey) {
-      state.docKey = docKey;
-      state.version = nextCacheRevision();
-      state.epoch = props.epoch;
-      state.readOnly = readOnly;
-      state.highlight = highlight;
-      state.readyEditor = null;
-      state.pendingFocus = null;
-      state.publish({ kind: "loading" });
-      // setItems removes the old record, which ends its edit session and
-      // releases its editor and undo history.
-      const item = guardedValue(state, "buildItem", () => buildItem(state.runtime, latest.current, state.version), null);
-      if (item === null) return;
-      state.itemType = item.type;
-      setFileComparison(props.oldContent !== undefined && item.type === "file");
-      guarded(state, "setItems", () => state.view.setItems([item]));
-      // The scroll container survives the item swap, and Pierre's layout
-      // anchor does not resolve across documents, so the previous file's
-      // offset would leave this one's first lines above the viewport. A new
-      // document always starts at the top.
-      resetScroll(hostRef.current);
-      requestAnimationFrame(() => resetScroll(hostRef.current));
-      return;
-    }
     // Only another author's change or a change of editability re-seeds. A
     // render during typing, and this view's own echo, change nothing.
     const sameEpoch = props.epoch === state.epoch;
@@ -344,14 +332,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           if (state !== null) state.pendingFocus = { target };
           return false;
         }
-        // Bare DOM focus leaves a document that has no selection unable to
-        // take keystrokes, so a fresh editor gets a caret on its first
-        // visible line. An existing selection is restored untouched.
-        if (target === undefined && (editor.getViewState().selections?.length ?? 0) === 0) {
-          editor.focus({ lineNumber: "first-visible" });
-          return true;
-        }
-        editor.focus(target);
+        focusEditor(editor, target);
         return true;
       },
       revertHunk: () => {
@@ -436,7 +417,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   return (
     <div
       ref={surfaceRef}
-      className={cn("relative flex h-full w-full min-h-0 flex-col", className)}
+      className={cn("relative flex w-full min-h-0 flex-col", className)}
       style={pierreCssVariables({ fontSize, lineHeight, fontFamily })}
       data-pierre-status={status.kind}
       onPointerMove={trackPointer}
@@ -596,7 +577,7 @@ function buildOptions(
           const focus = state.pendingFocus;
           state.pendingFocus = null;
           state.publish({ kind: "ready" });
-          if (focus !== null) editor.focus(focus.target);
+          if (focus !== null) focusEditor(editor, focus.target);
         },
         onFocus: () => latest.current.onFocus?.(),
         onBlur: () => latest.current.onBlur?.(),
@@ -701,6 +682,27 @@ function lineRowAt(content: HTMLElement, clientY: number): number | null {
 }
 
 /**
+ * Focus without scrolling. `focus()` scrolls every scrollable ancestor until
+ * the caret is in view, which can shift the pane and push its first lines out
+ * of view when the surface itself needs no scroll. Only an explicit line
+ * target — Go to Line — is allowed to scroll.
+ */
+function focusEditor(editor: Editor, target?: PierreFocusTarget): void {
+  if (target !== undefined) {
+    editor.focus(target);
+    return;
+  }
+  // Bare DOM focus leaves a document that has no selection unable to take
+  // keystrokes, so a fresh editor gets a caret on its first visible line.
+  // An existing selection is restored untouched.
+  if ((editor.getViewState().selections?.length ?? 0) === 0) {
+    editor.focus({ lineNumber: "first-visible", preventScroll: true });
+    return;
+  }
+  editor.focus({ preventScroll: true });
+}
+
+/**
  * The caret goes to the end of `lineNumber` (one-based), or to the document
  * end when it is omitted. `extend` grows the current selection to that point
  * instead of collapsing it, like a shift-click.
@@ -713,7 +715,7 @@ function focusLineEnd(editor: Editor, lineNumber?: number, extend = false): void
   if (extend && primary !== undefined) {
     const anchor = primary.direction === -1 ? primary.end : primary.start;
     editor.setSelections([{ start: anchor, end: { line: line - 1, character }, direction: "forward" }]);
-    editor.focus();
+    editor.focus({ preventScroll: true });
     return;
   }
   editor.focus({ lineNumber: line, character, preventScroll: true });
@@ -737,7 +739,7 @@ function run(state: SurfaceState | null, action: (editor: Editor) => void): bool
 function sendCommandKey(state: SurfaceState | null, key: string, shift = false): boolean {
   const editor = editorOf(state);
   if (editor === null) return false;
-  editor.focus();
+  editor.focus({ preventScroll: true });
   const target = deepestActiveElement();
   if (target === null) return false;
   const isMac = navigator.platform.startsWith("Mac");
@@ -771,6 +773,6 @@ function revertAtLine(state: SurfaceState | null, props: PierreSurfaceProps, lin
   const edit = revertHunkEdit(state.runtime, props.name, props.oldContent, editor.getText(), line, side);
   if (!edit) return false;
   editor.applyEdits([edit]);
-  editor.focus();
+  editor.focus({ preventScroll: true });
   return true;
 }

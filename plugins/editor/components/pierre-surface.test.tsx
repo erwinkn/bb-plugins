@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, waitFor } from "@testing-library/react";
-import type { ReactElement } from "react";
-import PierreSurface, { type PierreSurfaceProps } from "./PierreSurface";
+import { createRef, type ReactElement } from "react";
+import PierreSurface, { type PierreSurfaceHandle, type PierreSurfaceProps } from "./PierreSurface";
 
 vi.mock("@/lib/client-log", () => ({ reportCrash: vi.fn() }));
 vi.mock("@/lib/pierre-loader", () => ({ loadPierre: vi.fn() }));
@@ -18,33 +18,69 @@ vi.mock("@/lib/pierre-theme", () => {
   };
 });
 
+interface FakeEditorOptions {
+  onAttach?: (editor: FakeEditor) => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+}
+
 interface FakeOptions {
   onPostRender?: (node: unknown, instance: unknown, phase: string, context: { item: { id: string; edit: boolean } }) => void;
+  createEditor?: (type: string, options: FakeEditorOptions) => FakeEditor;
+}
+
+class FakeEditor {
+  constructor(
+    readonly type: string,
+    readonly options: FakeEditorOptions,
+  ) {}
+  focus = vi.fn();
+  getViewState() {
+    return { selections: [] as unknown[] };
+  }
+  getText() {
+    return "";
+  }
 }
 
 /** A Pierre stand-in whose synchronous entry points can be made to throw. */
 function fakeRuntime(behavior: {
-  setItems?: (items: { id: string }[], options: FakeOptions) => void;
+  setItems?: (items: { id: string; edit?: boolean }[], options: FakeOptions) => void;
   setOptions?: () => void;
   updateItem?: () => void;
   render?: () => void;
   cleanUp?: () => void;
 } = {}) {
-  const views: { options: FakeOptions }[] = [];
+  const views: FakeCodeView[] = [];
   class FakeCodeView {
     constructor(options: FakeOptions) {
       this.options = options;
       views.push(this);
     }
     options: FakeOptions;
-    setup() {}
-    setItems(items: { id: string }[]) {
+    host: HTMLElement | null = null;
+    cleaned = false;
+    items: { id: string; edit?: boolean }[] = [];
+    private editors = new Map<string, FakeEditor>();
+    setup(host: HTMLElement) {
+      this.host = host;
+    }
+    setItems(items: { id: string; edit?: boolean }[]) {
       if (behavior.setItems !== undefined) {
         behavior.setItems(items, this.options);
         return;
       }
+      this.items = items;
+      for (const item of items) {
+        if (item.edit === true && this.options.createEditor !== undefined) {
+          const editor = this.options.createEditor("file", {});
+          this.editors.set(item.id, editor);
+          // Pierre attaches the editor after the item renders.
+          editor.options.onAttach?.(editor);
+        }
+      }
       this.options.onPostRender?.({ shadowRoot: null }, null, "render", {
-        item: { id: items[0]!.id, edit: false },
+        item: { id: items[0]!.id, edit: items[0]!.edit === true },
       });
     }
     updateItem() {
@@ -58,17 +94,18 @@ function fakeRuntime(behavior: {
       behavior.render?.();
     }
     cleanUp() {
+      this.cleaned = true;
       behavior.cleanUp?.();
     }
-    getEditor() {
-      return undefined;
+    getEditor(id: string) {
+      return this.editors.get(id);
     }
   }
   return {
     views,
     runtime: {
       CodeView: FakeCodeView,
-      Editor: class {},
+      Editor: FakeEditor,
       parseDiffFromFile: () => ({ hunks: [] }),
       parsePatchFiles: () => [],
       registerCustomTheme: () => {},
@@ -130,7 +167,9 @@ describe("PierreSurface crash isolation", () => {
     const { runtime } = fakeRuntime({ setOptions: () => { throw new Error("setOptions exploded"); } });
     const { loadPierre } = await import("@/lib/pierre-loader");
     vi.mocked(loadPierre).mockResolvedValue(runtime as never);
-    const { container } = render(surface({ wrap: true }));
+    // Read-only items never attach an editor, so the recovery publish that
+    // follows the theme sync cannot clear the error.
+    const { container } = render(surface({ wrap: true, readOnly: true }));
     // The options effect runs once the surface exists; the theme sync resolves first.
     await waitFor(() => {
       const root = container.firstElementChild as HTMLElement;
@@ -142,10 +181,10 @@ describe("PierreSurface crash isolation", () => {
     const { runtime } = fakeRuntime({ updateItem: () => { throw new Error("updateItem exploded"); } });
     const { loadPierre } = await import("@/lib/pierre-loader");
     vi.mocked(loadPierre).mockResolvedValue(runtime as never);
-    const { container, rerender } = render(surface());
+    const { container, rerender } = render(surface({ readOnly: true }));
     expect(await statusOf(container)).toBe("ready");
     // Another author's edit replaces the document through updateItem.
-    rerender(surface({ epoch: 1, epochAuthor: "other-view" }));
+    rerender(surface({ readOnly: true, epoch: 1, epochAuthor: "other-view" }));
     expect(await statusOf(container)).toBe("error");
   });
 
@@ -176,5 +215,66 @@ describe("PierreSurface crash isolation", () => {
     vi.mocked(loadPierre).mockRejectedValue(new Error("no bundle"));
     const { container } = render(surface());
     expect(await statusOf(container)).toBe("error");
+  });
+});
+
+describe("PierreSurface document switching", () => {
+  it("sizes itself from the caller's insets, not a fixed height", async () => {
+    // h-full on an element offset by top-*/bottom-* over-constrains the box:
+    // bottom loses, the surface overflows its parent, and the file's last
+    // lines are clipped below the visible area.
+    const { runtime } = fakeRuntime();
+    const { loadPierre } = await import("@/lib/pierre-loader");
+    vi.mocked(loadPierre).mockResolvedValue(runtime as never);
+    const { container } = render(surface({ className: "absolute inset-x-0 bottom-0 top-8" }));
+    expect(await statusOf(container)).toBe("ready");
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).not.toContain("h-full");
+    expect(root.className).toContain("top-8");
+  });
+
+  it("rebuilds the view when the document identity changes", async () => {
+    const { runtime, views } = fakeRuntime();
+    const { loadPierre } = await import("@/lib/pierre-loader");
+    vi.mocked(loadPierre).mockResolvedValue(runtime as never);
+    const { container, rerender } = render(surface({ name: "a.ts" }));
+    expect(await statusOf(container)).toBe("ready");
+    expect(views).toHaveLength(1);
+    rerender(surface({ name: "b.ts" }));
+    await waitFor(() => expect(views).toHaveLength(2));
+    // Reusing the view through setItems would carry its scroll offsets and
+    // layout anchors into a document they were never measured for.
+    expect(views[0]!.cleaned).toBe(true);
+    expect(await statusOf(container)).toBe("ready");
+  });
+
+  it("starts a new document at the top of the scroll container", async () => {
+    const { runtime, views } = fakeRuntime();
+    const { loadPierre } = await import("@/lib/pierre-loader");
+    vi.mocked(loadPierre).mockResolvedValue(runtime as never);
+    const { container, rerender } = render(surface({ name: "a.ts" }));
+    expect(await statusOf(container)).toBe("ready");
+    const host = views[0]!.host!;
+    host.scrollTop = 500;
+    rerender(surface({ name: "b.ts" }));
+    await waitFor(() => expect(views).toHaveLength(2));
+    expect(await statusOf(container)).toBe("ready");
+    expect(host.scrollTop).toBe(0);
+  });
+
+  it("focuses the caret without scrolling, unless given a line target", async () => {
+    const { runtime, views } = fakeRuntime();
+    const { loadPierre } = await import("@/lib/pierre-loader");
+    vi.mocked(loadPierre).mockResolvedValue(runtime as never);
+    const ref = createRef<PierreSurfaceHandle>();
+    const { container } = render(surface({ ref }));
+    expect(await statusOf(container)).toBe("ready");
+    const editor = views[0]!.getEditor(views[0]!.items[0]!.id) as FakeEditor;
+    expect(ref.current!.focus()).toBe(true);
+    // A bare focus scrolls every scrollable ancestor to reveal the caret,
+    // which can push the pane's first lines out of view.
+    expect(editor.focus).toHaveBeenCalledWith({ lineNumber: "first-visible", preventScroll: true });
+    expect(ref.current!.focus({ lineNumber: 3 })).toBe(true);
+    expect(editor.focus).toHaveBeenCalledWith({ lineNumber: 3 });
   });
 });
