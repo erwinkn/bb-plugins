@@ -1,3 +1,5 @@
+import { DEFAULT_EDITOR_LIMITS, type EditorLimits } from "./editor-limits";
+
 export type AutoSave = "off" | "onBlur" | "afterDelay";
 
 export type TreeSide = "left" | "right";
@@ -10,6 +12,8 @@ export interface EditorPrefs {
   fileTreeSide: TreeSide;
   /** Draw BB's own diffs (timeline, diff panel) with this plugin's viewer. */
   bbDiffs: boolean;
+  /** The measured large-file tiers; see lib/editor-limits.ts. */
+  limits: EditorLimits;
 }
 
 const DEFAULT_PREFS: EditorPrefs = {
@@ -20,6 +24,7 @@ const DEFAULT_PREFS: EditorPrefs = {
   autoSave: "afterDelay",
   fileTreeSide: "right",
   bbDiffs: true,
+  limits: DEFAULT_EDITOR_LIMITS,
 };
 
 export const AUTO_SAVE_DELAY_MS = 400;
@@ -42,6 +47,30 @@ export function prefsFrom(values: Record<string, unknown> | null | undefined): E
       autoSave === "off" || autoSave === "onBlur" || autoSave === "afterDelay" ? autoSave : DEFAULT_PREFS.autoSave,
     fileTreeSide: values?.fileTreeSide === "left" ? "left" : "right",
     bbDiffs: bool("bbDiffs"),
+    limits: limitsFrom(values),
+  };
+}
+
+/** A stored non-negative integer, or the default when absent or invalid. */
+function sizeSetting(values: Record<string, unknown> | null | undefined, key: string, fallback: number): number {
+  const value = Number(values?.[key]);
+  return Number.isFinite(value) && value >= 0 ? Math.round(value) : fallback;
+}
+
+function limitsFrom(values: Record<string, unknown> | null | undefined): EditorLimits {
+  const defaults = DEFAULT_EDITOR_LIMITS;
+  return {
+    interactive: {
+      // KB in the settings, bytes in the engine.
+      bytes: sizeSetting(values, "editMaxKB", Math.round(defaults.interactive.bytes / 1024)) * 1024,
+      lines: sizeSetting(values, "editMaxLines", defaults.interactive.lines),
+      maxLineLength: sizeSetting(values, "editMaxLineLength", defaults.interactive.maxLineLength),
+    },
+    highlight: {
+      bytes: sizeSetting(values, "highlightMaxKB", Math.round(defaults.highlight.bytes / 1024)) * 1024,
+      lines: sizeSetting(values, "highlightMaxLines", defaults.highlight.lines),
+    },
+    wrapMaxLineLength: sizeSetting(values, "wrapMaxLineLength", defaults.wrapMaxLineLength),
   };
 }
 

@@ -11,6 +11,11 @@ export interface PierreItemInput {
   editable: boolean;
   /** Keep the mounted editor's type stable while the user types. */
   renderType?: "file" | "diff";
+  /**
+   * False forces lang "text": no grammar load, no worker highlight pass. For
+   * a file over the highlight tier that stays editable (see editor-limits).
+   */
+  highlight?: boolean;
 }
 
 /** Empty comparisons have no Pierre diff rows; show the existing file instead. */
@@ -20,11 +25,12 @@ export function createPierreItem(
 ): CodeViewItem<undefined> {
   const { id, name, version, cachePrefix } = input;
   const edit = input.editable && input.content !== null;
+  const lang = input.highlight === false ? ("text" as const) : undefined;
   const newFile: FileContents | null = input.content === null ? null : {
-    name, contents: input.content, cacheKey: `${cachePrefix}\0new\0${version}`,
+    name, contents: input.content, cacheKey: `${cachePrefix}\0new\0${version}`, lang,
   };
   const oldFile: FileContents | null = input.oldContent == null ? null : {
-    name: input.oldName ?? name, contents: input.oldContent, cacheKey: `${cachePrefix}\0old\0${version}`,
+    name: input.oldName ?? name, contents: input.oldContent, cacheKey: `${cachePrefix}\0old\0${version}`, lang,
   };
   const fileItem = (): CodeViewItem<undefined> => ({
     id, type: "file", version, edit,

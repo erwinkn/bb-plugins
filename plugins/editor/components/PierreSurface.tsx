@@ -67,6 +67,8 @@ export interface PierreSurfaceProps {
   /** The old side's name, for a rename. Defaults to `name`. */
   oldName?: string;
   readOnly?: boolean;
+  /** False renders without syntax highlighting, for a file over the highlight tier. */
+  highlight?: boolean;
   allowRevertHunk?: boolean;
   diffStyle?: "split" | "unified";
   wrap?: boolean;
@@ -122,6 +124,7 @@ interface SurfaceState {
   version: number;
   epoch: number;
   readOnly: boolean;
+  highlight: boolean;
   /** Set only by Pierre's onAttach, after the editable DOM exists. */
   readyEditor: Editor | null;
   pendingFocus: { target?: PierreFocusTarget } | null;
@@ -219,6 +222,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
           version,
           epoch: props.epoch,
           readOnly: props.readOnly === true,
+          highlight: props.highlight !== false,
           readyEditor: null,
           pendingFocus: null,
           publish,
@@ -286,6 +290,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   // else updates it in place.
   const docKey = documentKey(props);
   const readOnly = props.readOnly === true;
+  const highlight = props.highlight !== false;
   useEffect(() => {
     setHovered(null);
     const state = stateRef.current;
@@ -295,6 +300,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       state.version = nextCacheRevision();
       state.epoch = props.epoch;
       state.readOnly = readOnly;
+      state.highlight = highlight;
       state.readyEditor = null;
       state.pendingFocus = null;
       state.publish({ kind: "loading" });
@@ -316,15 +322,16 @@ export default function PierreSurface(props: PierreSurfaceProps) {
     // Only another author's change or a change of editability re-seeds. A
     // render during typing, and this view's own echo, change nothing.
     const sameEpoch = props.epoch === state.epoch;
-    const sameMode = readOnly === state.readOnly;
+    const sameMode = readOnly === state.readOnly && highlight === state.highlight;
     state.epoch = props.epoch;
     state.readOnly = readOnly;
+    state.highlight = highlight;
     if (sameMode && (sameEpoch || props.epochAuthor === props.viewId)) return;
     state.version = nextCacheRevision();
     guarded(state, "updateItem", () =>
       state.view.updateItem(buildItem(state.runtime, latest.current, state.version, state.itemType)),
     );
-  }, [docKey, props.epoch, props.epochAuthor, readOnly, props.viewId]);
+  }, [docKey, props.epoch, props.epochAuthor, readOnly, highlight, props.viewId]);
 
   useImperativeHandle(
     ref,
@@ -638,6 +645,7 @@ function buildItem(
     version,
     editable: props.readOnly !== true,
     renderType,
+    highlight: props.highlight !== false,
   }, runtime.parseDiffFromFile);
 }
 

@@ -23,7 +23,7 @@ import { indicatorFor } from "./Toolbar";
 import type { MenuItem } from "./ContextMenu";
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
 import { flushDirtySessions } from "@/lib/file-session";
-import { exceedsInteractiveLimits } from "@/lib/editor-limits";
+import { contentShape, limitTierForShape } from "@/lib/editor-limits";
 import { EditorTabBoundary } from "./EditorTabBoundary";
 import { PlainTextView } from "./PlainTextView";
 import { cn } from "@/lib/utils";
@@ -287,11 +287,22 @@ export function EditableDiffPane({
   const newSide = data === null ? null : editable && state !== null ? state.content : data.newContent;
   const previewable = hasPreview(path) && newSide !== null;
   const showPreview = previewable && previewing;
-  // Above the render soft limit a comparison stays out of the editor: the new
+  // Above the read-only tier a comparison stays out of the editor: the new
   // side opens in the virtualized plain-text view instead. The compare and
   // preview branches come first in the tree; this guards the editor branch.
-  const overLimit = newSide !== null ? exceedsInteractiveLimits(newSide) : null;
+  // The shape scan is O(file size), so it runs on load and external changes
+  // (epoch), not per keystroke.
+  const shape = useMemo(
+    () => (newSide !== null ? contentShape(newSide) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
+    [data, state?.load.kind, state?.epoch],
+  );
+  const overLimit = shape !== null ? limitTierForShape(shape, prefs.limits) : null;
+  const overReadOnly = overLimit !== null && overLimit.tier === "read-only";
+  const unhighlighted = overLimit !== null && overLimit.highlightDetail !== null;
   const forceEdit = sessionKey !== null && forceEditFor === sessionKey;
+  const wrapSuppressed =
+    prefs.wordWrap && shape !== null && shape.maxLineLength > prefs.limits.wrapMaxLineLength;
   // A working file must finish its session load before it can accept edits.
   // Otherwise a slow read exposes the session's initial empty document, and
   // typing into it invalidates the read that would have loaded the file.
@@ -371,8 +382,9 @@ export function EditableDiffPane({
                   epochAuthor={state?.epochAuthor ?? null}
                   oldContent={diskCompare.content}
                   readOnly
+                  highlight={!unhighlighted}
                   diffStyle={layout}
-                  wrap={prefs.wordWrap}
+                  wrap={prefs.wordWrap && !wrapSuppressed}
                   lineNumbers={prefs.lineNumbers}
                   fontSize={prefs.fontSize}
                   lineHeight={lineHeightFor(prefs.fontSize)}
@@ -392,10 +404,10 @@ export function EditableDiffPane({
               content={newSide}
               onOpenPath={onOpenPath}
             />
-          ) : overLimit !== null && !forceEdit && data !== null ? (
+          ) : overReadOnly && !forceEdit && data !== null ? (
             <>
               <NoticeRow tone="warning">
-                {overLimit.reason}. Opened read-only.
+                {overLimit!.reason}. Opened read-only.
                 <NoticeAction onClick={() => sessionKey !== null && setForceEditFor(sessionKey)}>Open in editor anyway</NoticeAction>
               </NoticeRow>
               <PlainTextView
@@ -408,39 +420,47 @@ export function EditableDiffPane({
               />
             </>
           ) : data !== null && baseUrl !== null && sessionReady ? (
-            <PierreSurface
-              ref={surfaceRef}
-              baseUrl={baseUrl}
-              viewId={viewId}
-              name={path}
-              content={newSide}
-              epoch={state?.epoch ?? 0}
-              epochAuthor={state?.epochAuthor ?? null}
-              oldContent={oldSide}
-              oldName={data.previousPath ?? undefined}
-              readOnly={readOnly}
-              allowRevertHunk={!readOnly}
-              diffStyle={layout}
-              wrap={prefs.wordWrap}
-              lineNumbers={prefs.lineNumbers}
-              expandUnchanged={expandUnchanged}
-              fontSize={prefs.fontSize}
-              lineHeight={lineHeightFor(prefs.fontSize)}
-              fontFamily={monoFontFamily()}
-              theme={theme}
-              onChange={(text) => file.setContent(text)}
-              onSave={save}
-              onFocus={() => {
-                markEditorActive(active);
-                file.claimEditor();
-              }}
-              onBlur={() => {
-                // Leaving the editor writes dirty buffers, whichever save mode.
-                void flushDirtySessions({ reason: "editor-blur" });
-              }}
-              onStatusChange={setSurfaceStatus}
-              className="absolute inset-0"
-            />
+            <>
+              {unhighlighted ? (
+                <NoticeRow tone="warning">
+                  Syntax highlighting is off for this large file{overLimit!.highlightDetail !== null ? ` (${overLimit!.highlightDetail})` : ""}.
+                </NoticeRow>
+              ) : null}
+              <PierreSurface
+                ref={surfaceRef}
+                baseUrl={baseUrl}
+                viewId={viewId}
+                name={path}
+                content={newSide}
+                epoch={state?.epoch ?? 0}
+                epochAuthor={state?.epochAuthor ?? null}
+                oldContent={oldSide}
+                oldName={data.previousPath ?? undefined}
+                readOnly={readOnly}
+                highlight={!unhighlighted}
+                allowRevertHunk={!readOnly}
+                diffStyle={layout}
+                wrap={prefs.wordWrap && !wrapSuppressed}
+                lineNumbers={prefs.lineNumbers}
+                expandUnchanged={expandUnchanged}
+                fontSize={prefs.fontSize}
+                lineHeight={lineHeightFor(prefs.fontSize)}
+                fontFamily={monoFontFamily()}
+                theme={theme}
+                onChange={(text) => file.setContent(text)}
+                onSave={save}
+                onFocus={() => {
+                  markEditorActive(active);
+                  file.claimEditor();
+                }}
+                onBlur={() => {
+                  // Leaving the editor writes dirty buffers, whichever save mode.
+                  void flushDirtySessions({ reason: "editor-blur" });
+                }}
+                onStatusChange={setSurfaceStatus}
+                className={unhighlighted ? "absolute inset-x-0 bottom-0 top-8" : "absolute inset-0"}
+              />
+            </>
           ) : null}
         </EditorTabBoundary>
         {showPreview ? null : <PaneState read={visibleRead} surface={surfaceStatus} entry={entry} onOpenFile={onOpenFile} />}

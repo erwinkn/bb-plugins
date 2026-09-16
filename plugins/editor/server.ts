@@ -328,6 +328,48 @@ export default async function plugin(bb: BbPluginApi) {
       description: "Render the timeline's file diffs and the diff panel's bodies with this viewer instead of BB's.",
       default: true,
     },
+    highlightMaxKB: {
+      type: "number",
+      label: "Syntax highlighting size limit (KB)",
+      description: "Bigger files still open in the editor, without syntax colors. Highlighting is what makes a multi-MB file slow to become editable. 0 disables highlighting.",
+      experimental_schema: z.number().int().min(0),
+      default: 1024,
+    },
+    highlightMaxLines: {
+      type: "number",
+      label: "Syntax highlighting line limit",
+      description: "Files with more lines than this open without syntax colors.",
+      experimental_schema: z.number().int().min(0),
+      default: 20000,
+    },
+    editMaxKB: {
+      type: "number",
+      label: "Editor size limit (KB)",
+      description: "Bigger files open read-only as plain text. The server never sends more than 8192 KB.",
+      experimental_schema: z.number().int().min(0),
+      default: 8192,
+    },
+    editMaxLines: {
+      type: "number",
+      label: "Editor line limit",
+      description: "Files with more lines than this open read-only as plain text.",
+      experimental_schema: z.number().int().min(0),
+      default: 2000000,
+    },
+    editMaxLineLength: {
+      type: "number",
+      label: "Editor line-length limit",
+      description: "A file with a line longer than this opens read-only as plain text.",
+      experimental_schema: z.number().int().min(0),
+      default: 4000000,
+    },
+    wrapMaxLineLength: {
+      type: "number",
+      label: "Word-wrap line-length limit",
+      description: "When wrapping is on, a file with a line longer than this is shown unwrapped: wrapped long lines get slower to edit quadratically.",
+      experimental_schema: z.number().int().min(0),
+      default: 50000,
+    },
   });
 
   // The bundle is served through the plugin's own HTTP routes, one per file

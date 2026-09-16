@@ -121,9 +121,21 @@ Extensions → Editor:
 | Code theme | Follow BB | Shared by Files, Changes and BB's diffs |
 | Wrap long lines | off | Shared by Files and Changes |
 | Show line numbers | on | Shared by Files and Changes |
-| Auto save | off | `onBlur` or `afterDelay` (one second) |
+| Auto save | afterDelay | `off` or `onBlur` too; delay is 400 ms |
 | File tree side | right | Also the Changes list side |
 | Draw BB's diffs | on | Off hands timeline and panel diffs back to BB |
+| Syntax highlighting size limit (KB) | 1024 | Bigger files stay editable without syntax colors; 0 disables highlighting |
+| Syntax highlighting line limit | 20000 | Files with more lines open without syntax colors |
+| Editor size limit (KB) | 8192 | Bigger files open read-only; the server never sends more anyway |
+| Editor line limit | 2000000 | Files with more lines open read-only as plain text |
+| Editor line-length limit | 4000000 | A file with a longer line opens read-only as plain text |
+| Word-wrap line-length limit | 50000 | Longer lines are never wrapped; wrapped long lines are quadratic to edit |
+
+Files open in three tiers measured against the real Pierre bundle: full editor,
+editor without syntax highlighting (highlighting is what makes a multi-MB file
+slow to become editable), and read-only plain text with an "Open in editor
+anyway" escape. See `lib/editor-limits.ts` for the measurements behind the
+defaults.
 
 ## Install and develop
 

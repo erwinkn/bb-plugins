@@ -4,7 +4,7 @@ import type { ComponentType, Ref } from "react";
 import type { PluginFileOpenerSource } from "@get-bb/plugin-sdk/app";
 import { lineHeightFor, monoFontFamily, type EditorPrefs, type TreeSide } from "@/lib/editor-options";
 import { copyText, forgetEditor, markEditorActive, type ActiveEditor } from "@/lib/editor-commands";
-import { exceedsInteractiveLimits } from "@/lib/editor-limits";
+import { contentShape, limitTierForShape } from "@/lib/editor-limits";
 import { flushDirtySessions } from "@/lib/file-session";
 import { useAssets } from "@/lib/use-assets";
 import { useFileSession } from "@/lib/use-file-session";
@@ -130,6 +130,7 @@ export function EditorPane({
   // switch or the panel closing cannot take the timer down with it.
   const [comparing, setComparing] = useState<{ key: string; diskContent: string } | null>(null);
   const [forceEditFor, setForceEditFor] = useState<string | null>(null);
+  const [forceHighlightFor, setForceHighlightFor] = useState<string | null>(null);
 
   useImperativeHandle(
     ref,
@@ -200,10 +201,29 @@ export function EditorPane({
   const unsupported = state?.load.kind === "unsupported";
   const readOnly = !isEditor || unsupported || state?.draft.kind === "stale";
   const sessionKey = state?.key ?? null;
-  // Above the render soft limit the editor stays out: the file opens in the
+  // The shape scan is O(file size). It runs when the file loads and when an
+  // outside change bumps the epoch, but not on every keystroke — on a
+  // multi-MB buffer that rescan would be the slow part of typing.
+  const shape = useMemo(
+    () => (state?.load.kind === "ready" ? contentShape(state.content) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- see above
+    [sessionKey, state?.load.kind, state?.epoch],
+  );
+  const tier = shape === null ? null : limitTierForShape(shape, prefs.limits);
+  // Above the read-only tier the editor stays out: the file opens in the
   // virtualized plain-text view, and the user can still force the editor.
-  const overLimit = state?.load.kind === "ready" ? exceedsInteractiveLimits(state.content) : null;
   const forceEdit = sessionKey !== null && forceEditFor === sessionKey;
+  const readOnlyTier = tier !== null && tier.tier === "read-only" && !forceEdit;
+  // The middle tier: editable, but the syntax highlight pass is what makes a
+  // big file slow to attach, so it is off unless the user asks for it. A file
+  // forced open past the read-only bound lands here too.
+  const forceHighlight = sessionKey !== null && forceHighlightFor === sessionKey;
+  const unhighlighted = tier !== null && tier.highlightDetail !== null && !forceHighlight;
+  // A wrapped long line re-lays out on every keystroke, quadratically. Such a
+  // file scrolls horizontally instead; the wrap preference stays untouched.
+  const wrapSuppressed =
+    prefs.wordWrap && shape !== null && shape.maxLineLength > prefs.limits.wrapMaxLineLength;
+  const surfaceNotices = (unhighlighted ? 1 : 0) + (wrapSuppressed && !readOnlyTier ? 1 : 0);
   // A conflict compare shows the buffer against what is on disk now.
   const compare = useCallback(() => {
     const session = file.session;
@@ -325,7 +345,8 @@ export function EditorPane({
                   epochAuthor={state.epochAuthor}
                   oldContent={comparing.diskContent}
                   readOnly
-                  wrap={prefs.wordWrap}
+                  highlight={!unhighlighted}
+                  wrap={prefs.wordWrap && !wrapSuppressed}
                   lineNumbers={prefs.lineNumbers}
                   fontSize={prefs.fontSize}
                   lineHeight={lineHeightFor(prefs.fontSize)}
@@ -354,10 +375,10 @@ export function EditorPane({
               onOpenPath={outsideRoot ? null : onOpenPath}
             />
           ) : assets.kind === "ready" && state !== null && state.load.kind === "ready" ? (
-            overLimit !== null && !forceEdit ? (
+            readOnlyTier ? (
               <>
                 <NoticeRow tone="warning">
-                  {overLimit.reason}. Opened read-only.
+                  {tier!.reason}. Opened read-only.
                   <NoticeAction onClick={() => sessionKey !== null && setForceEditFor(sessionKey)}>Open in editor anyway</NoticeAction>
                 </NoticeRow>
                 <PlainTextView
@@ -370,35 +391,49 @@ export function EditorPane({
                 />
               </>
             ) : (
-              <PierreSurface
-                key={sessionKey}
-                ref={surfaceRef}
-                baseUrl={assets.baseUrl}
-                viewId={file.viewId}
-                name={displayPath}
-                content={state.content}
-                epoch={state.epoch}
-                epochAuthor={state.epochAuthor}
-                readOnly={readOnly}
-                wrap={prefs.wordWrap}
-                lineNumbers={prefs.lineNumbers}
-                fontSize={prefs.fontSize}
-                lineHeight={lineHeightFor(prefs.fontSize)}
-                fontFamily={monoFontFamily()}
-                theme={theme}
-                onChange={setContent}
-                onSave={() => void save()}
-                onFocus={() => {
-                  claimEditor();
-                  markEditorActive(active);
-                }}
-                onBlur={() => {
-                  // Leaving the editor writes dirty buffers, whichever save mode.
-                  void flushDirtySessions({ reason: "editor-blur" });
-                }}
-                onStatusChange={setSurfaceStatus}
-                className="absolute inset-0"
-              />
+              <>
+                {unhighlighted ? (
+                  <NoticeRow tone="warning">
+                    Syntax highlighting is off for this large file{tier!.highlightDetail !== null ? ` (${tier!.highlightDetail})` : ""}.
+                    <NoticeAction onClick={() => sessionKey !== null && setForceHighlightFor(sessionKey)}>Highlight anyway</NoticeAction>
+                  </NoticeRow>
+                ) : null}
+                {wrapSuppressed ? (
+                  <NoticeRow tone="warning">
+                    Word wrap is off: this file has a {shape!.maxLineLength.toLocaleString()}-character line.
+                  </NoticeRow>
+                ) : null}
+                <PierreSurface
+                  key={sessionKey}
+                  ref={surfaceRef}
+                  baseUrl={assets.baseUrl}
+                  viewId={file.viewId}
+                  name={displayPath}
+                  content={state.content}
+                  epoch={state.epoch}
+                  epochAuthor={state.epochAuthor}
+                  readOnly={readOnly}
+                  highlight={!unhighlighted}
+                  wrap={prefs.wordWrap && !wrapSuppressed}
+                  lineNumbers={prefs.lineNumbers}
+                  fontSize={prefs.fontSize}
+                  lineHeight={lineHeightFor(prefs.fontSize)}
+                  fontFamily={monoFontFamily()}
+                  theme={theme}
+                  onChange={setContent}
+                  onSave={() => void save()}
+                  onFocus={() => {
+                    claimEditor();
+                    markEditorActive(active);
+                  }}
+                  onBlur={() => {
+                    // Leaving the editor writes dirty buffers, whichever save mode.
+                    void flushDirtySessions({ reason: "editor-blur" });
+                  }}
+                  onStatusChange={setSurfaceStatus}
+                  className={surfaceNotices === 0 ? "absolute inset-0" : surfaceNotices === 1 ? "absolute inset-x-0 bottom-0 top-8" : "absolute inset-x-0 bottom-0 top-16"}
+                />
+              </>
             )
           ) : null}
           {loading ? (

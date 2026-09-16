@@ -45,6 +45,17 @@ test("typing into a file fallback preserves its item type, text, and edit permis
   assert.equal(createPierreItem({ ...base, content: "new text\n" }, parseDiffFromFile).type, "diff", "a new comparison can display the new text changes");
 });
 
+test("highlight: false pins the language to text", () => {
+  const file = createPierreItem({ ...base, oldContent: undefined, highlight: false }, parseDiffFromFile);
+  assert.equal(file.type, "file");
+  assert.equal(file.type === "file" ? file.file.lang : null, "text");
+  const diff = createPierreItem({ ...base, content: "new\n", highlight: false }, parseDiffFromFile);
+  assert.equal(diff.type, "diff");
+  assert.equal(diff.type === "diff" ? diff.fileDiff.lang : null, "text");
+  const highlighted = createPierreItem({ ...base, oldContent: undefined }, parseDiffFromFile);
+  assert.equal(highlighted.type === "file" ? highlighted.file.lang : null, undefined);
+});
+
 test("nonempty additions, deletions, and modifications remain proper diffs", () => {
   for (const [oldContent, content] of [[null, "added\n"], ["deleted\n", null], ["old\n", "new\n"]] as const) {
     const item = createPierreItem({ ...base, oldContent, content }, parseDiffFromFile);
