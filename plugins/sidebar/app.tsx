@@ -972,7 +972,10 @@ function ThreadsList(props: PluginThreadListProps) {
                                     event.stopPropagation();
                                     openNew(project.id);
                                   }}
-                                  className="flex size-4 items-center justify-center rounded text-[var(--subtle-foreground)] outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                                  // ::before widens the tap target to 28x28
+                                  // while the painted box stays 16x16; it
+                                  // stops 2px short of the chevron's slot.
+                                  className="relative flex size-4 items-center justify-center rounded text-[var(--subtle-foreground)] outline-none before:absolute before:-inset-1.5 before:content-[''] hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                                 >
                                   <HostIcon
                                     name="Plus"
