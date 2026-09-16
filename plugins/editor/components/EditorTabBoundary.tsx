@@ -58,10 +58,12 @@ export class EditorTabBoundary extends Component<EditorTabBoundaryProps, Boundar
   render(): ReactNode {
     const { path, content, fontSize, lineHeight, fontFamily } = this.props;
     const { error, plainText } = this.state;
-    if (error === null) return this.props.children;
+    if (error === null) {
+      return <div className="relative flex min-h-0 flex-1 flex-col">{this.props.children}</div>;
+    }
     if (plainText) {
       return (
-        <div className="absolute inset-0 flex flex-col bg-background" data-testid="editor-tab-fallback">
+        <div className="relative flex min-h-0 flex-1 flex-col bg-background" data-testid="editor-tab-fallback">
           <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-1.5 text-xs text-muted-foreground">
             <span className="min-w-0 flex-1 truncate">{path} — read-only plain text after an editor error</span>
             <FallbackButton onClick={() => this.setState({ error: null, plainText: false })}>Retry the editor</FallbackButton>
@@ -75,7 +77,7 @@ export class EditorTabBoundary extends Component<EditorTabBoundaryProps, Boundar
     }
     const message = (error.message || "Something went wrong showing this file").slice(0, 300);
     return (
-      <div className="absolute inset-0 flex flex-col bg-background" data-testid="editor-tab-fallback">
+      <div className="relative flex min-h-0 flex-1 flex-col bg-background" data-testid="editor-tab-fallback">
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
           <FileIcon path={path} className="size-5 text-muted-foreground" />
           <p className="max-w-md text-sm text-foreground">The editor could not show this file.</p>

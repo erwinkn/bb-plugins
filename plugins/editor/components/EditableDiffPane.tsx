@@ -348,7 +348,7 @@ export function EditableDiffPane({
         onOpenFile={onOpenFile}
         onCompare={compare}
       />
-      <div className="relative min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1 flex-col">
         <EditorTabBoundary
           key={`${key}:${path}`}
           fileKey={`${key}:${path}`}
@@ -390,7 +390,7 @@ export function EditableDiffPane({
                   lineHeight={lineHeightFor(prefs.fontSize)}
                   fontFamily={monoFontFamily()}
                   theme={theme}
-                  className="absolute inset-0 top-8"
+                  className="min-h-0 w-full flex-1"
                 />
               ) : null}
             </>
@@ -416,7 +416,7 @@ export function EditableDiffPane({
                 lineHeight={lineHeightFor(prefs.fontSize)}
                 fontFamily={monoFontFamily()}
                 showLineNumbers={prefs.lineNumbers}
-                className="absolute inset-x-0 bottom-0 top-8 overflow-auto bg-background"
+                className="min-h-0 w-full flex-1 overflow-auto bg-background"
               />
             </>
           ) : data !== null && baseUrl !== null && sessionReady ? (
@@ -458,7 +458,7 @@ export function EditableDiffPane({
                   void flushDirtySessions({ reason: "editor-blur" });
                 }}
                 onStatusChange={setSurfaceStatus}
-                className={unhighlighted ? "absolute inset-x-0 bottom-0 top-8" : "absolute inset-0"}
+                className="min-h-0 w-full flex-1"
               />
             </>
           ) : null}

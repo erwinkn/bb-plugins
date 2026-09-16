@@ -26,6 +26,28 @@ function renderBoundary() {
 }
 
 describe("EditorTabBoundary", () => {
+  it("keeps notice rows and the flexing surface in normal-flow order", () => {
+    shouldThrow = false;
+    const { container } = render(
+      <div className="flex h-96 flex-col">
+        <EditorTabBoundary fileKey="k1" path="src/a.ts" content="file body" phase="editor">
+          <div role="status">First notice</div>
+          <div role="status">Second notice</div>
+          <div data-testid="surface" className="min-h-0 w-full flex-1" />
+        </EditorTabBoundary>
+      </div>,
+    );
+    const surface = screen.getByTestId("surface");
+    const boundary = surface.parentElement!;
+    expect(boundary.className).toContain("flex");
+    expect(boundary.className).toContain("min-h-0");
+    expect(boundary.className).toContain("flex-1");
+    expect(Array.from(boundary.children).map((element) => element.textContent || element.getAttribute("data-testid")))
+      .toEqual(["First notice", "Second notice", "surface"]);
+    expect(surface.className).toContain("flex-1");
+    expect(container.innerHTML).not.toMatch(/\btop-(?:8|16)\b/);
+  });
+
   it("shows the path and a safe message instead of a blank pane", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     renderBoundary();

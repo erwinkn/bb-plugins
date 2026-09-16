@@ -219,18 +219,22 @@ describe("PierreSurface crash isolation", () => {
 });
 
 describe("PierreSurface document switching", () => {
-  it("sizes itself from the caller's insets, not a fixed height", async () => {
-    // h-full on an element offset by top-*/bottom-* over-constrains the box:
-    // bottom loses, the surface overflows its parent, and the file's last
-    // lines are clipped below the visible area.
+  it("is a bounded flex child whose inner host owns scrolling", async () => {
     const { runtime } = fakeRuntime();
     const { loadPierre } = await import("@/lib/pierre-loader");
     vi.mocked(loadPierre).mockResolvedValue(runtime as never);
-    const { container } = render(surface({ className: "absolute inset-x-0 bottom-0 top-8" }));
+    const { container } = render(surface({ className: "min-h-0 w-full flex-1" }));
     expect(await statusOf(container)).toBe("ready");
     const root = container.firstElementChild as HTMLElement;
-    expect(root.className).not.toContain("h-full");
-    expect(root.className).toContain("top-8");
+    const scroll = container.querySelector<HTMLElement>('[data-testid="pierre-scroll-container"]')!;
+    expect(root.className).toContain("relative");
+    expect(root.className).toContain("min-h-0");
+    expect(root.className).toContain("flex-1");
+    expect(root.className).toContain("overflow-hidden");
+    expect(root.className).not.toMatch(/\b(?:absolute|top-(?:8|16))\b/);
+    expect(scroll.className).toContain("min-h-0");
+    expect(scroll.className).toContain("flex-1");
+    expect(scroll.className).toContain("overflow-auto");
   });
 
   it("rebuilds the view when the document identity changes", async () => {

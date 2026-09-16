@@ -113,7 +113,7 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
   }, [rootPath]);
 
   return (
-    <div ref={container} className="absolute inset-0 overflow-auto bg-background" data-testid="markdown-preview">
+    <div ref={container} className="flex min-h-0 w-full flex-1 flex-col overflow-auto bg-background" data-testid="markdown-preview">
       <EditorTabBoundary
         fileKey={path}
         path={path}

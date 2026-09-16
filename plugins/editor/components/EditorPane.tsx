@@ -223,7 +223,6 @@ export function EditorPane({
   // file scrolls horizontally instead; the wrap preference stays untouched.
   const wrapSuppressed =
     prefs.wordWrap && shape !== null && shape.maxLineLength > prefs.limits.wrapMaxLineLength;
-  const surfaceNotices = (unhighlighted ? 1 : 0) + (wrapSuppressed && !readOnlyTier ? 1 : 0);
   // A conflict compare shows the buffer against what is on disk now.
   const compare = useCallback(() => {
     const session = file.session;
@@ -306,7 +305,7 @@ export function EditorPane({
       {!editing && preview === "html" && state?.dirty ? (
         <NoticeRow tone="warning">HTML preview shows the saved file. Save to show your changes.</NoticeRow>
       ) : null}
-      <div className="relative min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1 flex-col">
         <EditorTabBoundary
           key={sessionKey ?? path}
           fileKey={sessionKey ?? path}
@@ -325,7 +324,7 @@ export function EditorPane({
           fontFamily={monoFontFamily()}
         >
           {unsupported ? (
-            <div className="absolute inset-0 overflow-auto bg-background">
+            <div className="min-h-0 w-full flex-1 overflow-auto bg-background">
               {Original ? <Original /> : <p className="p-4 text-sm text-muted-foreground">{state.load.reason}</p>}
             </div>
           ) : comparing !== null && comparing.key === sessionKey && state?.load.kind === "ready" ? (
@@ -353,12 +352,12 @@ export function EditorPane({
                   fontFamily={monoFontFamily()}
                   theme={theme}
                   onStatusChange={setSurfaceStatus}
-                  className="absolute inset-0 top-8"
+                  className="min-h-0 w-full flex-1"
                 />
               ) : null}
             </>
           ) : !editing && preview === "html" && Original && state?.load.kind === "ready" ? (
-            <div className="absolute inset-0 overflow-auto bg-background">
+            <div className="min-h-0 w-full flex-1 overflow-auto bg-background">
               <Original key={state.sha256} />
             </div>
           ) : !editing && preview === "markdown" && state !== null && state.load.kind === "ready" ? (
@@ -387,7 +386,7 @@ export function EditorPane({
                   lineHeight={lineHeightFor(prefs.fontSize)}
                   fontFamily={monoFontFamily()}
                   showLineNumbers={prefs.lineNumbers}
-                  className="absolute inset-x-0 bottom-0 top-8 overflow-auto bg-background"
+                  className="min-h-0 w-full flex-1 overflow-auto bg-background"
                 />
               </>
             ) : (
@@ -431,7 +430,7 @@ export function EditorPane({
                     void flushDirtySessions({ reason: "editor-blur" });
                   }}
                   onStatusChange={setSurfaceStatus}
-                  className={surfaceNotices === 0 ? "absolute inset-0" : surfaceNotices === 1 ? "absolute inset-x-0 bottom-0 top-8" : "absolute inset-x-0 bottom-0 top-16"}
+                  className="min-h-0 w-full flex-1"
                 />
               </>
             )

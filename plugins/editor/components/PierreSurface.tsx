@@ -86,9 +86,10 @@ export interface PierreSurfaceProps {
   onBlur?: () => void;
   onStatusChange?: (status: PierreSurfaceStatus) => void;
   /**
-   * The surface is absolutely positioned and gets its size from this class's
-   * insets — the root sets no height of its own, because a fixed height on an
-   * element offset by `top-*`/`bottom-*` would overflow its container.
+   * The surface gets its size and position from this class: `min-h-0 flex-1`
+   * as a flex child below the pane's bars, so the scroll container always
+   * starts below them whatever height they wrap to. The root sets no height
+   * of its own.
    */
   className?: string;
   ref?: Ref<PierreSurfaceHandle>;
@@ -417,7 +418,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   return (
     <div
       ref={surfaceRef}
-      className={cn("relative flex w-full min-h-0 flex-col", className)}
+      className={cn("relative flex min-h-0 w-full flex-col overflow-hidden", className)}
       style={pierreCssVariables({ fontSize, lineHeight, fontFamily })}
       data-pierre-status={status.kind}
       onPointerMove={trackPointer}
@@ -441,7 +442,12 @@ export default function PierreSurface(props: PierreSurfaceProps) {
               props.content === props.oldContent ? "No text changes · File contents" : "File contents"}
         </div>
       ) : null}
-      <div ref={hostRef} className="relative min-h-0 w-full flex-1 overflow-auto" onPointerDown={surfacePointerDown} />
+      <div
+        ref={hostRef}
+        className="relative min-h-0 w-full flex-1 overflow-auto"
+        data-testid="pierre-scroll-container"
+        onPointerDown={surfacePointerDown}
+      />
       {hovered !== null ? (
         <button
           ref={revertButtonRef}
