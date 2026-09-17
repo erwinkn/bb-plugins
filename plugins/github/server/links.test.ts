@@ -11,7 +11,7 @@ let binDir: string;
 const originalPath = process.env.PATH;
 
 type PullOutcome =
-  | { outcome: "available"; pullRequest: { url: string; title: string; state: string } }
+  | { outcome: "available"; pullRequest: { url: string; title: string; state: string; headRefName: string } }
   | { outcome: "absent" }
   | { outcome: "unavailable"; message: string };
 
@@ -51,7 +51,13 @@ function gitRepoWithOrigin(url: string): string {
   return dir;
 }
 
-async function load(options: { branchPull?: PullOutcome; environmentPath?: string | null } = {}) {
+async function load(
+  options: {
+    branchPull?: PullOutcome;
+    environmentPath?: string | null;
+    environment?: { branchName?: string | null; defaultBranch?: string | null; isWorktree?: boolean };
+  } = {},
+) {
   const branchPull: PullOutcome = options.branchPull ?? { outcome: "absent" };
   const metadata = new Map<string, Record<string, unknown>>();
   const host = createFakePluginHost({
@@ -69,7 +75,15 @@ async function load(options: { branchPull?: PullOutcome; environmentPath?: strin
         },
       },
       environments: {
-        get: async () => ({ id: "env-1", path: options.environmentPath ?? null, hostId: "host-1" }),
+        get: async () => ({
+          id: "env-1",
+          path: options.environmentPath ?? null,
+          hostId: "host-1",
+          branchName: "feature",
+          defaultBranch: "main",
+          isWorktree: true,
+          ...options.environment,
+        }),
         pullRequest: async () => branchPull,
       },
       plugins: {
@@ -98,8 +112,26 @@ describe("pull request links", () => {
 
     await harness.callRpc("listPullRequests", { threadId: "thr-1" });
     expect(metadata.get("thr-1")?.pullRequests).toEqual([
-      { repo: "other/repo", number: 9, url: "https://github.com/other/repo/pull/9", source: "agent", title: "Elsewhere", state: "merged" },
-      { repo: "acme/widgets", number: 7, url: "https://github.com/acme/widgets/pull/7", source: "agent", title: "Widget polish", state: "draft" },
+      {
+        repo: "other/repo",
+        number: 9,
+        url: "https://github.com/other/repo/pull/9",
+        source: "agent",
+        trigger: "agent-tool",
+        title: "Elsewhere",
+        state: "merged",
+        linkedAt: expect.any(String),
+      },
+      {
+        repo: "acme/widgets",
+        number: 7,
+        url: "https://github.com/acme/widgets/pull/7",
+        source: "agent",
+        trigger: "agent-tool",
+        title: "Widget polish",
+        state: "draft",
+        linkedAt: expect.any(String),
+      },
     ]);
     expect(changes()).toBe(2);
     expect(harness.inspection.sdk.callsTo("threads.updatePluginMetadata").length).toBeGreaterThanOrEqual(2);
@@ -141,21 +173,115 @@ describe("pull request links", () => {
     );
   });
 
-  it("links the branch PR automatically when first seen, on list and on thread.idle", async () => {
+  it("links the branch PR on thread.idle, never from a list call", async () => {
     const { harness, metadata, changes } = await load({
-      branchPull: { outcome: "available", pullRequest: { url: "https://github.com/acme/widgets/pull/53", title: "Icon script", state: "open" } },
+      branchPull: {
+        outcome: "available",
+        pullRequest: { url: "https://github.com/acme/widgets/pull/53", title: "Icon script", state: "open", headRefName: "feature" },
+      },
     });
+    // Listing is pure: panel mounts, github_list_prs, and `bb github links`
+    // must not persist the environment's branch PR as the thread's own.
     const listed = (await harness.callRpc("listPullRequests", { threadId: "thr-4" })) as { links: Array<Record<string, unknown>>; environmentId: string | null };
-    expect(listed.environmentId).toBe("env-1");
-    expect(listed.links).toEqual([expect.objectContaining({ repo: "acme/widgets", number: 53, source: "branch", title: "Icon script", state: "open" })]);
+    expect(listed).toEqual({ links: [], environmentId: "env-1" });
+    const toolList = JSON.parse(String(await harness.callAgentTool("github_list_prs", {}, { threadId: "thr-4" })));
+    expect(toolList.pullRequests).toEqual([]);
+    expect(changes()).toBe(0);
+    expect(metadata.get("thr-4")?.pullRequests).toBeUndefined();
+
+    await harness.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr-4", environmentId: "env-1" }), lastAssistantText: null });
+    const after = (await harness.callRpc("listPullRequests", { threadId: "thr-4" })) as { links: Array<Record<string, unknown>> };
+    expect(after.links).toEqual([
+      expect.objectContaining({ repo: "acme/widgets", number: 53, source: "branch", trigger: "thread-idle", title: "Icon script", state: "open" }),
+    ]);
     expect(changes()).toBe(1);
 
     await harness.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: "thr-4", environmentId: "env-1" }), lastAssistantText: null });
     await harness.callRpc("listPullRequests", { threadId: "thr-4" });
     expect(changes()).toBe(1); // already linked, nothing new to announce
     expect(metadata.get("thr-4")?.pullRequests).toEqual([
-      { repo: "acme/widgets", number: 53, url: "https://github.com/acme/widgets/pull/53", source: "branch", title: "Icon script", state: "open" },
+      {
+        repo: "acme/widgets",
+        number: 53,
+        url: "https://github.com/acme/widgets/pull/53",
+        source: "branch",
+        trigger: "thread-idle",
+        title: "Icon script",
+        state: "open",
+        linkedAt: expect.any(String),
+      },
     ]);
+  });
+
+  it("does not auto-link a shared checkout's PR, a default branch, or a head mismatch", async () => {
+    const branchPull: PullOutcome = {
+      outcome: "available",
+      pullRequest: { url: "https://github.com/acme/widgets/pull/53", title: "Icon script", state: "open", headRefName: "dev" },
+    };
+    const cases: Array<{
+      name: string;
+      environment: { branchName?: string | null; defaultBranch?: string | null; isWorktree?: boolean };
+      reason: string;
+    }> = [
+      {
+        name: "shared project checkout",
+        environment: { isWorktree: false, branchName: "dev", defaultBranch: "main" },
+        reason: "shared checkout",
+      },
+      {
+        name: "branch is the default branch",
+        environment: { isWorktree: true, branchName: "dev", defaultBranch: "dev" },
+        reason: "default branch",
+      },
+      {
+        name: "environment without a branch",
+        environment: { isWorktree: true, branchName: null },
+        reason: "no branch",
+      },
+      {
+        name: "pull request head is not the branch",
+        environment: { isWorktree: true, branchName: "feature" },
+        reason: "does not match branch",
+      },
+    ];
+    for (const [index, entry] of cases.entries()) {
+      const threadId = `thr-guard-${index}`;
+      const { harness, changes } = await load({ branchPull, environment: entry.environment });
+      await harness.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: threadId, environmentId: "env-1" }), lastAssistantText: null });
+      const listed = (await harness.callRpc("listPullRequests", { threadId })) as { links: unknown[] };
+      expect(listed.links, entry.name).toEqual([]);
+      expect(changes(), entry.name).toBe(0);
+      expect(
+        harness.logEntries.filter((log) => log.level === "debug" && log.message.includes(threadId) && log.message.includes(entry.reason)),
+        entry.name,
+      ).toHaveLength(1);
+    }
+  });
+
+  it("links the branch PR from the panel action even on a shared checkout", async () => {
+    const { harness, metadata } = await load({
+      environment: { isWorktree: false, branchName: "dev", defaultBranch: "dev" },
+      branchPull: {
+        outcome: "available",
+        pullRequest: { url: "https://github.com/acme/widgets/pull/53", title: "Icon script", state: "open", headRefName: "dev" },
+      },
+    });
+    const result = (await harness.callRpc("linkBranchPullRequest", { threadId: "thr-panel" })) as { link: Record<string, unknown> | null };
+    expect(result.link).toMatchObject({ repo: "acme/widgets", number: 53, source: "branch", trigger: "panel-action" });
+    expect(metadata.get("thr-panel")?.pullRequests).toEqual([
+      expect.objectContaining({ source: "branch", trigger: "panel-action", linkedAt: expect.any(String) }),
+    ]);
+
+    // The explicit action is still a link only when the PR's head is the branch.
+    const mismatch = await load({
+      environment: { isWorktree: true, branchName: "feature", defaultBranch: "main" },
+      branchPull: {
+        outcome: "available",
+        pullRequest: { url: "https://github.com/acme/widgets/pull/53", title: "Icon script", state: "open", headRefName: "other" },
+      },
+    });
+    expect(await mismatch.harness.callRpc("linkBranchPullRequest", { threadId: "thr-panel-2" })).toEqual({ link: null });
+    expect(await mismatch.harness.callRpc("listPullRequests", { threadId: "thr-panel-2" })).toEqual({ links: [], environmentId: "env-1" });
   });
 
   it("keeps an unavailable lookup quiet and lists manual links", async () => {
@@ -191,9 +317,12 @@ describe("pull request links", () => {
     expect(await harness.runCli(["links"])).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("--thread") });
     expect(await harness.runCli(["link", "https://github.com/acme/widgets/pull/7"], { threadId: "thr-8" })).toMatchObject({
       exitCode: 0,
-      stdout: expect.stringContaining("Linked acme/widgets#7\t[draft]\tWidget polish\t(agent)"),
+      stdout: expect.stringContaining("Linked acme/widgets#7\t[draft]\tWidget polish\t(agent via cli, linked "),
     });
-    expect(await harness.runCli(["links", "--thread", "thr-8"])).toMatchObject({ exitCode: 0, stdout: expect.stringContaining("acme/widgets#7") });
+    expect(await harness.runCli(["links", "--thread", "thr-8"])).toMatchObject({
+      exitCode: 0,
+      stdout: expect.stringContaining("acme/widgets#7\t[draft]\tWidget polish\t(agent via cli, linked "),
+    });
     expect(await harness.runCli(["unlink", "acme/widgets#7", "--thread=thr-8"])).toMatchObject({ exitCode: 0, stdout: "Unlinked acme/widgets#7" });
     expect(await harness.runCli(["links"], { threadId: "thr-8" })).toMatchObject({ exitCode: 0, stdout: expect.stringContaining("No pull requests") });
   });

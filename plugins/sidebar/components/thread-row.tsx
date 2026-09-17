@@ -102,6 +102,7 @@ export function ThreadRow({
   libraryAction,
   nesting,
   linkedPullRequests,
+  branchPullRequestEligible = true,
   snooze,
   onNavigate,
   onError,
@@ -137,6 +138,12 @@ export function ThreadRow({
   nesting?: ThreadRowNesting;
   /** The thread's github-prs links, merged with the branch PR for the chip. */
   linkedPullRequests?: readonly LinkedPullRequest[];
+  /**
+   * False hides BB's environment branch PR: on a shared project checkout or
+   * the default branch that PR is not the thread's own. Persisted github-prs
+   * links still show. Unevaluated threads default to showing it.
+   */
+  branchPullRequestEligible?: boolean;
   /** Snooze state and presets; omitted rows (archives) offer no snooze. */
   snooze?: ThreadRowSnooze;
   onNavigate: () => void;
@@ -203,8 +210,15 @@ export function ThreadRow({
   const { splitProps, isAvailable } = experimental_useSidebarThreadSplit(
     thread.id,
   );
-  const { pullRequest: branchPullRequest } =
+  const { pullRequest: environmentPullRequest } =
     experimental_useSidebarThreadPullRequest(thread.id);
+  // The environment's branch PR only counts as the thread's own when the
+  // environment is a thread-dedicated worktree on a non-default branch; a
+  // shared project checkout's PR must not be attributed to every thread on
+  // it. Persisted github-prs links merge regardless.
+  const branchPullRequest = branchPullRequestEligible
+    ? environmentPullRequest
+    : null;
   // The chip covers the union of the branch PR and the github-prs links.
   const pullRequests = useMemo(
     () => mergePullRequests(branchPullRequest, linkedPullRequests),

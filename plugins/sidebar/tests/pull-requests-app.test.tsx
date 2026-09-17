@@ -30,15 +30,20 @@ const link = (overrides: Partial<LinkedPullRequest>): LinkedPullRequest => ({
   ...overrides,
 });
 
-// A fake server: `linkedPullRequests` answers from this map per call.
+// A fake server: `linkedPullRequests` answers from these maps per call.
 let links: Record<string, LinkedPullRequest[]>;
+let branchEligible: Record<string, boolean>;
 const linkedPullRequests = vi.fn(
   async (input: unknown) => {
     const { threadIds } = input as { threadIds: string[] };
     const pullRequests: Record<string, LinkedPullRequest[]> = {};
-    for (const id of threadIds)
+    const branchPrEligible: Record<string, boolean> = {};
+    for (const id of threadIds) {
       if (links[id]?.length) pullRequests[id] = links[id]!;
-    return { pullRequests };
+      if (branchEligible[id] !== undefined)
+        branchPrEligible[id] = branchEligible[id]!;
+    }
+    return { pullRequests, branchPrEligible };
   },
 );
 const rpc = {
@@ -97,6 +102,7 @@ beforeEach(() => {
   updateState(() => parseState(null));
   vi.clearAllMocks();
   links = {};
+  branchEligible = {};
 });
 afterEach(async () => {
   for (const slot of mounted.splice(0)) slot.lifecycle.unmount();
@@ -129,6 +135,33 @@ describe("linked pull request chips", () => {
     expect(linkedPullRequests.mock.calls[0]![0]).toEqual({
       threadIds: expect.arrayContaining(["linked", "plain", "multi"]),
     });
+  });
+
+  it("hides the environment PR on a shared checkout but keeps persisted links", async () => {
+    const envPr: PluginSidebarPullRequest = {
+      number: 1438,
+      title: "Shared checkout PR",
+      url: "https://github.com/acme/widgets/pull/1438",
+      state: "open",
+      attention: "none",
+    };
+    links["linked"] = [
+      link({ number: 5, url: "https://github.com/acme/widgets/pull/5" }),
+    ];
+    branchEligible["linked"] = false;
+    const slot = mount({ sidebarPullRequests: { linked: envPr } });
+    // Only the persisted github-prs link remains; #1438 never appears.
+    const chip = await waitFor(() =>
+      within(row(slot, "linked") as HTMLElement).getByRole("link", {
+        name: /#5/,
+      }),
+    );
+    expect(chip.getAttribute("aria-label")).not.toContain("1438");
+    expect(
+      within(row(slot, "linked") as HTMLElement).queryByRole("link", {
+        name: /#1438/,
+      }),
+    ).toBeNull();
   });
 
   it("dedupes the branch PR against its linked copy", async () => {

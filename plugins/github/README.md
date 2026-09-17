@@ -56,23 +56,32 @@ The plugin SQLite table `thread_pull_requests` is the source of truth. Every
 change publishes the realtime signal `pull-requests-changed {threadId}` and
 mirrors the list into the thread's plugin metadata under `pullRequests`
 (`bb.sdk.threads.getPluginMetadata({ threadId, pluginId: "github-prs" })`), one
-entry per PR with `repo`, `number`, `url`, `source`, `title`, and the last-seen
-`state` (added in 0.4.0; entries mirrored earlier lack it).
+entry per PR with `repo`, `number`, `url`, `source`, `trigger`, `linkedAt`,
+`title`, and the last-seen `state` (`state` was added in 0.4.0, `trigger` and
+`linkedAt` later; entries mirrored earlier lack them).
 
 Sources:
 
 - `branch` — automatic. The PR of the thread environment's branch, as BB's
   own lookup finds it (`GET /environments/:id/pull-request`, the same `gh pr
-  view` behind the sidebar chip). Recorded the first time it is seen: after
-  each turn (`thread.idle`), and whenever the panel, a tool, or the CLI lists
-  links. The lookup is cached server-side for ten seconds.
+  view` behind the sidebar chip). Recorded only on `thread.idle`, and only
+  for a thread-dedicated worktree on a non-default branch whose name matches
+  the PR's head — a shared project checkout's branch moves independently of
+  the threads on it, so its PR is never attributed to them. The panel's
+  "Link branch PR" button runs the same lookup on explicit request (it still
+  requires the head match). Listing links — the panel, `github_list_prs`,
+  the `listPullRequests` RPC, `bb github links` — is read-only and never
+  creates a link.
 - `agent` — an agent called `github_link_pr` or `bb github link`.
 - `user` — pasted into the panel or sent through the `linkPullRequest` RPC.
 - `spawn` — the thread was created by **Review with agent** on a PR.
 
-No auto-linking from message text. Links are removed with the tools, the
-panel, or when the thread is deleted. A link keeps its first source and time;
-title and state refresh when a newer value is seen.
+Each link also records a `trigger` naming the entrypoint (`thread-idle`,
+`panel-action`, `agent-tool`, `cli`, `spawn`, `user`); rows written before
+attribution existed have none. No auto-linking from message text. Links are
+removed with the tools, the panel, or when the thread is deleted. A link
+keeps its first source, trigger, and time; title and state refresh when a
+newer value is seen.
 
 ## Agent tools
 

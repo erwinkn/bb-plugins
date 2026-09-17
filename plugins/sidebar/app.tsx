@@ -321,12 +321,13 @@ function ThreadsList(props: PluginThreadListProps) {
     : [];
   // github-prs links for every listed thread in one bulk call; archived
   // rows get the same chip when the archive list is open.
-  const linkedPullRequests = useLinkedPullRequests(
-    useMemo(
-      () => [...threads, ...archives.threads].map((thread) => thread.id),
-      [threads, archives.threads],
-    ),
-  );
+  const { links: linkedPullRequests, branchPrEligible } =
+    useLinkedPullRequests(
+      useMemo(
+        () => [...threads, ...archives.threads].map((thread) => thread.id),
+        [threads, archives.threads],
+      ),
+    );
   const { providers } = experimental_useProviders();
   const actions = experimental_useSidebarThreadActions();
   const connection = useRealtimeConnectionState();
@@ -693,6 +694,7 @@ function ThreadsList(props: PluginThreadListProps) {
             reparent(thread.id, parentThreadId),
         }}
         linkedPullRequests={linkedPullRequests.get(thread.id)}
+        branchPullRequestEligible={branchPrEligible.get(thread.id)}
         snooze={{
           until: sleeping.get(thread.id)?.until ?? null,
           woke: wokeIds.has(thread.id),

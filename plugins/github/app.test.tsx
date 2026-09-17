@@ -16,6 +16,7 @@ const link = (number: number, overrides: Record<string, unknown> = {}) => ({
   number,
   url: `https://github.com/get-bb/bb/pull/${number}`,
   source: "branch",
+  trigger: "thread-idle",
   title: `Change ${number}`,
   state: "open",
   linkedAt: "2026-09-13T00:00:00.000Z",
@@ -187,6 +188,22 @@ describe("GitHub PR panel", () => {
     await slot.setRealtimeConnectionState("reconnecting" as never);
     await slot.setRealtimeConnectionState("connected");
     await waitFor(() => expect(lists).toHaveBeenCalledTimes(3));
+    slot.lifecycle.unmount();
+  });
+
+  it("links the current branch PR through the explicit panel action", async () => {
+    const linkBranchPullRequest = vi.fn(() => ({ link: link(53, { trigger: "panel-action" }) }));
+    const lists = vi.fn(() => ({ links: [] as unknown[], environmentId: null }));
+    const slot = renderSlot(
+      panel,
+      { threadId: "thr-1", params: null },
+      { rpc: { listPullRequests: lists, linkBranchPullRequest, listLinks: () => ({ links: {} }) } },
+    );
+    await slot.findByText("Linked pull requests · 0");
+    fireEvent.click(slot.getByRole("button", { name: "Link branch PR" }));
+    await waitFor(() => expect(linkBranchPullRequest).toHaveBeenCalledWith({ threadId: "thr-1" }));
+    // The panel refetches its (pure) list after the action resolves.
+    await waitFor(() => expect(lists.mock.calls.length).toBeGreaterThanOrEqual(2));
     slot.lifecycle.unmount();
   });
 

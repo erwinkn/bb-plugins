@@ -9,15 +9,18 @@
  * Automatic links come from BB's own branch lookup
  * (`bb.sdk.environments.pullRequest`, the same `gh pr view` the sidebar chip
  * uses): the PR of the thread environment's branch is linked with source
- * `branch` the first time it is seen. Manual links come from the agent tools,
- * the CLI, and the panel (`agent` / `user`), and from "Review with agent"
- * spawns (`spawn`).
+ * `branch` on `thread.idle`, but only for a thread-dedicated worktree whose
+ * branch is not the environment's default. Manual links come from the agent
+ * tools, the CLI, and the panel (`agent` / `user`), and from "Review with
+ * agent" spawns (`spawn`). The `trigger` column records which entrypoint
+ * created the link for forensics.
  */
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   PULL_REQUESTS_CHANGED,
   threadPullRequestSchema,
   type LinkSource,
+  type LinkTrigger,
   type MetadataPullRequest,
   type ThreadPullRequest,
 } from "../contract";
@@ -37,6 +40,9 @@ export const LINK_MIGRATIONS = [
      PRIMARY KEY (thread_id, repo, number)
    )`,
   `CREATE INDEX IF NOT EXISTS thread_pull_requests_by_pull ON thread_pull_requests (repo, number)`,
+  // Which entrypoint created the link (thread-idle, panel-action, …). Rows
+  // written before attribution existed keep NULL.
+  `ALTER TABLE thread_pull_requests ADD COLUMN trigger TEXT`,
 ];
 
 /** Thread metadata key holding the mirrored list. */
@@ -45,6 +51,7 @@ export const METADATA_KEY = "pullRequests";
 export interface LinkInput extends PullRequestRef {
   threadId: string;
   source: LinkSource;
+  trigger: LinkTrigger;
   title?: string | null;
   state?: string | null;
 }
@@ -67,6 +74,7 @@ interface Row {
   number: number;
   url: string;
   source: string;
+  trigger: string | null;
   title: string | null;
   state: string | null;
   linked_at: string;
@@ -79,6 +87,7 @@ function decode(row: Row): ThreadPullRequest {
     number: Number(row.number),
     url: row.url,
     source: row.source,
+    trigger: row.trigger,
     title: row.title,
     state: row.state,
     linkedAt: row.linked_at,
@@ -86,7 +95,16 @@ function decode(row: Row): ThreadPullRequest {
 }
 
 export function toMetadata(link: ThreadPullRequest): MetadataPullRequest {
-  return { repo: link.repo, number: link.number, url: link.url, source: link.source, title: link.title, state: link.state };
+  return {
+    repo: link.repo,
+    number: link.number,
+    url: link.url,
+    source: link.source,
+    trigger: link.trigger,
+    title: link.title,
+    state: link.state,
+    linkedAt: link.linkedAt,
+  };
 }
 
 export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
@@ -166,14 +184,14 @@ export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
       return { link: get(input.threadId, ref)!, created: false };
     }
     db.prepare(
-      `INSERT INTO thread_pull_requests (thread_id, repo, number, url, source, title, state, linked_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO thread_pull_requests (thread_id, repo, number, url, source, trigger, title, state, linked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
-      input.threadId, ref.repo, ref.number, pullRequestUrl(ref), input.source,
+      input.threadId, ref.repo, ref.number, pullRequestUrl(ref), input.source, input.trigger,
       input.title ?? null, input.state ?? null, new Date().toISOString(),
     );
     changed(input.threadId);
-    bb.log.info(`linked ${ref.repo}#${ref.number} to thread ${input.threadId} (${input.source})`);
+    bb.log.info(`linked ${ref.repo}#${ref.number} to thread ${input.threadId} (${input.source} via ${input.trigger})`);
     return { link: get(input.threadId, ref)!, created: true };
   };
 
@@ -206,23 +224,63 @@ export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
 
   /**
    * Ask BB core for the PR of the thread's branch and link it with source
-   * `branch`. Returns the thread's environment id for the viewer's file links.
+   * `branch`. Only ever called from `thread.idle` and the panel's explicit
+   * "Link current branch PR" action — never from list paths, which must stay
+   * side-effect free.
+   *
+   * Automatic linking (`thread-idle`) requires a thread-dedicated worktree:
+   * a shared `project-checkout` environment has a branch that moves
+   * independently of the threads on it, so its PR must not be attributed to
+   * them. The branch must also be non-empty and differ from the
+   * environment's default branch, and the returned PR's head must be the
+   * branch. An explicit `panel-action` skips the worktree and default-branch
+   * checks — the user asked — but still requires the head match.
+   *
    * Silent on lookup failures: `unavailable` (no gh, non-GitHub remote) and
    * `absent` are normal outcomes, not errors.
    */
-  const refreshBranch = async (threadId: string): Promise<{ environmentId: string | null; link: ThreadPullRequest | null }> => {
+  const refreshBranchLink = async (
+    threadId: string,
+    trigger: "thread-idle" | "panel-action",
+  ): Promise<{ environmentId: string | null; link: ThreadPullRequest | null }> => {
     let environmentId: string | null = null;
+    const skip = (reason: string) => {
+      bb.log.debug(`branch pull request link skipped for thread ${threadId} (${trigger}): ${reason}`);
+      return { environmentId, link: null };
+    };
     try {
       const thread = await bb.sdk.threads.get({ threadId });
       if (thread.deletedAt || !thread.environmentId) return { environmentId: null, link: null };
       environmentId = thread.environmentId;
+      const environment = await bb.sdk.environments.get({ environmentId });
+      const branchName = environment.branchName ?? "";
+      if (branchName === "") return skip("the environment has no branch");
+      if (trigger === "thread-idle") {
+        if (environment.isWorktree === false) {
+          return skip(`environment ${environmentId} is a shared checkout, not a thread-owned worktree`);
+        }
+        if (environment.defaultBranch !== null && branchName === environment.defaultBranch) {
+          return skip(`branch ${branchName} is the environment's default branch`);
+        }
+      }
       const result = await bb.sdk.environments.pullRequest({ environmentId });
       if (result.outcome !== "available") return { environmentId, link: null };
+      const head = result.pullRequest.headRefName;
+      if (head !== branchName) {
+        return skip(`pull request head ${head === "" ? "?" : head} does not match branch ${branchName}`);
+      }
       const ref = parsePullRequestUrl(result.pullRequest.url);
       if (ref === null) return { environmentId, link: null };
       return {
         environmentId,
-        link: link({ threadId, ...ref, source: "branch", title: result.pullRequest.title, state: result.pullRequest.state }).link,
+        link: link({
+          threadId,
+          ...ref,
+          source: "branch",
+          trigger,
+          title: result.pullRequest.title,
+          state: result.pullRequest.state,
+        }).link,
       };
     } catch (error) {
       bb.log.debug(`branch pull request lookup for thread ${threadId} failed: ${String(error)}`);
@@ -232,6 +290,6 @@ export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
 
   const settled = () => Promise.all(chains.values()).then(() => undefined);
 
-  return { list, get, threadsFor, allPullLinks, link, linkDescribed, unlink, removeThread, refreshBranch, mirror, settled };
+  return { list, get, threadsFor, allPullLinks, link, linkDescribed, unlink, removeThread, refreshBranchLink, mirror, settled };
 }
 export type LinkStore = ReturnType<typeof createLinkStore>;

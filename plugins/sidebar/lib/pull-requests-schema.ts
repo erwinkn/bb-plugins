@@ -30,6 +30,27 @@ export const linkedPullRequestSchema = z.object({
 export type LinkedPullRequest = z.infer<typeof linkedPullRequestSchema>;
 
 /**
+ * May the environment's branch PR be presented as the thread's own? Only a
+ * thread-dedicated worktree qualifies: a shared project checkout has a branch
+ * that moves independently of the threads on it (its PR is not theirs), and
+ * a checkout sitting on its default branch attributes that branch's PR to
+ * every thread sharing it. Mirrors the github-prs plugin's automatic-link
+ * eligibility so the chip never shows what the plugin would refuse to link.
+ */
+export function isBranchPullRequestEnvironment(environment: {
+  isWorktree: boolean;
+  branchName: string | null;
+  defaultBranch: string | null;
+}): boolean {
+  return (
+    environment.isWorktree &&
+    environment.branchName !== null &&
+    environment.branchName !== "" &&
+    environment.branchName !== environment.defaultBranch
+  );
+}
+
+/**
  * Read the `pullRequests` metadata value tolerantly: another plugin writes
  * it, so entries may predate fields or be malformed. Bad entries drop out
  * one by one rather than failing the thread's whole list.

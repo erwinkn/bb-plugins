@@ -3,9 +3,10 @@
  * plugin (issues and PR browsing, spawning agents, mentions). This fork adds
  * per-thread pull request links:
  *
- * listPullRequests({threadId}) -> {links}: the thread's linked PRs, newest
- *   first. Refreshes the branch PR through BB's core lookup first, so a PR
- *   opened from the thread's branch is linked the first time anyone asks.
+ * listPullRequests({threadId}) -> {links, environmentId}: the thread's
+ *   linked PRs, newest first. Purely read-only: it never creates a link.
+ *   Automatic branch links come only from `thread.idle` and the panel's
+ *   explicit "Link current branch PR" action (linkBranchPullRequest).
  * linkPullRequest({threadId, reference}) -> {link}: link by URL,
  *   owner/repo#n, or #n (repo resolved from the thread's checkout).
  * unlinkPullRequest({threadId, repo, number}) -> {ok}.
@@ -130,6 +131,16 @@ export const pullSchema = z
 export const linkSourceSchema = z.enum(["branch", "agent", "user", "spawn"]);
 export type LinkSource = z.infer<typeof linkSourceSchema>;
 
+/**
+ * Which entrypoint created the link. `thread-idle` is the automatic branch
+ * link after a turn, `panel-action` the panel's "Link current branch PR"
+ * button, `agent-tool` the github_link_pr tool, `cli` a `bb github link`
+ * invocation, `spawn` a "Review with agent" spawn, and `user` the panel's
+ * manual link form. NULL on rows written before attribution existed.
+ */
+export const linkTriggerSchema = z.enum(["thread-idle", "panel-action", "agent-tool", "cli", "spawn", "user"]);
+export type LinkTrigger = z.infer<typeof linkTriggerSchema>;
+
 /** One pull request linked to one thread. `title` and `state` are the last values seen, not live. */
 export const threadPullRequestSchema = z
   .object({
@@ -138,6 +149,7 @@ export const threadPullRequestSchema = z
     number: itemNumberSchema,
     url: z.string().url(),
     source: linkSourceSchema,
+    trigger: linkTriggerSchema.nullable(),
     title: z.string().nullable(),
     state: z.string().nullable(),
     linkedAt: z.string(),
@@ -147,7 +159,16 @@ export type ThreadPullRequest = z.infer<typeof threadPullRequestSchema>;
 
 /** The `pullRequests` entry mirrored into thread plugin metadata. */
 export const metadataPullRequestSchema = z
-  .object({ repo: repoNameSchema, number: itemNumberSchema, url: z.string(), source: linkSourceSchema, title: z.string().nullable(), state: z.string().nullable() })
+  .object({
+    repo: repoNameSchema,
+    number: itemNumberSchema,
+    url: z.string(),
+    source: linkSourceSchema,
+    trigger: linkTriggerSchema.nullable(),
+    title: z.string().nullable(),
+    state: z.string().nullable(),
+    linkedAt: z.string(),
+  })
   .strict();
 export type MetadataPullRequest = z.infer<typeof metadataPullRequestSchema>;
 
@@ -250,6 +271,16 @@ export const githubRpcContract = defineRpcContract({
   linkPullRequest: {
     input: z.object({ threadId: z.string().min(1), reference: z.string().min(1).max(500) }).strict(),
     output: z.object({ link: threadPullRequestSchema, created: z.boolean() }).strict(),
+  },
+  /**
+   * The panel's "Link current branch PR" button: run BB's environment branch
+   * lookup and link the result. Unlike the automatic thread-idle refresh this
+   * is an explicit user request, so it also answers on shared checkouts and
+   * default branches — but still only when the PR's head is the branch.
+   */
+  linkBranchPullRequest: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z.object({ link: threadPullRequestSchema.nullable() }).strict(),
   },
   unlinkPullRequest: {
     input: z.object({ threadId: z.string().min(1), repo: repoNameSchema, number: itemNumberSchema }).strict(),

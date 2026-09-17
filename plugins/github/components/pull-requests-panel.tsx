@@ -83,6 +83,16 @@ const SOURCE_LABEL: Record<Linked["source"], string> = {
   spawn: "review thread",
 };
 
+/** Humanized `trigger` values; NULL on links written before attribution. */
+const TRIGGER_LABEL: Record<NonNullable<Linked["trigger"]>, string> = {
+  "thread-idle": "after a turn",
+  "panel-action": "via Link branch PR",
+  "agent-tool": "via agent tool",
+  cli: "via CLI",
+  spawn: "on spawn",
+  user: "via panel",
+};
+
 function LinkedRow({ link, onOpen, onUnlink }: { link: Linked; onOpen: () => void; onUnlink: () => void }) {
   return (
     <div className="flex items-center gap-2 px-3 py-2 hover:bg-accent/50">
@@ -96,6 +106,12 @@ function LinkedRow({ link, onOpen, onUnlink }: { link: Linked; onOpen: () => voi
           <span className="truncate">{link.repo}</span>
           <span>·</span>
           <span className="shrink-0">{SOURCE_LABEL[link.source]}</span>
+          {link.trigger !== null ? (
+            <>
+              <span>·</span>
+              <span className="shrink-0">{TRIGGER_LABEL[link.trigger] ?? link.trigger}</span>
+            </>
+          ) : null}
           <span>·</span>
           <span className="shrink-0">{relativeTime(link.linkedAt)}</span>
         </span>
@@ -156,6 +172,7 @@ function PullRequestsPanelContent({ threadId, params }: PluginThreadPanelProps) 
   const navigate = useBbNavigate();
   const { list, error, refetch } = useThreadPullRequests(threadId);
   const requested = pullRequestFromParams(params);
+  const [linkingBranch, setLinkingBranch] = useState(false);
 
   const openPullTab = useCallback(
     (ref: PullRequestRef) => navigate.openThreadPanel({ actionId: PULL_PANEL_ACTION_ID, title: pullTabTitle(ref.number), params: { url: pullRequestUrl(ref) } }),
@@ -173,6 +190,23 @@ function PullRequestsPanelContent({ threadId, params }: PluginThreadPanelProps) 
       .catch((cause: unknown) => toast.error(errorText(cause)));
   };
 
+  const linkBranchPullRequest = () => {
+    if (linkingBranch) return;
+    setLinkingBranch(true);
+    rpc
+      .call("linkBranchPullRequest", { threadId })
+      .then((result) => {
+        if (result.link === null) {
+          toast.info("No pull request found for this thread's branch");
+        } else {
+          toast.success(`Linked ${result.link.repo}#${result.link.number}`);
+        }
+        refetch();
+      })
+      .catch((cause: unknown) => toast.error(errorText(cause)))
+      .finally(() => setLinkingBranch(false));
+  };
+
   if (requested !== null) {
     return <ThreadPullView repo={requested.repo} number={requested.number} threadId={threadId} environmentId={list?.environmentId ?? null} onOpenList={openListTab} />;
   }
@@ -182,12 +216,23 @@ function PullRequestsPanelContent({ threadId, params }: PluginThreadPanelProps) 
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-foreground">Linked pull requests · {list.links.length}</h2>
-        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={refetch}>
-          Refresh
-        </Button>
+        <span className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2 text-xs"
+            disabled={linkingBranch}
+            onClick={linkBranchPullRequest}
+          >
+            {linkingBranch ? "Linking…" : "Link branch PR"}
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={refetch}>
+            Refresh
+          </Button>
+        </span>
       </div>
       {list.links.length === 0 ? (
-        <EmptyState message="No pull request is linked to this thread yet. The PR of the thread's branch links itself once it exists; agents link the ones they create or discuss; or paste one below." />
+        <EmptyState message="No pull request is linked to this thread yet. On its own worktree the PR of the thread's branch links itself once it exists; on a shared checkout use Link branch PR; agents link the ones they create or discuss; or paste one below." />
       ) : (
         <div className="overflow-hidden rounded-lg border border-border bg-card">
           <div className="divide-y divide-border">

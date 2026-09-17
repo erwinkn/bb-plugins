@@ -169,7 +169,12 @@ that does not fit fades out before the age instead of showing an ellipsis;
 the title fades before the status marker. The provider, the full branch, and
 the pull request title appear in an instant info card to the right on hover
 or keyboard focus. The pull request lookup uses BB's per-row sidebar hook, so
-BB owns its polling and staleness rules. The linked pull requests come from
+BB owns its polling and staleness rules, but the branch PR only joins the
+chip when the `linkedPullRequests` RPC reports the thread's environment as
+eligible — a thread-dedicated worktree on a non-default branch. On a shared
+project checkout that PR belongs to the checkout, not to each thread on it,
+so it is hidden; persisted github-prs links still show. The linked pull
+requests come from
 the `github-prs.pullRequests` thread metadata, read in one bulk
 `linkedPullRequests` RPC for the whole visible list rather than one call per
 row. A plugin app only receives its own realtime signals and BB emits no

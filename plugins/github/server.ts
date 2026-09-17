@@ -6,7 +6,7 @@
 import { execFile } from "node:child_process";
 import type { BbPluginApi, PluginCliContext } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { githubRpcContract, itemNumberSchema, repoNameSchema, type MergeMethod, type ThreadPullRequest } from "./contract";
+import { githubRpcContract, itemNumberSchema, repoNameSchema, type LinkTrigger, type MergeMethod, type ThreadPullRequest } from "./contract";
 import { isRepoName, parseGithubRemote, parsePullRequestReference, pullRequestKey, type PullRequestRef } from "./lib/pull-request-url";
 import { createLinkStore, LINK_MIGRATIONS } from "./server/links";
 export { githubRpcContract } from "./contract";
@@ -276,12 +276,12 @@ export const MIGRATIONS = [
 ];
 
 const LINK_TOOL_INSTRUCTIONS =
-  "BB keeps a list of GitHub pull requests linked to this thread. The PR of the thread's own branch is linked automatically. " +
+  "BB keeps a list of GitHub pull requests linked to this thread. On a dedicated worktree the PR of the thread's own branch is linked automatically; on a shared project checkout nothing links itself. " +
   "Call github_link_pr with the URL right after you create a pull request with gh or git, and when the user asks you to work on, review, or discuss a PR from another branch or repository. " +
   "Call github_list_prs to see the current links, and github_unlink_pr when a link was a mistake. The list is also in this thread's plugin metadata under github-prs.pullRequests.";
 
 function describeLink(link: ThreadPullRequest): Record<string, unknown> {
-  return { repo: link.repo, number: link.number, url: link.url, source: link.source, title: link.title, state: link.state, linkedAt: link.linkedAt };
+  return { repo: link.repo, number: link.number, url: link.url, source: link.source, trigger: link.trigger, title: link.title, state: link.state, linkedAt: link.linkedAt };
 }
 
 export default async function plugin(bb: BbPluginApi) {
@@ -615,14 +615,23 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  // Links written before `trigger`/mirrored `linkedAt` existed only get the
+  // new fields on their next change; re-mirror once at load so the metadata
+  // is complete.
+  for (const threadId of new Set(links.allPullLinks().map((link) => link.threadId))) {
+    void links.mirror(threadId);
+  }
+
   bb.events.on("thread.deleted", ({ thread }) => {
     links.removeThread(thread.id);
   });
   // A turn just ended: if the agent opened a PR on the thread's branch, BB's
-  // lookup now sees it and the link is recorded. The server caches the lookup
-  // per environment for 10 s, so this is one `gh pr view` at most per turn.
+  // lookup now sees it and the link is recorded — but only for eligible
+  // (thread-dedicated worktree, non-default branch) environments. The server
+  // caches the lookup per environment for 10 s, so this is one `gh pr view`
+  // at most per turn.
   bb.events.on("thread.idle", async ({ thread }) => {
-    await links.refreshBranch(thread.id);
+    await links.refreshBranchLink(thread.id, "thread-idle");
   });
 
   /** The GitHub repo a bare `#123` means for a thread: its checkout's origin, else its project's. */
@@ -658,11 +667,11 @@ export default async function plugin(bb: BbPluginApi) {
     return parsed.ref;
   }
 
-  async function linkByReference(threadId: string, reference: string, source: "agent" | "user") {
+  async function linkByReference(threadId: string, reference: string, source: "agent" | "user", trigger: LinkTrigger) {
     const ref = await resolveReference(threadId, reference);
     const thread = await bb.sdk.threads.get({ threadId });
     if (thread.deletedAt) throw new Error("This thread no longer exists.");
-    return links.linkDescribed({ threadId, ...ref, source });
+    return links.linkDescribed({ threadId, ...ref, source, trigger });
   }
 
   async function unlinkByReference(threadId: string, reference: string) {
@@ -670,8 +679,21 @@ export default async function plugin(bb: BbPluginApi) {
     return { ref, removed: links.unlink(threadId, ref) };
   }
 
+  /**
+   * The thread's stored links plus its environment id for the viewer's file
+   * links. Read-only on purpose: earlier versions created the branch link
+   * here, which let plain listing (panel mount, `bb github links`,
+   * github_list_prs) attribute a shared checkout's PR to every thread on it.
+   * Branch links come only from `thread.idle` and `linkBranchPullRequest`.
+   */
   async function listForThread(threadId: string) {
-    const { environmentId } = await links.refreshBranch(threadId);
+    let environmentId: string | null = null;
+    try {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (!thread.deletedAt) environmentId = thread.environmentId;
+    } catch (error) {
+      bb.log.debug(`thread lookup for thread ${threadId} failed: ${errorMessage(error)}`);
+    }
     return { links: links.list(threadId), environmentId };
   }
 
@@ -686,7 +708,7 @@ export default async function plugin(bb: BbPluginApi) {
     presentation: toolPresentation("Linking pull request", "Pull request linked"),
     parameters: z.object({ reference: z.string().min(1).max(500).describe("PR URL, owner/repo#number, or #number") }),
     async execute({ reference }, { threadId }) {
-      const result = await linkByReference(threadId, reference, "agent");
+      const result = await linkByReference(threadId, reference, "agent", "agent-tool");
       return JSON.stringify({ status: result.created ? "linked" : "already-linked", link: describeLink(result.link) });
     },
   });
@@ -704,7 +726,7 @@ export default async function plugin(bb: BbPluginApi) {
     name: "github_list_prs",
     description:
       "List the GitHub pull requests linked to this BB thread, newest first, with their last seen title and state. " +
-      "Refreshes the automatic link for the thread branch's own PR first.",
+      "Read-only: it never adds or removes links.",
     presentation: toolPresentation("Listing linked pull requests", "Linked pull requests listed"),
     parameters: z.object({}),
     async execute(_input, { threadId }) {
@@ -782,7 +804,7 @@ export default async function plugin(bb: BbPluginApi) {
           ].join("\n");
     const thread = await bb.sdk.threads.spawn({ projectId, environment: { type: "project-default" }, title: `${ref}: ${title}`.slice(0, 120), prompt });
     if (kind === "pr") {
-      links.link({ threadId: thread.id, repo, number, source: "spawn", title: item?.title ?? null, state: item?.state.toLowerCase() ?? null });
+      links.link({ threadId: thread.id, repo, number, source: "spawn", trigger: "spawn", title: item?.title ?? null, state: item?.state.toLowerCase() ?? null });
       bb.realtime.publish("links-changed", { key: linkKey("pr", repo, number) });
     } else {
       await addLink({ kind, repo, number, threadId: thread.id, createdAt: new Date().toISOString() });
@@ -1250,7 +1272,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
 
     async linkPullRequest({ threadId, reference }) {
-      return await linkByReference(threadId, reference, "user");
+      return await linkByReference(threadId, reference, "user", "user");
+    },
+
+    async linkBranchPullRequest({ threadId }) {
+      const { link } = await links.refreshBranchLink(threadId, "panel-action");
+      return { link };
     },
 
     unlinkPullRequest({ threadId, repo, number }) {
@@ -1340,7 +1367,7 @@ export default async function plugin(bb: BbPluginApi) {
   ].join("\n");
 
   const formatLink = (link: ThreadPullRequest) =>
-    `${link.repo}#${link.number}\t[${link.state ?? "?"}]\t${link.title ?? link.url}\t(${link.source})`;
+    `${link.repo}#${link.number}\t[${link.state ?? "?"}]\t${link.title ?? link.url}\t(${link.source} via ${link.trigger ?? "?"}, linked ${link.linkedAt})`;
 
   bb.cli.register({
     name: "github",
@@ -1400,7 +1427,7 @@ export default async function plugin(bb: BbPluginApi) {
             return { exitCode: 0, stdout: list.length === 0 ? "No pull requests are linked to this thread." : list.map(formatLink).join("\n") };
           }
           if (sub === "link") {
-            const result = await linkByReference(threadId, arg!, "agent");
+            const result = await linkByReference(threadId, arg!, "agent", "cli");
             return { exitCode: 0, stdout: `${result.created ? "Linked" : "Already linked"} ${formatLink(result.link)}` };
           }
           const { ref, removed } = await unlinkByReference(threadId, arg!);

@@ -13,8 +13,11 @@ thread's plugin metadata under `github-prs.pullRequests` for other tools to read
 
 The pull request of the thread's own branch links itself: after every turn,
 BB looks up the PR for the environment's branch (the same lookup as the
-sidebar chip) and records it. You do not need to link a PR you opened from
-the current branch, but linking it again is harmless.
+sidebar chip) and records it — but only on a thread-dedicated worktree whose
+branch is not the default branch. On a shared project checkout nothing links
+itself, so call `github_link_pr` for PRs the thread works on. Listing is
+read-only and never creates a link. You do not need to link a PR you opened
+from the current branch, but linking it again is harmless.
 
 ## What you must link
 

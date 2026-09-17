@@ -17,6 +17,13 @@ export const pullRequestsContract = defineRpcContract({
     }),
     output: z.object({
       pullRequests: z.record(z.string(), z.array(linkedPullRequestSchema)),
+      /**
+       * thread id → whether BB's environment branch PR may be shown as the
+       * row's PR. False for shared project checkouts and default-branch
+       * checkouts; threads that could not be evaluated are absent and the
+       * row keeps showing the branch PR (the previous behavior).
+       */
+      branchPrEligible: z.record(z.string(), z.boolean()),
     }),
   },
   /**
