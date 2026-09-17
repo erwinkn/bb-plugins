@@ -113,7 +113,11 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
   }, [rootPath]);
 
   return (
-    <div ref={container} className="flex min-h-0 w-full flex-1 flex-col overflow-auto bg-background" data-testid="markdown-preview">
+    <div
+      ref={container}
+      className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-y-auto overflow-x-hidden bg-background"
+      data-testid="markdown-preview"
+    >
       <EditorTabBoundary
         fileKey={path}
         path={path}
@@ -121,7 +125,16 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
         phase="markdown-preview"
         context={{ extension: "md", bytes: content.length, sourceKind: source.kind, host: source.experimental_hostId ?? undefined }}
       >
-        <Markdown content={rendered} className="mx-auto max-w-3xl px-6 py-5" experimental_document={document ?? undefined} />
+        <Markdown
+          content={rendered}
+          // BB's Markdown table breakout measures this root and writes its
+          // result back as CSS variables. Keep the measured box pinned to the
+          // pane: an intrinsic-width flex item lets a wide table alternately
+          // widen its own container and shrink it again on every observer pass.
+          // Tables keep their own overflow-x-auto wrapper inside Markdown.
+          className="mx-auto w-full min-w-0 max-w-3xl px-6 py-5"
+          experimental_document={document ?? undefined}
+        />
       </EditorTabBoundary>
     </div>
   );

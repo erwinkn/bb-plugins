@@ -5,9 +5,9 @@ import { MarkdownPreview } from "./MarkdownPreview";
 
 let markdownThrows = true;
 vi.mock("@get-bb/plugin-sdk/app", () => ({
-  Markdown: ({ content }: { content: string }) => {
+  Markdown: ({ content, className }: { content: string; className?: string }) => {
     if (markdownThrows) throw new Error("markdown exploded");
-    return <div data-testid="bb-markdown">{content}</div>;
+    return <div data-testid="bb-markdown" className={className}>{content}</div>;
   },
   useRpc: () => ({ call: vi.fn(async () => ({ baseUrl: "/preview", expiresAtMs: Date.now() + 300_000 })) }),
 }));
@@ -40,5 +40,19 @@ describe("MarkdownPreview crash isolation", () => {
       <MarkdownPreview source={source} path="notes.md" relativePath="notes.md" rootPath="" content="# hi" onOpenPath={null} />,
     );
     expect(screen.getByTestId("bb-markdown").textContent).toContain("# hi");
+  });
+
+  it("pins the Markdown root to the pane and confines wide-table overflow", () => {
+    markdownThrows = false;
+    render(
+      <MarkdownPreview source={source} path="wide.md" relativePath="wide.md" rootPath="" content="| wide | table |" onOpenPath={null} />,
+    );
+
+    const preview = screen.getByTestId("markdown-preview");
+    expect(preview.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "w-full", "overflow-y-auto", "overflow-x-hidden"]));
+    expect(preview.className.split(" ")).not.toContain("overflow-auto");
+
+    const markdown = screen.getByTestId("bb-markdown");
+    expect(markdown.className.split(" ")).toEqual(expect.arrayContaining(["w-full", "min-w-0", "max-w-3xl"]));
   });
 });

@@ -22,6 +22,7 @@ describe("editor pane layout", () => {
     const markdown = readFileSync(paneSources[2]!, "utf8");
     expect(editor).toContain('className="min-h-0 w-full flex-1"');
     expect(diff).toContain('className="min-h-0 w-full flex-1"');
-    expect(markdown).toContain('className="flex min-h-0 w-full flex-1 flex-col overflow-auto bg-background"');
+    expect(markdown).toContain('className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-y-auto overflow-x-hidden bg-background"');
+    expect(markdown).toContain('className="mx-auto w-full min-w-0 max-w-3xl px-6 py-5"');
   });
 });
