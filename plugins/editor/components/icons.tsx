@@ -34,6 +34,7 @@ function make(icon: IconSvgElement) {
 }
 
 export const BranchGlyph = makeHost("GitBranch");
+export const CloudOffGlyph = makeHost("CloudOff");
 export const CommitGlyph = make(GitCommitIcon);
 export const CompareGlyph = make(GitCompareIcon);
 

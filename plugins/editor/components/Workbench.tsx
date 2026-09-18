@@ -23,12 +23,13 @@ import { QuickOpen } from "./QuickOpen";
 import { ResizeHandle } from "./ResizeHandle";
 import { ThemePicker } from "./ThemePicker";
 import { themeNameFor } from "@/lib/themes";
-import { FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
+import { CloudOffGlyph, FolderIcon, SidebarLeftGlyph, SidebarRightGlyph } from "./icons";
 import { useFileWatch, type FileChange } from "@/lib/file-watch";
 import { previewKind } from "@/lib/file-preview";
 import { flushDirtySessions } from "@/lib/file-session";
 import { useSessionConfig, useSessionsOverview } from "@/lib/use-file-session";
 import { useEditorTelemetry } from "@/lib/client-log";
+import { isHostOfflineMessage } from "@/lib/host-offline";
 
 export type Surface = "opener" | "panel";
 
@@ -188,7 +189,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
             setTree((current) =>
               current.entries.length === 0 ? { ...current, isLoading: false, error: message } : { ...current, isLoading: false },
             );
-            toast.error(message);
+            // The offline state and its retries carry a dead host; a toast
+            // every ten seconds would only repeat it.
+            if (!isHostOfflineMessage(message)) toast.error(message);
             return false;
           }
           treeRequested.current = false;
@@ -280,6 +283,15 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     treeRequested.current = true;
     void loadTree();
   }, [treeOpen, loadTree]);
+
+  // A dead host reports through the tree error; the offline state shows it
+  // and keeps asking until the host answers again.
+  const offlineMessage = tree.error !== null && isHostOfflineMessage(tree.error) ? tree.error : null;
+  useEffect(() => {
+    if (offlineMessage === null) return;
+    const timer = setInterval(() => void loadTree({ quiet: true }), 10_000);
+    return () => clearInterval(timer);
+  }, [offlineMessage, loadTree]);
 
   // The open file's place in the tree: a path under the root as a
   // workspace-relative path; null for a file outside it, which the tree
@@ -565,7 +577,9 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       data-surface={surface}
     >
       <div className="flex min-h-0 min-w-0 flex-1">
-        {treeOnRight ? (
+        {offlineMessage !== null && tree.entries.length === 0 && activePath === null ? (
+          <HostOfflineState message={offlineMessage} onRetry={() => void loadTree()} />
+        ) : treeOnRight ? (
           <>
             {editorColumn}
             {treeColumn}
@@ -602,6 +616,27 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           }}
         />
       ) : null}
+    </div>
+  );
+}
+
+/** The workspace's host is away; the tree retries until it answers. */
+function HostOfflineState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-muted-foreground">
+      <CloudOffGlyph className="size-5 text-subtle-foreground" />
+      <p className="text-sm text-foreground">{message}</p>
+      <p className="text-xs">The files come back when the host reconnects.</p>
+      <button
+        type="button"
+        onClick={onRetry}
+        className={cn(
+          "cursor-pointer rounded-md border border-border px-2.5 py-1 text-xs text-foreground",
+          "hover:bg-state-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none",
+        )}
+      >
+        Try now
+      </button>
     </div>
   );
 }

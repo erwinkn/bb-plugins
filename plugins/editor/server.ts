@@ -11,6 +11,7 @@ import { CODE_THEME_CHOICES, codeThemeId, codeThemeLabel } from "./lib/themes.js
 import { diffEntrySchema, diffTargetSchema, hasConflictMarkers, isWorkingTreeTarget, type DiffTarget } from "./lib/diff-contract.js";
 import { FILES_CHANGED_CHANNEL, watchContract, watchSignals, type FilesChangedSignal } from "./lib/watch-contract.js";
 import { WatchRegistry, WATCH_TTL_MS } from "./lib/watch-registry.js";
+import { hostOfflineMessage, isHostOfflineMessage } from "./lib/host-offline.js";
 
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
 const MAX_DIFF_FILES = 10_000;
@@ -432,6 +433,8 @@ export default async function plugin(bb: BbPluginApi) {
   const watchHost = bb.hosts.experimental_client({ contract: watchContract, experimental_signals: watchSignals });
   const watches = new WatchRegistry();
   const syncingHosts = new Map<string, Promise<void>>();
+  /** Hosts whose live watches died with their worker; the next successful sync republishes a rescan. */
+  const recoveringHosts = new Set<string>();
 
   /** Make one host's watches match the registry, coalescing concurrent asks. */
   function syncHost(hostId: string): Promise<void> {
@@ -442,6 +445,11 @@ export default async function plugin(bb: BbPluginApi) {
       const result = await watchHost.call("syncWatches", { roots }, { hostId });
       watches.markWatching(hostId, result.watching);
       for (const failure of result.failed) bb.log.warn(`file watch failed for ${failure.rootPath}: ${failure.message}`);
+      if (recoveringHosts.delete(hostId)) {
+        for (const entry of watches.entriesOn(hostId)) {
+          if (entry.watching) publishChange({ root: entry.key, kind: "rescan", changes: [] });
+        }
+      }
     })().finally(() => syncingHosts.delete(hostId));
     syncingHosts.set(hostId, run);
     return run;
@@ -561,8 +569,10 @@ export default async function plugin(bb: BbPluginApi) {
     if (payload.paths.length > 0) publishChange({ root: entry.key, kind: "changed", changes: payload.paths });
   });
   // The worker took its watches with it. Say so, so open files reload, and
-  // start the watches again on the next chance.
+  // start the watches again on the next chance; the first successful sync
+  // after a dead host comes back republishes the rescan.
   watchHost.experimental_onWorkerExit(({ hostId }) => {
+    if (watches.entriesOn(hostId).some((entry) => entry.watching)) recoveringHosts.add(hostId);
     for (const entry of watches.entriesOn(hostId)) publishChange({ root: entry.key, kind: "rescan", changes: [] });
     watches.markWatching(hostId, []);
     void syncHost(hostId).catch((error: unknown) => bb.log.warn(`file watch restart failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -579,6 +589,40 @@ export default async function plugin(bb: BbPluginApi) {
   /** The host that holds a resolved target's root, or null when none can watch it. */
   async function hostOf(target: { rootPath: string; hostId?: string; rootHostId?: string }): Promise<string | null> {
     return target.rootHostId ?? target.hostId ?? primaryHost();
+  }
+
+  /** The name BB gives a host, for errors the daemon leaves anonymous. */
+  async function hostName(hostId: string): Promise<string | null> {
+    try {
+      return (await bb.sdk.hosts.get({ hostId })).name;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The daemon reports a dead host as "HTTP 502: Host is not connected",
+   * naming no host. Translate it so the workbench can show which host and
+   * recognize the state; any other failure passes through unchanged.
+   */
+  async function hostError(error: unknown, target: { rootPath: string; hostId?: string; rootHostId?: string }): Promise<Error> {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isHostOfflineMessage(message)) return error instanceof Error ? error : new Error(message);
+    try {
+      const hostId = await hostOf(target);
+      return new Error(hostOfflineMessage(hostId === null ? null : await hostName(hostId)));
+    } catch {
+      return new Error(hostOfflineMessage(null));
+    }
+  }
+
+  /** A daemon file call whose host-offline failure names its host. */
+  async function hostCall<T>(call: Promise<T>, target: { rootPath: string; hostId?: string; rootHostId?: string }): Promise<T> {
+    try {
+      return await call;
+    } catch (error) {
+      throw await hostError(error, target);
+    }
   }
 
   /**
@@ -925,13 +969,13 @@ export default async function plugin(bb: BbPluginApi) {
 
     async previewBase({ path: filePath, source }) {
       const target = await resolveTarget(source, filePath);
-      const lease = await bb.sdk.files.createPreview({
+      const lease = await hostCall(bb.sdk.files.createPreview({
         // A file outside the workspace previews against its own directory so
         // its relative assets resolve the way they do on disk.
         rootPath: confineRoot(target),
         ...(target.hostId === undefined ? {} : { hostId: target.hostId }),
         ttlMs: PREVIEW_LEASE_MS,
-      });
+      }), target);
       return { baseUrl: lease.baseUrl, expiresAtMs: lease.expiresAtMs };
     },
 
@@ -968,7 +1012,7 @@ export default async function plugin(bb: BbPluginApi) {
         // A dangling symbolic link reads as a missing path; name the link
         // instead, the way the tree marks it.
         const link = (await isLocalFile(target)) ? await brokenLinkTarget(target.path) : null;
-        if (link === null) throw error;
+        if (link === null) throw await hostError(error, target);
         return { kind: "unsupported" as const, reason: `This symbolic link's target is missing: ${link}` };
       }
       if (file.contentEncoding !== "utf8") return { kind: "unsupported" as const, reason: "This file is not text" };
@@ -1017,7 +1061,7 @@ export default async function plugin(bb: BbPluginApi) {
           ...(entry.kind === "directory" ? { deferred: true as const } : {}),
         }));
       };
-      return { root: target.rootPath, entries: await prefetchLevels(await listLevel(clean), listLevel) };
+      return { root: target.rootPath, entries: await prefetchLevels(await hostCall(listLevel(clean), target), listLevel) };
     },
 
     async search({ source, query, limit = 50 }) {
@@ -1037,14 +1081,14 @@ export default async function plugin(bb: BbPluginApi) {
       // Another host: the daemon fuzzy-searches it and ranks the matches.
       const hostId = await hostOf(target);
       if (hostId === null) throw new Error("This workspace's host is not available");
-      const result = await bb.sdk.files.listPaths({
+      const result = await hostCall(bb.sdk.files.listPaths({
         hostId,
         path: target.rootPath,
         query: trimmed,
         includeFiles: true,
         includeDirectories: false,
         limit,
-      });
+      }), target);
       return {
         matches: result.paths.map((entry) => ({ path: entry.path.replace(/^\.?\/+/, "") })),
       };
@@ -1055,13 +1099,13 @@ export default async function plugin(bb: BbPluginApi) {
       // Our RPC uses null for an explicit overwrite. BB's file API uses an
       // omitted hash for that operation; null means "create only if absent".
       const { rootHostId: _rootHostId, ...fileArgs } = target;
-      const result = await bb.sdk.files.write({
+      const result = await hostCall(bb.sdk.files.write({
         ...fileArgs,
         rootPath: confineRoot(target),
         content,
         contentEncoding: "utf8",
         ...(expectedSha256 === null ? {} : { expectedSha256 }),
-      });
+      }), target);
       return result.outcome === "written"
         ? { outcome: "written" as const, sha256: result.sha256 }
         : { outcome: "conflict" as const, currentSha256: result.currentSha256 };
@@ -1073,9 +1117,9 @@ export default async function plugin(bb: BbPluginApi) {
       const hostId = target.hostId === undefined ? {} : { hostId: target.hostId };
       if (await exists(target.path, hostId)) throw new Error(`${filePath} already exists`);
       if (kind === "directory") {
-        await bb.sdk.files.mkdir({ path: target.path, recursive: true, ...hostId });
+        await hostCall(bb.sdk.files.mkdir({ path: target.path, recursive: true, ...hostId }), target);
       } else {
-        const result = await bb.sdk.files.write({
+        const result = await hostCall(bb.sdk.files.write({
           path: target.path,
           content: "",
           contentEncoding: "utf8",
@@ -1083,7 +1127,7 @@ export default async function plugin(bb: BbPluginApi) {
           // Protect the gap between the existence check and the write.
           expectedSha256: null,
           ...hostId,
-        });
+        }), target);
         if (result.outcome !== "written") throw new Error(`${filePath} already exists`);
       }
       return { path: filePath };
@@ -1097,7 +1141,7 @@ export default async function plugin(bb: BbPluginApi) {
       const hostId = from.hostId === undefined ? {} : { hostId: from.hostId };
       if (from.path === to.path) return { path: newPath };
       if (await exists(to.path, hostId)) throw new Error(`${newPath} already exists`);
-      await bb.sdk.files.move({ sourcePath: from.path, destinationPath: to.path, ...hostId });
+      await hostCall(bb.sdk.files.move({ sourcePath: from.path, destinationPath: to.path, ...hostId }), from);
       return { path: newPath };
     },
 
@@ -1106,7 +1150,7 @@ export default async function plugin(bb: BbPluginApi) {
       const target = await resolveTarget(source, filePath);
       if (target.path === target.rootPath) throw new Error("The workspace root cannot be deleted");
       const hostId = target.hostId === undefined ? {} : { hostId: target.hostId };
-      await bb.sdk.files.remove({ path: target.path, recursive: kind === "directory", ...hostId });
+      await hostCall(bb.sdk.files.remove({ path: target.path, recursive: kind === "directory", ...hostId }), target);
       return null;
     },
 

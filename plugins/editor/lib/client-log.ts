@@ -9,6 +9,7 @@ import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import manifest from "../package.json";
 import { setSessionLogger, type SessionLogFields } from "./file-session";
+import { CrashDeduper, isResizeObserverLoopMessage } from "./crash-dedup";
 
 export const PLUGIN_VERSION = manifest.version;
 
@@ -36,6 +37,7 @@ export function bindClientLog(rpc: ClientLogRpc): () => void {
   return () => {
     installedSenders -= 1;
     if (installedSenders === 0) {
+      crashDeduper.flush();
       sender = null;
       setSessionLogger(null);
     }
@@ -77,12 +79,21 @@ function fieldsFor(context: CrashContext, extra: LogFields = {}): LogFields {
   return fields;
 }
 
+/**
+ * Identical consecutive reports merge into one event tagged `occurrences`
+ * (lib/crash-dedup.ts) so a ResizeObserver loop cannot flood the log.
+ */
+const crashDeduper = new CrashDeduper((level, fields) => logClient(level, "crash", fields));
+
 /** componentDidCatch and Pierre surface failures report through here. */
 export function reportCrash(context: CrashContext, error: unknown): void {
-  logClient("error", "crash", fieldsFor(context, {
-    message: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300),
+  const message = error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300);
+  const level: LogLevel = isResizeObserverLoopMessage(message) ? "warn" : "error";
+  const fields = fieldsFor(context, {
+    message,
     stack: sanitizeStack(error instanceof Error ? error.stack : undefined),
-  }));
+  });
+  crashDeduper.push(level, fields, [context.phase, context.path ?? "", message].join("\0"));
 }
 
 /**

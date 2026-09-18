@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { FileSessionSource } from "@/lib/file-session";
@@ -15,6 +18,27 @@ vi.mock("@/lib/editor-commands", () => ({ copyText: vi.fn(async () => {}) }));
 vi.mock("@/lib/client-log", () => ({ reportCrash: vi.fn() }));
 
 const source: FileSessionSource = { kind: "workspace", threadId: "thr_1", environmentId: "env_1", projectId: "p_1" };
+
+const fixtureDir = path.dirname(fileURLToPath(import.meta.url));
+/** Shaped like the document that produced the scrollbar ResizeObserver loop. */
+const nativePartsLab = readFileSync(path.join(fixtureDir, "fixtures", "native-parts-lab.md"), "utf8");
+
+/** The guards that keep a document's layout from feeding the observed widths. */
+function expectStableWidths() {
+  const preview = screen.getByTestId("markdown-preview");
+  expect(preview.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "w-full", "overflow-y-auto", "overflow-x-hidden"]));
+  expect(preview.className.split(" ")).not.toContain("overflow-auto");
+  // The scroller's clientWidth must not change when the scrollbar appears.
+  expect(preview.style.scrollbarGutter).toBe("stable");
+
+  const markdown = screen.getByTestId("bb-markdown");
+  expect(markdown.className.split(" ")).toEqual(expect.arrayContaining(["w-full", "min-w-0"]));
+  const wrapper = markdown.parentElement;
+  expect(wrapper).not.toBeNull();
+  // The measured box is pinned to the pane and sealed from its contents.
+  expect(wrapper!.className.split(" ")).toEqual(expect.arrayContaining(["w-full", "min-w-0", "max-w-3xl"]));
+  expect(wrapper!.style.contain).toBe("inline-size");
+}
 
 afterEach(() => {
   cleanup();
@@ -47,12 +71,16 @@ describe("MarkdownPreview crash isolation", () => {
     render(
       <MarkdownPreview source={source} path="wide.md" relativePath="wide.md" rootPath="" content="| wide | table |" onOpenPath={null} />,
     );
+    expectStableWidths();
+  });
 
-    const preview = screen.getByTestId("markdown-preview");
-    expect(preview.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "w-full", "overflow-y-auto", "overflow-x-hidden"]));
-    expect(preview.className.split(" ")).not.toContain("overflow-auto");
-
-    const markdown = screen.getByTestId("bb-markdown");
-    expect(markdown.className.split(" ")).toEqual(expect.arrayContaining(["w-full", "min-w-0", "max-w-3xl"]));
+  // The document's images grew it across the scrollbar threshold; every load
+  // flipped the scroller's clientWidth and the breakout rewrote its variables.
+  it("keeps the observed widths stable for an image-and-table document", () => {
+    markdownThrows = false;
+    render(
+      <MarkdownPreview source={source} path="native-parts-lab.md" relativePath="native-parts-lab.md" rootPath="" content={nativePartsLab} onOpenPath={null} />,
+    );
+    expectStableWidths();
   });
 });

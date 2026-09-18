@@ -115,6 +115,12 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
   return (
     <div
       ref={container}
+      // BB's Markdown breakout also observes this scroller: `clientWidth`
+      // shrinks when the vertical scrollbar appears, and an image loading can
+      // push the document across that threshold — scrollbar in, breakout
+      // narrower, layout shifts, scrollbar out, repeat. A stable gutter keeps
+      // the observed width the same whether or not a scrollbar is present.
+      style={{ scrollbarGutter: "stable" }}
       className="flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-y-auto overflow-x-hidden bg-background"
       data-testid="markdown-preview"
     >
@@ -125,16 +131,20 @@ export function MarkdownPreview({ source, path, relativePath, rootPath, content,
         phase="markdown-preview"
         context={{ extension: "md", bytes: content.length, sourceKind: source.kind, host: source.experimental_hostId ?? undefined }}
       >
-        <Markdown
-          content={rendered}
-          // BB's Markdown table breakout measures this root and writes its
-          // result back as CSS variables. Keep the measured box pinned to the
-          // pane: an intrinsic-width flex item lets a wide table alternately
-          // widen its own container and shrink it again on every observer pass.
-          // Tables keep their own overflow-x-auto wrapper inside Markdown.
-          className="mx-auto w-full min-w-0 max-w-3xl px-6 py-5"
-          experimental_document={document ?? undefined}
-        />
+        {/* BB's Markdown table breakout measures this root and writes its
+            result back as CSS variables. Keep the measured box pinned to the
+            pane: an intrinsic-width flex item lets a wide table alternately
+            widen its own container and shrink it again on every observer pass,
+            and inline-size containment makes that impossible — the box's width
+            can never derive from its contents. Tables keep their own
+            overflow-x-auto wrapper inside Markdown. */}
+        <div className="mx-auto w-full min-w-0 max-w-3xl px-6 py-5" style={{ contain: "inline-size" }}>
+          <Markdown
+            content={rendered}
+            className="w-full min-w-0"
+            experimental_document={document ?? undefined}
+          />
+        </div>
       </EditorTabBoundary>
     </div>
   );
