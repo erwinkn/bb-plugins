@@ -690,7 +690,7 @@ describe("Questions backend", () => {
     expect((await h.state()).summary).toBeNull();
     h.metadata.set("t", { summary: { markdown: "future", updatedAt: 1, version: 2 } });
     expect((await h.state()).summary).toBeNull();
-    await expect(h.harness.behavior.callAgentTool("questions_summary", { summary: "x".repeat(LIMITS.summaryChars + 1) }, { threadId: "t", projectId: "proj_t" })).rejects.toThrow(/8000/);
+    expect(await h.harness.behavior.callAgentTool("questions_summary", { summary: "x".repeat(LIMITS.summaryChars + 1) }, { threadId: "t", projectId: "proj_t" })).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("8000") }] });
     expect(await h.harness.behavior.runCli(["summary", "set", "y".repeat(LIMITS.summaryChars + 1)], { threadId: "t" })).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("8000") });
   });
 
