@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import type { ExperimentalHostWatchListener, ExperimentalHostWatchOptions } from "@get-bb/plugin-sdk";
-import entry from "./host.js";
+import entry, { branchFromOriginHead, gitDefaultBranch } from "./host.js";
 import { MAX_CHANGED_PATHS } from "./lib/watch-contract.js";
 
 /** A watcher the test drives by hand: it records starts and stops and hands out listeners. */
@@ -22,6 +22,22 @@ function fakeWatcher() {
   };
   return { active, log, watch };
 }
+
+test("the default-branch probe parses origin/HEAD without changing the checkout", async () => {
+  assert.deepEqual(branchFromOriginHead("origin/main\n"), { name: "main", ref: "origin/main" });
+  assert.equal(branchFromOriginHead("upstream/main\n"), null);
+  const signal = new AbortController().signal;
+  let observed: unknown;
+  assert.deepEqual(await gitDefaultBranch("/remote/work", signal, async (args, options) => {
+    observed = { args, options };
+    return "origin/release/next\n";
+  }), { name: "release/next", ref: "origin/release/next" });
+  assert.deepEqual(observed, {
+    args: ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+    options: { cwd: "/remote/work", signal },
+  });
+  assert.equal(await gitDefaultBranch("/remote/work", signal, async () => { throw new Error("missing ref"); }), null);
+});
 
 test("syncWatches starts, keeps and stops watches to match the requested roots", async (t) => {
   const watcher = fakeWatcher();

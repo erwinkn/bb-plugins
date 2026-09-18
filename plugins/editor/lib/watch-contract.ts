@@ -11,6 +11,13 @@ import { z } from "zod";
 export const MAX_CHANGED_PATHS = 512;
 
 export const watchContract = defineRpcContract({
+  /** Resolve the checkout's remote default branch on the host that owns it. */
+  gitDefaultBranch: {
+    input: z.object({ rootPath: z.string().min(1).max(4096) }).strict(),
+    output: z.object({
+      defaultBranch: z.object({ name: z.string().min(1), ref: z.string().min(1) }).strict().nullable(),
+    }).strict(),
+  },
   /**
    * Make the host's watches match `roots`: start the missing ones, stop the
    * rest. It is idempotent and returns at once; the watches outlive the call.

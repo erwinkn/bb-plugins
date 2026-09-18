@@ -4,6 +4,7 @@
  * changes goes back to the server as a signal; the server tells the open
  * editors, which re-read the files they show.
  */
+import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { experimental_defineHostEntry, type ExperimentalHostWatchSubscription } from "@get-bb/plugin-sdk";
@@ -13,6 +14,44 @@ import { MAX_CHANGED_PATHS, watchContract, watchSignals } from "./lib/watch-cont
 const IGNORED = [".git", "node_modules", ".bb"];
 
 const watches = new Map<string, ExperimentalHostWatchSubscription>();
+
+type GitRunner = (args: string[], options: { cwd: string; signal: AbortSignal }) => Promise<string>;
+
+/** Run one bounded, non-shell Git probe in the requested checkout. */
+const runGit: GitRunner = (args, { cwd, signal }) => new Promise((resolve, reject) => {
+  execFile("git", args, {
+    cwd,
+    signal,
+    timeout: 5_000,
+    maxBuffer: 16 * 1024,
+    encoding: "utf8",
+    windowsHide: true,
+  }, (error, stdout) => error ? reject(error) : resolve(stdout));
+});
+
+/** Keep both `main` for identity and `origin/main` for the comparison ref. */
+export function branchFromOriginHead(output: string): { name: string; ref: string } | null {
+  const ref = output.trim();
+  return ref.startsWith("origin/") && ref.length > "origin/".length
+    ? { name: ref.slice("origin/".length), ref }
+    : null;
+}
+
+/** Resolve origin/HEAD without fetching or mutating the checkout. */
+export async function gitDefaultBranch(
+  rootPath: string,
+  signal: AbortSignal,
+  git: GitRunner = runGit,
+): Promise<{ name: string; ref: string } | null> {
+  try {
+    return branchFromOriginHead(await git(
+      ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+      { cwd: rootPath, signal },
+    ));
+  } catch {
+    return null;
+  }
+}
 
 function realPath(rootPath: string): string {
   try {
@@ -26,6 +65,9 @@ export default experimental_defineHostEntry({
   contract: watchContract,
   experimental_signals: watchSignals,
   handlers: {
+    async gitDefaultBranch({ rootPath }, context) {
+      return { defaultBranch: await gitDefaultBranch(rootPath, context.signal) };
+    },
     async syncWatches({ roots }, context) {
       const wanted = new Set(roots);
       const stopped: Promise<void>[] = [];

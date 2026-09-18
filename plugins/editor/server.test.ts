@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createFakePluginHost, experimental_scanPublicSdkOnly, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import plugin, { findPluginRoot, pathApiFor, pierreAssetsDir, rpcContract } from "./server";
+import plugin, { comparisonBaseBranch, findPluginRoot, pathApiFor, pierreAssetsDir, rpcContract } from "./server";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 
@@ -407,6 +407,61 @@ const environment: Environment = {
   environmentProviderId: null, environmentProviderInstanceKey: null, environmentProviderSelection: null,
   lifecycle: { phase: "active", retireAt: null, teardown: null },
 };
+
+test("implicit comparison bases use the checkout default, HEAD on that default, and preserve worktrees", () => {
+  const checkout = {
+    baseBranch: null, branchName: "feature", defaultBranch: "feature",
+    isWorktree: false, mergeBaseBranch: null,
+  };
+  const defaultBranch = { name: "main", ref: "origin/main" };
+  assert.equal(comparisonBaseBranch(checkout, defaultBranch), "origin/main");
+  assert.equal(comparisonBaseBranch({ ...checkout, branchName: "main", defaultBranch: "main" }, defaultBranch), "HEAD");
+  assert.equal(comparisonBaseBranch(environment, { name: "ignored", ref: "origin/ignored" }), "main");
+  assert.equal(comparisonBaseBranch({ ...environment, mergeBaseBranch: "release/next" }, defaultBranch), "release/next");
+});
+
+test("a project checkout resolves its comparison default on the checkout host", async (t) => {
+  const checkout = {
+    ...environment,
+    isWorktree: false,
+    managed: false,
+    workspaceProvisionType: "unmanaged" as const,
+    environmentProviderId: "project-checkout",
+    baseBranch: null,
+    defaultBranch: "feature",
+  };
+  const hostCalls: { method: string; input: unknown; hostId: string }[] = [];
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "editor",
+    sdk: {
+      threads: { get: async () => makeThreadResponse({ environmentId: checkout.id, projectId: checkout.projectId }) },
+      environments: {
+        get: async () => checkout,
+        diffFiles: async () => ({
+          outcome: "available", files: [], mergeBaseRef: "abcdef0123456789",
+          initialPatches: [], shortstat: "", truncated: false,
+        }),
+      },
+    },
+    experimental_callHostRpc: async (call) => {
+      hostCalls.push(call);
+      return { defaultBranch: { name: "main", ref: "origin/main" } };
+    },
+  });
+  t.after(() => harness.lifecycle.dispose());
+  await plugin(bb);
+  const list = rpcContract.diffList.output.parse(await harness.behavior.callRpc("diffList", {
+    threadId: "thr_test", target: { type: "all" },
+  }));
+  assert.equal(list.baseBranch, "origin/main");
+  assert.deepEqual(list.target, { type: "all", mergeBaseBranch: "origin/main" });
+  assert.deepEqual(hostCalls, [{
+    method: "gitDefaultBranch", input: { rootPath: "/workspace" }, hostId: "host_remote",
+  }]);
+  assert.deepEqual(harness.inspection.sdk.callsTo("environments.diffFiles")[0]?.[0], {
+    environmentId: "env_test", target: "all", mergeBaseBranch: "origin/main",
+  });
+});
 const modifiedEntry: DiffFiles["files"][number] = {
   path: "a.ts", previousPath: null, changeKind: "modified", origin: "tracked",
   binary: false, loadMode: "auto", additions: 1, deletions: 1,

@@ -459,6 +459,24 @@ Suggested issue titles: `Pass semantic edit context to plugin diff renderers`,
 `Add dirty state and lifecycle controls for plugin editor tabs`.
 File separate requests in [BB issues](https://github.com/get-bb/bb/issues).
 
+### Correct default-branch metadata for project checkouts
+
+BB 0.43.1 reports the currently checked-out branch as both `branchName` and
+`defaultBranch` for a `project-checkout` environment, even when the checkout is
+on a feature branch. `environments.status().workspace.branch.defaultBranch`
+repeats the same value. This makes consumers compare the feature branch with
+itself and hide its committed changes. Observed on 2026-09-18 in environment
+`env_95ub9djwfn`: `cherry/native-extensions` was reported as the default even
+though the repository default is `main`.
+
+Core should resolve the project source's Git default branch on its owning host
+and expose it consistently in both environment responses. The editor plugin
+works around this by resolving `refs/remotes/origin/HEAD` through its host
+entry and comparing against its remote-qualified ref. Status: workaround
+implemented locally; no upstream issue filed.
+Suggested issue title: `Project checkouts report the current branch as the default branch`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
 ### Share individual threads with guests
 
 Add sharing for individual BB threads, with read-only access as the first

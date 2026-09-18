@@ -13,6 +13,9 @@ import { FILES_CHANGED_CHANNEL, watchContract, watchSignals, type FilesChangedSi
 import { WatchRegistry, WATCH_TTL_MS } from "./lib/watch-registry.js";
 import { hostOfflineMessage, isHostOfflineMessage } from "./lib/host-offline.js";
 
+type EditorEnvironment = Awaited<ReturnType<BbPluginApi["sdk"]["environments"]["get"]>>;
+type CheckoutDefaultBranch = { name: string; ref: string };
+
 const MAX_EDITABLE_BYTES = 8 * 1024 * 1024;
 const MAX_DIFF_FILES = 10_000;
 const MAX_COMMITS = 10_000;
@@ -43,6 +46,25 @@ export const sourceSchema = z
   .strict();
 
 export type FileSource = z.infer<typeof sourceSchema>;
+
+/**
+ * Pick the implicit branch comparison. Managed worktrees retain the base BB
+ * provisioned for them. A shared project checkout instead uses the remote's
+ * real default branch; BB currently reports its checked-out branch as
+ * `defaultBranch`, which would otherwise compare a feature branch to itself.
+ */
+export function comparisonBaseBranch(
+  environment: Pick<EditorEnvironment, "baseBranch" | "branchName" | "defaultBranch" | "isWorktree" | "mergeBaseBranch">,
+  checkoutDefaultBranch: CheckoutDefaultBranch | null = null,
+): string | null {
+  if (environment.mergeBaseBranch !== null) return environment.mergeBaseBranch;
+  if (environment.isWorktree) return environment.baseBranch ?? environment.defaultBranch;
+  if (checkoutDefaultBranch !== null) {
+    return checkoutDefaultBranch.name === environment.branchName ? "HEAD" : checkoutDefaultBranch.ref;
+  }
+  const reportedDefaultBranch = environment.defaultBranch ?? environment.baseBranch;
+  return reportedDefaultBranch !== null && reportedDefaultBranch === environment.branchName ? "HEAD" : reportedDefaultBranch;
+}
 
 const fileSchema = z.object({ path: z.string().min(1), source: sourceSchema }).strict();
 
@@ -433,8 +455,34 @@ export default async function plugin(bb: BbPluginApi) {
   const watchHost = bb.hosts.experimental_client({ contract: watchContract, experimental_signals: watchSignals });
   const watches = new WatchRegistry();
   const syncingHosts = new Map<string, Promise<void>>();
+  const checkoutDefaultBranches = new Map<string, { branch: CheckoutDefaultBranch | null; expiresAt: number }>();
+  const CHECKOUT_DEFAULT_BRANCH_TTL_MS = 60 * 1000;
   /** Hosts whose live watches died with their worker; the next successful sync republishes a rescan. */
   const recoveringHosts = new Set<string>();
+
+  /** Resolve project-checkout defaults on their own host, not the BB server. */
+  async function implicitComparisonBase(environment: EditorEnvironment): Promise<string | null> {
+    if (environment.isWorktree || environment.mergeBaseBranch !== null || environment.path === null) {
+      return comparisonBaseBranch(environment);
+    }
+    const key = `${environment.hostId}\0${environment.path}`;
+    let cached = checkoutDefaultBranches.get(key);
+    if (cached === undefined || cached.expiresAt <= Date.now()) {
+      let branch: CheckoutDefaultBranch | null = null;
+      try {
+        branch = (await watchHost.call(
+          "gitDefaultBranch",
+          { rootPath: environment.path },
+          { hostId: environment.hostId, timeoutMs: 5_000 },
+        )).defaultBranch;
+      } catch (error) {
+        bb.log.warn(`default branch probe failed for ${environment.path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      cached = { branch, expiresAt: Date.now() + CHECKOUT_DEFAULT_BRANCH_TTL_MS };
+      checkoutDefaultBranches.set(key, cached);
+    }
+    return comparisonBaseBranch(environment, cached.branch);
+  }
 
   /** Make one host's watches match the registry, coalescing concurrent asks. */
   function syncHost(hostId: string): Promise<void> {
@@ -764,7 +812,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (thread.environmentId === null) throw new Error("This thread has no workspace");
     const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
     if (!environment.path) throw new Error("This workspace has no filesystem path");
-    const baseBranch = environment.mergeBaseBranch ?? environment.baseBranch ?? environment.defaultBranch ?? null;
+    const baseBranch = await implicitComparisonBase(environment);
     const source: FileSource = {
       kind: "workspace", threadId, environmentId: thread.environmentId, projectId: thread.projectId,
       ...(environment.hostId ? { experimental_hostId: environment.hostId } : {}),
@@ -899,7 +947,7 @@ export default async function plugin(bb: BbPluginApi) {
       if (thread.environmentId === null) throw new Error("This thread has no workspace");
       const environment = await bb.sdk.environments.get({ environmentId: thread.environmentId });
       const baseBranch = ((target.type === "all" || target.type === "branch_committed") ? target.mergeBaseBranch : undefined)
-        ?? environment.mergeBaseBranch ?? environment.baseBranch ?? environment.defaultBranch ?? null;
+        ?? await implicitComparisonBase(environment);
       const status = await bb.sdk.environments.status({ environmentId: environment.id, ...(baseBranch ? { mergeBaseBranch: baseBranch } : {}) });
       if (status.outcome !== "available") {
         return { commits: [], baseBranch, message: status.outcome === "not_applicable" ? status.message : status.failure.message };
