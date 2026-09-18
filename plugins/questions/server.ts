@@ -100,6 +100,14 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// Tool schemas stay free of string `maxLength` bounds on purpose. BB forwards them to
+// the provider as JSON Schema, and local llama.cpp servers derive a constrained-decoding
+// grammar from every tool schema. Each `maxLength` becomes a `char{0,N}` repetition, and
+// llama.cpp's grammar parser rejects the whole grammar once `rules * repetitions` crosses
+// MAX_REPETITION_THRESHOLD (2000 in src/llama-grammar.cpp) — "failed to parse grammar" —
+// which breaks every local llama.cpp model in a thread. The service layer re-validates the
+// same LIMITS bounds, so omitting them here costs no validation. Array `maxItems` bounds
+// stay: they generate small repetitions and are worth keeping for the model.
 const askToolSchema = z.object({
   mode: z
     .enum(["panel", "inline"])
@@ -109,17 +117,16 @@ const askToolSchema = z.object({
     ),
   intro: z
     .string()
-    .max(LIMITS.introChars)
     .optional()
     .describe("One or two sentences shown above the round: what you need and why."),
   questions: z
     .array(
       z.object({
-        title: z.string().min(1).max(LIMITS.titleChars).describe("The question, as a full sentence."),
+        title: z.string().min(1).describe("The question, as a full sentence."),
         optional: z.boolean().optional().describe("Allow the user to skip this question. Questions are required by default."),
-        help: z.string().max(LIMITS.helpChars).optional().describe("Optional context under the title."),
+        help: z.string().optional().describe("Optional context under the title."),
         options: z
-          .array(z.string().min(1).max(LIMITS.optionChars))
+          .array(z.string().min(1))
           .max(LIMITS.optionsPerQuestion)
           .optional()
           .describe("Choices. Omit for a free-text question. The user can always type their own answer."),
@@ -324,9 +331,10 @@ export default async function plugin(bb: BbPluginApi) {
     description:
       "Read, set, or clear this thread's Questions summary — your own earlier note about the goal, the current direction, and what is still open. It survives compaction; call with no arguments to check for one.",
     parameters: z.object({
+      // No string `maxLength` here, for the same grammar reason as askToolSchema above;
+      // service.setSummary enforces LIMITS.summaryChars.
       summary: z
         .string()
-        .max(LIMITS.summaryChars)
         .nullable()
         .optional()
         .describe("Markdown, at most 8000 characters. Pass null to clear. Omit to read the current summary."),
