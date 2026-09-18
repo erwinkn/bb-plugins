@@ -1258,3 +1258,46 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
   header button, not a menu entry.
 - **Status:** not filed. Suggested title: `Add a plugin slot for thread
   header menu actions`.
+
+### Plugin panel fallback hides why a tab is unavailable (2026-09-18)
+
+- **Where:** BB 0.43.1 `PluginPanelActions` — a thread panel slot renders
+  "This plugin tab is not available. The plugin may still be loading, or it
+  has been disabled or removed." whenever the action is absent from the
+  client's `threadPanelActions` registry.
+- **Symptom:** the message conflates at least three distinct states —
+  the app bundle still loading, the app failing to load or register (bundle
+  or registration error), and the plugin being gone. A host disconnect at
+  the same moment produces a misleading "not available" even though the
+  plugin is healthy. Nothing in the panel says which state it is, and the
+  plugin has no way to render its own placeholder in that window.
+- **Ask:** distinguish the states in the fallback (loading vs. load/register
+  failure vs. removed), and surface the plugin's last registration error so
+  a failed bundle is diagnosable without log diving.
+- **Workaround (editor):** once the action does register, the Files panel
+  now renders its own "Host <name> is not connected" state and retries the
+  listing until the host answers, so a dead host never presents as a
+  generic failure.
+- **Status:** not filed. Suggested title: `Distinguish loading, load
+  failure, and removal in the plugin panel fallback`.
+
+### Markdown breakout reads the scroll container's clientWidth (2026-09-18)
+
+- **Where:** BB's `Markdown` table breakout observes the nearest ancestor
+  with non-visible overflow-x and writes CSS variables from its
+  `clientWidth`.
+- **Symptom:** on classic-scrollbar platforms, asynchronously loading
+  images grow the document across the scrollbar threshold; the appearing
+  scrollbar shrinks `clientWidth`, the breakout rewrites its variables,
+  layout shifts, the scrollbar disappears — a ResizeObserver loop
+  ("loop completed with undelivered notifications"). Reported against
+  `apps/gpuix/docs/native-parts-lab.md` (three large intrinsic-size images
+  plus wide tables) in the editor plugin's preview.
+- **Workaround (editor):** `scrollbar-gutter: stable` on the scroller and
+  `contain: inline-size` on the measured root, so neither observed width
+  can derive from content or scrollbar state.
+- **Ask:** measure the breakout limit from a layout-stable reference
+  (e.g. reserve the scrollbar gutter in BB's own scroll containers) so
+  host UIs that embed `Markdown` do not each need the workaround.
+- **Status:** not filed. Suggested title: `Markdown table breakout
+  observes a scrollbar-sensitive clientWidth`.
