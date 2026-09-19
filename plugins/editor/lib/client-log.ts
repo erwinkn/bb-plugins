@@ -122,10 +122,21 @@ export function reportCrash(context: CrashContext, error: unknown): void {
  * not forward unrelated errors. Returns the unbind.
  */
 export function installCrashReporting(context: () => CrashContext): () => void {
+  // The "ResizeObserver loop" notice fires on `window` for any observer in the
+  // page, and the browser already handled it. Logged bursts traced to host-UI
+  // observers (BB's windowed timeline, Markdown breakout), not this plugin's
+  // surfaces — forwarding them produced ~700 unattributable warns/day. Notices
+  // thrown inside our own surfaces still reach `reportCrash` via the error
+  // boundaries and keep their `warn` classification.
+  const isAmbientNotice = (error: unknown): boolean =>
+    isResizeObserverLoopMessage(error instanceof Error ? error.message : String(error));
   const onError = (event: ErrorEvent) => {
-    reportCrash({ ...context(), phase: `${context().phase}:window` }, event.error ?? event.message);
+    const error = event.error ?? event.message;
+    if (isAmbientNotice(error)) return;
+    reportCrash({ ...context(), phase: `${context().phase}:window` }, error);
   };
   const onRejection = (event: PromiseRejectionEvent) => {
+    if (isAmbientNotice(event.reason)) return;
     reportCrash({ ...context(), phase: `${context().phase}:unhandledrejection` }, event.reason);
   };
   window.addEventListener("error", onError);
