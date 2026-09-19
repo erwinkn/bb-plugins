@@ -10,10 +10,12 @@
  * (`bb.sdk.environments.pullRequest`, the same `gh pr view` the sidebar chip
  * uses): the PR of the thread environment's branch is linked with source
  * `branch` on `thread.idle`, but only for a thread-dedicated worktree whose
- * branch is not the environment's default. Manual links come from the agent
- * tools, the CLI, and the panel (`agent` / `user`), and from "Review with
- * agent" spawns (`spawn`). The `trigger` column records which entrypoint
- * created the link for forensics.
+ * branch is not the environment's default. The lookup's outcome is cached
+ * per environment for 60 s so bursts of idle events do not repeat it; the
+ * panel's explicit "Link current branch PR" action bypasses the cache.
+ * Manual links come from the agent tools, the CLI, and the panel
+ * (`agent` / `user`), and from "Review with agent" spawns (`spawn`). The
+ * `trigger` column records which entrypoint created the link for forensics.
  */
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
@@ -217,9 +219,115 @@ export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
     return true;
   };
 
+  /**
+   * Short-TTL cache for the branch link lookup. `decisions` holds what an
+   * environment's branch lookup concluded, keyed by environment id so sibling
+   * threads on one checkout share a single `environments.pullRequest` call;
+   * `threadEnvironments` memoizes the thread → environment resolution so a
+   * repeat `thread.idle` needs no SDK call at all. Entries live for
+   * BRANCH_LINK_TTL_MS, `panel-action` always bypasses the cache (it is the
+   * user's explicit "check now", so a just-opened PR links immediately), and
+   * `removeThread` drops a thread's memo so a deleted thread cannot replay a
+   * stale link.
+   */
+  const BRANCH_LINK_TTL_MS = 60_000;
+  type BranchLinkTrigger = "thread-idle" | "panel-action";
+  /**
+   * What one branch lookup concluded. `linked` replays as a local `link()`
+   * call for the asking thread; `unlinked` covers every negative outcome —
+   * `reason` is the diagnostic for the ones worth logging (guard skips and
+   * lookup failures), null for the quiet ones (no PR, lookup unavailable,
+   * unparseable URL).
+   */
+  type BranchLinkDecision =
+    | { kind: "linked"; ref: PullRequestRef; title: string | null; state: string | null }
+    | { kind: "unlinked"; reason: string | null };
+  const decisions = new Map<string, { trigger: BranchLinkTrigger; decision: BranchLinkDecision; expiresAt: number }>();
+  const threadEnvironments = new Map<string, { environmentId: string; expiresAt: number }>();
+  /** Last seen outcome per scope (`env:<id>` / `thread:<id>`); repeats stay quiet. */
+  const loggedOutcomes = new Map<string, string>();
+
+  const logOnce = (scope: string, outcome: string, message: string): void => {
+    if (loggedOutcomes.get(scope) === outcome) return;
+    loggedOutcomes.set(scope, outcome);
+    bb.log.debug(message);
+  };
+
+  /** Entries expire lazily on read; sweep only when a map grows past churn scale. */
+  const pruneExpired = <T extends { expiresAt: number }>(map: Map<string, T>): void => {
+    const now = Date.now();
+    for (const [key, entry] of map) if (entry.expiresAt <= now) map.delete(key);
+  };
+
   const removeThread = (threadId: string): void => {
+    threadEnvironments.delete(threadId);
     const result = db.prepare("DELETE FROM thread_pull_requests WHERE thread_id = ?").run(threadId);
     if (result.changes > 0) bb.realtime.publish(PULL_REQUESTS_CHANGED, { threadId });
+  };
+
+  /** Apply a cached or freshly-made decision: local writes only, no SDK calls. */
+  const applyDecision = (
+    threadId: string,
+    environmentId: string,
+    decision: BranchLinkDecision,
+    trigger: BranchLinkTrigger,
+  ): { environmentId: string; link: ThreadPullRequest | null } => {
+    if (decision.kind !== "linked") return { environmentId, link: null };
+    return {
+      environmentId,
+      link: link({ threadId, ...decision.ref, source: "branch", trigger, title: decision.title, state: decision.state }).link,
+    };
+  };
+
+  /**
+   * Run the real lookups (`environments.get`, then `environments.pullRequest`)
+   * and record the outcome as the environment's cached decision. Skip reasons
+   * log once per environment until the decision changes instead of once per
+   * idle event.
+   */
+  const lookupBranchLink = async (
+    threadId: string,
+    environmentId: string,
+    trigger: BranchLinkTrigger,
+  ): Promise<{ environmentId: string; link: ThreadPullRequest | null }> => {
+    const decide = (decision: BranchLinkDecision) => {
+      decisions.set(environmentId, { trigger, decision, expiresAt: Date.now() + BRANCH_LINK_TTL_MS });
+      const scope = `env:${environmentId}`;
+      const outcome = decision.kind === "linked" ? `linked:${decision.ref.repo}#${decision.ref.number}` : `unlinked:${decision.reason ?? "none"}`;
+      // One debug line per decision change, not per idle: quiet outcomes
+      // (absent/unavailable) update the seen outcome without logging.
+      if (loggedOutcomes.get(scope) !== outcome) {
+        loggedOutcomes.set(scope, outcome);
+        if (decision.kind === "unlinked" && decision.reason !== null) {
+          bb.log.debug(`branch pull request link skipped for thread ${threadId} (${trigger}): ${decision.reason}`);
+        }
+      }
+      return applyDecision(threadId, environmentId, decision, trigger);
+    };
+    try {
+      const environment = await bb.sdk.environments.get({ environmentId });
+      const branchName = environment.branchName ?? "";
+      if (branchName === "") return decide({ kind: "unlinked", reason: "the environment has no branch" });
+      if (trigger === "thread-idle") {
+        if (environment.isWorktree === false) {
+          return decide({ kind: "unlinked", reason: `environment ${environmentId} is a shared checkout, not a thread-owned worktree` });
+        }
+        if (environment.defaultBranch !== null && branchName === environment.defaultBranch) {
+          return decide({ kind: "unlinked", reason: `branch ${branchName} is the environment's default branch` });
+        }
+      }
+      const result = await bb.sdk.environments.pullRequest({ environmentId });
+      if (result.outcome !== "available") return decide({ kind: "unlinked", reason: null });
+      const head = result.pullRequest.headRefName;
+      if (head !== branchName) {
+        return decide({ kind: "unlinked", reason: `pull request head ${head === "" ? "?" : head} does not match branch ${branchName}` });
+      }
+      const ref = parsePullRequestUrl(result.pullRequest.url);
+      if (ref === null) return decide({ kind: "unlinked", reason: null });
+      return decide({ kind: "linked", ref, title: result.pullRequest.title, state: result.pullRequest.state });
+    } catch (error) {
+      return decide({ kind: "unlinked", reason: `the lookup failed: ${String(error)}` });
+    }
   };
 
   /**
@@ -236,6 +344,11 @@ export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
    * branch. An explicit `panel-action` skips the worktree and default-branch
    * checks — the user asked — but still requires the head match.
    *
+   * `thread-idle` replays the environment's cached decision while it is
+   * fresh; `panel-action` never reads the cache. A `linked` replay still runs
+   * `link()` for the asking thread, so attribution to sibling threads on the
+   * same environment matches the uncached behavior.
+   *
    * Silent on lookup failures: `unavailable` (no gh, non-GitHub remote) and
    * `absent` are normal outcomes, not errors.
    */
@@ -243,49 +356,35 @@ export function createLinkStore(bb: BbPluginApi, deps: LinkStoreDeps = {}) {
     threadId: string,
     trigger: "thread-idle" | "panel-action",
   ): Promise<{ environmentId: string | null; link: ThreadPullRequest | null }> => {
+    if (threadEnvironments.size > 256) pruneExpired(threadEnvironments);
+    if (decisions.size > 256) pruneExpired(decisions);
+    const now = Date.now();
     let environmentId: string | null = null;
-    const skip = (reason: string) => {
-      bb.log.debug(`branch pull request link skipped for thread ${threadId} (${trigger}): ${reason}`);
-      return { environmentId, link: null };
-    };
-    try {
-      const thread = await bb.sdk.threads.get({ threadId });
-      if (thread.deletedAt || !thread.environmentId) return { environmentId: null, link: null };
-      environmentId = thread.environmentId;
-      const environment = await bb.sdk.environments.get({ environmentId });
-      const branchName = environment.branchName ?? "";
-      if (branchName === "") return skip("the environment has no branch");
-      if (trigger === "thread-idle") {
-        if (environment.isWorktree === false) {
-          return skip(`environment ${environmentId} is a shared checkout, not a thread-owned worktree`);
-        }
-        if (environment.defaultBranch !== null && branchName === environment.defaultBranch) {
-          return skip(`branch ${branchName} is the environment's default branch`);
-        }
-      }
-      const result = await bb.sdk.environments.pullRequest({ environmentId });
-      if (result.outcome !== "available") return { environmentId, link: null };
-      const head = result.pullRequest.headRefName;
-      if (head !== branchName) {
-        return skip(`pull request head ${head === "" ? "?" : head} does not match branch ${branchName}`);
-      }
-      const ref = parsePullRequestUrl(result.pullRequest.url);
-      if (ref === null) return { environmentId, link: null };
-      return {
-        environmentId,
-        link: link({
-          threadId,
-          ...ref,
-          source: "branch",
-          trigger,
-          title: result.pullRequest.title,
-          state: result.pullRequest.state,
-        }).link,
-      };
-    } catch (error) {
-      bb.log.debug(`branch pull request lookup for thread ${threadId} failed: ${String(error)}`);
-      return { environmentId, link: null };
+    if (trigger === "thread-idle") {
+      const memo = threadEnvironments.get(threadId);
+      if (memo !== undefined && memo.expiresAt > now) environmentId = memo.environmentId;
     }
+    if (environmentId === null) {
+      try {
+        const thread = await bb.sdk.threads.get({ threadId });
+        if (thread.deletedAt || !thread.environmentId) return { environmentId: null, link: null };
+        environmentId = thread.environmentId;
+        threadEnvironments.set(threadId, { environmentId, expiresAt: now + BRANCH_LINK_TTL_MS });
+      } catch (error) {
+        logOnce(`thread:${threadId}`, `error:${String(error)}`, `branch pull request lookup for thread ${threadId} failed: ${String(error)}`);
+        return { environmentId: null, link: null };
+      }
+    }
+    if (trigger === "thread-idle") {
+      const cached = decisions.get(environmentId);
+      // A `panel-action` entry is never replayed for thread-idle: the explicit
+      // action skips the worktree and default-branch guards, so its outcome is
+      // not a decision thread-idle would have made — it just expires the slot.
+      if (cached !== undefined && cached.trigger === "thread-idle" && cached.expiresAt > now) {
+        return applyDecision(threadId, environmentId, cached.decision, trigger);
+      }
+    }
+    return lookupBranchLink(threadId, environmentId, trigger);
   };
 
   const settled = () => Promise.all(chains.values()).then(() => undefined);

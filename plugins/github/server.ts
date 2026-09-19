@@ -627,9 +627,9 @@ export default async function plugin(bb: BbPluginApi) {
   });
   // A turn just ended: if the agent opened a PR on the thread's branch, BB's
   // lookup now sees it and the link is recorded — but only for eligible
-  // (thread-dedicated worktree, non-default branch) environments. The server
-  // caches the lookup per environment for 10 s, so this is one `gh pr view`
-  // at most per turn.
+  // (thread-dedicated worktree, non-default branch) environments. The link
+  // store caches the decision per environment for 60 s, so bursts of idle
+  // events on one environment cost a single lookup, not one per event.
   bb.events.on("thread.idle", async ({ thread }) => {
     await links.refreshBranchLink(thread.id, "thread-idle");
   });

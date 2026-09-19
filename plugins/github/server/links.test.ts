@@ -336,3 +336,97 @@ describe("pull request links", () => {
     expect((link?.instructions ?? "").length).toBeLessThan(4096);
   });
 });
+
+describe("branch link decision cache", () => {
+  const availablePull: PullOutcome = {
+    outcome: "available",
+    pullRequest: { url: "https://github.com/acme/widgets/pull/53", title: "Icon script", state: "open", headRefName: "feature" },
+  };
+  const idle = (harness: Awaited<ReturnType<typeof load>>["harness"], threadId: string) =>
+    harness.emitThreadEvent("thread.idle", { thread: makeThreadResponse({ id: threadId, environmentId: "env-1" }), lastAssistantText: null });
+
+  it("repeats no SDK calls for a second idle of the same thread and shares the lookup across sibling threads", async () => {
+    const { harness } = await load({ branchPull: availablePull });
+    await idle(harness, "thr-c1");
+    await idle(harness, "thr-c1");
+    await idle(harness, "thr-c2");
+    // One environment lookup and one branch PR lookup serve all three idles;
+    // only the new sibling needed its own thread lookup.
+    expect(harness.inspection.sdk.callsTo("threads.get")).toHaveLength(2);
+    expect(harness.inspection.sdk.callsTo("environments.get")).toHaveLength(1);
+    expect(harness.inspection.sdk.callsTo("environments.pullRequest")).toHaveLength(1);
+    const first = (await harness.callRpc("listPullRequests", { threadId: "thr-c1" })) as { links: Array<Record<string, unknown>> };
+    const second = (await harness.callRpc("listPullRequests", { threadId: "thr-c2" })) as { links: Array<Record<string, unknown>> };
+    expect(first.links).toEqual([expect.objectContaining({ repo: "acme/widgets", number: 53, source: "branch", trigger: "thread-idle" })]);
+    expect(second.links).toEqual([expect.objectContaining({ repo: "acme/widgets", number: 53, source: "branch", trigger: "thread-idle" })]);
+  });
+
+  it("runs a fresh lookup once the decision is older than the TTL", async () => {
+    const { harness } = await load({ branchPull: availablePull });
+    vi.useFakeTimers();
+    try {
+      await idle(harness, "thr-ttl");
+      vi.advanceTimersByTime(61_000);
+      await idle(harness, "thr-ttl");
+      expect(harness.inspection.sdk.callsTo("threads.get")).toHaveLength(2);
+      expect(harness.inspection.sdk.callsTo("environments.get")).toHaveLength(2);
+      expect(harness.inspection.sdk.callsTo("environments.pullRequest")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("panel action bypasses the cache so a just-opened PR links immediately", async () => {
+    const { harness } = await load({ branchPull: { outcome: "absent" } });
+    await idle(harness, "thr-panel-cache");
+    expect(harness.inspection.sdk.callsTo("environments.pullRequest")).toHaveLength(1);
+    expect(await harness.callRpc("listPullRequests", { threadId: "thr-panel-cache" })).toEqual({
+      links: [],
+      environmentId: "env-1",
+    });
+
+    // The PR appears within the TTL; the explicit action must not see the
+    // cached "absent" decision.
+    harness.inspection.sdk.stub("environments.pullRequest", async () => availablePull);
+    const result = (await harness.callRpc("linkBranchPullRequest", { threadId: "thr-panel-cache" })) as {
+      link: Record<string, unknown> | null;
+    };
+    expect(result.link).toMatchObject({ repo: "acme/widgets", number: 53, source: "branch", trigger: "panel-action" });
+    expect(harness.inspection.sdk.callsTo("environments.pullRequest")).toHaveLength(2);
+  });
+
+  it("caches a skip decision and logs it only while the decision changes", async () => {
+    const { harness } = await load({ environment: { isWorktree: false, branchName: "dev", defaultBranch: "main" } });
+    vi.useFakeTimers();
+    try {
+      await idle(harness, "thr-s1");
+      await idle(harness, "thr-s1");
+      await idle(harness, "thr-s2");
+      expect(harness.inspection.sdk.callsTo("environments.get")).toHaveLength(1);
+      expect(harness.inspection.sdk.callsTo("environments.pullRequest")).toHaveLength(0);
+      const skips = () =>
+        harness.logEntries.filter((log) => log.level === "debug" && log.message.includes("shared checkout"));
+      expect(skips()).toHaveLength(1);
+
+      // Past the TTL the lookup runs again; the unchanged decision stays quiet.
+      vi.advanceTimersByTime(61_000);
+      await idle(harness, "thr-s1");
+      expect(harness.inspection.sdk.callsTo("environments.get")).toHaveLength(2);
+      expect(skips()).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not replay a cached link for a deleted thread", async () => {
+    const { harness } = await load({ branchPull: availablePull });
+    await idle(harness, "thr-gone");
+    expect(harness.inspection.sdk.callsTo("environments.pullRequest")).toHaveLength(1);
+
+    await harness.emitThreadEvent("thread.deleted", { thread: makeThreadResponse({ id: "thr-gone" }) });
+    harness.inspection.sdk.stub("threads.get", async () => makeThreadResponse({ id: "thr-gone", environmentId: "env-1", deletedAt: Date.now() }));
+    await idle(harness, "thr-gone");
+    expect(harness.inspection.sdk.callsTo("environments.pullRequest")).toHaveLength(1);
+    expect(await harness.callRpc("listPullRequests", { threadId: "thr-gone" })).toEqual({ links: [], environmentId: null });
+  });
+});
