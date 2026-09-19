@@ -239,9 +239,30 @@ function Group({
   );
 }
 
+// Thread arrays arrive with a fresh identity per host update, but a
+// content-checked snapshot keeps memoized derivations stable across unrelated
+// re-renders and still notices in-place edits (the test harness mutates the
+// same array to model an update).
+function useStableArray<T>(value: readonly T[]): readonly T[] {
+  const ref = useRef<{ snapshot: readonly T[]; result: readonly T[] } | null>(
+    null,
+  );
+  const prev = ref.current;
+  if (
+    prev &&
+    prev.snapshot.length === value.length &&
+    prev.snapshot.every((item, index) => item === value[index])
+  )
+    return prev.result;
+  const result = [...value];
+  ref.current = { snapshot: result, result };
+  return result;
+}
+
 function ThreadsList(props: PluginThreadListProps) {
-  const { status, threads: hostThreads, projects } =
+  const { status, threads: rawThreads, projects } =
     experimental_useSidebarThreads();
+  const hostThreads = useStableArray(rawThreads);
   const state = useClientState();
   const [error, setError] = useState<string | null>(null);
   const report = (cause: unknown) =>
@@ -286,7 +307,10 @@ function ThreadsList(props: PluginThreadListProps) {
   const snoozes = useSnooze();
   const snoozePresets = useSnoozePresets();
   const snoozeRpc = useRpc<typeof snoozeContract>();
-  const scope = resolveScope(spaces.catalog, state.spaceId);
+  const scope = useMemo(
+    () => resolveScope(spaces.catalog, state.spaceId),
+    [spaces.catalog, state.spaceId],
+  );
   const scopeKey =
     scope.kind === "space" ? `space:${scope.space.id}` : scope.kind;
   // Space and project management lives on the Spaces page.
@@ -308,17 +332,20 @@ function ThreadsList(props: PluginThreadListProps) {
   const projectRpc = useRpc<typeof projectContract>();
   // The library holds active threads only; archives never join it.
   const archives = useArchives(
-    threads,
     state.showArchives && scope.kind !== "library",
   );
-  const archived = state.showArchives
-    ? archives.threads
-        .filter((thread) => inScope(scope, thread.projectId))
-        .map((thread) => ({
-          thread,
-          status: "done" as const,
-        }))
-    : [];
+  const archived = useMemo(
+    () =>
+      state.showArchives
+        ? archives.threads
+            .filter((thread) => inScope(scope, thread.projectId))
+            .map((thread) => ({
+              thread,
+              status: "done" as const,
+            }))
+        : [],
+    [state.showArchives, archives.threads, scope],
+  );
   // github-prs links for every listed thread in one bulk call; archived
   // rows get the same chip when the archive list is open.
   const { links: linkedPullRequests, branchPrEligible } =
@@ -487,118 +514,189 @@ function ThreadsList(props: PluginThreadListProps) {
       threadTitle(thread),
     ]),
   );
-  const knownDrafts = new Set(state.drafts);
+  const knownDrafts = useMemo(() => new Set(state.drafts), [state.drafts]);
   // Saved threads and every descendant of a member stay out of the active
   // view; the library scope inverts the same set to list saved families.
-  const saved = savedThreadIds(threads, library.memberIds);
+  const saved = useMemo(
+    () => savedThreadIds(threads, new Set(library.doc.ids)),
+    [threads, library.doc],
+  );
   // A sleeping snooze hides the thread and its descendants, like a save; a
-  // woke one keeps the thread in Needs Attention until it is opened.
-  const sleeping = new Map<string, SnoozeEntry>();
-  const wokeIds = new Set<string>();
-  for (const entry of snoozes.doc.entries) {
-    if (isSleeping(entry, now)) sleeping.set(entry.threadId, entry);
-    else if (isWoke(entry)) wokeIds.add(entry.threadId);
-  }
-  const snoozedIds = savedThreadIds(threads, new Set(sleeping.keys()));
-  const inView = (thread: (typeof threads)[number]) =>
-    thread.isArchived
-      ? false
-      : scope.kind === "library"
-        ? saved.has(thread.id)
-        : !saved.has(thread.id) && inScope(scope, thread.projectId);
-  const withStatus = (thread: (typeof threads)[number]) => ({
-    thread,
-    status: statusOf(
+  // woke one keeps the thread in Needs Attention until it is opened. The 60 s
+  // tick only matters while entries exist, so an empty document does not
+  // rebuild the trees below on every tick.
+  const snoozeTick = snoozes.doc.entries.length ? now : 0;
+  const { sleeping, wokeIds } = useMemo(() => {
+    const sleeping = new Map<string, SnoozeEntry>();
+    const wokeIds = new Set<string>();
+    for (const entry of snoozes.doc.entries) {
+      if (isSleeping(entry, snoozeTick)) sleeping.set(entry.threadId, entry);
+      else if (isWoke(entry)) wokeIds.add(entry.threadId);
+    }
+    return { sleeping, wokeIds };
+  }, [snoozes.doc, snoozeTick]);
+  const snoozedIds = useMemo(
+    () => savedThreadIds(threads, new Set(sleeping.keys())),
+    [threads, sleeping],
+  );
+  const inView = useCallback(
+    (thread: (typeof threads)[number]) =>
+      thread.isArchived
+        ? false
+        : scope.kind === "library"
+          ? saved.has(thread.id)
+          : !saved.has(thread.id) && inScope(scope, thread.projectId),
+    [scope, saved],
+  );
+  const withStatus = useCallback(
+    (thread: (typeof threads)[number]) => ({
       thread,
-      knownDrafts.has(`thread:${thread.id}`),
-      wokeIds.has(thread.id),
-    ),
-  });
+      status: statusOf(
+        thread,
+        knownDrafts.has(`thread:${thread.id}`),
+        wokeIds.has(thread.id),
+      ),
+    }),
+    [knownDrafts, wokeIds],
+  );
   // Scope membership applies before pins and families: a pinned thread or a
   // descendant outside the scope stays hidden, and an inside child whose
   // parent is outside becomes a root. Titles stay unfiltered for parent labels.
-  const available = threads
-    .filter((thread) => inView(thread) && !snoozedIds.has(thread.id))
-    .map(withStatus);
+  const available = useMemo(
+    () =>
+      threads
+        .filter((thread) => inView(thread) && !snoozedIds.has(thread.id))
+        .map(withStatus),
+    [threads, inView, snoozedIds, withStatus],
+  );
   // Snoozed families keep their scope and sort by wake time, soonest first.
-  const snoozed = buildThreadTree(
-    threads
-      .filter((thread) => inView(thread) && snoozedIds.has(thread.id))
-      .map(withStatus),
-    state.sortBy,
-    state.sortDirection,
-  ).sort(
-    (a, b) =>
-      (sleeping.get(a.thread.id)?.until ?? 0) -
-      (sleeping.get(b.thread.id)?.until ?? 0),
+  const snoozed = useMemo(
+    () =>
+      buildThreadTree(
+        threads
+          .filter((thread) => inView(thread) && snoozedIds.has(thread.id))
+          .map(withStatus),
+        state.sortBy,
+        state.sortDirection,
+      ).sort(
+        (a, b) =>
+          (sleeping.get(a.thread.id)?.until ?? 0) -
+          (sleeping.get(b.thread.id)?.until ?? 0),
+      ),
+    [
+      threads,
+      inView,
+      snoozedIds,
+      withStatus,
+      sleeping,
+      state.sortBy,
+      state.sortDirection,
+    ],
   );
-  const pinnedIds = pinnedThreadIds(available);
-  const pinned = buildThreadTree(
-    available.filter(({ thread }) => pinnedIds.has(thread.id)),
-    state.sortBy,
-    state.sortDirection,
+  const pinnedIds = useMemo(() => pinnedThreadIds(available), [available]);
+  const pinned = useMemo(
+    () =>
+      buildThreadTree(
+        available.filter(({ thread }) => pinnedIds.has(thread.id)),
+        state.sortBy,
+        state.sortDirection,
+      ),
+    [available, pinnedIds, state.sortBy, state.sortDirection],
   );
-  const visible = available.filter(
-    ({ thread, status }) =>
-      !pinnedIds.has(thread.id) && !state.hidden.includes(status),
+  const visible = useMemo(
+    () =>
+      available.filter(
+        ({ thread, status }) =>
+          !pinnedIds.has(thread.id) && !state.hidden.includes(status),
+      ),
+    [available, pinnedIds, state.hidden],
   );
   // Thread and project snapshots can arrive separately. Keep unmatched
   // threads and new drafts navigable until project metadata is available.
-  const displayProjects = new Map(
-    projects
-      .filter((project) => inScope(scope, project.id))
-      .map((project) => [
-        project.id,
-        {
-          id: project.id,
-          name: projectLabel(project),
-          isPersonal: project.isPersonal,
-          known: true,
-        },
-      ]),
+  const displayProjects = useMemo(() => {
+    const display = new Map(
+      projects
+        .filter((project) => inScope(scope, project.id))
+        .map((project) => [
+          project.id,
+          {
+            id: project.id,
+            name: projectLabel(project),
+            isPersonal: project.isPersonal,
+            known: true,
+          },
+        ]),
+    );
+    for (const { thread } of visible) {
+      if (!display.has(thread.projectId)) {
+        display.set(thread.projectId, {
+          id: thread.projectId,
+          name: "Unknown project",
+          isPersonal: false,
+          known: false,
+        });
+      }
+    }
+    for (const key of knownDrafts) {
+      if (!key.startsWith("new:")) continue;
+      const projectId = key.slice(4);
+      if (
+        projectId &&
+        inScope(scope, projectId) &&
+        !display.has(projectId)
+      ) {
+        display.set(projectId, {
+          id: projectId,
+          name: "Unknown project",
+          isPersonal: false,
+          known: false,
+        });
+      }
+    }
+    return display;
+  }, [projects, scope, visible, knownDrafts]);
+  const newDrafts = useMemo(
+    () =>
+      scope.kind === "library"
+        ? []
+        : [...displayProjects.values()].filter(
+            (project) =>
+              knownDrafts.has(`new:${project.id}`) &&
+              !state.hidden.includes("draft"),
+          ),
+    [scope.kind, displayProjects, knownDrafts, state.hidden],
   );
-  for (const { thread } of visible) {
-    if (!displayProjects.has(thread.projectId)) {
-      displayProjects.set(thread.projectId, {
-        id: thread.projectId,
-        name: "Unknown project",
-        isPersonal: false,
-        known: false,
-      });
+  const families = useMemo(
+    () =>
+      buildThreadTree(visible, state.sortBy, state.sortDirection).map(
+        (node) => ({
+          node,
+          status: familyStatus(node),
+        }),
+      ),
+    [visible, state.sortBy, state.sortDirection],
+  );
+  // Project grouping builds one tree per project, only in that view.
+  const projectTrees = useMemo(() => {
+    const trees = new Map<string, ThreadNode[]>();
+    if (state.groupBy !== "project") return trees;
+    const byProject = new Map<string, typeof visible>();
+    for (const row of visible) {
+      const rows = byProject.get(row.thread.projectId);
+      if (rows) rows.push(row);
+      else byProject.set(row.thread.projectId, [row]);
     }
-  }
-  for (const key of knownDrafts) {
-    if (!key.startsWith("new:")) continue;
-    const projectId = key.slice(4);
-    if (
-      projectId &&
-      inScope(scope, projectId) &&
-      !displayProjects.has(projectId)
-    ) {
-      displayProjects.set(projectId, {
-        id: projectId,
-        name: "Unknown project",
-        isPersonal: false,
-        known: false,
-      });
-    }
-  }
-  const newDrafts =
-    scope.kind === "library"
-      ? []
-      : [...displayProjects.values()].filter(
-          (project) =>
-            knownDrafts.has(`new:${project.id}`) &&
-            !state.hidden.includes("draft"),
-        );
-  const families = buildThreadTree(
-    visible,
-    state.sortBy,
-    state.sortDirection,
-  ).map((node) => ({
-    node,
-    status: familyStatus(node),
-  }));
+    for (const [id, rows] of byProject)
+      trees.set(
+        id,
+        buildThreadTree(rows, state.sortBy, state.sortDirection),
+      );
+    return trees;
+  }, [state.groupBy, visible, state.sortBy, state.sortDirection]);
+  const archivedTree = useMemo(
+    () => buildThreadTree(archived, state.sortBy, state.sortDirection),
+    [archived, state.sortBy, state.sortDirection],
+  );
   const openNew = (id?: string) => {
     actions.openNewThread({ projectId: id, focusPrompt: true });
     props.onNavigate();
@@ -938,13 +1036,7 @@ function ThreadsList(props: PluginThreadListProps) {
                             : -1,
                       )
                       .map((project) => {
-                        const rows = buildThreadTree(
-                          visible.filter(
-                            (row) => row.thread.projectId === project.id,
-                          ),
-                          state.sortBy,
-                          state.sortDirection,
-                        );
+                        const rows = projectTrees.get(project.id) ?? [];
                         const drafts = newDrafts.filter(
                           (draft) => draft.id === project.id,
                         );
@@ -1084,11 +1176,7 @@ function ThreadsList(props: PluginThreadListProps) {
                     <ThreadRoots
                       label="Archived"
                       pageSize={10}
-                      nodes={buildThreadTree(
-                        archived,
-                        state.sortBy,
-                        state.sortDirection,
-                      )}
+                      nodes={archivedTree}
                       drafts={[]}
                       activeThreadId={props.activeThreadId}
                       renderRow={(node) => row(node)}
