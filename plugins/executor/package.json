@@ -1,0 +1,39 @@
+{
+  "name": "bb-plugin-executor",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "bb": ">=0.43.1",
+    "bbPluginSdk": ">=0.4.87 <0.5"
+  },
+  "bb": {
+    "name": "Executor",
+    "description": "Provider-agnostic access to Erwin's Executor MCP gateway: sandboxed TypeScript against connected integrations (cloudflare, github, google_*, linear, notion, and more) plus saved UI artifacts, in every bb thread.",
+    "branding": {
+      "icon": "Terminal"
+    },
+    "server": "./server.ts",
+    "skills": [
+      "skills"
+    ]
+  },
+  "dependencies": {
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.87",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "better-sqlite3": "^12.0.0",
+    "cron-parser": "^5.5.0",
+    "hono": "^4.11.9",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}

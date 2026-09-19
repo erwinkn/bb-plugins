@@ -46,6 +46,12 @@ Automations. See [Hide plugin nav menus](plugins/remove-plugin-ellipsis/README.m
 editing, JSON storage outside Git, revision history, and agent tools. See
 [Scratchpad](plugins/scratchpad/README.md).
 
+`executor` proxies Erwin's Executor MCP gateway into agent tools on every
+provider: `executor_execute` runs sandboxed TypeScript against his connected
+integrations, `executor_resume` continues paused runs, and artifact tools
+manage saved UIs. Auth is a plugin-secret OAuth token pair with automatic
+refresh, or a CF Access service token. See [Executor](plugins/executor/README.md).
+
 `github` (plugin id `github-prs`) forks BB's official GitHub plugin and adds
 several linked pull requests per thread, a GitHub PR side panel that lists
 them and shows a read-only PR overview, agent tools and a `bb github link`
