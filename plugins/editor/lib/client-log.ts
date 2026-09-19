@@ -23,10 +23,25 @@ let sender: ClientLogRpc | null = null;
 let queue: Promise<unknown> = Promise.resolve();
 let installedSenders = 0;
 
+interface PendingEvent {
+  level: LogLevel;
+  event: string;
+  fields: LogFields;
+}
+
+/**
+ * Events that arrived before any surface bound a sender — a crash during a
+ * surface's first render, for one — wait here for the next bind rather than
+ * dropping. Bounded, so an unmounted page cannot grow it forever.
+ */
+const pendingEvents: PendingEvent[] = [];
+const PENDING_EVENT_LIMIT = 100;
+
 /** Bound while at least one editor surface is mounted. */
 export function bindClientLog(rpc: ClientLogRpc): () => void {
   sender = rpc;
   installedSenders += 1;
+  for (const held of pendingEvents.splice(0)) logClient(held.level, held.event, held.fields);
   setSessionLogger((event, fields) => {
     const clean: LogFields = {};
     for (const [key, value] of Object.entries(fields)) {
@@ -46,10 +61,15 @@ export function bindClientLog(rpc: ClientLogRpc): () => void {
 
 /** One event to the plugin log. Fire-and-forget; logging must never break the editor. */
 export function logClient(level: LogLevel, event: string, fields: LogFields = {}): void {
+  const full: LogFields = { version: PLUGIN_VERSION, ...fields };
   const rpc = sender;
-  if (rpc === null) return;
+  if (rpc === null) {
+    pendingEvents.push({ level, event, fields: full });
+    if (pendingEvents.length > PENDING_EVENT_LIMIT) pendingEvents.shift();
+    return;
+  }
   queue = queue.then(() =>
-    rpc.call("clientLog", { level, event, fields: { version: PLUGIN_VERSION, ...fields } }).catch(() => null),
+    rpc.call("clientLog", { level, event, fields: full }).catch(() => null),
   );
 }
 

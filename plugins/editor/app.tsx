@@ -15,6 +15,7 @@ import { EDITOR_COMMANDS, isCommandAvailable, runEditorCommand } from "@/lib/edi
 import { Workbench, type WorkbenchProps } from "@/components/Workbench";
 import { DiffWorkbench } from "@/components/DiffWorkbench";
 import { BbDiffRenderer } from "@/components/BbDiffRenderer";
+import { GuardedSurface } from "@/components/SurfaceBoundary";
 
 type SetPref = WorkbenchProps["onSetPref"];
 
@@ -158,12 +159,47 @@ function NewThreadFilesPanel({ projectId, params }: PluginNewThreadPanelProps) {
   return <FilesPanelBody workspace={workspace} initialPath={pathParam(params)} />;
 }
 
+// Every slot body sits behind a surface boundary: a crash stays inside the
+// plugin, reported and retryable, instead of BB disabling the slot for the
+// session. The wrappers are named so the slot registry keeps stable components.
+function GuardedFileOpener(props: PluginFileOpenerProps) {
+  return (
+    <GuardedSurface phase="file-opener" path={props.path}>
+      <FileOpener {...props} />
+    </GuardedSurface>
+  );
+}
+
+function GuardedThreadFilesPanel(props: PluginThreadPanelProps) {
+  return (
+    <GuardedSurface phase="files-panel" path={pathParam(props.params)}>
+      <ThreadFilesPanel {...props} />
+    </GuardedSurface>
+  );
+}
+
+function GuardedThreadChangesPanel(props: PluginThreadPanelProps) {
+  return (
+    <GuardedSurface phase="changes-panel" path={pathParam(props.params)}>
+      <ThreadChangesPanel {...props} />
+    </GuardedSurface>
+  );
+}
+
+function GuardedNewThreadFilesPanel(props: PluginNewThreadPanelProps) {
+  return (
+    <GuardedSurface phase="files-panel" path={pathParam(props.params)}>
+      <NewThreadFilesPanel {...props} />
+    </GuardedSurface>
+  );
+}
+
 export default definePluginApp((app) => {
   app.slots.fileOpener({
     id: "editor",
     title: "Editor",
     extensions: CLAIMED_EXTENSIONS,
-    component: FileOpener,
+    component: GuardedFileOpener,
   });
 
   app.slots.threadPanelAction({
@@ -171,7 +207,7 @@ export default definePluginApp((app) => {
     title: "Files",
     icon: "Folder",
     layout: "flush",
-    component: ThreadFilesPanel,
+    component: GuardedThreadFilesPanel,
   });
 
   app.slots.threadPanelAction({
@@ -179,7 +215,7 @@ export default definePluginApp((app) => {
     title: "Changes",
     icon: "FileDiff",
     layout: "flush",
-    component: ThreadChangesPanel,
+    component: GuardedThreadChangesPanel,
   });
 
   // Exclusive: BB's timeline diffs, its diff panel's bodies and other plugins'
@@ -203,7 +239,7 @@ export default definePluginApp((app) => {
     title: "Files",
     icon: "Folder",
     layout: "flush",
-    component: NewThreadFilesPanel,
+    component: GuardedNewThreadFilesPanel,
   });
 
   for (const command of EDITOR_COMMANDS) {

@@ -85,9 +85,14 @@ export default experimental_defineHostEntry({
           // symbolic link (macOS's /tmp, for one) is resolved first and every
           // change is made relative to it.
           const realRoot = realPath(rootPath);
-          const subscription = await context.experimental_watch({ rootPath: realRoot, ignoredPaths: IGNORED }, async (event) => {
-            // The watch may already be gone; a late batch from it says nothing.
-            if (watches.get(rootPath) !== subscription) return;
+          // `let`, not `const`: an event can arrive while the call is still
+          // resolving, and reading a `const` there throws before the
+          // subscription can be checked at all.
+          let subscription: ExperimentalHostWatchSubscription | undefined;
+          subscription = await context.experimental_watch({ rootPath: realRoot, ignoredPaths: IGNORED }, async (event) => {
+            // The watch may already be gone, or still starting; a batch from
+            // outside the registered subscription says nothing.
+            if (subscription === undefined || watches.get(rootPath) !== subscription) return;
             if (event.kind === "changed") {
               const paths = event.changes.flatMap((change) => {
                 const relative = path.relative(realRoot, path.resolve(realRoot, change.path));
