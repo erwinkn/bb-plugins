@@ -1319,3 +1319,26 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
   host UIs that embed `Markdown` do not each need the workaround.
 - **Status:** not filed. Suggested title: `Markdown table breakout
   observes a scrollbar-sensitive clientWidth`.
+
+### Slot crashes are invisible to the plugin that owns them (2026-09-19)
+
+- **Where:** BB's slot error boundary (`componentDidCatch` → "slot
+  `<key>` crashed and is disabled for this session") catches a render
+  error in a plugin component, disables the slot, and only warns to the
+  browser console.
+- **Symptom:** a recurring "editor plugin crashed" report carried no
+  diagnosable trace. Boundary-caught render errors never reach
+  `window.onerror`, so a plugin's own crash telemetry sees nothing, the
+  server log sees nothing, and the slot stays disabled for the session —
+  the error message and component stack exist only in the user's browser
+  console.
+- **Workaround (editor):** every slot body now sits behind the plugin's
+  own `SurfaceBoundary`, which reports the crash through `clientLog`
+  (message + component stack) and offers Retry, so the failure is both
+  recoverable and visible in `bb plugin logs editor`.
+- **Ask:** forward the caught error to the owning plugin (a crash hook
+  or an event on the slot registration), or at least mirror it to the
+  server log, so a plugin can observe and diagnose its own slot crashes
+  without wrapping every component.
+- **Status:** not filed. Suggested title: `Let plugins observe their own
+  slot crashes (error hook or server-side report)`.
