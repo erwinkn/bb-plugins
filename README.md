@@ -1348,3 +1348,63 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
   without wrapping every component.
 - **Status:** not filed. Suggested title: `Let plugins observe their own
   slot crashes (error hook or server-side report)`.
+
+### Ambient ResizeObserver notices leak into plugin crash telemetry (2026-09-19)
+
+- **Where:** BB frontend surfaces emit a `window` `error` event whenever any
+  observer in the page needs more delivery passes than one frame allows
+  (`ResizeObserver loop completed with undelivered notifications`). The
+  editor-plugin audit traced the volume to BB's own observers, most
+  concretely the windowed thread timeline (`TimelineWindowedItems` builds a
+  `ResizeObserver` callback that calls `setHasHeight`/`setScrollMargin` while
+  observing the scroll element **and** `container.parentElement`, and the
+  virtualizer's per-item measure target mutates measurements), plus the
+  Markdown table-breakout observer writing width CSS variables.
+- **Symptom:** any plugin that installs a `window` `error` listener while its
+  surface is mounted captures these host-UI notices and reports them as its
+  own. The editor plugin logged 8,438 of them (7,454 from
+  `component-inventory.html`, which opens in BB's preview iframe with no
+  editor surface mounted at all) — roughly 700 warns/day, each one a
+  `clientLog` RPC to the server. The notice is a spec-mandated browser
+  heuristic, not a plugin crash.
+- **Workaround (editor):** the window-level `error`/`unhandledrejection`
+  handlers now drop the notice before reporting; a notice that a plugin's own
+  React boundary catches still reports as `warn`.
+- **Ask:** mark or filter this notice in BB's own reporting path, or remove
+  the observer anti-patterns (the timeline virtualizer observing
+  `parentElement` with setState callbacks) so plugin telemetry is not
+  polluted by host layout churn.
+- **Status:** not filed. Suggested title: `Ambient ResizeObserver notices
+  leak into plugin crash telemetry`.
+
+### Thread timeline builds block the event loop on large threads (2026-09-19)
+
+- **Where:** BB server timeline endpoint
+  (`GET /api/v1/threads/<id>/timeline`), which decodes the thread's `events`
+  JSON into a projection.
+- **Symptom:** an overload episode (before an 18:04 restart) produced 916
+  `Slow DB query` warnings (vs. 82 the previous day), 346 `Event loop
+  stalled` warnings, and 149 `Thread timeline build blocked the event loop`
+  warnings in ~18 h. One 756-event / 1.6 MB thread took 366 ms to project
+  with a 207 ms group-context query and a single events query up to 7.6 s;
+  the event loop stalled up to 1.08 s. A UI opening several large threads
+  concurrently compounds it.
+- **Ask:** bound the event decode/projection work (incremental or paged
+  projection, a cached summary, or streaming), and add the missing indexes
+  so a timeline build cannot block the loop for hundreds of milliseconds.
+- **Status:** not filed. Suggested title: `Thread timeline build blocks the
+  event loop on large threads`.
+
+### Account Pooler reconnect storm on transport timeout (2026-09-19)
+
+- **Where:** the builtin `account-pool` plugin's Codex/Claude transports.
+- **Symptom:** during the same overload episode the plugin log held 2,082
+  identical `Account Pooler Codex transport: WebSocket downstream, HTTPS SSE
+  upstream.` debug lines and a burst of `transport failed: ETIMEDOUT`
+  warnings across codex and claude, each failure driving a reconnect. The
+  duplicate per-connect debug line and the retry cadence both add load exactly
+  when the server is already struggling.
+- **Ask:** apply bounded/backoff reconnect attempts and drop or demote the
+  per-connect debug line (trace level, or once per account/transport change).
+- **Status:** not filed. Suggested title: `Account Pooler transport
+  reconnect storm and log spam on ETIMEDOUT`.
