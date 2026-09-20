@@ -85,7 +85,8 @@ shown as **No project** everywhere in the plugin.
 Each missing project keeps its own group until BB supplies its name.
 
 The display menu switches between Status and Project grouping and shows or hides
-each status. **Archived** is the last option under **Show statuses**, below **Done**.
+each status. **Snoozed** and **Archived** close the **Show statuses** list,
+below **Done**.
 Status groups keep the order above. Project groups sort by
 name, except **No project**, which always closes the list above Archived. Pins, roots, and siblings follow the selected date sort.
 Children in each family stay below their parent. A child's timestamp or pin does not
@@ -364,7 +365,9 @@ menu entry become **Unsnooze**.
 - A sleeping thread leaves the status groups and Pinned, together with its
   descendants (the same family rule as the library). The **Snoozed** group,
   closed by default and placed before Archived, lists sleeping families
-  soonest first, with the wake time in place of the age.
+  soonest first, with the wake time in place of the age. Unchecking
+  **Snoozed** under **Show statuses** hides the group, like Archived;
+  sleeping threads stay hidden until they wake.
 - A pinned thread can be snoozed: the snooze unpins it and remembers the
   pin, and the pin returns when the snooze ends by any route.
 - When the wake time comes, the plugin marks the thread unread through BB

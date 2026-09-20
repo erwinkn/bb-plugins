@@ -182,6 +182,20 @@ describe("snoozed group", () => {
     expect(rowsIn(section(slot, "Needs Attention"))).toEqual(["asleep", "asleep-child"]);
   });
 
+  it("hides the Snoozed group when the display option is off, keeping sleeping threads out of status groups", async () => {
+    const slot = mount();
+    await tick();
+    expect(slot.getByRole("region", { name: "Snoozed" })).toBeTruthy();
+    act(() => updateState((state) => ({ ...state, showSnoozed: false })));
+    await tick();
+    expect(slot.queryByRole("region", { name: "Snoozed" })).toBeNull();
+    expect(rowsIn(section(slot, "Done"))).toEqual(["plain"]);
+    expect(slot.container.querySelector('[data-sidebar-thread-id="asleep"]')).toBeNull();
+    act(() => updateState((state) => ({ ...state, showSnoozed: true })));
+    await tick();
+    expect(slot.getByRole("region", { name: "Snoozed" })).toBeTruthy();
+  });
+
   it("acknowledges a woke thread once it is the active thread", async () => {
     const fake = server();
     mount(fake, { activeThreadId: "woke" });

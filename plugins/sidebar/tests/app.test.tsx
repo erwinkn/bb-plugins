@@ -2364,6 +2364,7 @@ describe("activity sidebar", () => {
       "Working",
       "Draft",
       "Done",
+      "Snoozed",
       "Archived",
     ]);
     fireEvent.click(

@@ -5,6 +5,7 @@ import { STATUS_HELP, STATUS_LABEL, STATUSES } from "../lib/status";
 import { toggleValue, updateState, useClientState } from "../lib/client-state";
 import { StatusIcon } from "./status-icon";
 import { ArchiveIcon } from "./archive-icon";
+import { HostIcon } from "../lib/host-icon";
 
 export const menuItemClass =
   "flex cursor-default select-none items-center gap-2 rounded px-2 py-1.5 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground";
@@ -145,6 +146,25 @@ export function DisplayMenu() {
             <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
           </Menu.CheckboxItem>
         ))}
+        <Menu.CheckboxItem
+          checked={state.showSnoozed}
+          onSelect={(event) => event.preventDefault()}
+          onCheckedChange={(showSnoozed) =>
+            updateState((current) => ({
+              ...current,
+              showSnoozed: showSnoozed === true,
+            }))
+          }
+          className={menuItemClass}
+        >
+          <HostIcon
+            name="Clock"
+            fallback="Circle"
+            className="size-4 shrink-0 text-[var(--subtle-foreground)]"
+          />
+          <span className="flex-1">Snoozed</span>
+          <Menu.ItemIndicator aria-hidden="true">✓</Menu.ItemIndicator>
+        </Menu.CheckboxItem>
         <Menu.CheckboxItem
           checked={state.showArchives}
           onSelect={(event) => event.preventDefault()}

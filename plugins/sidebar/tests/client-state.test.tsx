@@ -27,6 +27,16 @@ describe("client state persistence", () => {
     ).toBe(false);
   });
 
+  it("shows snoozed threads by default and accepts only a boolean setting", () => {
+    expect(parseState(null).showSnoozed).toBe(true);
+    expect(parseState(JSON.stringify({ showSnoozed: false })).showSnoozed).toBe(
+      false,
+    );
+    expect(
+      parseState(JSON.stringify({ showSnoozed: "false" })).showSnoozed,
+    ).toBe(true);
+  });
+
   it("keeps consecutive updates when reads work but writes fail", () => {
     storage.setItem(KEY, JSON.stringify(parseState(null)));
     const { result } = renderHook(useClientState);

@@ -12,6 +12,7 @@ export interface ClientState {
   sortDirection: SortDirection;
   hidden: Status[];
   showArchives: boolean;
+  showSnoozed: boolean;
   collapsed: string[];
   drafts: string[];
   expandedArchives: string[];
@@ -33,6 +34,7 @@ const DEFAULT: ClientState = {
   sortDirection: "descending",
   hidden: [],
   showArchives: false,
+  showSnoozed: true,
   collapsed: [],
   drafts: [],
   expandedArchives: [],
@@ -56,6 +58,7 @@ export function parseState(raw: string | null): ClientState {
         STATUSES.includes(s as Status),
       ),
       showArchives: value.showArchives === true,
+      showSnoozed: value.showSnoozed !== false,
       collapsed: strings(value.collapsed),
       expandedArchives: strings(value.expandedArchives),
       drafts: strings(value.drafts).filter(

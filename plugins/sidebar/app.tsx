@@ -1145,7 +1145,7 @@ function ThreadsList(props: PluginThreadListProps) {
                           </Group>
                         ) : null;
                       })}
-                {snoozed.length > 0 && (
+                {state.showSnoozed && snoozed.length > 0 && (
                   <Group
                     id="snoozed"
                     title="Snoozed"
@@ -1186,7 +1186,7 @@ function ThreadsList(props: PluginThreadListProps) {
                 )}
                 {state.hidden.length < STATUSES.length &&
                   !archived.length &&
-                  !snoozed.length &&
+                  (!state.showSnoozed || !snoozed.length) &&
                   !visible.length &&
                   !pinned.length &&
                   !newDrafts.length && (
