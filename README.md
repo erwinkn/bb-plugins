@@ -1063,6 +1063,25 @@ Status: recorded 2026-09-13; no upstream issues filed. Suggested issue titles:
 `Let plugins decorate core timeline rows`.
 File in [BB issues](https://github.com/get-bb/bb/issues).
 
+### App-level "workspace mode" switch
+
+For a general-assistant plugin alongside coding work, there is no SDK surface
+that swaps the top-level app chrome — the sidebar shell, thread list
+container, and route layout are host-owned. The closest composition today is a
+`navPanel` page (full route + sidebar entry) plus `experimental_threadList`
+(exclusive sidebar list replacement) plus an `experimental_sidebarFooter`
+toggle, which approximates a "coding view / assistant view" switch but cannot
+hide or restructure the surrounding chrome.
+
+Requested host change: a first-class app-mode or workspace concept — e.g. a
+slot that lets one plugin own a named top-level mode (sidebar + main region +
+nav state) that the user switches between, or a supported way for a nav panel
+to replace the thread list while active.
+
+Status: recorded 2026-09-20; no upstream issue filed. Suggested issue title:
+`Plugin-owned app modes (switchable top-level workspaces)`.
+File in [BB issues](https://github.com/get-bb/bb/issues).
+
 ## Upstream issues
 
 Problems found while building these plugins whose fix belongs outside this
