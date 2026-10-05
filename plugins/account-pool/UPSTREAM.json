@@ -1,0 +1,346 @@
+{
+  "repository": "https://github.com/get-bb/bb",
+  "revision": "267938526dfcbc0edb228ce827b5bec202c1af97",
+  "bbAppVersion": "0.43.1",
+  "pluginVersion": "0.1.0",
+  "sdkVersion": "0.4.87",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 Michael Yong",
+  "sourceSha256": {
+    "app.test.tsx": "3150d92a4f20eb39eb7dbcc104ce0853571edde6047a4713f3ea5910ed871ed8",
+    "tsconfig.json": "2c6eee81ce6b536fdda4ffa08549a216499379bcb45527f8f99397a188e8de35",
+    "app.tsx": "52170cd7e5a352e3c0429c3becc6da0e8c710e87272948b2aa58556393c1f97f",
+    "vitest.config.ts": "294046583512ec02ce4f75d0ba2381121b5af5b961c209b9c893888e41c14162",
+    "PLUGIN_OVERVIEW.md": "dd1cb7ae845a73d3ffdb073caf863b5aa02842d8e920918445898faa62b83fc2",
+    "package.json": "74cf359926eeee5e74c1efa58cb2d482d5005c90eeb07672e32fc39be9330578",
+    "src/request-body.ts": "ab51682889548aa850505b8b3b3e14b951b5c43bf408a3228c97d3b2ad1f09ff",
+    "src/store.ts": "e4f1f033c75f8ec34bc37b71f82d197ac6906e5dd34316238b9fd0a5fc56348e",
+    "src/codex-adapter.test.ts": "de9d43257908d86daeb127dcfe8403fe0052889374b97ba7da7ad09d20dd4a6e",
+    "src/codex-device-login.test.ts": "c6c738a8b56d815e5e4dc095917a93bc1f15832a7934579d5e9c9189d6bddd82",
+    "src/server.ts": "51a0a173a022705402c0003ef5f213f1fba1d47ad6e40a01221dd4fb93b39aea",
+    "src/codex-adapter.ts": "533947b6ddbe2841f235651dffd772c6635e76ccea67fb9faeff9f05b35625df",
+    "src/claude-adapter.ts": "d8ea7bb261975b45c385d88c590db90544ecaeff59b79269fce726daf2c0ff4e",
+    "src/cli.ts": "2672b61bff4e83ae509e0b0c428fa99315bc191dac59e1be9083baa9da4213b7",
+    "src/oauth-login.ts": "455026351e927136929dbfd80a93333c24cb1cc889f3ea4c78fa1d6cb27fd2ce",
+    "src/operations.ts": "ed8d1ad80c819c1bd267fba2934120a01aae41f69c7a43a0a1766cd9e0b56428",
+    "src/credentials.ts": "b553879ea09e32406be935c19be73a4b8e70b5e5580e006c53438d70ce1887b2",
+    "src/upstream-transport.ts": "873e1e846be8422aca9176739e8bffe1c721f4d51d0c89cbe44475115d36385c",
+    "src/usage.ts": "750b435249294a6e18ebc18a17fad83102dd6a34af691495559f1b92f790b3c6",
+    "src/rpc.ts": "608063c48da8e944a61581437e79889db9fe73754f29309ad67ae952acb1f2ec",
+    "src/request-body.test.ts": "7c8159ede71d56ad6c7603f3c5e822f286f220a3f19c7fe2d999e18f3e57b3e2",
+    "src/server.test.ts": "405a5c08606cf18f940d71341f93c47afaa42b46b3b165d38b13883efa50a2c3",
+    "src/contracts.ts": "681e0c8c5bc3ce778dd1e2012ac46aaf6fbdf7fe63210ce8eddc5d2f38a4aef8",
+    "src/upstream-transport.test.ts": "105284e782705f93a9940481d8bc9ec41b98bc92380849679338f637a2fb7d81",
+    "src/oauth-login.test.ts": "e1d07c977f63e5a3cc9d46b27b3b88470bd50be73a243e388756d3eea0c6ecc1",
+    "src/realtime.ts": "034a31e535f123f29366a951a422a69e83cca8d2d745e9eb0ebcd2f85b4400ad",
+    "src/provider-adapter.ts": "77e31ff57edd706158feb20fbf02c9d4565c17cca63e1737a5f86314b437fb6e",
+    "src/codex-device-login.ts": "18fb6fe62932aba312dcd059261199bc305deedc4d772e14433cad184b819d55",
+    "src/provider-adapter.test.ts": "73a434fd834f7875e7e8f6b969443c8cf7ad505f12ca5deb011576d9ba078a79",
+    "src/store.test.ts": "642ef34706be9ddf2f5ba94f245076fe3ad67d6591df6a41675001913701bc76",
+    "src/quota.ts": "fed30cc66bd67f8b463d675302b4fc65d63bce263c667707d82bdf79ce9a34ef",
+    "src/credentials.test.ts": "fe2183f74d9b2494fd1ebaf45ef6de86bf3580f6a4daad509a0ae9889a7d3186",
+    "src/hub.ts": "f23b88b67dc00c537438c3172ac8ff1f481968798a4d85a9aa3b50e48b3d3790",
+    "skills/account-pool/SKILL.md": "d6379c6efed9d0d3eefa67c4f6d71dd80465cfca8cd29061563536999c1b0e9f",
+    "skills/account-pool/references/accounts-and-routing.md": "362be656bf07f85fbfe76616dc0b24e670805aa492c8e786efe1ec682407c96a",
+    "src/fixtures/localhost-key.pem": "02733e14f3857c8858fac5d40b68ec59a8d8ca1a02f78e17c733df7fa6a71262",
+    "src/fixtures/localhost-cert.pem": "9344777e46c1eddb9ba5f07e7a427f65ac15aca8600411a7e7cb17b3545c6ea7"
+  },
+  "vendoredUiSha256": {
+    "components/ui/button.tsx": "7b267fd11c0d62a16181be6b01da1cb0eff08e41e936cc8b0025e4700853b9c2",
+    "components/ui/coarse-pointer-sizing.ts": "4583124ca835201ebc630619ba0873887fe55b39529574cca7f5146e7814bd57",
+    "components/ui/coarse-pointer-visibility.ts": "c18e1fdfd61b06850c94151db16bacdca4ed726c085552436b7633c572f62e7c",
+    "components/ui/collapsible.tsx": "fbe07841b794e0d7d08e87ddaaafadf1dc0c63ecc8389cd2c5b4a0a3f5500df1",
+    "components/ui/dialog.tsx": "ef36b7ec02c707e1955f3de323f0dc9c121e40f384d516cf3439293454be555a",
+    "components/ui/dropdown-menu.tsx": "f7be581a851cbc13a644e6c5519bb5e69aed5da85aeb6485f1a0c9a17cc45c18",
+    "components/ui/empty-state.tsx": "f1e6ad94faeef8885a5275aa98a7e26a2219b1b5a0183228e0908a47fd016998",
+    "components/ui/hooks/use-compact-viewport.tsx": "56c7e82a62e3f0f35e6ffbaa1611569479de7f193ad20daef9f9466a44bce9e9",
+    "components/ui/hooks/use-media-query.ts": "868447cb0ac0fbdf0715adb8b9f05f0a9b2c9272234285984d77b0239232714a",
+    "components/ui/hooks/use-pointer-coarse.ts": "29936c113eca630b26af167bb694920a034216cfdcb408daef13512b9e0e9a9e",
+    "components/ui/icon-registry.ts": "6a3926625fdbed3bef2a1ff7d9df9f0898e2eb53133a095fa4cd26cbab6c00c1",
+    "components/ui/icon.tsx": "f52eae81241b0f5f220ba8e869363e82491f1769ee4a1adc5c2f56e1c75ec9bd",
+    "components/ui/input.tsx": "f87f9558bc96f3add147be53e6073a3c966f1ec3aaf1ab81b83ed48aa9f4bf95",
+    "components/ui/menu-item-hover.tsx": "f92c20ac1663e6d0264545bc56a21dc75c5b10634698332d6f8533a9256985f4",
+    "components/ui/motion.ts": "c96650e4436a54f2280efef8a953b160beae30044f36f7af4a146296d5859f82",
+    "components/ui/overlay-trigger.ts": "d6801ffff8340db9b203b22a9c23b2cf9d8b0a4c5945b7c66fe8ff1f131d7d8b",
+    "components/ui/resource-list.tsx": "d0bdd7b30695e1188c1bde5d6aa79f00e16330b39adc96dd739564908a667547",
+    "components/ui/resource-route-label.ts": "67ac26e7e1046bd04bcd2f0b83542ad6a4e40a2a3e826e3f8c8f1424f9d90cd4",
+    "components/ui/resource/atoms.tsx": "85b22208157a4f9f0bf2098925a748eab4f29ebca2c735eefe6fe2175ddd1664",
+    "components/ui/resource/collection.tsx": "9ad518bd9479dad1803994082a14907c132f9969bb0c22198ac2bc95cec4f41a",
+    "components/ui/resource/detail-controls.tsx": "1c3f314b6e8343c2dc368c7f19b8f98d752a0cbf172d709d5418602e8302fee5",
+    "components/ui/resource/detail-sections.tsx": "d50b7886843773c2124cf5930cdc10e7dc362e740a10eeeb416446a2176b2778",
+    "components/ui/resource/detail-shell.tsx": "cfd23d4b4eacd1b1e0087d491594693af00637fe393511b1ea3871850a4d9793",
+    "components/ui/resource/row.tsx": "e28e0b0dd7918f3f8bd75336c577d171602c03fe0610be71f5e243c4a604c93d",
+    "components/ui/resource/toolbar.tsx": "6d338b7fa0704efcef587e2cd1d2529d3eaac805adf0d6ed5d0e9ad079cfc3b7",
+    "components/ui/responsive-overlay.tsx": "57ba2136f660cfad2e17e80af48cc8af66d446f5a3f5fc6b12a4bc2558c262ca",
+    "components/ui/scroll-area.tsx": "f91d54480b0de618ebb20629513768e4007072eb63a87f881a70b82988f83a38",
+    "components/ui/skeleton.tsx": "c01cd8f11bd191fe7de5de2cac7b68fd2b36516d5836815bab19868c6d2dcd6d",
+    "components/ui/switch.tsx": "ff58f258401214819f620390aa4629385fe1a393df9e3798852d836a5c6468a2",
+    "components/ui/tooltip.tsx": "a5f9f59e32f4420207c571752636fdef1d36389892b1f8c5d22efecc713ff6ae",
+    "hooks/useBrowserDimmingModal.ts": "3ec72de8a9c39e94b1e3056aade77081eed3141a067f29d855098ad3f0f320c0",
+    "lib/portal-scope.ts": "cbf23e81c4436585a5e55a4893591d0cc22c189f54d004d70cb7e1a8cc72f988",
+    "lib/utils.ts": "bebe9a50d46ab609e089ed578507363110ccec8990d73fa9b86c58f221f570ac",
+    "components/ui/icon-extended.tsx": "111925eb578f87b8d37f46d39592c430ea98952a8708e82bd0b55b493e4a414d"
+  },
+  "installedRoot": "/home/exedev/.npm-global/lib/node_modules/bb-app/server/dist/builtin-plugins/account-pool",
+  "installedArtifactSha256": {
+    "package.json": "2c6ab020133d010de1146867035d646c975e75dd80fc7cadd63d8008e7a02ea2",
+    "dist/app.js": "9bc764df133543ae123140eb7f7789cff2312978c2a1dc776e92b1382c59bd6b",
+    "dist/server.meta.json": "46da809e5b3f56450c98751fa29536bd1effd89b26793e243bfd205b12f476fa",
+    "dist/app.meta.json": "46da809e5b3f56450c98751fa29536bd1effd89b26793e243bfd205b12f476fa",
+    "dist/app.css": "c58a84b9a1039b9d94f617f4c70f0cf3e7036a9dd8f30b071fc4b2b66b6102f1",
+    "dist/server.js": "84d6322b3571ca886353abfa9a957fed8560d8e39988eceda1d300030155244c",
+    "dist/server.js.map": "1ef41fcc7e8aa30fe5935b94d5b0e0f3c030696ce1e12a5e61907eda377dd5d2",
+    "skills/account-pool/SKILL.md": "d6379c6efed9d0d3eefa67c4f6d71dd80465cfca8cd29061563536999c1b0e9f",
+    "skills/account-pool/references/accounts-and-routing.md": "362be656bf07f85fbfe76616dc0b24e670805aa492c8e786efe1ec682407c96a"
+  },
+  "sourceMapMatchesRelease": true,
+  "localDependencyDeltas": {
+    "undici": {
+      "upstream": "7.28.0",
+      "local": "7.30.0",
+      "reason": "Patched same-major release; npm audit flags native 7.28.0, native transport source unchanged",
+      "releasedVersionSource": "https://github.com/nodejs/undici/releases/tag/v7.30.0",
+      "auditDateUtc": "2026-10-03",
+      "advisoriesAffectingUpstreamVersion": [
+        {
+          "npmAdvisoryId": 1130715,
+          "ghsa": "GHSA-8xcm-r25x-g524",
+          "url": "https://github.com/advisories/GHSA-8xcm-r25x-g524",
+          "title": "undici vulnerable to downstream response desynchronization via retry interceptor",
+          "severity": "moderate",
+          "affected7xRange": ">=7.0.0 <7.29.0",
+          "patched7xVersion": "7.29.0"
+        },
+        {
+          "npmAdvisoryId": 1130718,
+          "ghsa": "GHSA-4cwx-7wf7-3272",
+          "url": "https://github.com/advisories/GHSA-4cwx-7wf7-3272",
+          "title": "undici vulnerable to cross-user information disclosure and parse-time crash via degenerate private cache directives",
+          "severity": "high",
+          "affected7xRange": ">=7.0.0 <7.29.0",
+          "patched7xVersion": "7.29.0"
+        },
+        {
+          "npmAdvisoryId": 1130726,
+          "ghsa": "GHSA-m8rv-5g2x-5cg5",
+          "url": "https://github.com/advisories/GHSA-m8rv-5g2x-5cg5",
+          "title": "undici vulnerable to CRLF Injection via blob-like body 'type' property",
+          "severity": "moderate",
+          "affected7xRange": ">=7.0.0 <7.29.0",
+          "patched7xVersion": "7.29.0"
+        },
+        {
+          "npmAdvisoryId": 1130729,
+          "ghsa": "GHSA-jr45-8vmc-qm54",
+          "url": "https://github.com/advisories/GHSA-jr45-8vmc-qm54",
+          "title": "undici vulnerable to cross-user information disclosure via whitespace around equals in Cache-Control directives",
+          "severity": "moderate",
+          "affected7xRange": ">=7.0.0 <7.29.0",
+          "patched7xVersion": "7.29.0"
+        },
+        {
+          "npmAdvisoryId": 1130731,
+          "ghsa": "GHSA-v3r7-h72x-cjcm",
+          "url": "https://github.com/advisories/GHSA-v3r7-h72x-cjcm",
+          "title": "undici vulnerable to cookie attribute injection via unsanitized domain and unparsed setCookie fields",
+          "severity": "moderate",
+          "affected7xRange": ">=7.0.0 <7.29.0",
+          "patched7xVersion": "7.29.0"
+        },
+        {
+          "npmAdvisoryId": 1239933,
+          "ghsa": "GHSA-3wwx-pv8p-q78v",
+          "url": "https://github.com/advisories/GHSA-3wwx-pv8p-q78v",
+          "title": "undici vulnerable to Denial of Service via unhandled error in WebSocket permessage-deflate decompression",
+          "severity": "moderate",
+          "affected7xRange": ">=7.28.0 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        },
+        {
+          "npmAdvisoryId": 1240036,
+          "ghsa": "GHSA-pmjh-fq2x-6v4x",
+          "url": "https://github.com/advisories/GHSA-pmjh-fq2x-6v4x",
+          "title": "undici vulnerable to Denial of Service via orphaned RetryHandler response body",
+          "severity": "moderate",
+          "affected7xRange": ">=7.11.0 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        },
+        {
+          "npmAdvisoryId": 1240038,
+          "ghsa": "GHSA-r53p-7pc4-xj5r",
+          "url": "https://github.com/advisories/GHSA-r53p-7pc4-xj5r",
+          "title": "undici vulnerable to downstream response splitting via retry interceptor",
+          "severity": "low",
+          "affected7xRange": ">=7.0.0 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        },
+        {
+          "npmAdvisoryId": 1240041,
+          "ghsa": "GHSA-rfgv-xxqx-mfg5",
+          "url": "https://github.com/advisories/GHSA-rfgv-xxqx-mfg5",
+          "title": "undici vulnerable to Denial of Service via unrequested WebSocket subprotocol",
+          "severity": "high",
+          "affected7xRange": ">=7.0.0 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        },
+        {
+          "npmAdvisoryId": 1240044,
+          "ghsa": "GHSA-3xpg-4rpp-hhhm",
+          "url": "https://github.com/advisories/GHSA-3xpg-4rpp-hhhm",
+          "title": "undici vulnerable to Denial of Service via unbounded decompression of compressed responses",
+          "severity": "moderate",
+          "affected7xRange": ">=7.15.0 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        },
+        {
+          "npmAdvisoryId": 1240046,
+          "ghsa": "GHSA-2jfj-6hjv-fm6j",
+          "url": "https://github.com/advisories/GHSA-2jfj-6hjv-fm6j",
+          "title": "undici vulnerable to cross-user cookie disclosure via Set-Cookie caching in shared caches",
+          "severity": "moderate",
+          "affected7xRange": ">=7.0.0 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        },
+        {
+          "npmAdvisoryId": 1240048,
+          "ghsa": "GHSA-2gqq-gqf2-x968",
+          "url": "https://github.com/advisories/GHSA-2gqq-gqf2-x968",
+          "title": "undici vulnerable to response truncation via oversized chunked responses in the dump interceptor",
+          "severity": "low",
+          "affected7xRange": ">=7.1.0 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        },
+        {
+          "npmAdvisoryId": 1240050,
+          "ghsa": "GHSA-w293-vg96-wgc3",
+          "url": "https://github.com/advisories/GHSA-w293-vg96-wgc3",
+          "title": "undici vulnerable to TLS certificate validation bypass via dropped connect options in BalancedPool",
+          "severity": "high",
+          "affected7xRange": ">=7.24.1 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        },
+        {
+          "npmAdvisoryId": 1240052,
+          "ghsa": "GHSA-8436-99hf-9mmv",
+          "url": "https://github.com/advisories/GHSA-8436-99hf-9mmv",
+          "title": "undici vulnerable to caching and replay of unsafe HTTP method responses",
+          "severity": "low",
+          "affected7xRange": ">=7.0.0 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        },
+        {
+          "npmAdvisoryId": 1240055,
+          "ghsa": "GHSA-rx4f-c7p8-82vq",
+          "url": "https://github.com/advisories/GHSA-rx4f-c7p8-82vq",
+          "title": "undici vulnerable to Denial of Service via WebSocketStream unclean close",
+          "severity": "moderate",
+          "affected7xRange": ">=7.0.0 <7.29.1",
+          "patched7xVersion": "7.29.1"
+        }
+      ],
+      "maintainerVerification": [
+        {
+          "ghsa": "GHSA-3wwx-pv8p-q78v",
+          "affected7xRange": ">=7.28.0 <7.29.1",
+          "patched7xVersion": "7.29.1",
+          "facility": "WebSocket permessage-deflate decompression",
+          "url": "https://github.com/nodejs/undici/security/advisories/GHSA-3wwx-pv8p-q78v"
+        },
+        {
+          "ghsa": "GHSA-rfgv-xxqx-mfg5",
+          "affected7xRange": ">=7.0.0 <7.29.1",
+          "patched7xVersion": "7.29.1",
+          "facility": "WebSocket opening handshake / unrequested subprotocol",
+          "url": "https://github.com/nodejs/undici/security/advisories/GHSA-rfgv-xxqx-mfg5"
+        },
+        {
+          "ghsa": "GHSA-w293-vg96-wgc3",
+          "affected7xRange": ">=7.24.1 <7.29.1",
+          "patched7xVersion": "7.29.1",
+          "facility": "BalancedPool custom TLS identity checking",
+          "url": "https://github.com/nodejs/undici/security/advisories/GHSA-w293-vg96-wgc3"
+        }
+      ],
+      "reachability": "Native transport imports EnvHttpProxyAgent and uses Node fetch with an independent dispatcher, allowH2:false. It does not instantiate Undici WebSocket/WebSocketStream/BalancedPool or install cache/retry interceptors. Library advisory presence is not evidence of exploitability through this HTTP/1.1 routing path.",
+      "focusedTransportVerification": {
+        "passed": 6,
+        "tests": [
+          "independent dispatcher despite broken global HTTP/2 dispatcher",
+          "HTTP/1.1 ALPN when peer offers HTTP/2",
+          "disposal closes connections and rejects later requests",
+          "cancellation before dispatch",
+          "no replay of accepted POST after failed response connection",
+          "redaction of arbitrary transport error details"
+        ],
+        "sourceUnchanged": true
+      },
+      "currentProductionAudit": {
+        "info": 0,
+        "low": 0,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 0
+      },
+      "currentFullAudit": {
+        "info": 0,
+        "low": 1,
+        "moderate": 0,
+        "high": 0,
+        "critical": 0,
+        "total": 1
+      },
+      "remainingDevOnlyAdvisories": {
+        "esbuild": {
+          "name": "esbuild",
+          "severity": "low",
+          "isDirect": false,
+          "via": [
+            {
+              "source": 1120680,
+              "name": "esbuild",
+              "dependency": "esbuild",
+              "title": "esbuild allows arbitrary file read when running the development server on Windows",
+              "url": "https://github.com/advisories/GHSA-g7r4-m6w7-qqqr",
+              "severity": "low",
+              "cwe": [
+                "CWE-22"
+              ],
+              "cvss": {
+                "score": 2.5,
+                "vectorString": "CVSS:3.1/AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:L/A:N"
+              },
+              "range": ">=0.27.3 <0.28.1"
+            }
+          ],
+          "effects": [],
+          "range": "0.27.3 - 0.28.0",
+          "nodes": [
+            "node_modules/esbuild"
+          ],
+          "fixAvailable": true
+        }
+      }
+    }
+  },
+  "npmRelease": {
+    "gitHead": "267938526dfcbc0edb228ce827b5bec202c1af97",
+    "shasum": "f07daa7a162d0b2d80e85d30bc56970e0673482d",
+    "integrity": "sha512-DXOKHwCB1TuKZVkHdmNr1+SRrdKHX4I87lBOl8Uj5ZRrJfDrAmm0Qg+3XXeIyt/3A7Cmr6zdlzZTsBHM9lhBEA=="
+  },
+  "licenseSha256": "d10816aa30183af920bdd789a81b16847bcf3e287e1b3419dd7d85f6e3e8e7b0",
+  "localCompatibilityCorrection": {
+    "assignment": "A92",
+    "supersedes": "A90 exact runtime SDK engine pin claim",
+    "developmentSdkVersion": "0.4.87",
+    "enginePolicy": "minimum0.4.87 within major0; later0.x SDKs accepted by native sdk-compat",
+    "runtimeGuardAdded": false,
+    "postBbUpdateRechecks": "README.md After a BB update",
+    "mainBucketInlineHelpers": [
+      "auto_mode",
+      "memdir_relevance"
+    ],
+    "separateBucket": "subagents and background helpers",
+    "lifecycleEvidence": "/home/exedev/.bb/thread-storage/thr_8dvz3sf5ix/a92-runtime-trace.md"
+  }
+}
