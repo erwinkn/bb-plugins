@@ -93,6 +93,7 @@ export function ThreadRow({
   provider,
   providerRecord,
   parent,
+  title: titleOverride,
   depth = 0,
   children,
   active,
@@ -110,6 +111,12 @@ export function ThreadRow({
   thread: PluginSidebarThread;
   status: Status;
   project: string;
+  /**
+   * A logical identity shown instead of the native title — e.g. a Projects
+   * worker's "W# label". The native title still drives rename edits and
+   * renders as secondary metadata on the second line.
+   */
+  title?: string;
   /** False under a project header, where the name would repeat. */
   showProject: boolean;
   /**
@@ -227,7 +234,8 @@ export function ThreadRow({
   const threadRepo = branchPullRequest
     ? pullRequestRepo(branchPullRequest.url)
     : null;
-  const title = threadTitle(thread);
+  const nativeTitle = threadTitle(thread);
+  const title = titleOverride ?? nativeTitle;
   const branch = thread.environment?.branchName;
   // The project accent only appears where the project name does, so a row
   // under its own project header stays plain.
@@ -339,7 +347,7 @@ export function ThreadRow({
               event.preventDefault();
               const nextTitle = draftTitle.trim();
               if (!nextTitle || savingRef.current) return;
-              if (nextTitle === title) {
+              if (nextTitle === nativeTitle) {
                 closeEditor();
                 return;
               }
@@ -571,6 +579,20 @@ export function ThreadRow({
                           <span className="shrink-0">{project}</span>
                         </>
                       )}
+                      {titleOverride && nativeTitle !== titleOverride && (
+                        <>
+                          {(pullRequests.length > 0 || showProject) && (
+                            <span aria-hidden="true">·</span>
+                          )}
+                          <span
+                            data-thread-native-title=""
+                            className="min-w-0 truncate"
+                            title={nativeTitle}
+                          >
+                            {nativeTitle}
+                          </span>
+                        </>
+                      )}
                       {branch && (
                         <>
                           {(pullRequests.length > 0 || showProject) && (
@@ -631,7 +653,7 @@ export function ThreadRow({
                     className={menuItemClass}
                     onSelect={() => {
                       menuOpenedEditor.current = true;
-                      setDraftTitle(title);
+                      setDraftTitle(nativeTitle);
                       setRenameError(null);
                       setEditing(true);
                     }}

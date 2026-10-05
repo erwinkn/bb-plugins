@@ -174,6 +174,7 @@ describe("client storage boundary", () => {
         }),
       ),
     ).toEqual({
+      mode: "threads",
       hidden: ["done"],
       showArchives: false,
       showSnoozed: true,

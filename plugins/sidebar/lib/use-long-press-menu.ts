@@ -38,10 +38,18 @@ export function useLongPressMenu(menuOpen: boolean) {
       touchDocument.current = null;
       if (event.pointerType !== "touch" || event.isPrimary === false) return;
       const target = event.currentTarget;
+      // The finger may land on a descendant; drag sensors attach their touch
+      // listeners to that element, so it is the one to release.
+      const pressTarget =
+        event.target instanceof EventTarget ? event.target : target;
       touchDocument.current = target.ownerDocument;
       const { clientX, clientY } = event;
       timer.current = setTimeout(() => {
         timer.current = null;
+        // The menu claims the gesture: a stationary hold can already have
+        // armed a touch drag on the row, so cancel it before the menu opens.
+        // Inert on rows with nothing to cancel.
+        pressTarget.dispatchEvent(new Event("touchcancel"));
         // Use the same menu path as right-click. This also cancels Radix's
         // built-in 700 ms timer without preventing normal taps or scrolling.
         target.dispatchEvent(

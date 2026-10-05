@@ -8,7 +8,7 @@
     "bbPluginSdk": ">=0.4.87"
   },
   "bb": {
-    "name": "Threads",
+    "name": "Sidebar",
     "description": "Threads grouped by status, with pending input separate from unread replies.",
     "branding": {
       "icon": "Activity"

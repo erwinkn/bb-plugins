@@ -4,6 +4,61 @@ A status-first BB sidebar. It replaces only the thread list, not the rest of
 the sidebar. It uses the public Plugin SDK. It does not use a six-hour activity
 window, automatically archive threads, or run cleanup jobs.
 
+## Projects view
+
+The view switch toggles between Threads and Projects on this client. With the
+Projects plugin enabled, each project is one colored row that opens its
+coordinator. Children remain accessible in Threads view and the project overview.
+Metadata shows work in flight, remaining tasks and decisions needing attention.
+
+Status prioritizes an unread coordinator reply or a decision/input needing you,
+then any working thread (including native descendants), then an observed unsent
+text or attachment draft. Routine unread worker reports wait for the coordinator.
+The project color follows the same theme-aware palette as Threads view.
+
+Project order is fixed until you change it: activity, selection, polling and
+reloads never move a row. Drag a row to reorder it — the whole row is the
+handle on desktop; on touch, hold about a fifth of a second before moving so
+the sidebar still scrolls on a flick. On the keyboard, focus a row and press
+Space to lift it, arrows to move it, Space or Enter to drop it. The release
+click after a drag never opens the project.
+
+Each row keeps an options menu on right-click or a stationary long press
+(the same gesture on keyboard is ContextMenu/Shift+F10). **New thread** opens
+the Initiative's native BB composer in Projects immediately. The row's plus
+link opens the same composer in one click; it stays visible on mobile and
+appears on hover or keyboard focus on desktop. Navigation closes the mobile
+drawer and does not create a thread or send input.
+
+Choose the member repository, model and checkout in the native composer.
+Projects validates the selected repository and creates the user-owned thread
+under the current coordinator when you submit, using the same flow as the
+Initiative dashboard. Sidebar has no separate first-message form or repository
+submenu. Rename and Initiative overview remain in the row menu.
+
+Composer links target `/plugins/projects/projects/<encoded-initiative-id>/compose`.
+The public `toPluginPanel` helper is scoped to the calling plugin, so Sidebar
+uses the SDK's `UrlLink` to open Projects through native internal navigation. The old `createProjectThread` server RPC
+remains for already-loaded Sidebar bundles; the new UI does not call it.
+
+The order persists in the plugin's server-side key-value storage, so every
+client signed in to the same BB host shares it and reloads keep it. New
+projects append at the end; a project that leaves the tree keeps its stored
+slot and reclaims it if it returns. The first run orders projects by the
+Projects tree's order at that moment. Saves are revision-checked and
+serialized; a failed save keeps your order on screen, shows an error, and
+retries on the next refresh. Up to 256 project IDs are stored; snapshots
+beyond that cap keep the first 256 visible projects' order intact and a
+reorder that would exceed it is rejected rather than silently truncated. A
+stored document that fails to parse is surfaced as an error and left
+untouched.
+
+The sidebar builds independently of Projects; its versioned RPC schema is checked
+against the same fixture in both plugins' tests. If Projects is disabled, the view
+explains how to enable it and the switch returns to Threads. Overview and composer links close
+the mobile drawer before navigating. Composer links use `UrlLink` for BB's
+internal navigation; older overview links remain ordinary anchors.
+
 ## Status rules
 
 Groups appear in this order. Each thread appears in exactly one group.

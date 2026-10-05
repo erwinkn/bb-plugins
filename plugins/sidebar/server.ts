@@ -1,4 +1,5 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { registerProjectMode } from "./lib/project-mode-server";
 import { archiveContract } from "./lib/archive-contract";
 import { archiveTree } from "./lib/archive-tree";
 import { threadTitle } from "./lib/status";
@@ -12,6 +13,7 @@ import { registerPullRequests } from "./lib/pull-requests-store";
 import { nestingContract } from "./lib/nesting-contract";
 
 export default function plugin(bb: BbPluginApi) {
+  registerProjectMode(bb);
   const spaces = registerSpaces(bb);
   registerLibrary(bb);
   const snoozes = registerSnoozes(bb);

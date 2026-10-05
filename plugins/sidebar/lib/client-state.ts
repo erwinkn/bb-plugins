@@ -7,6 +7,7 @@ import {
 } from "./status";
 
 export interface ClientState {
+  mode: "threads" | "projects";
   groupBy: "status" | "project";
   sortBy: SortBy;
   sortDirection: SortDirection;
@@ -29,6 +30,7 @@ const KEY = CLIENT_STATE_KEY;
  */
 export const CLIENT_STATE_EVENT = "bb-plugin-sidebar:state";
 const DEFAULT: ClientState = {
+  mode: "threads",
   groupBy: "status",
   sortBy: "updated",
   sortDirection: "descending",
@@ -50,6 +52,7 @@ export function parseState(raw: string | null): ClientState {
     const value = JSON.parse(raw ?? "null");
     if (!value || typeof value !== "object") return DEFAULT;
     return {
+      mode: value.mode === "projects" ? "projects" : "threads",
       groupBy: value.groupBy === "project" ? "project" : "status",
       sortBy: value.sortBy === "created" ? "created" : "updated",
       sortDirection:

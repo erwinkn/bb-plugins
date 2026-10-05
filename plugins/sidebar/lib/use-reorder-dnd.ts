@@ -1,14 +1,16 @@
 // Port of bb apps/app/src/components/ui/useReorderDnd.ts and
 // components/sidebar/useDragClickSuppression.ts at desktop-v0.43.0 (MIT).
 // Differences from the original:
-// - KeyboardSensor is not ported: thread rows are links whose Enter/Space keys
-//   already activate navigation, and keyboard/mobile parity for reparenting is
-//   provided by the "Make child of…" / "Move to top level" menu actions.
 // - bb's SidebarTouchSensor only exists to disable dnd-kit's non-passive
 //   touchmove listener while its compact drawer is open; a plugin cannot
 //   observe that state, so plain TouchSensor (which installs the same iOS
 //   Safari fix unconditionally) is used.
+// - The KeyboardSensor lifts and drops with Space only: rows here are links,
+//   so Enter keeps its navigation role. ArrowUp/ArrowDown move between the
+//   vertical neighbours of the row the drag is over.
 import {
+  KeyboardCode,
+  KeyboardSensor,
   MouseSensor,
   TouchSensor,
   closestCenter,
@@ -22,6 +24,7 @@ import type {
   DragMoveEvent,
   DragOverEvent,
   DragStartEvent,
+  KeyboardCoordinateGetter,
   Modifier,
 } from "@dnd-kit/core";
 import type {
@@ -40,6 +43,39 @@ export const restrictDragToVerticalAxis: Modifier = ({ transform }) => ({
   ...transform,
   x: 0,
 });
+
+/**
+ * Arrow keys move a keyboard drag straight to the next or previous droppable
+ * row — appropriate for a single-column list where one keypress means one
+ * position, instead of the stock fixed-pixel step.
+ */
+export const reorderKeyboardCoordinates: KeyboardCoordinateGetter = (
+  event,
+  { active, context },
+) => {
+  const step =
+    event.code === KeyboardCode.Down
+      ? 1
+      : event.code === KeyboardCode.Up
+        ? -1
+        : 0;
+  if (!step) return;
+  const { droppableContainers, over } = context;
+  const rows = droppableContainers
+    .getEnabled()
+    .flatMap((container) => {
+      const rect = container.rect.current;
+      return rect ? [{ id: container.id, rect }] : [];
+    })
+    .sort((a, b) => a.rect.top - b.rect.top);
+  const current = rows.findIndex((row) => row.id === (over?.id ?? active));
+  const target = current >= 0 ? rows[current + step] : undefined;
+  if (!target) return;
+  return {
+    x: target.rect.left + target.rect.width / 2,
+    y: target.rect.top + target.rect.height / 2,
+  };
+};
 
 const CLICK_SUPPRESSION_MS = 350;
 
@@ -103,6 +139,12 @@ export interface ReorderDndOptions {
   collisionDetection?: CollisionDetection;
   /** Reports whether a drag session is active; Escape is ignored when not. */
   isActive?: () => boolean;
+  /**
+   * Focused rows lift on Space and drop on Space/Enter, with arrows stepping
+   * between neighbours. Off by default — a list opts in when its rows have no
+   * other keyboard reorder path.
+   */
+  keyboardReorder?: boolean;
 }
 
 export function useReorderDnd(
@@ -121,7 +163,20 @@ export function useReorderDnd(
   const touchSensor = useSensor(TouchSensor, {
     activationConstraint: { delay: 200, tolerance: 6 },
   });
-  const sensors = useSensors(mouseSensor, touchSensor);
+  const keyboardSensor = useSensor(KeyboardSensor, {
+    // Enter keeps following the link; Space lifts and drops the row.
+    keyboardCodes: {
+      start: [KeyboardCode.Space],
+      cancel: [KeyboardCode.Esc],
+      end: [KeyboardCode.Space, KeyboardCode.Enter],
+    },
+    coordinateGetter: reorderKeyboardCoordinates,
+  });
+  const sensors = useSensors(
+    mouseSensor,
+    touchSensor,
+    ...(options?.keyboardReorder ? [keyboardSensor] : []),
+  );
   const {
     consumeClickSuppression,
     onClickCapture,

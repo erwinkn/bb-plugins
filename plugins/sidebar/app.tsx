@@ -1,4 +1,5 @@
 import { DndContext, DragOverlay, useDroppable } from "@dnd-kit/core";
+import { ModeToggle, ProjectMode } from "./components/project-mode";
 import {
   useCallback,
   useEffect,
@@ -260,6 +261,15 @@ function useStableArray<T>(value: readonly T[]): readonly T[] {
 }
 
 function ThreadsList(props: PluginThreadListProps) {
+  const { mode } = useClientState();
+  return mode === "projects" ? (
+    <ProjectMode {...props} />
+  ) : (
+    <ThreadListContent {...props} />
+  );
+}
+
+function ThreadListContent(props: PluginThreadListProps) {
   const { status, threads: rawThreads, projects } =
     experimental_useSidebarThreads();
   const hostThreads = useStableArray(rawThreads);
@@ -877,6 +887,7 @@ function ThreadsList(props: PluginThreadListProps) {
       <ProjectHueStyle />
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
+          <ModeToggle />
           <ScopeMenu
             scope={scope}
             catalog={spaces.catalog}
