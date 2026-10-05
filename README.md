@@ -13,10 +13,13 @@ all reachable. See [BB MCP](plugins/bb-mcp/README.md).
 review panel, comments, revision history, and feedback to the original agent. See
 [Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
 
+`projects` adds a project coordinator, durable tasks and decisions, native worker
+threads, shared context, and an editable project overview. See [Projects](plugins/projects/README.md).
+
 `sidebar` adds a status-first thread list: Needs Attention, Unread,
 Working, Draft, and Done. It also supports project grouping and spaces, named
-project selections shared by every client. See
-[Threads](plugins/sidebar/README.md) for local installation and draft limits.
+project selections shared by every client, plus a Projects view with one colored row per project that opens its coordinator. See
+[Sidebar](plugins/sidebar/README.md) for local installation and draft limits.
 
 `editor` adds a Pierre file editor: a Files panel with a file tree,
 BB-matched syntax colors, a code theme picker, and an editable Changes tab.
@@ -28,11 +31,6 @@ with each code theme, one pick for chrome and code. Its tests grep the installed
 BB bundle for every host selector the stylesheet relies on. See
 [Theme](plugins/theme/README.md).
 
-`devin` adds **Devin** as a provider, with a native icon, sign-in
-help, executable setting, account usage, and live ACP model catalog. It preserves the provider
-ID `acp-devin`. See [Devin provider](plugins/devin/README.md) for configuration,
-verification, and migration from a custom ACP entry.
-
 `voice-mode` adds one live voice model, background workers, task and subscription
 views, session history, and spoken thread updates. See [Voice Mode](plugins/voice-mode/README.md).
 
@@ -41,10 +39,6 @@ compact](plugins/provider-usage-compact/README.md) for installation and rollback
 
 `remove-plugin-ellipsis` hides the ellipsis button on plugin sidebar rows, including
 Automations. See [Hide plugin nav menus](plugins/remove-plugin-ellipsis/README.md).
-
-`scratchpad` adds a shared rich-text document per worktree, with BlockNote
-editing, JSON storage outside Git, revision history, and agent tools. See
-[Scratchpad](plugins/scratchpad/README.md).
 
 `executor` proxies Erwin's Executor MCP gateway into agent tools on every
 provider: `executor_execute` runs sandboxed TypeScript against his connected
@@ -66,23 +60,41 @@ Use BB 0.43.1 or later. The bb server needs Git, npm, and GitHub access to this
 private repository. Configure Git authentication on that machine; do not put a
 token in the repository URL.
 
-Replace `COMMIT_SHA` with the full reviewed commit SHA:
+For this development instance, install an active plugin from the main checkout:
 
 ```sh
-bb plugin install git:https://github.com/erwinkn/bb-plugins.git@COMMIT_SHA --plugin devin
+bb plugin install path:/home/exedev/Code/bb-plugins/plugins/PLUGIN --yes
 ```
 
-Follow the migration steps first if a custom ACP entry already owns
-`acp-devin`. The collection index is `.bb/plugins.json`; the package lives in
-`plugins/devin`. Git installation builds source on the bb server. Generated
-bundles are not committed.
+The collection index is `.bb/plugins.json`; active packages live in `plugins/`.
+Generated bundles are not committed. See the daily loop below before replacing
+an existing installation.
+
+### Retired local plugins and recovery
+
+Scratchpad and Devin are retired from this instance and the collection index.
+Their tracked implementations remain in `plugins/scratchpad` and `plugins/devin`
+for recovery. [Scratchpad](plugins/scratchpad/README.md) documents note storage
+and export; [Devin provider](plugins/devin/README.md) documents its stable
+`acp-devin` identity and external CLI authentication. Source retention does not
+preserve installation state: back up plugin data, settings, secrets and schedules
+before the orchestrator removes a registration. Keep saved notes and browser
+drafts, native conversations and external Devin credentials.
+
+The untracked Assistant experiment is also retired. Its recoverable source
+archive and file manifest are in W66's thread storage at
+`/home/exedev/.bb/thread-storage/thr_eftuwm82fs/a118/assistant-source.tar.gz` and
+`assistant-manifest.json`. The orchestrator must confirm its disabled registration
+is removed before retiring its source; that removal is complete. The experiment
+directory, including its generated files, is retained at
+`/home/exedev/.bb/thread-storage/thr_eftuwm82fs/a118/retired-assistant`.
 
 ## Develop
 
 Use the local BB CLI, Node.js 22 or later, and npm:
 
 ```sh
-cd plugins/devin
+cd plugins/PLUGIN
 npm ci --include=dev
 npm run typecheck
 npm test
@@ -111,8 +123,8 @@ feature branches or pull requests for routine work.
   commit, push, stash, checkout. Child threads never touch Git.
 - The user talks to the orchestrator. For a change to a plugin, the
   orchestrator spawns a child thread on the main checkout with the full task,
-  the child investigates, implements, and reports back, and the orchestrator
-  verifies, reloads, and commits. The orchestrator does not diagnose or look
+  the child investigates, implements, verifies, and reports back, and the
+  orchestrator reloads and commits. The orchestrator does not diagnose or look
   for the solution itself before delegating: the child owns the whole
   problem, from finding the cause to verifying the fix.
 - When a child has reported and its work is committed or reverted, the
@@ -143,32 +155,25 @@ times; never check out another branch there, and never run `git rebase` or
    afterwards through a follow-up message, which queues behind that approval.
    Spawn every child on the Linux checkout environment `env_kdfdhsjp6x`
    (path `/home/exedev/Code/bb-plugins`), not on `env_pepnyn24rr`, whose
-   registered path is the Mac checkout: Devin enforces file writes against
-   the registered environment path, so a child on the Mac-path environment
-   cannot write anything on this host.
-   BB clamps a child's permission mode to its parent's current mode: if the
-   orchestrator runs in `auto`, a Devin child (which supports only
-   `accept-edits` and `full`) is silently dropped to `accept-edits` and stops
-   on every command, and no later `tell --permission-mode full` can raise it.
+   registered path is the Mac checkout.
+   BB clamps a child's permission mode to its parent's current mode; a later
+   message cannot raise a child beyond that ceiling.
    Keep the orchestrator thread itself in `full` before spawning, or spawn
    without `--parent-thread` (losing the parent link). Approvals granted with
    `bb thread interactions approve` are allow-once.
-   Children never run on Claude Fable. Implementation children run on Devin
-   SWE-2 at high reasoning: `--provider acp-devin --model
-   'devin-family:%5B%22swe-2%22%2C262000%2C%22%22%5D' --reasoning-level high`
-   (model id from `bb provider models acp-devin`). Investigation and
-   feasibility children run on Codex GPT-5.6 Sol at high reasoning:
-   `--provider codex --model gpt-5.6-sol --reasoning-level high`. Both always
-   with `--permission-mode full`. If a Devin child still stops for command
-   approval, approve it with `bb thread interactions approve <pint> <thread>`
-   and re-send full permissions with `bb thread tell <thread> "…" --mode auto
-   --permission-mode full`.
+   Use the explicit provider, model, reasoning and service-tier profile from
+   the current Initiative assignment, always with `--permission-mode full`.
+   These profiles take precedence over older README or AGENTS fallback wording.
+   Devin is retired from this instance; do not reinstall it to satisfy an old
+   spawn example.
 3. The child reports back with the files changed and what it verified. It does
    not commit.
-4. The orchestrator reviews the diff, runs `bb plugin build
+4. The orchestrator runs `bb plugin build
    ~/Code/bb-plugins/plugins/<name>` and `bb plugin reload <name>` (or keeps
    `bb plugin dev <path>` running for live rebuild+reload), and the user checks
-   the live behavior — desktop and mobile when the UI changes.
+   the live behavior — desktop and mobile when the UI changes. Testing, diff
+   review and browser checks stay delegated to children; for a substantial
+   change, spawn a review child rather than re-verifying in the orchestrator.
 5. If it is good, the orchestrator commits on `main` and pushes to `origin`
    directly. If not, the orchestrator sends follow-up instructions to the same
    child, or reverts the working tree with `git checkout -- <paths>` when the
@@ -206,6 +211,14 @@ secrets (`data.db` survives only by courtesy; back it up). Tracking the
 checkout path keeps `bb plugin dev` available and makes reload the only step
 between an edit and the running plugin.
 
+### Durable worker evidence
+
+Keep reports, screenshots, replay inputs and verification evidence in the
+thread's `BB_THREAD_STORAGE` or appropriate repository paths. Use `/tmp` only
+for disposable probes. A system cleanup age is not a retention guarantee.
+Clean only scratch directories owned by that run; never use a broad shared
+`/tmp` glob to remove other agents' work.
+
 ### Source switches and data preservation
 
 Use `bb plugin source <id> --json` to inspect the installed source and
@@ -233,10 +246,10 @@ directory, settings, and secrets beforehand and verify them afterward;
 For example, after confirming that a plugin has no server-side data:
 
 ```sh
-bb plugin source devin --json
-bb plugin remove devin
-bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin devin --yes
-bb plugin source devin --json
+bb plugin source PLUGIN --json
+bb plugin remove PLUGIN
+bb plugin install git:https://github.com/erwinkn/bb-plugins.git@BRANCH --plugin PLUGIN --yes
+bb plugin source PLUGIN --json
 ```
 
 After a new push to an installed Git branch, use `bb plugin update <id> --yes`.
@@ -270,6 +283,93 @@ Record potential BB issues here for later review and filing. Never open
 issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
+
+### Automations status and thread link from the same run (2026-10-04)
+
+Builtin Automations showed `auto_nn4rn8yenp8` with `lastRunStatus: running`
+for `arun_nwwqp-rbmzs` / `thr_zc8i477pv8`, while `lastRunThreadId` still linked
+to the prior succeeded run's `thr_h7w8vwn5iy`. The fields matched after the
+current run finished. BB should expose current status and thread link from
+the same run, or identify current and completed runs separately. This belongs
+in builtin Automations. No issue filed. Suggested title: `Keep Automations
+run status and thread link consistent`.
+
+### Plugin shutdown and reload recovery (2026-10-04)
+
+An Initiatives reload exposed a plugin bug: its background sweep kept scanning
+after the shutdown signal. A151 reproduced this with deferred native reads and
+provided a plugin-side cancellation patch, now being implemented. BB 0.43.1
+also has lifecycle limits worth addressing upstream:
+
+- `stopServices` defaults to a five-second wait. If a service exceeds it,
+  reload disposes the old instance without activating the candidate. Even
+  after the service eventually settles, another reload is required to restore
+  the plugin. Recover the pending reload automatically once the old instance
+  is confirmed stopped, without running two instances together.
+- `drainInvocations` also proceeds after its timeout; disposal then closes
+  databases and invalidates SDK access while work may still be running.
+  Preserve resources needed to settle already-issued operations and record
+  their receipts, with an explicit shutdown/drain contract.
+- Thread events can still reach the instance during disposal. Stop admitting
+  new handlers, and expose shutdown cancellation to handlers already running,
+  while allowing required receipt bookkeeping to finish.
+
+The plugin fix stops new sweep work and cancels supported reads. A mutation
+already sent to BB must still settle, so it cannot guarantee every shutdown
+finishes within five seconds. The host should distinguish cancellable reads
+from operations whose results still need recording.
+
+Verified in BB 0.43.1's installed `start-server.js`: `stopServices`,
+`onHungServiceSettled`, `disposePluginInstance`, `drainInvocations` and
+`emitThreadEvent`. No issue filed. Suggested title: `Preserve in-flight plugin
+receipts and recover reloads after delayed shutdown`.
+
+### Bounded model inference for plugin advisors (2026-10-04)
+
+A universal advisor can observe persisted thread activity in a plugin, but
+automatic reviews using BB's configured provider accounts need a bounded
+inference API for plugin callers. In BB 0.43.1 / SDK 0.4.87,
+`experimental_aiServices` lets plugins provide helper inference; it does not
+let them call the configured providers. An ordinary native agent session has
+built-in and other plugins' tools. A different workspace and `accept-edits`
+do not enforce a tools-less review, and hidden sessions still consume normal
+dispatch capacity. Detaching them to suppress notices also loses native
+parent ownership.
+
+Expose structured inference with an explicit provider/model/effort, bounded
+input and output, cancellation/deadline, usage receipts and ordinary resource
+accounting. The host should enforce the allowed capabilities and authenticate
+the calling plugin; plugins should not copy provider credentials, impersonate
+workers or implement their own delivery/retry system. This would let an
+advisor submit a compact evidence packet without running a full coding agent.
+No issue filed. Suggested title: `Expose bounded tools-less inference to plugins`.
+
+Observation can proceed independently. An explicitly configured external API
+is another possible inference transport; it requires its own credentials and
+does not reuse BB subscriptions. Additional candidates from the independently
+reviewed Advisor study:
+
+- **Enforced tool permissions.** A session tool allowlist and a true read-only
+  mode should cover native tools and other plugins' tools. Current audit
+  instructions describe permitted work; they are not a filesystem sandbox.
+- **Owned helper lifecycles.** Plugin-created helpers need explicit ownership,
+  cancellation on owner Stop or disable, notice routing and visible resource
+  accounting. Keep ordinary capacity limits; hidden threads need no exemption.
+- **Complete change attribution.** Include shell edits and exact before/after
+  state in per-thread evidence. Shared-checkout diffs describe repository state
+  and cannot establish which worker made an edit.
+- **Stable history notifications and usage.** Stabilize event notifications and
+  provide per-turn usage across providers. Add bounded history/file reads with
+  explicit truncation: compacting a full response in a plugin does not reduce
+  native IO or peak memory.
+- **Authenticated action provenance.** Expose the caller of plugin RPCs and
+  authoritative user responses so plugins can distinguish user approval from
+  an agent's acknowledgement. Gate settings actions where supported. This does
+  not prevent a full-permission agent from editing local plugin source or data;
+  such changes can only be made visible at this layer.
+
+No related issues filed. These are capability candidates, not implemented
+Advisor features; the revised proposal is still under review.
 
 ### Compact plugin interaction prompts
 
@@ -641,6 +741,24 @@ plugin's bundle.
 Status: no upstream issue filed. Suggested issue title:
 `Expose @pierre/diffs/edit to plugin frontends`.
 File the request in [BB issues](https://github.com/get-bb/bb/issues).
+
+### Pierre caret reveal uses the wrong scroll coordinates
+
+Pierre 1.4.1's `Editor.#scrollToLine` places its fallback reveal probe at a
+document offset inside a container positioned at the rendered window. Native
+`scrollIntoView` adds that window offset again; repeated reveal attempts can
+pin Editor at the bottom and make line 1 unreachable. A39 reproduced this,
+and A44 verified that large files also require CodeView's logical scrolling
+API because physical `scrollTop` excludes `scrollPageOffset`.
+
+Pierre should route caret reveals through CodeView's logical scroll API or
+position the probe in the correct coordinate space, covering paged files too.
+The local workaround is built, reloaded and verified under T26 against the
+actual shipped bundle, including an 800,001-line file with a nonzero page offset.
+
+Status: no upstream issue filed. Suggested issue title for Pierre's maintainers:
+`Correct Editor caret reveal coordinates in virtualized and paged files`.
+BB can consume the corrected Pierre version when available.
 
 ### Usage popup: compact header and visible provider tabs
 
@@ -1427,3 +1545,287 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
   per-connect debug line (trace level, or once per account/transport change).
 - **Status:** not filed. Suggested title: `Account Pooler transport
   reconnect storm and log spam on ETIMEDOUT`.
+
+### Projects: native notifications, receipts, navigation and cache evidence (2026-10-01)
+
+These are upstream candidates; no issues have been filed.
+
+- **Child notification control:** expose a per-thread policy that can suppress
+  routine turn-completion wakes while retaining native parenting, execution
+  inheritance, permission ceilings, replacement/archive/Stop behavior and
+  failure/blocker attention. BB 0.43.1 and SDK 0.4.87 expose no such control;
+  hidden children still notify their parent, while genuine source-derived forks
+  are documented silent. Make effective notification eligibility inspectable to
+  plugins so canonical Initiative reports use native sends when required,
+  including silent forks. Standalone workers avoid parent notices but lose the
+  native parent ceiling and automatic error/attention fan-in, so they are not an
+  equivalent quiet-child mode. A111's 2026-10-04 audit records the contracts and
+  tradeoffs. Suggested title: `Allow explicit worker outcomes without per-turn
+  parent wakes`. No issue filed.
+  A197's Marbre #79 trace found 11 progress-only parent notices after a reviewer
+  added a per-test Monitor beside a command's existing completion notification.
+  Consider a native policy that labels or coalesces progress completions while
+  background work remains, preserving final results, blockers, errors, decision
+  requests and Stop notices. Initiative guidance can explain when a turn ending
+  wakes its parent; the plugin cannot suppress those native notices. The Monitor
+  wake payload is not logged, so its role is inferred from the event order,
+  filter and turn text. Evidence: `thr_4y757tsgix/T90-review-chatter-report.md`
+  in BB thread storage. This extends the same unfiled candidate.
+- **Idempotent native sends and creation:** accept a caller operation ID, return a
+  durable delivery receipt, and offer lookup by that ID. Projects journals intents
+  and reconciles positive receipts; it never retries an uncertain operation merely
+  because a thread or prompt was not found.
+- **Idle thread creation or composer association:** `threads.spawn` requires a
+  non-empty `input` and always starts a turn — there is no way to create an idle
+  thread, and the root composer (the one lazy path) carries no plugin metadata or
+  project-association field. Either an idle-capable spawn or a metadata/association
+  slot on the new-thread pipeline would let Projects open a user-owned linked
+  thread without consuming a first message.
+- **Cross-plugin navigation:** expose navigation to another plugin's panel.
+  SDK 0.4.87's `toPluginPanel` targets the calling plugin. Sidebar therefore uses
+  SDK `UrlLink` to open `/plugins/projects/projects/<initiative-id>/compose` in
+  BB's internal navigation and closes the mobile drawer through `onNavigate`.
+  This works, but requires knowing another plugin's route structure.
+  The Initiative dashboard also needs to open Editor Files or Changes in the
+  coordinator's panel with a selected worker as its file source. SDK 0.4.87's
+  `openThreadPanel` targets an action owned by the calling plugin, so an
+  Editor-owned workspace picker can ship locally, while a dashboard button
+  needs a supported cross-plugin panel target and parameters. Source/SDK
+  inspection is recorded in A37 and A98; no issue filed. Suggested title:
+  `Allow plugins to open another plugin's thread panel with parameters`.
+- **Per-message sender attribution:** distinguish a human CLI send from an agent's
+  native CLI send in message.dispatch. Thread creation attribution cannot establish
+  who sent a later message. This would support diagnostics and native safeguards
+  around interrupted work; the minimal Projects plugin leaves Stop semantics to BB.
+  SDK 0.4.87 supports `senderThreadId` on sends. Its types also expose
+  `startedOnBehalfOf`, but BB 0.43.1 rejects that field on an ordinary spawn
+  with `startedOnBehalfOf requires an originKind`. A123's real reviewer start
+  reproduced this on 2026-10-04 before any native thread was created. The only
+  non-null origin kind is `fork`; ordinary workers and coordinator replacements
+  must never impersonate forks to supply attribution. This corrects A111's
+  fresh-creation capability claim. Keep native parenting and plugin attribution,
+  omit the unsupported actor field, and use the supported sender field on
+  messages. Upstream should permit trusted agent attribution on ordinary
+  plugin-created threads without changing their origin kind or lifecycle.
+  Suggested title: `Allow agent attribution on ordinary plugin thread creation`.
+  No issue filed.
+  A160's Advisor audit found a separate provenance gap: plugin sends and spawn
+  briefs without a sender are recorded as `initiator: "user"` with a null
+  sender, just like human input. Record the issuing plugin on those requests,
+  independently of agent attribution, so observers can distinguish a plugin
+  brief or notice from a human instruction. Until then, the Advisor labels
+  these requests `UNATTRIBUTED: user or plugin`. Suggested title:
+  `Record the issuing plugin on plugin-sent turn requests`. No issue filed.
+  Fork input also needs supported sender attribution: SDK 0.4.87 has no
+  `senderThreadId` on `threads.fork`, and BB 0.43.1 sets its actor only for
+  seed-only idle forks. Suggested title: `Allow sender attribution on plugin
+  forks with visible input`. No issue filed.
+- **Preserve agent-tool argument schemas:** BB 0.43.1's Claude bridge
+  replaces a tool schema whose root is not `type: "object"` with an empty
+  object. The SDK accepts the Projects command unions, but Claude then sees
+  no argument definitions. A172 traced 62 Claude coordinator decision-call
+  failures in 48 hours and reproduced the schema loss. Plugins can publish
+  explicit object roots and validate each action internally. BB should
+  preserve supported union constraints or reject an unsupported schema at
+  registration with an actionable error, rather than silently erase fields.
+  Suggested title: `Preserve or validate plugin tool schemas in the Claude
+  bridge`. No issue filed.
+- **Bounded native-child discovery:** support listing children of several
+  parent thread IDs in one bounded request, and emit a native event when a
+  thread's parent changes. SDK 0.4.87 currently accepts one parent per list
+  call; BB 0.43.1 has created/unarchived events but no parent-change event.
+  A167's isolated graph reproduced 302 list calls in a quiet sweep, including
+  a plugin deduplication bug. Its plugin-only candidate uses earlier archive
+  observations and bounded rechecks, with 53 steady-state list calls in the
+  same graph. These are fixture counts, not measured live latency. Batching
+  and parent-change events would reduce the remaining discovery work without
+  replacing fresh ownership checks. Suggested titles: `Batch bounded child
+  listings by parent thread IDs` and `Emit an event for thread parent
+  changes`. No issues filed.
+- **Event-history paging contract:** SDK 0.4.87 types `events.list.limit` as a
+  string, but BB 0.43.1 rejects values above 100. Its result is a bare array
+  without a continuation cursor. A160's native-schema probe reproduces the
+  rejection of `limit: "500"`, which typechecking alone had accepted. Expose
+  or document the page bound and return a continuation cursor. Plugins can
+  currently use bounded pages and strict `beforeSeq`/`afterSeq` cursors, with
+  visible gaps when a read cannot finish. Suggested title: `Expose the
+  events.list page bound and a next cursor in the plugin SDK`. No issue filed.
+- **Typed ownership history:** BB 0.43.1 records parent changes on the child
+  as `system/operation` events with `operation: "ownership_change"` and
+  previous/next parent IDs in metadata. SDK 0.4.87 leaves that metadata as an
+  open record. Publish the ownership-change shape as a typed event contract
+  so an observer can prove who was a thread's parent when an instruction was
+  accepted. Missing, malformed or truncated history must remain unknown.
+  Suggested title: `Type thread ownership-change events in the plugin SDK`.
+  No issue filed.
+- **Usage accounting epoch and request identity:** include a runtime accounting ID,
+  turn/attempt IDs, provider/model attribution and raw cache-read/cache-create usage.
+  A true cache hit rate also requires provider-defined lookup hit/miss counts;
+  separate read/write token counts alone would only support a token-share metric.
+  A Claude runtime counter can restart while its provider conversation ID survives,
+  even with a larger new
+  cumulative count. Projects preserves observed epochs conservatively, but cannot
+  guarantee lifetime totals, cache hits, subscription quota savings or cost.
+- **Scoped failure cause:** `thread.failed.error` currently carries the latest
+  system error, which may belong to an older turn. Include the failed turn ID and
+  its provider error directly so consumers can distinguish the provider cause
+  from lifecycle or transport errors.
+- **Native cache control:** `promptCacheTtl: "1h"` is already configurable per
+  user or checkout through Claude settings sources (verified 2026-10-02: provider
+  query loads user/project/local settings). The remaining gap is plugin-scoped:
+  no per-thread TTL override exists in BB, and the Claude bridge's
+  `cachedInputTokens` normalization loses the read/write split. Projects keeps
+  combined cached-input telemetry only and builds no provider plumbing.
+- **Cancellable cache maintenance and request-gap evidence:** expose a supported
+  provider request lease for warming an unchanged cached prefix without adding a
+  conversation turn. The lease must identify the exact request, model, account
+  and runtime generation, and end immediately on Stop, retirement,
+  replacement or cancellation. A plugin must not send dummy worker messages,
+  infer warmth from thread retention, or replay on a different routed account.
+  Include request-start timestamps and raw cache-read/cache-create usage so a
+  policy can compare actual request gaps and refresh costs. The accepted T83
+  study replaces A114's small bb-plugins sample with 120 threads and 3,219
+  finished turns from Solera, Coffre and Marbre & Craie. A171's corrected
+  findings, verified by A174, support provisional windows around 20 minutes
+  for coordinators and 15–20 minutes for Opus workers on open assignments.
+  Reported workers have only four observed review/fix returns, supporting
+  at most a rough 13–15 minute window. Acceptance alone is not terminal:
+  five of eight accepted-first Opus report turns returned. These are next-turn
+  horizons, not upstream request gaps, cache hits or measured savings.
+  Refreshing four minutes after BB's turn end can miss the five-minute cache
+  if the last request started a minute earlier. Keep warming off and current
+  settings intact until exact request/account/prefix timing, lifecycle
+  cancellation and usage accounting are supported and verified.
+  Suggested title: `Expose cancellable provider cache-maintenance leases and
+  per-request cache usage`. No issue filed.
+- **Turn-start timeout lifecycle settling:** when `provider_turn_start_timeout`
+  fires, the thread can stay `active` indefinitely — observed on three separate
+  coordinators (two hours after the timeout, no later `turn/started`), with
+  queued user messages stuck behind "waiting for the current turn". Emit a
+  terminal turn/lifecycle event or settle the thread to a non-active status so
+  status reads and queue draining reflect that the turn never started.
+- **Per-thread activity surface:** `threads.get` and the `thread.idle` /
+  `thread.failed` event DTOs expose `activeBackgroundAgentCount` but not
+  `activeBackgroundCommandCount` or `activeWorkflowCount`; only `threads.list`
+  rows carry the full `activity` object (verified on SDK 0.4.87). To prove a
+  cancelled worker's turn can no longer execute, Projects must scan the global
+  list (bounded paging) for the thread's row — and an unreadable or absent row
+  must conservatively hold the reservation. The SDK also returns parsed JSON
+  without runtime DTO validation, so absent or malformed lifecycle/activity
+  fields must read as unknown at every boundary — never as positive quiet.
+  A `threads.get` include or the same activity object on the GET/event DTO
+  would make single-thread quiescence checks direct instead of a filtered
+  global scan. No upstream issue filed.
+- **Positive stop confirmation:** the installed `threads.stop` route can
+  return `{ ok: true }` even when the host interrupt command fails, because
+  the handler swallows the failure unless `requireStopped` is requested — and
+  the public route never requests it. Projects therefore treats every Stop
+  response as an observation, releasing cancelled reservations only on the
+  positive quiet/gone evidence above. An SDK-level `requireStopped` option or
+  an execution-ended receipt would let cancellation settle directly. No
+  upstream issue filed.
+- **Logical worker branch names at creation:** accept a validated branch name
+  when creating a managed worktree, with native collision handling. The
+  installed SDK accepts a base branch but exposes no managed-worktree branch
+  naming or renaming argument, according to A37's SDK inspection. Initiative
+  delegation can name the native thread and environment, but cannot give its
+  Git branch the same logical worker name through that contract. Keep branch
+  creation in BB's environment provider rather than adding plugin Git
+  operations. Verification of current native options is part of T25; no issue
+  filed. Suggested title: `Support explicit branch names for managed worktree creation`.
+- **CLI event filters:** expose the SDK's existing event-type, descending-order
+  and before-sequence filters in `bb thread log`. A103's 2026-10-04 Solera,
+  Marbre and Craie audit found the CLI exposes limit/after-sequence for raw
+  events, forcing larger reads to inspect a recent bounded exchange. This
+  belongs in BB's CLI; Initiative's separate ignored-ref/oversized-overview
+  behavior belongs in the plugin. No issue filed. Suggested title:
+  `Expose SDK event filters in thread log`.
+- **Completion and dispatch receipts:** parent notices should identify the
+  completed turn and distinguish a preparatory/background turn from a final
+  report or failure. A103 found Marbre received "No final output was recorded"
+  while the reviewer had already started its next turn, followed later by the
+  real findings (`thr_krmkh8zwky:3918/3991`). Also evaluate discoverable native
+  dispatch history after queue rows disappear, so uncertain 504/409 outcomes
+  can be inspected without blind resends. Existing native batching and sender
+  fields remain the first tools to use; no additional plugin transport is
+  proposed. No issue filed. Suggested title:
+  `Expose turn-specific completion and dispatch outcomes`.
+- **Synchronous timeline reconstruction:** BB 0.43.1 logs show thread opening
+  can block the shared server event loop while querying and decoding a timeline
+  window. A105's 2026-10-04 navigation audit measured W52 reading 1,364 events
+  and 2,214,024 bytes for 20 segments in 447 ms; a Coffre build took 1,281 ms.
+  Across the captured period, 55 event-loop windows crossed 500 ms, with a
+  maximum reported delay of 2,284 ms. Profile/index event and group-context
+  queries, bound work before decoding, and avoid unnecessary reconstruction
+  while preserving native sequence-aware caching and complete evidence.
+  This belongs in BB's timeline/data path. Initiative and Sidebar also have
+  independently measured duplicate/global-read costs, tracked as T63 here.
+  No issue filed. Suggested title: `Reduce synchronous timeline build work
+  when opening threads`.
+
+### Session-preserving provider environment inspection (2026-10-03)
+
+- **Where:** native BB provider-runtime lifecycle and contributed environment
+  resolution. This belongs in BB because a plugin cannot replace a resident
+  Claude or Codex process's environment.
+- **Current path:** BB 0.43.1 supports `bb thread stop <id> --json` to release an
+  idle resident runtime while retaining its stored provider session. The next
+  authorized turn resolves plugin environment contributions again and resumes
+  that session. A Stop response alone does not prove release on an unavailable
+  host. A92 traced this path in the installed runtime; no live cutover was run.
+- **Gap:** there is no standalone resume or dry-start CLI phase before submitting
+  that next turn. The native `provider.env-resolved` diagnostic is emitted after
+  successful provider construction, so an Account Pool source change can be
+  verified during the first authorized turn, but not before any inference.
+- **Ask:** expose a session-preserving dry-resume or inspection operation that
+  refreshes contributed environment settings without submitting a model turn.
+  Return safe route, cache-TTL, host and session metadata with a positive runtime
+  receipt, excluding credentials and the full environment. This would make pool
+  cutover and rollback verifiable before admitting work.
+- **Status:** not filed. Suggested title: `Add session-preserving provider
+  dry-resume and safe environment inspection`.
+
+
+### Parent-aware native draft thread creation and composer navigation
+
+Initiative New thread needs to open a user-owned blank native composer under its
+current coordinator, without starting inference. Verified against BB 0.43.1 /
+SDK 0.4.87: ordinary CreateThreadRequest rejects empty input, ThreadSpawnArgs
+requires input or prompt, and native create dispatches the accepted first
+message. `BbNavigate.toCompose` accepts prompt/focus options but no parent or
+plugin metadata; Sidebar's openNewThread likewise cannot carry those fields.
+
+Requested host change: expose draft/blank thread creation or parent-aware native
+composer navigation carrying project, parentThreadId and plugin association
+metadata, with native ownership/permission validation and an acknowledged
+creation/navigation receipt. Submitting a message should remain the action that
+starts inference. This belongs in BB's thread and navigation APIs.
+
+Initiative currently opens the exported `experimental_NewThreadComposer` on a
+plugin page immediately. It forwards the user's structured request on Submit
+through the guarded native create path. Opening the composer performs no spawn
+or send. The existing Sidebar form caller has a narrow compatibility adapter
+until its separate migration. No issue filed. Suggested title: `Support
+parent-aware blank thread creation and composer navigation`.
+
+### Tell plugins when a stored setting value was replaced (2026-10-05)
+
+BB 0.43.1 (`start-server.js` 2265fa22, `coerceStoredPluginSettingValue`)
+replaces a stored plugin setting value of the wrong type, or a `select` value
+no longer among its options, with the descriptor default before
+`bb.settings.get()` returns. It does not apply `experimental_schema` on read,
+so an out-of-range number arrives unchanged. The SDK fake host does the same.
+
+Effect: a plugin cannot tell a coerced default from a value the user chose.
+The Advisor (T95) found that a renamed model or effort option would silently
+run as the default, which its design treats as a forbidden fallback. Out-of-range
+numbers are caught in the plugin, which substitutes the default, turns reviews
+off with a visible error and pauses pruning; a coerced type or option cannot be
+detected at all.
+
+Ask: when a stored value is replaced on read, or fails the descriptor's schema,
+report it to the plugin, for example through `settings.get({ withIssues: true })`
+returning `{ values, issues: [{ key, stored, reason }] }`, or a settings-issues
+event. Apply the same schema on read as on save, and keep the effective default.
+Show the issue in the Settings form too. No issue filed. Suggested title:
+`Expose replaced or invalid stored plugin setting values to plugins`.

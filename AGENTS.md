@@ -26,8 +26,8 @@ requests for routine work.
   commit, push, stash, checkout. Child threads never touch Git.
 - The user talks to the orchestrator. For a change to a plugin, the
   orchestrator spawns a child thread on the main checkout with the full task;
-  the child investigates, implements, and reports back; the orchestrator
-  verifies, reloads, and commits. When a child has reported and its work is
+  the child investigates, implements, verifies, and reports back; the
+  orchestrator reloads and commits. When a child has reported and its work is
   committed or reverted, the orchestrator archives it.
 - Spawn children on the Linux checkout environment `env_kdfdhsjp6x` (path
   `/home/exedev/Code/bb-plugins`), never on `env_pepnyn24rr` (its registered
@@ -53,9 +53,10 @@ plugin tracks whatever the checkout contains.
 2. The child works directly in `~/Code/bb-plugins/plugins/<name>` and may run
    `npm run typecheck`, `npm test`, and `npm run build` there. It reports
    files changed and what it verified. It does not commit.
-3. The orchestrator reviews the diff, runs `bb plugin build` and
-   `bb plugin reload` (or keeps `bb plugin dev` running), and the user checks
-   the live behavior.
+3. The orchestrator runs `bb plugin build` and `bb plugin reload` (or keeps
+   `bb plugin dev` running), and the user checks the live behavior. Testing
+   and diff review stay with children; a substantial change gets a review
+   child rather than an orchestrator-side check.
 4. If it is good, the orchestrator commits on `main` and pushes to `origin`
    directly. If not, it sends follow-up instructions to the same child, or
    reverts the working tree with `git checkout -- <paths>`.

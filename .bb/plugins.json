@@ -12,8 +12,8 @@
       "source": "./plugins/plans"
     },
     {
-      "name": "devin",
-      "source": "./plugins/devin"
+      "name": "projects",
+      "source": "./plugins/projects"
     },
     {
       "name": "voice-mode",
@@ -38,10 +38,6 @@
     {
       "name": "remove-plugin-ellipsis",
       "source": "./plugins/remove-plugin-ellipsis"
-    },
-    {
-      "name": "scratchpad",
-      "source": "./plugins/scratchpad"
     },
     {
       "name": "executor",
