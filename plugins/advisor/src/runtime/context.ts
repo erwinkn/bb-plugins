@@ -11,6 +11,8 @@ import type { InitiativeSource } from "./initiatives.js";
 export interface WatchContext {
   thread: ThreadDto | null;
   threadRead: Read<ThreadFacts>;
+  /** The thread read answered BB's own 404: the thread is deleted. Any other failure is unknown, not deleted. */
+  deleted: boolean;
   snapshot: Snapshot;
   fork: ForkOrigin;
   parent: string | null;
@@ -42,10 +44,12 @@ export async function readContext(
   const rs = () => readSignal(signal, opts.deadlineMs);
   let thread: ThreadDto | null = null;
   let threadRead: Read<ThreadFacts>;
+  let deleted = false;
   try {
     thread = await host.getThread(threadId, rs());
     threadRead = ok({ parentThreadId: thread.parentThreadId ?? null, archivedAt: thread.archivedAt ?? null });
   } catch (err) {
+    deleted = isNotFound(err);
     threadRead = failed(`threads.get failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   const gaps: string[] = [];
@@ -77,6 +81,7 @@ export async function readContext(
   return {
     thread,
     threadRead,
+    deleted,
     snapshot: snap,
     fork,
     parent: threadRead.ok ? threadRead.value.parentThreadId : null,
@@ -118,3 +123,6 @@ export function dispatchGate(ctx: WatchContext): string | null {
   const gaps = snapshotGaps(ctx.snapshot);
   return gaps.length > 0 ? `context read failed or incomplete (${gaps.join(", ")}): no request until a later pass reads it` : null;
 }
+
+/** BB's own "not found" for a read: the thread is gone. Network errors, 5xx and timeouts are not. */
+export const isNotFound = (err: unknown): boolean => (err as { status?: number } | null)?.status === 404;

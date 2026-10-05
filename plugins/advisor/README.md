@@ -120,13 +120,14 @@ BB, not on the plugin:
   watch (yours stays yours; watching a member explicitly makes its watch
   yours, so Initiative off, removal or retirement no longer touch it). A member that joins after the watch was turned
   on is read from its first event. A member that turns `retired` or `former`,
-  whose thread is archived, or whose Initiative is archived, is disabled with
-  the reason kept; history stays and a user re-enable is not undone. Projects
+  whose thread is archived or deleted (BB answers 404; any other read failure
+  ends nothing), or whose Initiative is archived, is disabled with the reason
+  kept; history stays and a user re-enable is not undone. Projects
   does not know native archive state, so the Advisor learns it cheaply: a
   member with an enabled watch from that watch's own thread read, any other
   member from one thread read before it would be (re)started, at most 20 reads
-  per Initiative per pass (the rest wait a pass). An archived member is shown
-  `archived`, read again every 5 minutes or on an unarchive event, and watched
+  per Initiative per pass (the rest wait a pass). Such a member is shown
+  `archived` or `deleted`, read again every 5 minutes or on an unarchive event, and watched
   again once it is live. A missing listing route is
   "unavailable" for the listing only: thread context keeps working, existing
   member watches go on, and the Initiative watch shows the error.

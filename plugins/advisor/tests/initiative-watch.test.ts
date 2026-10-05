@@ -304,7 +304,7 @@ describe("Initiative watch", () => {
     expect(o.initiativeWatches[0]).toMatchObject({ enabled: true, error: expect.stringMatching(/^Projects context routes unavailable .*new members are not added/u) });
     expect(watched(r)).toMatchObject({ thr_w1: { enabled: true } }); // existing member watches go on
     const cli = await runCli(["status"], { store: r.store, advisor: r.advisor, initiatives: unavailableInitiatives, now: clock.now });
-    expect(cli.stdout).toMatch(/initiative watches \(1\):\n {2}bb-plugins \(prj_1\) on · 2 live members, 2 observed, 1 retired, former or archived · Projects context routes unavailable/u);
+    expect(cli.stdout).toMatch(/initiative watches \(1\):\n {2}bb-plugins \(prj_1\) on · 2 live members, 2 observed, 1 ended · Projects context routes unavailable/u);
   });
 
   it("CLI: watch and unwatch --initiative, and findings name the Initiative and role", async () => {
@@ -392,7 +392,7 @@ describe("Initiative watch: archived member threads", () => {
     expect(r.store.getWatchByThread("thr_u_old")).toBeNull();
     expect(r.store.memberOf("thr_u_old")).toMatchObject({ state: "archived" });
     expect(Object.keys(watched(r)).sort()).toEqual(["thr_coord", "thr_u1", "thr_u2", "thr_u3", "thr_u4", "thr_w1"]);
-    expect(await status(r, clock)).toMatch(/bb-plugins \(prj_1\) on · 6 live members, 6 observed, 2 retired, former or archived/u);
+    expect(await status(r, clock)).toMatch(/bb-plugins \(prj_1\) on · 6 live members, 6 observed, 2 ended/u);
   });
 
   it("stops existing Initiative watches of archived threads at the next sync, keeps their history, and leaves explicit watches alone", async () => {
@@ -452,6 +452,49 @@ describe("Initiative watch: archived member threads", () => {
     clock.advance(5 * 60_000);
     await r.tick();
     expect(watched(r).thr_u_old).toMatchObject({ origin: "initiative", enabled: true });
+  });
+
+  it("T108: a deleted thread (BB's 404) ends its Initiative watch with history kept; a transient read failure ends nothing", async () => {
+    const { r, world, clock, init } = await coffre();
+    const mine = await r.advisor.watch("thr_u4", "test");
+    await r.advisor.watchInitiative("prj_1", "test");
+    await r.tick();
+    const u1 = r.store.getWatchByThread("thr_u1")!;
+    const cards = r.store.listCards(u1.id, { limit: 50 }).length;
+    expect(cards).toBeGreaterThan(0);
+    world.threads.delete("thr_u1"); // threads.get answers 404
+    world.threads.delete("thr_u4");
+    world.failGet.add("thr_u2"); // threads.get answers 503
+    await r.tick();
+    clock.advance(11_000);
+    await r.tick();
+    expect(watched(r)).toMatchObject({
+      thr_u1: { origin: "initiative", enabled: false, ended: "thread deleted" },
+      thr_u2: { origin: "initiative", enabled: true, ended: null },
+      thr_u4: { origin: "selected", enabled: true },
+    });
+    expect(r.store.listCards(u1.id, { limit: 50 })).toHaveLength(cards);
+    expect(r.store.memberOf("thr_u1")).toMatchObject({ state: "deleted" });
+    expect(r.store.memberOf("thr_u2")).toMatchObject({ state: "active" });
+    expect(r.store.getWatch(mine.id)).toMatchObject({ enabled: true, lastError: "deleted: not observed" });
+    expect(overview(r.store, r.advisor, unavailableInitiatives, clock.now()).watches.find((w) => w.threadId === "thr_u1")).toMatchObject({ initiative: { state: "deleted" } });
+    // New members: a deleted one is never watched; one whose read fails transiently waits, then is watched.
+    init.add("thr_gone", { kind: "adhoc", role: "user", worker: null, generation: null });
+    world.addThread("thr_flaky");
+    world.failGet.add("thr_flaky");
+    init.add("thr_flaky", { kind: "adhoc", role: "user", worker: null, generation: null });
+    clock.advance(11_000);
+    await r.tick();
+    expect(r.store.getWatchByThread("thr_gone")).toBeNull();
+    expect(r.store.memberOf("thr_gone")).toMatchObject({ state: "deleted" });
+    expect(r.store.getWatchByThread("thr_flaky")).toBeNull();
+    expect(r.store.memberOf("thr_flaky")).toMatchObject({ state: "active" });
+    world.failGet.delete("thr_flaky");
+    world.failGet.delete("thr_u2");
+    clock.advance(11_000);
+    await r.tick();
+    expect(watched(r)).toMatchObject({ thr_flaky: { origin: "initiative", enabled: true }, thr_u2: { enabled: true, ended: null } });
+    expect(r.store.getWatchByThread("thr_gone")).toBeNull();
   });
 
   it("reads at most 20 unknown members a pass; the rest wait a pass rather than being watched unread", async () => {

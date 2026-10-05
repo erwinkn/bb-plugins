@@ -21,7 +21,7 @@ function bounded(text: string): string {
 
 function initiativeLine(i: InitiativeWatchView): string {
   const m = i.members;
-  return `${i.name} (${i.id}) ${i.enabled ? "on" : "off"}${i.archived ? " · archived" : ""} · ${m.live} live members, ${m.observed} observed, ${m.total - m.live} retired, former or archived${m.excluded ? `, ${m.excluded} excluded` : ""}${i.error ? ` · ${i.error}` : ""}`;
+  return `${i.name} (${i.id}) ${i.enabled ? "on" : "off"}${i.archived ? " · archived" : ""} · ${m.live} live members, ${m.observed} observed, ${m.total - m.live} ended${m.excluded ? `, ${m.excluded} excluded` : ""}${i.error ? ` · ${i.error}` : ""}`;
 }
 
 export async function runCli(argv: string[], d: CliDeps): Promise<{ exitCode: number; stdout?: string; stderr?: string }> {
@@ -36,7 +36,7 @@ export async function runCli(argv: string[], d: CliDeps): Promise<{ exitCode: nu
       const v = initiativeWatchView(d.store, iw.id)!;
       return {
         exitCode: 0,
-        stdout: `watching Initiative ${initiativeLine(v)}\nnew members are added as they appear; retired, former and archived members stop being observed and keep their history\n`,
+        stdout: `watching Initiative ${initiativeLine(v)}\nnew members are added as they appear; retired, former, archived and deleted members stop being observed and keep their history\n`,
       };
     } catch (err) {
       return { exitCode: 1, stderr: `${err instanceof Error ? err.message : String(err)}\n` };

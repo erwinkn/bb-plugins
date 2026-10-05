@@ -44,12 +44,14 @@ export interface WatchState {
   dispatchGate: string | null;
   /** The environment root path was read (its value may still be null). */
   rootPathRead: boolean;
-  /** Why an Initiative watch stopped this member watch (retired, former, archived, Initiative watch off); null when it did not. */
+  /** Why an Initiative watch stopped this member watch (retired, former, thread archived or deleted, Initiative watch off); null when it did not. */
   initiativeEnded: string | null;
   /** The thread's own Initiative membership from its last successful context read (labels and feed filters only); null when it has none. */
   initiative?: { id: string; name: string; kind: string; role: string; worker: string | null; state: string } | null;
   /** Seed from the thread's first event when the thread was created at or after this time (a member that joined a watched Initiative). */
   fromStartIfCreatedAfter: number | null;
+  /** When a thread read last answered BB's own 404 (the thread is deleted); a successful read clears it. */
+  threadDeleted: number | null;
 }
 
 export const EMPTY_STATE: WatchState = {
@@ -66,6 +68,7 @@ export const EMPTY_STATE: WatchState = {
   rootPathRead: false,
   initiativeEnded: null,
   fromStartIfCreatedAfter: null,
+  threadDeleted: null,
 };
 
 export interface WatchRow {

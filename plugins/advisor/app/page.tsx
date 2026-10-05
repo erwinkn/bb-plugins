@@ -208,7 +208,7 @@ function InitiativeRow({ i }: { i: InitiativeWatchView }) {
       <p className="pl-4 text-xs text-muted-foreground">
         {i.archived ? "archived · " : ""}
         {m.observed} observed of {m.live} live members
-        {m.total > m.live ? ` · ${m.total - m.live} retired, former or archived` : ""}
+        {m.total > m.live ? ` · ${m.total - m.live} ended` : ""}
         {m.excluded ? ` · ${m.excluded} excluded` : ""}
       </p>
       {i.error ? (
