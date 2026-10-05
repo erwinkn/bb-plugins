@@ -5,7 +5,8 @@ description: Inspect BB Advisor watches, evidence coverage and findings with the
 
 # BB Advisor
 
-The Advisor watches threads a person selected. It reads their events and
+The Advisor watches threads a person selected, or every thread of an
+Initiative a person selected. It reads their events and
 environment and keeps immutable evidence: file edits with their diffs,
 commands with exit codes, completion claims, turn ends, and turn-end
 snapshots of changed test files (to catch shell edits). It never sends
@@ -25,7 +26,20 @@ bb advisor status                 # activation, routes, today's budget use, watc
 bb advisor watch <threadId>       # start watching (reads only)
 bb advisor unwatch <threadId>     # stop; deletes that thread's evidence and findings
 bb advisor findings <threadId>    # findings with severity, subject status and summary
+bb advisor watch --initiative <id|name>             # watch a whole Initiative
+bb advisor unwatch --initiative <id|name> [--delete] # turn it off (keeps history), or remove it
 ```
+
+An Initiative watch covers its coordinator, workers, reviewers and the
+user's threads in it, and adds members that join later (read from their
+first event). Retired and replaced members stop being observed and keep their
+history. `status` lists Initiative watches with member counts, and each
+watch and finding names its Initiative and role (for example `W12 work`).
+Unwatching one member thread excludes it from the Initiative watch until it is
+watched again. Watching a member explicitly makes that watch the user's own.
+
+The Advisor page opens on one feed of findings across every watch; its Discuss
+action is for the user to start, never for an agent.
 
 ## Reading findings honestly
 

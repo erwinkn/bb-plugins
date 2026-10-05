@@ -9,7 +9,7 @@ import { Requests } from "../src/rules/requests.js";
 import { buildBody, referenceSerializer } from "../src/rules/packet.js";
 import { inclusionOrder } from "../src/rules/requests.js";
 import { ok } from "../src/rules/snapshot.js";
-import type { InitiativeSource } from "../src/runtime/initiatives.js";
+import { unavailableInitiatives, type InitiativeSource } from "../src/runtime/initiatives.js";
 import { watchDetail } from "../src/views.js";
 import { Clock, FakeWorld, rig } from "./helpers/world.js";
 import { fixture } from "./helpers/a160.js";
@@ -23,6 +23,7 @@ function initiatives(): InitiativeSource {
   const worker = { ...PS.workers_view_running.items[0], ref: "W9", threadId: "thr_fork", assignments: [{ ref: "A9", state: "running", cancelled: false, tasks: ["T1"] }] };
   const a9 = { ...PS.readRefs_detailed_running.items[0], ref: "A9", workerNum: 9, briefText: NEW_BRIEF };
   return {
+    ...unavailableInitiatives,
     available: true,
     label: "test Initiative source",
     membership: async (threadId) => ok(threadId === "thr_fork" ? { coordinatorThreadId: "thr_coord", worker, former: false } : null),

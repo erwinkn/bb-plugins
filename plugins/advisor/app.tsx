@@ -12,6 +12,7 @@ import { AdvisorPage, PANEL_PATH, useOverview } from "./app/page";
 import { SettingsPanel } from "./app/settings";
 import { Empty, errorText } from "./app/ui";
 import { WatchView } from "./app/watch";
+import { UnseenBadge } from "./app/feed";
 
 function ThreadPanel({ threadId }: { threadId: string; params: unknown }) {
   const rpc = useRpc<typeof rpcContract>();
@@ -54,6 +55,9 @@ export default definePluginApp((app) => {
     icon: "SecurityCheck",
     path: PANEL_PATH,
     component: AdvisorPage,
+    // The one Advisor entry: unseen findings across every watch, live. BB does not mount
+    // sidebar accessories on compact viewports (SDK gap); there the feed shows the count.
+    experimental_sidebarAccessory: UnseenBadge,
   });
   app.slots.threadPanelAction({
     id: "advisor-thread",

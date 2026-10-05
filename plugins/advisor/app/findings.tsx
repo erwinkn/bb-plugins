@@ -5,7 +5,7 @@
 // covers only the occurrences already recorded. "Dismiss" reopens on any new
 // occurrence. Nothing here closes an issue because tests pass.
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "../server";
@@ -53,13 +53,15 @@ export function FindingsList({ watchId, findings, threshold, onChanged }: { watc
   );
 }
 
-function FindingCard({ f, watchId, act }: { f: FindingView; watchId: string; act: (p: Promise<unknown>) => void }) {
+/** One finding. The feed adds its thread (`context`) and Discuss (`extra`); the watch view needs neither. */
+export function FindingCard({ f, watchId, act, context, extra }: { f: FindingView; watchId: string; act: (p: Promise<unknown>) => void; context?: ReactNode; extra?: ReactNode }) {
   const rpc = useRpc<typeof rpcContract>();
   const [opened, setOpened] = useState<OpenedEvidence | null>(null);
   const c = f.citation;
   const muted = f.issueState === "muted";
   return (
     <li className="space-y-2 rounded-lg border border-border bg-card p-3">
+      {context}
       <div className="flex flex-wrap items-center gap-2">
         <Severity severity={f.severity} />
         <span className="text-xs text-muted-foreground">{f.category}</span>
@@ -129,6 +131,7 @@ function FindingCard({ f, watchId, act }: { f: FindingView; watchId: string; act
         >
           {opened ? "Hide evidence" : "Open evidence"}
         </Button>
+        {extra}
       </div>
       {opened ? (
         <div className="space-y-1">

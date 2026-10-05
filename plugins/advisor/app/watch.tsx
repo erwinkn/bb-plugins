@@ -69,7 +69,12 @@ export function WatchView({ watchId, threshold, onRemoved, compact = false }: { 
           ) : null}
         </div>
         <div className="flex flex-wrap gap-1">
-          <Chip tone={s.enabled ? "strong" : "neutral"}>{s.enabled ? "observing" : "disabled"}</Chip>
+          <Chip tone={s.enabled ? "strong" : "neutral"}>{s.enabled ? "observing" : s.ended ? `stopped: ${s.ended}` : "disabled"}</Chip>
+          {s.initiative ? (
+            <Chip title={`Initiative ${s.initiative.id} · ${s.initiative.state}${s.initiative.excluded ? " · excluded from the Initiative watch" : ""}`}>
+              {s.initiative.name} · {s.initiative.label}
+            </Chip>
+          ) : null}
           {s.pause.map((p) => (
             <Chip key={p} tone="danger">
               paused: {p}
@@ -115,7 +120,19 @@ export function WatchView({ watchId, threshold, onRemoved, compact = false }: { 
               <HintButton size="sm" variant="ghost" disabled={busy || s.backlog === 0} onClick={() => act(() => rpc.call("watchSkipToTip", { watchId }), "Skipped; recorded as not judged")} hint="Marks every unreviewed card as not judged. Recorded as a gap.">
                 Skip to tip
               </HintButton>
-              <HintButton size="sm" variant="ghost" disabled={busy} onClick={() => act(async () => (await rpc.call("watchRemove", { watchId }), onRemoved?.()))} hint="Stops watching and deletes this thread's evidence and findings. The spend ledger keeps its rows.">
+              <HintButton
+                size="sm"
+                variant="ghost"
+                disabled={busy}
+                onClick={() =>
+                  act(async () => {
+                    const r = await rpc.call("watchRemove", { watchId });
+                    if (r.excludedFrom.length > 0) toast(`Excluded from the ${r.excludedFrom.join(", ")} watch: it is not added back. Watch the thread again to include it.`);
+                    onRemoved?.();
+                  })
+                }
+                hint={s.initiative ? "Stops watching, deletes this thread's evidence and findings, and excludes it from its Initiative watch. The spend ledger keeps its rows." : "Stops watching and deletes this thread's evidence and findings. The spend ledger keeps its rows."}
+              >
                 Remove
               </HintButton>
             </>

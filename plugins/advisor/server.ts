@@ -15,7 +15,8 @@ import { PROJECTS_PLUGIN_ID, projectsInitiatives } from "./src/runtime/projects.
 import { openStore } from "./src/store/store.js";
 import type { FetchLike } from "./src/transport/types.js";
 import type { TransportDeps } from "./src/transport/transports.js";
-import { cardView, findingView, overview, routesTable, watchDetail, watchSummary } from "./src/views.js";
+import { cardView, feedView, feedWatchIds, findingView, initiativeWatchView, memberView, overview, routesTable, unseenTotal, watchDetail, watchSummary } from "./src/views.js";
+import { discussionPrompt } from "./src/discuss.js";
 import { runCli } from "./src/cli.js";
 
 export { rpcContract };
@@ -93,8 +94,34 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
     bb.events.on("thread.idle", ({ thread }) => {
       if (store.getWatchByThread(thread.id)?.enabled) advisor.wake();
     });
+    // A new thread may be a new member of a watched Initiative: list members at the next pass.
+    bb.events.on("thread.created", () => advisor.noteThreadCreated());
 
     const via = "panel";
+    const discussion = (occurrenceId: string) => {
+      const o = store.getOccurrence(occurrenceId);
+      if (!o) throw new Error(`unknown finding ${occurrenceId}`);
+      const w = store.getWatch(o.watchId);
+      const thread = { threadId: w?.threadId ?? "unknown", title: w?.title ?? null };
+      const finding = findingView(store, o, { threadId: thread.threadId, initiative: w ? memberView(store, w.threadId) : null });
+      return { finding, thread, watchId: o.watchId, projectId: w?.projectId ?? null, title: `Advisor · ${finding.summary}`.slice(0, 120) };
+    };
+    /** Discuss creates in flight, by finding. */
+    const discussing = new Map<string, Promise<string>>();
+    /** The discussion thread opened for a finding, while it still exists and is not archived. */
+    const liveDiscussion = async (occurrenceId: string): Promise<string | null> => {
+      const threadId = store.discussionOf(occurrenceId);
+      if (!threadId) return null;
+      try {
+        const t = await host.getThread(threadId);
+        if (t.archivedAt === null) return threadId;
+      } catch (err) {
+        // Unknown is not gone: only BB's own 404 forgets the link.
+        if ((err as { status?: number }).status !== 404) throw err;
+      }
+      store.forgetDiscussion(occurrenceId);
+      return null;
+    };
     bb.rpc.register(rpcContract, {
       overview: () => overview(store, advisor, initiatives, now()),
       settingsView: async (): Promise<SettingsView> => {
@@ -135,7 +162,19 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
         return { watch: w ? watchSummary(store, advisor, w) : null };
       },
       watchAdd: async ({ threadId }) => ({ watch: watchSummary(store, advisor, await advisor.watch(threadId, via)) }),
-      watchRemove: ({ watchId }) => (advisor.unwatch(watchId, via), { ok: true as const }),
+      watchRemove: ({ watchId }) => ({ ok: true as const, ...advisor.unwatch(watchId, via) }),
+      initiativeOptions: async () => {
+        const r = await initiatives.initiatives(AbortSignal.timeout(10_000));
+        if (r.status !== "ok") return { status: r.status, error: r.error, initiatives: [] };
+        const on = new Set(store.listInitiativeWatches().filter((i) => i.enabled).map((i) => i.id));
+        return { status: "ok" as const, error: null, initiatives: r.value.map((i) => ({ id: i.id, name: i.name, paused: i.paused, watched: on.has(i.id) })) };
+      },
+      initiativeWatchSet: async ({ initiativeId, enabled }) => {
+        if (enabled) await advisor.watchInitiative(initiativeId, via);
+        else advisor.unwatchInitiative(initiativeId, via);
+        return { initiative: initiativeWatchView(store, initiativeId)! };
+      },
+      initiativeWatchRemove: ({ initiativeId }) => ({ deleted: advisor.unwatchInitiative(initiativeId, via, true).deleted }),
       watchSetEnabled: ({ watchId, enabled }) => (advisor.setEnabled(watchId, enabled, via), { ok: true as const }),
       watchPause: ({ watchId }) => (advisor.pause(watchId, via), { ok: true as const }),
       watchResume: ({ watchId }) => (advisor.resume(watchId, via), { ok: true as const }),
@@ -186,6 +225,46 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
         return { cleared };
       },
       ledger: () => ({ rows: store.listLedger(100) }),
+      feed: ({ initiativeId, watchId, before, limit }) => feedView(store, advisor, { initiativeId, watchId, before, limit }),
+      unseen: () => ({ unseen: unseenTotal(store, advisor.resolved.config.severityThreshold) }),
+      feedMarkSeen: ({ initiativeId, watchId }) => {
+        const marked = store.acknowledgeAll(feedWatchIds(store, { initiativeId, watchId }), now());
+        store.logAction(watchId ?? null, "acknowledge-all", `${marked} findings${initiativeId ? ` of Initiative ${initiativeId}` : ""}`, via, now());
+        bb.realtime.publish("advisor.changed", { at: now() });
+        return { marked };
+      },
+      discussDraft: async ({ occurrenceId }) => {
+        const d = discussion(occurrenceId);
+        return { prompt: discussionPrompt(d.finding, d.thread), projectId: d.projectId, threadId: await liveDiscussion(occurrenceId), title: d.title };
+      },
+      discussCreate: async ({ occurrenceId, request }) => {
+        // One create per finding at a time: a concurrent submit (two tabs) waits and reuses its
+        // thread. A failed spawn rejects every waiter and leaves nothing behind, so it can be retried.
+        const pending = discussing.get(occurrenceId);
+        if (pending) return { threadId: await pending, reused: true };
+        const create = (async () => {
+          const existing = await liveDiscussion(occurrenceId);
+          if (existing) return { threadId: existing, reused: true };
+          const d = discussion(occurrenceId);
+          // The user's own submit from BB's composer: a separate thread, never the watched one.
+          const thread = await bb.sdk.threads.spawn({
+            ...(request as unknown as Parameters<typeof bb.sdk.threads.spawn>[0]),
+            title: d.title,
+          });
+          store.saveDiscussion(occurrenceId, thread.id, now());
+          store.logAction(d.watchId, "discuss", `${occurrenceId} → ${thread.id}`, via, now());
+          bb.realtime.publish("advisor.changed", { at: now() });
+          return { threadId: thread.id, reused: false };
+        })();
+        const shared = create.then((r) => r.threadId);
+        shared.catch(() => {}); // waiters see the error; an unwaited failure is not unhandled
+        discussing.set(occurrenceId, shared);
+        try {
+          return await create;
+        } finally {
+          discussing.delete(occurrenceId);
+        }
+      },
       recordsGet: ({ occurrenceIds }) => {
         const records = [];
         const missing = [];
@@ -203,8 +282,12 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
       summary: "Watch threads and inspect Advisor evidence and findings",
       commands: [
         { name: "status", summary: "Activation, watches and today's budget use", usage: "bb advisor status" },
-        { name: "watch", summary: "Watch a thread (reads its events; never writes to it)", usage: "bb advisor watch <threadId>" },
-        { name: "unwatch", summary: "Stop watching a thread and delete its evidence and findings", usage: "bb advisor unwatch <threadId>" },
+        { name: "watch", summary: "Watch a thread, or a whole Initiative with --initiative (reads events; never writes)", usage: "bb advisor watch <threadId> | --initiative <id|name>" },
+        {
+          name: "unwatch",
+          summary: "Stop watching a thread (deletes its evidence), or turn an Initiative watch off (keeps history; --delete removes it)",
+          usage: "bb advisor unwatch <threadId> | --initiative <id|name> [--delete]",
+        },
         { name: "findings", summary: "Findings of a watched thread", usage: "bb advisor findings <threadId>" },
       ],
       run: (argv) => runCli(argv, { store, advisor, initiatives, now }),

@@ -8,14 +8,14 @@ import type { EventQuery, EventRow } from "../rules/events.js";
 import { inclusionOrder } from "../rules/requests.js";
 import { briefsOf } from "../rules/snapshot.js";
 import { bucketHold, freshBucket, take } from "../rules/scheduler.js";
-import { hashKey, type Store, type WatchRow } from "../store/store.js";
+import { hashKey, type InitiativeWatchRow, type Store, type WatchRow } from "../store/store.js";
 import type { TransportDeps } from "../transport/transports.js";
 import { runCheckpoint } from "./checkpoints.js";
 import { dispatchGate, readContext, type WatchContext } from "./context.js";
 import { drainPass } from "./drain.js";
 import type { AdvisorHost } from "./host.js";
 import { READ_DEADLINE_MS, readSignal } from "./host.js";
-import type { InitiativeSource } from "./initiatives.js";
+import type { InitiativeMembers, InitiativeSource, InitiativeSummary } from "./initiatives.js";
 import { budgetSince, carryFor, dayKey, type BudgetCarry } from "./ledger.js";
 import { deriveFromRows, hasTrigger, insertCards, pauseOf, storePause } from "./observer.js";
 import { normPath } from "../rules/diff.js";
@@ -44,6 +44,10 @@ interface Inflight {
 }
 
 const PRUNE_EVERY_MS = 10 * 60_000;
+/** At most one member listing per watched Initiative this often, unless a thread was just created. */
+const INITIATIVE_SYNC_MS = 10_000;
+/** Member pages (up to 200 threads each) read per Initiative per pass; a longer walk goes on next pass. */
+const INITIATIVE_PAGES_PER_PASS = 5;
 const MIN_TICK_GAP_MS = 2000;
 /** Pause reasons an observation pass sets and clears from what it read; all others belong to reviews and panel actions. */
 const OBSERVED_REASONS = ["interrupted", "user-stopped"] as const;
@@ -57,6 +61,11 @@ export class Advisor {
   private disposed = false;
   /** The last project-scope listing failure, shown as an observation error until a listing succeeds. */
   scopeError: string | null = null;
+  /** Last member listing attempt per Initiative watch (memory only: a reload lists at once). */
+  private initiativeSyncAt = new Map<string, number>();
+  private initiativeSyncDue = false;
+  /** Member walks in progress: the next page cursor and every thread listed so far (memory only). */
+  private walks = new Map<string, { after: string | null; seen: Set<string> }>();
 
   constructor(private d: AdvisorDeps) {
     this.resolved = resolveConfig({});
@@ -195,9 +204,20 @@ export class Advisor {
   async watch(threadId: string, via: string): Promise<WatchRow> {
     const existing = this.d.store.getWatchByThread(threadId);
     const now = this.d.now();
+    // Watching a thread again is the way back in after an exclusion from an Initiative watch.
+    this.d.store.setExcluded(threadId, false);
     if (existing) {
       if (!existing.enabled) this.setEnabled(existing.id, true, via);
-      return this.d.store.getWatch(existing.id)!;
+      // An explicit watch of a thread an Initiative watch started becomes yours: no Initiative
+      // retirement, off or removal touches it afterwards.
+      const w = this.d.store.getWatch(existing.id)!;
+      if (w.origin === "initiative") {
+        w.origin = "selected";
+        this.d.store.saveWatch(w, now);
+        this.d.store.logAction(w.id, "watch", `${threadId} (now selected explicitly)`, via, now);
+        this.changed();
+      }
+      return w;
     }
     const thread = await this.d.host.getThread(threadId);
     const [ok, why] = eligible({ archivedAt: thread.archivedAt });
@@ -221,6 +241,7 @@ export class Advisor {
       p.enable();
       w.epoch = p.epoch;
       w.enabled = true;
+      w.state.initiativeEnded = null;
       w.seeded = false; // re-seed: the interval while disabled is shown as not observed
       if (w.cursor !== null) this.d.store.addGap(w.id, "observation", "disabled-interval", w.cursor + 1, null, "not observed while disabled", now);
     } else {
@@ -235,7 +256,19 @@ export class Advisor {
     this.changed();
   }
 
-  unwatch(watchId: string, via: string): void {
+  /**
+   * Stop watching a thread and delete its evidence. A thread an Initiative
+   * watch has seen is excluded from it, so the next listing does not add it
+   * back; watching the thread again includes it. Returns those Initiatives' names.
+   */
+  unwatch(watchId: string, via: string): { excludedFrom: string[] } {
+    const w = this.d.store.getWatch(watchId);
+    const ids = w ? this.d.store.setExcluded(w.threadId, true) : [];
+    this.drop(watchId, via);
+    return { excludedFrom: ids.map((id) => this.d.store.getInitiativeWatch(id)?.name ?? id) };
+  }
+
+  private drop(watchId: string, via: string): void {
     this.inflight.get(watchId)?.controller.abort("watch-removed");
     this.d.store.logAction(watchId, "unwatch", null, via, this.d.now());
     this.d.store.deleteWatch(watchId);
@@ -282,6 +315,7 @@ export class Advisor {
     const cfg = this.resolved.config;
     if (cfg.observationEnabled && this.resolved.observationErrors.length === 0) {
       await this.syncProjectScope(signal);
+      await this.syncInitiatives(signal);
       for (const w of this.d.store.listWatches()) {
         if (signal.aborted) return;
         if (!w.enabled) continue;
@@ -328,6 +362,225 @@ export class Advisor {
     }
   }
 
+  // ------------------------------------------------------------------ Initiative watches
+
+  /** A thread was created somewhere: a watched Initiative may have a new member, so list at the next pass. */
+  noteThreadCreated(): void {
+    if (!this.d.store.listInitiativeWatches().some((i) => i.enabled)) return;
+    this.initiativeSyncDue = true;
+    this.wake();
+  }
+
+  /** A stored Initiative watch by exact id, or by name ignoring case. */
+  findInitiativeWatch(ref: string): InitiativeWatchRow | null {
+    const all = this.d.store.listInitiativeWatches();
+    return all.find((i) => i.id === ref) ?? all.find((i) => i.name.toLowerCase() === ref.trim().toLowerCase()) ?? null;
+  }
+
+  /**
+   * Turn on a watch of a whole Initiative: its coordinator and every current
+   * member, and members that join later. An unknown Initiative is resolved
+   * through the Projects context routes; when they cannot be read nothing is
+   * watched and the error says why.
+   */
+  async watchInitiative(ref: string, via: string, signal: AbortSignal = new AbortController().signal): Promise<InitiativeWatchRow> {
+    const known = this.findInitiativeWatch(ref);
+    let target: { id: string; name: string };
+    if (known) target = known;
+    else {
+      const list = await this.d.initiatives.initiatives(readSignal(signal, this.deadline));
+      if (list.status !== "ok") {
+        throw new Error(`cannot watch Initiative ${ref}: the Projects context routes are ${list.status === "unavailable" ? "unavailable" : "unreadable"} (${list.error}); nothing is watched`);
+      }
+      target = pickInitiative(list.value, ref);
+    }
+    const now = this.d.now();
+    const on = known?.enabled === true;
+    this.d.store.saveInitiativeWatch(
+      { id: target.id, name: target.name, enabled: true, since: on ? known.since : now, archived: known?.archived ?? false, syncedAt: known?.syncedAt ?? null, error: known?.error ?? null },
+      now,
+    );
+    if (!on) this.d.store.logAction(null, "watch-initiative", `${target.name} (${target.id})`, via, now);
+    await this.syncInitiative(target.id, signal);
+    this.changed();
+    return this.d.store.getInitiativeWatch(target.id)!;
+  }
+
+  /**
+   * Turn an Initiative watch off: the member watches it started stop
+   * observing and keep their evidence and findings. With `remove`, those
+   * watches and their evidence are deleted and the Initiative watch is forgotten.
+   * Threads you watch yourself are never touched.
+   */
+  unwatchInitiative(ref: string, via: string, remove = false): { initiative: InitiativeWatchRow; stopped: number; deleted: number } {
+    const iw = this.findInitiativeWatch(ref);
+    if (!iw) throw new Error(`no Initiative watch matches ${ref}`);
+    const now = this.d.now();
+    let stopped = 0;
+    let deleted = 0;
+    this.d.store.saveInitiativeWatch({ ...iw, enabled: false }, now);
+    for (const m of this.d.store.listMembers(iw.id)) {
+      const w = this.d.store.getWatchByThread(m.threadId);
+      if (!w || w.origin !== "initiative" || this.claimedElsewhere(m.threadId, iw.id)) continue;
+      if (remove) {
+        this.drop(w.id, via);
+        deleted++;
+      } else if (w.enabled) {
+        this.endMember(w.id, "Initiative watch off");
+        stopped++;
+      }
+    }
+    if (remove) this.d.store.deleteInitiativeWatch(iw.id);
+    this.d.store.logAction(null, remove ? "remove-initiative" : "unwatch-initiative", `${iw.name} (${iw.id}): ${remove ? `${deleted} member watches deleted` : `${stopped} member watches stopped`}`, via, now);
+    this.initiativeSyncAt.delete(iw.id);
+    this.walks.delete(iw.id);
+    this.changed();
+    return { initiative: { ...iw, enabled: false }, stopped, deleted };
+  }
+
+  /** Another enabled Initiative watch currently counts this thread as a live member. */
+  private claimedElsewhere(threadId: string, initiativeId: string): boolean {
+    return this.d.store
+      .listInitiativeWatches()
+      .some((i) => i.id !== initiativeId && i.enabled && !i.archived && this.d.store.listMembers(i.id).some((m) => m.threadId === threadId && !m.excluded && !memberEnded(m.state)));
+  }
+
+  /** Stop a member watch on the Initiative's behalf: history stays, observation stops, and the reason is kept. */
+  private endMember(watchId: string, why: string): void {
+    this.setEnabled(watchId, false, "initiative");
+    const w = this.d.store.getWatch(watchId);
+    if (!w) return;
+    w.state.initiativeEnded = why;
+    this.d.store.saveWatch(w, this.d.now());
+  }
+
+  private async syncInitiatives(signal: AbortSignal): Promise<void> {
+    const due = this.initiativeSyncDue;
+    this.initiativeSyncDue = false;
+    const now = this.d.now();
+    for (const iw of this.d.store.listInitiativeWatches()) {
+      if (signal.aborted) return;
+      if (!iw.enabled) continue;
+      const last = this.initiativeSyncAt.get(iw.id);
+      // An unfinished walk goes on at the next pass.
+      if (!due && !this.walks.has(iw.id) && last !== undefined && now - last < INITIATIVE_SYNC_MS) continue;
+      await this.syncInitiative(iw.id, signal);
+    }
+  }
+
+  /**
+   * Walk the member listing, at most INITIATIVE_PAGES_PER_PASS pages a pass:
+   * new live members get a watch (read from their first event when they joined
+   * after the watch was turned on), members that retired, were replaced, or
+   * whose Initiative was archived stop being observed, and a member stopped
+   * that way starts again if it comes back. Only a walk that reached the last
+   * page stops watches of members it no longer lists (moved or removed). A
+   * failed or missing page changes nothing more and is shown on the Initiative watch.
+   */
+  private async syncInitiative(initiativeId: string, signal: AbortSignal): Promise<void> {
+    const iw = this.d.store.getInitiativeWatch(initiativeId);
+    if (!iw || !iw.enabled) return;
+    this.initiativeSyncAt.set(iw.id, this.d.now());
+    const walk = this.walks.get(iw.id) ?? { after: null, seen: new Set<string>() };
+    this.walks.set(iw.id, walk);
+    let moved = false;
+    for (let page = 0; page < INITIATIVE_PAGES_PER_PASS; page++) {
+      const r = await this.d.initiatives.members(iw.id, walk.after, readSignal(signal, this.deadline));
+      const now = this.d.now();
+      const fresh = this.d.store.getInitiativeWatch(initiativeId);
+      if (!fresh || !fresh.enabled) {
+        this.walks.delete(initiativeId); // turned off while listing
+        return;
+      }
+      if (r.status !== "ok") {
+        const error = (
+          r.status === "unavailable"
+            ? `Projects context routes unavailable (${r.error}): new members are not added and retired ones are not stopped until they can be read`
+            : `member listing failed (${r.error}); retried next pass`
+        ).slice(0, 500);
+        if (error !== fresh.error) {
+          this.d.log.warn(`Initiative watch ${fresh.name}: ${error}`);
+          this.d.store.saveInitiativeWatch({ ...fresh, error }, now);
+          moved = true;
+        }
+        break;
+      }
+      const v = r.value;
+      for (const m of v.members) walk.seen.add(m.threadId);
+      if (this.applyMembers(fresh, v, now)) moved = true;
+      if (v.next === null) {
+        if (this.reconcileMissing(this.d.store.getInitiativeWatch(initiativeId)!, walk.seen, now)) moved = true;
+        this.walks.delete(initiativeId);
+        break;
+      }
+      walk.after = v.next;
+    }
+    if (moved) {
+      this.wake();
+      this.changed();
+    }
+  }
+
+  /** Apply one page of members; true when anything shown moved. */
+  private applyMembers(fresh: InitiativeWatchRow, v: InitiativeMembers, now: number): boolean {
+    const prev = new Map(this.d.store.listMembers(fresh.id).map((m) => [m.threadId, m]));
+    let moved = fresh.error !== null || fresh.name !== v.name || fresh.archived !== v.archived;
+    this.d.store.tx(() => {
+      for (const m of v.members) {
+        const before = prev.get(m.threadId);
+        this.d.store.saveMember({ initiativeId: fresh.id, threadId: m.threadId, kind: m.kind, role: m.role, worker: m.worker, generation: m.generation, state: m.state }, now);
+        if (!before || before.state !== m.state) moved = true;
+        const ended = v.archived ? "Initiative archived" : m.state === "retired" ? "retired from the Initiative" : m.state === "former" ? "former Initiative member (replaced)" : null;
+        const wasEnded = before === undefined || fresh.archived || memberEnded(before.state);
+        const w = this.d.store.getWatchByThread(m.threadId);
+        if (ended === null) {
+          if (before?.excluded) continue;
+          if (!w) {
+            const nw = this.d.store.createWatch(m.threadId, "initiative", now);
+            nw.state.fromStartIfCreatedAfter = fresh.since;
+            this.d.store.saveWatch(nw, now);
+            this.d.store.logAction(nw.id, "watch", `${m.threadId} (Initiative ${v.name}, ${memberLabel(m)})`, "initiative", now);
+            moved = true;
+          } else if (w.origin === "initiative" && !w.enabled && w.state.initiativeEnded !== null) {
+            this.setEnabled(w.id, true, "initiative");
+            moved = true;
+          }
+        } else if (!wasEnded && this.endOwned(m.threadId, fresh.id, ended)) moved = true;
+      }
+      this.d.store.saveInitiativeWatch({ ...fresh, name: v.name, archived: v.archived, syncedAt: now, error: null }, now);
+    });
+    return moved;
+  }
+
+  /** After a complete walk: members still recorded as live that the listing no longer names. */
+  private reconcileMissing(iw: InitiativeWatchRow, seen: Set<string>, now: number): boolean {
+    let moved = false;
+    this.d.store.tx(() => {
+      for (const m of this.d.store.listMembers(iw.id)) {
+        if (seen.has(m.threadId) || memberEnded(m.state)) continue;
+        this.d.store.setMemberState(iw.id, m.threadId, "removed", now);
+        this.endOwned(m.threadId, iw.id, "no longer listed in the Initiative");
+        moved = true;
+      }
+    });
+    return moved;
+  }
+
+  /**
+   * Stop (or re-label) a watch this Initiative owns. A watch you selected
+   * yourself, or one another watched Initiative still counts as live, is left alone.
+   */
+  private endOwned(threadId: string, initiativeId: string, why: string): boolean {
+    const w = this.d.store.getWatchByThread(threadId);
+    if (!w || w.origin !== "initiative" || this.claimedElsewhere(threadId, initiativeId)) return false;
+    if (w.enabled) this.endMember(w.id, why);
+    else if (w.state.initiativeEnded !== null) {
+      w.state.initiativeEnded = why;
+      this.d.store.saveWatch(w, this.d.now());
+    } else return false;
+    return true;
+  }
+
   private source(threadId: string, signal: AbortSignal) {
     return { list: (q: EventQuery) => this.d.host.listEvents(threadId, q, readSignal(signal, this.deadline)) };
   }
@@ -339,7 +592,11 @@ export class Advisor {
     const newest = await src.list({ order: "desc", limit: "1" });
     const tip = newest[0]?.seq ?? 0;
     const turn = await src.list({ order: "desc", limit: "1", beforeSeq: String(tip + 1), types: ["turn/started"] });
-    const startSeq = turn[0]?.seq ?? tip + 1;
+    // A member that joined a watched Initiative is read from its first event, not from the current turn.
+    const since = w.state.fromStartIfCreatedAfter;
+    const created = ctx.thread?.createdAt;
+    const fromStart = since !== null && typeof created === "number" && created >= since;
+    const startSeq = fromStart ? 1 : (turn[0]?.seq ?? tip + 1);
     const rq = this.d.store.loadRequests(w.id, { parent: ctx.parent, fork: ctx.fork });
     rq.fork = ctx.fork;
     rq.setContext({ parent: ctx.parent, coordinator: ctx.coordinator, member: ctx.member, briefs: briefsOf(ctx.snapshot) }); // trusted again only after a drain reaches the tip
@@ -428,6 +685,8 @@ export class Advisor {
       pause.projectsRead(m.value?.userStopped ?? false);
       storePause(w, pause);
     }
+    // Labels and filters only: this never adds a watch for the Initiative's other members.
+    if (ctx.initiative !== undefined) w.state.initiative = ctx.initiative;
     let interrupted = false;
     let turnEnded = 0;
     const info = await drainPass(this.source(w.threadId, signal), w.cursor ?? 0, (page: EventRow[], next: number) => {
@@ -503,7 +762,11 @@ export class Advisor {
     cur.state.checkpointDue = w.state.checkpointDue;
     cur.state.dispatchGate = w.state.dispatchGate;
     cur.state.rootPathRead = w.state.rootPathRead;
-    if (justSeeded) cur.state.bucket = w.state.bucket;
+    if (w.state.initiative !== undefined) cur.state.initiative = w.state.initiative;
+    if (justSeeded) {
+      cur.state.bucket = w.state.bucket;
+      cur.state.fromStartIfCreatedAfter = null; // only the first seed may start from the first event
+    }
     const p = pauseOf(cur);
     for (const reason of OBSERVED_REASONS) {
       const had = startPause.has(reason);
@@ -691,4 +954,25 @@ export class Advisor {
   inflightWatches(): string[] {
     return [...this.inflight.keys()];
   }
+}
+
+/** States in which a member is no longer observed: retired, replaced, or no longer listed. */
+const memberEnded = (state: string) => state === "retired" || state === "former" || state === "removed";
+
+/** "W12 work", "coordinator", "user thread". */
+export function memberLabel(m: { kind: string; role: string; worker: string | null }): string {
+  if (m.kind === "coordinator") return "coordinator";
+  if (m.kind === "adhoc") return "user thread";
+  return [m.worker, m.role].filter(Boolean).join(" ");
+}
+
+/** An Initiative by exact id, exact name (any case), or a unique partial name. */
+export function pickInitiative(list: InitiativeSummary[], ref: string): InitiativeSummary {
+  const q = ref.trim().toLowerCase();
+  const exact = list.find((i) => i.id === ref) ?? list.find((i) => i.name.toLowerCase() === q);
+  if (exact) return exact;
+  const partial = list.filter((i) => i.name.toLowerCase().includes(q) || i.id.toLowerCase().startsWith(q));
+  if (partial.length === 1) return partial[0]!;
+  if (partial.length === 0) throw new Error(`no open Initiative matches ${ref}${list.length ? ` (open: ${list.map((i) => `${i.name} ${i.id}`).join(", ")})` : ""}`);
+  throw new Error(`${ref} matches ${partial.length} Initiatives: ${partial.map((i) => `${i.name} ${i.id}`).join(", ")}; use the id`);
 }

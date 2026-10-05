@@ -170,4 +170,39 @@ export const MIGRATIONS = [
   // A228: the later card that removed an open issue's cited lines (observed, not a verdict).
   `ALTER TABLE issues ADD COLUMN reversed_by TEXT`,
   `CREATE INDEX ledger_created ON ledger (billing, created_at)`,
+  // T103: whole-Initiative watches and the members they have seen. Member
+  // threads are ordinary watches (origin "initiative"), so a build without
+  // these tables still observes them as thread watches.
+  `CREATE TABLE initiative_watches (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    since INTEGER NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    synced_at INTEGER,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE initiative_members (
+    initiative_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    role TEXT NOT NULL,
+    worker TEXT,
+    generation INTEGER,
+    state TEXT NOT NULL,
+    excluded INTEGER NOT NULL DEFAULT 0,
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL,
+    PRIMARY KEY (initiative_id, thread_id)
+  )`,
+  `CREATE INDEX initiative_members_thread ON initiative_members (thread_id)`,
+  // T105: the separate BB thread Erwin opened to discuss a finding (reused by later Discuss clicks).
+  `CREATE TABLE discussions (
+    occurrence_id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX occurrences_feed ON occurrences (created_at, id)`,
 ];

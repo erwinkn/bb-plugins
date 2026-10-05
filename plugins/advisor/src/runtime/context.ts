@@ -2,7 +2,7 @@
 // the optional Initiative membership, assignments and task briefs. Each is an
 // explicit read outcome; reads are independent and non-atomic.
 
-import { failed, ok, snapshot, type Read, type Snapshot, type ThreadFacts } from "../rules/snapshot.js";
+import { failed, ok, snapshot, type Membership, type Read, type Snapshot, type ThreadFacts } from "../rules/snapshot.js";
 import type { ForkOrigin } from "../rules/requests.js";
 import type { AdvisorHost, ThreadDto } from "./host.js";
 import { readSignal } from "./host.js";
@@ -16,6 +16,8 @@ export interface WatchContext {
   parent: string | null;
   coordinator: string | null;
   member: boolean;
+  /** The thread's own Initiative membership (labels and filters only); undefined when the read failed. */
+  initiative?: Membership["initiative"] | null;
   /** Requirement coverage gaps caused by context that could not be read. */
   gaps: string[];
   notes: string[];
@@ -80,6 +82,7 @@ export async function readContext(
     parent: threadRead.ok ? threadRead.value.parentThreadId : null,
     coordinator: membership.ok && membership.value ? membership.value.coordinatorThreadId : null,
     member,
+    ...(membership.ok ? { initiative: membership.value?.initiative ?? null } : {}),
     gaps,
     notes,
   };

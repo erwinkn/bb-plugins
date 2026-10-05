@@ -6,15 +6,17 @@ import { useCallback, useEffect, useState } from "react";
 import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import type { rpcContract } from "../server";
-import type { ThreadOption } from "../src/rpc";
-import type { Overview } from "../src/views";
+import type { InitiativeOption, ThreadOption } from "../src/rpc";
+import type { InitiativeWatchView, Overview } from "../src/views";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { Chip, Empty, errorText } from "./ui";
+import { Chip, Empty, HintButton, errorText } from "./ui";
 import { WatchView } from "./watch";
+import { FeedView } from "./feed";
+import { DiscussView } from "./discuss";
 
 export const PANEL_PATH = "advisor";
 
@@ -121,22 +123,144 @@ function ThreadPicker({ open, onClose, onPicked }: { open: boolean; onClose: () 
   );
 }
 
+function InitiativePicker({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [r, setR] = useState<{ status: string; error: string | null; initiatives: InitiativeOption[] } | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    setR(null);
+    rpc.call("initiativeOptions").then(setR, (e) => toast.error(errorText(e)));
+  }, [rpc, open]);
+  return (
+    <Dialog open={open} onOpenChange={(v) => (v ? null : onClose())}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Watch an Initiative</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Watches its coordinator, workers, reviewers and your threads in it, and members that join later. Retired and replaced members stop being observed and keep their history. Reviews follow your Settings, caps and route.
+        </p>
+        {r === null ? <Empty>Loading…</Empty> : null}
+        {r && r.status !== "ok" ? (
+          <p role="alert" className="text-sm text-destructive">
+            Initiatives cannot be listed: the Projects context routes are {r.status === "unavailable" ? "unavailable" : "unreadable"} ({r.error}). Nothing can be watched as an Initiative until they are.
+          </p>
+        ) : null}
+        <ul className="max-h-80 divide-y divide-border overflow-y-auto">
+          {(r?.initiatives ?? []).map((i) => (
+            <li key={i.id} className="flex items-center gap-2 py-2">
+              <span className="min-w-0 flex-1 truncate text-sm">{i.name}</span>
+              {i.paused ? <Chip tone="muted">paused</Chip> : null}
+              <span className="hidden font-mono text-xs text-muted-foreground sm:inline">{i.id}</span>
+              <Button
+                size="sm"
+                variant={i.watched ? "ghost" : "outline"}
+                disabled={i.watched}
+                onClick={() =>
+                  rpc.call("initiativeWatchSet", { initiativeId: i.id, enabled: true }).then(
+                    (x) => {
+                      toast.success(`Watching ${i.name}: ${x.initiative.members.observed} threads`);
+                      onClose();
+                    },
+                    (e) => toast.error(errorText(e)),
+                  )
+                }
+              >
+                {i.watched ? "Watched" : "Watch"}
+              </Button>
+            </li>
+          ))}
+          {r?.status === "ok" && r.initiatives.length === 0 ? <li className="py-2 text-sm text-muted-foreground">No open Initiative.</li> : null}
+        </ul>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function InitiativeRow({ i }: { i: InitiativeWatchView }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [busy, setBusy] = useState(false);
+  const act = (p: () => Promise<unknown>) => {
+    setBusy(true);
+    p().then(
+      () => setBusy(false),
+      (e) => {
+        setBusy(false);
+        toast.error(errorText(e));
+      },
+    );
+  };
+  const m = i.members;
+  return (
+    <li className="space-y-1 rounded-md px-2 py-1.5">
+      <div className="flex items-center gap-2 text-sm">
+        <span className={cn("size-2 shrink-0 rounded-full", i.enabled && !i.error ? "bg-foreground" : "bg-muted-foreground/40")} aria-hidden />
+        <span className="min-w-0 flex-1 truncate">{i.name}</span>
+        {!i.enabled ? (
+          <HintButton size="sm" variant="ghost" disabled={busy} hint="Deletes the Initiative watch and the evidence of the member watches it started. Threads you watch yourself are kept." onClick={() => act(() => rpc.call("initiativeWatchRemove", { initiativeId: i.id }))}>
+            Remove
+          </HintButton>
+        ) : null}
+        <Button size="sm" variant="outline" disabled={busy} aria-pressed={i.enabled} onClick={() => act(() => rpc.call("initiativeWatchSet", { initiativeId: i.id, enabled: !i.enabled }))}>
+          {i.enabled ? "On" : "Off"}
+        </Button>
+      </div>
+      <p className="pl-4 text-xs text-muted-foreground">
+        {i.archived ? "archived · " : ""}
+        {m.observed} observed of {m.live} live members
+        {m.total > m.live ? ` · ${m.total - m.live} retired or former` : ""}
+        {m.excluded ? ` · ${m.excluded} excluded` : ""}
+      </p>
+      {i.error ? (
+        <p role="alert" className="pl-4 text-xs text-destructive">
+          {i.error}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
 export function AdvisorPage({ subPath }: { subPath: string }) {
   const nav = useBbNavigate();
   const { o, error, refetch } = useOverview();
   const [picking, setPicking] = useState(false);
-  const selected = subPath || null;
+  const [pickingInitiative, setPickingInitiative] = useState(false);
+  // Routes: "" the findings feed, "watches" the list (on narrow screens), "<watchId>" one
+  // thread, "discuss/<occurrenceId>" the Discuss composer.
+  const route = subPath.replace(/^\/+|\/+$/gu, "");
   const select = (id: string | null) => nav.toPluginPanel(PANEL_PATH, { subPath: id ?? "" });
   if (error) return <p role="alert" className="p-4 text-sm text-destructive">{error}</p>;
   if (!o) return <div className="p-4"><Empty>Loading…</Empty></div>;
-  const watch = o.watches.find((w) => w.id === selected) ?? null;
+  const watch = o.watches.find((w) => w.id === route) ?? null;
+  const discuss = route.startsWith("discuss/") ? route.slice("discuss/".length) : null;
+  const listing = route === "watches";
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col md:flex-row">
-      <aside className={cn("min-h-0 shrink-0 space-y-3 overflow-y-auto border-border p-4 md:w-80 md:border-r", watch && "hidden md:block")}>
+      <aside className={cn("min-h-0 shrink-0 space-y-3 overflow-y-auto border-border p-4 md:w-80 md:border-r", !listing && "hidden md:block")}>
+        <Button size="sm" variant="ghost" className="md:hidden" onClick={() => select(null)}>
+          <Icon name="ChevronLeft" className="size-4" />
+          Findings
+        </Button>
         <ActivationStrip o={o} />
         <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium">Initiatives</h2>
+          <Button size="sm" variant="outline" aria-label="Watch an Initiative" onClick={() => setPickingInitiative(true)}>
+            <Icon name="Plus" className="size-4" />
+            Watch
+          </Button>
+        </div>
+        {o.initiativeWatches.length === 0 ? (
+          <p className="text-xs text-muted-foreground">Watch a whole Initiative with one switch, including members that join later.</p>
+        ) : (
+          <ul className="space-y-1">
+            {o.initiativeWatches.map((i) => (
+              <InitiativeRow key={i.id} i={i} />
+            ))}
+          </ul>
+        )}
+        <div className="flex items-center justify-between">
           <h2 className="text-sm font-medium">Watched threads</h2>
-          <Button size="sm" variant="outline" onClick={() => setPicking(true)}>
+          <Button size="sm" variant="outline" aria-label="Watch a thread" onClick={() => setPicking(true)}>
             <Icon name="Plus" className="size-4" />
             Watch
           </Button>
@@ -149,11 +273,16 @@ export function AdvisorPage({ subPath }: { subPath: string }) {
               <li key={w.id}>
                 <button
                   onClick={() => select(w.id)}
-                  aria-current={w.id === selected}
-                  className={cn("flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover", w.id === selected && "bg-state-active")}
+                  aria-current={w.id === route}
+                  className={cn("flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-state-hover", w.id === route && "bg-state-active")}
                 >
                   <span className={cn("size-2 shrink-0 rounded-full", w.enabled && w.pause.length === 0 ? "bg-foreground" : "bg-muted-foreground/40")} aria-hidden />
                   <span className="min-w-0 flex-1 truncate">{w.title ?? w.threadId}</span>
+                  {w.initiative ? (
+                    <span className="shrink-0 text-xs text-muted-foreground" title={`${w.initiative.name} · ${w.initiative.state}`}>
+                      {w.initiative.label}
+                    </span>
+                  ) : null}
                   {w.unacknowledged > 0 ? <span className="rounded-full bg-foreground px-1.5 text-[11px] text-background">{w.unacknowledged}</span> : null}
                 </button>
               </li>
@@ -169,21 +298,35 @@ export function AdvisorPage({ subPath }: { subPath: string }) {
           ))}
         </div>
       </aside>
-      <main className={cn("min-h-0 flex-1 overflow-y-auto p-4 md:p-5", !watch && "hidden md:block")}>
-        <div className="mx-auto w-full max-w-3xl">
-          {watch ? (
+      <main className={cn("min-h-0 flex-1 overflow-y-auto p-4 md:p-5", listing && "hidden md:block")}>
+        <div className="mx-auto h-full w-full max-w-3xl">
+          {discuss ? (
+            <DiscussView key={discuss} occurrenceId={discuss} onBack={() => select(null)} />
+          ) : watch ? (
             <>
-              <Button size="sm" variant="ghost" className="mb-2 md:hidden" onClick={() => select(null)}>
+              <Button size="sm" variant="ghost" className="mb-2" onClick={() => select(null)}>
                 <Icon name="ChevronLeft" className="size-4" />
-                Watched threads
+                Findings
               </Button>
               <WatchView key={watch.id} watchId={watch.id} threshold={o.severityThreshold} onRemoved={() => select(null)} />
             </>
           ) : (
-            <Empty>Pick a watched thread to see its findings, evidence and coverage.</Empty>
+            <>
+              <Button size="sm" variant="outline" className="mb-3 md:hidden" onClick={() => select("watches")}>
+                Watches and Initiatives ({o.watches.length})
+              </Button>
+              <FeedView onOpenWatch={(id) => select(id)} onDiscuss={(id) => select(`discuss/${id}`)} />
+            </>
           )}
         </div>
       </main>
+      <InitiativePicker
+        open={pickingInitiative}
+        onClose={() => {
+          setPickingInitiative(false);
+          refetch();
+        }}
+      />
       <ThreadPicker
         open={picking}
         onClose={() => setPicking(false)}

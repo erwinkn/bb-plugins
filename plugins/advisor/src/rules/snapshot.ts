@@ -32,6 +32,8 @@ export interface Membership {
   former?: boolean;
   /** A later assignment queued but not delivered (contract v1 `next`): context, never a requirement. */
   queued?: string | null;
+  /** Which Initiative, and the thread's place in it, for labels and feed filters only. */
+  initiative?: { id: string; name: string; kind: string; role: string; worker: string | null; state: string };
 }
 
 /** A Projects readRefs result (lib/read.ts). */

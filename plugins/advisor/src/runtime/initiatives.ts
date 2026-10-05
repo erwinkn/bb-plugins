@@ -9,9 +9,47 @@
 import type { AssignmentRecord, Membership, Read, RefsResult, TaskBriefRecord } from "../rules/snapshot.js";
 import { ok } from "../rules/snapshot.js";
 
+/** An Initiative a user can watch whole (context/v1/initiatives). */
+export interface InitiativeSummary {
+  id: string;
+  name: string;
+  paused: boolean;
+  coordinatorThreadId: string | null;
+}
+
+export type MemberState = "active" | "stopped" | "retired" | "former";
+
+/** One thread of an Initiative, in the thread route's terms (context/v1/members). */
+export interface InitiativeMember {
+  threadId: string;
+  kind: string;
+  role: string;
+  worker: string | null;
+  generation: number | null;
+  state: MemberState;
+}
+
+/** One page of members; `next` is the cursor for the following page, null on the last. */
+export interface InitiativeMembers {
+  id: string;
+  name: string;
+  archived: boolean;
+  next: string | null;
+  members: InitiativeMember[];
+}
+
+/**
+ * A listing read. "unavailable" means the route is not there (Projects not
+ * installed, or a build without it); "failed" is any other unknown answer.
+ * Neither is ever read as "no members".
+ */
+export type Listing<T> = { status: "ok"; value: T } | { status: "unavailable" | "failed"; error: string };
+
 export interface InitiativeSource {
   readonly available: boolean;
   readonly label: string;
+  initiatives(signal: AbortSignal): Promise<Listing<InitiativeSummary[]>>;
+  members(initiativeId: string, after: string | null, signal: AbortSignal): Promise<Listing<InitiativeMembers>>;
   membership(threadId: string, signal: AbortSignal): Promise<Read<Membership | null>>;
   assignments(threadId: string, refs: string[], signal: AbortSignal): Promise<Read<RefsResult<AssignmentRecord>>>;
   tasks(threadId: string, refs: string[], signal: AbortSignal): Promise<Read<RefsResult<TaskBriefRecord>>>;
@@ -20,6 +58,12 @@ export interface InitiativeSource {
 export const unavailableInitiatives: InitiativeSource = {
   available: false,
   label: "Initiative context unavailable: the authenticated Projects read API is not available yet (T96).",
+  async initiatives() {
+    return { status: "unavailable", error: "the Projects context routes are not available" } as const;
+  },
+  async members() {
+    return { status: "unavailable", error: "the Projects context routes are not available" } as const;
+  },
   async membership() {
     return ok(null);
   },

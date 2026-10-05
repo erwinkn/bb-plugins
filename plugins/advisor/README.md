@@ -45,7 +45,7 @@ watched thread ─events─► OBSERVER ─cards─► STORE (sqlite) ─► PAN
 | Setting | Default | Notes |
 |---|---|---|
 | Observe watched threads | on | No thread is watched until you pick one. |
-| Watch scope / project | selected | `selected-and-project` also watches every non-archived thread of one project. |
+| Watch scope / project | selected | `selected-and-project` also watches every non-archived thread of one project. Initiative watches are separate: see below. |
 | Poll interval | 15 s | Event notices also wake it. |
 | Turn-end test checkpoints / paths | on / 20 | Native limit 50 paths. |
 | Test globs | `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `**/test_*.py`, `**/*_test.go`, `tests/**` | |
@@ -108,6 +108,41 @@ BB, not on the plugin:
   not running. The last delivered assignment stays the thread's brief in every
   phase (reported and accepted are progress; cancelled, rejected and failed are
   history); a queued `next` assignment is shown as a note, never a requirement.
+- **Initiative watches** (T103) list `…/context/v1/initiatives` and
+  `…/context/v1/members?initiativeId=&after=&limit=200` (paged by thread id).
+  Members are listed at most every 10 s per watched Initiative, and at the
+  next pass after BB's `thread.created`; a pass reads at most 5 pages and a
+  longer walk continues at the next pass. Only a walk that reached the last
+  page stops Initiative-owned watches of threads it no longer lists (moved to
+  another Initiative or removed); a failed page stops nothing.
+  Each member is an ordinary watch with origin `initiative`, so caps, route,
+  triggers and reviews are unchanged and a thread watched both ways is one
+  watch (yours stays yours; watching a member explicitly makes its watch
+  yours, so Initiative off, removal or retirement no longer touch it). A member that joins after the watch was turned
+  on is read from its first event. A member that turns `retired` or `former`,
+  or whose Initiative is archived, is disabled with the reason kept; history
+  stays and a user re-enable is not undone. A missing listing route is
+  "unavailable" for the listing only: thread context keeps working, existing
+  member watches go on, and the Initiative watch shows the error.
+
+## Feed, badge and Discuss (T105)
+
+- **Entry:** the Advisor's own `navPanel` row. Its `experimental_sidebarAccessory`
+  shows unseen real findings (not previews) at or above the display threshold,
+  summed over every watch, refetched on `advisor.changed`. BB does not mount
+  sidebar accessories on compact viewports, so on phones the count shows at the
+  top of the feed instead (an SDK gap, not worked around with a second entry).
+- **Feed:** the page's default route. Newest first across all watches, with a
+  `(createdAt, id)` cursor, filters by Initiative (watches whose thread an
+  Initiative watch lists) or by thread. Preview findings stay labelled and are
+  never counted. Mark all seen applies to the current filter.
+- **Discuss:** route `discuss/<occurrenceId>` renders BB's
+  `experimental_NewThreadComposer` seeded (`initialPrompt`, draft key
+  `advisor:discuss:<id>`) with the finding, its citations and the watched
+  thread's id, defaulting to the watched thread's project. Only the composer's
+  submit calls `discussCreate`, which spawns a separate top-level thread titled
+  `Advisor · <summary>` and remembers it; while that thread exists and is not
+  archived, Discuss reopens it instead. The watched thread is never messaged.
 
 ## Review lifecycle
 

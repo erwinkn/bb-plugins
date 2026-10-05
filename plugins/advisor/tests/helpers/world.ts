@@ -35,6 +35,10 @@ export class FakeWorld {
   queries: Array<{ threadId: string } & EventQuery> = [];
   tokenCalls = 0;
   failGet = new Set<string>();
+  /** threads.spawn calls (Discuss only; the Advisor never writes to a watched thread). */
+  spawns: any[] = [];
+  /** The next spawns that fail (BB refusing the create). */
+  failSpawns = 0;
   /** What the Pooler's advisor.get answers; an Error is thrown, as for an absent plugin. */
   poolerAdvisor: unknown = new Error("no advisor.get");
 
@@ -121,6 +125,15 @@ export class FakeWorld {
           return t;
         },
         list: async (args: { projectId?: string }) => [...world.threads.values()].filter((t) => !args.projectId || t.projectId === args.projectId),
+        spawn: async (args: any) => {
+          await new Promise((r) => setTimeout(r, 5)); // a real spawn takes a while: concurrent callers overlap
+          if (world.failSpawns > 0) {
+            world.failSpawns--;
+            throw new Error("spawn refused");
+          }
+          world.spawns.push(args);
+          return world.addThread(`thr_spawned_${world.spawns.length}`, { title: args.title ?? null });
+        },
         events: {
           list: async (args: { threadId: string } & EventQuery) => {
             const { threadId, signal: _s, ...q } = args as any;

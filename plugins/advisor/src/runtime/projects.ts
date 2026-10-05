@@ -14,7 +14,7 @@
 
 import { z } from "zod";
 import { failed, ok, type AssignmentRecord, type Membership, type Read, type RefsResult, type TaskBriefRecord } from "../rules/snapshot.js";
-import type { InitiativeSource } from "./initiatives.js";
+import type { InitiativeSource, Listing } from "./initiatives.js";
 import { unavailableInitiatives } from "./initiatives.js";
 import type { FetchLike } from "../transport/types.js";
 
@@ -66,6 +66,45 @@ const recordPage = z
     nextOffset: z.number().nullable(),
     text: z.string(),
     textVersion: z.string().optional(), // v1.1
+  })
+  .passthrough();
+
+const initiativesPage = z
+  .object({
+    version: z.literal(1),
+    initiatives: z.array(
+      z
+        .object({
+          initiativeId: z.string(),
+          name: z.string(),
+          paused: z.boolean(),
+          coordinator: z.object({ threadId: z.string().nullable() }).passthrough(),
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
+
+const membersPage = z
+  .object({
+    version: z.literal(1),
+    initiativeId: z.string(),
+    name: z.string(),
+    archived: z.boolean(),
+    // Paged by thread id since contract v1 members was added; absent next means one complete page.
+    next: z.string().nullable().optional(),
+    members: z.array(
+      z
+        .object({
+          threadId: z.string(),
+          kind: z.string(),
+          role: z.string(),
+          worker: z.string().nullable(),
+          generation: z.number().nullable(),
+          state: z.enum(["active", "stopped", "retired", "former"]),
+        })
+        .passthrough(),
+    ),
   })
   .passthrough();
 
@@ -160,7 +199,37 @@ export function projectsInitiatives(d: ProjectsDeps): InitiativeSource {
     throw new Error(`record ${ref} changed while it was read twice (textVersion)`);
   }
 
+  /** A listing never changes `available`: a Projects build without these routes still serves thread context. */
+  async function listing<T>(path: string, schema: z.ZodType<T>, signal: AbortSignal): Promise<Listing<T>> {
+    try {
+      const parsed = schema.safeParse(await get(path, signal));
+      return parsed.success ? { status: "ok", value: parsed.data } : { status: "failed", error: `Projects ${path.split("?")[0]} does not match contract v1` };
+    } catch (err) {
+      return { status: err instanceof Unavailable ? "unavailable" : "failed", error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   const source: InitiativeSource = {
+    async initiatives(signal) {
+      const r = await listing("initiatives", initiativesPage, signal);
+      if (r.status !== "ok") return r;
+      return { status: "ok", value: r.value.initiatives.map((i) => ({ id: i.initiativeId, name: i.name, paused: i.paused, coordinatorThreadId: i.coordinator.threadId })) };
+    },
+    async members(initiativeId, after, signal) {
+      const r = await listing(`members?initiativeId=${encodeURIComponent(initiativeId)}&limit=200${after ? `&after=${encodeURIComponent(after)}` : ""}`, membersPage, signal);
+      if (r.status !== "ok") return r;
+      const v = r.value;
+      return {
+        status: "ok",
+        value: {
+          id: v.initiativeId,
+          name: v.name,
+          archived: v.archived,
+          next: v.next ?? null,
+          members: v.members.map((m) => ({ threadId: m.threadId, kind: m.kind, role: m.role, worker: m.worker, generation: m.generation, state: m.state })),
+        },
+      };
+    },
     get available() {
       return available;
     },
@@ -197,6 +266,7 @@ export function projectsInitiatives(d: ProjectsDeps): InitiativeSource {
         coordinatorThreadId: m.coordinator.threadId ?? "",
         former: m.former || m.state === "former",
         queued: m.next ? m.next.ref : null,
+        initiative: { id: m.initiativeId, name: typeof m.initiativeName === "string" ? m.initiativeName : m.initiativeId, kind: m.kind, role: m.role, worker: m.worker, state: m.state },
         worker: {
           ref: m.worker ?? `${m.kind}`,
           role: m.role,

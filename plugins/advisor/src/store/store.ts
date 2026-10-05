@@ -44,6 +44,12 @@ export interface WatchState {
   dispatchGate: string | null;
   /** The environment root path was read (its value may still be null). */
   rootPathRead: boolean;
+  /** Why an Initiative watch stopped this member watch (retired, former, archived, Initiative watch off); null when it did not. */
+  initiativeEnded: string | null;
+  /** The thread's own Initiative membership from its last successful context read (labels and feed filters only); null when it has none. */
+  initiative?: { id: string; name: string; kind: string; role: string; worker: string | null; state: string } | null;
+  /** Seed from the thread's first event when the thread was created at or after this time (a member that joined a watched Initiative). */
+  fromStartIfCreatedAfter: number | null;
 }
 
 export const EMPTY_STATE: WatchState = {
@@ -58,12 +64,14 @@ export const EMPTY_STATE: WatchState = {
   pauseLog: [],
   dispatchGate: null,
   rootPathRead: false,
+  initiativeEnded: null,
+  fromStartIfCreatedAfter: null,
 };
 
 export interface WatchRow {
   id: string;
   threadId: string;
-  origin: "selected" | "project";
+  origin: "selected" | "project" | "initiative";
   enabled: boolean;
   epoch: number;
   title: string | null;
@@ -82,6 +90,32 @@ export interface WatchRow {
   lastError: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface InitiativeWatchRow {
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** When it was last turned on: members created since are read from their first event. */
+  since: number;
+  archived: boolean;
+  syncedAt: number | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MemberRow {
+  initiativeId: string;
+  threadId: string;
+  kind: string;
+  role: string;
+  worker: string | null;
+  generation: number | null;
+  state: string;
+  excluded: boolean;
+  firstSeen: number;
+  lastSeen: number;
 }
 
 export interface CardRow {
@@ -277,11 +311,86 @@ export class Store {
   /** Removing a watch deletes its evidence and findings; the ledger keeps its rows. */
   deleteWatch(id: string): void {
     this.tx(() => {
+      this.db.prepare("DELETE FROM discussions WHERE occurrence_id IN (SELECT id FROM occurrences WHERE watch_id = ?)").run(id);
       for (const t of ["cards", "requests", "request_state", "gaps", "issues", "occurrences", "notifications", "reviews", "checkpoints"]) {
         this.db.prepare(`DELETE FROM ${t} WHERE watch_id = ?`).run(id);
       }
       this.db.prepare("DELETE FROM watches WHERE id = ?").run(id);
     });
+  }
+
+  // ------------------------------------------------------------------ Initiative watches
+
+  private toInitiativeWatch(r: any): InitiativeWatchRow {
+    return { id: r.id, name: r.name, enabled: !!r.enabled, since: r.since, archived: !!r.archived, syncedAt: r.synced_at, error: r.error, createdAt: r.created_at, updatedAt: r.updated_at };
+  }
+
+  private toMember(r: any): MemberRow {
+    return { initiativeId: r.initiative_id, threadId: r.thread_id, kind: r.kind, role: r.role, worker: r.worker, generation: r.generation, state: r.state, excluded: !!r.excluded, firstSeen: r.first_seen, lastSeen: r.last_seen };
+  }
+
+  listInitiativeWatches(): InitiativeWatchRow[] {
+    return (this.db.prepare("SELECT * FROM initiative_watches ORDER BY created_at").all() as any[]).map((r) => this.toInitiativeWatch(r));
+  }
+
+  getInitiativeWatch(id: string): InitiativeWatchRow | null {
+    const r = this.db.prepare("SELECT * FROM initiative_watches WHERE id = ?").get(id);
+    return r ? this.toInitiativeWatch(r) : null;
+  }
+
+  saveInitiativeWatch(iw: Omit<InitiativeWatchRow, "createdAt" | "updatedAt">, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO initiative_watches (id, name, enabled, since, archived, synced_at, error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, enabled=excluded.enabled, since=excluded.since, archived=excluded.archived,
+         synced_at=excluded.synced_at, error=excluded.error, updated_at=excluded.updated_at`,
+      )
+      .run(iw.id, iw.name, iw.enabled ? 1 : 0, iw.since, iw.archived ? 1 : 0, iw.syncedAt, iw.error, now, now);
+  }
+
+  /** Forget an Initiative watch and the members it saw; member watches are the caller's. */
+  deleteInitiativeWatch(id: string): void {
+    this.tx(() => {
+      this.db.prepare("DELETE FROM initiative_members WHERE initiative_id = ?").run(id);
+      this.db.prepare("DELETE FROM initiative_watches WHERE id = ?").run(id);
+    });
+  }
+
+  listMembers(initiativeId: string): MemberRow[] {
+    return (this.db.prepare("SELECT * FROM initiative_members WHERE initiative_id = ? ORDER BY first_seen, thread_id").all(initiativeId) as any[]).map((r) => this.toMember(r));
+  }
+
+  /** The thread's most recently seen membership in an Initiative the Advisor knows. */
+  memberOf(threadId: string): (MemberRow & { initiativeName: string; initiativeEnabled: boolean }) | null {
+    const r = this.db
+      .prepare(
+        `SELECT m.*, w.name AS initiative_name, w.enabled AS initiative_enabled FROM initiative_members m
+         JOIN initiative_watches w ON w.id = m.initiative_id WHERE m.thread_id = ? ORDER BY m.last_seen DESC LIMIT 1`,
+      )
+      .get(threadId) as any;
+    return r ? { ...this.toMember(r), initiativeName: r.initiative_name, initiativeEnabled: !!r.initiative_enabled } : null;
+  }
+
+  /** Record what a listing said about one member; exclusion and first sight are kept. */
+  saveMember(m: Omit<MemberRow, "excluded" | "firstSeen" | "lastSeen">, now: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO initiative_members (initiative_id, thread_id, kind, role, worker, generation, state, excluded, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+         ON CONFLICT(initiative_id, thread_id) DO UPDATE SET kind=excluded.kind, role=excluded.role, worker=excluded.worker, generation=excluded.generation,
+         state=excluded.state, last_seen=excluded.last_seen`,
+      )
+      .run(m.initiativeId, m.threadId, m.kind, m.role, m.worker, m.generation, m.state, now, now);
+  }
+
+  setMemberState(initiativeId: string, threadId: string, state: string, now: number): void {
+    this.db.prepare("UPDATE initiative_members SET state = ?, last_seen = ? WHERE initiative_id = ? AND thread_id = ?").run(state, now, initiativeId, threadId);
+  }
+
+  /** Exclude (or include again) a thread from every Initiative watch that has seen it; returns the Initiatives affected. */
+  setExcluded(threadId: string, excluded: boolean): string[] {
+    const ids = (this.db.prepare("SELECT initiative_id FROM initiative_members WHERE thread_id = ? AND excluded = ?").all(threadId, excluded ? 0 : 1) as any[]).map((r) => String(r.initiative_id));
+    this.db.prepare("UPDATE initiative_members SET excluded = ? WHERE thread_id = ?").run(excluded ? 1 : 0, threadId);
+    return ids;
   }
 
   // ------------------------------------------------------------------ request table
@@ -876,6 +985,56 @@ export class Store {
         : this.db.prepare("SELECT * FROM occurrences ORDER BY created_at DESC LIMIT ?").all(limit)
     ) as any[];
     return rows.map((r) => this.toOcc(r));
+  }
+
+  /** Findings across watches (null: every watch), newest first, strictly before a (createdAt, id) cursor. */
+  listFeed(watchIds: string[] | null, limit: number, before: { createdAt: number; id: string } | null): OccurrenceRow[] {
+    if (watchIds !== null && watchIds.length === 0) return [];
+    const where: string[] = [];
+    const args: unknown[] = [];
+    if (watchIds !== null) {
+      where.push(`watch_id IN (${watchIds.map(() => "?").join(",")})`);
+      args.push(...watchIds);
+    }
+    if (before) {
+      where.push("(created_at < ? OR (created_at = ? AND id < ?))");
+      args.push(before.createdAt, before.createdAt, before.id);
+    }
+    const sql = `SELECT * FROM occurrences ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, id DESC LIMIT ?`;
+    return (this.db.prepare(sql).all(...args, limit) as any[]).map((r) => this.toOcc(r));
+  }
+
+  /** Real (not preview) findings not yet marked seen, counted per watch and severity. */
+  unseenCounts(): Array<{ watchId: string; severity: string; n: number }> {
+    return (
+      this.db.prepare("SELECT watch_id, severity, COUNT(*) AS n FROM occurrences WHERE preview = 0 AND acknowledged_at IS NULL GROUP BY watch_id, severity").all() as any[]
+    ).map((r) => ({ watchId: r.watch_id, severity: r.severity, n: Number(r.n) }));
+  }
+
+  /** Mark every unseen finding of these watches (null: all) seen; returns how many. */
+  acknowledgeAll(watchIds: string[] | null, now: number): number {
+    if (watchIds === null) return this.db.prepare("UPDATE occurrences SET acknowledged_at = ? WHERE acknowledged_at IS NULL").run(now).changes;
+    let n = 0;
+    const stmt = this.db.prepare("UPDATE occurrences SET acknowledged_at = ? WHERE watch_id = ? AND acknowledged_at IS NULL");
+    this.tx(() => {
+      for (const id of watchIds) n += stmt.run(now, id).changes;
+    });
+    return n;
+  }
+
+  discussionOf(occurrenceId: string): string | null {
+    const r = this.db.prepare("SELECT thread_id FROM discussions WHERE occurrence_id = ?").get(occurrenceId) as { thread_id: string } | undefined;
+    return r?.thread_id ?? null;
+  }
+
+  saveDiscussion(occurrenceId: string, threadId: string, now: number): void {
+    this.db
+      .prepare("INSERT INTO discussions (occurrence_id, thread_id, created_at) VALUES (?, ?, ?) ON CONFLICT(occurrence_id) DO UPDATE SET thread_id = excluded.thread_id, created_at = excluded.created_at")
+      .run(occurrenceId, threadId, now);
+  }
+
+  forgetDiscussion(occurrenceId: string): void {
+    this.db.prepare("DELETE FROM discussions WHERE occurrence_id = ?").run(occurrenceId);
   }
 
   getOccurrence(id: string): OccurrenceRow | null {
