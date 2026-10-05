@@ -50,7 +50,8 @@ import type { ThreadNode } from "../lib/thread-tree";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "../lib/mobile-sidebar-scroll";
 import { useLinkedPullRequests } from "../lib/use-linked-pull-requests";
 import { StatusIcon } from "./status-icon";
-import { ProjectHueStyle, projectHueStep } from "../lib/project-hue";
+import { ProjectHueStyle, appearanceHueStep, appearanceIcon } from "../lib/project-hue";
+import { ProjectAppearanceEditor, type AppearancePatch } from "./project-appearance";
 import { HostIcon } from "../lib/host-icon";
 import { ThreadRow, type ProviderIconRecord } from "./thread-row";
 import { ThreadChildren } from "./thread-children";
@@ -191,6 +192,13 @@ export function ProjectMode(props: PluginThreadListProps) {
   const renameProject = useCallback(
     async (projectId: string, name: string) => {
       await api.call("renameTreeProject", { projectId, name });
+      schedule();
+    },
+    [api, schedule],
+  );
+  const restyleProject = useCallback(
+    async (projectId: string, patch: AppearancePatch) => {
+      await api.call("setTreeProjectAppearance", { projectId, ...patch });
       schedule();
     },
     [api, schedule],
@@ -344,6 +352,7 @@ export function ProjectMode(props: PluginThreadListProps) {
                   }}
                   onOverview={props.onNavigate}
                   onRename={(name) => renameProject(p.id, name)}
+                  onAppearance={(patch) => restyleProject(p.id, patch)}
                   onNewThread={props.onNavigate}
                   onMenuOpen={() => {
                     dnd.consumeClickSuppression();
@@ -396,6 +405,7 @@ function ProjectRow({
   onOpen,
   onOverview,
   onRename,
+  onAppearance,
   onNewThread,
   onMenuOpen,
   isCompactViewport,
@@ -410,6 +420,7 @@ function ProjectRow({
   onOpen: (event: ReactMouseEvent<HTMLAnchorElement>) => void;
   onOverview: () => void;
   onRename: (name: string) => Promise<void>;
+  onAppearance: (patch: AppearancePatch) => Promise<void>;
   onNewThread: () => void;
   onMenuOpen: () => void;
   isCompactViewport: boolean;
@@ -420,6 +431,7 @@ function ProjectRow({
   const composeHref = `/plugins/projects/projects/${encodeURIComponent(project.id)}/compose`;
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [styling, setStyling] = useState(false);
   const [draft, setDraft] = useState(project.name);
   const [saving, setSaving] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -439,6 +451,7 @@ function ProjectRow({
     disabled: !canReorder,
   });
   const longPress = useLongPressMenu(menuOpen);
+  const hue = appearanceHueStep(project.name, project.appearance?.color);
   const setAnchor = (node: HTMLAnchorElement | null) => {
     anchorRef.current = node;
     draggable.setNodeRef(node);
@@ -522,6 +535,16 @@ function ProjectRow({
               </p>
             )}
           </form>
+        ) : styling ? (
+          <ProjectAppearanceEditor
+            name={project.name}
+            appearance={project.appearance}
+            onChange={onAppearance}
+            onClose={() => {
+              setStyling(false);
+              requestAnimationFrame(() => anchorRef.current?.focus());
+            }}
+          />
         ) : (
           <ContextMenu.Root
             onOpenChange={(open) => {
@@ -591,16 +614,17 @@ function ProjectRow({
               >
                 <span
                   aria-hidden="true"
-                  data-project-hue={projectHueStep(project.name)}
+                  data-project-hue={hue}
                   className="absolute bottom-3 left-0 top-3 w-0.5 rounded-full bg-current opacity-70"
                 />
                 <span
                   aria-hidden="true"
-                  data-project-hue={projectHueStep(project.name)}
+                  data-project-hue={hue}
+                  data-project-icon={appearanceIcon(project.appearance?.icon)}
                   className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-current/10"
                 >
                   <HostIcon
-                    name="Target"
+                    name={appearanceIcon(project.appearance?.icon)}
                     fallback="Folder"
                     className="size-4"
                   />
@@ -663,6 +687,15 @@ function ProjectRow({
                 >
                   Rename…
                 </ContextMenu.Item>
+                <ContextMenu.Item
+                  className={menuItemClass}
+                  onSelect={() => {
+                    focusEditor.current = true;
+                    setStyling(true);
+                  }}
+                >
+                  Icon and color…
+                </ContextMenu.Item>
                 <ContextMenu.Item className={menuItemClass} asChild>
                   <a
                     href={`/plugins/projects/projects/${project.id}`}
@@ -675,7 +708,7 @@ function ProjectRow({
             </ContextMenu.Portal>
           </ContextMenu.Root>
         )}
-        {!editing && (
+        {!editing && !styling && (
           <UrlLink
             href={composeHref}
             data-initiative-new-thread={project.id}

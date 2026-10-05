@@ -1,7 +1,7 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { projectOrderDocSchema } from "./project-order-schema";
-import { treeSchema } from "./project-tree-schema";
+import { PROJECT_COLORS, PROJECT_ICONS, treeSchema } from "./project-tree-schema";
 
 const projectId = z.string().min(1).max(80);
 
@@ -48,6 +48,17 @@ export const projectModeContract = defineRpcContract({
     input: z.object({
       projectId,
       name: z.string().trim().min(1).max(200),
+    }),
+    output: z.unknown(),
+  },
+  // Icon and color go through the same user-scoped `command` RPC
+  // ("appearance"), so Projects owns the data and validates the palette.
+  // Omitted keeps a field; null resets it to the default look.
+  setTreeProjectAppearance: {
+    input: z.object({
+      projectId,
+      icon: z.enum(PROJECT_ICONS).nullable().optional(),
+      color: z.enum(PROJECT_COLORS).nullable().optional(),
     }),
     output: z.unknown(),
   },

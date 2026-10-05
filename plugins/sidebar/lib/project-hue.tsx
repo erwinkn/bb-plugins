@@ -1,3 +1,6 @@
+import { isHostIconName, type HostIconName } from "./host-icon-names";
+import { PROJECT_COLORS, PROJECT_ICONS } from "./project-tree-schema";
+
 /**
  * Project identity color: a deterministic hue per project name on an
  * eight-step wheel. The dot on a project header and the 2px accent on a
@@ -22,6 +25,20 @@ export function projectHueStep(name: string): number {
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return hash % PROJECT_HUE_STEPS;
+}
+
+/**
+ * An Initiative's hue step: the user's color when it names a palette entry
+ * (PROJECT_COLORS is in step order), else the step derived from its name.
+ */
+export function appearanceHueStep(name: string, color?: string | null): number {
+  const chosen = color ? (PROJECT_COLORS as readonly string[]).indexOf(color) : -1;
+  return chosen >= 0 && chosen < PROJECT_HUE_STEPS ? chosen : projectHueStep(name);
+}
+
+/** An Initiative's icon: the user's choice when this sidebar knows it, else Target. */
+export function appearanceIcon(icon?: string | null): HostIconName {
+  return icon && (PROJECT_ICONS as readonly string[]).includes(icon) && isHostIconName(icon) ? icon : "Target";
 }
 
 export function projectHue(name: string): number {

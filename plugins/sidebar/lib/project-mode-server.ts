@@ -54,6 +54,23 @@ export function registerProjectMode(bb: BbPluginApi) {
         outputSchema: z.unknown(),
       });
     },
+    setTreeProjectAppearance: async ({ projectId, icon, color }) => {
+      if (!(await projectsRunning(bb)))
+        throw new Error("The Projects plugin is not running.");
+      return bb.sdk.plugins.callRpc({
+        pluginId: "projects",
+        method: "command",
+        input: {
+          projectId,
+          command: {
+            action: "appearance",
+            ...(icon !== undefined ? { icon } : {}),
+            ...(color !== undefined ? { color } : {}),
+          },
+        },
+        outputSchema: z.unknown(),
+      });
+    },
     createProjectThread: async ({ projectId, bbProjectId, prompt }) => {
       if (!(await projectsRunning(bb)))
         throw new Error("The Projects plugin is not running.");

@@ -36,6 +36,16 @@ under the current coordinator when you submit, using the same flow as the
 Initiative dashboard. Sidebar has no separate first-message form or repository
 submenu. Rename and Initiative overview remain in the row menu.
 
+**Icon and color…**, next to Rename, swaps the row for a small picker: an
+automatic color (the hue from the name) or one of the eight identity hues, and
+one of sixteen BB icons. Each choice saves at once through the Projects
+`command` RPC (`appearance`), which owns the data, accepts only the palette
+and only from the user (agents cannot change it). **Reset** returns to the
+default Target icon and name hue; Escape or **Done** closes the picker. The
+choice persists in Projects, travels in the tree as optional `appearance`,
+and never moves the row or changes its identity. An older Projects without
+the field, or a value this sidebar does not know, shows the default look.
+
 Composer links target `/plugins/projects/projects/<encoded-initiative-id>/compose`.
 The public `toPluginPanel` helper is scoped to the calling plugin, so Sidebar
 uses the SDK's `UrlLink` to open Projects through native internal navigation. The old `createProjectThread` server RPC

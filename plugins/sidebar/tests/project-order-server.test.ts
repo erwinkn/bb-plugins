@@ -290,6 +290,36 @@ describe("project order", () => {
     }
   });
 
+  it("forwards icon and color to the Projects command RPC, and validates the palette first", async () => {
+    const calls: { method: string; input: unknown }[] = [];
+    const h = createFakePluginHost({
+      sdk: {
+        plugins: {
+          list: async () => ({
+            plugins: [{ id: "projects", enabled: true, status: "running" }],
+          }),
+          callRpc: async (args: { method: string; input?: unknown }) => {
+            calls.push({ method: args.method, input: args.input });
+            return { appearance: { icon: "Bug", color: null } };
+          },
+        },
+      },
+    });
+    registerProjectMode(h.bb);
+    try {
+      await h.harness.callRpc("setTreeProjectAppearance", { projectId: "p1", icon: "Bug", color: null });
+      await h.harness.callRpc("setTreeProjectAppearance", { projectId: "p1", color: "teal" });
+      expect(calls).toEqual([
+        { method: "command", input: { projectId: "p1", command: { action: "appearance", icon: "Bug", color: null } } },
+        { method: "command", input: { projectId: "p1", command: { action: "appearance", color: "teal" } } },
+      ]);
+      await expect(h.harness.callRpc("setTreeProjectAppearance", { projectId: "p1", color: "#f00" })).rejects.toThrow();
+      expect(calls).toHaveLength(2);
+    } finally {
+      await h.harness.dispose();
+    }
+  });
+
   it("rejects a rename when the Projects plugin is not running", async () => {
     const h = createFakePluginHost({
       sdk: { plugins: { list: async () => ({ plugins: [] }) } },

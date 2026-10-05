@@ -9,6 +9,7 @@ import { parseState, updateState } from "../lib/client-state";
 import { PROJECT_ORDER_CHANNEL } from "../lib/project-order-schema";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { thread } from "./fixtures";
+import { projectHueStep } from "../lib/project-hue";
 const app = await loadPluginApp(() => import("../app"));
 const Component = app.threadLists[0].component;
 const slots: ReturnType<typeof renderSlot>[] = [];
@@ -617,6 +618,64 @@ describe("Projects sidebar mode", () => {
     await waitFor(() => expect(
       slot.inspection.rpcCalls.filter((call) => call.method === "projectMode").length,
     ).toBeGreaterThan(1));
+  });
+  it("shows a chosen icon and color, and falls back to the default look for unknown values", async () => {
+    const styled = { ...tree, projects: [{ ...tree.projects[0]!, appearance: { icon: "Bug", color: "teal" } }] };
+    const slot = mount(true, { treeData: styled as typeof richTree });
+    const row = await slot.findByRole("link", { name: "Open Useful search" });
+    expect(row.querySelector("[data-project-icon]")?.getAttribute("data-project-icon")).toBe("Bug");
+    expect(row.querySelector("[data-project-hue]")?.getAttribute("data-project-hue")).toBe("7");
+    slot.unmount();
+    const unknown = { ...tree, projects: [{ ...tree.projects[0]!, appearance: { icon: "Skull", color: "chartreuse" } }] };
+    const plain = mount(true, { treeData: unknown as typeof richTree });
+    const fallback = await plain.findByRole("link", { name: "Open Useful search" });
+    expect(fallback.querySelector("[data-project-icon]")?.getAttribute("data-project-icon")).toBe("Target");
+    expect(fallback.querySelector("[data-project-hue]")?.getAttribute("data-project-hue")).toBe(String(projectHueStep("Useful search")));
+  });
+  it("edits icon and color from the row menu next to Rename, and resets to the default", async () => {
+    const calls: unknown[] = [];
+    const slot = mount(true, {
+      treeData: richTree,
+      threads: richThreads,
+      rpc: {
+        setTreeProjectAppearance: async (input: unknown) => {
+          calls.push(input);
+          return {};
+        },
+      },
+    });
+    const menu = await openContextMenu(slot, "Useful search");
+    const items = within(menu).getAllByRole("menuitem").map((item) => item.textContent);
+    expect(items.indexOf("Icon and color…")).toBe(items.indexOf("Rename…") + 1);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Icon and color…" }));
+    const editor = await slot.findByRole("group", { name: "Icon and color for Useful search" });
+    fireEvent.click(within(editor).getByRole("button", { name: "green" }));
+    await waitFor(() => expect(calls).toEqual([{ projectId: "p1", color: "green" }]));
+    await waitFor(() => expect(within(editor).getByRole("button", { name: "green" }).getAttribute("aria-pressed")).toBe("true"));
+    fireEvent.click(within(editor).getByRole("button", { name: "Brain" }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    fireEvent.click(within(editor).getByRole("button", { name: "Reset" }));
+    await waitFor(() => expect(calls.at(-1)).toEqual({ projectId: "p1", icon: null, color: null }));
+    fireEvent.click(within(editor).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(slot.queryByRole("group", { name: /Icon and color/ })).toBeNull());
+    expect(await slot.findByRole("link", { name: "Open Useful search" })).toBeTruthy();
+  });
+  it("keeps the editor open and shows the reason when a save is refused", async () => {
+    const slot = mount(true, {
+      treeData: richTree,
+      threads: richThreads,
+      rpc: {
+        setTreeProjectAppearance: async () => {
+          throw new Error("The Projects plugin is not running.");
+        },
+      },
+    });
+    const menu = await openContextMenu(slot, "Useful search");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Icon and color…" }));
+    const editor = await slot.findByRole("group", { name: "Icon and color for Useful search" });
+    fireEvent.click(within(editor).getByRole("button", { name: "red" }));
+    expect((await within(editor).findByRole("alert")).textContent).toBe("The Projects plugin is not running.");
+    expect(within(editor).getByRole("button", { name: "red" }).getAttribute("aria-pressed")).toBe("false");
   });
   const expectNativeComposerLink = (
     slot: ReturnType<typeof renderSlot>,
