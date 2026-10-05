@@ -18,6 +18,7 @@ import { ProjectError } from "./bb";
 import { messageSchema } from "./messaging";
 import { DECISION_ACTIONS, decisionIssues, normalizeDecisionInput } from "./decision-input";
 import { reportedRetryHint, settlementReceipt } from "./receipts";
+import { PROJECT_COLORS, PROJECT_ICONS } from "./tree-schema";
 
 const text = (max = 2000) => z.string().trim().min(1).max(max);
 const ref = text(80);
@@ -320,6 +321,14 @@ export const updateSchema = z
     checkpoint: text(6000).optional(),
   })
   .strict();
+/** T16: user-only Initiative icon and color. Omitted keeps a field, null resets it to the default look. */
+export const appearanceCommandSchema = z
+  .object({
+    action: z.literal("appearance"),
+    icon: z.enum(PROJECT_ICONS).nullable().optional(),
+    color: z.enum(PROJECT_COLORS).nullable().optional(),
+  })
+  .strict();
 export const commandSchema = z.discriminatedUnion("action", [
   createSchema,
   messageSchema.extend({ action: z.literal("message") }),
@@ -338,6 +347,7 @@ export const commandSchema = z.discriminatedUnion("action", [
   decisionReviewSchema,
   acknowledgeSchema,
   updateSchema,
+  appearanceCommandSchema,
 ]);
 export type Command = z.infer<typeof commandSchema>;
 
@@ -384,6 +394,9 @@ export async function runCommand(
     }
     case "edit":
       return service.editProject(projectId, c, author);
+    case "appearance":
+      if (author !== "user") throw new ProjectError("Only the user changes an Initiative's icon or color, from the sidebar or the Initiative panel.");
+      return service.setAppearance(projectId, c);
     case "pause":
       return service.setPaused(projectId, c.paused);
     case "stop-work":

@@ -42,6 +42,21 @@
           "bbProjectId": "repo"
         }
       ]
+    },
+    {
+      "id": "p2",
+      "name": "Billing",
+      "objective": "Invoices",
+      "paused": false,
+      "coordinatorThreadId": null,
+      "memberProjectIds": ["repo"],
+      "inFlight": 0,
+      "remaining": 0,
+      "opinions": 0,
+      "revisit": 0,
+      "appearance": { "icon": "Bug", "color": "teal" },
+      "retired": 0,
+      "nodes": []
     }
   ]
 }

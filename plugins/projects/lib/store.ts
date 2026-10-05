@@ -33,6 +33,7 @@ import {
 } from "./schema";
 
 import { isLegacyReport, storedReportSchema } from "./legacy";
+import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-schema";
 
 
 // The plugin server is the only writer. Every multi-row change runs in one
@@ -366,6 +367,8 @@ export const MIGRATIONS = [
   `ALTER TABLE assignments ADD COLUMN report_seq INTEGER NOT NULL DEFAULT 0`,
   // T96: which prior report filings a fresh brief embedded, written once at dispatch.
   `ALTER TABLE assignments ADD COLUMN handoff_sources TEXT`,
+  // T16: the user's optional icon and color for an Initiative ({icon,color} JSON; NULL is the default look).
+  `ALTER TABLE projects ADD COLUMN appearance TEXT`,
 ];
 
 export const ACTIVITY_LIMIT = 300;
@@ -385,6 +388,8 @@ export interface ProjectRecord {
   coordinatorContinuedAt: number | null;
   policy: Policy;
   context: ProjectContext;
+  /** The user's icon and color; null fields (or unknown stored values) mean the default look. */
+  appearance: ProjectAppearance;
   createdAt: number;
   updatedAt: number;
   archivedAt: number | null;
@@ -843,10 +848,25 @@ function toProject(row: Row): ProjectRecord {
       (row.coordinator_continued_at as number | null) ?? null,
     policy: decode("projects", row, "policy", storedPolicySchema),
     context: decode("projects", row, "context", projectContextSchema),
+    appearance: readAppearance(row.appearance),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     archivedAt: (row.archived_at as number | null) ?? null,
   };
+}
+
+/** Lenient by design: appearance is cosmetic, so a legacy or unknown stored value reads as the default instead of failing the record. */
+function readAppearance(raw: unknown): ProjectAppearance {
+  if (typeof raw !== "string") return { icon: null, color: null };
+  try {
+    const v = JSON.parse(raw) as { icon?: unknown; color?: unknown };
+    return {
+      icon: (PROJECT_ICONS as readonly unknown[]).includes(v?.icon) ? (v.icon as string) : null,
+      color: (PROJECT_COLORS as readonly unknown[]).includes(v?.color) ? (v.color as string) : null,
+    };
+  } catch {
+    return { icon: null, color: null };
+  }
 }
 
 function toProjectThread(row: Row): ProjectThreadRecord {
@@ -1239,6 +1259,13 @@ export class Store {
         this.now(),
         id,
       );
+    return this.project(id)!;
+  }
+
+  /** Cosmetic only: no updated_at bump, so list order and identity stay where they were. */
+  setAppearance(id: string, appearance: ProjectAppearance) {
+    const stored = appearance.icon === null && appearance.color === null ? null : JSON.stringify(appearance);
+    this.db.prepare(`UPDATE projects SET appearance = ? WHERE id = ?`).run(stored, id);
     return this.project(id)!;
   }
 

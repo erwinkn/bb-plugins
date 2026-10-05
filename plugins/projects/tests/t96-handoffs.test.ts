@@ -125,7 +125,7 @@ describe("T96 standard handoff from the canonical report", () => {
     const before = ledger(f, project.id);
     const calls = sends(f);
     const cases: [unknown, RegExp][] = [
-      [{ tasks: [unrelated.ref], handoffs: ["A1"] }, /handoffs: A1 covers T1, which T\d+ does not name\. If the handoff belongs to this work, add "T1" or "A1" to the contextRefs of T\d+'s brief \(initiative_task task-update\), or delegate T1 itself with this handoff\.$/],
+      [{ tasks: [unrelated.ref], handoffs: ["A1"] }, /handoffs: A1 covers T1, which T\d+ does not name\. If the handoff belongs to this work, add "T1" or "A1" to the contextRefs of T\d+'s brief \(initiative_task task-update\)\. To retry T1 itself instead, first reject A1's report with initiative_task \{"action":"assignment-reject","assignment":"A1","reason":"…"\}, then delegate T1 with this handoff\.$/],
       [{ tasks: [related.ref], handoffs: ["A2"] }, /handoffs: A2 \(running\) has no stored report, so it has no handoff yet/],
       [{ tasks: [related.ref], handoffs: ["A99"] }, /handoffs: A99 is not an assignment in this Initiative/],
       [{ tasks: [related.ref], handoffs: ["A1", "A2", "A3", "A4"] }, /handoffs/],
@@ -232,6 +232,8 @@ describe("T96 public context routes", () => {
     expect(routes).toEqual([
       { method: "GET", path: "/context/v1/thread", auth: "token" },
       { method: "GET", path: "/context/v1/record", auth: "token" },
+      { method: "GET", path: "/context/v1/initiatives", auth: "token" },
+      { method: "GET", path: "/context/v1/members", auth: "token" },
     ]);
   });
 

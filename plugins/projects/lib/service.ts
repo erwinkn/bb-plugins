@@ -2467,6 +2467,16 @@ export class ProjectsService {
     });
   }
 
+  /** Icon and color are cosmetic: no activity entry, no order change. Omitted keeps a field; null resets it. */
+  setAppearance(projectId: string, patch: { icon?: string | null; color?: string | null }) {
+    const project = this.requireProject(projectId);
+    const appearance = {
+      icon: patch.icon === undefined ? project.appearance.icon : patch.icon,
+      color: patch.color === undefined ? project.appearance.color : patch.color,
+    };
+    return { appearance: this.store.setAppearance(project.id, appearance).appearance };
+  }
+
   /**
    * Pause gates what the plugin starts: delegation and the handover drain.
    * It never touches native queues, stops threads or suppresses reports.

@@ -107,12 +107,14 @@ describe("F2: saved guidance reaches one stable result within a load", () => {
 });
 
 describe("F3: the relation hint leads with contextRefs or the same task", () => {
+  const retryHint = `To retry T1 itself instead, first reject A1's report with initiative_task {"action":"assignment-reject","assignment":"A1","reason":"…"}, then delegate T1 with this handoff.`;
+
   it("following the hint literally on a reported, unfinished source lets fresh work start with its handoff", async () => {
     const { f, project, t1 } = await reported();
     const t2 = f.service.createTask(project.id, { title: "Fix", summary: "Fix.", brief: brief("proj_a", ["fix"]) }, "coordinator");
     const hint = await refused(f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref], label: "Fix", area: "fix", handoffs: ["A1"] }));
-    expect(hint).toBe(`handoffs: A1 covers T1, which ${t2.ref} does not name. If the handoff belongs to this work, add "T1" or "A1" to the contextRefs of ${t2.ref}'s brief (initiative_task task-update), or delegate T1 itself with this handoff.`);
-    expect(hint).not.toMatch(/dependsOn/);
+    expect(hint).toBe(`handoffs: A1 covers T1, which ${t2.ref} does not name. If the handoff belongs to this work, add "T1" or "A1" to the contextRefs of ${t2.ref}'s brief (initiative_task task-update). ${retryHint}`);
+    expect(hint).not.toMatch(/dependsOn|or delegate T1 itself/);
     const a1 = f.store.assignment(project.id, 1)!;
     const task1 = f.store.task(project.id, t1.num)!;
     await tool(f, "initiative_task", { action: "task-update", task: t2.ref, brief: { ...brief("proj_a", ["fix"]), contextRefs: ["T1"] } });
@@ -122,9 +124,24 @@ describe("F3: the relation hint leads with contextRefs or the same task", () => 
     expect(f.store.task(project.id, t1.num)).toEqual(task1);
   });
 
-  it("a rejected source's own task can be delegated again with its handoff", async () => {
+  it("a reported source's retry route works only through the rejection the hint names", async () => {
+    const { f, project, t1 } = await reported();
+    // Without the rejection, the same task is still owned by A1's report.
+    expect(await refused(f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref], label: "Redo", area: "search", handoffs: ["A1"] }))).toMatch(/T1 already has A1 \(reported succeeded\)/);
+    await tool(f, "initiative_task", { action: "assignment-reject", assignment: "A1", reason: "Redo with the new schema." });
+    const a1 = f.store.assignment(project.id, 1)!;
+    expect(a1.report).not.toBeNull();
+    const [r] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref], label: "Redo", area: "search", handoffs: ["A1"] });
+    expect(f.store.assignment(project.id, Number(r!.assignment.slice(1)))!.handoffSources![0]).toMatchObject({ assignment: "A1", state: "rejected" });
+    expect(f.store.assignment(project.id, 1)).toEqual(a1);
+  });
+
+  it("a rejected source offers its own task directly, and that route works", async () => {
     const { f, project, t1 } = await reported();
     await f.service.rejectReport(project.id, "A1", "Redo with the new schema.");
+    const t2 = f.service.createTask(project.id, { title: "Fix", summary: "Fix.", brief: brief("proj_a", ["fix"]) }, "coordinator");
+    const hint = await refused(f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref], label: "Fix", area: "fix", handoffs: ["A1"] }));
+    expect(hint).toBe(`handoffs: A1 covers T1, which ${t2.ref} does not name. If the handoff belongs to this work, add "T1" or "A1" to the contextRefs of ${t2.ref}'s brief (initiative_task task-update), or delegate T1 itself with this handoff.`);
     const a1 = f.store.assignment(project.id, 1)!;
     const [r] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref], label: "Redo", area: "search", handoffs: ["A1"] });
     expect(r!.assignment).toBe("A2");
@@ -138,14 +155,35 @@ describe("F3: the relation hint leads with contextRefs or the same task", () => 
     const t2 = f.service.createTask(project.id, { title: "Next", summary: "Next.", brief: brief("proj_a", ["next"]) }, "coordinator");
     const hint = await refused(f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref], label: "N", area: "n", handoffs: ["A1"] }));
     expect(hint).toBe(`handoffs: A1 covers T1, which ${t2.ref} does not name. If the handoff belongs to this work, add "T1" or "A1" to the contextRefs of ${t2.ref}'s brief (initiative_task task-update). T1 is done, so adding it to dependsOn also works.`);
+    const task1 = f.store.task(project.id, t1.num)!;
+    await tool(f, "initiative_task", { action: "task-update", task: t2.ref, dependsOn: [t1.ref] });
+    const [r] = await f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref], label: "N", area: "n", handoffs: ["A1"] });
+    expect(f.store.assignment(project.id, Number(r!.assignment.slice(1)))!.handoffSources![0]).toMatchObject({ assignment: "A1", state: "accepted" });
+    expect(f.store.task(project.id, t1.num)).toEqual(task1);
   });
 
-  it("P5: a continue with no tasks names the delegated briefs and the same task", async () => {
+  it("several target tasks agree in number, and one of their briefs is enough", async () => {
+    const { f, project } = await reported();
+    const t2 = f.service.createTask(project.id, { title: "Fix", summary: "Fix.", brief: brief("proj_a", ["fix"]) }, "coordinator");
+    const t3 = f.service.createTask(project.id, { title: "Docs", summary: "Docs.", brief: brief("proj_a", ["docs"]) }, "coordinator");
+    const hint = await refused(f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref, t3.ref], label: "Fix", area: "fix", handoffs: ["A1"] }));
+    expect(hint).toBe(`handoffs: A1 covers T1, which ${t2.ref} and ${t3.ref} do not name. If the handoff belongs to this work, add "T1" or "A1" to the contextRefs of one of their briefs (initiative_task task-update). ${retryHint}`);
+    await tool(f, "initiative_task", { action: "task-update", task: t3.ref, brief: { ...brief("proj_a", ["docs"]), contextRefs: ["A1"] } });
+    const [r] = await f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref, t3.ref], label: "Fix", area: "fix", handoffs: ["A1"] });
+    expect(f.store.assignment(project.id, Number(r!.assignment.slice(1)))!.handoffSources![0]).toMatchObject({ assignment: "A1", state: "reported" });
+  });
+
+  it("P5: a delegation with no tasks is asked for tasks, not for briefs it does not have", async () => {
     const { f, project } = await reported();
     const before = ledger(f, project.id);
     const hint = await refused(f.service.delegate(project.id, { route: "continue", worker: "W1", handoffs: ["A1"], note: "Review fix" } as never));
-    expect(hint).toBe(`handoffs: A1 covers T1, which this delegation does not name. If the handoff belongs to this work, add "T1" or "A1" to the contextRefs of the delegated tasks' briefs, or delegate T1 itself with this handoff.`);
+    expect(hint).toBe(`handoffs: A1 covers T1, but this delegation names no tasks. Pass the tasks this work is for; if the handoff belongs to it, add "T1" or "A1" to the contextRefs of one of their briefs (initiative_task task-update).`);
     expect(ledger(f, project.id)).toBe(before);
+    // Following it: a task that names A1 in its brief continues W1 with the handoff.
+    const t2 = f.service.createTask(project.id, { title: "Fix", summary: "Fix.", brief: { ...brief("proj_a", ["search"]), contextRefs: ["A1"] } }, "coordinator");
+    const [r] = await f.service.delegate(project.id, { route: "continue", worker: "W1", tasks: [t2.ref], handoffs: ["A1"], note: "Review fix" });
+    expect(r).toMatchObject({ worker: "W1" });
+    expect(f.store.assignment(project.id, Number(r!.assignment.slice(1)))!.handoffSources![0]).toMatchObject({ assignment: "A1", state: "reported" });
   });
 });
 

@@ -781,5 +781,6 @@ export function buildSummary(store: Store, projectId: string) {
     coordinatorThreadId: project.coordinatorThreadId, memberProjectIds: project.memberProjectIds,
     inFlight: active.length, remaining: tasks.filter(t => !["done", "cancelled"].includes(t.status) && !assigned.has(t.num)).length,
     opinions: attention.filter(d => d.human_attention === "needs-opinion").length,
-    revisit: attention.filter(d => d.decision_owner === "agent" && d.decision_review === "pending").length };
+    revisit: attention.filter(d => d.decision_owner === "agent" && d.decision_review === "pending").length,
+    appearance: project.appearance };
 }

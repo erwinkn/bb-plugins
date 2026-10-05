@@ -113,7 +113,12 @@ commands; failed actions keep their errors and drafts. Threads opens each native
 thread from its primary row, with a separate detail caret. Current native parents
 preserve nested members and user ownership. Unknown parents stay explicit in
 expanded details. Retired workers and prior generations remain under a fold.
-The optional Threads integration keeps its unchanged tree v1 contract.
+The optional Threads integration keeps its tree v1 contract; each Initiative
+now also carries an optional `appearance` (`{icon, color}`, null for the
+default look) that the user sets from the sidebar row menu through the
+user-only `appearance` command (an icon from `PROJECT_ICONS`, a color from
+`PROJECT_COLORS` in `lib/tree-schema.ts`; null resets). Agents' tools and
+agent CLI calls are refused, and the change never reorders the list.
 
 The coordinator menu includes Pause/Resume, Context editing, repositories,
 refresh and confirmed stop/archive actions. Replace inherits incumbent model,
@@ -704,7 +709,7 @@ stable result and the next load rewrites nothing. Edited clauses and custom text
 
 ## Read-only context for other plugins
 
-Two token-auth GET routes give local plugins (Account Pooler warming, Advisor)
+Token-auth GET routes give local plugins (Account Pooler warming, Advisor)
 Initiative context from Projects' own records, with no native call, write, wake
 or model call:
 
@@ -723,6 +728,15 @@ or model call:
   also renders decisions, task status and the worker label, which `updatedAt`
   and `reportVersion` do not cover, so a reader compares `textVersion` across
   pages and restarts from offset 0 on a mismatch instead of stitching pages.
+- `/api/v1/plugins/projects/http/context/v1/initiatives` lists open
+  Initiatives (id, name, paused, coordinator), and
+  `/api/v1/plugins/projects/http/context/v1/members?initiativeId=…` lists
+  every thread the thread route places in that Initiative, current and former
+  (kind, role, W#, generation, state), in pages ordered by thread id
+  (`limit` up to 500, default 200; pass `next` back as `after` until it is
+  null). The
+  Advisor's Initiative watch reads these; watch an Initiative from the Advisor
+  page or with `bb advisor watch --initiative <id|name>`.
 
 Send `x-bb-plugin-token` from `bb.sdk.plugins.token({pluginId:"projects"})`.
 Every Projects response has `version: 1`; errors are `bad-request`,

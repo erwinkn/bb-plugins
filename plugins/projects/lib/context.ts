@@ -127,6 +127,70 @@ export function threadContext(store: Store, query: URLSearchParams): ContextResp
   });
 }
 
+/** GET context/v1/initiatives: the open Initiatives a reader can pick, most recently updated first. */
+export function initiativesContext(store: Store, _query: URLSearchParams): ContextResponse {
+  return guard(() => ({
+    initiatives: store.projects().map(p => ({
+      initiativeId: p.id,
+      name: p.name,
+      paused: p.paused,
+      coordinator: { threadId: p.coordinatorThreadId, generation: p.coordinatorGeneration },
+    })),
+  }));
+}
+
+export const MEMBERS_PAGE_DEFAULT = 200;
+export const MEMBERS_PAGE_MAX = 500;
+
+/**
+ * GET context/v1/members?initiativeId=&after=&limit=: every thread the thread route would
+ * place in this Initiative, current and former, in the same terms (kind, role, W#, state).
+ * Built from the same membership read, so the two routes never disagree about one thread.
+ * Pages are ordered by thread id: pass `next` back as `after` until it is null. A thread
+ * present for the whole walk is always on exactly one page.
+ */
+export function membersContext(store: Store, query: URLSearchParams): ContextResponse {
+  return guard(() => {
+    const initiativeId = required(query, "initiativeId", /^[\w-]{1,80}$/, "pass an Initiative id from context/v1/initiatives");
+    const after = query.get("after");
+    if (after !== null && !/^[\w-]{1,200}$/.test(after)) throw new ContextError(400, "bad-request", "after is invalid: pass the previous page's next.");
+    const limit = integer(query, "limit", MEMBERS_PAGE_DEFAULT, 1, MEMBERS_PAGE_MAX);
+    const p = store.project(initiativeId);
+    if (!p) throw new ContextError(404, "not-found", `No Initiative ${initiativeId}.`);
+    const ids = new Set<string>();
+    if (p.coordinatorThreadId) ids.add(p.coordinatorThreadId);
+    for (const g of store.generations(p.id, 0)) ids.add(g.threadId);
+    for (const w of store.workers(p.id)) {
+      if (w.threadId) ids.add(w.threadId);
+      for (const g of store.generations(p.id, w.num)) ids.add(g.threadId);
+    }
+    for (const t of store.projectThreads(p.id)) if (t.threadId) ids.add(t.threadId);
+    for (const t of store.nestedProjectThreads(p.id)) ids.add(t.threadId);
+    const candidates = [...ids].sort().filter(id => after === null || id > after);
+    const members = [];
+    let next: string | null = null;
+    for (const [i, threadId] of candidates.entries()) {
+      if (members.length === limit) {
+        next = candidates[i - 1]!;
+        break;
+      }
+      const m = membershipContext(store, threadId);
+      if (!m || m.initiativeId !== p.id) continue;
+      members.push({ threadId, kind: m.kind, role: m.role, worker: m.worker, generation: m.generation, state: m.state, former: m.former, retired: m.retired, stopped: m.stopped });
+    }
+    return {
+      initiativeId: p.id,
+      name: p.name,
+      archived: p.archivedAt !== null,
+      paused: p.paused,
+      coordinator: { threadId: p.coordinatorThreadId, generation: p.coordinatorGeneration },
+      next,
+      truncated: next !== null,
+      members,
+    };
+  });
+}
+
 /** GET context/v1/record?initiativeId=&ref=&part=&offset=&limit= */
 export function recordText(store: Store, query: URLSearchParams): ContextResponse {
   return guard(() => {

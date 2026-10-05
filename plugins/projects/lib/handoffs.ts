@@ -124,19 +124,39 @@ export function resolveHandoffs(store: Store, projectId: string, refs: readonly 
     seen.add(a.num);
     if (!a.report) throw new ProjectError(`handoffs: ${a.ref} (${a.state}) has no stored report, so it has no handoff yet.`);
     const covered = [...a.taskNums, ...(a.reviewOf ?? [])];
-    if (!namedAssignments.has(a.num) && !covered.some(n => related.has(n))) {
-      const source = covered.map(taskRef).join(", ") || "no task";
-      const target = tasks.map(t => t.ref).join(", ") || "this delegation";
-      // contextRefs and the same task work whatever the source's state; dependsOn also gates
-      // dispatch on the source task being done, so it is offered only once it is (A223).
-      const done = covered.length > 0 && covered.every(n => store.task(projectId, n)?.status === "done");
-      throw new ProjectError(
-        `handoffs: ${a.ref} covers ${source}, which ${target} does not name. If the handoff belongs to this work, ` +
-          `add ${covered[0] ? `"${taskRef(covered[0])}" or ` : ""}"${a.ref}" to the contextRefs of ${tasks.length ? `${target}'s brief (initiative_task task-update)` : "the delegated tasks' briefs"}` +
-          `${covered.length && !done ? `, or delegate ${source} itself with this handoff` : ""}.` +
-          (done ? ` ${source} is done, so adding it to dependsOn also works.` : ""),
-      );
-    }
+    if (!namedAssignments.has(a.num) && !covered.some(n => related.has(n))) throw new ProjectError(relationHint(store, projectId, a, covered, tasks));
     return [a];
   });
+}
+
+/** "T1", "T1 and T2", "T1, T2 and T3". */
+const listRefs = (refs: string[]) => (refs.length <= 1 ? refs.join("") : `${refs.slice(0, -1).join(", ")} and ${refs.at(-1)}`);
+
+/**
+ * Why a selected handoff does not relate to the delegated tasks, and the routes that do.
+ * contextRefs always works and leads. dependsOn also gates dispatch on the source task being
+ * done, so it is offered only once it is (A223). The source's own task can be delegated again
+ * directly only after a rejection; a reported source needs that rejection first, offered only
+ * as a retry (A226), and a report still listing background work cannot be rejected yet.
+ */
+function relationHint(store: Store, projectId: string, a: AssignmentRecord, covered: number[], tasks: readonly TaskRecord[]): string {
+  const source = listRefs(covered.map(taskRef)) || "no task";
+  const many = covered.length > 1;
+  const name = `${covered[0] ? `"${taskRef(covered[0])}" or ` : ""}"${a.ref}"`;
+  if (!tasks.length)
+    return `handoffs: ${a.ref} covers ${source}, but this delegation names no tasks. Pass the tasks this work is for; if the handoff belongs to it, add ${name} to the contextRefs of one of their briefs (initiative_task task-update).`;
+  const target = listRefs(tasks.map(t => t.ref));
+  const plural = tasks.length > 1;
+  const done = covered.length > 0 && covered.every(n => store.task(projectId, n)?.status === "done");
+  const retry = a.role === "work" && covered.length > 0 && !done && !a.report?.pendingBackgroundWork.length;
+  const itself = many ? "themselves" : "itself";
+  return (
+    `handoffs: ${a.ref} covers ${source}, which ${target} ${plural ? "do" : "does"} not name. If the handoff belongs to this work, ` +
+    `add ${name} to the contextRefs of ${plural ? "one of their briefs" : `${target}'s brief`} (initiative_task task-update)` +
+    (retry && a.state === "rejected" ? `, or delegate ${source} ${itself} with this handoff.` : ".") +
+    (retry && a.state === "reported"
+      ? ` To retry ${source} ${itself} instead, first reject ${a.ref}'s report with initiative_task {"action":"assignment-reject","assignment":"${a.ref}","reason":"…"}, then delegate ${source} with this handoff.`
+      : "") +
+    (done ? ` ${source} ${many ? "are" : "is"} done, so adding ${many ? "them" : "it"} to dependsOn also works.` : "")
+  );
 }

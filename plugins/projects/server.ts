@@ -38,7 +38,7 @@ import { decisionToolJsonSchema } from "./lib/decision-input";
 import { objectRootSchema } from "./lib/tool-schema";
 import { ProjectError, errorMessage } from "./lib/bb";
 import { scopedNativeEvent } from "./lib/native-events";
-import { recordText, threadContext } from "./lib/context";
+import { initiativesContext, membersContext, recordText, threadContext } from "./lib/context";
 import { messageSchema, currentIdentity, workerWork } from "./lib/messaging";
 import {
   readCollection, readRefs, readRows, compactOverview, agentReadSchema, validateSelection,
@@ -385,7 +385,7 @@ export default function plugin(bb: BbPluginApi) {
 
   // T96: read-only lifecycle and brief/handoff context for other local plugins
   // (Pooler warming, Advisor). Token auth; own store only; reads never write or wake.
-  for (const [path, read] of [["/context/v1/thread", threadContext], ["/context/v1/record", recordText]] as const)
+  for (const [path, read] of [["/context/v1/thread", threadContext], ["/context/v1/record", recordText], ["/context/v1/initiatives", initiativesContext], ["/context/v1/members", membersContext]] as const)
     bb.http.route("GET", path, (c) => {
       const { status, body } = read(store, new URL(c.req.url).searchParams);
       return c.json(body, status);
