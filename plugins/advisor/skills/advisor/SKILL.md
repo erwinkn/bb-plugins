@@ -32,8 +32,8 @@ bb advisor unwatch --initiative <id|name> [--delete] # turn it off (keeps histor
 
 An Initiative watch covers its coordinator, workers, reviewers and the
 user's threads in it, and adds members that join later (read from their
-first event). Retired and replaced members stop being observed and keep their
-history. `status` lists Initiative watches with member counts, and each
+first event). Retired, replaced and archived members stop being observed and
+keep their history; an unarchived member is watched again. `status` lists Initiative watches with member counts, and each
 watch and finding names its Initiative and role (for example `W12 work`).
 Unwatching one member thread excludes it from the Initiative watch until it is
 watched again. Watching a member explicitly makes that watch the user's own.

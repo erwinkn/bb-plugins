@@ -304,7 +304,7 @@ describe("Initiative watch", () => {
     expect(o.initiativeWatches[0]).toMatchObject({ enabled: true, error: expect.stringMatching(/^Projects context routes unavailable .*new members are not added/u) });
     expect(watched(r)).toMatchObject({ thr_w1: { enabled: true } }); // existing member watches go on
     const cli = await runCli(["status"], { store: r.store, advisor: r.advisor, initiatives: unavailableInitiatives, now: clock.now });
-    expect(cli.stdout).toMatch(/initiative watches \(1\):\n {2}bb-plugins \(prj_1\) on · 2 live members, 2 observed, 1 retired or former · Projects context routes unavailable/u);
+    expect(cli.stdout).toMatch(/initiative watches \(1\):\n {2}bb-plugins \(prj_1\) on · 2 live members, 2 observed, 1 retired, former or archived · Projects context routes unavailable/u);
   });
 
   it("CLI: watch and unwatch --initiative, and findings name the Initiative and role", async () => {
@@ -363,5 +363,112 @@ describe("Projects listing routes (contract v1 additions)", () => {
     expect((await src.membership("t", signal())).ok).toBe(true);
     const broken = server(() => ({ status: 500, body: { version: 1, error: { code: "store-unreadable", message: "x" } } }));
     expect(await broken.members("prj_1", null, signal())).toMatchObject({ status: "failed" });
+  });
+});
+
+// T107: a natively archived member is ended like a retired one. Modelled on the live
+// Coffre and bb-plugins watches: a coordinator, workers, and user threads of which
+// most are archived, some already watched before archive state was read.
+describe("Initiative watch: archived member threads", () => {
+  async function coffre() {
+    const { r, world, clock, init } = await setup();
+    for (const t of ["thr_u1", "thr_u2", "thr_u3", "thr_u4"]) {
+      world.addThread(t);
+      work(world, t);
+      init.add(t, { kind: "adhoc", role: "user", worker: null, generation: null });
+    }
+    world.addThread("thr_u_old", { archivedAt: clock.now() });
+    init.add("thr_u_old", { kind: "adhoc", role: "user", worker: null, generation: null });
+    return { r, world, clock, init };
+  }
+  const archive = (world: FakeWorld, t: string, at: number | null) => {
+    world.threads.get(t).archivedAt = at;
+  };
+  const status = async (r: Rig, clock: Clock) => (await runCli(["status"], { store: r.store, advisor: r.advisor, initiatives: unavailableInitiatives, now: clock.now })).stdout!;
+
+  it("never watches an already archived member, and shows it ended as archived", async () => {
+    const { r, clock } = await coffre();
+    await r.advisor.watchInitiative("prj_1", "test");
+    expect(r.store.getWatchByThread("thr_u_old")).toBeNull();
+    expect(r.store.memberOf("thr_u_old")).toMatchObject({ state: "archived" });
+    expect(Object.keys(watched(r)).sort()).toEqual(["thr_coord", "thr_u1", "thr_u2", "thr_u3", "thr_u4", "thr_w1"]);
+    expect(await status(r, clock)).toMatch(/bb-plugins \(prj_1\) on · 6 live members, 6 observed, 2 retired, former or archived/u);
+  });
+
+  it("stops existing Initiative watches of archived threads at the next sync, keeps their history, and leaves explicit watches alone", async () => {
+    const { r, world, clock } = await coffre();
+    const mine = await r.advisor.watch("thr_u4", "test");
+    await r.advisor.watchInitiative("prj_1", "test");
+    await r.tick();
+    const u1 = r.store.getWatchByThread("thr_u1")!;
+    const cards = r.store.listCards(u1.id, { limit: 50 }).length;
+    expect(cards).toBeGreaterThan(0);
+    for (const t of ["thr_u1", "thr_u2", "thr_u4"]) archive(world, t, clock.now());
+    const gets = world.gets.length;
+    await r.tick(); // each enabled watch's own pass reads its thread
+    clock.advance(11_000);
+    await r.tick();
+    // Enabled watches needed no extra thread read: one read per watch per pass, as before.
+    expect(world.gets.length - gets).toBe(2 * 6 - 2);
+    expect(watched(r)).toMatchObject({
+      thr_u1: { origin: "initiative", enabled: false, ended: "thread archived" },
+      thr_u2: { origin: "initiative", enabled: false, ended: "thread archived" },
+      thr_u3: { enabled: true, ended: null },
+      thr_u4: { origin: "selected", enabled: true },
+    });
+    expect(r.store.listCards(u1.id, { limit: 50 })).toHaveLength(cards);
+    const o = overview(r.store, r.advisor, unavailableInitiatives, clock.now());
+    expect(o.watches.find((w) => w.threadId === "thr_u1")).toMatchObject({ ended: "thread archived", initiative: { state: "archived" } });
+    const on = (await status(r, clock)).split("\n").filter((l) => / on /u.test(l) && l.startsWith("  thr_")).map((l) => l.trim().split(" ")[0]);
+    expect(on.sort()).toEqual(["thr_coord", "thr_u3", "thr_u4", "thr_w1"]);
+    // Off and on again does not restart them.
+    r.advisor.unwatchInitiative("prj_1", "test");
+    await r.advisor.watchInitiative("prj_1", "test");
+    expect(watched(r)).toMatchObject({ thr_u1: { enabled: false, ended: "thread archived" }, thr_u3: { enabled: true } });
+  });
+
+  it("an unarchived member that is still live is watched again: at once on the event, else at the periodic re-read", async () => {
+    const { r, world, clock } = await coffre();
+    await r.advisor.watchInitiative("prj_1", "test");
+    archive(world, "thr_u1", clock.now());
+    await r.tick();
+    clock.advance(11_000);
+    await r.tick();
+    expect(watched(r).thr_u1).toMatchObject({ enabled: false, ended: "thread archived" });
+    clock.advance(11_000);
+    const gets = world.gets.length;
+    await r.tick();
+    expect(world.gets.filter((t, i) => i >= gets && (t === "thr_u1" || t === "thr_u_old"))).toEqual([]); // archived members are not re-read every pass
+    archive(world, "thr_u1", null);
+    await r.harness.emitThreadEvent("thread.unarchived", { thread: world.threads.get("thr_u1") });
+    await r.tick();
+    expect(watched(r).thr_u1).toEqual({ origin: "initiative", enabled: true, ended: null });
+    expect(r.store.memberOf("thr_u1")).toMatchObject({ state: "active" });
+    // No event: the archived member is read again within ARCHIVE_RECHECK_MS.
+    archive(world, "thr_u_old", null);
+    clock.advance(11_000);
+    await r.tick();
+    expect(r.store.getWatchByThread("thr_u_old")).toBeNull();
+    clock.advance(5 * 60_000);
+    await r.tick();
+    expect(watched(r).thr_u_old).toMatchObject({ origin: "initiative", enabled: true });
+  });
+
+  it("reads at most 20 unknown members a pass; the rest wait a pass rather than being watched unread", async () => {
+    const { r, world, clock, init } = await setup();
+    for (let i = 0; i < 30; i++) {
+      const t = `thr_u${String(i).padStart(2, "0")}`;
+      world.addThread(t, i % 2 ? { archivedAt: clock.now() } : {});
+      init.add(t, { kind: "adhoc", role: "user", worker: null, generation: null });
+    }
+    const gets = world.gets.length;
+    await r.advisor.watchInitiative("prj_1", "test");
+    expect(world.gets.length - gets).toBe(20);
+    const users = () => Object.keys(watched(r)).filter((t) => t.startsWith("thr_u")).length;
+    expect(users()).toBeLessThan(15);
+    clock.advance(11_000);
+    await r.tick();
+    expect(users()).toBe(15);
+    expect(r.store.listMembers("prj_1").filter((m) => m.state === "archived")).toHaveLength(15);
   });
 });

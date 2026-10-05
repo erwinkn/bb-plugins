@@ -123,6 +123,8 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
     });
     // A new thread may be a new member of a watched Initiative: list members at the next pass.
     bb.events.on("thread.created", () => advisor.noteThreadCreated());
+    // An archived member that is unarchived is read again and, if still live, watched again.
+    bb.events.on("thread.unarchived", ({ thread }) => advisor.noteThreadUnarchived(thread.id));
 
     const via = "panel";
     const discussion = (occurrenceId: string) => {

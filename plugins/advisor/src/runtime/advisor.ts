@@ -48,6 +48,10 @@ const PRUNE_EVERY_MS = 10 * 60_000;
 const INITIATIVE_SYNC_MS = 10_000;
 /** Member pages (up to 200 threads each) read per Initiative per pass; a longer walk goes on next pass. */
 const INITIATIVE_PAGES_PER_PASS = 5;
+/** Native thread reads per Initiative per pass to learn whether a member is archived. */
+const ARCHIVE_READS_PER_PASS = 20;
+/** An archived member is read again this often, in case it was unarchived without an event reaching us. */
+const ARCHIVE_RECHECK_MS = 5 * 60_000;
 const MIN_TICK_GAP_MS = 2000;
 /** Pause reasons an observation pass sets and clears from what it read; all others belong to reviews and panel actions. */
 const OBSERVED_REASONS = ["interrupted", "user-stopped"] as const;
@@ -66,6 +70,8 @@ export class Advisor {
   private initiativeSyncDue = false;
   /** Member walks in progress: the next page cursor and every thread listed so far (memory only). */
   private walks = new Map<string, { after: string | null; seen: Set<string> }>();
+  /** When a member's thread was last seen archived (memory only: a reload reads archived members again). */
+  private archiveSeenAt = new Map<string, number>();
 
   constructor(private d: AdvisorDeps) {
     this.resolved = resolveConfig({});
@@ -371,6 +377,13 @@ export class Advisor {
     this.wake();
   }
 
+  /** A thread was unarchived: an archived member of a watched Initiative is read again at the next pass. */
+  noteThreadUnarchived(threadId: string): void {
+    if (!this.archiveSeenAt.delete(threadId) || !this.d.store.listInitiativeWatches().some((i) => i.enabled)) return;
+    this.initiativeSyncDue = true;
+    this.wake();
+  }
+
   /** A stored Initiative watch by exact id, or by name ignoring case. */
   findInitiativeWatch(ref: string): InitiativeWatchRow | null {
     const all = this.d.store.listInitiativeWatches();
@@ -471,8 +484,8 @@ export class Advisor {
   /**
    * Walk the member listing, at most INITIATIVE_PAGES_PER_PASS pages a pass:
    * new live members get a watch (read from their first event when they joined
-   * after the watch was turned on), members that retired, were replaced, or
-   * whose Initiative was archived stop being observed, and a member stopped
+   * after the watch was turned on), members that retired, were replaced, whose
+   * thread or Initiative was archived stop being observed, and a member stopped
    * that way starts again if it comes back. Only a walk that reached the last
    * page stops watches of members it no longer lists (moved or removed). A
    * failed or missing page changes nothing more and is shown on the Initiative watch.
@@ -484,8 +497,10 @@ export class Advisor {
     const walk = this.walks.get(iw.id) ?? { after: null, seen: new Set<string>() };
     this.walks.set(iw.id, walk);
     let moved = false;
+    const reads = { left: ARCHIVE_READS_PER_PASS };
     for (let page = 0; page < INITIATIVE_PAGES_PER_PASS; page++) {
       const r = await this.d.initiatives.members(iw.id, walk.after, readSignal(signal, this.deadline));
+      const archive = r.status === "ok" ? await this.archiveStates(iw.id, r.value, reads, signal) : null;
       const now = this.d.now();
       const fresh = this.d.store.getInitiativeWatch(initiativeId);
       if (!fresh || !fresh.enabled) {
@@ -507,7 +522,7 @@ export class Advisor {
       }
       const v = r.value;
       for (const m of v.members) walk.seen.add(m.threadId);
-      if (this.applyMembers(fresh, v, now)) moved = true;
+      if (this.applyMembers(fresh, v, archive!, now)) moved = true;
       if (v.next === null) {
         if (this.reconcileMissing(this.d.store.getInitiativeWatch(initiativeId)!, walk.seen, now)) moved = true;
         this.walks.delete(initiativeId);
@@ -521,20 +536,82 @@ export class Advisor {
     }
   }
 
+  /**
+   * Which live members on a page have a natively archived thread, read
+   * cheaply. A member with an enabled watch needs no read: the watch's own pass
+   * reads its thread. Otherwise only a member this Initiative watch would start
+   * or restart is read, an archived one again every ARCHIVE_RECHECK_MS (or
+   * after an unarchive event), within `reads` thread reads a pass. A member
+   * that would start but was not read is `deferred` to a later pass.
+   */
+  private async archiveStates(initiativeId: string, v: InitiativeMembers, reads: { left: number }, signal: AbortSignal): Promise<{ archived: Set<string>; deferred: Set<string> }> {
+    const archived = new Set<string>();
+    const deferred = new Set<string>();
+    if (v.archived) return { archived, deferred };
+    const prev = new Map(this.d.store.listMembers(initiativeId).map((m) => [m.threadId, m]));
+    const now = this.d.now();
+    const due: Array<{ threadId: string; known: boolean }> = [];
+    for (const m of v.members) {
+      if (memberEnded(m.state)) continue;
+      const before = prev.get(m.threadId);
+      const known = before?.state === "archived";
+      const w = this.d.store.getWatchByThread(m.threadId);
+      if (w?.enabled) {
+        if (w.thread?.archivedAt != null) {
+          archived.add(m.threadId);
+          this.archiveSeenAt.set(m.threadId, now);
+        }
+        continue;
+      }
+      const starts = !before?.excluded && (!w || (w.origin === "initiative" && w.state.initiativeEnded !== null));
+      if (starts && (!known || now - (this.archiveSeenAt.get(m.threadId) ?? -Infinity) >= ARCHIVE_RECHECK_MS)) due.push({ threadId: m.threadId, known });
+      else if (known) archived.add(m.threadId);
+    }
+    // Unread members first: they are the ones holding back a watch.
+    due.sort((a, b) => Number(a.known) - Number(b.known));
+    for (const { threadId, known } of due) {
+      let gone: boolean | null = null;
+      if (reads.left > 0 && !signal.aborted) {
+        reads.left--;
+        try {
+          gone = (await this.d.host.getThread(threadId, readSignal(signal, this.deadline))).archivedAt !== null;
+        } catch (err) {
+          // A thread BB no longer has ends like an archived one; any other failure is unknown.
+          if ((err as { status?: number }).status === 404) gone = true;
+        }
+      }
+      if (gone === null) (known ? archived : deferred).add(threadId);
+      else if (gone) {
+        archived.add(threadId);
+        this.archiveSeenAt.set(threadId, now);
+      } else this.archiveSeenAt.delete(threadId);
+    }
+    return { archived, deferred };
+  }
+
   /** Apply one page of members; true when anything shown moved. */
-  private applyMembers(fresh: InitiativeWatchRow, v: InitiativeMembers, now: number): boolean {
+  private applyMembers(fresh: InitiativeWatchRow, v: InitiativeMembers, archive: { archived: Set<string>; deferred: Set<string> }, now: number): boolean {
     const prev = new Map(this.d.store.listMembers(fresh.id).map((m) => [m.threadId, m]));
     let moved = fresh.error !== null || fresh.name !== v.name || fresh.archived !== v.archived;
     this.d.store.tx(() => {
       for (const m of v.members) {
         const before = prev.get(m.threadId);
-        this.d.store.saveMember({ initiativeId: fresh.id, threadId: m.threadId, kind: m.kind, role: m.role, worker: m.worker, generation: m.generation, state: m.state }, now);
-        if (!before || before.state !== m.state) moved = true;
-        const ended = v.archived ? "Initiative archived" : m.state === "retired" ? "retired from the Initiative" : m.state === "former" ? "former Initiative member (replaced)" : null;
+        const state = archive.archived.has(m.threadId) ? "archived" : m.state;
+        this.d.store.saveMember({ initiativeId: fresh.id, threadId: m.threadId, kind: m.kind, role: m.role, worker: m.worker, generation: m.generation, state }, now);
+        if (!before || before.state !== state) moved = true;
+        const ended = v.archived
+          ? "Initiative archived"
+          : state === "retired"
+            ? "retired from the Initiative"
+            : state === "former"
+              ? "former Initiative member (replaced)"
+              : state === "archived"
+                ? "thread archived"
+                : null;
         const wasEnded = before === undefined || fresh.archived || memberEnded(before.state);
         const w = this.d.store.getWatchByThread(m.threadId);
         if (ended === null) {
-          if (before?.excluded) continue;
+          if (before?.excluded || archive.deferred.has(m.threadId)) continue;
           if (!w) {
             const nw = this.d.store.createWatch(m.threadId, "initiative", now);
             nw.state.fromStartIfCreatedAfter = fresh.since;
@@ -956,8 +1033,8 @@ export class Advisor {
   }
 }
 
-/** States in which a member is no longer observed: retired, replaced, or no longer listed. */
-const memberEnded = (state: string) => state === "retired" || state === "former" || state === "removed";
+/** States in which a member is no longer observed: retired, replaced, its thread archived, or no longer listed. */
+const memberEnded = (state: string) => state === "retired" || state === "former" || state === "archived" || state === "removed";
 
 /** "W12 work", "coordinator", "user thread". */
 export function memberLabel(m: { kind: string; role: string; worker: string | null }): string {

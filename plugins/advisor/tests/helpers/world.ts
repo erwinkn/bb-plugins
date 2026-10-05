@@ -35,6 +35,8 @@ export class FakeWorld {
   queries: Array<{ threadId: string } & EventQuery> = [];
   tokenCalls = 0;
   failGet = new Set<string>();
+  /** threads.get calls, by thread id. */
+  gets: string[] = [];
   /** threads.spawn calls (Discuss only; the Advisor never writes to a watched thread). */
   spawns: any[] = [];
   /** Calls into the Sidebar plugin (the Advisor's unseen-count pushes). */
@@ -122,6 +124,7 @@ export class FakeWorld {
     return {
       threads: {
         get: async ({ threadId }: { threadId: string }) => {
+          world.gets.push(threadId);
           if (world.failGet.has(threadId)) throw Object.assign(new Error("threads.get failed"), { status: 503 });
           const t = world.threads.get(threadId);
           if (!t) throw Object.assign(new Error(`thread ${threadId} not found`), { status: 404 });

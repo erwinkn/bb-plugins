@@ -69,7 +69,11 @@ export interface InitiativeWatchView {
 export function memberView(store: Store, threadId: string): MemberView | null {
   const own = store.getWatchByThread(threadId)?.state.initiative;
   const m = store.memberOf(threadId);
-  if (own) return { ...own, label: memberLabel(own), excluded: m?.initiativeId === own.id ? m.excluded : false };
+  if (own) {
+    const same = m?.initiativeId === own.id;
+    // A watch reads its thread's own membership; whether the thread is archived is the Initiative watch's finding.
+    return { ...own, state: same && m.state === "archived" ? "archived" : own.state, label: memberLabel(own), excluded: same ? m.excluded : false };
+  }
   if (!m) return null;
   return { id: m.initiativeId, name: m.initiativeName, kind: m.kind, role: m.role, worker: m.worker, state: m.state, label: memberLabel(m), excluded: m.excluded };
 }
