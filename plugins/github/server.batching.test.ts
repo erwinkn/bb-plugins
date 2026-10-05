@@ -17,7 +17,7 @@ vi.mock("node:child_process", () => ({
     fake.calls.push(args);
     if (args[0] === "--version" || args[0] === "auth")
       return callback(null, "ok", "");
-    expect(options).toEqual({ timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
+    expect(options).toEqual({ timeout: 30_000, maxBuffer: 16 * 1024 * 1024, signal: expect.any(AbortSignal) });
     const name = args.find((arg) => arg.startsWith("name="))?.slice(5);
     const response = fake.responses.get(name ?? "");
     if (response === undefined)

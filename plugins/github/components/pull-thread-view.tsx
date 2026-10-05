@@ -3,14 +3,14 @@
 // Changes / Description / Commits / Checks / Reviews tabs over BB's diff
 // viewer. Files collapse per-section and can be marked viewed; diffs lazily
 // load both full sides so the viewer can expand unmodified regions.
-import { useCallback, useEffect, useState } from "react";
+import { FileSection } from "./pull-file";
+import { PullHistoryControls } from "./pull-history-controls";
+import { usePullDetail } from "./use-pull-detail";
+import { useEffect, useState } from "react";
 import {
-  experimental_Diff as Diff,
-  experimental_FileLink as FileLink,
   UrlLink,
   useBbNavigate,
   useRpc,
-  type ExperimentalDiffFullFileContents,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { EXTERNAL_ATTRIBUTE } from "../lib/link-interception";
@@ -19,7 +19,6 @@ import { EmptyState } from "./empty-state";
 import { GithubBody } from "./github-html";
 import { PullTimeline, REVIEW_STATE_LABELS, ReviewThreadCard, reviewStateClass } from "./pull-detail";
 import { Avatar, DetailSkeleton, errorText, relativeTime, type Contract, type MergeMethod, type PullCheck, type PullDetail, type PullFile } from "./shared";
-import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { Icon } from "./ui/icon";
@@ -284,7 +283,7 @@ function ChecksTab({ checks }: { checks: PullCheck[] }) {
 }
 
 function CommitsTab({ pull }: { pull: PullDetail }) {
-  if (pull.commits.length === 0) return <EmptyState message="No commits listed for this pull request." />;
+  if (pull.commits.length === 0) return <EmptyState message="No commits in the loaded pages." />;
   return (
     <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
       {pull.commits.map((commit) => (
@@ -326,115 +325,12 @@ function readViewed(repo: string, number: number): Set<string> {
   }
 }
 
-function FileSection({
-  pull,
-  file,
-  environmentId,
-  open,
-  viewed,
-  onToggleOpen,
-  onToggleViewed,
-}: {
-  pull: PullDetail;
-  file: PullFile;
-  environmentId: string | null;
-  open: boolean;
-  viewed: boolean;
-  onToggleOpen: () => void;
-  onToggleViewed: (viewed: boolean) => void;
-}) {
-  const rpc = useRpc<Contract>();
-  const [contents, setContents] = useState<ExperimentalDiffFullFileContents | null>(null);
-  const [contentsLoaded, setContentsLoaded] = useState(false);
-
-  useEffect(() => {
-    if (!open || file.patch === null || contentsLoaded) return;
-    let live = true;
-    const oldPath = file.status === "added" ? null : (file.previousPath ?? file.path);
-    const newPath = file.status === "removed" ? null : file.path;
-    rpc
-      .call("getPullFile", { repo: pull.repo, oldPath, oldRef: pull.baseRefOid, newPath, newRef: pull.headRefOid })
-      .then((result) => {
-        if (!live) return;
-        setContentsLoaded(true);
-        if (result.old === null && result.new === null) return;
-        setContents({
-          old: result.old ?? { path: file.previousPath ?? file.path, content: "" },
-          new: result.new ?? { path: file.path, content: "" },
-        });
-      })
-      .catch(() => {
-        if (live) setContentsLoaded(true);
-      });
-    return () => {
-      live = false;
-    };
-  }, [rpc, open, file, pull.repo, pull.baseRefOid, pull.headRefOid, contentsLoaded]);
-
-  return (
-    <div className={cn("overflow-hidden rounded-lg border border-border bg-card", viewed && "opacity-60")}>
-      <div className="flex w-full items-center gap-2 px-3 py-2 hover:bg-accent/50">
-        <button
-          type="button"
-          className="shrink-0 text-xs text-muted-foreground"
-          aria-label={`${open ? "Collapse" : "Expand"} ${file.path} diff`}
-          onClick={onToggleOpen}
-        >
-          {open ? "▾" : "▸"}
-        </button>
-        <Icon name="FileDiff" className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-        {environmentId === null || file.status === "removed" ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={file.previousPath !== null ? `${file.previousPath} → ${file.path}` : file.path}>
-            {file.path}
-          </span>
-        ) : (
-          <FileLink
-            className="min-w-0 flex-1 truncate font-mono text-xs text-foreground hover:underline"
-            target={{ kind: "workspace", environmentId, path: file.path }}
-          >
-            {file.path}
-          </FileLink>
-        )}
-        {file.status !== "modified" ? (
-          <Badge variant="secondary" className="shrink-0 font-normal text-muted-foreground">
-            {file.status}
-          </Badge>
-        ) : null}
-        <span className="shrink-0 text-xs text-green-600 dark:text-green-400">+{file.additions}</span>
-        <span className="shrink-0 text-xs text-red-600 dark:text-red-400">−{file.deletions}</span>
-        <label className="flex shrink-0 items-center gap-1.5 pl-1 text-xs text-muted-foreground" title="Mark file as viewed">
-          <input
-            type="checkbox"
-            checked={viewed}
-            aria-label={`Mark ${file.path} as viewed`}
-            onChange={(event) => onToggleViewed(event.target.checked)}
-            className="size-3.5 accent-current"
-          />
-        </label>
-      </div>
-      {open ? (
-        file.patch !== null ? (
-          <div className="border-t border-border">
-            <Diff patch={file.patch} path={file.path} experimental_fullFileContents={contents ?? undefined} />
-          </div>
-        ) : (
-          <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
-            Diff too large to inline —{" "}
-            <UrlLink href={`${pull.url}/files`} className="underline" {...externalLink}>
-              view on GitHub ↗
-            </UrlLink>
-          </p>
-        )
-      ) : null}
-    </div>
-  );
-}
 
 function ChangesTab({ pull, environmentId }: { pull: PullDetail; environmentId: string | null }) {
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [viewed, setViewed] = useState<Set<string>>(() => readViewed(pull.repo, pull.number));
 
-  const isOpen = (path: string) => openMap[path] ?? !viewed.has(path);
+  const isOpen = (path: string) => openMap[path] ?? false;
   const allOpen = pull.files.length > 0 && pull.files.every((file) => isOpen(file.path));
 
   const toggleViewed = (file: PullFile, next: boolean) => {
@@ -450,7 +346,7 @@ function ChangesTab({ pull, environmentId }: { pull: PullDetail; environmentId: 
     setOpenMap((current) => ({ ...current, [file.path]: !next }));
   };
 
-  if (pull.files.length === 0) return <EmptyState message="No changed files listed for this pull request." />;
+  if (pull.files.length === 0) return <EmptyState message="No files in the loaded pages." />;
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -470,7 +366,7 @@ function ChangesTab({ pull, environmentId }: { pull: PullDetail; environmentId: 
       </div>
       {pull.files.map((file) => (
         <FileSection
-          key={file.path}
+          key={`${pull.baseRefOid}:${pull.headRefOid}:${file.path}`}
           pull={pull}
           file={file}
           environmentId={environmentId}
@@ -507,9 +403,6 @@ function DescriptionTab({ pull }: { pull: PullDetail }) {
 }
 
 function ReviewsTab({ pull }: { pull: PullDetail }) {
-  if (pull.reviews.length === 0 && pull.reviewThreads.length === 0 && pull.reviewRequests.length === 0) {
-    return <EmptyState message="No reviews yet." />;
-  }
   return (
     <div className="flex flex-col gap-2">
       {pull.reviewRequests.length > 0 ? (
@@ -548,24 +441,14 @@ export function ThreadPullView({
   environmentId: string | null;
   onOpenList: () => void;
 }) {
-  const rpc = useRpc<Contract>();
-  const [pull, setPull] = useState<PullDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<TabId>("changes");
-
-  const load = useCallback(() => {
-    rpc.call("getPull", { repo, number }).then(
-      (result) => {
-        setPull(result.pull);
-        setError(null);
-      },
-      (err: unknown) => setError(errorText(err)),
-    );
-  }, [rpc, repo, number]);
-  useEffect(() => {
-    setPull(null);
-    load();
-  }, [load]);
+  const { pull, error, pages, refresh: load, loadPage, missingReviewParents } = usePullDetail(repo, number, threadId);
+  const [tab, setTab] = useState<TabId>("description");
+  useEffect(() => { setTab("description"); }, [repo, number, threadId]);
+  const selectTab = (next: TabId) => {
+    setTab(next);
+    const sections = next === "changes" ? ["files" as const] : next === "commits" ? ["commits" as const] : next === "reviews" ? ["reviews" as const, "reviewComments" as const] : [];
+    for (const section of sections) if (!pages[section].loaded && !pages[section].loading && pages[section].error === null) loadPage(section);
+  };
 
   if (error !== null) return <EmptyState message={error} />;
   if (pull === null) return <DetailSkeleton />;
@@ -574,7 +457,7 @@ export function ThreadPullView({
   const tabs: Array<{ id: TabId; label: React.ReactNode }> = [
     { id: "changes", label: `Changes ${pull.changedFiles}` },
     { id: "description", label: "Description" },
-    { id: "commits", label: `Commits ${pull.commits.length}` },
+    { id: "commits", label: "Commits" },
     {
       id: "checks",
       label:
@@ -619,7 +502,7 @@ export function ThreadPullView({
             type="button"
             role="tab"
             aria-selected={tab === entry.id}
-            onClick={() => setTab(entry.id)}
+            onClick={() => selectTab(entry.id)}
             className={cn(
               "-mb-px border-b-2 pb-1.5 text-xs font-medium",
               tab === entry.id ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
@@ -630,11 +513,25 @@ export function ThreadPullView({
         ))}
       </div>
 
-      {tab === "changes" ? <ChangesTab pull={pull} environmentId={environmentId} /> : null}
-      {tab === "description" ? <DescriptionTab pull={pull} /> : null}
-      {tab === "commits" ? <CommitsTab pull={pull} /> : null}
+      {tab === "changes" ? <>
+        <PullHistoryControls label="Files" state={pages.files} count={pull.files.length} onLoad={() => loadPage("files")} url={`${pull.url}/files`} />
+        {pages.files.loaded ? <ChangesTab key={`${repo}#${number}`} pull={pull} environmentId={environmentId} /> : null}
+      </> : null}
+      {tab === "description" ? <>
+        <DescriptionTab pull={pull} />
+        <PullHistoryControls label="Comments" state={pages.comments} count={pull.comments.length} onLoad={() => loadPage("comments")} url={pull.url} />
+      </> : null}
+      {tab === "commits" ? <>
+        <PullHistoryControls label="Commits" state={pages.commits} count={pull.commits.length} onLoad={() => loadPage("commits")} url={`${pull.url}/commits`} />
+        {pages.commits.loaded ? <CommitsTab pull={pull} /> : null}
+      </> : null}
       {tab === "checks" ? <ChecksTab checks={pull.checks} /> : null}
-      {tab === "reviews" ? <ReviewsTab pull={pull} /> : null}
+      {tab === "reviews" ? <>
+        <PullHistoryControls label="Reviews" state={pages.reviews} count={pull.reviews.length} onLoad={() => loadPage("reviews")} url={pull.url} />
+        <PullHistoryControls label="Review comments" state={pages.reviewComments} count={pull.reviewThreads.reduce((sum, thread) => sum + thread.comments.length, 0)} onLoad={() => loadPage("reviewComments")} url={pull.url} />
+        {missingReviewParents ? <p className="text-xs text-muted-foreground">Some reply parents are not in the loaded pages.</p> : null}
+        {(pages.reviews.loaded || pages.reviewComments.loaded) ? <ReviewsTab pull={pull} /> : null}
+      </> : null}
     </div>
   );
 }

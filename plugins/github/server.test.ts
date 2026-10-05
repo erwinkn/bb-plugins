@@ -6,7 +6,6 @@ import { githubRpcContract } from "./contract";
 import {
   fetchRepoItems,
   parseExtraRepos,
-  parsePaginatedGhApi,
   splitThreadFlag,
   validateGithubCliArgs,
 } from "./server";
@@ -51,40 +50,7 @@ function assertGithubFrontendInference(
           url: string;
           durationSeconds: number | null;
         }>;
-        commits: Array<{
-          sha: string;
-          message: string;
-          author: string;
-          committedAt: string;
-          url: string;
-        }>;
-        comments: Array<{ author: string; body: string; bodyHtml: string | null; createdAt: string }>;
-        reviews: Array<{
-          author: string;
-          state: string;
-          body: string;
-          bodyHtml: string | null;
-          createdAt: string;
-        }>;
-        reviewThreads: Array<{
-          path: string;
-          line: number | null;
-          diffHunk: string;
-          comments: Array<{
-            author: string;
-            body: string;
-            bodyHtml: string | null;
-            createdAt: string;
-          }>;
-        }>;
-        files: Array<{
-          path: string;
-          previousPath: string | null;
-          status: string;
-          additions: number;
-          deletions: number;
-          patch: string | null;
-        }>;
+
       };
     }>
   >();
@@ -137,18 +103,6 @@ describe("GitHub RPC contract", () => {
         title: "Keep syncing pull requests",
       }),
     ]);
-  });
-
-  it("flattens every paginated GitHub API page", () => {
-    expect(
-      parsePaginatedGhApi(
-        JSON.stringify([[{ id: 1 }, { id: 2 }], [{ id: 3 }]]),
-      ),
-    ).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }]);
-
-    expect(() => parsePaginatedGhApi(JSON.stringify([{ id: 1 }]))).toThrow(
-      "malformed page",
-    );
   });
 
   it("separates usable extraRepos entries from ones it cannot honor", () => {

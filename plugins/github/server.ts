@@ -3,6 +3,8 @@
 // interception. The issue/PR sync, gh runner, mentions, and `bb github` CLI
 // are upstream code; the additions live under "Pull request links" below and
 // in server/links.ts.
+import { fetchPullPage } from "./server/pull-pages";
+import { createPullFileSnapshots } from "./server/pull-file";
 import { execFile } from "node:child_process";
 import type { BbPluginApi, PluginCliContext } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -108,9 +110,9 @@ function describeIgnoredExtraRepos(ignored: string[]): string {
   );
 }
 
-function run(file: string, args: string[], timeoutMs = 30_000): Promise<{ stdout: string; stderr: string }> {
+function run(file: string, args: string[], timeoutMs = 30_000, signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(file, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, signal }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(`${file} ${args.slice(0, 3).join(" ")} failed: ${stderr.trim() || error.message}`));
       } else {
@@ -118,26 +120,6 @@ function run(file: string, args: string[], timeoutMs = 30_000): Promise<{ stdout
       }
     });
   });
-}
-
-export function parsePaginatedGhApi(raw: string): Record<string, unknown>[] {
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) {
-    throw new Error("GitHub API pagination returned a non-array response");
-  }
-  const rows: Record<string, unknown>[] = [];
-  for (const page of parsed) {
-    if (!Array.isArray(page)) {
-      throw new Error("GitHub API pagination returned a malformed page");
-    }
-    for (const row of page) {
-      if (typeof row !== "object" || row === null || Array.isArray(row)) {
-        throw new Error("GitHub API pagination returned a malformed row");
-      }
-      rows.push(row as Record<string, unknown>);
-    }
-  }
-  return rows;
 }
 
 /** CLI argv shape check. `--thread <id>` is stripped before this runs. */
@@ -305,6 +287,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  const lifecycle = new AbortController();
+  bb.onDispose(() => lifecycle.abort());
+
   let ghPath: string | null = null;
   type GhState = "ready" | "needs_configuration" | "unavailable";
   let ghState: GhState = "unavailable";
@@ -315,7 +300,7 @@ export default async function plugin(bb: BbPluginApi) {
     const candidates = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
     for (const candidate of candidates) {
       try {
-        await run(candidate, ["--version"], 5_000);
+        await run(candidate, ["--version"], 5_000, lifecycle.signal);
         ghPath = candidate;
         return candidate;
       } catch {}
@@ -325,9 +310,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   async function gh(args: string[], timeoutMs?: number): Promise<string> {
     const file = await resolveGh();
-    const { stdout } = await run(file, args, timeoutMs);
+    const { stdout } = await run(file, args, timeoutMs, lifecycle.signal);
     return stdout;
   }
+
+  const pullFileSnapshot = createPullFileSnapshots(gh);
 
   async function probeAuth(): Promise<void> {
     try {
@@ -992,15 +979,11 @@ export default async function plugin(bb: BbPluginApi) {
         "number,title,body,state,isDraft,author,createdAt,updatedAt,labels," +
         "assignees,url,baseRefName,headRefName,additions,deletions," +
         "changedFiles,reviewDecision,mergeStateStatus,statusCheckRollup," +
-        "reviewRequests,commits";
+        "reviewRequests";
       const FULL_JSON = "application/vnd.github.full+json";
-      const [viewRaw, pullRaw, commentsRaw, reviewsRaw, reviewCommentsRaw, filesRaw, mergeMethods] = await Promise.all([
+      const [viewRaw, pullRaw, mergeMethods] = await Promise.all([
         gh(["pr", "view", String(number), "-R", repo, "--json", prFields], 30_000),
         gh(["api", `repos/${repo}/pulls/${number}`, "-H", `Accept: ${FULL_JSON}`], 30_000),
-        gh(["api", "--paginate", "--slurp", `repos/${repo}/issues/${number}/comments?per_page=100`, "-H", `Accept: ${FULL_JSON}`], 30_000),
-        gh(["api", "--paginate", "--slurp", `repos/${repo}/pulls/${number}/reviews?per_page=100`, "-H", `Accept: ${FULL_JSON}`], 30_000),
-        gh(["api", "--paginate", "--slurp", `repos/${repo}/pulls/${number}/comments?per_page=100`, "-H", `Accept: ${FULL_JSON}`], 30_000),
-        gh(["api", "--paginate", "--slurp", `repos/${repo}/pulls/${number}/files?per_page=100`], 30_000),
         getMergeMethods(repo).catch(() => [] as MergeMethod[]),
       ]);
 
@@ -1065,107 +1048,6 @@ export default async function plugin(bb: BbPluginApi) {
         };
       });
 
-      const toComment = (entry: { user?: { login?: unknown }; author?: { login?: unknown }; body?: unknown; body_html?: unknown; created_at?: unknown }) => ({
-        author: String(entry.user?.login ?? entry.author?.login ?? ""),
-        body: typeof entry.body === "string" ? entry.body : "",
-        bodyHtml: typeof entry.body_html === "string" && entry.body_html.length > 0 ? entry.body_html : null,
-        createdAt: String(entry.created_at ?? ""),
-      });
-
-      interface GhIssueComment {
-        user?: { login?: unknown };
-        body?: unknown;
-        body_html?: unknown;
-        created_at?: unknown;
-      }
-      const comments = (parsePaginatedGhApi(commentsRaw) as GhIssueComment[]).map(toComment);
-
-      interface GhReview {
-        user?: { login?: unknown };
-        state?: unknown;
-        body?: unknown;
-        body_html?: unknown;
-        submitted_at?: unknown;
-      }
-      const reviews = (parsePaginatedGhApi(reviewsRaw) as GhReview[]).map((review) => ({
-        author: String(review.user?.login ?? ""),
-        state: String(review.state ?? ""),
-        body: typeof review.body === "string" ? review.body : "",
-        bodyHtml: typeof review.body_html === "string" && review.body_html.length > 0 ? review.body_html : null,
-        createdAt: String(review.submitted_at ?? ""),
-      }));
-
-      interface GhReviewComment {
-        id?: unknown;
-        in_reply_to_id?: unknown;
-        path?: unknown;
-        line?: unknown;
-        original_line?: unknown;
-        diff_hunk?: unknown;
-        body?: unknown;
-        body_html?: unknown;
-        created_at?: unknown;
-        user?: { login?: unknown };
-      }
-      const reviewComments = parsePaginatedGhApi(reviewCommentsRaw) as GhReviewComment[];
-      interface ReviewThread {
-        path: string;
-        line: number | null;
-        diffHunk: string;
-        comments: Array<{ author: string; body: string; bodyHtml: string | null; createdAt: string }>;
-      }
-      const threadByRootId = new Map<number, ReviewThread>();
-      for (const comment of reviewComments) {
-        const id = Number(comment.id ?? NaN);
-        const replyTo = Number(comment.in_reply_to_id ?? NaN);
-        const entry = toComment(comment);
-        const rootThread = Number.isFinite(replyTo) ? threadByRootId.get(replyTo) : undefined;
-        if (rootThread !== undefined) {
-          rootThread.comments.push(entry);
-          if (Number.isFinite(id)) threadByRootId.set(id, rootThread);
-          continue;
-        }
-        const line = Number(comment.line ?? comment.original_line ?? NaN);
-        const thread: ReviewThread = {
-          path: String(comment.path ?? ""),
-          line: Number.isFinite(line) ? line : null,
-          diffHunk: typeof comment.diff_hunk === "string" ? comment.diff_hunk : "",
-          comments: [entry],
-        };
-        if (Number.isFinite(id)) threadByRootId.set(id, thread);
-      }
-      const reviewThreads = [...new Set(threadByRootId.values())];
-
-      interface GhPullFile {
-        filename?: unknown;
-        previous_filename?: unknown;
-        status?: unknown;
-        additions?: unknown;
-        deletions?: unknown;
-        patch?: unknown;
-      }
-      const files = (parsePaginatedGhApi(filesRaw) as GhPullFile[]).map((file) => {
-        const patch = typeof file.patch === "string" ? file.patch : null;
-        return {
-          path: String(file.filename ?? ""),
-          previousPath: typeof file.previous_filename === "string" ? file.previous_filename : null,
-          status: String(file.status ?? "modified"),
-          additions: Number(file.additions ?? 0),
-          deletions: Number(file.deletions ?? 0),
-          patch: patch !== null && patch.length <= 20_000 ? patch : null,
-        };
-      });
-
-      const commits = (view.commits ?? []).map((entry) => {
-        const sha = String(entry.oid ?? "");
-        return {
-          sha,
-          message: String(entry.messageHeadline ?? ""),
-          author: String(entry.authors?.[0]?.login ?? entry.authors?.[0]?.name ?? ""),
-          committedAt: String(entry.committedDate ?? ""),
-          url: sha.length > 0 ? `https://github.com/${repo}/commit/${sha}` : "",
-        };
-      });
 
       return {
         pull: {
@@ -1185,7 +1067,7 @@ export default async function plugin(bb: BbPluginApi) {
           headRefOid: String(rest.head?.sha ?? ""),
           additions: Number(view.additions ?? 0),
           deletions: Number(view.deletions ?? 0),
-          changedFiles: Number(view.changedFiles ?? files.length),
+          changedFiles: Number(view.changedFiles ?? 0),
           labels: (view.labels ?? []).map((label) => String(label?.name ?? "")),
           assignees: (view.assignees ?? []).map((user) => String(user?.login ?? "")),
           reviewDecision: String(view.reviewDecision ?? ""),
@@ -1196,13 +1078,12 @@ export default async function plugin(bb: BbPluginApi) {
             .map((entry) => String(entry.login ?? entry.name ?? entry.slug ?? ""))
             .filter((name) => name.length > 0),
           checks,
-          commits,
-          comments,
-          reviews,
-          reviewThreads,
-          files,
         },
       };
+    },
+
+    getPullPage(input) {
+      return fetchPullPage(gh, input);
     },
 
     async mergePull({ repo, number, method }): Promise<{ ok: true }> {
@@ -1215,7 +1096,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true };
     },
 
-    async getPullFile({ repo, oldPath, oldRef, newPath, newRef }) {
+    async getPullFile({ repo, number, page, oldPath, oldRef, newPath, newRef }) {
       const fetchSide = async (path: string | null, ref: string) => {
         if (path === null) return null;
         try {
@@ -1229,8 +1110,16 @@ export default async function plugin(bb: BbPluginApi) {
           return null;
         }
       };
-      const [oldSide, newSide] = await Promise.all([fetchSide(oldPath, oldRef), fetchSide(newPath, newRef)]);
-      return { old: oldSide, new: newSide };
+      if (number === undefined) {
+        const [oldSide, newSide] = await Promise.all([fetchSide(oldPath, oldRef), fetchSide(newPath, newRef)]);
+        return { old: oldSide, new: newSide };
+      }
+      const snapshot = await pullFileSnapshot({ repo, number, page: page ?? 1, oldRef, newRef });
+      const path = newPath ?? oldPath;
+      const file = snapshot.files.find((entry) => entry.path === path);
+      if (!file) throw new Error("File is no longer in this pull request page. Refresh the pull request before loading this diff.");
+      const [oldSide, newSide] = await Promise.all([fetchSide(oldPath, snapshot.mergeBase), fetchSide(newPath, newRef)]);
+      return { old: oldSide, new: newSide, patch: file.patch };
     },
 
     async commentPull({ repo, number, body }): Promise<{ ok: true }> {

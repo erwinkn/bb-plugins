@@ -50,6 +50,60 @@ Added here:
 - **Link interception**: a click on a GitHub PR link in a thread opens the PR
   in the thread's GitHub PR panel.
 
+## PR detail loading
+
+Opening a PR loads its title, description, checks, branch/merge metadata and
+counts. Comments, reviews, review conversations, files and commits have separate
+bounded reads. The thread panel opens on Description; selecting Changes,
+Commits or Reviews loads the first page for that view. Comments and the nav
+overview's histories load on their explicit Load buttons. Each section shows
+its loaded count, continuation, errors and an explicit retry. A failed section
+keeps its loaded entries and does not hide the PR summary or other sections.
+
+`getPull` returns core data only. `getPullPage({repo, number, section, page})`
+returns at most 20 items, `nextPage` from GitHub's HTTP Link header and any
+endpoint limitation. This count keeps routine responses small without extra
+lookahead requests. Each read is one `gh api` request, never an aggregate of
+all pages. The existing 16 MiB subprocess guard still rejects oversized pages;
+no bodies or history entries are silently shortened. Pages are merged by
+comment/review ID, commit SHA or file path. Review replies are regrouped across
+loaded pages, with a visible warning when their parent is absent.
+
+Files pages project metadata before subprocess output and retain no patches.
+Diffs start collapsed. Expanding a file uses `getPullFile` to fetch a structured,
+bounded patch page and the selected old/new contents. Concurrent expansions
+with the same repo, PR, page and opened refs share that in-flight page and ref
+validation. Settled reads are discarded, so later expansions revalidate; there
+is no TTL cache or automatic retry. Renames keep both paths; missing filenames
+and malformed responses fail visibly, while binary/unavailable/oversized diffs
+show a GitHub link. Existing 20,000-character patch and 524,288-character
+file-content guards remain.
+
+GitHub PRs use a [three-dot comparison](https://docs.github.com/en/pull-requests/reference/branches),
+from merge base to head. The server resolves the opened base/head SHAs with
+GitHub's [compare endpoint](https://docs.github.com/en/rest/commits/commits#compare-two-commits),
+requesting one commit and projecting only the merge-base SHA. Old file contents
+use that immutable merge base. After fetching patches it checks the current
+head and, if the base tip moved, compares the current merge base too. Harmless
+base-tip motion is accepted; a changed head or merge base requires Refresh.
+These separate REST reads do not form a transactional remote snapshot.
+
+GitHub's endpoints expose at most 3,000 files and 250 PR commits. Reaching either
+cap produces a visible limitation and GitHub link rather than a claim of a
+complete history. See [GitHub's pull endpoints](https://docs.github.com/en/rest/pulls/pulls?apiVersion=2022-11-28)
+and [gh api header/filter options](https://cli.github.com/manual/gh_api).
+The initial read uses two detail commands and one cached repository merge-method
+lookup. Histories add commands only when opened. An expansion adds up to two content
+reads plus three shared snapshot reads: patch page, opened merge base and
+current PR refs. A moved base tip adds one merge-base comparison. Twenty
+concurrent two-sided files on one page therefore use 43 reads with unchanged
+base tip, versus 80 before sharing. Existing plugin-start authentication is unchanged.
+
+SDK 0.4.87 does not expose cancellation on plugin RPC calls. Views discard late
+responses after PR/thread changes, refresh or unmount; plugin disposal aborts
+subprocesses. Closing a tab alone can leave its bounded in-flight RPC finishing
+on the server. There is no background history pagination or automatic retry.
+
 ## Link policy
 
 The plugin SQLite table `thread_pull_requests` is the source of truth. Every

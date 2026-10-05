@@ -54,7 +54,7 @@ export const threadLinkSchema = z
     createdAt: z.string(),
   })
   .strict();
-export const pullSchema = z
+const pullWithHistorySchema = z
   .object({
     repo: repoNameSchema,
     number: itemNumberSchema,
@@ -121,11 +121,34 @@ export const pullSchema = z
           additions: z.number().nonnegative(),
           deletions: z.number().nonnegative(),
           patch: z.string().nullable(),
+          page: z.number().int().positive().max(150).optional(),
         })
         .strict(),
     ),
   })
   .strict();
+
+/** Summary only; histories are explicitly paged by getPullPage. */
+export const pullSchema = pullWithHistorySchema.omit({ comments: true, reviews: true, reviewThreads: true, files: true, commits: true });
+export const pullSectionSchema = z.enum(["comments", "reviews", "reviewComments", "files", "commits"]);
+export type PullSection = z.infer<typeof pullSectionSchema>;
+export const PULL_PAGE_SIZE = 20;
+const pageFields = { nextPage: z.number().int().positive().nullable(), limitation: z.string().nullable() };
+const identifiedComment = commentSchema.extend({ id: z.string().min(1) });
+export const pullPageSchema = z.discriminatedUnion("section", [
+  z.object({ section: z.literal("comments"), items: z.array(identifiedComment).max(PULL_PAGE_SIZE), ...pageFields }).strict(),
+  z.object({ section: z.literal("reviews"), items: z.array(pullWithHistorySchema.shape.reviews.element.extend({ id: z.string().min(1) })).max(PULL_PAGE_SIZE), ...pageFields }).strict(),
+  z.object({ section: z.literal("reviewComments"), items: z.array(identifiedComment.extend({
+    inReplyToId: z.string().nullable(), path: z.string(), line: z.number().int().nonnegative().nullable(), diffHunk: z.string(),
+  })).max(PULL_PAGE_SIZE), ...pageFields }).strict(),
+  z.object({ section: z.literal("files"), items: z.array(pullWithHistorySchema.shape.files.element.extend({ patch: z.null(), page: z.number().int().positive().max(150) })).max(PULL_PAGE_SIZE), ...pageFields }).strict(),
+  z.object({ section: z.literal("commits"), items: z.array(pullWithHistorySchema.shape.commits.element).max(PULL_PAGE_SIZE), ...pageFields }).strict(),
+]);
+export type PullPage = z.infer<typeof pullPageSchema>;
+export type PullDetail = Omit<z.infer<typeof pullWithHistorySchema>, "comments" | "reviews"> & {
+  comments: Extract<PullPage, { section: "comments" }>["items"];
+  reviews: Extract<PullPage, { section: "reviews" }>["items"];
+};
 
 /** How a thread ended up linked to a PR. */
 export const linkSourceSchema = z.enum(["branch", "agent", "user", "spawn"]);
@@ -235,6 +258,10 @@ export const githubRpcContract = defineRpcContract({
       .strict(),
   },
   getPull: { input: itemInputSchema, output: z.object({ pull: pullSchema }).strict() },
+  getPullPage: {
+    input: itemInputSchema.extend({ section: pullSectionSchema, page: z.number().int().positive() }).strict(),
+    output: pullPageSchema,
+  },
   mergePull: { input: itemInputSchema.extend({ method: mergeMethodSchema }), output: okResultSchema },
   setPullTitle: { input: itemInputSchema.extend({ title: nonBlankStringSchema }), output: okResultSchema },
   /** Full file contents for expand-context in the diff viewer; null side when absent/unfetchable. */
@@ -242,6 +269,8 @@ export const githubRpcContract = defineRpcContract({
     input: z
       .object({
         repo: repoNameSchema,
+        number: itemNumberSchema.optional(),
+        page: z.number().int().positive().max(150).optional(),
         oldPath: z.string().min(1).nullable(),
         oldRef: z.string().min(1),
         newPath: z.string().min(1).nullable(),
@@ -250,6 +279,7 @@ export const githubRpcContract = defineRpcContract({
       .strict(),
     output: z
       .object({
+        patch: z.string().nullable().optional(),
         old: z.object({ path: z.string(), content: z.string() }).strict().nullable(),
         new: z.object({ path: z.string(), content: z.string() }).strict().nullable(),
       })

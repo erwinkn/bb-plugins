@@ -122,76 +122,6 @@ beforeEach(() => {
     head: { sha: "aaaa1111" },
     base: { sha: "bbbb2222" },
   });
-  const issueComments = JSON.stringify([
-    [
-      {
-        user: { login: "commenter" },
-        body: "Conversation comment",
-        body_html: "<p>Conversation comment</p>",
-        created_at: "2026-08-19T14:00:00Z",
-      },
-    ],
-  ]);
-  const pullReviews = JSON.stringify([
-    [
-      {
-        user: { login: "reviewer" },
-        state: "CHANGES_REQUESTED",
-        body: "Please fix this.",
-        body_html: "<p>Please fix <strong>this</strong>.</p>",
-        submitted_at: "2026-08-19T15:00:00Z",
-      },
-    ],
-  ]);
-  const reviewComments = JSON.stringify([
-    [
-      {
-        id: 100,
-        path: "src/index.ts",
-        line: 9,
-        diff_hunk: "@@ -1 +1 @@",
-        body: "Root comment",
-        created_at: "2026-08-19T16:00:00Z",
-        user: { login: "reviewer" },
-      },
-      {
-        id: 101,
-        in_reply_to_id: 100,
-        body: "Reply",
-        created_at: "2026-08-19T16:05:00Z",
-        user: { login: "bob" },
-      },
-    ],
-    [
-      {
-        id: 102,
-        path: "src/other.ts",
-        original_line: 4,
-        body: "Second thread",
-        created_at: "2026-08-19T17:00:00Z",
-        user: { login: "reviewer" },
-      },
-    ],
-  ]);
-  const pullFiles = JSON.stringify([
-    [
-      {
-        filename: "src/index.ts",
-        status: "modified",
-        additions: 10,
-        deletions: 2,
-        patch: "@@ -1 +1 @@",
-      },
-    ],
-    [
-      {
-        filename: "src/other.ts",
-        status: "added",
-        additions: 2,
-        deletions: 1,
-      },
-    ],
-  ]);
 
   writeFileSync(
     join(binDir, "gh"),
@@ -208,10 +138,6 @@ case "$*" in
   "issue view 7 -R acme/widgets --json"*) printf '%s\n' '${issueDetail}';;
   "pr view 42 -R acme/widgets --json"*) printf '%s\n' '${pullDetail}';;
   "api repos/acme/widgets/pulls/42 "*) printf '%s\n' '${pullRest}';;
-  "api --paginate --slurp repos/acme/widgets/issues/42/comments?per_page=100 "*) printf '%s\n' '${issueComments}';;
-  "api --paginate --slurp repos/acme/widgets/pulls/42/reviews?per_page=100 "*) printf '%s\n' '${pullReviews}';;
-  "api --paginate --slurp repos/acme/widgets/pulls/42/comments?per_page=100 "*) printf '%s\n' '${reviewComments}';;
-  "api --paginate --slurp repos/acme/widgets/pulls/42/files?per_page=100") printf '%s\n' '${pullFiles}';;
   "api repos/acme/widgets") printf '%s\n' '{"allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":false}';;
   "pr merge "*) printf '%s\n' '';;
   "pr edit "*) printf '%s\n' '';;
@@ -381,56 +307,15 @@ describe("github plugin RPC behavior", () => {
     ).toHaveLength(3);
   });
 
-  it("normalizes draft state, checks, review threads, and paginated files", async () => {
+  it("normalizes core details without requesting histories", async () => {
     const { harness } = await loadPlugin();
-
-    await expect(
-      harness.callRpc("getPull", { repo: "acme/widgets", number: 42 }),
-    ).resolves.toMatchObject({
-      pull: {
-        repo: "acme/widgets",
-        number: 42,
-        state: "DRAFT",
-        changedFiles: 2,
-        bodyHtml: "<p>Pull body.</p>",
-        mergeable: "MERGEABLE",
-        mergeMethods: ["squash"],
-        baseRefOid: "bbbb2222",
-        headRefOid: "aaaa1111",
-        commits: [{ sha: "0123456789abcdef0123456789abcdef01234567", message: "Normalize pull details", author: "bob" }],
-        comments: [{ author: "commenter", body: "Conversation comment", bodyHtml: "<p>Conversation comment</p>" }],
-        reviews: [{ author: "reviewer", state: "CHANGES_REQUESTED", bodyHtml: "<p>Please fix <strong>this</strong>.</p>" }],
-        reviewRequests: ["reviewer", "core-team"],
-        checks: [
-          { name: "build", status: "success", durationSeconds: null },
-          { name: "legacy", status: "failure" },
-          { name: "queued", status: "pending" },
-          { name: "skipped", status: "neutral" },
-        ],
-        reviewThreads: [
-          {
-            path: "src/index.ts",
-            line: 9,
-            comments: [
-              { author: "reviewer", body: "Root comment" },
-              { author: "bob", body: "Reply" },
-            ],
-          },
-          {
-            path: "src/other.ts",
-            line: 4,
-            comments: [{ author: "reviewer", body: "Second thread" }],
-          },
-        ],
-        files: [
-          {
-            path: "src/index.ts",
-            status: "modified",
-            patch: "@@ -1 +1 @@",
-          },
-          { path: "src/other.ts", status: "added", patch: null },
-        ],
-      },
-    });
+    const result = await harness.callRpc("getPull", { repo: "acme/widgets", number: 42 });
+    expect(result).toMatchObject({ pull: { repo: "acme/widgets", number: 42, state: "DRAFT", changedFiles: 0,
+      bodyHtml: "<p>Pull body.</p>", mergeable: "MERGEABLE", mergeMethods: ["squash"],
+      baseRefOid: "bbbb2222", headRefOid: "aaaa1111", reviewRequests: ["reviewer", "core-team"],
+      checks: [{ name: "build", status: "success" }, { name: "legacy", status: "failure" }, { name: "queued", status: "pending" }, { name: "skipped", status: "neutral" }],
+    } });
+    expect(result).not.toHaveProperty("pull.files");
+    expect(ghCalls().filter((call) => call.includes("--paginate"))).toEqual([]);
   });
 });

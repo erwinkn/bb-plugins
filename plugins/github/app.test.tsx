@@ -151,23 +151,26 @@ describe("GitHub PR panel", () => {
           listPullRequests: () => ({ links: [link(42)], environmentId: "env-1" }),
           getPull: (input: unknown) => pull((input as { number: number }).number),
           listLinks: () => ({ links: {} }),
+          getPullPage: (input: unknown) => { const { section, number } = input as { section: "files" | "commits"; number: number }; return { section, items: pull(number).pull[section], nextPage: null, limitation: null }; },
         },
       },
     );
     await slot.findByText("Navigation fix 42");
     expect(slot.getByRole("tab", { name: "Changes 2" })).toBeTruthy();
     expect(slot.getByRole("tab", { name: "Description" })).toBeTruthy();
-    expect(slot.getByRole("tab", { name: "Commits 1" })).toBeTruthy();
+    expect(slot.getByRole("tab", { name: "Commits" })).toBeTruthy();
     expect(slot.getByRole("tab", { name: "Checks" })).toBeTruthy();
     expect(slot.getByRole("tab", { name: "Reviews" })).toBeTruthy();
     expect(slot.getByRole("button", { name: "Squash & Merge" })).toBeTruthy();
     expect(slot.getByLabelText("Open on GitHub").hasAttribute("data-github-open-external")).toBe(true);
+    fireEvent.click(slot.getByRole("tab", { name: "Changes 2" }));
+    await slot.findByText("modified.ts");
     expect(slot.getByText("modified.ts").closest("a")?.getAttribute("href")).toBe("./modified.ts");
     expect(slot.getByText("removed.ts").closest("a")).toBeNull();
     expect(slot.queryByText("Review with agent")).toBeNull();
     expect(slot.queryByPlaceholderText("Leave a comment…")).toBeNull();
 
-    fireEvent.click(slot.getByRole("tab", { name: "Commits 1" }));
+    fireEvent.click(slot.getByRole("tab", { name: "Commits" }));
     await slot.findByText("0123456");
     slot.lifecycle.unmount();
   });

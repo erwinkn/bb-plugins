@@ -2,8 +2,11 @@
 // threads with diff hunks, files, comments. Inherited from BB's official
 // GitHub plugin; `readOnly` (the thread-panel viewer) hides the comment box
 // and the spawn button.
+import { FileSection } from "./pull-file";
+import { PullHistoryControls } from "./pull-history-controls";
+import { usePullDetail } from "./use-pull-detail";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { experimental_Diff as Diff, experimental_FileLink as FileLink, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
+import { experimental_Diff as Diff, UrlLink, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { EXTERNAL_ATTRIBUTE } from "../lib/link-interception";
 import { EmptyState } from "./empty-state";
@@ -21,7 +24,6 @@ import {
   type Contract,
   type PullCheck,
   type PullDetail,
-  type PullFile,
   type ReviewThread,
 } from "./shared";
 import { Badge } from "./ui/badge";
@@ -116,55 +118,6 @@ function ChecksSection({ checks }: { checks: PullCheck[] }) {
             </div>
           ))}
         </div>
-      ) : null}
-    </div>
-  );
-}
-
-function FileDiffCard({ environmentId, file, url }: { environmentId: string | null; file: PullFile; url: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="overflow-hidden rounded-lg border border-border bg-card">
-      <div className="flex w-full items-center gap-2 px-3 py-2 hover:bg-accent/50">
-        <button
-          type="button"
-          className="shrink-0 text-xs text-muted-foreground"
-          aria-label={`${open ? "Collapse" : "Expand"} ${file.path} diff`}
-          onClick={() => setOpen((prev) => !prev)}
-        >
-          {open ? "▾" : "▸"}
-        </button>
-        {environmentId === null || file.status === "removed" ? (
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{file.path}</span>
-        ) : (
-          <FileLink
-            className="min-w-0 flex-1 truncate font-mono text-xs text-foreground hover:underline"
-            target={{ kind: "workspace", environmentId, path: file.path }}
-          >
-            {file.path}
-          </FileLink>
-        )}
-        {file.status !== "modified" ? (
-          <Badge variant="secondary" className="shrink-0 font-normal text-muted-foreground">
-            {file.status}
-          </Badge>
-        ) : null}
-        <span className="shrink-0 text-xs text-green-600 dark:text-green-400">+{file.additions}</span>
-        <span className="shrink-0 text-xs text-red-600 dark:text-red-400">−{file.deletions}</span>
-      </div>
-      {open ? (
-        file.patch !== null ? (
-          <div className="border-t border-border">
-            <Diff patch={file.patch} path={file.path} />
-          </div>
-        ) : (
-          <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
-            Diff too large to inline —{" "}
-            <UrlLink href={`${url}/files`} className="underline" {...externalLink}>
-              view on GitHub ↗
-            </UrlLink>
-          </p>
-        )
       ) : null}
     </div>
   );
@@ -304,25 +257,11 @@ export function PullDetailView({
   readOnly?: boolean;
   workspaceEnvironmentId?: string | null;
 }) {
-  const rpc = useRpc<Contract>();
   const links = useLinks();
   const { spawn, spawningKey } = useSpawn();
-  const [pull, setPull] = useState<PullDetail | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    rpc.call("getPull", { repo, number }).then(
-      (result) => {
-        setPull(result.pull);
-        setError(null);
-      },
-      (err: unknown) => setError(errorText(err)),
-    );
-  }, [rpc, repo, number]);
-  useEffect(() => {
-    setPull(null);
-    load();
-  }, [load]);
+  const { pull, error, pages, refresh: load, loadPage, missingReviewParents } = usePullDetail(repo, number);
+  const [openFiles, setOpenFiles] = useState<Record<string, boolean>>({});
+  useEffect(() => { setOpenFiles({}); }, [repo, number]);
 
   if (error !== null) return <EmptyState message={error} />;
   if (pull === null) return <DetailSkeleton />;
@@ -343,7 +282,12 @@ export function PullDetailView({
         </div>
       </div>
 
+      <PullHistoryControls label="Comments" state={pages.comments} count={pull.comments.length} onLoad={() => loadPage("comments")} url={pull.url} />
+      <PullHistoryControls label="Reviews" state={pages.reviews} count={pull.reviews.length} onLoad={() => loadPage("reviews")} url={pull.url} />
+      <PullHistoryControls label="Review comments" state={pages.reviewComments} count={pull.reviewThreads.reduce((sum, thread) => sum + thread.comments.length, 0)} onLoad={() => loadPage("reviewComments")} url={pull.url} />
+      {missingReviewParents ? <p className="text-xs text-muted-foreground">Some reply parents are not in the loaded pages.</p> : null}
       <PullTimeline pull={pull} />
+      <PullHistoryControls label="Files" state={pages.files} count={pull.files.length} onLoad={() => loadPage("files")} url={`${pull.url}/files`} />
 
       {pull.files.length > 0 ? (
         <div className="flex flex-col gap-2">
@@ -355,7 +299,7 @@ export function PullDetailView({
             </span>
           </h3>
           {pull.files.map((file) => (
-            <FileDiffCard key={file.path} environmentId={workspaceEnvironmentId} file={file} url={pull.url} />
+            <FileSection key={`${pull.baseRefOid}:${pull.headRefOid}:${file.path}`} pull={pull} file={file} environmentId={workspaceEnvironmentId} open={openFiles[file.path] ?? false} viewed={false} onToggleOpen={() => setOpenFiles((current) => ({ ...current, [file.path]: !current[file.path] }))} />
           ))}
         </div>
       ) : null}
