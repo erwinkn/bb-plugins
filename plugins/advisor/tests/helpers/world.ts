@@ -35,6 +35,8 @@ export class FakeWorld {
   queries: Array<{ threadId: string } & EventQuery> = [];
   tokenCalls = 0;
   failGet = new Set<string>();
+  /** What the Pooler's advisor.get answers; an Error is thrown, as for an absent plugin. */
+  poolerAdvisor: unknown = new Error("no advisor.get");
 
   constructor(public clock: Clock) {}
 
@@ -159,7 +161,8 @@ export class FakeWorld {
           return { ok: true, token: "tok-advisor" };
         },
         callRpc: async () => {
-          throw new Error("no advisor.get");
+          if (world.poolerAdvisor instanceof Error) throw world.poolerAdvisor;
+          return world.poolerAdvisor;
         },
       },
     } as any;

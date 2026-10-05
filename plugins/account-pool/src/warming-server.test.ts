@@ -859,3 +859,89 @@ describe("A234 1 through the hub: a finished helper does not suppress the final 
     });
   }
 });
+
+describe("usage ledger through the plugin", () => {
+  type Row = Record<string, unknown>;
+  const rows = (f: Fixture, table: string): Row[] =>
+    f.host.bb.storage.database().prepare(`SELECT * FROM ${table} ORDER BY at, rowid`).all() as Row[];
+
+  it("records native and refresh requests, settings and quota history, and reports them", async () => {
+    const f = await fixture();
+    const start = f.clock.now();
+    await setMode(f.host, "warm");
+    expect(await nativeRequest(f.host)).toBe(200);
+    await idle(f.host);
+    await leased(f.host);
+    await f.clock.advanceTo(4 * MINUTE);
+    await vi.waitFor(async () => expect((await warmingStatus(f.host)).totals.refreshesConfirmed).toBe(1));
+    // The second refresh would be due at 8 minutes; the next turn comes first.
+    await f.clock.advanceTo(7 * MINUTE);
+    await active(f.host);
+    expect(await nativeRequest(f.host, { turn: "second turn" })).toBe(200);
+    // Token counting is not a model request.
+    expect(await nativeRequest(f.host, { path: "/v1/messages/count_tokens" })).toBe(200);
+    await vi.waitFor(() => expect(rows(f, "usage_requests")).toHaveLength(3));
+    const shared = {
+      provider: "claude", session_key: `session:${SESSION}`, model: "claude-opus-5-5", family: "opus",
+      ttl: "5m", status: 200, completed: 1,
+    };
+    expect(rows(f, "usage_requests")).toMatchObject([
+      { ...shared, at: start, kind: "native", idle_gap_ms: null,
+        input_tokens: 4, output_tokens: 9, cache_read_tokens: 80_000, cache_write_tokens: 20_000,
+        cache_write_5m_tokens: 20_000, cache_write_1h_tokens: 0 },
+      { ...shared, kind: "refresh", thread_id: "thr_coord", role: "coordinator", idle_gap_ms: null,
+        output_tokens: 0, cache_read_tokens: 100_000, cache_write_tokens: 0 },
+      { ...shared, at: start + 7 * MINUTE, kind: "native", thread_id: "thr_coord", role: "coordinator",
+        idle_gap_ms: 7 * MINUTE },
+    ]);
+    // Every response carried the same quota headers: one history row.
+    expect(rows(f, "usage_quota")).toMatchObject([{ five_hour_utilization: 0.1 }]);
+    await f.clock.advanceTo(10 * MINUTE);
+    expect((await f.host.harness.behavior.runCli(["config", "set", "claudeMainCacheTtl", "5m"])).exitCode).toBe(0);
+    await vi.waitFor(() =>
+      expect(
+        rows(f, "usage_settings").map((row) => {
+          const settings = JSON.parse(String(row.settings_json));
+          return [settings.claudeMainCacheTtl, settings.warming.mode];
+        }),
+      ).toEqual([["1h", "off"], ["1h", "warm"], ["5m", "warm"]]),
+    );
+
+    const report = JSON.parse((await f.host.harness.behavior.runCli(["usage", "report", "--json"])).stdout);
+    expect(report.total.claude.native.requests).toBe(2);
+    expect(report.total.claude.refresh.requests).toBe(1);
+    expect(report.total.idle).toMatchObject({ afterExpiry: 1, rewritesAvoided: 1, rewriteTokensAvoided: 80_000 });
+    expect(report.periods.map((period: { settings: { warming: { mode: string } } }) => period.settings.warming.mode)).toEqual(["warm"]);
+    expect(report.ledger).toMatchObject({ writeErrors: 0, retentionDays: 30 });
+    const text = (await f.host.harness.behavior.runCli(["usage", "report", "--since", "1h"])).stdout;
+    expect(text).toContain("ttl 1h · warming warm (opus; coordinator 20m, worker 15/10m)");
+    expect(text).toContain("account 0: 3 req");
+  });
+
+  it("a failing ledger write never fails or changes a request", async () => {
+    const f = await fixture();
+    f.host.bb.storage
+      .database()
+      .exec("CREATE TRIGGER usage_full BEFORE INSERT ON usage_requests BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+    expect(await nativeRequest(f.host)).toBe(200);
+    expect(await nativeRequest(f.host, { turn: "next" })).toBe(200);
+    await vi.waitFor(async () => {
+      const report = JSON.parse((await f.host.harness.behavior.runCli(["usage", "report", "--json"])).stdout);
+      expect(report.ledger).toMatchObject({ writeErrors: 2, lastError: "disk full" });
+    });
+    expect(f.upstream.native).toHaveLength(2);
+    // Logged once: the second failure falls inside the same minute.
+    expect(
+      f.host.harness.inspection.logEntries.filter((entry) => entry.message.includes("usage ledger")),
+    ).toEqual([{ level: "warn", message: "Account Pooler usage ledger write failed (1 so far): disk full" }]);
+  });
+
+  it("retention is shown and set through the CLI with the shared validation", async () => {
+    const f = await fixture();
+    expect((await f.host.harness.behavior.runCli(["usage", "retention"])).stdout).toBe("retentionDays: 30\n");
+    expect((await f.host.harness.behavior.runCli(["usage", "retention", "7"])).stdout).toBe("retentionDays: 7\n");
+    expect(await f.host.bb.storage.kv.get("usage-ledger")).toEqual({ retentionDays: 7 });
+    const invalid = await f.host.harness.behavior.runCli(["usage", "retention", "0"]);
+    expect(invalid).toMatchObject({ exitCode: 1, stderr: "retentionDays: Must be at least 1.\n" });
+  });
+});

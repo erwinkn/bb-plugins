@@ -5,6 +5,7 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import type { CardView, FindingView, Overview, WatchDetail, WatchSummary } from "./views.js";
+import type { PoolerAdvisorStatus } from "./config/routes.js";
 import type { LedgerRow } from "./store/store.js";
 
 const out = <T>() => z.custom<T>(() => true);
@@ -26,7 +27,7 @@ export interface SettingsView {
     unverified: string[];
     price: { inMax: number; out: number; basis: string; source: string; version: string } | null;
   }>;
-  pooler: { status: "unknown" | "read"; detail: string };
+  pooler: PoolerAdvisorStatus;
   settingsLog: Array<{ at: number; settingsRev: number; keys: string[]; summary: string }>;
   deferred: Array<{ id: string; label: string; status: string }>;
   initiativeContext: string;

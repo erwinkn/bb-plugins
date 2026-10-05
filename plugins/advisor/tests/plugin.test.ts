@@ -77,6 +77,40 @@ describe("settings", () => {
   });
 });
 
+describe("Account Pooler advisor route indicator", () => {
+  const view = (claude: boolean, codex: boolean, error: string | null = null) => ({ routes: { claude, codex }, maxUtilization: null, effectiveMaxUtilization: 0.98, error });
+
+  it("says whether the Pooler lets the selected route through and how to turn it on, read-only", async () => {
+    const r = await rig({ route: "sonnet:pool" });
+    r.world.poolerAdvisor = view(false, true);
+    let s: any = await r.harness.behavior.callRpc("settingsView");
+    expect(s.pooler).toMatchObject({ status: "read", provider: "claude", permitted: false, routes: { claude: false, codex: true } });
+    expect(s.pooler.detail).toBe(
+      "Blocked: the Pooler's Claude advisor route is off. Turn it on with `bb pool-local advisor set claude on` or in the Account Pooler's Advisor routes settings.",
+    );
+    await r.harness.behavior.setSettings({ route: "luna:pool" });
+    s = await r.harness.behavior.callRpc("settingsView");
+    expect(s.pooler).toMatchObject({ provider: "codex", permitted: true, detail: "Allowed: the Pooler's Codex advisor route is on (accounts up to 98% utilization)." });
+    r.world.poolerAdvisor = view(true, true, "Stored advisor-config is invalid, so advisor routes are off: (record): bad");
+    s = await r.harness.behavior.callRpc("settingsView");
+    expect(s.pooler).toMatchObject({ permitted: false, detail: "Blocked: Stored advisor-config is invalid, so advisor routes are off: (record): bad" });
+  });
+
+  it("degrades when the Pooler is absent, and is informational for routes that do not use it", async () => {
+    const r = await rig({ route: "sonnet:pool" });
+    let s: any = await r.harness.behavior.callRpc("settingsView");
+    expect(s.pooler).toMatchObject({ status: "unavailable", routes: null, provider: "claude", permitted: false });
+    expect(s.pooler.detail).toBe("The Account Pooler is not installed, disabled or not responding (no advisor.get). Route sonnet:pool cannot send until it answers.");
+    r.world.poolerAdvisor = { unexpected: true };
+    s = await r.harness.behavior.callRpc("settingsView");
+    expect(s.pooler.detail).toBe("The Account Pooler returned an unexpected advisor.get response. Route sonnet:pool cannot send until it answers.");
+    await r.harness.behavior.setSettings({ route: "fake" });
+    r.world.poolerAdvisor = view(true, false);
+    s = await r.harness.behavior.callRpc("settingsView");
+    expect(s.pooler).toMatchObject({ provider: null, permitted: null, detail: "Not used by route fake. Pooler advisor routes: claude on, codex off." });
+  });
+});
+
 describe("panel actions keep their honest meaning", () => {
   it("acknowledge marks a finding seen, not signed off; mute and dismiss are issue states; clear only hides acknowledged rows", async () => {
     const r = await withFinding();

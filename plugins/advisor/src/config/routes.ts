@@ -107,3 +107,55 @@ export const POOLER_PLUGIN_ID = "account-pool-local";
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 export const OPENAI_URL = "https://api.openai.com/v1/responses";
 export const TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone";
+
+/**
+ * Whether the Pooler currently lets the Advisor's route through, read from its
+ * advisor.get RPC (read-only). An absent, disabled or older Pooler degrades to
+ * "unavailable"; nothing here changes a Pooler setting.
+ */
+export interface PoolerAdvisorStatus {
+  status: "read" | "unavailable";
+  routes: { claude: boolean; codex: boolean } | null;
+  effectiveMaxUtilization: number | null;
+  /** The Pooler provider the selected route needs, or null for a route that does not use it. */
+  provider: "claude" | "codex" | null;
+  /** null for a route that does not use the Pooler. */
+  permitted: boolean | null;
+  detail: string;
+}
+
+export function poolerAdvisorStatus(route: string, read: { ok: true; value: unknown } | { ok: false; error: string }): PoolerAdvisorStatus {
+  const provider = ROUTES[route as RouteId]?.transport === "account-pool" ? (route.startsWith("luna:") ? "codex" : "claude") : null;
+  const view = read.ok ? poolerViewOf(read.value) : null;
+  const name = provider === "codex" ? "Codex" : "Claude";
+  const how = provider === null ? "" : ` Turn it on with \`bb pool-local advisor set ${provider} on\` or in the Account Pooler's Advisor routes settings.`;
+  if (view === null) {
+    const why = read.ok ? "returned an unexpected advisor.get response" : `is not installed, disabled or not responding (${read.error})`;
+    return {
+      status: "unavailable",
+      routes: null,
+      effectiveMaxUtilization: null,
+      provider,
+      permitted: provider === null ? null : false,
+      detail: `The Account Pooler ${why}.${provider === null ? "" : ` Route ${route} cannot send until it answers.`}`.slice(0, 600),
+    };
+  }
+  const both = `claude ${view.routes.claude ? "on" : "off"}, codex ${view.routes.codex ? "on" : "off"}`;
+  const permitted = provider === null ? null : view.error === null && view.routes[provider];
+  const detail =
+    provider === null
+      ? `Not used by route ${route}. Pooler advisor routes: ${both}.`
+      : view.error !== null
+        ? `Blocked: ${view.error}`
+        : permitted
+          ? `Allowed: the Pooler's ${name} advisor route is on (accounts up to ${Math.round(view.effectiveMaxUtilization * 100)}% utilization).`
+          : `Blocked: the Pooler's ${name} advisor route is off.${how}`;
+  return { status: "read", routes: view.routes, effectiveMaxUtilization: view.effectiveMaxUtilization, provider, permitted, detail: detail.slice(0, 600) };
+}
+
+function poolerViewOf(value: unknown): { routes: { claude: boolean; codex: boolean }; effectiveMaxUtilization: number; error: string | null } | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, any>;
+  if (typeof v.routes?.claude !== "boolean" || typeof v.routes?.codex !== "boolean" || typeof v.effectiveMaxUtilization !== "number") return null;
+  return { routes: { claude: v.routes.claude, codex: v.routes.codex }, effectiveMaxUtilization: v.effectiveMaxUtilization, error: typeof v.error === "string" ? v.error : null };
+}

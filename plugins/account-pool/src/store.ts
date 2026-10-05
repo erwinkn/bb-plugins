@@ -560,7 +560,11 @@ const EMPTY_QUOTA = {
 };
 
 export class QuotaStore {
-  constructor(private readonly db: Database.Database) {}
+  // onPut sees every write after it lands; the usage ledger keeps its history from it.
+  constructor(
+    private readonly db: Database.Database,
+    private readonly onPut: (quota: AccountQuota) => void = () => {},
+  ) {}
 
   get(accountId: string): AccountQuota {
     const row = quotaRowSchema
@@ -629,6 +633,7 @@ export class QuotaStore {
         value.heldUntil,
         value.error,
       );
+    this.onPut(value);
   }
 
   remove(accountId: string): void {
@@ -743,4 +748,47 @@ export const QUOTA_MIGRATIONS = [
     provider TEXT PRIMARY KEY,
     account_id TEXT NOT NULL
   )`,
+  // The usage ledger (ledger.ts). Append-only and read by nothing on the routing path, so an
+  // older build that never applies this migration still starts.
+  `CREATE TABLE usage_requests (
+    at INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    session_key TEXT,
+    thread_id TEXT,
+    role TEXT,
+    account_id TEXT NOT NULL,
+    model TEXT,
+    family TEXT NOT NULL,
+    ttl TEXT,
+    status INTEGER,
+    completed INTEGER NOT NULL,
+    latency_ms INTEGER NOT NULL,
+    idle_gap_ms INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    cache_write_5m_tokens INTEGER,
+    cache_write_1h_tokens INTEGER
+  );
+  CREATE INDEX usage_requests_at ON usage_requests (at);
+  CREATE INDEX usage_requests_session ON usage_requests (session_key, model, at);
+  CREATE TABLE usage_quota (
+    at INTEGER NOT NULL,
+    account_id TEXT NOT NULL,
+    five_hour_utilization REAL,
+    five_hour_reset_at INTEGER,
+    seven_day_utilization REAL,
+    seven_day_reset_at INTEGER,
+    family_weekly_json TEXT NOT NULL,
+    limit_windows_json TEXT NOT NULL
+  );
+  CREATE INDEX usage_quota_at ON usage_quota (at);
+  CREATE INDEX usage_quota_account ON usage_quota (account_id, at);
+  CREATE TABLE usage_settings (
+    at INTEGER NOT NULL,
+    settings_json TEXT NOT NULL
+  );
+  CREATE INDEX usage_settings_at ON usage_settings (at)`,
 ];

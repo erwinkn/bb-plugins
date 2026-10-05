@@ -23,6 +23,14 @@ import type {
   ImportedCodexCredentials,
 } from "./credentials.js";
 import { createHub, type AccountPoolHub } from "./hub.js";
+import {
+  DEFAULT_RETENTION_DAYS,
+  USAGE_LEDGER_KEY,
+  UsageLedger,
+  openLedgerDatabase,
+  usageLedgerConfigSchema,
+  type LedgerSettings,
+} from "./ledger.js";
 import { PoolOperations } from "./operations.js";
 import { accountPoolRpcContract, createRpcHandlers } from "./rpc.js";
 import { ClaudeOAuthLogin } from "./oauth-login.js";
@@ -56,6 +64,8 @@ import {
   warmingConfigView,
   type WarmingConfigController,
 } from "./warming-config.js";
+import { buildUsageReport } from "./usage-report.js";
+import { parseOrThrow } from "./validation.js";
 
 export interface AccountPoolPluginOptions {
   fetch?: typeof fetch;
@@ -102,6 +112,8 @@ export function createAccountPoolPlugin(
         });
         await bb.storage.kv.set("config", next);
         currentSettings = next;
+        // Declared below; config.set is reachable only once RPC and the CLI are registered.
+        recordLedgerSettings();
         bb.realtime.publish(ACCOUNT_POOL_CONFIG_CHANGED, {});
         return next;
       },
@@ -148,7 +160,33 @@ export function createAccountPoolPlugin(
     const routing = new RoutingStore(bb.storage.kv, now);
     const db = bb.storage.database();
     bb.storage.migrate(db, QUOTA_MIGRATIONS);
-    const quotas = new QuotaStore(db);
+    // The usage ledger's own record. An invalid one keeps the default retention.
+    const storedLedgerConfig = usageLedgerConfigSchema.safeParse(
+      (await bb.storage.kv.get(USAGE_LEDGER_KEY)) ?? {
+        retentionDays: DEFAULT_RETENTION_DAYS,
+      },
+    );
+    if (!storedLedgerConfig.success)
+      bb.log.warn(
+        `Stored ${USAGE_LEDGER_KEY} is invalid; keeping usage rows for ${DEFAULT_RETENTION_DAYS} days.`,
+      );
+    let retentionDays = storedLedgerConfig.success
+      ? storedLedgerConfig.data.retentionDays
+      : DEFAULT_RETENTION_DAYS;
+    // Assigned below, once the warmer and the Projects reader exist.
+    let threadLabel: (sessionKey: string) => {
+      threadId: string;
+      role: string | null;
+    } | null = () => null;
+    const ledgerDb = openLedgerDatabase(db, (message) => bb.log.warn(message));
+    const ledger = new UsageLedger({
+      db: ledgerDb,
+      now,
+      retentionDays: () => retentionDays,
+      thread: (sessionKey) => threadLabel(sessionKey),
+      log: (message) => bb.log.warn(message),
+    });
+    const quotas = new QuotaStore(db, (quota) => ledger.quota(quota));
     const transport =
       options.fetch === undefined ? createUpstreamTransport() : null;
     const upstreamFetch = options.fetch ?? transport?.fetch;
@@ -176,6 +214,38 @@ export function createAccountPoolPlugin(
           : hubRef.keepAlive(request, signal),
     });
     bb.onDispose(() => warmer.dispose());
+    threadLabel = (sessionKey) => {
+      const threadId = sessionKey.startsWith("session:")
+        ? warmer.threadOf(sessionKey.slice(8))
+        : null;
+      if (threadId === null) return null;
+      const context = projectsContext.peek(threadId);
+      return {
+        threadId,
+        role:
+          context?.kind !== "member"
+            ? null
+            : context.memberKind === "coordinator"
+              ? "coordinator"
+              : context.role,
+      };
+    };
+    // The settings a usage report splits periods by: recorded now, and after every change.
+    const recordLedgerSettings = () => {
+      const { historyLimit: _limit, historyMinutes: _minutes, ...warming } =
+        effectiveWarmingConfig(warmingState);
+      const settings: LedgerSettings = {
+        claudeMainCacheTtl: currentSettings.claudeMainCacheTtl,
+        warming,
+      };
+      ledger.settings(settings);
+    };
+    recordLedgerSettings();
+    ledger.flush();
+    bb.onDispose(() => {
+      ledger.close();
+      if (ledgerDb !== db) ledgerDb.close();
+    });
     const warming: WarmingConfigController = {
       get: () =>
         warmingConfigView(warmingState, currentSettings.switchThreshold),
@@ -184,6 +254,7 @@ export function createAccountPoolPlugin(
         const next = mergeWarmingConfig(warmingState, input);
         await bb.storage.kv.set(WARMING_CONFIG_KEY, next);
         warmingState = { ok: true, config: next };
+        recordLedgerSettings();
         if (next.mode !== previous.mode)
           warmer.cancelAll(`warming mode changed to ${next.mode}`);
         // A narrower family list ends its leases and admissions before anything else is sent.
@@ -242,6 +313,7 @@ export function createAccountPoolPlugin(
       onAccountsChanged: () =>
         bb.realtime.publish(ACCOUNT_POOL_ACCOUNTS_CHANGED, {}),
       warming: warmer,
+      ledger,
     });
     hubRef = hub;
     if (transport !== null) {
@@ -289,10 +361,40 @@ export function createAccountPoolPlugin(
         status: () => warmer.status(),
       }),
     );
-    registerPoolCli(bb, operations, login, codexLogin, config, advisor, {
-      config: warming,
-      status: () => warmer.status(),
-    });
+    registerPoolCli(
+      bb,
+      operations,
+      login,
+      codexLogin,
+      config,
+      advisor,
+      { config: warming, status: () => warmer.status() },
+      {
+        now,
+        report: async (since) => {
+          ledger.flush();
+          const labels = Object.fromEntries(
+            (await accounts.list()).map((account) => [account.id, account.label]),
+          );
+          return buildUsageReport(db, {
+            since,
+            until: now(),
+            ledger: { ...ledger.status(), retentionDays },
+            accountLabels: labels,
+          });
+        },
+        retentionDays: () => retentionDays,
+        setRetentionDays: async (days) => {
+          const next = parseOrThrow(usageLedgerConfigSchema, {
+            retentionDays: days,
+          });
+          await bb.storage.kv.set(USAGE_LEDGER_KEY, next);
+          retentionDays = next.retentionDays;
+          ledger.pruneSoon();
+          return retentionDays;
+        },
+      },
+    );
     const proxiedHealth = async (provider: PoolProvider) =>
       (await operations.isRoutingEnabled(provider)) &&
       (await operations.hasUsableEnabledAccount(provider))

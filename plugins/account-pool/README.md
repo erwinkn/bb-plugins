@@ -1,4 +1,4 @@
-# Account Pooler Local
+# Account Pooler (fork)
 
 A local fork of BB 0.43.1's Account Pooler 0.1.0. It requests a configurable
 Claude main-conversation cache TTL and retains eligible session/account bindings
@@ -261,6 +261,56 @@ Leases keep the exact request body only in memory, only in `warm` mode, and drop
 it when they end. Status shows hashes, token counts and requests only; it makes no
 dollar estimate. `scripts/copy-pool-state.py` does not carry `advisor-config` or
 `warming-config` into a new install.
+
+## Usage ledger
+
+The Pooler keeps a durable record in its SQLite database so a report can tell
+whether cache warming saves more quota than it costs:
+
+- `usage_requests`: one row per upstream model request (native, warming refresh
+  or advisor; Claude `/v1/messages` and Codex POST routes, not `count_tokens` or
+  `GET /v1/models`). A retried attempt gets its own row. Columns: start time,
+  kind, provider, session key, BB thread and Initiative role when already known,
+  account, model and family, the tail breakpoint's cache TTL, HTTP status,
+  latency, input, output, cache read and cache write (5m, 1h) tokens, and the
+  idle gap since the session's previous native request on the same model. Codex
+  rows carry OpenAI's cached tokens as cache reads.
+- `usage_quota`: a row per account each time its observed 5h, 7d, per-family
+  weekly or Codex window utilization or reset time changes.
+- `usage_settings`: `claudeMainCacheTtl` and the warming settings, recorded at
+  startup and after every change, so a report can split periods by setting.
+
+Rows hold counts, ids and times, never a request or response body. Every
+dispatched attempt gets a row, including one that failed to connect or was
+canceled after it was sent (status and usage empty). Recording only queues in
+memory; a later event-loop turn writes at most 500 rows per table through the
+ledger's own SQLite connection, which never waits for a lock: when another
+writer holds it, the rows stay queued and retry a second later. Queues are
+bounded and drop their oldest row, counted. A failed write is logged (at most
+once a minute) and counted, and never reaches the request. Rows older than the
+retention (default 30 days) are pruned hourly, 500 rows at a time.
+
+```sh
+bb pool-local usage report [--since 7d|24h|90m|2026-10-05] [--json]
+bb pool-local usage retention [<days>]
+```
+
+The report shows totals, each settings period and each UTC day: requests by
+kind, Claude cache hit ratio, cache-write tokens by TTL, cold starts after an
+expired TTL (rewrites, and hits kept warm by a refresh), refresh tokens, an
+estimate of the net saving, and each account's utilization burn per observed
+window (Claude 5h, 7d and per-family weekly; Codex windows by length).
+Cold starts are judged per session and model, from successful requests only (a
+failed attempt or refresh never counts as cache activity): a native request that
+came more than the previous entry's TTL after the previous one either rewrote the
+prefix or, if a refresh ran in between and it read more than it wrote, counts as
+a rewrite avoided. A report that starts mid-session is seeded from the activity
+just before `--since`. The
+estimate weighs tokens at API price ratios to uncached input (cache read 0.1×,
+5m write 1.25×, 1h write 2×, output 5×), the closest public proxy for
+subscription quota. Subagents share their main session id, so a subagent on the
+main model can hide a cold start but never invents one. The thread and role
+columns are filled only while warming links sessions (any mode but `off`).
 
 ## Source and identity
 

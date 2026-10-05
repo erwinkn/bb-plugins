@@ -6,7 +6,7 @@ Watch the threads you choose and keep a factual record of what their agents did:
 - An **Advisor** tab in a thread's side panel to watch that thread and see its findings.
 - Findings that show the exact before and after lines, whether the test name was proven from the hunk, the requirement they cite and how that requirement's authority is known.
 - Coverage that names what the Advisor could not see: history before the watch, missing diffs, truncated hunks, checkpoint gaps, pruned or skipped evidence, partial requirement context.
-- Settings for every behavior it has: watch scope, triggers, cadence, packet and retention bounds, concurrency, route and model, effort, custom instructions, daily budgets, display threshold and notifications. Below the form, the effective state shows errors, which secrets are set and what is not available yet.
+- Settings for every behavior it has: watch scope, triggers, cadence, packet and retention bounds, concurrency, route and model, effort, custom instructions, daily budgets, display threshold and notifications. Below the form, the effective state shows errors, which secrets are set, whether the Account Pooler currently lets a pooled route through (and how to turn it on), and what is not available yet.
 - `bb advisor status|watch|unwatch|findings` for agents and terminals.
 
 ## How it works

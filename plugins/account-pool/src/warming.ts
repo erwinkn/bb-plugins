@@ -103,6 +103,8 @@ export interface NativeObservation {
 }
 
 export interface KeepAliveRequest {
+  // The Claude Code session the lease keeps warm; the usage ledger attributes the refresh to it.
+  sessionId: string;
   accountId: string;
   family: ModelFamily;
   url: string;
@@ -858,6 +860,7 @@ export class CacheWarmer {
     try {
       result = await this.deps.keepAlive(
         {
+          sessionId: lease.sessionId,
           accountId: lease.accountId,
           family: lease.family,
           url: lease.url,
@@ -1015,6 +1018,11 @@ export class CacheWarmer {
       ttl: lease.ttl,
       message,
     });
+  }
+
+  // The BB thread linked to a Claude Code session, if exactly one is.
+  threadOf(sessionId: string): string | null {
+    return this.linkedThread(sessionId);
   }
 
   private linkedThread(sessionId: string): string | null {

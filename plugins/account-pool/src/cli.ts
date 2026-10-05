@@ -31,6 +31,11 @@ import {
   type WarmingConfigView,
 } from "./warming-config.js";
 import type { WarmingStatus } from "./warming.js";
+import {
+  formatUsageReport,
+  parseSince,
+  type UsageReport,
+} from "./usage-report.js";
 import type { PoolOperations } from "./operations.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
@@ -66,6 +71,8 @@ const HELP = [
   "  bb pool-local warming",
   "  bb pool-local warming set <key> <value>",
   "  bb pool-local warming status [--json]",
+  "  bb pool-local usage report [--since <90m|24h|7d|iso>] [--json]",
+  "  bb pool-local usage retention [<days>]",
   "  bb pool-local token rotate --machine <id-or-name>",
   "  bb pool-local bypass <thread-id> [--off]",
   "",
@@ -347,6 +354,15 @@ function json(value: object): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+export interface UsageController {
+  now: () => number;
+  report: (since: number) => Promise<UsageReport>;
+  retentionDays: () => number;
+  setRetentionDays: (days: number) => Promise<number>;
+}
+
+const DEFAULT_REPORT_SINCE = "7d";
+
 export function registerPoolCli(
   bb: Pick<BbPluginApi, "cli">,
   operations: PoolOperations,
@@ -355,6 +371,7 @@ export function registerPoolCli(
   config: AccountPoolConfigController,
   advisor: AdvisorConfigController,
   warming: { config: WarmingConfigController; status: () => WarmingStatus },
+  usage: UsageController,
 ): void {
   bb.cli.register({
     name: "pool-local",
@@ -461,6 +478,18 @@ export function registerPoolCli(
         name: "warming-status",
         summary: "Show cache-warming leases, refreshes and recent decisions",
         usage: "bb pool-local warming status [--json]",
+      },
+      {
+        name: "usage-report",
+        summary:
+          "Report requests, cache use, cold starts, warming cost and quota burn by day and settings period",
+        usage:
+          "bb pool-local usage report [--since <90m|24h|7d|iso>] [--json]",
+      },
+      {
+        name: "usage-retention",
+        summary: "Show or set how many days the usage ledger keeps",
+        usage: "bb pool-local usage retention [<days>]",
       },
       {
         name: "token-rotate",
@@ -756,6 +785,31 @@ export function registerPoolCli(
               ? json(status)
               : `${formatWarmingStatus(status)}\n`,
           };
+        }
+        if (argv[0] === "usage" && argv[1] === "report") {
+          const flags = parseFlags(argv.slice(2), ["json"], ["since"]);
+          const report = await usage.report(
+            parseSince(
+              flags.values.get("since") ?? DEFAULT_REPORT_SINCE,
+              usage.now(),
+            ),
+          );
+          return {
+            exitCode: 0,
+            stdout: flags.booleans.has("json")
+              ? json(report)
+              : `${formatUsageReport(report)}\n`,
+          };
+        }
+        if (argv[0] === "usage" && argv[1] === "retention") {
+          if (argv.length === 2)
+            return {
+              exitCode: 0,
+              stdout: `retentionDays: ${usage.retentionDays()}\n`,
+            };
+          if (argv.length !== 3 || argv[2]?.trim() === "") throw new Error(HELP);
+          const days = await usage.setRetentionDays(Number(argv[2]));
+          return { exitCode: 0, stdout: `retentionDays: ${days}\n` };
         }
         if (argv[0] === "token" && argv[1] === "rotate") {
           const flags = parseFlags(argv.slice(2), [], ["machine"]);

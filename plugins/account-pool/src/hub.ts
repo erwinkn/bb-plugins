@@ -12,13 +12,18 @@ import {
   effectiveAdvisorMaxUtilization,
   type AdvisorConfigState,
 } from "./advisor-config.js";
-import { cacheUsageFrom } from "./cache-usage.js";
+import {
+  cacheUsageFrom,
+  createCodexUsageTap,
+  createUsageTap,
+} from "./cache-usage.js";
 import { createClaudeAdapter } from "./claude-adapter.js";
 import {
   createCodexAdapter,
   DEFAULT_CODEX_REFRESH_URL,
   DEFAULT_CODEX_USAGE_URL,
 } from "./codex-adapter.js";
+import type { RequestKind, RequestRecord } from "./ledger.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import type { ImportedProviderAccount } from "./provider-adapter.js";
 import { TransientOAuthRefreshError } from "./provider-adapter.js";
@@ -92,12 +97,24 @@ interface HubOptions {
   onAccountsChanged: () => void;
   onUpstreamError: (provider: PoolProvider, error: unknown) => void;
   warming: WarmingHooks | null;
+  ledger: LedgerHooks | null;
 }
 
 // The hub's view of the cache warmer: it reports native Claude Messages traffic and nothing else.
 export interface WarmingHooks {
   observe(start: NativeRequestStart): NativeObservation | null;
 }
+
+// The hub's view of the usage ledger: one record per upstream response. It must not throw.
+export interface LedgerHooks {
+  request(record: RequestRecord): void;
+}
+
+// What the ledger needs about a request before its response.
+type LedgerStart = Omit<
+  RequestRecord,
+  "status" | "completed" | "usage" | "finishedAt" | "startedAt"
+>;
 
 interface SelectedAccount {
   account: Account;
@@ -331,16 +348,30 @@ export class AccountPoolHub {
       }
       let upstream: UpstreamResult;
       dispatch.sent = true;
+      const upstreamBody = parsed.forAccount(selected);
+      const attempt = this.ledgerAttempt(
+        {
+          kind: "advisor",
+          provider: adapter.provider,
+          sessionKey: null,
+          accountId: selected.id,
+          family: parsed.family,
+          body: upstreamBody,
+        },
+        this.options.now(),
+      );
       try {
         upstream = await this.fetchUpstream(
           request,
-          parsed.forAccount(selected),
+          upstreamBody,
           selected,
           secret,
           adapter,
           (headers) => advisorRequestHeaders(adapter.provider, headers, secret),
         );
       } catch (error) {
+        if (error instanceof UpstreamConnectionError)
+          attempt.finish(null, false, null);
         signal.throwIfAborted();
         if (!(error instanceof UpstreamConnectionError)) throw error;
         return adapter.errorResponse(
@@ -349,6 +380,7 @@ export class AccountPoolHub {
         );
       }
       if (request.signal.aborted) {
+        attempt.finish(upstream.response.status, false, null);
         await this.discardUpstream(upstream, false);
         signal.throwIfAborted();
       }
@@ -362,7 +394,7 @@ export class AccountPoolHub {
           this.options.now(),
         ),
       );
-      return this.clientResponse(upstream);
+      return this.clientResponse(upstream, attempt.tap(upstream.response));
     } catch (error) {
       if (!signal.aborted) throw error;
       return adapter.errorResponse(
@@ -555,6 +587,7 @@ export class AccountPoolHub {
         ? null
         : JSON.stringify([adapter.provider, hostId, parsed.parentAffinityId]);
     const observation = this.observeNative(request, adapter, parsed);
+    const ledgerKind = ledgerKindOf(request);
     let respondedToClient = false;
     try {
       while (attempted.size < candidateIds.size) {
@@ -646,6 +679,19 @@ export class AccountPoolHub {
           signal.throwIfAborted();
           let upstream: UpstreamResult;
           const attemptStartedAt = this.options.now();
+          const attempt = this.ledgerAttempt(
+            ledgerKind === null
+              ? null
+              : {
+                  kind: ledgerKind,
+                  provider: adapter.provider,
+                  sessionKey: parsed.affinityId,
+                  accountId: selected.account.id,
+                  family,
+                  body: upstreamBody,
+                },
+            attemptStartedAt,
+          );
           try {
             upstream = await this.fetchUpstream(
               request,
@@ -655,6 +701,8 @@ export class AccountPoolHub {
               adapter,
             );
           } catch (error) {
+            if (error instanceof UpstreamConnectionError)
+              attempt.finish(null, false, null);
             if (pacing !== null) {
               this.releasePacing(selected.account.id, pacing);
               pacing = null;
@@ -670,6 +718,7 @@ export class AccountPoolHub {
             break;
           }
           if (request.signal.aborted) {
+            attempt.finish(upstream.response.status, false, null);
             await this.discardUpstream(upstream, false);
             signal.throwIfAborted();
           }
@@ -682,6 +731,9 @@ export class AccountPoolHub {
             this.options.now(),
           );
           this.options.quotas.put(observed);
+          // A response that is not 2xx carries no usage, and may be retried on another account:
+          // its row is written now, whether or not the client sees it.
+          if (!response.ok) attempt.finish(response.status, true, null);
           if (pacing !== null && !response.ok) {
             this.releasePacing(selected.account.id, pacing);
             pacing = null;
@@ -789,9 +841,7 @@ export class AccountPoolHub {
           }
           if (response.ok) selected.accept();
           respondedToClient = true;
-          return this.clientResponse(
-            upstream,
-            observation?.responded({
+          const warmingTap = observation?.responded({
               accountId: selected.account.id,
               url: adapter
                 .upstreamUrl(request, this.options.getSettings())
@@ -801,7 +851,10 @@ export class AccountPoolHub {
               startedAt: attemptStartedAt,
               status: response.status,
               contentType: response.headers.get("content-type"),
-            }),
+            });
+          return this.clientResponse(
+            upstream,
+            bothTaps(warmingTap, attempt.tap(response)),
           );
         }
       }
@@ -920,6 +973,14 @@ export class AccountPoolHub {
     new Uint8Array(body).set(request.body);
     const startedAt = this.options.now();
     let response: Response;
+    const ledgerStart: LedgerStart = {
+      kind: "refresh",
+      provider: "claude",
+      sessionKey: `session:${request.sessionId}`,
+      accountId: account.id,
+      family: request.family,
+      body: request.body,
+    };
     try {
       response = await this.options.fetch(request.url, {
         method: "POST",
@@ -928,6 +989,8 @@ export class AccountPoolHub {
         signal: aborted,
       });
     } catch {
+      // Whether anything reached Anthropic is unknown: the row has no status.
+      this.recordRequest(ledgerStart, startedAt, null, false, null);
       return {
         kind: "failed",
         reason: aborted.aborted
@@ -954,15 +1017,86 @@ export class AccountPoolHub {
       typeof payload === "object" && payload !== null
         ? (payload as Record<string, unknown>)
         : null;
+    const usage = cacheUsageFrom(object?.usage);
+    this.recordRequest(
+      ledgerStart,
+      startedAt,
+      response.status,
+      text !== null,
+      usage,
+    );
     return {
       kind: "response",
       status: response.status,
-      usage: cacheUsageFrom(object?.usage),
+      usage,
       outputEmpty: Array.isArray(object?.content)
         ? object.content.length === 0
         : null,
       startedAt,
     };
+  }
+
+  // One upstream attempt in the usage ledger, recorded exactly once: from its response stream's
+  // end (tap), or at once (finish) when it failed to connect, was canceled after it was sent, or
+  // is not 2xx. A null start records nothing.
+  private ledgerAttempt(start: LedgerStart | null, startedAt: number) {
+    let done = start === null || this.options.ledger === null;
+    const finish = (
+      status: number | null,
+      completed: boolean,
+      usage: RequestRecord["usage"],
+    ) => {
+      if (done || start === null) return;
+      done = true;
+      this.recordRequest(start, startedAt, status, completed, usage);
+    };
+    const tap = (response: Response): ResponseTap | undefined => {
+      if (done || start === null) return undefined;
+      const contentType = response.headers.get("content-type");
+      const usage =
+        start.provider === "claude"
+          ? createUsageTap(contentType)
+          : createCodexUsageTap(contentType);
+      // Nothing here may reach the client's stream: a tap that fails records no usage.
+      let failed = false;
+      return {
+        push: (chunk) => {
+          if (done || failed) return;
+          try {
+            usage.push(chunk);
+          } catch {
+            failed = true;
+          }
+        },
+        finish: (completed) => {
+          let read: RequestRecord["usage"] = null;
+          try {
+            if (!failed && !done) read = usage.usage();
+          } catch {}
+          finish(response.status, completed, read);
+        },
+      };
+    };
+    return { finish, tap };
+  }
+
+  private recordRequest(
+    start: LedgerStart,
+    startedAt: number,
+    status: number | null,
+    completed: boolean,
+    usage: RequestRecord["usage"],
+  ): void {
+    try {
+      this.options.ledger?.request({
+        ...start,
+        startedAt,
+        finishedAt: this.options.now(),
+        status,
+        completed,
+        usage,
+      });
+    } catch {}
   }
 
   private async discardUpstream(
@@ -1596,6 +1730,7 @@ export function createHub(options: {
   onAccountsChanged?: () => void;
   onUpstreamError?: (provider: PoolProvider, error: unknown) => void;
   warming?: WarmingHooks;
+  ledger?: LedgerHooks;
 }): AccountPoolHub {
   const adapters: ReadonlyMap<PoolProvider, ProviderAdapter> = new Map([
     [
@@ -1638,6 +1773,7 @@ export function createHub(options: {
     onAccountsChanged: options.onAccountsChanged ?? (() => {}),
     onUpstreamError: options.onUpstreamError ?? (() => {}),
     warming: options.warming ?? null,
+    ledger: options.ledger ?? null,
   });
 }
 
@@ -1723,6 +1859,31 @@ export function replayableHeaders(inbound: Headers): Headers {
       headers.append(normalized, value);
   }
   return headers;
+}
+
+// Model requests go to the usage ledger; token counting and model lists do not.
+function ledgerKindOf(request: Request): RequestKind | null {
+  if (request.method !== "POST") return null;
+  return new URL(request.url).pathname.endsWith("/count_tokens")
+    ? null
+    : "native";
+}
+
+function bothTaps(
+  first: ResponseTap | undefined,
+  second: ResponseTap | undefined,
+): ResponseTap | undefined {
+  if (first === undefined || second === undefined) return first ?? second;
+  return {
+    push: (chunk) => {
+      first.push(chunk);
+      second.push(chunk);
+    },
+    finish: (completed) => {
+      first.finish(completed);
+      second.finish(completed);
+    },
+  };
 }
 
 // The Claude request parser names a metadata.user_id session "session:<id>".

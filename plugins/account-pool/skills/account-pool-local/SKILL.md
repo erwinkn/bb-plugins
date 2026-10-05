@@ -3,7 +3,7 @@ name: account-pool-local
 description: "Configure or diagnose Account Pooler accounts, authentication, quota routing, and failover through bb pool-local."
 ---
 
-# Account Pooler Local
+# Account Pooler (fork)
 
 Use `bb pool-local` for this plugin's accounts and routes. Inspect current state with
 `bb pool-local status --json` and `bb pool-local account list --json` before changing routing.
@@ -32,3 +32,8 @@ Advisor routes and cache warming are opt-in and off by default. Inspect them wit
 `bb pool-local advisor`, `bb pool-local warming` and `bb pool-local warming status`;
 change them only when the task asks for it. Warming never changes `claudeMainCacheTtl`,
 accounts or routing, and its status reports requests and tokens, not costs.
+
+To judge whether warming pays for itself, read `bb pool-local usage report [--since 7d] [--json]`:
+requests, cache hit ratio, cold starts, refresh cost, rewrites avoided and quota burn per account,
+by day and by settings period. It is read-only; `bb pool-local usage retention <days>` changes
+how long the ledger keeps rows.

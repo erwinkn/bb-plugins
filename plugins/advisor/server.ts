@@ -5,7 +5,7 @@
 
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { POOLER_PLUGIN_ID } from "./src/config/routes.js";
+import { POOLER_PLUGIN_ID, poolerAdvisorStatus } from "./src/config/routes.js";
 import { SECRET_KEYS, settingsDescriptors } from "./src/config/settings.js";
 import { rpcContract, type SettingsView } from "./src/rpc.js";
 import { Advisor } from "./src/runtime/advisor.js";
@@ -100,15 +100,14 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
       settingsView: async (): Promise<SettingsView> => {
         const raw = (await settings.get()) as Record<string, unknown>;
         const r = advisor.resolved;
-        let pooler: SettingsView["pooler"] = { status: "unknown", detail: "The Account Pooler advisor status was not read." };
-        if (r.config.route.endsWith(":pool")) {
-          try {
-            const res = await bb.sdk.plugins.callRpc({ pluginId: POOLER_PLUGIN_ID, method: "advisor.get", input: null, outputSchema: z.unknown() });
-            pooler = { status: "read", detail: JSON.stringify(res).slice(0, 600) };
-          } catch (err) {
-            pooler = { status: "unknown", detail: `Account Pooler advisor status unavailable: ${err instanceof Error ? err.message : String(err)}`.slice(0, 600) };
-          }
+        // Read for every route, so Settings can say whether a pooled route would be let through.
+        let read: Parameters<typeof poolerAdvisorStatus>[1];
+        try {
+          read = { ok: true, value: await bb.sdk.plugins.callRpc({ pluginId: POOLER_PLUGIN_ID, method: "advisor.get", input: null, outputSchema: z.unknown() }) };
+        } catch (err) {
+          read = { ok: false, error: err instanceof Error ? err.message : String(err) };
         }
+        const pooler = poolerAdvisorStatus(r.config.route, read);
         return {
           effective: Object.fromEntries(Object.entries(r.config).filter(([k]) => k !== "secretsPresent")),
           errors: { review: r.reviewErrors, observation: r.observationErrors },

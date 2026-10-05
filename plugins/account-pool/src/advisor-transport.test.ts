@@ -4,7 +4,8 @@
 import { describe, expect, it } from "vitest";
 import type { Account, AccountQuota, AccountSecret } from "./contracts.js";
 import type { AdvisorConfigState } from "./advisor-config.js";
-import { advisorRequestHeaders, createHub } from "./hub.js";
+import { advisorRequestHeaders, createHub, type LedgerHooks } from "./hub.js";
+import type { RequestRecord } from "./ledger.js";
 import type {
   AccountStore,
   HubTokenStore,
@@ -77,7 +78,7 @@ const gate = () => {
 };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
-type Reply = number | { status: number; headers?: Record<string, string> } | "hang" | { gate: ReturnType<typeof gate>; status: number };
+type Reply = number | { status: number; headers?: Record<string, string>; body?: string } | "hang" | "fail" | { gate: ReturnType<typeof gate>; status: number };
 type RefreshStep = number | { gate: ReturnType<typeof gate>; status: number };
 
 // The log tags advisor POSTs "adv-": native requests never carry the OAuth beta or bb-advisor.
@@ -88,6 +89,7 @@ function makeHub(options: {
   refresh?: RefreshStep[];
   advisor?: AdvisorConfigState;
   settings?: { switchThreshold?: number };
+  ledger?: LedgerHooks;
 }) {
   let clock = START;
   const accounts = options.accounts ?? [account("A")];
@@ -149,6 +151,7 @@ function makeHub(options: {
       sessionAffinityIdleMinutes: 60,
     }),
     getAdvisorConfig: () => options.advisor ?? ON,
+    ledger: options.ledger,
     now: () => clock,
     refreshUrl: "https://u.invalid/oauth/token",
     codexRefreshUrl: "https://u.invalid/c/oauth/token",
@@ -171,6 +174,10 @@ function makeHub(options: {
       const advisor =
         headers.get("user-agent") === "bb-advisor" ? "adv-" : "";
       const reply = script[posts++] ?? 200;
+      if (reply === "fail") {
+        log.push(`${advisor}post:fail`);
+        throw new TypeError("fetch failed");
+      }
       if (reply === "hang") {
         log.push(`${advisor}post:hang`);
         return new Promise<Response>((_resolve, reject) => {
@@ -186,7 +193,11 @@ function makeHub(options: {
       }
       const status = typeof reply === "number" ? reply : reply.status;
       log.push(`${advisor}post:${status}:${headers.get("authorization")?.slice(7) ?? "-"}`);
-      return new Response(JSON.stringify({ model: "claude-sonnet-5-5" }), {
+      const body =
+        typeof reply === "object" && "body" in reply && reply.body !== undefined
+          ? reply.body
+          : JSON.stringify({ model: "claude-sonnet-5-5" });
+      return new Response(body, {
         status,
         headers: {
           "content-type": "application/json",
@@ -736,5 +747,115 @@ describe("advisor body bound (A229)", () => {
     );
     expect(response.headers.get("x-account-pool-dispatch")).toBe("sent");
     expect(env.sent).toHaveLength(1);
+  });
+});
+
+describe("usage ledger records (T102)", () => {
+  const recorder = () => {
+    const records: RequestRecord[] = [];
+    return { records, ledger: { request: (record: RequestRecord) => records.push(record) } };
+  };
+  const summary = (record: RequestRecord) => ({
+    kind: record.kind,
+    provider: record.provider,
+    sessionKey: record.sessionKey,
+    accountId: record.accountId,
+    status: record.status,
+    completed: record.completed,
+    usage: record.usage,
+  });
+
+  it("tags advisor traffic separately, with the usage of its response", async () => {
+    const { records, ledger } = recorder();
+    const usage = { input_tokens: 10, output_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+    const env = makeHub({ ledger, script: [{ status: 200, body: JSON.stringify({ model: "claude-sonnet-5-5", usage }) }, 200] });
+    expect((await advise(env)).status).toBe(200);
+    expect((await native(env)).status).toBe(200);
+    expect(records.map(summary)).toEqual([
+      {
+        kind: "advisor", provider: "claude", sessionKey: null, accountId: "A", status: 200, completed: true,
+        usage: { inputTokens: 10, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: null, cacheWrite1hTokens: null },
+      },
+      { kind: "native", provider: "claude", sessionKey: null, accountId: "A", status: 200, completed: true, usage: null },
+    ]);
+    expect(new TextDecoder().decode(records[0]?.body)).toContain("claude-sonnet-5-5");
+  });
+
+  it("records a failed attempt that is retried on another account, and the one that answered", async () => {
+    const { records, ledger } = recorder();
+    const env = makeHub({
+      ledger,
+      accounts: [account("A", "claude", "oauth", 0), account("B", "claude", "oauth", 1)],
+      secrets: new Map([["A", oauth()], ["B", oauth("tok-b")]]),
+      script: [529, 200],
+    });
+    expect((await native(env)).status).toBe(200);
+    expect(records.map((record) => [record.accountId, record.status])).toEqual([["A", 529], ["B", 200]]);
+  });
+
+  it("reads Codex usage from the streamed response.completed event", async () => {
+    const { records, ledger } = recorder();
+    const completed = {
+      type: "response.completed",
+      response: { id: "r", output: [{ type: "message", content: "x".repeat(100_000) }], usage: { input_tokens: 1_000, input_tokens_details: { cached_tokens: 900 }, output_tokens: 20 } },
+    };
+    const sse = `event: response.created\ndata: {"type":"response.created"}\n\nevent: response.completed\ndata: ${JSON.stringify(completed)}\n\n`;
+    const env = makeHub({
+      ledger,
+      accounts: [account("C", "codex")],
+      secrets: new Map([["C", oauth()]]),
+      script: [{ status: 200, headers: { "content-type": "text/event-stream" }, body: sse }],
+    });
+    const response = await env.hub.handle(
+      new Request(`${ROUTE}/v1/responses`, {
+        method: "POST",
+        headers: { authorization: "Bearer hub", "content-type": "application/json", "thread-id": "codex-thread" },
+        body: codexBody,
+      }),
+      "codex",
+    );
+    await response.text();
+    expect(records.map(summary)).toEqual([
+      {
+        kind: "native", provider: "codex", sessionKey: "session:codex-thread", accountId: "C", status: 200, completed: true,
+        usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 900, cacheWriteTokens: 0, cacheWrite5mTokens: null, cacheWrite1hTokens: null },
+      },
+    ]);
+  });
+
+  it("records a send that failed to connect, and one canceled before its headers, exactly once", async () => {
+    const { records, ledger } = recorder();
+    const env = makeHub({
+      ledger,
+      accounts: [account("A", "claude", "oauth", 0), account("B", "claude", "oauth", 1)],
+      secrets: new Map([["A", oauth()], ["B", oauth("tok-b")]]),
+      script: ["fail", 200, "hang"],
+    });
+    expect((await native(env)).status).toBe(200);
+    const controller = new AbortController();
+    const pending = env.hub.handleAdvisor(advisorRequest("claude", {}, controller.signal), "claude");
+    await tick();
+    controller.abort();
+    expect((await pending).status).toBe(499);
+    expect(records.map((record) => [record.kind, record.accountId, record.status, record.completed, record.usage])).toEqual([
+      ["native", "A", null, false, null],
+      ["native", "B", 200, true, null],
+      // The advisor prefers the active account, which the failover moved to B.
+      ["advisor", "B", null, false, null],
+    ]);
+  });
+
+  it("a ledger that throws never fails a request", async () => {
+    const env = makeHub({
+      ledger: {
+        request: () => {
+          throw new Error("ledger broken");
+        },
+      },
+      script: [200, 500, 200],
+    });
+    expect((await native(env)).status).toBe(200);
+    expect((await advise(env)).status).toBe(500);
+    expect((await advise(env)).status).toBe(200);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   cacheUsageFrom,
+  createCodexUsageTap,
   createUsageTap,
   describeClaudeRequest,
   keepAliveBody,
@@ -129,5 +130,27 @@ describe("usage taps", () => {
     expect(cacheUsageFrom({ input_tokens: 10, output_tokens: 2 })).toBeNull();
     expect(cacheUsageFrom({ cache_read_input_tokens: -1 })).toBeNull();
     expect(cacheUsageFrom({ cache_read_input_tokens: 4 })).toMatchObject({ cacheReadTokens: 4, cacheWriteTokens: 0 });
+  });
+});
+
+describe("createCodexUsageTap", () => {
+  const completed = (cached: number) =>
+    `data: ${JSON.stringify({ type: "response.completed", response: { output: [], usage: { input_tokens: 500, input_tokens_details: { cached_tokens: cached }, output_tokens: 7 } } })}\n\n`;
+
+  it("reads response.completed across any chunking and skips other events unbuffered", () => {
+    const body = new TextEncoder().encode(
+      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "y".repeat(200_000) })}\n\nevent: response.completed\n${completed(400)}`,
+    );
+    for (const size of [1, 7, 64, body.byteLength]) {
+      const tap = createCodexUsageTap("text/event-stream; charset=utf-8");
+      for (let offset = 0; offset < body.byteLength; offset += size) tap.push(body.subarray(offset, offset + size));
+      expect(tap.usage()).toEqual({ inputTokens: 100, outputTokens: 7, cacheReadTokens: 400, cacheWriteTokens: 0, cacheWrite5mTokens: null, cacheWrite1hTokens: null });
+    }
+  });
+
+  it("reads a JSON body's usage", () => {
+    const tap = createCodexUsageTap("application/json");
+    tap.push(new TextEncoder().encode(JSON.stringify({ usage: { input_tokens: 10, output_tokens: 1 } })));
+    expect(tap.usage()).toMatchObject({ inputTokens: 10, cacheReadTokens: 0 });
   });
 });

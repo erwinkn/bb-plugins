@@ -29,6 +29,11 @@ export function SettingsPanel() {
           <Chip tone={e.reviewEnabled ? "strong" : "neutral"}>reviews {e.reviewEnabled ? "on" : "off"}</Chip>
           <Chip tone={e.providerRequestsEnabled ? "danger" : "neutral"}>provider requests {e.providerRequestsEnabled ? "allowed" : "off"}</Chip>
           <Chip>route {String(e.route)}</Chip>
+          {v.pooler.permitted !== null && (
+            <Chip tone={v.pooler.permitted ? "strong" : "danger"} title={v.pooler.detail}>
+              Pooler {v.pooler.provider} route {v.pooler.permitted ? "allowed" : "blocked"}
+            </Chip>
+          )}
           <Chip>budget day: {String(e.budgets?.timeZone)}</Chip>
         </div>
         {v.errors.review.length + v.errors.observation.length === 0 ? (
@@ -41,6 +46,9 @@ export function SettingsPanel() {
               </li>
             ))}
           </ul>
+        )}
+        {v.pooler.permitted !== null && (
+          <p className={v.pooler.permitted ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>{v.pooler.detail}</p>
         )}
         {v.notes.map((n) => (
           <p key={n} className="text-xs text-muted-foreground">
@@ -78,7 +86,10 @@ export function SettingsPanel() {
             </tbody>
           </table>
         </div>
-        <p className="text-xs text-muted-foreground">Account Pooler advisor routes: {v.pooler.detail}</p>
+        <p className="text-xs text-muted-foreground">
+          Account Pooler advisor routes:{" "}
+          {v.pooler.routes ? `claude ${v.pooler.routes.claude ? "on" : "off"}, codex ${v.pooler.routes.codex ? "on" : "off"} (read-only here; change them with bb pool-local advisor set).` : v.pooler.detail}
+        </p>
         <p className="text-xs text-muted-foreground">Every route sends at most one request per review, never retries and never falls back to another model, route or account.</p>
       </Section>
       <Section title="Not available yet">

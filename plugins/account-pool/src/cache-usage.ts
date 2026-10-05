@@ -64,7 +64,18 @@ export function bodyHash(body: Uint8Array): string {
   return createHash("sha256").update(body).digest("hex").slice(0, 12);
 }
 
+// The warmer and the usage ledger both describe the same upstream body; it is parsed once.
+const shapes = new WeakMap<Uint8Array, ClaudeRequestShape>();
+
 export function describeClaudeRequest(body: Uint8Array): ClaudeRequestShape {
+  const known = shapes.get(body);
+  if (known !== undefined) return known;
+  const shape = describeOnce(body);
+  shapes.set(body, shape);
+  return shape;
+}
+
+function describeOnce(body: Uint8Array): ClaudeRequestShape {
   const hash = bodyHash(body);
   let request: unknown;
   try {
@@ -209,6 +220,11 @@ export function createUsageTap(contentType: string | null): UsageTap {
       usage: () => usage,
     };
   }
+  return jsonBodyTap((parsed) => cacheUsageFrom(parsed.usage));
+}
+
+// A non-streamed body, buffered up to 1 MiB and parsed once at the end.
+function jsonBodyTap(read: (body: JsonObject) => CacheUsage | null): UsageTap {
   const chunks: Uint8Array[] = [];
   let bytes = 0;
   let overflow = false;
@@ -233,10 +249,89 @@ export function createUsageTap(contentType: string | null): UsageTap {
       }
       try {
         const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown;
-        return isObject(parsed) ? cacheUsageFrom(parsed.usage) : null;
+        return isObject(parsed) ? read(parsed) : null;
       } catch {
         return null;
       }
     },
   };
 }
+
+// Codex (OpenAI Responses) usage in the same shape. input_tokens includes cached_tokens, so the
+// uncached part becomes inputTokens and cached_tokens cacheReadTokens. OpenAI reports no cache
+// writes: cacheWriteTokens is 0 and its TTL split unknown.
+export function codexUsageFrom(value: unknown): CacheUsage | null {
+  if (!isObject(value)) return null;
+  const input = count(value.input_tokens);
+  const details = isObject(value.input_tokens_details)
+    ? value.input_tokens_details
+    : null;
+  const cached = count(details?.cached_tokens) ?? 0;
+  if (input === null) return null;
+  return {
+    inputTokens: Math.max(0, input - cached),
+    outputTokens: count(value.output_tokens),
+    cacheReadTokens: cached,
+    cacheWriteTokens: 0,
+    cacheWrite5mTokens: null,
+    cacheWrite1hTokens: null,
+  };
+}
+
+// The usage of a Codex response as it streams: SSE carries it in the final response.completed
+// (or response.incomplete) event, whose line holds the whole response, so only that line is kept,
+// up to 4 MiB. A JSON body is parsed once at the end if it fits in 1 MiB.
+const MAX_CODEX_EVENT_BYTES = 4 * 1024 * 1024;
+
+export function createCodexUsageTap(contentType: string | null): UsageTap {
+  const eventStream =
+    contentType?.split(";", 1)[0]?.trim().toLowerCase() === "text/event-stream";
+  if (!eventStream)
+    return jsonBodyTap((parsed) => codexUsageFrom(parsed.usage));
+  const decoder = new TextDecoder();
+  let usage: CacheUsage | null = null;
+  let line = "";
+  let keeping: boolean | null = null;
+  const readLine = (text: string) => {
+    try {
+      const event = JSON.parse(text.slice(5).trim()) as JsonObject;
+      if (isObject(event.response))
+        usage = codexUsageFrom(event.response.usage) ?? usage;
+    } catch {}
+  };
+  return {
+    push(chunk) {
+      const text = decoder.decode(chunk, { stream: true });
+      let start = 0;
+      for (let index = text.indexOf("\n"); index >= 0; ) {
+        if (keeping !== false) {
+          const full = line + text.slice(start, index);
+          if (isFinalCodexEvent(full)) readLine(full.trimEnd());
+        }
+        line = "";
+        keeping = null;
+        start = index + 1;
+        index = text.indexOf("\n", start);
+      }
+      if (keeping === false) return;
+      line += text.slice(start);
+      // Decide once the line's event type is visible; drop every other line at once.
+      if (keeping === null && line.length >= 48) {
+        keeping = isFinalCodexEvent(line);
+        if (!keeping) line = "";
+      }
+      if (line.length > MAX_CODEX_EVENT_BYTES) {
+        line = "";
+        keeping = false;
+      }
+    },
+    usage: () => usage,
+  };
+}
+
+function isFinalCodexEvent(line: string): boolean {
+  return /^data:\s*\{"type":"response\.(completed|incomplete|failed)"/u.test(
+    line,
+  );
+}
+

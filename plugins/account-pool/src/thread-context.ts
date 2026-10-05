@@ -78,6 +78,8 @@ export interface ThreadContextReader {
     signal: AbortSignal,
     options?: { fresh?: boolean },
   ): Promise<ThreadContext>;
+  // The last membership read for the thread, however old, without a request. Labels only.
+  peek(threadId: string): ThreadContext | null;
 }
 
 export function createProjectsContextReader(deps: {
@@ -109,6 +111,7 @@ export function createProjectsContextReader(deps: {
       }
       return context;
     },
+    peek: (threadId) => cache.get(threadId)?.context ?? null,
   };
 }
 
