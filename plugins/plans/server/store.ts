@@ -18,6 +18,8 @@ export const MIGRATIONS = [
   "CREATE INDEX outbox_plan_state ON outbox (plan_id, state, next_attempt_at)",
   "DROP TABLE waits",
   "DROP TABLE deliveries",
+  "CREATE INDEX plans_thread_updated ON plans (json_extract(body, '$.threadId'), json_extract(body, '$.updatedAt') DESC)",
+  "CREATE INDEX plans_updated ON plans (json_extract(body, '$.updatedAt') DESC)",
 ];
 
 export function createStore(bb: BbPluginApi) {
@@ -26,6 +28,17 @@ export function createStore(bb: BbPluginApi) {
   bb.storage.migrate(db, MIGRATIONS.slice(0, 6));
   const decode = (row: { body: string }) => planSchema.parse(JSON.parse(row.body));
   const all = () => (db.prepare("SELECT body FROM plans ORDER BY rowid DESC").all() as { body: string }[]).map(decode);
+  const forThread = (threadId: string) => (db.prepare("SELECT body FROM plans WHERE json_extract(body, '$.threadId') = ? ORDER BY rowid DESC").all(threadId) as { body: string }[]).map(decode);
+  const list = ({ threadId, offset = 0, limit = 10, excludeId }: { threadId?: string; offset?: number; limit?: number; excludeId?: string }) => {
+    const clauses: string[] = [];
+    const args: (string | number)[] = [];
+    if (threadId) { clauses.push("json_extract(body, '$.threadId') = ?"); args.push(threadId); }
+    if (excludeId !== undefined) { clauses.push("id != ?"); args.push(excludeId); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (db.prepare(`SELECT body FROM plans ${where} ORDER BY json_extract(body, '$.updatedAt') DESC, rowid DESC LIMIT ? OFFSET ?`).all(...args, limit, offset) as { body: string }[]).map(decode);
+  };
+  /** Scalar identity lookup: signals do not need another complete Plan decode. */
+  const threadId = (id: string): string | null | undefined => (db.prepare("SELECT json_extract(body, '$.threadId') AS threadId FROM plans WHERE id = ?").get(id) as { threadId: string | null } | undefined)?.threadId;
   const get = (id: string): Plan => {
     const row = db.prepare("SELECT body FROM plans WHERE id = ?").get(id) as { body: string } | undefined;
     if (!row) throw new Error("Plan not found.");
@@ -42,7 +55,14 @@ export function createStore(bb: BbPluginApi) {
     db.prepare("INSERT INTO plans (id, body) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET body = excluded.body").run(plan.id, body);
     return parsed;
   };
-  const changed = (id: string) => bb.realtime.publish("plans-changed", { id });
+  const changed = (id: string, previousThreadId?: string | null) => {
+    const currentThreadId = threadId(id);
+    bb.realtime.publish("plans-changed", {
+      id,
+      ...(currentThreadId !== undefined ? { threadId: currentThreadId } : {}),
+      ...(previousThreadId !== undefined ? { previousThreadId } : {}),
+    });
+  };
   const save = (plan: Plan) => write({ ...plan, updatedAt: Date.now() });
   const saveDelivery = (plan: Plan) => write({ ...get(plan.id), delivery: plan.delivery }, false);
   const warn = (message: string) => bb.log.warn(message);
@@ -86,6 +106,6 @@ export function createStore(bb: BbPluginApi) {
     }
   })();
   bb.storage.migrate(db, MIGRATIONS);
-  return { db, all, get, save, saveDelivery, changed, warn };
+  return { db, all, forThread, list, threadId, get, save, saveDelivery, changed, warn };
 }
 export type PlanStore = ReturnType<typeof createStore>;

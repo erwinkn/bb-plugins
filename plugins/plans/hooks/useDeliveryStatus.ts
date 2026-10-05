@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime } from "@get-bb/plugin-sdk/app";
 import { PLANS_CHANGED, usePlansApi } from "./usePlansApi";
+import { changesPlan } from "../lib/change-signal";
 
 type ApprovalState = "pending" | "failed" | "dropped" | "cancelled" | "sent";
 
@@ -60,7 +61,7 @@ export function useDeliveryStatus(planId: string, planStatus = "open") {
     if (requestedStatusRef.current !== planStatus) refreshRef.current();
   }, [planStatus]);
   useRealtime(PLANS_CHANGED, useCallback((payload: unknown) => {
-    if (typeof payload === "object" && payload !== null && "id" in payload && payload.id !== planId) return;
+    if (!changesPlan(payload, planId)) return;
     refreshRef.current();
   }, [planId]));
   return {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRealtime } from "@get-bb/plugin-sdk/app";
 import type { Plan } from "../contract";
 import { describeError } from "../lib/errors";
+import { changesPlan } from "../lib/change-signal";
 import { PLANS_CHANGED, usePlansApi } from "./usePlansApi";
 
 export interface PlanState {
@@ -14,9 +15,8 @@ export interface PlanState {
 }
 
 /**
- * One plan with its full version and comment history. `list` only carries the
- * latest version, so the review surface always reads from `get` and from what
- * mutations return.
+ * One plan with its full version and comment history, kept current by matching
+ * plan changes and mutation results.
  */
 export function usePlan(planId: string | null): PlanState {
   const api = usePlansApi();
@@ -56,7 +56,9 @@ export function usePlan(planId: string | null): PlanState {
     refetch();
     return () => { mountedRef.current = false; requestRef.current += 1; };
   }, [refetch]);
-  useRealtime(PLANS_CHANGED, refetch);
+  useRealtime(PLANS_CHANGED, useCallback((payload: unknown) => {
+    if (changesPlan(payload, planId)) refetch();
+  }, [planId, refetch]));
 
   const apply = useCallback((next: Plan) => {
     if (!mountedRef.current || next.id !== planId) return;

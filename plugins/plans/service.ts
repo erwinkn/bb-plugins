@@ -37,8 +37,9 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
     return item;
   };
   const mutate = (plan: Plan, work: () => void = () => {}) => {
+    const previousThreadId = store.threadId(plan.id);
     const saved = store.db.transaction(() => { work(); return store.save(plan); })();
-    store.changed(plan.id); session(plan.id).schedule(); return saved;
+    store.changed(plan.id, previousThreadId); session(plan.id).schedule(); return saved;
   };
   const create = async (input: z.input<typeof createSchema>, source: "agent" | "user" = "user") => {
     const { title, markdown, threadId, sample = false, reviewHeading, reviewSummary } = createSchema.parse(input);
@@ -211,7 +212,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
         store.db.prepare("DELETE FROM plans WHERE id = ?").run(id);
       })();
       await live.dispose();
-      sessions.delete(id); store.changed(id);
+      sessions.delete(id); store.changed(id, plan.threadId);
       if (plan.threadId) await metadata.clear(plan.threadId, id);
       return { ok: true as const };
     } catch (error) { live.resume(); throw error; }
@@ -235,7 +236,7 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
   };
   const list = ({ threadId, offset = 0 }: { threadId?: string; offset?: number }) => {
     z.number().int().nonnegative().parse(offset);
-    return store.all().filter((plan) => !threadId || plan.threadId === threadId).sort((a, b) => b.updatedAt - a.updatedAt).slice(offset, offset + 10);
+    return store.list({ threadId, offset });
   };
   const version = ({ id, versionId }: { id: string; versionId: string }) => {
     const plan = get({ id }); const version = plan.versions.find((item) => item.id === versionId);
@@ -244,18 +245,18 @@ export function createPlanService(bb: BbPluginApi, options: PlanServiceOptions =
   };
   bb.events.on("message.queued", ({ entry }) => {
     if (entry.waitingOn?.kind !== "interaction") return;
-    for (const plan of store.all()) if (plan.threadId === entry.threadId) sessions.get(plan.id)?.release();
+    for (const plan of store.forThread(entry.threadId)) sessions.get(plan.id)?.release();
   });
   bb.events.on("message.dispatched", ({ entry }) => {
-    for (const plan of store.all()) if (plan.threadId === entry.threadId) session(plan.id).dispatched(entry.id, entry.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
+    for (const plan of store.forThread(entry.threadId)) session(plan.id).dispatched(entry.id, entry.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"));
   });
   bb.events.on("message.cancelled", ({ entry }) => {
     // The deleted row can belong to an in-flight send whose pointer is not yet
     // persisted, so every session on the thread matches for itself.
-    for (const plan of store.all()) if (plan.threadId === entry.threadId) sessions.get(plan.id)?.cancelled(entry.id);
+    for (const plan of store.forThread(entry.threadId)) sessions.get(plan.id)?.cancelled(entry.id);
   });
   bb.events.on("thread.unarchived", ({ thread }) => {
-    for (const plan of store.all()) if (plan.threadId === thread.id) session(plan.id).unarchived();
+    for (const plan of store.forThread(thread.id)) session(plan.id).unarchived();
   });
   /** The thread's active plan from metadata, confirmed against the database. */
   const activePlan = ({ threadId }: { threadId: string }) => metadata.read(idSchema.parse(threadId));

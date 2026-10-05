@@ -47,7 +47,7 @@ export function createMetadata(bb: BbPluginApi, store: PlanStore) {
   };
   /** After a plan is deleted: point at the newest remaining plan or clear the keys. */
   const clear = (threadId: string, planId: string) => run(threadId, async () => {
-    const remaining = store.all().filter((plan) => plan.threadId === threadId && plan.id !== planId).sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    const remaining = store.list({ threadId, excludeId: planId, limit: 1 })[0];
     if (remaining) await bb.sdk.threads.updatePluginMetadata({ threadId, set: pointerFor(remaining) });
     else await bb.sdk.threads.updatePluginMetadata({ threadId, remove: [...POINTER_KEYS] });
   });
