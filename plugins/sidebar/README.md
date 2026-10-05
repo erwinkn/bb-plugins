@@ -36,6 +36,14 @@ under the current coordinator when you submit, using the same flow as the
 Initiative dashboard. Sidebar has no separate first-message form or repository
 submenu. Rename and Initiative overview remain in the row menu.
 
+**Advisor.** One Advisor row sits above the Initiatives header (and at the top
+of the Threads view) with the Advisor's count of new findings, on desktop and
+phones. It opens the Advisor feed (`/plugins/advisor/advisor`). The count is read
+once from the Advisor's read-only `unseen` RPC and then pushed by the Advisor on
+every change (republished here on `advisor-unseen`), so nothing polls. Without a
+running Advisor the row is not drawn. Hide the Advisor's own top-section row
+with BB's **Hide from sidebar** so this is the only entry.
+
 **Icon and color…**, next to Rename, swaps the row for a small picker: an
 automatic color (the hue from the name) or one of the eight identity hues, and
 one of sixteen BB icons. Each choice saves at once through the Projects

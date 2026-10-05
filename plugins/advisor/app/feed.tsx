@@ -154,23 +154,3 @@ export function FeedView({ onOpenWatch, onDiscuss }: { onOpenWatch: (watchId: st
     </div>
   );
 }
-
-/** The sidebar badge: unseen real findings across every watch. Renders nothing at zero. */
-export function UnseenBadge() {
-  const rpc = useRpc<typeof rpcContract>();
-  const [n, setN] = useState(0);
-  const refetch = useCallback(() => {
-    rpc.call("unseen").then(
-      (r) => setN(r.unseen),
-      () => {},
-    );
-  }, [rpc]);
-  useEffect(() => refetch(), [refetch]);
-  useRealtime("advisor.changed", refetch);
-  if (n === 0) return null;
-  return (
-    <span aria-label={`${n} new Advisor findings`} className="rounded-full bg-foreground px-1.5 text-[11px] leading-4 text-background">
-      {n > 99 ? "99+" : n}
-    </span>
-  );
-}

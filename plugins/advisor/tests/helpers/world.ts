@@ -37,6 +37,9 @@ export class FakeWorld {
   failGet = new Set<string>();
   /** threads.spawn calls (Discuss only; the Advisor never writes to a watched thread). */
   spawns: any[] = [];
+  /** Calls into the Sidebar plugin (the Advisor's unseen-count pushes). */
+  sidebarCalls: Array<{ method: string; input: unknown }> = [];
+  sidebarMissing = false;
   /** The next spawns that fail (BB refusing the create). */
   failSpawns = 0;
   /** What the Pooler's advisor.get answers; an Error is thrown, as for an absent plugin. */
@@ -173,7 +176,12 @@ export class FakeWorld {
           world.tokenCalls++;
           return { ok: true, token: "tok-advisor" };
         },
-        callRpc: async () => {
+        callRpc: async (args: { pluginId: string; method: string; input: unknown }) => {
+          if (args.pluginId === "sidebar") {
+            world.sidebarCalls.push({ method: args.method, input: args.input });
+            if (world.sidebarMissing) throw new Error("plugin sidebar is not running");
+            return { ok: true };
+          }
           if (world.poolerAdvisor instanceof Error) throw world.poolerAdvisor;
           return world.poolerAdvisor;
         },

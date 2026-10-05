@@ -1,7 +1,7 @@
 // T105: one feed across every watch, the unseen badge count, mark-seen and
 // Discuss. The fake reviewer and a fake BB world; no model request.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { oneLineDiff, rig, type Rig } from "./helpers/world.js";
 import { projectsInitiatives } from "../src/runtime/projects.js";
 
@@ -151,5 +151,29 @@ describe("A252 follow-ups", () => {
     expect(both.map((x: any) => x.reused)).toEqual([false, true]);
     expect(r.world.spawns).toHaveLength(1);
     expect(r.store.discussionOf(fb!.id)).toBe(both[0].threadId);
+  });
+});
+
+describe("T106 unseen count pushed to the Sidebar", () => {
+  it("pushes the count when it changes, coalesced, and only then; a missing Sidebar is harmless", async () => {
+    const r = await rig({ reviewEnabled: true, severityThreshold: "note" }, { unseenPushDelayMs: 1 });
+    const pushes = () => r.world.sidebarCalls.filter((c) => c.method === "advisorChanged").map((c) => (c.input as { unseen: number }).unseen);
+    await vi.waitFor(() => expect(pushes()).toEqual([0])); // on load
+    r.world.addThread("thr_a", { title: "A" });
+    await r.advisor.watch("thr_a", "test");
+    await r.tick();
+    await weaken(r, "thr_a");
+    await vi.waitFor(() => expect(pushes()).toEqual([0, 1]));
+    await r.tick(); // observation-only changes push nothing new
+    await new Promise((res) => setTimeout(res, 20));
+    expect(pushes()).toEqual([0, 1]);
+    const [o] = r.store.listOccurrences(r.store.getWatchByThread("thr_a")!.id);
+    r.world.sidebarMissing = true;
+    await r.harness.behavior.callRpc("findingAcknowledge", { occurrenceId: o!.id });
+    await vi.waitFor(() => expect(pushes()).toEqual([0, 1, 0]));
+    // The failed push is retried on the next change.
+    r.world.sidebarMissing = false;
+    await r.harness.behavior.callRpc("feedMarkSeen", {});
+    await vi.waitFor(() => expect(pushes()).toEqual([0, 1, 0, 0]));
   });
 });

@@ -2,7 +2,7 @@ Watch the threads you choose and keep a factual record of what their agents did:
 
 ## What you get
 
-- One **Advisor** entry in the sidebar with a live count of new findings across every watch (desktop; BB does not show sidebar badges on phones, so there the count heads the feed).
+- One **Advisor** entry, drawn by the Sidebar plugin right above Initiatives, with a live count of new findings on desktop and phones. BB's own Advisor row in the top section can be hidden with its **Hide from sidebar** option; the page and its URL keep working.
 - An **Advisor** page that opens on one feed of findings across every watched Initiative and thread, newest first, filterable by Initiative or thread. Each finding links to its thread and its evidence; **Mark seen** or **Mark all seen** clears the count. **Discuss** opens BB's new-thread composer with the finding filled in as a draft: nothing is sent and no agent starts until you submit, and the discussion is a separate thread (later clicks reopen it).
 - Your watched threads, each with Findings, Evidence, Coverage, Requirements and Reviews tabs. It works on desktop and on narrow screens.
 - An **Advisor** tab in a thread's side panel to watch that thread and see its findings.

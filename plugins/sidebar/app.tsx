@@ -1,5 +1,6 @@
 import { DndContext, DragOverlay, useDroppable } from "@dnd-kit/core";
 import { ModeToggle, ProjectMode } from "./components/project-mode";
+import { AdvisorEntry } from "./components/advisor-entry";
 import {
   useCallback,
   useEffect,
@@ -885,6 +886,7 @@ function ThreadListContent(props: PluginThreadListProps) {
         </style>
       )}
       <ProjectHueStyle />
+      <AdvisorEntry onNavigate={props.onNavigate} />
       <div className="shrink-0 px-2 pt-2">
         <div className="flex items-center gap-1">
           <ModeToggle />

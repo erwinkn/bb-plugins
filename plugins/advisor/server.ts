@@ -20,6 +20,8 @@ import { discussionPrompt } from "./src/discuss.js";
 import { runCli } from "./src/cli.js";
 
 export { rpcContract };
+
+const SIDEBAR_PLUGIN_ID = "sidebar";
 export type { AdvisorRpc } from "./src/rpc.js";
 
 export interface AdvisorPluginOptions {
@@ -32,6 +34,8 @@ export interface AdvisorPluginOptions {
   fakeFindings?: TransportDeps["fakeFindings"];
   /** Test seam: per-read deadline for native and Projects reads (production 10 s). */
   readDeadlineMs?: number;
+  /** Test seam: how long unseen-count pushes to the Sidebar are coalesced (production 250 ms). */
+  unseenPushDelayMs?: number;
   /** Test seam: receives the runtime once the factory has registered everything. */
   onReady?: (r: { advisor: Advisor; store: ReturnType<typeof openStore> }) => void;
 }
@@ -51,6 +55,29 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
   return async function plugin(bb: BbPluginApi) {
     const settings = bb.settings.define(settingsDescriptors);
     const store = openStore(bb);
+    // T106: the Sidebar plugin renders the one Advisor entry and cannot hear this plugin's
+    // realtime channel, so each change of the unseen count is pushed to it (coalesced, best
+    // effort: without the Sidebar nothing happens).
+    let pushedUnseen: number | null = null;
+    let pushTimer: ReturnType<typeof setTimeout> | null = null;
+    const pushUnseen = () => {
+      if (pushTimer) return;
+      pushTimer = setTimeout(() => {
+        pushTimer = null;
+        const unseen = unseenTotal(store, advisor.resolved.config.severityThreshold);
+        if (unseen === pushedUnseen) return;
+        bb.sdk.plugins
+          .callRpc({ pluginId: SIDEBAR_PLUGIN_ID, method: "advisorChanged", input: { unseen }, outputSchema: z.unknown() })
+          .then(
+            () => (pushedUnseen = unseen),
+            () => {},
+          );
+      }, opts.unseenPushDelayMs ?? 250);
+    };
+    const publish = (channel: string, payload: unknown) => {
+      bb.realtime.publish(channel, payload);
+      if (channel === "advisor.changed") pushUnseen();
+    };
     const host = opts.host ?? sdkHost(bb, POOLER_PLUGIN_ID);
     const now = opts.now ?? Date.now;
     const fetchImpl: FetchLike = opts.fetch ?? ((url, init) => fetch(url, init));
@@ -65,7 +92,7 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
       now,
       sleep: opts.sleep ?? sleepFor,
       log: bb.log,
-      publish: (channel, payload) => bb.realtime.publish(channel, payload),
+      publish: (channel, payload) => publish(channel, payload),
       ...(opts.readDeadlineMs ? { readDeadlineMs: opts.readDeadlineMs } : {}),
       transportDeps: {
         fetch: fetchImpl,
@@ -208,20 +235,20 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
       findingAcknowledge: ({ occurrenceId }) => {
         store.acknowledge(occurrenceId, now());
         store.logAction(store.getOccurrence(occurrenceId)?.watchId ?? null, "acknowledge", occurrenceId, via, now());
-        bb.realtime.publish("advisor.changed", { at: now() });
+        publish("advisor.changed", { at: now() });
         return { ok: true as const };
       },
       issueSetState: ({ watchId, category, locator, state }) => {
         const verified = store.listIssues(watchId).find((i) => i.category === category && i.locator === locator)?.subjectVerified ?? false;
         store.setIssueState(watchId, category, locator, state, verified, now());
         store.logAction(watchId, `issue-${state}`, `${category} ${locator}`, via, now());
-        bb.realtime.publish("advisor.changed", { at: now() });
+        publish("advisor.changed", { at: now() });
         return { ok: true as const };
       },
       findingsClearAcknowledged: ({ watchId }) => {
         const cleared = store.clearAcknowledged(watchId);
         store.logAction(watchId, "clear-view", `${cleared} acknowledged findings hidden from the list`, via, now());
-        bb.realtime.publish("advisor.changed", { at: now() });
+        publish("advisor.changed", { at: now() });
         return { cleared };
       },
       ledger: () => ({ rows: store.listLedger(100) }),
@@ -230,7 +257,7 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
       feedMarkSeen: ({ initiativeId, watchId }) => {
         const marked = store.acknowledgeAll(feedWatchIds(store, { initiativeId, watchId }), now());
         store.logAction(watchId ?? null, "acknowledge-all", `${marked} findings${initiativeId ? ` of Initiative ${initiativeId}` : ""}`, via, now());
-        bb.realtime.publish("advisor.changed", { at: now() });
+        publish("advisor.changed", { at: now() });
         return { marked };
       },
       discussDraft: async ({ occurrenceId }) => {
@@ -253,7 +280,7 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
           });
           store.saveDiscussion(occurrenceId, thread.id, now());
           store.logAction(d.watchId, "discuss", `${occurrenceId} → ${thread.id}`, via, now());
-          bb.realtime.publish("advisor.changed", { at: now() });
+          publish("advisor.changed", { at: now() });
           return { threadId: thread.id, reused: false };
         })();
         const shared = create.then((r) => r.threadId);
@@ -293,7 +320,11 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
       run: (argv) => runCli(argv, { store, advisor, initiatives, now }),
     });
 
-    bb.onDispose(() => advisor.dispose());
+    bb.onDispose(() => {
+      if (pushTimer) clearTimeout(pushTimer);
+      return advisor.dispose();
+    });
+    pushUnseen(); // a Sidebar that loaded first, or a reload, gets the current count
     opts.onReady?.({ advisor, store });
   };
 }

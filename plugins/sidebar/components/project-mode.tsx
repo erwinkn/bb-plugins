@@ -57,6 +57,7 @@ import { ThreadRow, type ProviderIconRecord } from "./thread-row";
 import { ThreadChildren } from "./thread-children";
 import { ThreadDragOverlay } from "./thread-drag-overlay";
 import { menuItemClass } from "./menus";
+import { AdvisorEntry } from "./advisor-entry";
 
 export function ModeToggle() {
   const state = useClientState();
@@ -241,6 +242,7 @@ export function ProjectMode(props: PluginThreadListProps) {
         </style>
       )}
       <ProjectHueStyle />
+      <AdvisorEntry onNavigate={props.onNavigate} />
       <div className="flex shrink-0 items-center gap-2 px-2 pt-2 pb-2">
         <ModeToggle />
         <span className="flex-1 text-xs font-medium">Initiatives</span>

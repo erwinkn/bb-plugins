@@ -143,14 +143,10 @@ describe("Advisor page", () => {
     await waitFor(() => expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "thr_spawned_1" })));
   });
 
-  it("T105: the sidebar badge counts unseen findings live and hides at zero", async () => {
-    const r = await backendWithFinding();
+  it("T106: the Advisor page keeps its route but adds no sidebar badge (the Sidebar plugin renders the entry)", () => {
     const page = app.navPanels.find((p) => p.id === "advisor")!;
-    const badge = renderSlot({ component: page.experimental_sidebarAccessory! }, {}, { rpc: rpcFor(r) as any });
-    await badge.findByLabelText("1 new Advisor findings");
-    r.store.acknowledgeAll(null, r.clock.now());
-    await badge.behavior.emitRealtime("advisor.changed", {});
-    await waitFor(() => expect(badge.queryByLabelText(/new Advisor findings/u)).toBeNull());
+    expect(page.path).toBe("advisor");
+    expect(page.experimental_sidebarAccessory).toBeUndefined();
   });
 
   it("A252 #3: Mark all seen stays available while an unseen finding is only on an older page", async () => {

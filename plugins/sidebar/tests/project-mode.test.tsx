@@ -231,6 +231,13 @@ describe("Projects sidebar mode", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); }); expect(read).toHaveBeenCalledTimes(2);
   });
 
+  it("T106: puts the one Advisor entry right above the Initiatives header", async () => {
+    const slot = mount(true, { rpc: { advisorEntry: () => ({ available: true, unseen: 2 }) } });
+    const entry = await slot.findByRole("link", { name: "Advisor, 2 new findings" });
+    const header = slot.getAllByText("Initiatives").find((el) => el.tagName === "SPAN")!;
+    expect(entry.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(slot.container.querySelectorAll("[data-advisor-entry]")).toHaveLength(1);
+  });
   it("renders one colored project row that opens its coordinator", async () => {
     const slot = mount();
     await waitFor(() => expect(slot.getByRole("link", { name: "Open Useful search" })).toBeTruthy());

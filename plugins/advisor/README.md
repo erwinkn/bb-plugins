@@ -127,11 +127,15 @@ BB, not on the plugin:
 
 ## Feed, badge and Discuss (T105)
 
-- **Entry:** the Advisor's own `navPanel` row. Its `experimental_sidebarAccessory`
-  shows unseen real findings (not previews) at or above the display threshold,
-  summed over every watch, refetched on `advisor.changed`. BB does not mount
-  sidebar accessories on compact viewports, so on phones the count shows at the
-  top of the feed instead (an SDK gap, not worked around with a second entry).
+- **Entry (T106):** the Sidebar plugin draws the one Advisor row above the
+  Initiatives header (and atop the Threads view). It reads the count once from
+  this plugin's `unseen` RPC; afterwards this plugin pushes every change of the
+  count to the Sidebar's `advisorChanged` RPC (coalesced 250 ms, sent only when
+  the number changed, best effort when the Sidebar is absent), because an app
+  only hears its own plugin's realtime. The count is unseen real findings (not
+  previews) at or above the display threshold, summed over every watch. The
+  `navPanel` registration stays because it is what serves the page's URL; hide
+  its host row with BB's "Hide from sidebar" (a per-user preference).
 - **Feed:** the page's default route. Newest first across all watches, with a
   `(createdAt, id)` cursor, filters by Initiative (watches whose thread an
   Initiative watch lists) or by thread. Preview findings stay labelled and are
