@@ -30,6 +30,8 @@ export interface DiffFileListProps {
   truncated: boolean;
   onSelect: (path: string) => void;
   onRefresh: () => void;
+  /** Inspecting another thread's workspace: reverts stay hidden. */
+  readOnly?: boolean;
 }
 
 export function DiffFileList({
@@ -44,6 +46,7 @@ export function DiffFileList({
   truncated,
   onSelect,
   onRefresh,
+  readOnly = false,
 }: DiffFileListProps) {
   const activeRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
@@ -74,7 +77,7 @@ export function DiffFileList({
         <ul role="list" className="flex flex-col">
           {files.map((entry) => (
             <li key={`${targetKey(target)}:${entry.path}`}>
-              <DiffFileActions entry={entry} target={target} threadId={threadId} onChanged={onChanged}>
+              <DiffFileActions entry={entry} target={target} threadId={threadId} onChanged={onChanged} readOnly={readOnly}>
                 <Row
                   entry={entry}
                   active={entry.path === activePath}

@@ -12,6 +12,9 @@ import { diffEntrySchema, diffTargetSchema, hasConflictMarkers, isWorkingTreeTar
 import { FILES_CHANGED_CHANNEL, watchContract, watchSignals, type FilesChangedSignal } from "./lib/watch-contract.js";
 import { WatchRegistry, WATCH_TTL_MS } from "./lib/watch-registry.js";
 import { hostOfflineMessage, isHostOfflineMessage } from "./lib/host-offline.js";
+import { findPanelTab, solePanelTabParams } from "./lib/panel-target.js";
+import { orderWorkspaceEntries, shapeWorkspaceEntry, type WorkspaceThreadMetadata, type WorkspaceThreadRow } from "./lib/workspace-entries.js";
+import { treeSchema, type ProjectTree, type TreeNode } from "./lib/projects-tree.js";
 
 type EditorEnvironment = Awaited<ReturnType<BbPluginApi["sdk"]["environments"]["get"]>>;
 type CheckoutDefaultBranch = { name: string; ref: string };
@@ -135,6 +138,67 @@ export const rpcContract = defineRpcContract({
   assets: {
     input: z.null(),
     output: z.object({ baseUrl: z.string() }),
+  },
+  /**
+   * The workspaces a thread panel may inspect: the thread's coordinator and
+   * the threads under it, named the way Projects manages them (W#, label,
+   * role) when its metadata answers, plus each thread's native branch and
+   * worktree metadata. Unavailable and archived rows stay listed, marked,
+   * so a tab pointing at one never silently retargets.
+   */
+  workspaces: {
+    input: z.object({ threadId: z.string().regex(BB_ID) }).strict(),
+    output: z.object({
+      coordinatorThreadId: z.string(),
+      /** Whether Projects naming applied (tree or per-thread tags). */
+      named: z.boolean(),
+      /** Set when Projects runs but its tree could not be read. */
+      degraded: z.string().nullable(),
+      entries: z.array(
+        z.object({
+          threadId: z.string(),
+          role: z.enum(["coordinator", "worker", "review", "adhoc", "thread"]),
+          workerRef: z.string().nullable(),
+          label: z.string(),
+          title: z.string().nullable(),
+          bbProjectId: z.string().nullable(),
+          status: z.string(),
+          archived: z.boolean(),
+          environmentId: z.string().nullable(),
+          hostId: z.string().nullable(),
+          branch: z.string().nullable(),
+          isWorktree: z.boolean().nullable(),
+          workspaceKind: z.string().nullable(),
+          environmentName: z.string().nullable(),
+          environmentPath: z.string().nullable(),
+          available: z.boolean(),
+          reason: z.string().nullable(),
+        }),
+      ),
+    }),
+  },
+  /**
+   * Persist a Files or Changes tab's new workspace target by rewriting its
+   * `paramsJson` in the thread's tab record. The tab is matched by
+   * (plugin, action, current params): openPanel never keeps two tabs of one
+   * action with identical params, so a match is unique. A missed or
+   * ambiguous match declines honestly — the session target stands either way.
+   */
+  setPanelTarget: {
+    input: z
+      .object({
+        threadId: z.string().regex(BB_ID),
+        actionId: z.enum(["files", "changes"]),
+        expectedParams: z.unknown(),
+        params: z.unknown(),
+      })
+      .strict(),
+    output: z.object({
+      persisted: z.boolean(),
+      reason: z.string().nullable(),
+      /** The matched tab's real params on a decline; absent when unreadable. */
+      currentParams: z.unknown().optional(),
+    }),
   },
   /** The workspace a thread (or a project's default checkout) edits. */
   workspace: {
@@ -1048,6 +1112,128 @@ export default async function plugin(bb: BbPluginApi) {
       const source: FileSource = { kind: "workspace", threadId: null, environmentId: null, projectId };
       const target = await resolveTarget(source, ".");
       return { source, root: target.rootPath, label: path.basename(target.rootPath) };
+    },
+
+    async workspaces({ threadId }) {
+      const self = await bb.sdk.threads.get({ threadId });
+      const coordinatorId = self.parentThreadId ?? self.id;
+      // The Projects tree v1 is authoritative for Initiative membership —
+      // its nodes name every managed thread across all member BB projects
+      // with stable labels, worker refs and work/review/adhoc roles. A
+      // transient failure is not absence: the plugin still running means the
+      // error is reported as degraded naming, not dropped rows.
+      let tree: ProjectTree | null = null;
+      let degraded: string | null = null;
+      const projectsPlugin = (await bb.sdk.plugins.list()).plugins.find((plugin) => plugin.id === "projects");
+      const projectsRunning = Boolean(projectsPlugin?.enabled && projectsPlugin.status === "running");
+      if (projectsRunning) {
+        try {
+          tree = await bb.sdk.plugins.callRpc({ pluginId: "projects", method: "tree", input: null, outputSchema: treeSchema });
+        } catch (error) {
+          degraded = `The Projects tree could not be read; names are native fallbacks. ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+      const treeProject = tree?.projects.find((project) => project.coordinatorThreadId === coordinatorId) ?? null;
+      const members = new Map<string, TreeNode>();
+      if (treeProject !== null) {
+        for (const node of treeProject.nodes) if (node.threadId !== null) members.set(node.threadId, node);
+      }
+
+      // Native rows supply the environment facts. `archived` is
+      // three-valued: the default list excludes archived rows, `true` names
+      // only them. Both feeds merge by id so either interpretation still
+      // yields every candidate. Native calls must not fail soft: a
+      // transient error masquerading as "no workers" would mark every
+      // workspace unavailable, so a failure fails the whole call and the
+      // picker's error state offers a retry.
+      const [active, archived] = await Promise.all([
+        bb.sdk.threads.list({ parentThreadId: coordinatorId, limit: 200 }),
+        bb.sdk.threads.list({ parentThreadId: coordinatorId, archived: true, limit: 200 }),
+      ]);
+      const rows = new Map<string, WorkspaceThreadRow>();
+      for (const row of [...active, ...archived]) rows.set(row.id, row);
+      const fetchRow = async (id: string): Promise<WorkspaceThreadRow> => {
+        const thread = await bb.sdk.threads.get({ threadId: id });
+        const environment =
+          thread.environmentId === null
+            ? null
+            : await bb.sdk.environments.get({ environmentId: thread.environmentId });
+        return {
+          id: thread.id,
+          parentThreadId: thread.parentThreadId,
+          projectId: thread.projectId,
+          title: thread.title,
+          titleFallback: thread.titleFallback,
+          archivedAt: thread.archivedAt,
+          deletedAt: thread.deletedAt,
+          status: thread.status,
+          environmentId: thread.environmentId,
+          environmentHostId: environment?.hostId ?? null,
+          environmentBranchName: environment?.branchName ?? null,
+          environmentIsWorktree: environment?.isWorktree ?? null,
+          environmentName: environment?.name ?? null,
+          environmentPath: environment?.path ?? null,
+          environmentWorkspaceDisplayKind: null,
+        };
+      };
+      // The coordinator is nobody's child; its environment fields come from
+      // `threads.get` plus one `environments.get` for the display metadata.
+      if (!rows.has(coordinatorId)) rows.set(coordinatorId, await fetchRow(coordinatorId));
+      // Members the tree names but the coordinator does not parent —
+      // adopted and other-member-project workers — are fetched directly.
+      for (const memberId of members.keys()) {
+        if (!rows.has(memberId)) rows.set(memberId, await fetchRow(memberId));
+      }
+      // The panel's own thread must always be reachable — it may sit under a
+      // coordinator of another project, or outside the tree entirely.
+      if (!rows.has(self.id)) rows.set(self.id, await fetchRow(self.id));
+
+      // Exact membership when the tree answered: managed nodes plus the
+      // coordinator and the panel thread. Without it every child of the
+      // coordinator is a candidate, named by per-thread metadata tags.
+      const picked = treeProject !== null ? [...rows.values()].filter((row) => members.has(row.id) || row.id === coordinatorId || row.id === self.id) : [...rows.values()];
+      let named = treeProject !== null;
+      const entries = orderWorkspaceEntries(
+        await Promise.all(
+          picked.map(async (row) => {
+            const node = members.get(row.id) ?? null;
+            const metadata =
+              node === null
+                ? await bb.sdk.threads
+                    .getPluginMetadata({ threadId: row.id, pluginId: "projects" })
+                    .then((data) => data as WorkspaceThreadMetadata)
+                    .catch(() => null)
+                : null;
+            if (metadata !== null) named = true;
+            return shapeWorkspaceEntry(row, metadata, { coordinator: row.id === coordinatorId, node });
+          }),
+        ),
+      );
+      return { coordinatorThreadId: coordinatorId, named, degraded, entries };
+    },
+
+    async setPanelTarget({ threadId, actionId, expectedParams, params }) {
+      if (params !== null && (typeof params !== "object" || Array.isArray(params))) {
+        throw new Error("Panel params must be a JSON object or null");
+      }
+      if (JSON.stringify(params).length > 4096) throw new Error("Panel params are too large to persist");
+      const { revision, tabs } = await bb.sdk.threads.tabs.get({ threadId });
+      const match = findPanelTab(tabs, { pluginId: "editor", actionId, params: expectedParams });
+      // On a decline the panel adopts the tab's real params when they are
+      // knowable, so the next pick chains from the truth instead of a stale
+      // expected an unordered props delivery left behind.
+      const current = match === null ? solePanelTabParams(tabs, { pluginId: "editor", actionId }) : { found: false as const };
+      const currentParams = current.found ? current.params : undefined;
+      if (match === null) return { persisted: false, reason: "The panel tab was not found; the workspace target applies to this session only", currentParams };
+      if (match === "ambiguous") return { persisted: false, reason: "More than one panel tab matched; the workspace target applies to this session only" };
+      if (match === "unreadable") {
+        return { persisted: false, reason: "A panel tab's params could not be read; the workspace target applies to this session only" };
+      }
+      const nextTabs = tabs.map((tab) =>
+        tab.id === match.id && tab.kind === "plugin-panel" ? { ...tab, paramsJson: JSON.stringify(params) } : tab,
+      );
+      await bb.sdk.threads.tabs.update({ threadId, expectedRevision: revision, tabs: nextTabs });
+      return { persisted: true, reason: null };
     },
 
     async read({ path: filePath, source }) {

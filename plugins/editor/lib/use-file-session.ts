@@ -38,6 +38,12 @@ export interface UseFileSessionOptions {
   path: string | null;
   /** Content the caller already read, for example from the diff RPC. */
   seed?: SessionSeed | null;
+  /**
+   * Inspection views attach `writable: false`: they read and mirror but may
+   * not drive writes or un-park kept edits. Flipping it re-attaches, so an
+   * explicit edit opt-in upgrades the view without losing the buffer.
+   */
+  writable?: boolean;
 }
 
 export interface UseFileSession {
@@ -66,7 +72,7 @@ const NEVER_CHANGES = () => NO_OP;
  * share the text, the dirty state and the save queue.
  */
 export function useFileSession(options: UseFileSessionOptions): UseFileSession {
-  const { source, path, seed = null } = options;
+  const { source, path, seed = null, writable = true } = options;
   const io = useFileSessionIo();
   const viewId = useId();
   const key = path === null ? null : sessionKeyFor(source, path);
@@ -90,8 +96,8 @@ export function useFileSession(options: UseFileSessionOptions): UseFileSession {
 
   useEffect(() => {
     if (session === null) return;
-    return session.attach(viewId);
-  }, [session, viewId]);
+    return session.attach(viewId, { writable });
+  }, [session, viewId, writable]);
 
   const seedContent = seed?.content ?? null;
   const seedSha = seed?.sha256 ?? null;
@@ -118,15 +124,18 @@ export function useFileSession(options: UseFileSessionOptions): UseFileSession {
     isEditor,
     claimEditor: useCallback(() => session?.claimEditor(viewId), [session, viewId]),
     setContent: useCallback((text: string) => session?.setContent(text, viewId), [session, viewId]),
-    save: useCallback(() => session?.save() ?? Promise.resolve(false), [session]),
-    overwrite: useCallback(() => session?.overwrite() ?? Promise.resolve(false), [session]),
+    // Every mutation carries this view's own capability: an inspection view
+    // cannot borrow another view's opt-in, and the session rechecks it when
+    // the write runs, not when it was asked for.
+    save: useCallback(() => session?.save(viewId) ?? Promise.resolve(false), [session, viewId]),
+    overwrite: useCallback(() => session?.overwrite(viewId) ?? Promise.resolve(false), [session, viewId]),
     reload: useCallback(
-      () => session?.reload() ?? Promise.resolve<ReloadOutcome>({ ok: false, reason: "error", message: "No file" }),
-      [session],
+      () => session?.reload(viewId) ?? Promise.resolve<ReloadOutcome>({ ok: false, reason: "error", message: "No file" }),
+      [session, viewId],
     ),
     refresh: useCallback(() => session?.refresh() ?? Promise.resolve(false), [session]),
-    restoreDraft: useCallback(() => session?.restoreDraft(), [session]),
-    discardDraft: useCallback(() => session?.discardDraft(), [session]),
+    restoreDraft: useCallback(() => session?.restoreDraft(viewId), [session, viewId]),
+    discardDraft: useCallback(() => session?.discardDraft(viewId), [session, viewId]),
   };
 }
 

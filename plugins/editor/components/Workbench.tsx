@@ -41,6 +41,8 @@ export interface WorkbenchProps {
   /** Stable key for per-workspace memory (last file). */
   workspaceKey: string;
   label: string;
+  /** Inspecting another thread's workspace: read everywhere, write nowhere. */
+  inspectOnly?: boolean;
   prefs: EditorPrefs;
   /** Optimistic preference write; the settings store confirms it. */
   onSetPref: SetPref;
@@ -69,7 +71,7 @@ const NAVIGATE_FLUSH_MS = 1500;
 /** How long a change notice may still be the echo of our own mutation. */
 const MUTATION_ECHO_WINDOW_MS = 2000;
 
-export function Workbench({ surface, source, initialPath, workspaceKey, label, prefs, onSetPref, Original }: WorkbenchProps) {
+export function Workbench({ surface, source, initialPath, workspaceKey, label, inspectOnly = false, prefs, onSetPref, Original }: WorkbenchProps) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const paneId = useId().replace(/[^a-zA-Z0-9]/g, "");
@@ -114,8 +116,10 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
     sourceKind: source.kind,
     host: source.experimental_hostId ?? undefined,
   }));
-  // The panel closing or a thread switch must not take pending writes down.
-  useEffect(() => () => void flushDirtySessions({ reason: "workbench-unmount" }), []);
+  // The panel closing or a workspace switch flushes this workspace's writes;
+  // buffers parked for the switch or held by another workspace are not its
+  // to save.
+  useEffect(() => () => void flushDirtySessions({ reason: "workbench-unmount", source }), [source]);
   const sessionOverview = useSessionsOverview();
 
   const show = useCallback((path: string, options: { record: boolean }) => {
@@ -388,16 +392,18 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
 
   const createEntry = useCallback(
     async (path: string, kind: CreateKind) => {
+      if (inspectOnly) throw new Error("This workspace is open for inspection; enable editing to change it");
       await rpc.call("create", { path, source, kind });
       if (await loadTree({ quiet: true })) noteOwnMutation([path]);
       if (kind === "file") guardedShow(path, { record: true });
       else toast.success(`Created ${path}/`);
     },
-    [guardedShow, loadTree, noteOwnMutation, rpc, source],
+    [inspectOnly, guardedShow, loadTree, noteOwnMutation, rpc, source],
   );
 
   const renameEntry = useCallback(
     async (path: string, newPath: string, kind: CreateKind) => {
+      if (inspectOnly) throw new Error("This workspace is open for inspection; enable editing to change it");
       const prefix = `${path}/`;
       // The open file counts when its tree path is the renamed one; a file
       // outside the root is never under a tree entry.
@@ -422,11 +428,12 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       if (movesOpenFile && treePath !== null) show(renamed(treePath), { record: false });
       if (await loadTree({ quiet: true })) noteOwnMutation([path, newPath]);
     },
-    [treePath, loadTree, noteOwnMutation, rpc, show, source],
+    [inspectOnly, treePath, loadTree, noteOwnMutation, rpc, show, source],
   );
 
   const deleteEntry = useCallback(
     async (path: string, kind: CreateKind) => {
+      if (inspectOnly) throw new Error("This workspace is open for inspection; enable editing to change it");
       const removed = (entry: string) => entry === path || (kind === "directory" && entry.startsWith(`${path}/`));
       const gone = treePath !== null && removed(treePath);
       // Deleting the open file would take its unsaved edits with it.
@@ -450,7 +457,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
       });
       toast.success(`Deleted ${path}`);
     },
-    [activePath, treePath, loadTree, rpc, source],
+    [activePath, inspectOnly, treePath, loadTree, rpc, source],
   );
 
   const toggleTree = useCallback(() => {
@@ -491,6 +498,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
         isLoading={tree.isLoading}
         error={tree.error}
         activePath={treePath}
+        readOnly={inspectOnly}
         onOpenFile={openFile}
         onRefresh={() => void loadTree()}
         onLoadDirectory={loadDirectory}
@@ -551,6 +559,7 @@ export function Workbench({ surface, source, initialPath, workspaceKey, label, p
           paneId={paneId}
           source={source}
           path={activePath}
+          inspectOnly={inspectOnly}
           prefs={prefs}
           treeOpen={treeOpen}
           treeSide={prefs.fileTreeSide}

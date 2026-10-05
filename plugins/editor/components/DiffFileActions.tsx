@@ -13,12 +13,14 @@ import { ContextMenu, menuAt, type MenuState } from "./ContextMenu";
  * It opens from a right click, a long press on a touch screen, and from the
  * keyboard's menu key or Shift+F10.
  */
-export function DiffFileActions({ children, entry, target, threadId, onChanged }: {
+export function DiffFileActions({ children, entry, target, threadId, onChanged, readOnly = false }: {
   children: ReactNode;
   entry: DiffEntry;
   target: DiffTarget;
   threadId: string;
   onChanged: () => void;
+  /** Inspecting another thread's workspace: the revert affordance stays hidden. */
+  readOnly?: boolean;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const io = useFileSessionIo();
@@ -28,6 +30,8 @@ export function DiffFileActions({ children, entry, target, threadId, onChanged }
   const running = useRef(false);
   /** Holds the file's session open between the read and the action, so its text stays current. */
   const detach = useRef<(() => void) | null>(null);
+  /** The revert view id: the mutation's invoker, writable only while the pane may edit. */
+  const revertView = useRef<string | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -38,6 +42,7 @@ export function DiffFileActions({ children, entry, target, threadId, onChanged }
   }, []);
 
   const enabled =
+    !readOnly &&
     isWorkingTreeTarget(target) &&
     !entry.binary &&
     entry.loadMode !== "too_large" &&
@@ -47,6 +52,7 @@ export function DiffFileActions({ children, entry, target, threadId, onChanged }
   const finish = () => {
     detach.current?.();
     detach.current = null;
+    revertView.current = null;
     running.current = false;
     if (mounted.current) {
       setBusy(false);
@@ -55,7 +61,7 @@ export function DiffFileActions({ children, entry, target, threadId, onChanged }
   };
 
   const prepare = async () => {
-    if (running.current) return;
+    if (running.current || !enabled) return;
     running.current = true;
     setBusy(true);
     try {
@@ -72,7 +78,13 @@ export function DiffFileActions({ children, entry, target, threadId, onChanged }
           seed: { content: data.newContent, sha256: data.sha256, absolutePath: data.absolutePath, relativePath: data.relativePath },
         });
       }
-      if (session) detach.current = session.attach(`revert:${crypto.randomUUID()}`);
+      if (session) {
+        // The revert view is writable only while this pane may edit — in an
+        // inspection the attach stays read-only and the session itself then
+        // refuses the mutation, no matter how it was reached.
+        revertView.current = `revert:${crypto.randomUUID()}`;
+        detach.current = session.attach(revertView.current, { writable: enabled });
+      }
       const snapshot = session?.getSnapshot();
       const deleting = data.oldContent === null;
       const run = async () => {
@@ -90,7 +102,8 @@ export function DiffFileActions({ children, entry, target, threadId, onChanged }
             });
             return result.kind === "deleted" ? null : result;
           };
-          if (session && snapshot) await session.mutateFile(snapshot, action);
+          if (session && snapshot && revertView.current !== null) await session.mutateFile(snapshot, action, revertView.current);
+          else if (!enabled) throw new Error("This workspace is open for inspection; enable editing to change it");
           else await action();
           onChanged();
           toast.success(deleting ? "File deleted" : data.newContent === null ? "File restored" : "File reverted");

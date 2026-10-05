@@ -462,6 +462,199 @@ test("a project checkout resolves its comparison default on the checkout host", 
     environmentId: "env_test", target: "all", mergeBaseBranch: "origin/main",
   });
 });
+type ThreadRow = {
+  id: string; parentThreadId: string | null; projectId: string | null;
+  title: string | null; titleFallback: string | null;
+  archivedAt: number | null; deletedAt: number | null; status: string;
+  environmentId: string | null; environmentHostId: string | null;
+  environmentBranchName: string | null; environmentIsWorktree: boolean | null;
+  environmentName: string | null; environmentPath: string | null;
+  environmentWorkspaceDisplayKind: string | null;
+};
+
+function threadRow(overrides: Partial<ThreadRow>): ThreadRow {
+  return {
+    id: "thr_x", parentThreadId: "thr_coord", projectId: "proj_self",
+    title: null, titleFallback: "fallback", archivedAt: null, deletedAt: null,
+    status: "idle", environmentId: "env_x", environmentHostId: "host_primary",
+    environmentBranchName: "main", environmentIsWorktree: false,
+    environmentName: null, environmentPath: "/ws", environmentWorkspaceDisplayKind: null,
+    ...overrides,
+  };
+}
+
+async function workspacesHost(options: {
+  self: ThreadRow;
+  children: ThreadRow[];
+  archived?: ThreadRow[];
+  threads?: Map<string, { thread: unknown; environment?: unknown }>;
+  metadata?: Map<string, { worker?: number | null; role?: string | null; projectId?: string | null }>;
+  projects?: { enabled: boolean; status: string } | null;
+  tree?: unknown;
+  treeError?: Error;
+}) {
+  const threads = options.threads ?? new Map();
+  const { bb, harness } = createFakePluginHost({
+    pluginId: "editor",
+    sdk: {
+      threads: {
+        get: async (args: { id?: string; threadId?: string }) => {
+          const id = args.id ?? args.threadId!;
+          if (id === options.self.id) return makeThreadResponse({ id, parentThreadId: options.self.parentThreadId });
+          const record = threads.get(id);
+          if (!record) throw new Error(`no such thread ${id}`);
+          return record.thread;
+        },
+        list: async (args?: { parentThreadId?: string; archived?: boolean }) =>
+          args?.archived ? [...(options.archived ?? []), ...options.children] : options.children,
+        getPluginMetadata: async (args: { threadId: string }) => options.metadata?.get(args.threadId) ?? {},
+      },
+      environments: {
+        get: async (args: { environmentId: string }) => {
+          const record = threads.get(args.environmentId);
+          if (record?.environment) return record.environment;
+          return { ...environment, id: args.environmentId, path: `/ws/${args.environmentId}` };
+        },
+      },
+      plugins: {
+        list: async () => ({
+          plugins: options.projects === null ? [] : [options.projects ?? { id: "projects", enabled: true, status: "running" }],
+        }),
+        callRpc: async () => {
+          if (options.treeError) throw options.treeError;
+          return options.tree;
+        },
+      },
+    },
+  });
+  await plugin(bb);
+  return harness;
+}
+
+test("workspaces consumes the Projects tree for exact Initiative membership", async (t) => {
+  const tree = {
+    version: 1,
+    projects: [{
+      id: "proj_coord", name: "Initiative", objective: "", paused: false,
+      coordinatorThreadId: "thr_coord", memberProjectIds: ["proj_self", "proj_other"],
+      inFlight: 4, remaining: 1, opinions: 0, revisit: 0,
+      nodes: [
+        { threadId: "thr_coord", label: "Initiative", role: "coordinator", worker: null, parentWorker: null, state: "active", bbProjectId: "proj_coord" },
+        { threadId: "thr_w7", label: "Fix clipping", role: "work", worker: "W7", parentWorker: null, state: "active", bbProjectId: "proj_self" },
+        // Work belongs to a DIFFERENT member project — native self-project
+        // filtering would lose it.
+        { threadId: "thr_w8", label: "Cross member", role: "work", worker: "W8", parentWorker: null, state: "active", bbProjectId: "proj_other" },
+        { threadId: "thr_w9", label: "Audit pass", role: "review", worker: "W9", parentWorker: null, state: "active", bbProjectId: "proj_self" },
+        // Adopted member whose thread is NOT a native child of the
+        // coordinator — only resolvable via the tree + threads.get.
+        { threadId: "thr_adopted", label: "Adopted brief", role: "work", worker: "W10", parentWorker: null, state: "active", bbProjectId: "proj_coord" },
+        { threadId: "thr_adhoc", label: "Side question", role: "adhoc", worker: null, parentWorker: null, state: "active", bbProjectId: "proj_self" },
+        // Not yet spawned — no thread to inspect.
+        { threadId: null, label: "Queued brief", role: "work", worker: "W11", parentWorker: null, state: "planned", bbProjectId: "proj_self" },
+      ],
+      retired: 0,
+    }],
+  };
+  const harness = await workspacesHost({
+    self: threadRow({ id: "thr_w7" }),
+    children: [
+      // Mutable native titles must NOT drive the picker label.
+      threadRow({ id: "thr_w7", title: "renamed by a later turn" }),
+      threadRow({ id: "thr_w8", projectId: "proj_other" }),
+      threadRow({ id: "thr_w9" }),
+      threadRow({ id: "thr_adhoc" }),
+      // A native child absent from the tree is NOT an Initiative member.
+      threadRow({ id: "thr_unrelated", title: "random child" }),
+    ],
+    threads: new Map([
+      ["thr_coord", { thread: makeThreadResponse({ id: "thr_coord", environmentId: "env_coord" }) }],
+      ["thr_adopted", { thread: makeThreadResponse({ id: "thr_adopted", environmentId: "env_adopted", archivedAt: null }) }],
+    ]),
+    tree,
+  });
+  t.after(() => harness.lifecycle.dispose());
+
+  const result = rpcContract.workspaces.output.parse(
+    await harness.behavior.callRpc("workspaces", { threadId: "thr_w7" }),
+  );
+  assert.equal(result.coordinatorThreadId, "thr_coord");
+  assert.equal(result.named, true);
+  assert.equal(result.degraded, null);
+  const byId = new Map(result.entries.map((entry) => [entry.threadId, entry]));
+
+  assert.equal(byId.get("thr_coord")?.role, "coordinator");
+  assert.equal(byId.get("thr_coord")?.label, "Coordinator");
+
+  // Tree label wins over the mutated native title.
+  assert.equal(byId.get("thr_w7")?.label, "Fix clipping");
+  assert.equal(byId.get("thr_w7")?.workerRef, "W7");
+
+  // The other member project's worker survives.
+  assert.equal(byId.get("thr_w8")?.workerRef, "W8");
+  assert.equal(byId.get("thr_w8")?.bbProjectId, "proj_other");
+
+  // Reviewer keeps its own role — not folded into "worker".
+  assert.equal(byId.get("thr_w9")?.role, "review");
+  assert.equal(byId.get("thr_w9")?.workerRef, "W9");
+
+  // The adopted member is reachable even though it is not a native child.
+  assert.equal(byId.get("thr_adopted")?.workerRef, "W10");
+  assert.equal(byId.get("thr_adhoc")?.role, "adhoc");
+
+  // Excluded: unrelated child, unspawned node.
+  assert.equal(byId.has("thr_unrelated"), false);
+  assert.equal(byId.has("thr_w11"), false);
+});
+
+test("workspaces falls back natively when Projects is absent and marks a transient tree failure", async (t) => {
+  const children = [
+    threadRow({ id: "thr_w1", title: "Renamed worker" }),
+    threadRow({ id: "thr_loose", title: "Loose child" }),
+  ];
+  const metadata = new Map([
+    ["thr_w1", { worker: 3, role: "review", projectId: "proj_self" }],
+  ]);
+
+  // Projects absent: children come from native discovery; per-thread tags
+  // still name what they can.
+  const absent = await workspacesHost({
+    self: threadRow({ id: "thr_w1" }),
+    children,
+    threads: new Map([["thr_coord", { thread: makeThreadResponse({ id: "thr_coord" }) }]]),
+    metadata,
+    projects: null,
+  });
+  t.after(() => absent.lifecycle.dispose());
+  const fallback = rpcContract.workspaces.output.parse(
+    await absent.behavior.callRpc("workspaces", { threadId: "thr_w1" }),
+  );
+  assert.equal(fallback.degraded, null);
+  assert.equal(fallback.named, true);
+  const byId = new Map(fallback.entries.map((entry) => [entry.threadId, entry]));
+  assert.equal(byId.get("thr_w1")?.workerRef, "W3");
+  assert.equal(byId.get("thr_w1")?.role, "review");
+  // The unrelated child remains listed under the honest native fallback.
+  assert.equal(byId.get("thr_loose")?.role, "thread");
+
+  // Projects running but the tree call fails: membership is unknown, so all
+  // children list with native names AND the picker sees the failure marker.
+  const failed = await workspacesHost({
+    self: threadRow({ id: "thr_w1" }),
+    children,
+    threads: new Map([["thr_coord", { thread: makeThreadResponse({ id: "thr_coord" }) }]]),
+    metadata,
+    treeError: new Error("projects plugin restarting"),
+  });
+  t.after(() => failed.lifecycle.dispose());
+  const degraded = rpcContract.workspaces.output.parse(
+    await failed.behavior.callRpc("workspaces", { threadId: "thr_w1" }),
+  );
+  assert.match(degraded.degraded ?? "", /could not be read/);
+  const degradedIds = new Set(degraded.entries.map((entry) => entry.threadId));
+  assert.equal(degradedIds.has("thr_loose"), true);
+  assert.equal(degradedIds.has("thr_w1"), true);
+});
+
 const modifiedEntry: DiffFiles["files"][number] = {
   path: "a.ts", previousPath: null, changeKind: "modified", origin: "tracked",
   binary: false, loadMode: "auto", additions: 1, deletions: 1,

@@ -58,6 +58,8 @@ export interface EditorPaneProps {
   /** A Pierre theme name being previewed by the picker; null follows BB. */
   themePreview: string | null;
   onPickTheme: () => void;
+  /** Inspecting another thread's workspace: the surface renders, edits do not. */
+  inspectOnly?: boolean;
   /** BB's preview, bound to this exact file. */
   Original?: ComponentType;
   /** Changes when the user opened the file deliberately; the editor takes focus. */
@@ -88,6 +90,7 @@ export function EditorPane({
   onSetPref,
   themePreview,
   onPickTheme,
+  inspectOnly = false,
   Original,
   focusNonce = 0,
   ref,
@@ -119,7 +122,7 @@ export function EditorPane({
     if (!editing) setSurfaceStatus({ kind: "loading" });
   }, [editing]);
 
-  const file = useFileSession({ source, path });
+  const file = useFileSession({ source, path, writable: !inspectOnly });
   const state = file.state;
   const { save, overwrite, reload, setContent, claimEditor, isEditor } = file;
 
@@ -199,7 +202,7 @@ export function EditorPane({
 
   const lineCount = useMemo(() => (state?.content ?? "").split("\n").length, [state?.content]);
   const unsupported = state?.load.kind === "unsupported";
-  const readOnly = !isEditor || unsupported || state?.draft.kind === "stale";
+  const readOnly = inspectOnly || !isEditor || unsupported || state?.draft.kind === "stale";
   const sessionKey = state?.key ?? null;
   // The shape scan is O(file size). It runs when the file loads and when an
   // outside change bumps the epoch, but not on every keystroke — on a
@@ -426,8 +429,9 @@ export function EditorPane({
                     markEditorActive(active);
                   }}
                   onBlur={() => {
-                    // Leaving the editor writes dirty buffers, whichever save mode.
-                    void flushDirtySessions({ reason: "editor-blur" });
+                    // The workspace picker blurs first; manual mode must
+                    // keep the buffer dirty for its save/park/cancel choice.
+                    if (prefs.autoSave !== "off") void flushDirtySessions({ reason: "editor-blur", source });
                   }}
                   onStatusChange={setSurfaceStatus}
                   className="min-h-0 w-full flex-1"

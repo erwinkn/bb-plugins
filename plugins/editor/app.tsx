@@ -16,6 +16,11 @@ import { Workbench, type WorkbenchProps } from "@/components/Workbench";
 import { DiffWorkbench } from "@/components/DiffWorkbench";
 import { BbDiffRenderer } from "@/components/BbDiffRenderer";
 import { GuardedSurface } from "@/components/SurfaceBoundary";
+import { WorkspaceBar, type SwitchConfirm } from "@/components/WorkspaceBar";
+import { NoticeAction, NoticeRow } from "@/components/EditorPane";
+import { targetThreadParam } from "@/lib/panel-target";
+import { useInspectionGate, useWorkspace, type WorkspaceState } from "@/lib/use-workspace";
+import { useGuardedSwitch, usePanelTarget, useWorkspaces } from "@/lib/use-panel-target";
 
 type SetPref = WorkbenchProps["onSetPref"];
 
@@ -83,80 +88,160 @@ function FileOpener({ path, source, Original }: PluginFileOpenerProps) {
   );
 }
 
-type WorkspaceState =
-  | { kind: "loading" }
-  | { kind: "error"; message: string }
-  | { kind: "ready"; source: PluginFileOpenerSource; root: string; label: string };
-
-function useWorkspace(threadId: string | null, projectId: string | null): WorkspaceState {
-  const rpc = useRpc<typeof rpcContract>();
-  const [state, setState] = useState<WorkspaceState>({ kind: "loading" });
-  useEffect(() => {
-    let cancelled = false;
-    setState({ kind: "loading" });
-    void rpc
-      .call("workspace", { threadId, projectId })
-      .then((result) => {
-        if (!cancelled) setState({ kind: "ready", ...result });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setState({ kind: "error", message: error instanceof Error ? error.message : "Could not resolve the workspace" });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rpc, threadId, projectId]);
-  return state;
-}
-
 function pathParam(params: unknown): string | null {
   if (typeof params !== "object" || params === null || Array.isArray(params)) return null;
   const path = (params as { path?: unknown }).path;
   return typeof path === "string" && path !== "" ? path : null;
 }
 
-function FilesPanelBody({ workspace, initialPath }: { workspace: WorkspaceState; initialPath: string | null }) {
-  const { prefs, setPref } = usePrefs();
+function FilesPanelBody({ workspace, initialPath, prefs, onSetPref, inspectOnly = false, onRetry }: { workspace: WorkspaceState; initialPath: string | null; prefs: EditorPrefs; onSetPref: SetPref; inspectOnly?: boolean; onRetry?: () => void }) {
   if (workspace.kind === "loading") {
     return <div className="flex h-full items-center justify-center text-xs text-muted-foreground">Loading workspace…</div>;
   }
   if (workspace.kind === "error") {
-    return <p className="p-4 text-sm text-destructive">{workspace.message}</p>;
+    return (
+      <div className="p-4">
+        <NoticeRow tone="error">
+          {workspace.message}
+          {onRetry !== undefined ? <NoticeAction onClick={onRetry}>Retry</NoticeAction> : null}
+        </NoticeRow>
+      </div>
+    );
   }
   return (
-    <Workbench
-      key={workspaceKeyFor(workspace.source)}
-      surface="panel"
-      source={workspace.source}
-      initialPath={initialPath}
-      workspaceKey={workspaceKeyFor(workspace.source)}
-      label={workspace.label}
-      prefs={prefs}
-      onSetPref={setPref}
-    />
+    <>
+      {workspace.refreshError !== null ? (
+        <NoticeRow tone="error">
+          {workspace.refreshError}
+          {onRetry !== undefined ? <NoticeAction onClick={onRetry}>Retry</NoticeAction> : null}
+        </NoticeRow>
+      ) : null}
+      <Workbench
+        key={workspaceKeyFor(workspace.source)}
+        surface="panel"
+        source={workspace.source}
+        initialPath={initialPath}
+        workspaceKey={workspaceKeyFor(workspace.source)}
+        label={workspace.label}
+        inspectOnly={inspectOnly}
+        prefs={prefs}
+        onSetPref={onSetPref}
+      />
+    </>
   );
+}
+
+/**
+ * The switch confirmation: identical for the Files and Changes tabs, so one
+ * row serves both.
+ */
+function SwitchConfirmRow({ confirm }: { confirm: SwitchConfirm }) {
+  return (
+    <NoticeRow tone="warning">
+      Switch to {confirm.label} with unsaved changes in this workspace?
+      <NoticeAction onClick={confirm.saveAndSwitch}>Save and switch</NoticeAction>
+      <NoticeAction onClick={confirm.keepAndSwitch}>Keep unsaved and switch</NoticeAction>
+      <NoticeAction onClick={confirm.cancel}>Cancel</NoticeAction>
+    </NoticeRow>
+  );
+}
+
+/**
+ * The workspace picker a Files or Changes tab carries: it selects the thread
+ * whose workspace the tab inspects (its own by default), surfaces stale and
+ * unavailable targets honestly, resolves that workspace once for the guard
+ * and the panel, and holds the inspection-mode opt-in.
+ */
+function useWorkspacePicker(threadId: string, params: unknown, actionId: "files" | "changes", autoSave: "off" | "onBlur" | "afterDelay") {
+  const target = usePanelTarget(threadId, params, actionId);
+  const workspaces = useWorkspaces(threadId);
+  const workspace = useWorkspace(target.targetThreadId, null);
+  // The opt-in binds to the resolved environment and requires it fresh: a
+  // stale or failed resolution can only be inspected.
+  const gate = useInspectionGate(target.targetThreadId, target.foreign, workspace);
+  // One Retry re-runs both halves of the picker's evidence: the workspace
+  // list AND the selected workspace's resolution, plus whatever the panel
+  // body derives from it.
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const retry = useCallback(() => {
+    workspaces.refresh();
+    workspace.refresh();
+    setReloadNonce((nonce) => nonce + 1);
+  }, [workspaces.refresh, workspace.refresh]);
+  const guarded = useGuardedSwitch(workspace.kind === "ready" ? workspace.source : null, autoSave, target.switchTarget);
+  const inspecting = gate.inspecting;
+  const bar = (
+    <>
+      <WorkspaceBar
+        state={workspaces}
+        targetThreadId={target.targetThreadId}
+        ownThreadId={threadId}
+        inspecting={target.foreign}
+        editingEnabled={gate.editingEnabled}
+        onPick={(entry) => guarded.requestSwitch({ threadId: entry.threadId, label: entry.label })}
+        onSetEditing={gate.setEditingEnabled}
+        onRefresh={retry}
+      />
+      {guarded.confirm !== null ? <SwitchConfirmRow confirm={guarded.confirm} /> : null}
+    </>
+  );
+  return { target, inspecting, bar, workspace, retry, reloadNonce };
 }
 
 /** The "Files" tab in a thread's side panel. */
 function ThreadFilesPanel({ threadId, params }: PluginThreadPanelProps) {
-  const workspace = useWorkspace(threadId, null);
-  return <FilesPanelBody workspace={workspace} initialPath={pathParam(params)} />;
+  const { prefs, setPref } = usePrefs();
+  const picker = useWorkspacePicker(threadId, params, "files", prefs.autoSave);
+  // The persisted path belongs to the persisted target; while the picker's
+  // session target differs, it must not open an absolute path of another
+  // workspace inside this one.
+  const paramTarget = targetThreadParam(params) ?? threadId;
+  const initialPath = picker.target.targetThreadId === paramTarget ? pathParam(params) : null;
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {picker.bar}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <FilesPanelBody workspace={picker.workspace} initialPath={initialPath} prefs={prefs} onSetPref={setPref} inspectOnly={picker.inspecting} onRetry={picker.retry} />
+      </div>
+    </div>
+  );
 }
 
 function ThreadChangesPanel({ threadId, params }: PluginThreadPanelProps) {
   const { prefs, setPref } = usePrefs();
-  return <DiffWorkbench threadId={threadId} params={params} prefs={prefs} onSetPref={setPref} />;
+  const picker = useWorkspacePicker(threadId, params, "changes", prefs.autoSave);
+  // The persisted path and comparison belong to the persisted target; while
+  // the picker's session target differs, they must not drive this workspace's
+  // view — another workspace's identical relative path is a different file.
+  const paramTarget = targetThreadParam(params) ?? threadId;
+  const boundParams = paramTarget === picker.target.targetThreadId ? params : { targetThreadId: picker.target.targetThreadId };
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {picker.bar}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* The target switch remounts the workbench so no state crosses workspaces. */}
+        <DiffWorkbench
+          key={picker.target.targetThreadId}
+          threadId={picker.target.targetThreadId}
+          params={boundParams}
+          prefs={prefs}
+          onSetPref={setPref}
+          inspectOnly={picker.inspecting}
+          reloadNonce={picker.reloadNonce}
+        />
+      </div>
+    </div>
+  );
 }
 
 /** The "Files" tab on the New thread screen: the project's default checkout. */
 function NewThreadFilesPanel({ projectId, params }: PluginNewThreadPanelProps) {
+  const { prefs, setPref } = usePrefs();
   const workspace = useWorkspace(null, projectId);
   if (projectId === null) {
     return <p className="p-4 text-sm text-muted-foreground">Select a project to browse its files.</p>;
   }
-  return <FilesPanelBody workspace={workspace} initialPath={pathParam(params)} />;
+  return <FilesPanelBody workspace={workspace} initialPath={pathParam(params)} prefs={prefs} onSetPref={setPref} />;
 }
 
 // Every slot body sits behind a surface boundary: a crash stays inside the

@@ -80,9 +80,13 @@ export interface DiffWorkbenchProps {
   params: unknown;
   prefs: EditorPrefs;
   onSetPref: SetPref;
+  /** Inspecting another thread's workspace: comparisons render, edits and reverts do not. */
+  inspectOnly?: boolean;
+  /** Bumped by the picker's Retry: re-runs the list for the same target. */
+  reloadNonce?: number;
 }
 
-export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbenchProps) {
+export function DiffWorkbench({ threadId, params, prefs, onSetPref, inspectOnly = false, reloadNonce = 0 }: DiffWorkbenchProps) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -100,10 +104,15 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
   const width = useElementWidth(rootRef);
 
   // Same shared session layer as the Files tab: apply the save preference,
-  // wire the plugin log, and flush pending writes when this tab goes away.
+  // wire the plugin log, and flush this workspace's pending writes when the
+  // tab goes away; buffers parked for a switch or owned by another workspace
+  // are not this tab's to save.
   useSessionConfig(prefs);
   useEditorTelemetry(() => ({ phase: "changes-panel", path: selected ?? undefined }));
-  useEffect(() => () => void flushDirtySessions({ reason: "changes-unmount" }), []);
+  const flushSource = useRef<FileSource | null>(null);
+  useEffect(() => () => {
+    if (flushSource.current !== null) void flushDirtySessions({ reason: "changes-unmount", source: flushSource.current });
+  }, []);
   const sessionOverview = useSessionsOverview();
 
   const key = targetKey(target);
@@ -144,6 +153,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
       .call("diffList", { threadId, target })
       .then((result) => {
         if (mine !== generation.current) return;
+        flushSource.current = result.source;
         setList({
           files: result.files,
           source: result.source,
@@ -160,10 +170,17 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
       })
       .catch((error: unknown) => {
         if (mine !== generation.current) return;
-        setList({ ...EMPTY_LIST, isLoading: false, error: error instanceof Error ? error.message : "This comparison could not be listed" });
+        // Keep the last good comparison: the rows were true moments ago and
+        // the open file's session must not lose its source. The error marks
+        // them stale.
+        setList((current) => ({
+          ...current,
+          isLoading: false,
+          error: error instanceof Error ? error.message : "This comparison could not be listed",
+        }));
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rpc, threadId, key, listNonce]);
+  }, [rpc, threadId, key, listNonce, reloadNonce]);
 
   const chooseTarget = useCallback(
     (next: DiffTarget) => {
@@ -223,13 +240,14 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
   /** Opens a workspace file in the Files tab, or in BB's own preview when the tab is unavailable. */
   const openPath = useCallback(
     (path: string) => {
-      if (navigate.openThreadPanel({ actionId: "files", params: { path } })) return;
+      // The Files tab opens on the same worker this tab inspects.
+      if (navigate.openThreadPanel({ actionId: "files", params: { path, targetThreadId: threadId } })) return;
       const environmentId = list.source?.environmentId ?? null;
       if (environmentId !== null) {
         navigate.experimental_openFilePreview({ target: { kind: "workspace", environmentId, path }, location: null });
       }
     },
-    [navigate, list.source],
+    [navigate, list.source, threadId],
   );
   const openFile = useMemo(() => (selected === null ? null : () => openPath(selected)), [openPath, selected]);
 
@@ -256,6 +274,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
         truncated={list.truncated}
         onSelect={select}
         onRefresh={refreshList}
+        readOnly={inspectOnly}
       />
       {compact ? null : (
         <ResizeHandle
@@ -307,6 +326,7 @@ export function DiffWorkbench({ threadId, params, prefs, onSetPref }: DiffWorkbe
         onOpenFile={openFile}
         onOpenPath={openPath}
         onSaved={refreshListKeepingSelection}
+        inspectOnly={inspectOnly}
       />
     )
   ) : null;

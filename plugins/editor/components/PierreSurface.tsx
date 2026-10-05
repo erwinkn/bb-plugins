@@ -11,6 +11,7 @@ import {
 import { cn } from "@/lib/utils";
 import { revertHunkEdit } from "@/lib/revert-hunk";
 import { createPierreItem } from "@/lib/pierre-item";
+import { acquirePierreScrollRevealFix } from "@/lib/pierre-scroll-fix";
 import { RevertGlyph } from "./icons";
 
 /**
@@ -206,6 +207,10 @@ export default function PierreSurface(props: PierreSurfaceProps) {
   useEffect(() => {
     let disposed = false;
     let created: CodeView | null = null;
+    // Pierre's caret-reveal probe encodes document offsets into a
+    // window-positioned container; the fix reroutes it through the owning
+    // CodeView's logical scroll. See lib/pierre-scroll-fix.ts.
+    let releaseRevealFix: (() => void) | null = null;
     const publish = (next: PierreSurfaceStatus) => {
       if (disposed) return;
       const previous = statusRef.current;
@@ -247,6 +252,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
         setFileComparison(props.oldContent !== undefined && item.type === "file");
         guarded(provisional, "setup", () => view.setup(host));
         guarded(provisional, "setItems", () => view.setItems([item]));
+        releaseRevealFix = acquirePierreScrollRevealFix(host, view, item.id);
         resetScroll(host);
         // setItems schedules rendering. It does not mean that the file, its
         // highlighter, or the editable DOM exists yet. The callbacks below
@@ -259,6 +265,7 @@ export default function PierreSurface(props: PierreSurfaceProps) {
       });
     return () => {
       disposed = true;
+      releaseRevealFix?.();
       // cleanUp ends the edit session, so the last onChange has already run.
       // It must not throw through the unmount: a dead surface still reports.
       if (created !== null) {

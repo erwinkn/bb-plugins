@@ -77,6 +77,8 @@ export interface EditableDiffPaneProps {
   onOpenPath: (path: string) => void;
   /** A save changed the file, so the change list needs new counts. */
   onSaved: () => void;
+  /** Inspecting another thread's workspace: comparisons render, edits and reverts do not. */
+  inspectOnly?: boolean;
 }
 
 export function EditableDiffPane({
@@ -97,6 +99,7 @@ export function EditableDiffPane({
   onOpenFile,
   onOpenPath,
   onSaved,
+  inspectOnly = false,
 }: EditableDiffPaneProps) {
   const rpc = useRpc<typeof rpcContract>();
   const theme = usePierreTheme();
@@ -141,7 +144,7 @@ export function EditableDiffPane({
   }, [rpc, threadId, key, path, refreshNonce, resyncNonce, listedReason]);
 
   const data = read.kind === "ready" ? read.data : null;
-  const editable = data?.editable === true;
+  const editable = !inspectOnly && data?.editable === true;
   /** Saves one read: the session takes this text unless it already has its own. */
   const seed = useMemo(
     () =>
@@ -154,6 +157,7 @@ export function EditableDiffPane({
     source: data?.source ?? NO_SOURCE,
     path: editable ? path : null,
     seed,
+    writable: editable,
   });
   const { state, viewId, isEditor } = file;
 
@@ -205,9 +209,14 @@ export function EditableDiffPane({
 
   // Auto save lives in the file session (`configureFileSessions`), so the
   // pending write survives this pane unmounting. Still, this pane going away —
-  // the file switch remounts it — writes dirty buffers at once rather than
-  // waiting out the delay.
-  useEffect(() => () => void flushDirtySessions({ reason: "diff-pane-close" }), []);
+  // the file or workspace switch remounts it — writes this workspace's dirty
+  // buffers at once rather than waiting out the delay. Another workspace's
+  // buffers are not this pane's to save.
+  const flushSource = data?.source ?? null;
+  useEffect(() => {
+    if (flushSource === null) return;
+    return () => void flushDirtySessions({ reason: "diff-pane-close", source: flushSource });
+  }, [flushSource]);
 
   // A conflict compare re-points the old side at the file on disk, so the
   // same surface shows "disk on the left, your text on the right".
@@ -454,8 +463,9 @@ export function EditableDiffPane({
                   file.claimEditor();
                 }}
                 onBlur={() => {
-                  // Leaving the editor writes dirty buffers, whichever save mode.
-                  void flushDirtySessions({ reason: "editor-blur" });
+                  // The workspace picker blurs first; manual mode must
+                  // keep the buffer dirty for its save/park/cancel choice.
+                  if (prefs.autoSave !== "off" && data !== null) void flushDirtySessions({ reason: "editor-blur", source: data.source });
                 }}
                 onStatusChange={setSurfaceStatus}
                 className="min-h-0 w-full flex-1"

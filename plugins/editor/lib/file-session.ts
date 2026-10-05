@@ -114,30 +114,45 @@ export interface FileSession {
   subscribe(listener: () => void): () => void;
   /** Point the session at a newer transport. A later view may hold one. */
   setIo(io: FileSessionIo): void;
-  /** Register a view. The first attach starts the read. Call the result to detach. */
-  attach(viewId: string): () => void;
+  /**
+   * Register a view. The first attach starts the read. Call the result to
+   * detach. `writable: false` opens an inspection view: it can read and
+   * mirror, but it may not drive writes, claim the editor, or un-park edits
+   * that a switch kept unsaved — those resume when a writable view attaches.
+   */
+  attach(viewId: string, options?: { writable?: boolean }): () => void;
   /** Make `viewId` the editing view. Call it when the view takes focus. */
   claimEditor(viewId: string): void;
   /** Report edited text from a view. */
   setContent(text: string, viewId: string): void;
   /** Serialize a confirmed file action with saves; keep any later typing. */
-  mutateFile(expected: { content: string; sha256: string | null }, action: () => Promise<SessionSeed | null>): Promise<void>;
+  mutateFile(
+    expected: { content: string; sha256: string | null },
+    action: () => Promise<SessionSeed | null>,
+    invoker?: string,
+  ): Promise<void>;
   /** Install a caller's read. It is ignored when the session has edits or a draft. */
   seed(seed: SessionSeed): void;
-  /** Write with `expectedSha256`. Resolves true when the text reached disk. */
-  save(): Promise<boolean>;
+  /**
+   * Write with `expectedSha256`. Resolves true when the text reached disk.
+   * `invoker` names the view asking: it must still be attached and writable
+   * when the write runs. Without one the call is lifecycle work — a flush,
+   * the autosave timer, a dispose — which a session may do only while it is
+   * opted in (a writable view attached now or earlier; see `writeLease`).
+   */
+  save(invoker?: string): Promise<boolean>;
   /** Save now: cancels a pending auto save and writes if the file is dirty. */
   flush(): Promise<boolean>;
   /** Read the file as it is on disk now, without touching the buffer. */
   readDisk(): Promise<ReadResult | null>;
   /** Write without a hash check, after a reported conflict. */
-  overwrite(): Promise<boolean>;
+  overwrite(invoker?: string): Promise<boolean>;
   /** Take the file from disk, dropping any edits. Refuses when the text changed while reading. */
-  reload(): Promise<ReloadOutcome>;
+  reload(invoker?: string): Promise<ReloadOutcome>;
   /** Apply a draft that the load kept back. */
-  restoreDraft(): void;
+  restoreDraft(invoker?: string): void;
   /** Forget the draft, and the edits when they came from it. */
-  discardDraft(): void;
+  discardDraft(invoker?: string): void;
   /** Read the file again to find a change made outside the editor. */
   refresh(): Promise<boolean>;
   /** Write a pending draft to the store now. */
@@ -319,6 +334,8 @@ class Session implements FileSession {
   private readonly listeners = new Set<() => void>();
   private readonly onChanged: (session: Session) => void;
   private readonly views: string[] = [];
+  /** Which attached views may write; absent or false reads as inspection. */
+  private readonly viewWritable = new Map<string, boolean>();
   private snapshot: FileSessionSnapshot;
   /** Rises on every text change; guards results of older reads and writes. */
   private version = 0;
@@ -415,7 +432,15 @@ class Session implements FileSession {
       this.retryTimer = null;
     }
     if (kind === "clean") this.retryAttempt = 0;
-    if (sessionConfig.autoSave === "afterDelay" && kind === "dirty" && this.autoSaveTimer === null) {
+    // Revocation disarms a pending autosave only while read-only views hold
+    // the session. With no views the outgoing-autosave lease lets the armed
+    // write finish — the closing editor's save is its contract.
+    const watchedReadOnly = this.views.length > 0 && !this.hasWritableView();
+    if ((this.parked || watchedReadOnly) && this.autoSaveTimer !== null) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+    if (sessionConfig.autoSave === "afterDelay" && kind === "dirty" && !this.parked && this.hasWritableView() && this.autoSaveTimer === null) {
       this.log("save-scheduled", { delayMs: sessionConfig.autoSaveDelayMs });
       this.autoSaveTimer = setTimeout(() => {
         this.autoSaveTimer = null;
@@ -428,6 +453,8 @@ class Session implements FileSession {
   /** After a failed write: retry with backoff while the error stands. */
   private scheduleRetry(): void {
     if (!sessionConfig.retryFailedSaves || this.disposed || this.retryTimer !== null) return;
+    // A retry is scheduled work too: without a writable view it must not fire.
+    if (!this.hasWritableView()) return;
     const delayMs = RETRY_DELAYS_MS[Math.min(this.retryAttempt, RETRY_DELAYS_MS.length - 1)] ?? 15_000;
     this.retryAttempt += 1;
     this.log("save-retry", { attempt: this.retryAttempt, delayMs });
@@ -447,10 +474,84 @@ class Session implements FileSession {
     return this.views.length;
   }
 
-  attach(viewId: string): () => void {
+  /**
+   * A workspace switch parked this session instead of saving it: lifecycle
+   * flushes skip it so a manual-mode edit survives the switch unsaved. Only
+   * a writable view un-parks on attach — an inspection view reads and
+   * mirrors the kept edits without becoming able to write them.
+   */
+  parked = false;
+
+  /**
+   * Write authority has three tiers, all checked when a write executes:
+   *
+   * - View-invoked work (typing, save, overwrite, reload, a revert or a draft
+   *   choice) must come from a currently attached writable view — an
+   *   inspection view cannot borrow a sibling's opt-in, and revoking a view
+   *   between schedule and execution cancels its queued write.
+   * - Lifecycle work (lifecycle flushes and the dispose write) may run while
+   *   a writable view is attached. It may also run on the outgoing autosave
+   *   lease: once a writable view has attached, a session with no views at
+   *   all still completes a pending save — the "closing the editor saves
+   *   dirty work" contract. The moment the only attached views are
+   *   inspection views the session is being watched, not edited, and even
+   *   lifecycle work stops. A session that was only ever inspected never
+   *   holds the lease.
+   * - `parked` overrides both: nothing writes a suspended buffer.
+   */
+  private hasWritableView(): boolean {
+    for (const viewId of this.views) {
+      if (this.viewWritable.get(viewId) === true) return true;
+    }
+    return false;
+  }
+
+  private writeLease = false;
+
+  /** The invoker names a view; without one the call is lifecycle work. */
+  private mayWrite(invoker: string | undefined): boolean {
+    if (this.parked) return false;
+    if (invoker !== undefined) return this.viewWritable.get(invoker) === true;
+    return this.hasWritableView() || (this.writeLease && this.views.length === 0);
+  }
+
+  /**
+   * Revocation cancels scheduled work and the lease itself: while inspection
+   * views are the only attachment an armed autosave or retry must not fire,
+   * and the outgoing-autosave lease dies — a reader closing later must not
+   * revive edit authority it only ever witnessed. Zero views is different:
+   * a timer armed by an editor that just closed still completes its save.
+   */
+  private cancelTimersIfUnwritable(): void {
+    if (this.views.length === 0 || this.hasWritableView()) return;
+    this.writeLease = false;
+    if (this.autoSaveTimer !== null) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+  }
+
+  attach(viewId: string, options?: { writable?: boolean }): () => void {
+    const writable = options?.writable !== false;
+    if (writable) {
+      this.parked = false;
+      this.writeLease = true;
+    }
     if (!this.views.includes(viewId)) this.views.push(viewId);
-    if (this.snapshot.editorId === null) this.patch({ editorId: viewId });
-    else this.emit();
+    this.viewWritable.set(viewId, writable);
+    if (!writable) this.cancelTimersIfUnwritable();
+    if (this.snapshot.editorId === null) {
+      // Only a writable view may become the editing view; an inspection
+      // first-attach leaves the seat open for one.
+      if (writable) this.patch({ editorId: viewId });
+      else this.emit();
+    } else {
+      this.emit();
+    }
     void this.ensureLoaded();
     return () => this.detach(viewId);
   }
@@ -458,17 +559,18 @@ class Session implements FileSession {
   private detach(viewId: string): void {
     const index = this.views.indexOf(viewId);
     if (index !== -1) this.views.splice(index, 1);
+    this.viewWritable.delete(viewId);
+    this.cancelTimersIfUnwritable();
     this.flushDraft();
     if (this.snapshot.editorId === viewId) {
-      this.patch({ editorId: this.views[this.views.length - 1] ?? null });
+      this.patch({ editorId: [...this.views].reverse().find((id) => this.viewWritable.get(id) === true) ?? null });
     } else {
       this.emit();
     }
   }
 
   claimEditor(viewId: string): void {
-    if (this.snapshot.editorId === viewId) return;
-    if (!this.views.includes(viewId)) this.views.push(viewId);
+    if (this.snapshot.editorId === viewId || this.viewWritable.get(viewId) !== true) return;
     this.patch({ editorId: viewId });
   }
 
@@ -480,6 +582,7 @@ class Session implements FileSession {
    */
   setContent(text: string, viewId: string): void {
     if (this.disposed || text === this.snapshot.content || this.snapshot.draft.kind === "stale") return;
+    if (this.viewWritable.get(viewId) !== true) return;
     if (this.snapshot.editorId !== null && this.snapshot.editorId !== viewId) return;
     this.version += 1;
     const hasEdits = text !== this.snapshot.savedContent;
@@ -593,8 +696,16 @@ class Session implements FileSession {
     return run;
   }
 
-  mutateFile(expected: { content: string; sha256: string | null }, action: () => Promise<SessionSeed | null>): Promise<void> {
+  mutateFile(
+    expected: { content: string; sha256: string | null },
+    action: () => Promise<SessionSeed | null>,
+    invoker?: string,
+  ): Promise<void> {
+    if (this.parked) return Promise.reject(new Error("This workspace is open for inspection; enable editing to change it"));
     return this.enqueue(async () => {
+      // Authority is rechecked inside the queue: a capability revoked while
+      // the action waited for its turn must not run.
+      if (!this.mayWrite(invoker)) throw new Error("This workspace is open for inspection; enable editing to change it");
       if (this.disposed || this.snapshot.content !== expected.content || this.snapshot.sha256 !== expected.sha256) {
         throw new Error("The file changed. Try the action again.");
       }
@@ -622,8 +733,8 @@ class Session implements FileSession {
     });
   }
 
-  save(): Promise<boolean> {
-    return this.write(false);
+  save(invoker?: string): Promise<boolean> {
+    return this.write(false, invoker);
   }
 
   flush(): Promise<boolean> {
@@ -644,12 +755,20 @@ class Session implements FileSession {
     });
   }
 
-  overwrite(): Promise<boolean> {
-    return this.write(true);
+  overwrite(invoker?: string): Promise<boolean> {
+    return this.write(true, invoker);
   }
 
-  private write(force: boolean): Promise<boolean> {
+  private write(force: boolean, invoker?: string): Promise<boolean> {
     return this.enqueue(async () => {
+      // Authority is checked when the write runs, not when it was asked for:
+      // a view detached or flipped read-only while this sat in the queue
+      // leaves its request refused, and an inspecting-only session never
+      // holds the lease a lifecycle write needs.
+      if (!this.mayWrite(invoker)) {
+        this.log("save-skipped", { reason: "inspect" });
+        return false;
+      }
       if ((this.disposed && !this.allowDisposedWrite) || this.snapshot.load.kind !== "ready" || this.snapshot.draft.kind === "stale") return false;
       // A reported conflict waits for the user: reload, or an explicit
       // overwrite. Auto save must not settle it on its own.
@@ -715,13 +834,22 @@ class Session implements FileSession {
    * user asked to discard: those keystrokes are newer than the read, and the
    * user can ask again.
    */
-  reload(): Promise<ReloadOutcome> {
+  reload(invoker?: string): Promise<ReloadOutcome> {
     return this.enqueue(async () => {
       if (this.disposed) return { ok: false, reason: "error", message: "The file is closed" } as const;
+      // Reloading discards the buffer — an edit, so it needs write authority.
+      if (!this.mayWrite(invoker)) {
+        return { ok: false, reason: "error", message: "This workspace is open for inspection; enable editing to reload" } as const;
+      }
       const version = this.version;
       try {
         const result = await this.io.read({ path: this.path, source: this.source });
         if (this.disposed) return { ok: false, reason: "error", message: "The file is closed" } as const;
+        // The invoker's capability may have been revoked while the read ran;
+        // a detached or demoted view's reload must not replace dirty state.
+        if (!this.mayWrite(invoker)) {
+          return { ok: false, reason: "error", message: "This workspace is open for inspection; enable editing to reload" } as const;
+        }
         if (result.kind === "unsupported") {
           this.patch({ load: { kind: "unsupported", reason: result.reason } });
           return { ok: false, reason: "unsupported", message: result.reason } as const;
@@ -789,7 +917,10 @@ class Session implements FileSession {
    * The session goes to the conflict state at once, which stops auto save and
    * leaves the choice between reload and an explicit overwrite with the user.
    */
-  restoreDraft(): void {
+  restoreDraft(invoker?: string): void {
+    // Restoring or discarding changes what an inspection view mirrors, and
+    // discarding loses the kept edits outright — both wait for edit opt-in.
+    if (!this.mayWrite(invoker)) return;
     const draft = this.drafts.read(this.key);
     if (draft === null) {
       this.patch({ draft: { kind: "none" } });
@@ -813,7 +944,8 @@ class Session implements FileSession {
     });
   }
 
-  discardDraft(): void {
+  discardDraft(invoker?: string): void {
+    if (!this.mayWrite(invoker)) return;
     this.drafts.remove(this.key);
     this.draftBaseSha256 = this.snapshot.sha256;
     if (this.snapshot.content !== this.snapshot.savedContent) {
@@ -892,6 +1024,7 @@ class Session implements FileSession {
     }
     const needsWrite =
       this.snapshot.load.kind === "ready" &&
+      this.mayWrite(undefined) &&
       this.snapshot.save.kind !== "conflict" &&
       this.snapshot.draft.kind !== "stale" &&
       (this.snapshot.hasEdits || this.snapshot.save.kind === "error");
@@ -1083,6 +1216,23 @@ export function subscribeSessions(listener: () => void): () => void {
   return () => registryListeners.delete(listener);
 }
 
+/**
+ * Keep a workspace's dirty files unsaved through the flush a workspace switch
+ * triggers. Parked sessions keep their edits and drafts; attaching a view
+ * again returns them to normal flush behavior. Returns the parked paths.
+ */
+export function parkDirtySessions(source: FileSessionSource): readonly string[] {
+  const prefix = sourceKeyFor(source);
+  const parked: string[] = [];
+  for (const session of sessions.values()) {
+    if (!session.key.startsWith(prefix) || !session.getSnapshot().dirty) continue;
+    session.parked = true;
+    session.flushDraft();
+    parked.push(session.path);
+  }
+  return parked;
+}
+
 /** The paths with unsaved work in one workspace, for a file list marker. */
 export function dirtyPaths(source: FileSessionSource): ReadonlySet<string> {
   const prefix = sourceKeyFor(source);
@@ -1106,11 +1256,15 @@ function flushAllDrafts(): void {
  * the user. With `timeoutMs` the promise resolves when the writes settle or
  * the bound passes, whichever comes first; the writes continue either way.
  */
-export function flushDirtySessions(options: { timeoutMs?: number; reason?: string } = {}): Promise<void> {
+export function flushDirtySessions(options: { timeoutMs?: number; reason?: string; source?: FileSessionSource } = {}): Promise<void> {
+  // A source bounds the flush: a workbench leaving for another workspace must
+  // not rush saves that belong to a different workspace's buffers.
+  const prefix = options.source !== undefined ? sourceKeyFor(options.source) : null;
   const pending: Promise<boolean>[] = [];
   for (const session of sessions.values()) {
     const snapshot = session.getSnapshot();
-    if (!snapshot.dirty || snapshot.save.kind === "conflict" || snapshot.draft.kind === "stale") continue;
+    if (!snapshot.dirty || session.parked || snapshot.save.kind === "conflict" || snapshot.draft.kind === "stale") continue;
+    if (prefix !== null && !session.key.startsWith(prefix)) continue;
     pending.push(session.flush());
   }
   if (pending.length === 0) return Promise.resolve();

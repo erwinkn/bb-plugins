@@ -19,6 +19,8 @@ export interface FileTreeProps {
   onRefresh: () => void;
   /** Called when an expanded directory's listing could return more data. */
   onLoadDirectory: (path: string) => void;
+  /** Inspection mode: opening and copying stay, mutations are hidden. */
+  readOnly?: boolean;
   /** Resolves when the entry exists; rejects with a message to show inline. */
   onCreate: (path: string, kind: CreateKind) => Promise<void>;
   onRename: (path: string, newPath: string, kind: CreateKind) => Promise<void>;
@@ -47,6 +49,7 @@ export function FileTree({
   onOpenFile,
   onRefresh,
   onLoadDirectory,
+  readOnly = false,
   onCreate,
   onRename,
   onDelete,
@@ -138,12 +141,16 @@ export function FileTree({
       anchor,
       items: [
         ...(node.kind === "file" ? [{ label: "Open in new tab", onSelect: () => onOpenFile(node.path, { newTab: true }) }] : []),
-        { label: "New file…", onSelect: () => startDraft(parent, "file") },
-        { label: "New folder…", onSelect: () => startDraft(parent, "directory") },
-        { type: "separator" as const },
-        { label: "Rename…", onSelect: () => setRowEdit({ kind: "rename", path: node.path }) },
-        { label: "Delete…", onSelect: () => setRowEdit({ kind: "delete", path: node.path }) },
-        { type: "separator" as const },
+        ...(readOnly
+          ? []
+          : [
+              { label: "New file…", onSelect: () => startDraft(parent, "file") },
+              { label: "New folder…", onSelect: () => startDraft(parent, "directory") },
+              { type: "separator" as const },
+              { label: "Rename…", onSelect: () => setRowEdit({ kind: "rename", path: node.path }) },
+              { label: "Delete…", onSelect: () => setRowEdit({ kind: "delete", path: node.path }) },
+              { type: "separator" as const },
+            ]),
         { label: "Copy absolute path", onSelect: () => void copyText(absolutePathOf(node.path), "Absolute path copied") },
         { label: "Copy relative path", onSelect: () => void copyText(node.path, "Relative path copied") },
         { label: "Copy name", onSelect: () => void copyText(node.name, "Name copied") },
@@ -180,12 +187,16 @@ export function FileTree({
           <TreeButton label="Refresh" onClick={onRefresh}>
             <RefreshGlyph className={cn(isLoading && "animate-spin")} />
           </TreeButton>
-          <TreeButton label="New file" onClick={() => startDraft("", "file")}>
-            <FileAddGlyph />
-          </TreeButton>
-          <TreeButton label="New folder" onClick={() => startDraft("", "directory")}>
-            <FolderAddGlyph />
-          </TreeButton>
+          {readOnly ? null : (
+            <>
+              <TreeButton label="New file" onClick={() => startDraft("", "file")}>
+                <FileAddGlyph />
+              </TreeButton>
+              <TreeButton label="New folder" onClick={() => startDraft("", "directory")}>
+                <FolderAddGlyph />
+              </TreeButton>
+            </>
+          )}
         </div>
       </div>
       <div className="px-2 pb-1.5">
@@ -229,6 +240,7 @@ export function FileTree({
               rowEdit={rowEdit}
               expanded={effectiveExpanded}
               level={0}
+              readOnly={readOnly}
               nodes={filtered.nodes}
               onOpenFile={onOpenFile}
               onStartDraft={startDraft}
@@ -354,6 +366,7 @@ interface RowsProps {
   rowEdit: RowEdit | null;
   expanded: ReadonlySet<string>;
   level: number;
+  readOnly: boolean;
   nodes: readonly TreeNode[];
   onOpenFile: (path: string, options: { newTab: boolean }) => void;
   onStartDraft: (parent: string, kind: CreateKind) => void;
@@ -366,7 +379,7 @@ interface RowsProps {
 }
 
 function Rows(props: RowsProps) {
-  const { activePath, activeRowRef, draft, rowEdit, expanded, level, nodes, onOpenFile, onStartDraft, onToggle, onCancelDraft, onCreate, onEndRowEdit, onRename, onDelete } = props;
+  const { activePath, activeRowRef, draft, rowEdit, expanded, level, readOnly, nodes, onOpenFile, onStartDraft, onToggle, onCancelDraft, onCreate, onEndRowEdit, onRename, onDelete } = props;
   return (
     <>
       {nodes.map((node) => {
@@ -422,7 +435,7 @@ function Rows(props: RowsProps) {
                 <span className="truncate">{node.name}</span>
                 {node.link !== null ? <LinkBadge link={node.link} directory={isDirectory} /> : null}
               </button>
-              {isDirectory ? (
+              {isDirectory && !readOnly ? (
                 <div className="absolute top-0 right-1 flex h-6 items-center gap-0.5 opacity-0 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
                   <RowButton label={`New file in ${node.name}`} onClick={() => onStartDraft(node.path, "file")}>
                     <FileAddGlyph />
