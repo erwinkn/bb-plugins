@@ -219,7 +219,17 @@ classification refuses the send. This also applies to the dry runs in `observe`.
   only if that request could have leased itself (no `parent_session_id`, an
   enabled family): its prefix is the fresher one. A finished helper in another
   family does not, so when the final Opus request and a Haiku helper overlap, the
-  Opus request leases whichever of the two started first.
+  Opus request leases whichever of the two started first. Nor does an
+  eligible request that ended without a usable response (aborted, cut off or
+  non-2xx). The newest usable eligible completion skipped while other requests
+  of its session still ran is held, and once nothing is in flight it leases if
+  one of those requests failed and none newer succeeded (two successes keep the
+  earlier rule: nothing leases). A held completion passes every lease gate
+  first, keeps a body only in warm mode, counts in `retainedBodyBytes`, is
+  capped at `maxLeases` held at once and expires when its refresh would be
+  due. Skips name the case: a newer request in flight, one that finished
+  first, or (on the resumed lease) a newer or older one that failed. A lease
+  already ended by a newer start is not reopened (D372).
 - `thread.active` ends every lease and admission of the thread before BB's
   snapshot is read again, because that snapshot can still name the previous
   session while the new turn runs on another one.

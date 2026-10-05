@@ -146,6 +146,15 @@ export interface WarmerDeps {
   ): Promise<KeepAliveResult>;
 }
 
+// The newest usable eligible completion of a session that was skipped only because another
+// request of the session was still in flight. It already passed every lease gate, holds a body only
+// in warm mode, and lives at most until its refresh would be due.
+interface HeldCompletion {
+  sequence: number;
+  lease: Lease;
+  timer: unknown;
+}
+
 interface Lease {
   sessionId: string;
   accountId: string;
@@ -262,11 +271,15 @@ export class CacheWarmer {
   private readonly admissions = new Map<string, Admission>();
   private readonly sessionThreads = new Map<string, string | typeof AMBIGUOUS>();
   private readonly threadSessions = new Map<string, string>();
-  // Per session: the start sequence of every native request in flight, of every model family, and
-  // the newest start that could itself lease (no parent session, enabled family). Both reset once
-  // nothing is in flight.
+  // Per session: the start sequence of every native request in flight, of every model family; the
+  // starts that could themselves lease (no parent session, enabled family) and have not ended
+  // without a usable response; how the latest eligible one that did end that way failed; and the
+  // newest usable eligible completion skipped while another request still ran. All reset once
+  // nothing is in flight. Held completions are bounded by maxLeases and expire.
   private readonly inFlight = new Map<string, Set<number>>();
-  private readonly latestEligible = new Map<string, number>();
+  private readonly eligibleStarts = new Map<string, Set<number>>();
+  private readonly failures = new Map<string, { sequence: number; why: string }>();
+  private readonly held = new Map<string, HeldCompletion>();
   private sequence = 0;
   private refreshing = 0;
   private refreshTimes: number[] = [];
@@ -304,6 +317,10 @@ export class CacheWarmer {
   // itself: its prefix is the fresher one, and it was skipped while the older request still ran.
   // A finished request that could never lease (a helper in another family, an agent-team request)
   // does not, so the turn's last eligible request leases whatever order the two started in.
+  // Neither does an eligible request that ended without a usable response (aborted, failed,
+  // non-2xx): the newest usable eligible completion skipped while other requests ran is held, and
+  // once nothing in the session is in flight, it leases if one of those requests failed and no
+  // newer eligible request succeeded.
   observe(start: NativeRequestStart): NativeObservation | null {
     if (!this.active()) return null;
     this.totals.nativeObserved += 1;
@@ -318,7 +335,11 @@ export class CacheWarmer {
       const running = this.inFlight.get(session) ?? new Set<number>();
       running.add(sequence);
       this.inFlight.set(session, running);
-      if (this.couldLease(start)) this.latestEligible.set(session, sequence);
+      if (this.couldLease(start)) {
+        const eligible = this.eligibleStarts.get(session) ?? new Set<number>();
+        eligible.add(sequence);
+        this.eligibleStarts.set(session, eligible);
+      }
     }
     let finished = false;
     const finish = (
@@ -329,23 +350,54 @@ export class CacheWarmer {
       if (finished) return;
       finished = true;
       let busy: string | null = null;
+      let hold = false;
+      let resume: { held: HeldCompletion; failure: { sequence: number; why: string } } | null = null;
       if (session !== null) {
+        this.pruneHeld();
+        const usable =
+          response !== null &&
+          completed &&
+          response.status >= 200 &&
+          response.status < 300;
+        const eligible = this.eligibleStarts.get(session);
+        const wasEligible = eligible?.has(sequence) ?? false;
+        // A request without a usable response can never be the fresher prefix.
+        if (!usable && wasEligible) {
+          eligible!.delete(sequence);
+          this.failures.set(session, {
+            sequence,
+            why: response === null ? "ended without a response" : !completed ? "response did not complete" : `HTTP ${response.status}`,
+          });
+        }
+        const newest = eligible?.size ? Math.max(...eligible) : 0;
         const running = this.inFlight.get(session);
         running?.delete(sequence);
-        if (running !== undefined && running.size > 0)
+        if (running !== undefined && running.size > 0) {
           busy =
             Math.max(...running) > sequence
               ? "a newer native request in the session is in flight"
               : "an older native request in the session is still in flight";
-        else {
-          if ((this.latestEligible.get(session) ?? 0) > sequence)
+          // Kept until the session settles, in case the requests still running fail.
+          hold = usable && wasEligible && (this.held.get(session)?.sequence ?? 0) < sequence;
+        } else {
+          if (newest > sequence)
             busy =
-              "a newer request in the session that could start a lease ended first";
+              "a newer request in the session that could start a lease finished first";
+          // An eligible request failed and no newer eligible one succeeded. (A completion that
+          // waited only on requests that could never lease, or on ones that succeeded, stays
+          // skipped, as before.)
+          const held = this.held.get(session);
+          const failure = this.failures.get(session);
+          if (held !== undefined && failure !== undefined && held.sequence === newest)
+            resume = { held, failure };
           this.inFlight.delete(session);
-          this.latestEligible.delete(session);
+          this.eligibleStarts.delete(session);
+          this.failures.delete(session);
+          this.dropHeld(session);
         }
       }
-      this.afterNative(start, busy, response, usage, completed);
+      this.afterNative(start, busy, response, usage, completed, hold ? sequence : null);
+      if (resume !== null) this.resumeHeld(resume.held, resume.failure);
     };
     return {
       responded: (response) => {
@@ -411,6 +463,7 @@ export class CacheWarmer {
       if (hit(lease.sessionId)) this.endLease(lease, reason);
     for (const admission of [...this.admissions.values()])
       if (hit(admission.lease.sessionId)) this.dropAdmission(admission, reason);
+    for (const session of [...this.held.keys()]) if (hit(session)) this.dropHeld(session);
   }
 
   // Applies a settings change at once: leases and admissions the current mode or model families
@@ -437,12 +490,14 @@ export class CacheWarmer {
         this.dropAdmission(admission, reason);
     }
     const session = this.threadSessions.get(threadId);
+    if (session !== undefined) this.dropHeld(session);
     if (session !== undefined && this.sessionThreads.get(session) === threadId)
       this.sessionThreads.delete(session);
     this.threadSessions.delete(threadId);
   }
 
   cancelAll(reason: string): void {
+    for (const session of [...this.held.keys()]) this.dropHeld(session);
     for (const lease of [...this.leases.values()]) this.endLease(lease, reason);
     for (const admission of [...this.admissions.values()])
       this.dropAdmission(admission, reason);
@@ -460,6 +515,9 @@ export class CacheWarmer {
       retainedBodyBytes += lease.body?.byteLength ?? 0;
     for (const admission of this.admissions.values())
       retainedBodyBytes += admission.lease.body?.byteLength ?? 0;
+    this.pruneHeld();
+    for (const held of this.held.values())
+      retainedBodyBytes += held.lease.body?.byteLength ?? 0;
     return {
       mode: this.disposed ? "off" : this.deps.config().mode,
       leases: [...this.leases.values()].map((lease) => ({
@@ -533,12 +591,14 @@ export class CacheWarmer {
     return null;
   }
 
+  // `holdAs`: a busy completion that passes every other gate is held under this sequence.
   private afterNative(
     start: NativeRequestStart,
     busy: string | null,
     response: NativeResponse | null,
     usage: CacheUsage | null,
     completed: boolean,
+    holdAs: number | null = null,
   ): void {
     if (this.disposed) return;
     const config = this.deps.config();
@@ -589,14 +649,34 @@ export class CacheWarmer {
       );
     if (!config.families.includes(start.family as WarmingFamily))
       return skip(`model family ${start.family} is not enabled for warming`);
-    if (busy !== null) return skip(busy);
+    if (busy !== null) {
+      if (holdAs !== null) {
+        const lease = this.leaseFrom(start.sessionId, start.family, response, usage, shape, config);
+        if (typeof lease !== "string") this.hold(holdAs, lease, config);
+      }
+      return skip(busy);
+    }
+    const lease = this.leaseFrom(start.sessionId, start.family, response, usage, shape, config);
+    if (typeof lease === "string") return skip(lease);
+    this.admit(lease, config);
+  }
+
+  // Every lease gate that does not depend on the session's other requests: a lease, or why not.
+  private leaseFrom(
+    sessionId: string,
+    family: ModelFamily,
+    response: NativeResponse,
+    usage: CacheUsage | null,
+    shape: ReturnType<typeof describeClaudeRequest>,
+    config: WarmingConfig,
+  ): Lease | string {
     if (response.status < 200 || response.status >= 300)
-      return skip(`native request returned HTTP ${response.status}`);
-    if (usage === null) return skip("cache usage unknown");
-    if (shape.tailTtl === null) return skip("no cache breakpoint");
-    if (shape.keepAliveBlocker !== null) return skip(shape.keepAliveBlocker);
+      return `native request returned HTTP ${response.status}`;
+    if (usage === null) return "cache usage unknown";
+    if (shape.tailTtl === null) return "no cache breakpoint";
+    if (shape.keepAliveBlocker !== null) return shape.keepAliveBlocker;
     const prefixTokens = usage.cacheReadTokens + usage.cacheWriteTokens;
-    if (prefixTokens === 0) return skip("nothing was cached");
+    if (prefixTokens === 0) return "nothing was cached";
     const ttlMs = CACHE_TTL_MS[shape.tailTtl];
     const coveredUntil = response.startedAt + ttlMs;
     const completedAt = this.deps.now();
@@ -604,20 +684,15 @@ export class CacheWarmer {
       coveredUntil >=
       completedAt + longestWindowMinutes(config) * 60_000
     )
-      return skip(
-        `the ${shape.tailTtl} cache entry already outlasts every warming window`,
-      );
+      return `the ${shape.tailTtl} cache entry already outlasts every warming window`;
     const dryRun = config.mode === "observe";
     if (!dryRun && response.body.byteLength > config.maxLeaseBodyKiB * 1024)
-      return skip(
-        `request body is larger than maxLeaseBodyKiB (${config.maxLeaseBodyKiB} KiB)`,
-      );
-    this.admit(
-      {
-        sessionId: start.sessionId,
+      return `request body is larger than maxLeaseBodyKiB (${config.maxLeaseBodyKiB} KiB)`;
+    return {
+        sessionId,
         accountId: response.accountId,
         model: shape.model,
-        family: start.family,
+        family,
         ttl: shape.tailTtl,
         url: response.url,
         body: dryRun ? null : response.body,
@@ -637,9 +712,57 @@ export class CacheWarmer {
         timer: null,
         controller: null,
         ended: false,
-      },
-      config,
-    );
+    };
+  }
+
+  // At most maxLeases completions are held at once (the oldest goes first), each only until its
+  // refresh would be due: after that a lease from it could only end at once.
+  private hold(sequence: number, lease: Lease, config: WarmingConfig): void {
+    this.dropHeld(lease.sessionId);
+    while (this.held.size >= config.maxLeases) {
+      const oldest = this.held.keys().next();
+      if (oldest.done) break;
+      this.dropHeld(oldest.value);
+    }
+    const ms = Math.max(0, this.heldExpiry(lease, config) - this.deps.now());
+    const timer = this.deps.timers.setTimeout(() => this.pruneHeld(), ms);
+    this.held.set(lease.sessionId, { sequence, lease, timer });
+  }
+
+  private heldExpiry(lease: Lease, config: WarmingConfig): number {
+    return lease.coveredUntil - config.safetyMarginSeconds * 1_000;
+  }
+
+  private dropHeld(sessionId: string): void {
+    const held = this.held.get(sessionId);
+    if (held === undefined) return;
+    this.deps.timers.clearTimeout(held.timer);
+    this.held.delete(sessionId);
+  }
+
+  private pruneHeld(): void {
+    const config = this.deps.config();
+    const now = this.deps.now();
+    for (const [session, held] of [...this.held])
+      if (now >= this.heldExpiry(held.lease, config)) this.dropHeld(session);
+  }
+
+  // A held completion is reconsidered once its session settled after an eligible request failed.
+  private resumeHeld(held: HeldCompletion, failure: { sequence: number; why: string }): void {
+    if (this.disposed) return;
+    const config = this.deps.config();
+    const lease = held.lease;
+    const event = { threadId: this.linkedThread(lease.sessionId), accountId: lease.accountId, model: lease.model, ttl: lease.ttl };
+    this.record({
+      ...event,
+      kind: "native",
+      message: `${failure.sequence > held.sequence ? "a newer" : "an older"} request in the session failed (${failure.why}) and none newer succeeded, so the last successful request can lease again; body ${lease.bodyHash}`,
+    });
+    const blocked = this.gate(lease, config);
+    if (blocked !== null) return this.record({ ...event, kind: "skip", message: blocked });
+    if (this.deps.now() >= this.heldExpiry(lease, config))
+      return this.record({ ...event, kind: "skip", message: "the entry expired before the session settled" });
+    this.admit(lease, config);
   }
 
   // At most maxLeases requests wait for admission at once; a newer one replaces the oldest, so

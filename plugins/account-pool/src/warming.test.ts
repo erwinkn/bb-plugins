@@ -1105,24 +1105,28 @@ describe("D357: pauseStopsWarming", () => {
 // and completions the way concurrent Claude Code requests do.
 function overlapping(
   h: Harness,
-  options: { family?: ModelFamily; turn?: string; model?: string } = {},
+  options: { family?: ModelFamily; turn?: string; model?: string; session?: string } = {},
 ) {
   const family = options.family ?? "opus";
-  const observation = h.warmer.observe({ sessionId: "s-thr_coord", parentSessionId: null, family });
+  const observation = h.warmer.observe({ sessionId: options.session ?? "s-thr_coord", parentSessionId: null, family });
   const startedAt = h.clock.now();
   return {
-    async finish() {
+    async finish(end: { status?: number; completed?: boolean } = {}) {
       const tap = observation?.responded({
         accountId: ACCOUNT,
         url: URL_,
         body: requestBody({ model: options.model, turn: options.turn }),
         headers: new Headers(),
         startedAt,
-        status: 200,
+        status: end.status ?? 200,
         contentType: "text/event-stream",
       });
       tap?.push(sse(NATIVE_USAGE));
-      tap?.finish(true);
+      tap?.finish(end.completed ?? true);
+      await flush();
+    },
+    async abandon() {
+      observation?.abandon();
       await flush();
     },
   };
@@ -1190,7 +1194,7 @@ describe("A234 1: a finished helper does not suppress the final eligible complet
     await older.finish();
     expect(h.warmer.status()).toMatchObject({ leases: [], admissions: [] });
     expect(h.events().at(-1)).toBe(
-      "skip: a newer request in the session that could start a lease ended first",
+      "skip: a newer request in the session that could start a lease finished first",
     );
     await h.clock.advanceTo(60 * MINUTE);
     expect(h.sent).toHaveLength(0);
@@ -1204,7 +1208,7 @@ describe("A234 1: a finished helper does not suppress the final eligible complet
     await opus.finish();
     expect(h.warmer.status().leases).toHaveLength(0);
     expect(h.events().at(-1)).toBe(
-      "skip: a newer request in the session that could start a lease ended first",
+      "skip: a newer request in the session that could start a lease finished first",
     );
   });
 
@@ -1319,5 +1323,159 @@ describe("D362: reviewerAcceptedMinutes", () => {
     await h.clock.advanceTo(60 * MINUTE);
     expect(h.sent).toHaveLength(0);
     expect(h.events().at(-1)).toBe("end: no warming window for reviewer accepted");
+  });
+});
+
+describe("T104: a newer request that ends without a usable response stops blocking the last good one", () => {
+  type Overlap = ReturnType<typeof overlapping>;
+  const failures: [string, (r: Overlap) => Promise<void>, string][] = [
+    ["aborted", (r) => r.abandon(), "ended without a response"],
+    ["failed with HTTP 500", (r) => r.finish({ status: 500 }), "HTTP 500"],
+    ["cut off mid-response", (r) => r.finish({ completed: false }), "response did not complete"],
+  ];
+  const leasedBody = (h: Harness) => new TextDecoder().decode(h.sent[0]?.body);
+
+  for (const [label, fail, why] of failures) {
+    it(`newer ${label} first, then the older completes: the older leases`, async () => {
+      const h = linked();
+      const older = overlapping(h, { turn: "older" });
+      const newer = overlapping(h, { turn: "newer" });
+      await fail(newer);
+      expect(h.warmer.status().leases).toHaveLength(0); // the older one still runs
+      await older.finish();
+      expect(h.warmer.status().leases).toHaveLength(1);
+      expect(h.events().join("\n")).not.toContain("finished first");
+      await h.clock.advanceTo(60 * MINUTE);
+      expect(leasedBody(h)).toContain("older");
+    });
+
+    it(`older completes first, then the newer ${label}: the held older one leases`, async () => {
+      const h = linked();
+      const older = overlapping(h, { turn: "older" });
+      const newer = overlapping(h, { turn: "newer" });
+      await older.finish();
+      // A running same-session request still prevents leasing.
+      expect(h.warmer.status()).toMatchObject({ leases: [], admissions: [] });
+      expect(h.events().at(-1)).toBe("skip: a newer native request in the session is in flight");
+      await fail(newer);
+      expect(h.warmer.status().leases).toHaveLength(1);
+      expect(h.events().join("\n")).toContain(`native: a newer request in the session failed (${why}) and none newer succeeded, so the last successful request can lease again`);
+      await h.clock.advanceTo(60 * MINUTE);
+      expect(leasedBody(h)).toContain("older");
+    });
+  }
+
+  it("a successful newer request still wins, in both finish orders", async () => {
+    const first = linked();
+    const a = overlapping(first, { turn: "older" });
+    const b = overlapping(first, { turn: "newer" });
+    await a.finish();
+    await b.finish();
+    await first.clock.advanceTo(60 * MINUTE);
+    expect(new TextDecoder().decode(first.sent[0]?.body)).toContain("newer");
+    const second = linked();
+    const c = overlapping(second, { turn: "older" });
+    const d = overlapping(second, { turn: "newer" });
+    await d.finish();
+    await c.finish();
+    expect(second.events().at(-1)).toBe("skip: a newer request in the session that could start a lease finished first");
+    expect(second.warmer.status().leases).toHaveLength(0);
+  });
+
+  it("the newest successful one leases when several newer requests end differently", async () => {
+    const h = linked();
+    const one = overlapping(h, { turn: "one" });
+    const two = overlapping(h, { turn: "two" });
+    const three = overlapping(h, { turn: "three" });
+    await two.finish(); // held: one and three still run
+    await three.abandon();
+    await one.finish();
+    expect(h.events()).toContain("skip: a newer request in the session that could start a lease finished first");
+    expect(h.warmer.status().leases).toHaveLength(1);
+    await h.clock.advanceTo(60 * MINUTE);
+    expect(leasedBody(h)).toContain("two");
+  });
+
+  it("any new start still cancels the resumed lease, and a turn start drops a held completion", async () => {
+    const h = linked();
+    const older = overlapping(h, { turn: "older" });
+    const newer = overlapping(h, { turn: "newer" });
+    await older.finish();
+    await newer.abandon();
+    expect(h.warmer.status().leases).toHaveLength(1);
+    overlapping(h, { turn: "next" });
+    expect(h.warmer.status().leases).toHaveLength(0);
+
+    const t = linked();
+    const a = overlapping(t, { turn: "older" });
+    const b = overlapping(t, { turn: "newer" });
+    await a.finish();
+    t.warmer.threadStarted("thr_coord");
+    await b.abandon();
+    expect(t.warmer.status()).toMatchObject({ leases: [], admissions: [] });
+  });
+
+  it("A250 #2: the newest success leases whatever order the failures and the success arrive in", async () => {
+    const h = linked();
+    const a = overlapping(h, { turn: "turn-a" });
+    const b = overlapping(h, { turn: "turn-b" });
+    const c = overlapping(h, { turn: "turn-c" });
+    await c.abandon();
+    await b.finish(); // only the older A still runs
+    expect(h.warmer.status().leases).toHaveLength(0);
+    await a.abandon();
+    expect(h.warmer.status().leases).toHaveLength(1);
+    expect(h.events().join("\n")).toContain("native: an older request in the session failed (ended without a response) and none newer succeeded");
+    await h.clock.advanceTo(60 * MINUTE);
+    expect(leasedBody(h)).toContain("turn-b");
+  });
+
+  it("two successes with no failure keep the earlier rule: nothing leases", async () => {
+    const h = linked();
+    const a = overlapping(h, { turn: "a" });
+    const b = overlapping(h, { turn: "b" });
+    await b.finish();
+    await a.finish();
+    expect(h.warmer.status()).toMatchObject({ leases: [], admissions: [] });
+  });
+
+  it("A250 #1: held completions pass the lease gates first, stay within maxLeases, count their bytes and expire", async () => {
+    const h = linked({ maxLeases: 1, maxLeaseBodyKiB: 64 });
+    // Too large to ever lease: never held.
+    const big = overlapping(h, { session: "s-big", turn: "x".repeat(70_000) });
+    overlapping(h, { session: "s-big", turn: "newer" });
+    await big.finish();
+    expect(h.warmer.status().retainedBodyBytes).toBe(0);
+    // Two sessions each hold one completion; maxLeases 1 keeps only the latest.
+    for (const session of ["s-1", "s-2"]) {
+      const older = overlapping(h, { session, turn: `older ${session}` });
+      overlapping(h, { session, turn: "newer" });
+      await older.finish();
+    }
+    const retained = h.warmer.status().retainedBodyBytes;
+    expect(retained).toBeGreaterThan(0);
+    expect(retained).toBeLessThan(64 * 1024);
+    // A held completion is gone once its refresh would be due, timer or not.
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.warmer.status().retainedBodyBytes).toBe(0);
+  });
+
+  it("observe mode holds no request body", async () => {
+    const h = linked({ mode: "observe" });
+    const older = overlapping(h, { turn: "older" });
+    const newer = overlapping(h, { turn: "newer" });
+    await older.finish();
+    expect(h.warmer.status().retainedBodyBytes).toBe(0);
+    await newer.abandon();
+    expect(h.warmer.status().admissions.length + h.warmer.status().leases.length).toBe(1);
+  });
+
+  it("an older request that waited only on a helper that could never lease stays skipped, as before", async () => {
+    const h = linked();
+    const opus = overlapping(h, { turn: "final" });
+    const haiku = overlapping(h, HAIKU);
+    await opus.finish();
+    await haiku.abandon();
+    expect(h.warmer.status()).toMatchObject({ leases: [], admissions: [] });
   });
 });
