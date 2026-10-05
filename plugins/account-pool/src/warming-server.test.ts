@@ -915,7 +915,7 @@ describe("usage ledger through the plugin", () => {
     expect(report.ledger).toMatchObject({ writeErrors: 0, retentionDays: 30 });
     const text = (await f.host.harness.behavior.runCli(["usage", "report", "--since", "1h"])).stdout;
     expect(text).toContain("ttl 1h · warming warm (opus; coordinator 20m, worker 15/10m)");
-    expect(text).toContain("account 0: 3 req");
+    expect(text).toContain("pool@example.com: 3 req");
   });
 
   it("a failing ledger write never fails or changes a request", async () => {

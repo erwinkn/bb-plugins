@@ -374,7 +374,11 @@ export function createAccountPoolPlugin(
         report: async (since) => {
           ledger.flush();
           const labels = Object.fromEntries(
-            (await accounts.list()).map((account) => [account.id, account.label]),
+            // Labels are often shared ("Erwin"), so the email tells accounts apart.
+            (await accounts.list()).map((account) => [
+              account.id,
+              account.email ?? account.label,
+            ]),
           );
           return buildUsageReport(db, {
             since,
