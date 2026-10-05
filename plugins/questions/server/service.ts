@@ -15,6 +15,7 @@ import {
   type Summary,
   type SummaryMetadata,
   type ThreadState,
+  type HeaderState,
   type ChangeSignal,
   LIMITS,
   SUMMARY_METADATA_KEY,
@@ -164,6 +165,11 @@ export class QuestionsService {
       submissions: this.store.listSubmissions(threadId, LIMITS.submissionsListed),
       openRoundId: this.deps.openRound?.(threadId) ?? null,
     };
+  }
+
+  header(threadId: string): HeaderState {
+    const roundId = this.deps.openRound?.(threadId) ?? null;
+    return { threadId, round: roundId === null ? null : this.store.headerRound(threadId, roundId) };
   }
 
   /**

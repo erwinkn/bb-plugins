@@ -199,6 +199,18 @@ export const threadStateSchema = z.object({
 });
 export type ThreadState = z.infer<typeof threadStateSchema>;
 
+/** Header attention follows the current native prompt, independent of history. */
+export const headerStateSchema = z.object({
+  threadId: z.string(),
+  round: z.object({
+    id: z.string(),
+    mode: z.enum(QUESTION_MODES),
+    open: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }).nullable(),
+});
+export type HeaderState = z.infer<typeof headerStateSchema>;
+
 export function emptyAnswer(): Answer {
   return {
     selected: [],

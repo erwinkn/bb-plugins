@@ -5,7 +5,7 @@ import plugin from "../server";
 import { MIGRATIONS, QuestionsStore } from "../server/store";
 import { QuestionsService } from "../server/service";
 import { QuestionInteractions } from "../server/interactions";
-import { LIMITS, actionableFailures, emptyAnswer, threadStateSchema, type Answer, type Question, type Submission } from "../lib/model";
+import { LIMITS, actionableFailures, emptyAnswer, headerStateSchema, threadStateSchema, type Answer, type Question, type Submission } from "../lib/model";
 
 const hosts: ReturnType<typeof createFakePluginHost>[] = [];
 const ids = new Map<string, string>();
@@ -63,7 +63,8 @@ async function setup(beforePlugin?: (host: ReturnType<typeof createFakePluginHos
   const submit = async (questionIds: string[], submissionId = "s1", version = 1) => rpc("questions_submit", {
     threadId: "t", submissionId: uuid(submissionId), items: questionIds.map((questionId) => ({ questionId, expectedVersion: version })),
   }) as Promise<{ outcome: string; submission: Submission }>;
-  return { ...host, send, metadata, rpc, state, ask, save, submit };
+  const header = async (threadId = "t") => headerStateSchema.parse(await rpc("questions_header", { threadId }));
+  return { ...host, send, metadata, rpc, state, header, ask, save, submit };
 }
 
 describe("Questions backend", () => {
@@ -690,7 +691,7 @@ describe("Questions backend", () => {
     expect((await h.state()).summary).toBeNull();
     h.metadata.set("t", { summary: { markdown: "future", updatedAt: 1, version: 2 } });
     expect((await h.state()).summary).toBeNull();
-    await expect(h.harness.behavior.callAgentTool("questions_summary", { summary: "x".repeat(LIMITS.summaryChars + 1) }, { threadId: "t", projectId: "proj_t" })).rejects.toThrow(/8000/);
+    expect(await h.harness.behavior.callAgentTool("questions_summary", { summary: "x".repeat(LIMITS.summaryChars + 1) }, { threadId: "t", projectId: "proj_t" })).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("8000") }] });
     expect(await h.harness.behavior.runCli(["summary", "set", "y".repeat(LIMITS.summaryChars + 1)], { threadId: "t" })).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("8000") });
   });
 
@@ -860,5 +861,153 @@ describe("Questions backend", () => {
     ] });
     expect(result.violations).toEqual([]);
     expect(result.privateDependencies).toEqual([]);
+  });
+});
+
+
+describe("Compact header backend", () => {
+  it("reads only the current round in two indexed projections regardless of history, summary or submissions", async () => {
+    const h = await setup();
+    const history = [];
+    for (let i = 0; i < 40; i++) history.push(await h.ask([{ title: `History ${i}?` }]));
+    const old = history[0]!.questions[0]!;
+    await h.save(old, { ...emptyAnswer(), text: "Historical answer" });
+    await h.submit([old.id], "history");
+    h.metadata.set("t", { summary: { markdown: "Summary survives", updatedAt: 1, version: 1 } });
+    const waiting = h.harness.behavior.callAgentTool("questions_ask", { questions: [
+      { title: "Submitted?" }, { title: "Edited?" }, { title: "Still empty?", optional: true },
+    ] }, { threadId: "t", projectId: "proj_t" });
+    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
+    const current = (await h.state()).rounds.at(-1)!;
+    const sent = { ...emptyAnswer(), text: "Sent" };
+    await h.save(current.questions[0]!, { ...sent, text: "  Sent  " });
+    await h.save(current.questions[1]!, { ...sent, text: "Edited later" });
+    const db = h.bb.storage.database();
+    for (const q of current.questions.slice(0, 2)) db.prepare("UPDATE answers SET submitted_json = ? WHERE question_id = ?").run(JSON.stringify(sent), q.id);
+    const fullBefore = await h.state();
+    const metadataBefore = h.harness.inspection.sdk.callsTo("threads.getPluginMetadata").length;
+    const sdkBefore = h.harness.inspection.sdk.calls.length;
+    const prepare = vi.spyOn(db, "prepare");
+    const compact = await h.header();
+    const sql = prepare.mock.calls.map(([sql]) => sql);
+    prepare.mockRestore();
+    expect(compact).toEqual({ threadId: "t", round: { id: current.id, mode: "panel", total: 3, open: 2 } });
+    expect(sql).toEqual([
+      "SELECT mode, questions_json FROM rounds WHERE id = ? AND thread_id = ?",
+      "SELECT question_id, draft_json, submitted_json FROM answers WHERE thread_id = ? AND round_id = ?",
+    ]);
+    expect(h.harness.inspection.sdk.calls).toHaveLength(sdkBefore);
+    expect(h.harness.inspection.sdk.callsTo("threads.getPluginMetadata")).toHaveLength(metadataBefore);
+    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(fullBefore).length / 10);
+    expect(await h.state()).toEqual(fullBefore);
+    const plan = db.prepare("EXPLAIN QUERY PLAN SELECT question_id, draft_json, submitted_json FROM answers WHERE thread_id = ? AND round_id = ?").all("t", current.id) as { detail: string }[];
+    expect(plan.some((row) => row.detail.includes("answers_thread_round") && row.detail.includes("round_id=?"))).toBe(true);
+
+    // If header accidentally decodes history or outbox, these fixtures fail.
+    db.prepare("UPDATE rounds SET questions_json = '{bad' WHERE id = ?").run(history[0]!.id);
+    db.prepare("UPDATE answers SET draft_json = '{bad' WHERE question_id = ?").run(old.id);
+    db.prepare("UPDATE submissions SET snapshot_json = '{bad' WHERE thread_id = ?").run("t");
+    h.harness.sdk.stub("threads.getPluginMetadata", async () => { throw new Error("Header must not read summaries"); });
+    expect(await h.header()).toEqual(compact);
+    await expect(h.state()).rejects.toThrow(); // Full state still reads its original contract.
+    h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
+    expect(await waiting).toMatchObject({ isError: true });
+  });
+
+  it("does zero storage or SDK work when there is no open prompt, even with unanswered history", async () => {
+    const h = await setup();
+    await h.ask([{ title: "Never opened?" }]);
+    const prepare = vi.spyOn(h.bb.storage.database(), "prepare");
+    const sdkBefore = h.harness.inspection.sdk.calls.length;
+    expect(await h.header()).toEqual({ threadId: "t", round: null });
+    expect(await h.header("other")).toEqual({ threadId: "other", round: null });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(h.harness.inspection.sdk.calls).toHaveLength(sdkBefore);
+    prepare.mockRestore();
+  });
+
+  it("scopes the open round and answer reads to their thread and reports missing current rounds", async () => {
+    const h = await setup();
+    const foreign = await h.ask([{ title: "Foreign?" }], "other");
+    const store = new QuestionsStore(h.bb.storage.database());
+    const service = new QuestionsService(store, { sdk: h.bb.sdk, log: h.bb.log, publish: () => {}, openRound: () => foreign.id });
+    expect(service.header("t")).toEqual({ threadId: "t", round: null });
+    expect(service.header("other")).toEqual({ threadId: "other", round: { id: foreign.id, mode: "panel", open: 1, total: 1 } });
+  });
+
+  it.each(["panel", "inline"])("keeps %s native submission and cancellation behavior with compact reads", async (mode) => {
+    const h = await setup();
+    const controller = new AbortController();
+    const call = h.harness.behavior.callAgentTool("questions_ask", { mode, questions: [{ title: "Current?" }] }, { threadId: "t", projectId: "proj_t", signal: controller.signal });
+    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
+    const current = (await h.state()).rounds[0]!;
+    expect((await h.header()).round).toEqual({ id: current.id, mode, open: 1, total: 1 });
+    const other = await h.header("other");
+    expect(other.round).toBeNull();
+    await h.save(current.questions[0]!, { ...emptyAnswer(), text: "Draft remains open" });
+    expect((await h.header()).round?.open).toBe(1);
+    await h.submit([current.questions[0]!.id], `compact-${mode}`);
+    expect(JSON.parse(await call as string).answers[0].answer.text).toBe("Draft remains open");
+    expect((await h.header()).round).toBeNull();
+    expect(h.send).not.toHaveBeenCalled();
+
+    const cancelled = h.harness.behavior.callAgentTool("questions_ask", { mode, questions: [{ title: "Cancel?" }] }, { threadId: "t", projectId: "proj_t" });
+    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
+    expect((await h.header()).round?.open).toBe(1);
+    h.harness.cancelInteraction(h.harness.pendingInteractions[0]!.id);
+    expect(await cancelled).toMatchObject({ isError: true });
+    expect((await h.header()).round).toBeNull();
+    expect((await h.state()).rounds).toHaveLength(2);
+  });
+
+  it.each(["thread-stopped", "request-aborted"] as const)("clears compact attention after native %s without losing draft data", async (reason) => {
+    const h = await setup();
+    let settle!: (result: { outcome: "cancelled"; reason: typeof reason }) => void;
+    vi.spyOn(h.bb.ui, "requestInput").mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
+    const call = h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Stopped?" }] }, { threadId: "t", projectId: "proj_t" });
+    await vi.waitFor(() => expect(settle).toBeTypeOf("function"));
+    const q = (await h.state()).rounds[0]!.questions[0]!;
+    await h.save(q, { ...emptyAnswer(), text: "Keep draft" });
+    expect((await h.header()).round?.open).toBe(1);
+    settle({ outcome: "cancelled", reason });
+    expect(await call).toMatchObject({ isError: true });
+    expect((await h.header()).round).toBeNull();
+    expect((await h.state()).answers[0]!.draft?.text).toBe("Keep draft");
+  });
+
+  it("clears compact attention on native prompt failure and disposal", async () => {
+    const h = await setup();
+    vi.spyOn(h.bb.ui, "requestInput").mockRejectedValueOnce(new Error("Prompt unavailable"));
+    expect(await h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Failure?" }] }, { threadId: "t", projectId: "proj_t" })).toMatchObject({ isError: true });
+    expect((await h.header()).round).toBeNull();
+    const call = h.harness.behavior.callAgentTool("questions_ask", { questions: [{ title: "Dispose?" }] }, { threadId: "t", projectId: "proj_t" });
+    await vi.waitFor(() => expect(h.harness.pendingInteractions).toHaveLength(1));
+    expect((await h.header()).round?.open).toBe(1);
+    const replacement = await h.harness.lifecycle.reload(plugin);
+    hosts.push(replacement);
+    expect(await call).toMatchObject({ isError: true });
+    expect(headerStateSchema.parse(await replacement.harness.behavior.callRpc("questions_header", { threadId: "t" })).round).toBeNull();
+    expect(threadStateSchema.parse(await replacement.harness.behavior.callRpc("questions_state", { threadId: "t" })).rounds).toHaveLength(2);
+  });
+
+  it("preserves preview tool schemas without string maxLength while service string bounds still reject oversize input", async () => {
+    const h = await setup();
+    const tools = h.harness.inspection.registrations.agentTools;
+    const askSchema = tools.find((tool) => tool.name === "questions_ask")!.inputSchema;
+    const summarySchema = tools.find((tool) => tool.name === "questions_summary")!.inputSchema;
+    expect(JSON.stringify(askSchema)).not.toContain('"maxLength"');
+    expect(JSON.stringify(summarySchema)).not.toContain('"maxLength"');
+    expect(JSON.stringify(askSchema)).toContain('"maxItems"');
+    for (const input of [
+      { intro: "x".repeat(LIMITS.introChars + 1), questions: [{ title: "Valid?" }] },
+      { questions: [{ title: "x".repeat(LIMITS.titleChars + 1) }] },
+      { questions: [{ title: "Valid?", help: "x".repeat(LIMITS.helpChars + 1) }] },
+      { questions: [{ title: "Valid?", options: ["x".repeat(LIMITS.optionChars + 1)] }] },
+    ]) {
+      expect(await h.harness.behavior.callAgentTool("questions_ask", input, { threadId: "t", projectId: "proj_t" })).toMatchObject({ isError: true });
+    }
+    expect(await h.harness.behavior.callAgentTool("questions_summary", { summary: "x".repeat(LIMITS.summaryChars + 1) }, { threadId: "t", projectId: "proj_t" })).toMatchObject({ isError: true });
+    expect((await h.state()).rounds).toHaveLength(0);
+    expect(h.harness.pendingInteractions).toHaveLength(0);
   });
 });

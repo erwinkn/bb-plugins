@@ -2,13 +2,13 @@
 // many of its questions still need an answer and opens the Questions panel.
 // Submitting, cancelling, or stopping the prompt removes the entry. A new
 // round opens the panel once; a reload never does.
-import { useEffect, useRef, useState } from "react";
-import { useBbNavigate, useRealtime, useRpc } from "@get-bb/plugin-sdk/app";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useBbNavigate, useRealtime, useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginThreadHeaderActionProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../server";
 import { Icon } from "@/components/ui/icon";
 import { ATTENTION_TINT } from "./primitives";
-import { type ChangeSignal, REALTIME_CHANNEL, answerStatus } from "@/lib/model";
+import { type ChangeSignal, type HeaderState, REALTIME_CHANNEL } from "@/lib/model";
 import { cn } from "@/lib/utils";
 import { requestRound, takeRequestedRound } from "@/lib/panel-navigation";
 import { QUESTIONS_ACTION_ID } from "./InlineRound";
@@ -31,55 +31,86 @@ function rememberOpened(threadId: string, roundId: string): boolean {
 export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeaderActionProps) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
-  const [counts, setCounts] = useState<{ open: number; total: number } | null>(null);
-  const mounted = useRef(true);
-  const requestSeq = useRef(0);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+  const [header, setHeader] = useState<HeaderState | null>(null);
+  const currentThread = useRef(threadId);
+  currentThread.current = threadId;
+  const reader = useRef<{
+    threadId: string;
+    refresh: () => void;
+    signal: (signal: Partial<ChangeSignal>) => void;
+  } | null>(null);
   // Always open without params: the host keys the tab by action + params,
   // so params would open a second Questions tab. The round to show travels
   // through panel-navigation instead.
-  const open = (roundId?: string) => {
+  const open = useCallback((roundId?: string) => {
     if (roundId) requestRound(threadId, roundId);
     const opened = navigate.openThreadPanel({ actionId: QUESTIONS_ACTION_ID, title: "Questions" });
     if (!opened && roundId) takeRequestedRound(threadId);
     return opened;
-  };
-  /** Reload counts; a stale reply for an earlier thread or request is ignored. */
-  const refresh = (openRoundId?: string) => {
-    const seq = (requestSeq.current += 1);
-    const forThread = threadId;
-    rpc.call("questions_state", { threadId: forThread }).then(
-      (state) => {
-        if (!mounted.current || seq !== requestSeq.current || forThread !== threadId) return;
-        // Only the round whose prompt is open counts: a submitted or dismissed
-        // round no longer waits on the user even if answers are missing.
-        const waiting = state.rounds.find((round) => round.id === state.openRoundId) ?? null;
-        if (waiting === null) {
-          setCounts(null);
-        } else {
-          const answers = new Map(state.answers.map((item) => [item.questionId, item]));
-          const openCount = waiting.questions.filter((question) => answerStatus(answers.get(question.id)) !== "done").length;
-          setCounts({ open: openCount, total: waiting.questions.length });
+  }, [navigate, threadId]);
+  useEffect(() => {
+    // Each effect owns a generation. Cleanup invalidates even a reply for a
+    // thread we have since left and returned to, without touching its RPC.
+    let active = true;
+    let inFlight = false;
+    let invalidated = false;
+    let createdRoundId: string | undefined;
+    const refresh = () => {
+      if (!active) return;
+      if (inFlight) { invalidated = true; return; }
+      inFlight = true;
+      void read();
+    };
+    const read = async () => {
+      try {
+        const state = await rpc.call("questions_header", { threadId });
+        // A signal received during the read requires one trailing refresh.
+        // Its earlier snapshot must not briefly reopen a closed prompt.
+        if (!active || currentThread.current !== threadId || state.threadId !== threadId || invalidated) return;
+        setHeader(state);
+        const round = state.round;
+        if (round && round.id === createdRoundId) {
+          createdRoundId = undefined;
+          if (round.mode === "panel" && rememberOpened(threadId, round.id)) open(round.id);
         }
-        // Only a panel round opens the panel; inline rounds stay in the thread.
-        const created = openRoundId ? state.rounds.find((round) => round.id === openRoundId) : undefined;
-        if (created && created.mode === "panel" && rememberOpened(forThread, created.id)) open(created.id);
+      } catch {
+        // Keep successful counts. A later signal or reconnect can refresh;
+        // there is no automatic retry after a failed read.
+      } finally {
+        inFlight = false;
+        if (active && invalidated) { invalidated = false; refresh(); }
+      }
+    };
+    const currentReader = {
+      threadId,
+      refresh,
+      signal: (signal: Partial<ChangeSignal>) => {
+        if (signal.kind === "round-created" && typeof signal.roundId === "string") createdRoundId = signal.roundId;
+        if (signal.kind === "prompt-closed" && signal.roundId === createdRoundId) createdRoundId = undefined;
+        refresh();
       },
-      () => { /* Keep the last successful counts and the panel launcher. */ },
-    );
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { setCounts(null); refresh(); }, [threadId]);
+    };
+    reader.current = currentReader;
+    setHeader(null);
+    refresh();
+    return () => {
+      active = false;
+      if (reader.current === currentReader) reader.current = null;
+    };
+  }, [threadId, rpc, open]);
   useRealtime(REALTIME_CHANNEL, (payload) => {
     const signal = payload as Partial<ChangeSignal> | null;
-    if (!signal || signal.threadId !== threadId) return;
-    refresh(signal.kind === "round-created" && typeof signal.roundId === "string" ? signal.roundId : undefined);
+    if (!signal || signal.threadId !== threadId || reader.current?.threadId !== threadId) return;
+    if (!signal.kind || !["round-created", "answers", "submission", "prompt-opened", "prompt-closed"].includes(signal.kind)) return;
+    reader.current.signal(signal);
   });
+  const connection = useRealtimeConnectionState();
+  const seenConnection = useRef(connection);
+  useEffect(() => {
+    if (connection === "connected" && seenConnection.current === "reconnecting" && reader.current?.threadId === threadId) reader.current.refresh();
+    seenConnection.current = connection;
+  }, [connection, threadId]);
+  const counts = header?.threadId === threadId ? header.round : null;
   if (counts === null || counts.total === 0) return null;
   return (
     <button

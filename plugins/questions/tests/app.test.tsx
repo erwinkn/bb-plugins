@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
 import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginMessageDirectiveProps, PluginPendingInteractionProps, PluginThreadHeaderActionProps, PluginThreadPanelProps } from "@get-bb/plugin-sdk/app";
@@ -11,6 +12,8 @@ import {
   type Round,
   type Submission,
   type ThreadState,
+  type HeaderState,
+  answerStatus,
   actionableFailures,
   emptyAnswer,
 } from "../lib/model";
@@ -72,6 +75,13 @@ function backend(initial: Partial<ThreadState> = {}) {
   };
   const calls: { method: string; input: unknown }[] = [];
   const handlers = {
+    questions_header: async ({ threadId }: { threadId: string }): Promise<HeaderState> => {
+      calls.push({ method: "questions_header", input: { threadId } });
+      const current = state.rounds.find((round) => round.id === state.openRoundId);
+      const answers = new Map(state.answers.map((answer) => [answer.questionId, answer]));
+      return { threadId, round: current ? { id: current.id, mode: current.mode, total: current.questions.length,
+        open: current.questions.filter((question) => answerStatus(answers.get(question.id)) !== "done").length } : null };
+    },
     questions_state: async () => {
       calls.push({ method: "questions_state", input: null });
       return structuredClone(state);
@@ -809,6 +819,191 @@ describe("Message directive", () => {
 });
 
 describe("Header control", () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (cause: Error) => void;
+    const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  }
+
+  it("coalesces mount plus ten signals into two compact reads and applies only the trailing snapshot", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])], openRoundId: "r1" });
+    const first = deferred<HeaderState>();
+    const trailing = deferred<HeaderState>();
+    const calls: string[] = [];
+    server.handlers.questions_header = async ({ threadId }) => {
+      calls.push(threadId);
+      return calls.length === 1 ? first.promise : trailing.promise;
+    };
+    const { slot, openThreadPanel } = mountHeader(server);
+    expect(calls).toEqual([THREAD]);
+    for (let i = 0; i < 10; i++) await slot.behavior.emitRealtime("questions-changed", {
+      threadId: THREAD, kind: i === 0 ? "round-created" : "answers", roundId: "r1",
+    });
+    expect(calls).toHaveLength(1);
+    await act(async () => first.resolve({ threadId: THREAD, round: { id: "r1", mode: "panel", open: 1, total: 1 } }));
+    expect(calls).toHaveLength(2);
+    expect(slot.container.querySelector("button")).toBeNull();
+    expect(openThreadPanel).not.toHaveBeenCalled();
+    await act(async () => trailing.resolve({ threadId: THREAD, round: { id: "r1", mode: "panel", open: 0, total: 1 } }));
+    await slot.findByRole("button", { name: "Questions, 0 open" });
+    expect(openThreadPanel).toHaveBeenCalledTimes(1);
+    expect(slot.inspection.rpcCalls.map((call) => call.method)).toEqual(["questions_header", "questions_header"]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("does not read on unrelated, summary, or malformed signals", async () => {
+    const server = backend();
+    const { slot } = mountHeader(server);
+    await waitFor(() => expect(server.calls).toHaveLength(1));
+    for (const payload of [null, {}, { threadId: "other", kind: "answers" }, { threadId: THREAD, kind: "summary" }, { threadId: THREAD, kind: "unknown" }]) {
+      await slot.behavior.emitRealtime("questions-changed", payload);
+    }
+    expect(server.calls.map((call) => call.method)).toEqual(["questions_header"]);
+  });
+
+  it("waits for prompt-opened when creation arrives before the native prompt, then opens only once across remount", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
+    const { slot, openThreadPanel } = mountHeader(server);
+    await waitFor(() => expect(server.calls).toHaveLength(1));
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r1" });
+    expect(openThreadPanel).not.toHaveBeenCalled();
+    server.state.openRoundId = "r1";
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "prompt-opened", roundId: "r1" });
+    await waitFor(() => expect(openThreadPanel).toHaveBeenCalledTimes(1));
+    slot.lifecycle.unmount();
+    const remount = mountHeader(server, openThreadPanel).slot;
+    await remount.findByRole("button", { name: "Questions, 1 open" });
+    await remount.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r1" });
+    expect(openThreadPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it("never opens a created round that closes while its compact read is pending", async () => {
+    const server = backend();
+    const read = deferred<HeaderState>();
+    let calls = 0;
+    server.handlers.questions_header = async () => ++calls === 1 ? read.promise : { threadId: THREAD, round: null };
+    const { slot, openThreadPanel } = mountHeader(server);
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r1" });
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "prompt-closed", roundId: "r1" });
+    await act(async () => read.resolve({ threadId: THREAD, round: { id: "r1", mode: "panel", open: 1, total: 1 } }));
+    expect(calls).toBe(2);
+    expect(openThreadPanel).not.toHaveBeenCalled();
+    expect(slot.container.querySelector("button")).toBeNull();
+  });
+
+  it("keeps submitted versus dirty draft counts across header remount without loading or writing the shared store", async () => {
+    const sent = { ...emptyAnswer(), text: "Submitted" };
+    const server = backend({ rounds: [round("r1", 1, [question("q1"), question("q2")])], openRoundId: "r1",
+      answers: [answer("q1", "r1", { ...sent, text: "  Submitted  " }, 2, sent), answer("q2", "r1", { ...sent, text: "Edited" }, 3, sent)] });
+    const before = structuredClone(server.state);
+    const { slot } = mountHeader(server);
+    await slot.findByRole("button", { name: "Questions, 1 open" });
+    slot.lifecycle.unmount();
+    const remount = mountHeader(server).slot;
+    await remount.findByRole("button", { name: "Questions, 1 open" });
+    expect(server.state).toEqual(before);
+    expect(server.calls.map((call) => call.method)).toEqual(["questions_header", "questions_header"]);
+  });
+
+  it("keeps unsaved shared panel edits through panel and header remounts while a final draft save is pending", async () => {
+    const sent = { ...emptyAnswer(), text: "Submitted" };
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])], openRoundId: "r1",
+      answers: [answer("q1", "r1", sent, 1, sent)] });
+    const saving = deferred<void>();
+    const save = server.handlers.questions_save_draft;
+    let saves = 0;
+    server.handlers.questions_save_draft = async (input) => { saves++; await saving.promise; return save(input); };
+    const panel = mountPanel(server);
+    const input = await panel.findByLabelText("Your answer");
+    fireEvent.change(input, { target: { value: "Unsaved local edit" } });
+    const { slot } = mountHeader(server);
+    await within(slot.container).findByRole("button", { name: "Questions, 0 open" });
+    // Header count retains server semantics; it does not flush or replace
+    // the panel's local overlay just to compute the attention count.
+    expect((input as HTMLTextAreaElement).value).toBe("Unsaved local edit");
+    panel.lifecycle.unmount();
+    slot.lifecycle.unmount();
+    await waitFor(() => expect(saves).toBe(1));
+    const headerAgain = mountHeader(server).slot;
+    const panelAgain = mountPanel(server);
+    await within(headerAgain.container).findByRole("button", { name: "Questions, 0 open" });
+    const restored = await within(panelAgain.container).findByLabelText("Your answer");
+    expect((restored as HTMLTextAreaElement).value).toBe("Unsaved local edit");
+    expect(headerAgain.inspection.rpcCalls.map((call) => call.method)).toEqual(["questions_header"]);
+    await act(async () => saving.resolve());
+    await waitFor(() => expect(server.state.answers[0]!.draft?.text).toBe("Unsaved local edit"));
+    await headerAgain.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
+    await within(headerAgain.container).findByRole("button", { name: "Questions, 1 open" });
+    expect(server.state.answers[0]!.submitted?.text).toBe("Submitted");
+    expect((restored as HTMLTextAreaElement).value).toBe("Unsaved local edit");
+    expect(saves).toBe(1);
+  });
+
+  it("recovers an initial failure on reconnect without retrying automatically, and coalesces reconnect with signals", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])], openRoundId: "r1" });
+    const original = server.handlers.questions_header;
+    const afterReconnect = deferred<HeaderState>();
+    let calls = 0;
+    server.handlers.questions_header = async (input) => {
+      calls++;
+      if (calls === 1) throw new Error("offline");
+      if (calls === 2) return afterReconnect.promise;
+      return original(input);
+    };
+    const { slot } = mountHeader(server);
+    await act(async () => {});
+    expect(calls).toBe(1);
+    expect(slot.container.querySelector("button")).toBeNull();
+    await slot.behavior.setRealtimeConnectionState("reconnecting");
+    await slot.behavior.setRealtimeConnectionState("connected");
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "answers" });
+    expect(calls).toBe(2);
+    await act(async () => afterReconnect.reject(new Error("still offline")));
+    await slot.findByRole("button", { name: "Questions, 1 open" });
+    expect(calls).toBe(3);
+  });
+
+  it("ignores old-thread and old-generation in-flight replies, including a return to the same thread", async () => {
+    const server = backend();
+    const first = deferred<HeaderState>();
+    const other = deferred<HeaderState>();
+    const returned = deferred<HeaderState>();
+    const oldThread = THREAD;
+    const calls: string[] = [];
+    server.handlers.questions_header = async ({ threadId }) => {
+      calls.push(threadId);
+      return calls.length === 1 ? first.promise : calls.length === 2 ? other.promise : returned.promise;
+    };
+    const { slot, openThreadPanel } = mountHeader(server);
+    await slot.behavior.emitRealtime("questions-changed", { threadId: oldThread, kind: "round-created", roundId: "stale" });
+    const Component = app.threadHeaderActions[0]!.component;
+    await act(async () => slot.lifecycle.rerender(createElement(Component, { threadId: "other", projectId: "proj", isCompactViewport: false })));
+    await slot.behavior.emitRealtime("questions-changed", { threadId: oldThread, kind: "answers" });
+    await act(async () => slot.lifecycle.rerender(createElement(Component, { threadId: oldThread, projectId: "proj", isCompactViewport: false })));
+    await act(async () => returned.resolve({ threadId: oldThread, round: { id: "current", mode: "panel", open: 2, total: 2 } }));
+    await slot.findByRole("button", { name: "Questions, 2 open" });
+    await act(async () => {
+      first.resolve({ threadId: oldThread, round: { id: "stale", mode: "panel", open: 8, total: 8 } });
+      other.resolve({ threadId: "other", round: { id: "wrong", mode: "panel", open: 9, total: 9 } });
+    });
+    expect(slot.getByRole("button", { name: "Questions, 2 open" })).toBeTruthy();
+    expect(calls).toEqual([oldThread, "other", oldThread]);
+    expect(openThreadPanel).not.toHaveBeenCalled();
+  });
+
+  it("drops pending reads and their trailing refresh when unmounted", async () => {
+    const server = backend();
+    const pending = deferred<HeaderState>();
+    server.handlers.questions_header = async () => pending.promise;
+    const { slot, openThreadPanel } = mountHeader(server);
+    await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r1" });
+    slot.lifecycle.unmount();
+    await act(async () => pending.resolve({ threadId: THREAD, round: { id: "r1", mode: "panel", open: 1, total: 1 } }));
+    expect(slot.inspection.rpcCalls).toHaveLength(1);
+    expect(openThreadPanel).not.toHaveBeenCalled();
+  });
+
   function mountHeader(server: ReturnType<typeof backend>, openThreadPanel = vi.fn(() => true)) {
     const registration = app.threadHeaderActions[0]!;
     const slot = renderSlot<PluginThreadHeaderActionProps, typeof rpcContract>(
@@ -822,9 +1017,9 @@ describe("Header control", () => {
 
   it("keeps the launcher after a failed refresh", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1")])], openRoundId: "r1" });
-    const original = server.handlers.questions_state;
+    const original = server.handlers.questions_header;
     let fail = false;
-    server.handlers.questions_state = async () => { if (fail) throw new Error("offline"); return original(); };
+    server.handlers.questions_header = async (input) => { if (fail) throw new Error("offline"); return original(input); };
     const { slot, openThreadPanel } = mountHeader(server);
     await slot.findByRole("button", { name: "Questions, 1 open" });
     fail = true;
@@ -849,7 +1044,7 @@ describe("Header control", () => {
     expect(openThreadPanel).toHaveBeenLastCalledWith({ actionId: "questions", title: "Questions" });
     await slot.behavior.emitRealtime("questions-changed", { threadId: THREAD, kind: "round-created", roundId: "r2" });
     await slot.behavior.emitRealtime("questions-changed", { threadId: "other", kind: "round-created", roundId: "r3" });
-    await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_state").length).toBeGreaterThanOrEqual(3));
+    await waitFor(() => expect(server.calls.filter((call) => call.method === "questions_header").length).toBeGreaterThanOrEqual(3));
     expect(openThreadPanel).toHaveBeenCalledTimes(2);
   });
 
@@ -887,14 +1082,14 @@ describe("Header control", () => {
   it("renders nothing for answered history without an open prompt", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1")])] });
     const { slot } = mountHeader(server);
-    await waitFor(() => expect(server.calls.some((call) => call.method === "questions_state")).toBe(true));
+    await waitFor(() => expect(server.calls.some((call) => call.method === "questions_header")).toBe(true));
     expect(slot.container.querySelector("button")).toBeNull();
   });
 
   it("renders nothing for a thread without questions", async () => {
     const server = backend();
     const { slot } = mountHeader(server);
-    await waitFor(() => expect(server.calls.some((call) => call.method === "questions_state")).toBe(true));
+    await waitFor(() => expect(server.calls.some((call) => call.method === "questions_header")).toBe(true));
     expect(slot.container.querySelector("button")).toBeNull();
   });
 });

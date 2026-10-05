@@ -5,11 +5,13 @@ import type Database from "better-sqlite3";
 import {
   type Answer,
   type AnswerState,
+  type HeaderState,
   type Round,
   type Submission,
   type SubmissionState,
   type Summary,
   answerSchema,
+  answersEqual,
   questionSchema,
 } from "../lib/model";
 
@@ -61,6 +63,7 @@ export const MIGRATIONS = [
     round_id TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`,
+  `CREATE INDEX IF NOT EXISTS answers_thread_round ON answers(thread_id, round_id)`,
 ];
 
 interface RoundRow {
@@ -237,6 +240,39 @@ export class QuestionsStore {
       .prepare<[string, string], RoundRow>("SELECT * FROM rounds WHERE id = ? AND thread_id = ?")
       .get(roundId, threadId);
     return row ? rowToRound(row) : null;
+  }
+
+  /** Two scoped reads, with no historical rounds, summary, or outbox decoding. */
+  headerRound(threadId: string, roundId: string): HeaderState["round"] {
+    const row = this.db
+      .prepare<[string, string], Pick<RoundRow, "mode" | "questions_json">>(
+        "SELECT mode, questions_json FROM rounds WHERE id = ? AND thread_id = ?",
+      )
+      .get(roundId, threadId);
+    if (!row) return null;
+    if (row.mode !== "inline" && row.mode !== "panel") throw new StoredDataError(`Stored round ${roundId} has an invalid display mode.`);
+    const questions = questionSchema.array().safeParse(JSON.parse(row.questions_json));
+    if (!questions.success) throw new StoredDataError(`Stored questions for round ${roundId} are not readable.`);
+    const rows = this.db
+      .prepare<[string, string], Pick<AnswerRow, "question_id" | "draft_json" | "submitted_json">>(
+        "SELECT question_id, draft_json, submitted_json FROM answers WHERE thread_id = ? AND round_id = ?",
+      )
+      .all(threadId, roundId);
+    const done = new Set(rows.filter((answer) => {
+      if (answer.submitted_json === null) return false;
+      // Use the same normalized equality as answerStatus. A changed draft
+      // reopens the count even when an older answer has been submitted.
+      return answersEqual(
+        parseAnswer(answer.draft_json, `question ${answer.question_id} (draft)`),
+        parseAnswer(answer.submitted_json, `question ${answer.question_id} (submitted)`),
+      );
+    }).map((answer) => answer.question_id));
+    return {
+      id: roundId,
+      mode: row.mode,
+      open: questions.data.filter((question) => !done.has(question.id)).length,
+      total: questions.data.length,
+    };
   }
 
   roundProjectId(roundId: string): string | null {
