@@ -1,0 +1,16 @@
+{
+ "seq": 9289,
+ "threadId": "thr_3crmwq2vej",
+ "type": "item/completed",
+ "item": {
+  "type": "fileChange",
+  "status": "completed",
+  "changes": [
+   {
+    "kind": "update",
+    "path": "/home/exedev/Code/bb-plugins/plugins/projects/tests/t66-contracts.test.ts",
+    "diff": "@@ -93,3 +93,3 @@\n     expect(args).toMatchObject({ parentThreadId: \"coordinator\", origin: \"plugin\", originPluginId: \"projects\", permissionMode: \"full\", providerId: \"codex\", pluginMetadata: { projectId: project.id, role: \"worker\", worker: 2 } });\n-    expect(args.prompt).toContain(\"assignment A2\"); expect(args.prompt).toContain(\"T1 \u2190 A1\");\n+    expect(args.prompt).toMatch(/\\bA2\\b/); expect(args.prompt).toContain(\"T1 \u2190 A1\");\n     expect(args).not.toHaveProperty(\"startedOnBehalfOf\"); expect(args).not.toHaveProperty(\"originKind\"); expect(args).not.toHaveProperty(\"senderThreadId\");\n@@ -106,3 +106,3 @@\n     expect(f.spawn.mock.calls[0][0]).toMatchObject({ origin: \"plugin\", originPluginId: \"projects\", pluginMetadata: { projectId: project.id, role: \"worker\" } });\n-    expect(f.spawn.mock.calls[0][0].prompt).toContain(\"assignment A1\");\n+    expect(f.spawn.mock.calls[0][0].prompt).toMatch(/\\bA1\\b/);\n     expect(f.spawn.mock.calls[0][0]).not.toHaveProperty(\"senderThreadId\"); expect(f.send).not.toHaveBeenCalled();\n@@ -113,2 +113,3 @@\n     expect(f.spawn.mock.calls[0][0]).toHaveProperty(\"parentThreadId\", \"coordinator\"); expect(f.spawn.mock.calls[0][0]).not.toHaveProperty(\"startedOnBehalfOf\"); expect(f.spawn.mock.calls[0][0]).not.toHaveProperty(\"senderThreadId\");\n+    expect(f.spawn.mock.calls[0][0]).not.toHaveProperty(\"originKind\"); expect(f.spawn).toHaveBeenCalledTimes(1); expect(f.send).not.toHaveBeenCalled();\n   });\n@@ -120,2 +121,4 @@\n       expect(call).not.toHaveProperty(\"startedOnBehalfOf\"); expect(call).not.toHaveProperty(\"originKind\");\n+      expect(call).toMatchObject({ origin: \"plugin\", originPluginId: \"projects\", pluginMetadata: { role: \"coordinator\" } });\n+      expect(f.store.projects()[0]?.coordinatorThreadId).toBe([...f.threads.keys()].at(-1));\n       expect(f.spawn).toHaveBeenCalledTimes(1); expect(f.send).not.toHaveBeenCalled();\n"
+   }
+  ]
+ }
+}

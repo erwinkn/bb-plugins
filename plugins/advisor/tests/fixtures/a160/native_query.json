@@ -1,0 +1,254 @@
+{
+ "admitted": {
+  "a152.seedFirst": {
+   "status": 200,
+   "effectiveLimit": 1
+  },
+  "a152.seedNewest": {
+   "status": 400,
+   "issues": [
+    "Thread event limit cannot exceed 100"
+   ]
+  },
+  "a152.receiptSweep": {
+   "status": 400,
+   "issues": [
+    "Thread event limit cannot exceed 100"
+   ]
+  },
+  "a152.drain": {
+   "status": 200,
+   "effectiveLimit": 25
+  },
+  "a160.contract.seedFirst": {
+   "status": 200,
+   "effectiveLimit": 1
+  },
+  "a160.contract.seedNewest": {
+   "status": 200,
+   "effectiveLimit": 100
+  },
+  "a160.contract.receiptSweep": {
+   "status": 200,
+   "effectiveLimit": 100
+  },
+  "a160.contract.drain": {
+   "status": 200,
+   "effectiveLimit": 25
+  },
+  "a160.seedFirst": {
+   "status": 200,
+   "effectiveLimit": 1
+  },
+  "a160.seedNewestPage": {
+   "status": 200,
+   "effectiveLimit": 100
+  },
+  "a160.receiptSweepPage": {
+   "status": 200,
+   "effectiveLimit": 100
+  },
+  "a160.drainPage": {
+   "status": 200,
+   "effectiveLimit": 25
+  },
+  "ctl.limit101": {
+   "status": 400,
+   "issues": [
+    "Thread event limit cannot exceed 100"
+   ]
+  },
+  "ctl.limit0": {
+   "status": 400,
+   "issues": [
+    "limit must be a positive integer"
+   ]
+  },
+  "ctl.limitOmitted": {
+   "status": 200,
+   "effectiveLimit": 100
+  },
+  "ctl.negativeCursor": {
+   "status": 400,
+   "issues": [
+    "Invalid string: must match pattern /^\\d+$/"
+   ]
+  },
+  "ctl.unknownType": {
+   "status": 400,
+   "issues": [
+    "Invalid thread event types"
+   ]
+  }
+ },
+ "pageSize": 100,
+ "cases": {
+  "a152.seedFirst": {
+   "threadId": "thr_child",
+   "order": "asc",
+   "limit": "1",
+   "types": [
+    "client/turn/requested"
+   ]
+  },
+  "a152.seedNewest": {
+   "threadId": "thr_child",
+   "order": "desc",
+   "beforeSeq": "9001",
+   "limit": "500",
+   "types": [
+    "client/turn/requested",
+    "turn/input/accepted",
+    "client/turn/rejected"
+   ]
+  },
+  "a152.receiptSweep": {
+   "threadId": "thr_child",
+   "order": "asc",
+   "afterSeq": "3",
+   "limit": "500",
+   "types": [
+    "turn/input/accepted",
+    "client/turn/rejected"
+   ]
+  },
+  "a152.drain": {
+   "threadId": "thr_child",
+   "order": "asc",
+   "afterSeq": "9000",
+   "limit": "25"
+  },
+  "a160.contract.seedFirst": {
+   "threadId": "thr_child",
+   "order": "asc",
+   "limit": "1",
+   "types": [
+    "client/turn/requested"
+   ]
+  },
+  "a160.contract.seedNewest": {
+   "threadId": "thr_child",
+   "order": "desc",
+   "beforeSeq": "9001",
+   "limit": "100",
+   "types": [
+    "client/turn/requested",
+    "turn/input/accepted",
+    "client/turn/rejected"
+   ]
+  },
+  "a160.contract.receiptSweep": {
+   "threadId": "thr_child",
+   "order": "asc",
+   "afterSeq": "3",
+   "limit": "100",
+   "types": [
+    "turn/input/accepted",
+    "client/turn/rejected"
+   ]
+  },
+  "a160.contract.drain": {
+   "threadId": "thr_child",
+   "order": "asc",
+   "afterSeq": "9000",
+   "limit": "25"
+  },
+  "a160.seedFirst": {
+   "threadId": "t",
+   "order": "asc",
+   "limit": "1",
+   "types": [
+    "client/turn/requested"
+   ]
+  },
+  "a160.seedNewestPage": {
+   "threadId": "t",
+   "order": "desc",
+   "beforeSeq": "9001",
+   "limit": "100",
+   "types": [
+    "client/turn/requested",
+    "turn/input/accepted",
+    "client/turn/rejected"
+   ]
+  },
+  "a160.receiptSweepPage": {
+   "threadId": "t",
+   "order": "asc",
+   "afterSeq": "3",
+   "limit": "100",
+   "types": [
+    "turn/input/accepted",
+    "client/turn/rejected"
+   ]
+  },
+  "a160.drainPage": {
+   "threadId": "t",
+   "order": "asc",
+   "afterSeq": "9000",
+   "limit": "25"
+  },
+  "ctl.limit101": {
+   "threadId": "t",
+   "order": "asc",
+   "limit": "101"
+  },
+  "ctl.limit0": {
+   "threadId": "t",
+   "order": "asc",
+   "limit": "0"
+  },
+  "ctl.limitOmitted": {
+   "threadId": "t",
+   "order": "asc"
+  },
+  "ctl.negativeCursor": {
+   "threadId": "t",
+   "order": "asc",
+   "afterSeq": "-1",
+   "limit": "10"
+  },
+  "ctl.unknownType": {
+   "threadId": "t",
+   "order": "asc",
+   "limit": "10",
+   "types": [
+    "client/turn/requested",
+    "nope/x"
+   ]
+  }
+ },
+ "issued": {
+  "sha256": "f193a3a3dc48be26c0b7d8803bea696558d28f91889df4dce538c7ea8e082050",
+  "count": 103,
+  "admitted": 103,
+  "rejected": []
+ },
+ "cursorStrictness": {
+  "afterSeq": true,
+  "beforeSeq": true
+ },
+ "routeClampsLimit": true,
+ "responseIsBareArray": true,
+ "sdkDtsSha256": "02e5059c72416327f8b591b5caac94e2738a564f99e5122c14a9a9ae6cfef381",
+ "sourceLines": {
+  "pageSize": 42556,
+  "schema": 43525,
+  "mapper": 326161,
+  "route": 314242,
+  "list": 35099,
+  "bounded": 305716
+ },
+ "sliceSha256": {
+  "pageSize": "77f89af2a28c86d9f5b2a1eab2a4e2e1108212aa095f9c3e9b8d4899c09bb2cc",
+  "schema": "aa6c281d47c435ca5f1feb3c4fac2f7b0db47f5755192e54c8b200e4487e556f",
+  "mapper": "368dee101eaa2dcf22743059e0cc8828d996ba1443020d387d8dae3fa8f950a8",
+  "helper": "5362e2a0cc0137d7f9dc8de8fa6afd39035964d4f0283f115aaec32690c6a1c1",
+  "bounded": "ff9ef1cd2601f7ecb2ac871483238b17836b9e904920f6ccdde597520215359f",
+  "route": "9a4fcd894890f134f87dfb44423ce4218d4db96509926520ff314761504339c2",
+  "list": "cb9d31d26ce98d416a01ff40058c904107da32842e6b9c078ff87772be772e8b",
+  "systemTypes": "54e3a1c4d439916a72e044bf575c2a5c71621bd838e54f275c69be0840e5858c"
+ },
+ "startServerSha256": "2265fa22756d49cb795582a121b826e50c9afed7ead257b575bcdb18192f1a88",
+ "zod": "4.3.6"
+}

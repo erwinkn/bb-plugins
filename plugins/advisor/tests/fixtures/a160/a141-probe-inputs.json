@@ -1,0 +1,236 @@
+{
+ "cross_subject_pair": {
+  "before": "it('A', () => expect(a).toBe(42));\nit('B', () => expect(b).toBe(42));\n",
+  "after": "it('A', () => expect(a).toBe(42));\nit('B', () => expect(b).toBeGreaterThan(0));\n",
+  "diff": "@@ -1,2 +1,2 @@\n it('A', () => expect(a).toBe(42));\n-it('B', () => expect(b).toBe(42));\n+it('B', () => expect(b).toBeGreaterThan(0));",
+  "finding": {
+   "category": "test-integrity",
+   "evidence": "E:1",
+   "hunk": 0,
+   "subject": "A",
+   "before": {
+    "lines": [
+     1,
+     1
+    ],
+    "quote": "it('A', () => expect(a).toBe(42));"
+   },
+   "after": {
+    "lines": [
+     2,
+     2
+    ],
+    "quote": "it('B', () => expect(b).toBeGreaterThan(0));"
+   }
+  },
+  "accepted": true,
+  "reason": "ok",
+  "display": {
+   "before": {
+    "path": "tests/pair.test.ts",
+    "side": "old",
+    "lines": [
+     1,
+     1
+    ],
+    "text": "it('A', () => expect(a).toBe(42));"
+   },
+   "after": {
+    "path": "tests/pair.test.ts",
+    "side": "new",
+    "lines": [
+     2,
+     2
+    ],
+    "text": "it('B', () => expect(b).toBeGreaterThan(0));"
+   },
+   "subject": "A",
+   "subjectVerified": true
+  }
+ },
+ "multiline_closed_scope": {
+  "before": "it('A', () => {\n  expect(a).toBe(1);\n});\nit(\n  'B',\n  () => {\n    expect(b).toBe(42);\n  }\n);\n",
+  "after": "it('A', () => {\n  expect(a).toBe(1);\n});\nit(\n  'B',\n  () => {\n    expect(b).toBeTruthy();\n  }\n);\n",
+  "diff": "@@ -1,9 +1,9 @@\n it('A', () => {\n   expect(a).toBe(1);\n });\n it(\n   'B',\n   () => {\n-    expect(b).toBe(42);\n+    expect(b).toBeTruthy();\n   }\n );",
+  "finding": {
+   "category": "test-integrity",
+   "evidence": "E:2",
+   "hunk": 0,
+   "subject": "A",
+   "before": {
+    "lines": [
+     7,
+     7
+    ],
+    "quote": "    expect(b).toBe(42);"
+   },
+   "after": {
+    "lines": [
+     7,
+     7
+    ],
+    "quote": "    expect(b).toBeTruthy();"
+   }
+  },
+  "accepted": true,
+  "reason": "ok",
+  "display": {
+   "before": {
+    "path": "tests/multiline.test.ts",
+    "side": "old",
+    "lines": [
+     7,
+     7
+    ],
+    "text": "    expect(b).toBe(42);"
+   },
+   "after": {
+    "path": "tests/multiline.test.ts",
+    "side": "new",
+    "lines": [
+     7,
+     7
+    ],
+    "text": "    expect(b).toBeTruthy();"
+   },
+   "subject": "A",
+   "subjectVerified": true
+  }
+ },
+ "moved_relation_cross_subject": {
+  "before": "it('A', () => expect(a).toBe(42));\npad();\npad();\npad();\npad();\npad();\npad();\npad();\npad();\npad();\npad();\nit('B', () => expect(b).toBe(42));\n",
+  "after": "pad();\npad();\npad();\npad();\npad();\npad();\npad();\npad();\npad();\npad();\nit('B', () => expect(b).toBeTruthy());\n",
+  "diff": "@@ -1,2 +1 @@\n-it('A', () => expect(a).toBe(42));\n pad();\n@@ -11,2 +10,2 @@\n pad();\n-it('B', () => expect(b).toBe(42));\n+it('B', () => expect(b).toBeTruthy());",
+  "finding": {
+   "category": "test-integrity",
+   "evidence": "E:6",
+   "hunk": 0,
+   "subject": "A",
+   "before": {
+    "lines": [
+     1,
+     1
+    ],
+    "quote": "it('A', () => expect(a).toBe(42));"
+   },
+   "after": {
+    "lines": [
+     11,
+     11
+    ],
+    "quote": "it('B', () => expect(b).toBeTruthy());",
+    "hunk": 1
+   },
+   "relation": "moved"
+  },
+  "accepted": true,
+  "reason": "ok",
+  "display": {
+   "before": {
+    "path": "tests/moved.test.ts",
+    "side": "old",
+    "lines": [
+     1,
+     1
+    ],
+    "text": "it('A', () => expect(a).toBe(42));"
+   },
+   "after": {
+    "path": "tests/moved.test.ts",
+    "side": "new",
+    "lines": [
+     11,
+     11
+    ],
+    "text": "it('B', () => expect(b).toBeTruthy());"
+   },
+   "subject": "A",
+   "subjectVerified": true
+  }
+ },
+ "rejected_instruction_held": {
+  "rows": [
+   {
+    "seq": 100,
+    "type": "client/turn/requested",
+    "data": {
+     "requestId": "r",
+     "senderThreadId": null,
+     "initiator": "user",
+     "input": [
+      {
+       "type": "text",
+       "text": "Please rename the test"
+      }
+     ]
+    }
+   },
+   {
+    "seq": 101,
+    "type": "client/turn/rejected",
+    "data": {
+     "requestId": "r"
+    }
+   }
+  ],
+  "result": {
+   "state": "unknown",
+   "reason": "instruction-pending",
+   "latch": false
+  },
+  "baselinePending": []
+ },
+ "rejection_masks_accepted_instruction": {
+  "rows": [
+   {
+    "seq": 100,
+    "type": "client/turn/requested",
+    "data": {
+     "requestId": "r",
+     "senderThreadId": null,
+     "initiator": "user",
+     "input": [
+      {
+       "type": "text",
+       "text": "Please rename the test"
+      }
+     ]
+    }
+   },
+   {
+    "seq": 101,
+    "type": "client/turn/rejected",
+    "data": {
+     "requestId": "r"
+    }
+   },
+   {
+    "seq": 102,
+    "type": "client/turn/requested",
+    "data": {
+     "requestId": "r2",
+     "senderThreadId": null,
+     "initiator": "user",
+     "input": [
+      {
+       "type": "text",
+       "text": "The contract changed; retain the new value"
+      }
+     ]
+    }
+   },
+   {
+    "seq": 103,
+    "type": "turn/input/accepted",
+    "data": {
+     "clientRequestId": "r2"
+    }
+   }
+  ],
+  "result": {
+   "state": "unknown",
+   "reason": "instruction-pending",
+   "latch": false
+  }
+ }
+}

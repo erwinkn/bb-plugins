@@ -1,0 +1,438 @@
+{
+ "workers_view_running": {
+  "items": [
+   {
+    "ref": "W1",
+    "state": "idle",
+    "label": "W",
+    "area": "a",
+    "role": "work",
+    "threadId": null,
+    "generation": 0,
+    "bbProjectId": "proj_a",
+    "userStopped": false,
+    "assignments": [
+     {
+      "ref": "A1",
+      "state": "running",
+      "cancelled": false,
+      "tasks": [
+       "T1"
+      ]
+     }
+    ],
+    "assignmentsTruncated": false
+   }
+  ],
+  "total": 1,
+  "missingRefs": [],
+  "offset": 0,
+  "limit": 20,
+  "nextOffset": null,
+  "truncated": false,
+  "byteLimited": false,
+  "detail": "Summaries only. Use detailed:true and optionally fields for full records."
+ },
+ "workerWork_running": {
+  "assignments": [
+   {
+    "ref": "A1",
+    "state": "running",
+    "cancelled": false,
+    "tasks": [
+     "T1"
+    ]
+   }
+  ],
+  "assignmentsTruncated": false
+ },
+ "readRefs_detailed_running": {
+  "items": [
+   {
+    "projectId": "p1",
+    "num": 1,
+    "ref": "A1",
+    "workerNum": 1,
+    "taskNums": [
+     1
+    ],
+    "route": "fresh",
+    "role": "work",
+    "access": "write",
+    "workKind": "implementation",
+    "threadId": "thr_w",
+    "generation": 0,
+    "profile": {
+     "providerId": "claude-code",
+     "model": "claude-opus-5-5",
+     "reasoningLevel": "high"
+    },
+    "actualProfile": null,
+    "fingerprint": null,
+    "bbProjectId": "proj_a",
+    "environmentId": null,
+    "state": "running",
+    "opId": "op_running",
+    "opState": "done",
+    "queuedMessageId": null,
+    "briefText": "Implement refunds; keep exact totals.",
+    "briefDelivered": false,
+    "cancelRequested": false,
+    "reviewOf": null,
+    "reviewTargets": null,
+    "checkpoint": null,
+    "reportNotice": null,
+    "rationale": null,
+    "reviewKey": null,
+    "pendingIdentity": null,
+    "report": null,
+    "reportedAt": null,
+    "stopReason": null,
+    "createdAt": 1700000000000,
+    "updatedAt": 1700000000000
+   }
+  ],
+  "total": 1,
+  "missingRefs": [],
+  "offset": 0,
+  "limit": 20,
+  "nextOffset": null,
+  "truncated": false,
+  "byteLimited": false,
+  "detail": "Full selected records/fields; no JSON clipping."
+ },
+ "readRefs_task_brief": {
+  "items": [
+   {
+    "ref": "T1",
+    "view": "tasks",
+    "brief": {
+     "objective": "Make the thing work",
+     "acceptanceCriteria": [
+      "It works"
+     ],
+     "contextRefs": [],
+     "areas": [
+      {
+       "bbProjectId": "proj_a",
+       "paths": [
+        "src"
+       ]
+      }
+     ],
+     "constraints": [],
+     "verification": [
+      "npm test"
+     ]
+    }
+   }
+  ],
+  "total": 1,
+  "missingRefs": [],
+  "offset": 0,
+  "limit": 20,
+  "nextOffset": null,
+  "truncated": false,
+  "byteLimited": false,
+  "detail": "Full selected records/fields; no JSON clipping."
+ },
+ "workerWork_cancel_requested": {
+  "assignments": [
+   {
+    "ref": "A1",
+    "state": "running",
+    "cancelled": true,
+    "tasks": [
+     "T1"
+    ]
+   }
+  ],
+  "assignmentsTruncated": false
+ },
+ "readRefs_detailed_cancel_requested": {
+  "items": [
+   {
+    "projectId": "p1",
+    "num": 1,
+    "ref": "A1",
+    "workerNum": 1,
+    "taskNums": [
+     1
+    ],
+    "route": "fresh",
+    "role": "work",
+    "access": "write",
+    "workKind": "implementation",
+    "threadId": "thr_w",
+    "generation": 0,
+    "profile": {
+     "providerId": "claude-code",
+     "model": "claude-opus-5-5",
+     "reasoningLevel": "high"
+    },
+    "actualProfile": null,
+    "fingerprint": null,
+    "bbProjectId": "proj_a",
+    "environmentId": null,
+    "state": "running",
+    "opId": "op_running",
+    "opState": "done",
+    "queuedMessageId": null,
+    "briefText": "Implement refunds; keep exact totals.",
+    "briefDelivered": false,
+    "cancelRequested": true,
+    "reviewOf": null,
+    "reviewTargets": null,
+    "checkpoint": null,
+    "reportNotice": null,
+    "rationale": null,
+    "reviewKey": null,
+    "pendingIdentity": null,
+    "report": null,
+    "reportedAt": null,
+    "stopReason": null,
+    "createdAt": 1700000000000,
+    "updatedAt": 1700000000000
+   }
+  ],
+  "total": 1,
+  "missingRefs": [],
+  "offset": 0,
+  "limit": 20,
+  "nextOffset": null,
+  "truncated": false,
+  "byteLimited": false,
+  "detail": "Full selected records/fields; no JSON clipping."
+ },
+ "workers_view_after_report": {
+  "items": [
+   {
+    "ref": "W1",
+    "state": "idle",
+    "label": "W",
+    "area": "a",
+    "role": "work",
+    "threadId": null,
+    "generation": 0,
+    "bbProjectId": "proj_a",
+    "userStopped": false,
+    "assignments": [],
+    "assignmentsTruncated": false
+   }
+  ],
+  "total": 1,
+  "missingRefs": [],
+  "offset": 0,
+  "limit": 20,
+  "nextOffset": null,
+  "truncated": false,
+  "byteLimited": false,
+  "detail": "Summaries only. Use detailed:true and optionally fields for full records."
+ },
+ "workerWork_after_report": {
+  "assignments": [],
+  "assignmentsTruncated": false
+ },
+ "readRefs_detailed_after_report": {
+  "items": [
+   {
+    "projectId": "p1",
+    "num": 1,
+    "ref": "A1",
+    "workerNum": 1,
+    "taskNums": [
+     1
+    ],
+    "route": "fresh",
+    "role": "work",
+    "access": "write",
+    "workKind": "implementation",
+    "threadId": "thr_w",
+    "generation": 0,
+    "profile": {
+     "providerId": "claude-code",
+     "model": "claude-opus-5-5",
+     "reasoningLevel": "high"
+    },
+    "actualProfile": null,
+    "fingerprint": null,
+    "bbProjectId": "proj_a",
+    "environmentId": null,
+    "state": "reported",
+    "opId": "op_running",
+    "opState": "done",
+    "queuedMessageId": null,
+    "briefText": "Implement refunds; keep exact totals.",
+    "briefDelivered": false,
+    "cancelRequested": false,
+    "reviewOf": null,
+    "reviewTargets": null,
+    "checkpoint": null,
+    "reportNotice": null,
+    "rationale": null,
+    "reviewKey": null,
+    "pendingIdentity": null,
+    "report": null,
+    "reportedAt": null,
+    "stopReason": null,
+    "createdAt": 1700000000000,
+    "updatedAt": 1700000000000
+   }
+  ],
+  "total": 1,
+  "missingRefs": [],
+  "offset": 0,
+  "limit": 20,
+  "nextOffset": null,
+  "truncated": false,
+  "byteLimited": false,
+  "detail": "Full selected records/fields; no JSON clipping."
+ },
+ "readRefs_summary_with_missing": {
+  "items": [
+   {
+    "ref": "A1",
+    "state": "reported",
+    "worker": "W1",
+    "tasks": [
+     "T1"
+    ],
+    "role": "work",
+    "access": "write",
+    "route": "fresh",
+    "opState": "done",
+    "queuedMessageId": null,
+    "profile": {
+     "providerId": "claude-code",
+     "model": "claude-opus-5-5",
+     "reasoningLevel": "high"
+    },
+    "reviewOf": null,
+    "report": null,
+    "notification": null,
+    "verificationRevision": null,
+    "checkpoint": null
+   }
+  ],
+  "total": 1,
+  "missingRefs": [
+   "A99"
+  ],
+  "offset": 0,
+  "limit": 20,
+  "nextOffset": null,
+  "truncated": false,
+  "byteLimited": false,
+  "detail": "Summaries only. Use detailed:true and optionally fields for full records."
+ },
+ "readRefs_detailed_cancelled": {
+  "items": [
+   {
+    "projectId": "p1",
+    "num": 2,
+    "ref": "A2",
+    "workerNum": 1,
+    "taskNums": [
+     1
+    ],
+    "route": "fresh",
+    "role": "work",
+    "access": "write",
+    "workKind": "implementation",
+    "threadId": "thr_w",
+    "generation": 0,
+    "profile": {
+     "providerId": "claude-code",
+     "model": "claude-opus-5-5",
+     "reasoningLevel": "high"
+    },
+    "actualProfile": null,
+    "fingerprint": null,
+    "bbProjectId": "proj_a",
+    "environmentId": null,
+    "state": "cancelled",
+    "opId": "op_cancelled",
+    "opState": "done",
+    "queuedMessageId": null,
+    "briefText": "Superseded brief.",
+    "briefDelivered": false,
+    "cancelRequested": false,
+    "reviewOf": null,
+    "reviewTargets": null,
+    "checkpoint": null,
+    "reportNotice": null,
+    "rationale": null,
+    "reviewKey": null,
+    "pendingIdentity": null,
+    "report": null,
+    "reportedAt": null,
+    "stopReason": null,
+    "createdAt": 1700000000000,
+    "updatedAt": 1700000000000
+   }
+  ],
+  "total": 1,
+  "missingRefs": [],
+  "offset": 0,
+  "limit": 20,
+  "nextOffset": null,
+  "truncated": false,
+  "byteLimited": false,
+  "detail": "Full selected records/fields; no JSON clipping."
+ },
+ "readRefs_paged": {
+  "items": [
+   {
+    "projectId": "p1",
+    "num": 1,
+    "ref": "A1",
+    "workerNum": 1,
+    "taskNums": [
+     1
+    ],
+    "route": "fresh",
+    "role": "work",
+    "access": "write",
+    "workKind": "implementation",
+    "threadId": "thr_w",
+    "generation": 0,
+    "profile": {
+     "providerId": "claude-code",
+     "model": "claude-opus-5-5",
+     "reasoningLevel": "high"
+    },
+    "actualProfile": null,
+    "fingerprint": null,
+    "bbProjectId": "proj_a",
+    "environmentId": null,
+    "state": "reported",
+    "opId": "op_running",
+    "opState": "done",
+    "queuedMessageId": null,
+    "briefText": "Implement refunds; keep exact totals.",
+    "briefDelivered": false,
+    "cancelRequested": false,
+    "reviewOf": null,
+    "reviewTargets": null,
+    "checkpoint": null,
+    "reportNotice": null,
+    "rationale": null,
+    "reviewKey": null,
+    "pendingIdentity": null,
+    "report": null,
+    "reportedAt": null,
+    "stopReason": null,
+    "createdAt": 1700000000000,
+    "updatedAt": 1700000000000
+   }
+  ],
+  "total": 2,
+  "missingRefs": [],
+  "offset": 0,
+  "limit": 1,
+  "nextOffset": 1,
+  "truncated": true,
+  "byteLimited": false,
+  "detail": "Full selected records/fields; no JSON clipping."
+ }
+}

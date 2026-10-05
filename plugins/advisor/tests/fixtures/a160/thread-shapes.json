@@ -1,0 +1,124 @@
+{
+ "rootThread": {
+  "activeBackgroundAgentCount": 0,
+  "canSpawnChild": true,
+  "createdAt": 1,
+  "deletedAt": null,
+  "environmentId": "env_x",
+  "id": "thr_root",
+  "lastReadAt": null,
+  "latestAttentionAt": 1,
+  "originKind": null,
+  "originPluginId": null,
+  "pinnedAt": null,
+  "projectId": "proj_x",
+  "providerId": "claude-code",
+  "queuedMessageCount": 0,
+  "runtime": {
+   "displayStatus": "active",
+   "hostReconnectGraceExpiresAt": null
+  },
+  "sectionId": null,
+  "sourceThreadId": null,
+  "status": "active",
+  "title": "t",
+  "titleFallback": null,
+  "updatedAt": 1,
+  "visibility": "visible",
+  "parentThreadId": null,
+  "archivedAt": null
+ },
+ "childThread": {
+  "activeBackgroundAgentCount": 0,
+  "canSpawnChild": true,
+  "createdAt": 1,
+  "deletedAt": null,
+  "environmentId": "env_x",
+  "id": "thr_child",
+  "lastReadAt": null,
+  "latestAttentionAt": 1,
+  "originKind": null,
+  "originPluginId": null,
+  "pinnedAt": null,
+  "projectId": "proj_x",
+  "providerId": "claude-code",
+  "queuedMessageCount": 0,
+  "runtime": {
+   "displayStatus": "active",
+   "hostReconnectGraceExpiresAt": null
+  },
+  "sectionId": null,
+  "sourceThreadId": null,
+  "status": "active",
+  "title": "t",
+  "titleFallback": null,
+  "updatedAt": 1,
+  "visibility": "visible",
+  "parentThreadId": "thr_coord",
+  "archivedAt": null
+ },
+ "archivedChild": {
+  "activeBackgroundAgentCount": 0,
+  "canSpawnChild": true,
+  "createdAt": 1,
+  "deletedAt": null,
+  "environmentId": "env_x",
+  "id": "thr_child",
+  "lastReadAt": null,
+  "latestAttentionAt": 1,
+  "originKind": null,
+  "originPluginId": null,
+  "pinnedAt": null,
+  "projectId": "proj_x",
+  "providerId": "claude-code",
+  "queuedMessageCount": 0,
+  "runtime": {
+   "displayStatus": "active",
+   "hostReconnectGraceExpiresAt": null
+  },
+  "sectionId": null,
+  "sourceThreadId": null,
+  "status": "active",
+  "title": "t",
+  "titleFallback": null,
+  "updatedAt": 1,
+  "visibility": "visible",
+  "parentThreadId": "thr_coord",
+  "archivedAt": 1700000000000
+ },
+ "seedFirst": {
+  "threadId": "thr_child",
+  "order": "asc",
+  "limit": "1",
+  "types": [
+   "client/turn/requested"
+  ]
+ },
+ "seedNewest": {
+  "threadId": "thr_child",
+  "order": "desc",
+  "beforeSeq": "9001",
+  "limit": "100",
+  "types": [
+   "client/turn/requested",
+   "turn/input/accepted",
+   "client/turn/rejected"
+  ]
+ },
+ "receiptSweep": {
+  "threadId": "thr_child",
+  "order": "asc",
+  "afterSeq": "3",
+  "limit": "100",
+  "types": [
+   "turn/input/accepted",
+   "client/turn/rejected"
+  ]
+ },
+ "drain": {
+  "threadId": "thr_child",
+  "order": "asc",
+  "afterSeq": "9000",
+  "limit": "25"
+ }
+}

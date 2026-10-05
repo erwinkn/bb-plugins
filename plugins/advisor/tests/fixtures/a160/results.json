@@ -1,0 +1,3709 @@
+{
+ "failures": [],
+ "corrected": [
+  "p2e_former_kept_peer_not_promoted",
+  "p2e_new_coordinator_instruction_is_requirement"
+ ],
+ "results": {
+  "suspicious_weakening_valid": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    true,
+    "ok",
+    "computes totals with refunds",
+    "verified"
+   ],
+   "expect": [
+    true,
+    "ok",
+    "computes totals with refunds",
+    "verified"
+   ]
+  },
+  "wrong_subject_rejected": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    false,
+    "subject-mismatch"
+   ],
+   "expect": [
+    false,
+    "subject-mismatch"
+   ]
+  },
+  "unchanged_line_rejected": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    false,
+    "no-changed-line-cited"
+   ],
+   "expect": [
+    false,
+    "no-changed-line-cited"
+   ]
+  },
+  "repeated_assertion_accepted": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    true,
+    "ok"
+   ],
+   "expect": [
+    true,
+    "ok"
+   ]
+  },
+  "misquote_rejected": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    false,
+    "before-quote-mismatch"
+   ],
+   "expect": [
+    false,
+    "before-quote-mismatch"
+   ]
+  },
+  "invented_requirement_rejected": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    false,
+    "requirement-quote-not-in-packet"
+   ],
+   "expect": [
+    false,
+    "requirement-quote-not-in-packet"
+   ]
+  },
+  "a124_citation_valid_but_label_legitimate": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "hunks": 4,
+    "changedExpectLinesRemoved": 2,
+    "expectLinesAdded": 5,
+    "citationValid": true,
+    "subject": "plugins/projects/tests/t66-contracts.test.ts:L94",
+    "subjectStatus": "ambiguous",
+    "evaluationLabel": "legitimate-update"
+   },
+   "expect": {
+    "hunks": 4,
+    "changedExpectLinesRemoved": 2,
+    "expectLinesAdded": 5,
+    "citationValid": true,
+    "subject": "plugins/projects/tests/t66-contracts.test.ts:L94",
+    "subjectStatus": "ambiguous",
+    "evaluationLabel": "legitimate-update"
+   }
+  },
+  "subject_swap_visible": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "label": "head-stable",
+    "removedHunkSubjects": [
+     "A"
+    ],
+    "addedHunkSubjects": [
+     "H"
+    ]
+   },
+   "expect": {
+    "label": "head-stable",
+    "removedHunkSubjects": [
+     "A"
+    ],
+    "addedHunkSubjects": [
+     "H"
+    ]
+   }
+  },
+  "shell_edit_checkpoint_card": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "added": 1,
+    "observedEdits": 0,
+    "writer": "unknown"
+   },
+   "expect": {
+    "added": 1,
+    "observedEdits": 0,
+    "writer": "unknown"
+   }
+  },
+  "commit_during_read": {
+   "part": "A",
+   "pass": true,
+   "got": "head-moved-during-read",
+   "expect": "head-moved-during-read"
+  },
+  "commit_not_restoration": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "label": "base-changed",
+    "removed": null
+   },
+   "expect": {
+    "label": "base-changed",
+    "removed": null
+   }
+  },
+  "status_unavailable": {
+   "part": "A",
+   "pass": true,
+   "got": "unknown-head",
+   "expect": "unknown-head"
+  },
+  "unrelated_file_scope": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "patchRead": [
+     "tests/totals.test.ts"
+    ],
+    "coverageOnly": [
+     "README.md",
+     "src/util.ts"
+    ]
+   },
+   "expect": {
+    "patchRead": [
+     "tests/totals.test.ts"
+    ],
+    "coverageOnly": [
+     "README.md",
+     "src/util.ts"
+    ]
+   }
+  },
+  "identical_regression_new_occurrence": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "sameLocator": true,
+    "distinctOccurrences": true,
+    "oldReRaiseDeduped": true,
+    "notifications": [
+     "new",
+     "recurred-after-model-reported-resolved"
+    ]
+   },
+   "expect": {
+    "sameLocator": true,
+    "distinctOccurrences": true,
+    "oldReRaiseDeduped": true,
+    "notifications": [
+     "new",
+     "recurred-after-model-reported-resolved"
+    ]
+   }
+  },
+  "passing_weakened_test_stays_open": {
+   "part": "A",
+   "pass": true,
+   "got": "open",
+   "expect": "open"
+  },
+  "dismissed_then_recurred_notifies": {
+   "part": "A",
+   "pass": true,
+   "got": "recurred-after-dismissed-unverified",
+   "expect": "recurred-after-dismissed-unverified"
+  },
+  "pre_watch_requirement_seeded": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "refs": [
+     "R:1",
+     "R:50"
+    ],
+    "anchorOnlyRefs": [
+     "R:50"
+    ],
+    "coverage": "complete"
+   },
+   "expect": {
+    "refs": [
+     "R:1",
+     "R:50"
+    ],
+    "anchorOnlyRefs": [
+     "R:50"
+    ],
+    "coverage": "complete"
+   }
+  },
+  "pending_request_blocks": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    "r4"
+   ],
+   "expect": [
+    "r4"
+   ]
+  },
+  "partial_requirements_disable_missed_requirement": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "coverage": "partial",
+    "omitted": [
+     "R:50"
+    ],
+    "categories": [
+     "test-integrity",
+     "unsupported-claim"
+    ]
+   },
+   "expect": {
+    "coverage": "partial",
+    "omitted": [
+     "R:50"
+    ],
+    "categories": [
+     "test-integrity",
+     "unsupported-claim"
+    ]
+   }
+  },
+  "projects_truncation_expanded": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    "A7-tasks-trimmed"
+   ],
+   "expect": [
+    "A7-tasks-trimmed"
+   ]
+  },
+  "fresh_after_ordinary_work": {
+   "part": "A",
+   "pass": true,
+   "got": "current-as-of-tip",
+   "expect": "current-as-of-tip"
+  },
+  "stale_after_accepted_instruction": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    "new-accepted-instruction:r9"
+   ],
+   "expect": [
+    "new-accepted-instruction:r9"
+   ]
+  },
+  "unknown_while_instruction_pending": {
+   "part": "A",
+   "pass": true,
+   "got": "unknown",
+   "expect": "unknown"
+  },
+  "unknown_when_drain_behind": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    "drain-behind"
+   ],
+   "expect": [
+    "drain-behind"
+   ]
+  },
+  "stale_after_stop": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    "stopped"
+   ],
+   "expect": [
+    "stopped"
+   ]
+  },
+  "stale_after_membership_loss": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    "membership-changed"
+   ],
+   "expect": [
+    "membership-changed"
+   ]
+  },
+  "peer_message_not_authoritative": {
+   "part": "A",
+   "pass": true,
+   "got": "current-as-of-tip",
+   "expect": "current-as-of-tip"
+  },
+  "stop_latch_then_resume": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    false,
+    true
+   ],
+   "expect": [
+    false,
+    true
+   ]
+  },
+  "lifetime_bounded": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "stalled_headers": [
+     "aborted",
+     "headers-deadline",
+     30
+    ],
+    "slow_body": [
+     "aborted",
+     "total-deadline",
+     90
+    ],
+    "stop_in_flight": [
+     "aborted",
+     "stop",
+     10
+    ],
+    "completed": [
+     "completed",
+     null,
+     20
+    ]
+   },
+   "expect": {
+    "stalled_headers": [
+     "aborted",
+     "headers-deadline",
+     30
+    ],
+    "slow_body": [
+     "aborted",
+     "total-deadline",
+     90
+    ],
+    "stop_in_flight": [
+     "aborted",
+     "stop",
+     10
+    ],
+    "completed": [
+     "completed",
+     null,
+     20
+    ]
+   }
+  },
+  "unknown_usage_charged_in_full": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "a": [
+     "unknown_charged",
+     0.1
+    ],
+    "b": [
+     "unknown_charged",
+     0.1
+    ],
+    "c": [
+     "unknown_charged",
+     0.1
+    ],
+    "d": [
+     "reconciled",
+     0.02
+    ],
+    "e": [
+     "unknown_charged",
+     0.1
+    ]
+   },
+   "expect": {
+    "a": [
+     "unknown_charged",
+     0.1
+    ],
+    "b": [
+     "unknown_charged",
+     0.1
+    ],
+    "c": [
+     "unknown_charged",
+     0.1
+    ],
+    "d": [
+     "reconciled",
+     0.02
+    ],
+    "e": [
+     "unknown_charged",
+     0.1
+    ]
+   }
+  },
+  "fifo_no_starvation": {
+   "part": "A",
+   "pass": true,
+   "got": "C:1",
+   "expect": "C:1"
+  },
+  "failure_keeps_frontier": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    0,
+    "C:1"
+   ],
+   "expect": [
+    0,
+    "C:1"
+   ]
+  },
+  "oversized_edit_split_in_order": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "parts": true,
+    "ordered": true,
+    "allWithinCap": true,
+    "singleHugeHunk": "truncated"
+   },
+   "expect": {
+    "parts": true,
+    "ordered": true,
+    "allWithinCap": true,
+    "singleHugeHunk": "truncated"
+   }
+  },
+  "first_card_always_progresses": {
+   "part": "A",
+   "pass": true,
+   "got": [
+    [
+     "X"
+    ],
+    true
+   ],
+   "expect": [
+    [
+     "X"
+    ],
+    true
+   ]
+  },
+  "scheduler_bound": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "counts": {
+     "continuous_8h": 49,
+     "burst_then_idle": 8,
+     "turn_end_every_7min": 49
+    },
+    "boundHolds": {
+     "continuous_8h": true,
+     "burst_then_idle": true,
+     "turn_end_every_7min": true
+    },
+    "a137RollingIn332min": 36,
+    "bucketIn332min": 35
+   },
+   "expect": {
+    "counts": {
+     "continuous_8h": 49,
+     "burst_then_idle": 8,
+     "turn_end_every_7min": 49
+    },
+    "boundHolds": {
+     "continuous_8h": true,
+     "burst_then_idle": true,
+     "turn_end_every_7min": true
+    },
+    "a137RollingIn332min": 36,
+    "bucketIn332min": 35
+   }
+  },
+  "body_fit_gpt-6-luna": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "underCap": true,
+    "firstCard": "Q:0",
+    "measured": true
+   },
+   "expect": {
+    "underCap": true,
+    "firstCard": "Q:0",
+    "measured": true
+   },
+   "detail": {
+    "renderedCardBytes": 102400,
+    "cardsKept": 11,
+    "bodyBytes": 61818
+   }
+  },
+  "body_fit_claude-sonnet-5-5": {
+   "part": "A",
+   "pass": true,
+   "got": {
+    "underCap": true,
+    "firstCard": "Q:0",
+    "measured": true
+   },
+   "expect": {
+    "underCap": true,
+    "firstCard": "Q:0",
+    "measured": true
+   },
+   "detail": {
+    "renderedCardBytes": 102400,
+    "cardsKept": 11,
+    "bodyBytes": 61715
+   }
+  },
+  "reservation_formula_spot": {
+   "part": "A",
+   "pass": true,
+   "got": 0.1864,
+   "expect": 0.1864
+  },
+  "nested_suite_chain_verified": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "S1 › handles errors",
+    "verified"
+   ],
+   "expect": [
+    true,
+    "S1 › handles errors",
+    "verified"
+   ]
+  },
+  "regex_test_method_not_a_scope": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "verified"
+   ],
+   "expect": [
+    true,
+    "verified"
+   ]
+  },
+  "python_indent_scope_verified": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "test_b",
+    "verified"
+   ],
+   "expect": [
+    true,
+    "test_b",
+    "verified"
+   ]
+  },
+  "python_closed_def_not_subject": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    false,
+    "subject-mismatch"
+   ],
+   "expect": [
+    false,
+    "subject-mismatch"
+   ]
+  },
+  "rename_in_hunk_rename_or_replacement": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "rename-or-replacement",
+    "tests/rename.test.ts:L1",
+    "positional",
+    false
+   ],
+   "expect": [
+    true,
+    "rename-or-replacement",
+    "tests/rename.test.ts:L1",
+    "positional",
+    false
+   ],
+   "a144Expected": [
+    true,
+    "verified-rename",
+    "new name"
+   ]
+  },
+  "regex_literal_brackets_do_not_extend_closed_test": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "ambiguous"
+   ],
+   "expect": [
+    true,
+    "ambiguous"
+   ]
+  },
+  "division_is_not_a_regex_control": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "B",
+    "verified"
+   ],
+   "expect": [
+    true,
+    "B",
+    "verified"
+   ]
+  },
+  "a141_cross_subject_pair": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    false,
+    "subject-incompatible",
+    null
+   ],
+   "expect": [
+    false,
+    "subject-incompatible",
+    null
+   ],
+   "a141Observed": {
+    "accepted": true,
+    "display": "A",
+    "subjectVerified": true
+   }
+  },
+  "a141_multiline_closed_scope": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "ok",
+    "ambiguous"
+   ],
+   "expect": [
+    true,
+    "ok",
+    "ambiguous"
+   ],
+   "a141Observed": {
+    "accepted": true,
+    "display": "A",
+    "subjectVerified": true
+   }
+  },
+  "a141_moved_relation_cross_subject": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    false,
+    "subject-incompatible",
+    null
+   ],
+   "expect": [
+    false,
+    "subject-incompatible",
+    null
+   ],
+   "a141Observed": {
+    "accepted": true,
+    "display": "A",
+    "subjectVerified": true
+   }
+  },
+  "a141_multiline_shows_position_and_claim": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "tests/multiline.test.ts:L7",
+    "A"
+   ],
+   "expect": [
+    "tests/multiline.test.ts:L7",
+    "A"
+   ]
+  },
+  "mid_line_close_not_attributed_to_closed_test": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "ambiguous",
+    "tests/midline.test.ts:L4"
+   ],
+   "expect": [
+    true,
+    "ambiguous",
+    "tests/midline.test.ts:L4"
+   ]
+  },
+  "mid_line_close_then_hook_not_test_a": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "ambiguous"
+   ],
+   "expect": [
+    true,
+    "ambiguous"
+   ]
+  },
+  "parameterized_call_ambiguous": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "ambiguous"
+   ],
+   "expect": [
+    true,
+    "ambiguous"
+   ]
+  },
+  "multiline_template_ambiguous": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "ambiguous"
+   ],
+   "expect": [
+    true,
+    "ambiguous"
+   ]
+  },
+  "block_edit_cross_pair_rejected": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    false,
+    "subject-incompatible"
+   ],
+   "expect": [
+    false,
+    "subject-incompatible"
+   ]
+  },
+  "range_spanning_two_tests_rejected": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    false,
+    "before-range-spans-subjects"
+   ],
+   "expect": [
+    false,
+    "before-range-spans-subjects"
+   ]
+  },
+  "block_edit_matching_pair_verified": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "verified"
+   ],
+   "expect": [
+    true,
+    "verified"
+   ]
+  },
+  "moved_same_test_claimed_not_verified": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    2,
+    true,
+    "ambiguous",
+    "claimed-moved"
+   ],
+   "expect": [
+    2,
+    true,
+    "ambiguous",
+    "claimed-moved"
+   ],
+   "a144Expected": [
+    2,
+    true,
+    "verified-moved"
+   ]
+  },
+  "cross_hunk_without_moved_rejected": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    false,
+    "after-cross-hunk-without-moved"
+   ],
+   "expect": [
+    false,
+    "after-cross-hunk-without-moved"
+   ]
+  },
+  "a141_same_title_distinct_files": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "issueCount": 2,
+    "occurrenceCount": 2,
+    "notificationCount": 2
+   },
+   "expect": {
+    "issueCount": 2,
+    "occurrenceCount": 2,
+    "notificationCount": 2
+   },
+   "a141Observed": {
+    "issueCount": 1,
+    "occurrenceCount": 2,
+    "notificationCount": 1
+   },
+   "locators": [
+    "tests/cache.test.ts::handles errors@new:L1",
+    "tests/refunds.test.ts::handles errors@new:L1"
+   ]
+  },
+  "repeated_title_suites_independent": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "subjects": [
+     "cache › handles errors",
+     "refunds › handles errors"
+    ],
+    "issues": 2,
+    "notifiedAfterMutingFirst": 2
+   },
+   "expect": {
+    "subjects": [
+     "cache › handles errors",
+     "refunds › handles errors"
+    ],
+    "issues": 2,
+    "notifiedAfterMutingFirst": 2
+   }
+  },
+  "repeated_title_same_scope_distinct_by_declaration": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    "tests/dup.test.ts::dup@new:L1",
+    "tests/dup.test.ts::dup@new:L4"
+   ],
+   "expect": [
+    true,
+    "tests/dup.test.ts::dup@new:L1",
+    "tests/dup.test.ts::dup@new:L4"
+   ]
+  },
+  "same_generation_brief_edit_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "briefs-changed"
+   ],
+   "expect": [
+    "briefs-changed"
+   ],
+   "a141Observed": {
+    "state": "current-as-of-tip",
+    "latch": false
+   }
+  },
+  "assignment_replaced_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "A2-new-assignment",
+    "A1-cancelled"
+   ],
+   "expect": [
+    "A2-new-assignment",
+    "A1-cancelled"
+   ]
+  },
+  "assignment_cancel_requested_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "A1-cancel-requested"
+   ],
+   "expect": [
+    "A1-cancel-requested"
+   ]
+  },
+  "assignment_stopped_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "A1-stopped"
+   ],
+   "expect": [
+    "A1-stopped"
+   ]
+  },
+  "assignment_progress_not_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "current-as-of-tip",
+    [
+     "A1-running->reported"
+    ]
+   ],
+   "expect": [
+    "current-as-of-tip",
+    [
+     "A1-running->reported"
+    ]
+   ]
+  },
+  "coordinator_replaced_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "coordinator-changed"
+   ],
+   "expect": [
+    "coordinator-changed"
+   ]
+  },
+  "worker_generation_replaced_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "membership-changed"
+   ],
+   "expect": [
+    "membership-changed"
+   ]
+  },
+  "user_stopped_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "user-stopped"
+   ],
+   "expect": [
+    "user-stopped"
+   ]
+  },
+  "parent_changed_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "parent-changed"
+   ],
+   "expect": [
+    "parent-changed"
+   ]
+  },
+  "settings_revision_changed_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "settingsRev-changed"
+   ],
+   "expect": [
+    "settingsRev-changed"
+   ]
+  },
+  "watch_epoch_changed_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "epoch-changed"
+   ],
+   "expect": [
+    "epoch-changed"
+   ]
+  },
+  "brief_read_truncated_unknown": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "T1-brief-unread"
+   ],
+   "expect": [
+    "T1-brief-unread"
+   ]
+  },
+  "membership_read_missing_unknown": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "membership-missing"
+   ],
+   "expect": [
+    "membership-missing"
+   ]
+  },
+  "known_change_outranks_unknown_read": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "stale",
+    [
+     "briefs-changed"
+    ],
+    [
+     "T1-brief-failed"
+    ]
+   ],
+   "expect": [
+    "stale",
+    [
+     "briefs-changed"
+    ],
+    [
+     "T1-brief-failed"
+    ]
+   ]
+  },
+  "non_atomic_label_kept": {
+   "part": "B",
+   "pass": true,
+   "got": "independent, non-atomic",
+   "expect": "independent, non-atomic"
+  },
+  "a141_rejected_instruction_settled": {
+   "part": "B",
+   "pass": true,
+   "got": "current-as-of-tip",
+   "expect": "current-as-of-tip",
+   "a141Observed": {
+    "state": "unknown",
+    "reason": "instruction-pending",
+    "latch": false
+   }
+  },
+  "a141_reject_then_accept_stale": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "new-accepted-instruction:r2"
+   ],
+   "expect": [
+    "new-accepted-instruction:r2"
+   ],
+   "a141Observed": {
+    "state": "unknown",
+    "reason": "instruction-pending",
+    "latch": false
+   }
+  },
+  "a141_receipt_beyond_seed_cap": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "pending": [],
+    "boundaryState": "accepted",
+    "coverage": "complete",
+    "gaps": [],
+    "boundaryIsRequirement": true
+   },
+   "expect": {
+    "pending": [],
+    "boundaryState": "accepted",
+    "coverage": "complete",
+    "gaps": [],
+    "boundaryIsRequirement": true
+   },
+   "a144Expected": {
+    "coverage": "partial",
+    "gaps": [
+     "requests-after-#500-not-scanned"
+    ]
+   },
+   "a141Observed": {
+    "rowCount": 501,
+    "coverage": "partial",
+    "pending": [
+     "boundary"
+    ],
+    "omitted": []
+   }
+  },
+  "stale_accepted_outranks_unrelated_pending": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "stale",
+    [
+     "new-accepted-instruction:a1"
+    ]
+   ],
+   "expect": [
+    "stale",
+    [
+     "new-accepted-instruction:a1"
+    ]
+   ]
+  },
+  "peer_pending_does_not_hold": {
+   "part": "B",
+   "pass": true,
+   "got": "current-as-of-tip",
+   "expect": "current-as-of-tip"
+  },
+  "pending_beyond_horizon_degrades_to_partial": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "pendingAt10": [
+     "slow"
+    ],
+    "pendingAt45": [],
+    "coverageAt45": "partial"
+   },
+   "expect": {
+    "pendingAt10": [
+     "slow"
+    ],
+    "pendingAt45": [],
+    "coverageAt45": "partial"
+   }
+  },
+  "seed_request_settled_by_drain": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "accepted",
+    []
+   ],
+   "expect": [
+    "accepted",
+    []
+   ]
+  },
+  "orphan_receipt_recorded_not_invented": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    [
+     7
+    ],
+    []
+   ],
+   "expect": [
+    [
+     7
+    ],
+    []
+   ]
+  },
+  "a141_failure_pause_survives_work_input": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    false,
+    [
+     "failure"
+    ]
+   ],
+   "expect": [
+    false,
+    [
+     "failure"
+    ]
+   ],
+   "a141Observed": {
+    "dispatchAllowed": true,
+    "latched": false
+   }
+  },
+  "two_failures_pause": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "failure"
+   ],
+   "expect": [
+    "failure"
+   ]
+  },
+  "manual_pause_survives_work_input": {
+   "part": "B",
+   "pass": true,
+   "got": false,
+   "expect": false
+  },
+  "interrupt_cleared_failure_kept": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    "failure"
+   ],
+   "expect": [
+    "failure"
+   ]
+  },
+  "resume_clears_only_human_reasons": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    [
+     "disabled",
+     "user-stopped"
+    ],
+    {
+     "action": "resume",
+     "via": "panel",
+     "caller": "unverified"
+    }
+   ],
+   "expect": [
+    [
+     "disabled",
+     "user-stopped"
+    ],
+    {
+     "action": "resume",
+     "via": "panel",
+     "caller": "unverified"
+    }
+   ]
+  },
+  "native_and_enable_clear_their_own": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    2
+   ],
+   "expect": [
+    true,
+    2
+   ]
+  },
+  "a141_encoded_fixed_sections_overflow": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "underCap": true,
+    "cards": [
+     "E:1:0#0"
+    ],
+    "partial": [
+     "R:1"
+    ],
+    "coverage": "partial",
+    "missedRequirementEnabled": false
+   },
+   "expect": {
+    "underCap": true,
+    "cards": [
+     "E:1:0#0"
+    ],
+    "partial": [
+     "R:1"
+    ],
+    "coverage": "partial",
+    "missedRequirementEnabled": false
+   },
+   "a141Observed": {
+    "requirementRawBytes": 12288,
+    "bodyWithoutCardsBytes": 74031,
+    "fitFunctionResult": {
+     "error": "charter alone exceeds cap"
+    }
+   },
+   "detail": {
+    "bodyBytes": 57231,
+    "requirementSerializedBytes": 73728
+   }
+  },
+  "single_escaped_oversized_card": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "rawBytes": 9022,
+    "cardEncWithinCap": true,
+    "inclusion": "truncated",
+    "keptLines": 0,
+    "sent": [
+     "E:600:0#0"
+    ],
+    "underCap": true
+   },
+   "expect": {
+    "rawBytes": 9022,
+    "cardEncWithinCap": true,
+    "inclusion": "truncated",
+    "keptLines": 0,
+    "sent": [
+     "E:600:0#0"
+    ],
+    "underCap": true
+   }
+  },
+  "truncated_away_line_cannot_be_cited": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    false,
+    "before-lines-outside-hunk"
+   ],
+   "expect": [
+    false,
+    "before-lines-outside-hunk"
+   ]
+  },
+  "oversized_policy_visible_error": {
+   "part": "B",
+   "pass": true,
+   "got": "priorities are 6000 serialized bytes; cap 4096",
+   "expect": "priorities are 6000 serialized bytes; cap 4096"
+  },
+  "requirements_trimmed_with_named_omissions": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "partial": 1,
+    "omittedNamed": true,
+    "allAccounted": true,
+    "card": [
+     "E:1:0#0"
+    ]
+   },
+   "expect": {
+    "partial": 1,
+    "omittedNamed": true,
+    "allAccounted": true,
+    "card": [
+     "E:1:0#0"
+    ]
+   }
+  },
+  "a141_retained_citation_complete_after_prune": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "accepted": true,
+    "retainedStatus": "complete",
+    "retainedBytes": 4882,
+    "open": {
+     "source": "retained",
+     "complete": true
+    }
+   },
+   "expect": {
+    "accepted": true,
+    "retainedStatus": "complete",
+    "retainedBytes": 4882,
+    "open": {
+     "source": "retained",
+     "complete": true
+    }
+   },
+   "a141Observed": {
+    "citationAccepted": true,
+    "excerptBytes": 4882,
+    "findingExcerptCap": 4096
+   }
+  },
+  "retained_citation_clipped_exactly": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "accepted": true,
+    "status": "clipped",
+    "withinCap": true,
+    "exactAccounting": true,
+    "validUtf8": true,
+    "openComplete": false,
+    "label": "citation clipped; full evidence pruned"
+   },
+   "expect": {
+    "accepted": true,
+    "status": "clipped",
+    "withinCap": true,
+    "exactAccounting": true,
+    "validUtf8": true,
+    "openComplete": false,
+    "label": "citation clipped; full evidence pruned"
+   },
+   "detail": {
+    "citedBytes": 10477,
+    "keptBytes": 8191,
+    "omittedBytes": 2286,
+    "subjectStatus": "ambiguous"
+   }
+  },
+  "prune_unreviewed_records_not_judged_gap": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "pruned": [
+     "C:0",
+     "C:1",
+     "C:2"
+    ],
+    "frontier": 0,
+    "gaps": [
+     {
+      "kind": "not-judged",
+      "reason": "pruned-before-review",
+      "fromSeq": 12,
+      "toSeq": 12,
+      "cards": 1
+     }
+    ]
+   },
+   "expect": {
+    "pruned": [
+     "C:0",
+     "C:1",
+     "C:2"
+    ],
+    "frontier": 0,
+    "gaps": [
+     {
+      "kind": "not-judged",
+      "reason": "pruned-before-review",
+      "fromSeq": 12,
+      "toSeq": 12,
+      "cards": 1
+     }
+    ]
+   }
+  },
+  "s4_call_attribution": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "gpt-6-luna": {
+     "callsPerModel": 120,
+     "reserved16KiB": 0.38112,
+     "expected4kIn1kOut": 0.108
+    },
+    "claude-sonnet-5-5": {
+     "callsPerModel": 120,
+     "reserved16KiB": 7.6224,
+     "expected4kIn1kOut": 2.16
+    },
+    "total": {
+     "calls": 240,
+     "reserved16KiB": 8.00352,
+     "expected4kIn1kOut": 2.268
+    }
+   },
+   "expect": {
+    "gpt-6-luna": {
+     "callsPerModel": 120,
+     "reserved16KiB": 0.38112,
+     "expected4kIn1kOut": 0.108
+    },
+    "claude-sonnet-5-5": {
+     "callsPerModel": 120,
+     "reserved16KiB": 7.6224,
+     "expected4kIn1kOut": 2.16
+    },
+    "total": {
+     "calls": 240,
+     "reserved16KiB": 8.00352,
+     "expected4kIn1kOut": 2.268
+    }
+   },
+   "a141Observed": {
+    "gpt-6-luna": {
+     "callsPerModel": 120,
+     "reserved": 0.38112,
+     "expected4kInput1kOutput": 0.108,
+     "tableReservedWith240CallsPerModel": 0.76224
+    },
+    "claude-sonnet-5-5": {
+     "callsPerModel": 120,
+     "reserved": 7.622399999999999,
+     "expected4kInput1kOutput": 2.1599999999999997,
+     "tableReservedWith240CallsPerModel": 15.244799999999998
+    }
+   }
+  },
+  "per_watch_cost_rows": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "gpt-6-luna": {
+     "reservationAtCap": 0.00932,
+     "expectedPerReview(6k in,1k out)": 0.0011,
+     "8hWorker49ReviewsExpected": 0.054,
+     "8hWorker49ReviewsReservedBound": 0.457
+    },
+    "claude-sonnet-5-5": {
+     "reservationAtCap": 0.1864,
+     "expectedPerReview(6k in,1k out)": 0.022,
+     "8hWorker49ReviewsExpected": 1.078,
+     "8hWorker49ReviewsReservedBound": 9.134
+    }
+   },
+   "expect": {
+    "gpt-6-luna": {
+     "reservationAtCap": 0.00932,
+     "expectedPerReview(6k in,1k out)": 0.0011,
+     "8hWorker49ReviewsExpected": 0.054,
+     "8hWorker49ReviewsReservedBound": 0.457
+    },
+    "claude-sonnet-5-5": {
+     "reservationAtCap": 0.1864,
+     "expectedPerReview(6k in,1k out)": 0.022,
+     "8hWorker49ReviewsExpected": 1.078,
+     "8hWorker49ReviewsReservedBound": 9.134
+    }
+   }
+  },
+  "confirmation_effect_not_guaranteed": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "primary": [
+     0.8,
+     0.8
+    ],
+    "confirmKeeps4TP2FP": [
+     0.667,
+     0.4
+    ],
+    "confirmKeeps8TP0FP": [
+     1.0,
+     0.8
+    ]
+   },
+   "expect": {
+    "primary": [
+     0.8,
+     0.8
+    ],
+    "confirmKeeps4TP2FP": [
+     0.667,
+     0.4
+    ],
+    "confirmKeeps8TP0FP": [
+     1.0,
+     0.8
+    ]
+   }
+  },
+  "drain_catch_up_lossless_idempotent": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "passes": 3,
+    "cards": 500,
+    "cursor": 500,
+    "replayAddsNothing": true
+   },
+   "expect": {
+    "passes": 3,
+    "cards": 500,
+    "cursor": 500,
+    "replayAddsNothing": true
+   }
+  },
+  "command_output_bounded": {
+   "part": "B",
+   "pass": true,
+   "got": {
+    "truncated": true,
+    "kept": 2048,
+    "omitted": 12952
+   },
+   "expect": {
+    "truncated": true,
+    "kept": 2048,
+    "omitted": 12952
+   }
+  },
+  "watch_eligibility": {
+   "part": "B",
+   "pass": true,
+   "got": [
+    true,
+    [
+     false,
+     "advisor-owned"
+    ]
+   ],
+   "expect": [
+    true,
+    [
+     false,
+     "advisor-owned"
+    ]
+   ]
+  },
+  "p1a_root_thread_contract_current": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "current-as-of-tip",
+    null
+   ],
+   "expect": [
+    "current-as-of-tip",
+    null
+   ],
+   "a148Observed": {
+    "state": "unknown",
+    "reasons": [
+     "archived-missing",
+     "parent-missing"
+    ],
+    "notes": [],
+    "reads": "independent, non-atomic"
+   }
+  },
+  "p1a_child_thread_contract_current": {
+   "part": "C",
+   "pass": true,
+   "got": "current-as-of-tip",
+   "expect": "current-as-of-tip",
+   "a148Observed": {
+    "state": "unknown",
+    "reasons": [
+     "archived-missing"
+    ],
+    "notes": [],
+    "reads": "independent, non-atomic"
+   }
+  },
+  "p1a_thread_read_failed_unknown": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "unknown",
+    [
+     "thread-missing"
+    ]
+   ],
+   "expect": [
+    "unknown",
+    [
+     "thread-missing"
+    ]
+   ]
+  },
+  "p1a_archived_between_reads_stale": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "archived-changed"
+   ],
+   "expect": [
+    "archived-changed"
+   ]
+  },
+  "p1a_eligibility_reads_archivedAt": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    [
+     true,
+     "ok"
+    ],
+    [
+     true,
+     "ok"
+    ],
+    [
+     false,
+     "archived"
+    ]
+   ],
+   "expect": [
+    [
+     true,
+     "ok"
+    ],
+    [
+     true,
+     "ok"
+    ],
+    [
+     false,
+     "archived"
+    ]
+   ]
+  },
+  "p1a_membership_read_failed_is_not_none": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "unknown",
+    [
+     "membership-missing"
+    ]
+   ],
+   "expect": [
+    "unknown",
+    [
+     "membership-missing"
+    ]
+   ]
+  },
+  "p3_joined_initiative_mid_review_stale": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "stale",
+    [
+     "membership-joined"
+    ]
+   ],
+   "expect": [
+    "stale",
+    [
+     "membership-joined"
+    ]
+   ],
+   "a148Observed": {
+    "state": "current-as-of-tip",
+    "notes": [],
+    "reads": "independent, non-atomic"
+   }
+  },
+  "p3_left_initiative_mid_review_stale": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "membership-left"
+   ],
+   "expect": [
+    "membership-left"
+   ]
+  },
+  "p1b_installed_row_drops_reported": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "A1",
+    [],
+    "reported"
+   ],
+   "expect": [
+    "A1",
+    [],
+    "reported"
+   ]
+  },
+  "p1b_accepted_via_ref_current": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "current-as-of-tip",
+    [
+     "A1-running->accepted"
+    ]
+   ],
+   "expect": [
+    "current-as-of-tip",
+    [
+     "A1-running->accepted"
+    ]
+   ]
+  },
+  "p1b_missing_ref_unknown_not_cancelled": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "unknown",
+    [
+     "A1-missing",
+     "T1-brief-unread"
+    ]
+   ],
+   "expect": [
+    "unknown",
+    [
+     "A1-missing",
+     "T1-brief-unread"
+    ]
+   ]
+  },
+  "p1b_failed_ref_read_unknown": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "unknown",
+    [
+     "A1-failed",
+     "T1-brief-unread"
+    ]
+   ],
+   "expect": [
+    "unknown",
+    [
+     "A1-failed",
+     "T1-brief-unread"
+    ]
+   ]
+  },
+  "p1b_paged_ref_unread_unknown": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "unknown",
+    [
+     "A2-unread"
+    ],
+    [
+     "A1-running->reported"
+    ]
+   ],
+   "expect": [
+    "unknown",
+    [
+     "A2-unread"
+    ],
+    [
+     "A1-running->reported"
+    ]
+   ]
+  },
+  "p1b_reported_but_owner_changed_stale": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "A1-owner-changed"
+   ],
+   "expect": [
+    "A1-owner-changed"
+   ]
+  },
+  "p1b_reported_but_cancel_after_report_stale": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "A1-cancel-requested"
+   ],
+   "expect": [
+    "A1-cancel-requested"
+   ]
+  },
+  "p1b_reported_but_brief_edited_after_report_stale": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "briefs-changed"
+   ],
+   "expect": [
+    "briefs-changed"
+   ]
+  },
+  "p1b_reported_but_rejected_report_stale": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "A1-rejected"
+   ],
+   "expect": [
+    "A1-rejected"
+   ]
+  },
+  "p1c_moved_across_suites_claimed": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    true,
+    "ok",
+    "ambiguous",
+    "claimed-moved",
+    false
+   ],
+   "expect": [
+    true,
+    "ok",
+    "ambiguous",
+    "claimed-moved",
+    false
+   ],
+   "a148Observed": [
+    true,
+    "ok",
+    "verified-moved",
+    "handles errors"
+   ]
+  },
+  "p1c_moved_quote_still_validated": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    false,
+    "after-quote-mismatch"
+   ],
+   "expect": [
+    false,
+    "after-quote-mismatch"
+   ]
+  },
+  "p1c_moved_claim_must_match_names": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    false,
+    "subject-mismatch"
+   ],
+   "expect": [
+    false,
+    "subject-mismatch"
+   ]
+  },
+  "p2d_reorder_true_pair_kept_ambiguous": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "old2->new2 claim A": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old2->new2 claim B": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old2->new5 claim A": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "old2->new5 claim B": [
+     false,
+     "subject-mismatch",
+     null,
+     null
+    ],
+    "old5->new2 claim A": [
+     false,
+     "no-changed-line-cited",
+     null,
+     null
+    ],
+    "old5->new2 claim B": [
+     false,
+     "no-changed-line-cited",
+     null,
+     null
+    ],
+    "old5->new5 claim A": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old5->new5 claim B": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ]
+   },
+   "expect": {
+    "old2->new2 claim A": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old2->new2 claim B": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old2->new5 claim A": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "old2->new5 claim B": [
+     false,
+     "subject-mismatch",
+     null,
+     null
+    ],
+    "old5->new2 claim A": [
+     false,
+     "no-changed-line-cited",
+     null,
+     null
+    ],
+    "old5->new2 claim B": [
+     false,
+     "no-changed-line-cited",
+     null,
+     null
+    ],
+    "old5->new5 claim A": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old5->new5 claim B": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ]
+   },
+   "a148Observed": {
+    "old2->new2 claim A": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old2->new2 claim B": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old2->new5 claim A": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old2->new5 claim B": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old5->new2 claim A": [
+     false,
+     "no-changed-line-cited",
+     null,
+     null
+    ],
+    "old5->new2 claim B": [
+     false,
+     "no-changed-line-cited",
+     null,
+     null
+    ],
+    "old5->new5 claim A": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ],
+    "old5->new5 claim B": [
+     false,
+     "subject-incompatible",
+     null,
+     null
+    ]
+   }
+  },
+  "p2d_replacement_not_verified_rename": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    true,
+    "ok",
+    "rename-or-replacement",
+    "positional",
+    false,
+    "tests/x.test.ts:L2"
+   ],
+   "expect": [
+    true,
+    "ok",
+    "rename-or-replacement",
+    "positional",
+    false,
+    "tests/x.test.ts:L2"
+   ],
+   "a148Observed": [
+    true,
+    "ok",
+    "verified-rename",
+    "renders without crashing"
+   ]
+  },
+  "p2d_same_name_edit_in_run_verified_control": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    true,
+    "verified"
+   ],
+   "expect": [
+    true,
+    "verified"
+   ]
+  },
+  "p2c_ambiguous_mute_does_not_hide_other_test": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "sameLocator": true,
+    "issues": 1,
+    "issueState": "muted",
+    "notifications": [
+     "new",
+     "new-occurrence-at-muted-unverified-locator"
+    ]
+   },
+   "expect": {
+    "sameLocator": true,
+    "issues": 1,
+    "issueState": "muted",
+    "notifications": [
+     "new",
+     "new-occurrence-at-muted-unverified-locator"
+    ]
+   },
+   "a148Observed": {
+    "status": [
+     "ambiguous",
+     "ambiguous"
+    ],
+    "locators": [
+     "tests/amb.test.ts@new:L42",
+     "tests/amb.test.ts@new:L42"
+    ],
+    "issues": 1,
+    "notifications": [
+     {
+      "occ": "eee2275fae7c",
+      "reason": "new"
+     }
+    ],
+    "proposalClaim": "never one test's mute hiding another's"
+   }
+  },
+  "p2c_verified_mute_still_suppresses_control": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    true,
+    [
+     "new"
+    ],
+    2
+   ],
+   "expect": [
+    true,
+    [
+     "new"
+    ],
+    2
+   ]
+  },
+  "p2b_rendered_card_bound": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "probe5aGridMax<=cap": true,
+    "truncatedHunksAlone": true,
+    "probes5aGridMax<=cap": true,
+    "a148CardsSplit": [
+     "truncated",
+     "complete"
+    ],
+    "builtCards": [
+     "E:1:0#0",
+     "E:1:0#1"
+    ]
+   },
+   "expect": {
+    "probe5aGridMax<=cap": true,
+    "truncatedHunksAlone": true,
+    "probes5aGridMax<=cap": true,
+    "a148CardsSplit": [
+     "truncated",
+     "complete"
+    ],
+    "builtCards": [
+     "E:1:0#0",
+     "E:1:0#1"
+    ]
+   },
+   "a148Observed": [
+    "{\"lineLen\": 39, \"smallLen\": 20, \"max\": 8226, \"cards\": [8226], \"hunks\": [2]}",
+    "build_body AssertionError: ingest must bound cards"
+   ],
+   "detail": {
+    "probe5aGridMaxEncBytes": 8189,
+    "probes5aGridMaxEncBytes": 8119
+   }
+  },
+  "p2a_omitted_refs_cannot_eat_reserve": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "cardsSent": [
+     "E:9:0#0"
+    ],
+    "underCap": true,
+    "partial": [
+     "R:1"
+    ],
+    "accounted": true,
+    "coverage": "partial"
+   },
+   "expect": {
+    "cardsSent": [
+     "E:9:0#0"
+    ],
+    "underCap": true,
+    "partial": [
+     "R:1"
+    ],
+    "accounted": true,
+    "coverage": "partial"
+   },
+   "a148Observed": {
+    "cardsSent": [],
+    "bodyBytes": 57390,
+    "omitted": [
+     "R:100000",
+     "R:100001",
+     "R:100002",
+     "R:100003",
+     "R:100004",
+     "R:100005",
+     "R:100006",
+     "R:100007",
+     "R:100008",
+     "R:100009",
+     "R:100010",
+     "R:100011"
+    ],
+    "partial": [
+     "R:1"
+    ]
+   }
+  },
+  "p2a_recheck_sheds_when_omission_line_grows": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "cardsSent": [
+     "E:9:0#0"
+    ],
+    "underCap": true,
+    "partial": [
+     "R:1"
+    ],
+    "bodyUsesCap": true,
+    "accounted": true
+   },
+   "expect": {
+    "cardsSent": [
+     "E:9:0#0"
+    ],
+    "underCap": true,
+    "partial": [
+     "R:1"
+    ],
+    "bodyUsesCap": true,
+    "accounted": true
+   },
+   "detail": {
+    "bodyBytes": 65472
+   }
+  },
+  "p2a_omission_line_bounded": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "withinBound": true,
+    "tail": ", +492 more]"
+   },
+   "expect": {
+    "withinBound": true,
+    "tail": ", +492 more]"
+   }
+  },
+  "p2a_oldest_card_always_progresses": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "allSentInOrder": true,
+    "rounds<=cards": true
+   },
+   "expect": {
+    "allSentInOrder": true,
+    "rounds<=cards": true
+   }
+  },
+  "p2e_new_coordinator_instruction_is_requirement": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "provenance": "not stored (A160 F2)",
+    "requirements": [
+     {
+      "ref": "R:10",
+      "class": "coordinator",
+      "proof": "unverified",
+      "text": "tests may use toBeCloseTo now"
+     }
+    ]
+   },
+   "expect": {
+    "provenance": "not stored (A160 F2)",
+    "requirements": [
+     {
+      "ref": "R:10",
+      "class": "coordinator",
+      "proof": "unverified",
+      "text": "tests may use toBeCloseTo now"
+     }
+    ]
+   },
+   "a148Observed": {
+    "storedAuthority": "peer",
+    "requirements": []
+   },
+   "a160Corrected": "A152 expected provenance 'peer' (the class cached at ingest) and no proof field. A160 F2 stores no class at ingest; thr_new was never this thread's native parent, so its current authority is shown as unverified at acceptance."
+  },
+  "p2e_new_coordinator_instruction_after_tip_stale": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "stale",
+    [
+     "new-accepted-instruction:n2"
+    ]
+   ],
+   "expect": [
+    "stale",
+    [
+     "new-accepted-instruction:n2"
+    ]
+   ],
+   "a148Observed": {
+    "state": "current-as-of-tip",
+    "notes": [],
+    "reads": "independent, non-atomic"
+   }
+  },
+  "p2e_former_kept_peer_not_promoted": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "requirements": [],
+    "panel": [
+     {
+      "ref": "R:30",
+      "sender": "thr_old",
+      "class": "unproven"
+     },
+     {
+      "ref": "R:32",
+      "sender": "thr_peer",
+      "class": "unproven"
+     }
+    ]
+   },
+   "expect": {
+    "requirements": [],
+    "panel": [
+     {
+      "ref": "R:30",
+      "sender": "thr_old",
+      "class": "unproven"
+     },
+     {
+      "ref": "R:32",
+      "sender": "thr_peer",
+      "class": "unproven"
+     }
+    ]
+   },
+   "a160Corrected": "A152 expected R:30 former-coordinator from the context cached when the row was ingested. Under A157 F2-B the same history seeded after the replacement gave nothing, so the label depended on watch start. thr_old was never this thread's native parent (parent thr_coord), so authority at acceptance is unproven: panel only, in every watch start. The peer is still not promoted. Part D d2_* keeps the D336 historic case where the proof exists."
+  },
+  "p2f_newest_pre_watch_instruction_seeded": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "latestIncluded": true,
+    "firstSettled": "accepted",
+    "gaps": [
+     "requests-#2-#100-not-scanned"
+    ],
+    "coverage": "partial",
+    "orphans": []
+   },
+   "expect": {
+    "latestIncluded": true,
+    "firstSettled": "accepted",
+    "gaps": [
+     "requests-#2-#100-not-scanned"
+    ],
+    "coverage": "partial",
+    "orphans": []
+   },
+   "a148Observed": {
+    "latestIncluded": false,
+    "gaps": [
+     "requests-after-#500-not-scanned"
+    ],
+    "orphanReceipts": 0,
+    "sdkSupports": "ThreadEventsListArgs.beforeSeq/order:'desc' (d.ts:18348-18356)"
+   }
+  },
+  "p2f_seed_drain_join_at_tip": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "pendingAtTip": [
+     "late"
+    ],
+    "afterDrain": "accepted",
+    "middleGapOrphansOnly": true
+   },
+   "expect": {
+    "pendingAtTip": [
+     "late"
+    ],
+    "afterDrain": "accepted",
+    "middleGapOrphansOnly": true
+   }
+  },
+  "p2f_receipt_before_request_joins": {
+   "part": "C",
+   "pass": true,
+   "got": [
+    "accepted",
+    []
+   ],
+   "expect": [
+    "accepted",
+    []
+   ]
+  },
+  "p2f_first_request_unsettled_never_pending": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "pending": [],
+    "state": "requested",
+    "gaps": [
+     "requests-#2-#100-not-scanned",
+     "request-#1-settlement-not-found"
+    ]
+   },
+   "expect": {
+    "pending": [],
+    "state": "requested",
+    "gaps": [
+     "requests-#2-#100-not-scanned",
+     "request-#1-settlement-not-found"
+    ]
+   }
+  },
+  "retention_lopsided_reuses_share": {
+   "part": "C",
+   "pass": true,
+   "got": {
+    "emoji4": [
+     "clipped",
+     true,
+     true
+    ],
+    "lopsided": [
+     "clipped",
+     true,
+     true
+    ],
+    "exact_cap": [
+     "complete",
+     true,
+     true
+    ],
+    "lopsidedKept>=8000": true
+   },
+   "expect": {
+    "emoji4": [
+     "clipped",
+     true,
+     true
+    ],
+    "lopsided": [
+     "clipped",
+     true,
+     true
+    ],
+    "exact_cap": [
+     "complete",
+     true,
+     true
+    ],
+    "lopsidedKept>=8000": true
+   },
+   "a148Observed": {
+    "emoji4": {
+     "status": "clipped",
+     "keptBytes": 4357,
+     "withinCap": true,
+     "exact": true,
+     "reqOmitted": 690
+    },
+    "lopsided": {
+     "status": "clipped",
+     "keptBytes": 4116,
+     "withinCap": true,
+     "exact": true,
+     "reqOmitted": 0
+    },
+    "exact_cap": {
+     "status": "complete",
+     "keptBytes": 8192,
+     "withinCap": true,
+     "exact": true,
+     "reqOmitted": null
+    }
+   },
+   "detail": {
+    "emoji4": {
+     "status": "clipped",
+     "keptBytes": 8189,
+     "withinCap": true,
+     "exact": true
+    },
+    "lopsided": {
+     "status": "clipped",
+     "keptBytes": 8192,
+     "withinCap": true,
+     "exact": true
+    },
+    "exact_cap": {
+     "status": "complete",
+     "keptBytes": 8192,
+     "withinCap": true,
+     "exact": true
+    }
+   }
+  },
+  "d1_fake_matches_installed_schema": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "pageMax": 100,
+    "verdicts": {
+     "a152.seedFirst": 200,
+     "a152.seedNewest": 400,
+     "a152.receiptSweep": 400,
+     "a152.drain": 200,
+     "a160.contract.seedFirst": 200,
+     "a160.contract.seedNewest": 200,
+     "a160.contract.receiptSweep": 200,
+     "a160.contract.drain": 200,
+     "a160.seedFirst": 200,
+     "a160.seedNewestPage": 200,
+     "a160.receiptSweepPage": 200,
+     "a160.drainPage": 200,
+     "ctl.limit101": 400,
+     "ctl.limit0": 400,
+     "ctl.limitOmitted": 200,
+     "ctl.negativeCursor": 400,
+     "ctl.unknownType": 400
+    },
+    "cursorsStrict": {
+     "afterSeq": true,
+     "beforeSeq": true
+    },
+    "bareArray": true
+   },
+   "expect": {
+    "pageMax": 100,
+    "verdicts": {
+     "a152.seedFirst": 200,
+     "a152.seedNewest": 400,
+     "a152.receiptSweep": 400,
+     "a152.drain": 200,
+     "a160.contract.seedFirst": 200,
+     "a160.contract.seedNewest": 200,
+     "a160.contract.receiptSweep": 200,
+     "a160.contract.drain": 200,
+     "a160.seedFirst": 200,
+     "a160.seedNewestPage": 200,
+     "a160.receiptSweepPage": 200,
+     "a160.drainPage": 200,
+     "ctl.limit101": 400,
+     "ctl.limit0": 400,
+     "ctl.limitOmitted": 200,
+     "ctl.negativeCursor": 400,
+     "ctl.unknownType": 400
+    },
+    "cursorsStrict": {
+     "afterSeq": true,
+     "beforeSeq": true
+    },
+    "bareArray": true
+   }
+  },
+  "d1_seed_pages_at_most_100": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "maxLimit": 100,
+    "reads": 8,
+    "newestPages": [
+     "1201",
+     "1101",
+     "1001",
+     "901",
+     "801"
+    ],
+    "requirements": 251,
+    "gaps": [
+     "requests-#2-#700-not-scanned"
+    ],
+    "first": "accepted",
+    "latest": "accepted"
+   },
+   "expect": {
+    "maxLimit": 100,
+    "reads": 8,
+    "newestPages": [
+     "1201",
+     "1101",
+     "1001",
+     "901",
+     "801"
+    ],
+    "requirements": 251,
+    "gaps": [
+     "requests-#2-#700-not-scanned"
+    ],
+    "first": "accepted",
+    "latest": "accepted"
+   }
+  },
+  "d1_receipt_sweep_pages_strict_cursor": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "first": "accepted",
+    "sweepAfterSeq": [
+     "1",
+     "101",
+     "201"
+    ],
+    "gaps": [
+     "requests-#2-#1099-not-scanned"
+    ]
+   },
+   "expect": {
+    "first": "accepted",
+    "sweepAfterSeq": [
+     "1",
+     "101",
+     "201"
+    ],
+    "gaps": [
+     "requests-#2-#1099-not-scanned"
+    ]
+   }
+  },
+  "d1_receipt_sweep_page_cap_named": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "pending": [],
+    "state": "requested",
+    "gaps": [
+     "requests-#2-#2099-not-scanned",
+     "request-#1-settlement-not-found",
+     "receipt-sweep-page-cap@1001"
+    ],
+    "coverage": "partial",
+    "sweepReads": 10
+   },
+   "expect": {
+    "pending": [],
+    "state": "requested",
+    "gaps": [
+     "requests-#2-#2099-not-scanned",
+     "request-#1-settlement-not-found",
+     "receipt-sweep-page-cap@1001"
+    ],
+    "coverage": "partial",
+    "sweepReads": 10
+   }
+  },
+  "d1_empty_history": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "gaps": [],
+    "notes": [],
+    "coverage": "complete",
+    "reads": 3
+   },
+   "expect": {
+    "gaps": [],
+    "notes": [],
+    "coverage": "complete",
+    "reads": 3
+   }
+  },
+  "d1_non_progress_server_named_gap": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "reads<=bound": true,
+    "violation": [
+     "seed-newest-contract-violation-non-progress@1101"
+    ],
+    "coverage": "partial"
+   },
+   "expect": {
+    "reads<=bound": true,
+    "violation": [
+     "seed-newest-contract-violation-non-progress@1101"
+    ],
+    "coverage": "partial"
+   }
+  },
+  "d1_duplicate_cursor_row_server_named_gap": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "reads<=bound": true,
+    "violation": [
+     "seed-newest-contract-violation-non-progress@1101"
+    ],
+    "coverage": "partial"
+   },
+   "expect": {
+    "reads<=bound": true,
+    "violation": [
+     "seed-newest-contract-violation-non-progress@1101"
+    ],
+    "coverage": "partial"
+   }
+  },
+  "d1_byte_bound_named": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "gaps": [
+     "seed-newest-byte-cap@401",
+     "requests-#2-#400-not-scanned"
+    ],
+    "accepted": 101
+   },
+   "expect": {
+    "gaps": [
+     "seed-newest-byte-cap@401",
+     "requests-#2-#400-not-scanned"
+    ],
+    "accepted": 101
+   }
+  },
+  "d1_413_halves_then_names_gap": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "limits": [
+     "25",
+     "50",
+     "100"
+    ],
+    "rows": 200,
+    "status": "complete",
+    "singleRowTooLarge": "read-failed-413@None"
+   },
+   "expect": {
+    "limits": [
+     "25",
+     "50",
+     "100"
+    ],
+    "rows": 200,
+    "status": "complete",
+    "singleRowTooLarge": "read-failed-413@None"
+   }
+  },
+  "d1_drain_non_progress_stops": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "gap": "contract-violation-non-progress@0",
+    "atTip": false,
+    "stored": 0
+   },
+   "expect": {
+    "gap": "contract-violation-non-progress@0",
+    "atTip": false,
+    "stored": 0
+   }
+  },
+  "d2_A_equals_B_projects_topology": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "A": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "B": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "B2": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ]
+   },
+   "expect": {
+    "A": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "B": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "B2": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ]
+   }
+  },
+  "d2_A_equals_B_a157_topology": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "A": [
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "B": [
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "panelA": [
+     {
+      "ref": "R:30",
+      "sender": "thr_old",
+      "class": "unproven"
+     }
+    ],
+    "panelB": [
+     {
+      "ref": "R:30",
+      "sender": "thr_old",
+      "class": "unproven"
+     }
+    ]
+   },
+   "expect": {
+    "A": [
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "B": [
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "panelA": [
+     {
+      "ref": "R:30",
+      "sender": "thr_old",
+      "class": "unproven"
+     }
+    ],
+    "panelB": [
+     {
+      "ref": "R:30",
+      "sender": "thr_old",
+      "class": "unproven"
+     }
+    ]
+   }
+  },
+  "d2_C_late_replaced_coordinator_never_requirement": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "reqs": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "sameAsSeeded": true,
+    "panel": [
+     {
+      "ref": "R:50",
+      "sender": "thr_old",
+      "class": "unproven"
+     }
+    ],
+    "newestCurrent": "R:40"
+   },
+   "expect": {
+    "reqs": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "sameAsSeeded": true,
+    "panel": [
+     {
+      "ref": "R:50",
+      "sender": "thr_old",
+      "class": "unproven"
+     }
+    ],
+    "newestCurrent": "R:40"
+   }
+  },
+  "d2_C_transfer_in_flight_late_message_historic": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "reqs": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ],
+     [
+      "R:50",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "pending": [],
+    "historicAfterCurrent": true,
+    "lateInHistoric": true
+   },
+   "expect": {
+    "reqs": [
+     [
+      "R:30",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ],
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ],
+     [
+      "R:50",
+      "former-parent",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "pending": [],
+    "historicAfterCurrent": true,
+    "lateInHistoric": true
+   }
+  },
+  "d2_former_never_stales_current_does": {
+   "part": "D",
+   "pass": true,
+   "got": [
+    "current-as-of-tip",
+    "stale",
+    [
+     "new-accepted-instruction:n9"
+    ]
+   ],
+   "expect": [
+    "current-as-of-tip",
+    "stale",
+    [
+     "new-accepted-instruction:n9"
+    ]
+   ]
+  },
+  "d2_D_peer_promoted_later": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "whileCoordinator": [
+     [
+      "R:10",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "afterReplaced": [],
+    "panel": [
+     {
+      "ref": "R:10",
+      "sender": "thr_peer",
+      "class": "unproven"
+     }
+    ]
+   },
+   "expect": {
+    "whileCoordinator": [
+     [
+      "R:10",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "afterReplaced": [],
+    "panel": [
+     {
+      "ref": "R:10",
+      "sender": "thr_peer",
+      "class": "unproven"
+     }
+    ]
+   }
+  },
+  "d2_E_labels_reach_judge": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "current": true,
+    "historicSection": true,
+    "classes": {
+     "R:40": "coordinator",
+     "R:30": "former-parent"
+    },
+    "unverifiedLabel": true
+   },
+   "expect": {
+    "current": true,
+    "historicSection": true,
+    "classes": {
+     "R:40": "coordinator",
+     "R:30": "former-parent"
+    },
+    "unverifiedLabel": true
+   }
+  },
+  "d2_E_historic_requirement_not_missable": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "missedHistoric": [
+     false,
+     "historic-requirement-not-missable"
+    ],
+    "contextHistoric": [
+     true,
+     "historic: replaced authority, context only"
+    ],
+    "missedCurrent": [
+     true,
+     "ok"
+    ]
+   },
+   "expect": {
+    "missedHistoric": [
+     false,
+     "historic-requirement-not-missable"
+    ],
+    "contextHistoric": [
+     true,
+     "historic: replaced authority, context only"
+    ],
+    "missedCurrent": [
+     true,
+     "ok"
+    ]
+   }
+  },
+  "d2_refresh_order_independent": {
+   "part": "D",
+   "pass": true,
+   "got": true,
+   "expect": true
+  },
+  "d2_ownership_history_unknown_not_guessed": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "malformed": [
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "truncated": [
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "truncNote": [
+     "ownership-history-before-#1005-not-scanned:page-cap@1005"
+    ]
+   },
+   "expect": {
+    "malformed": [
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "truncated": [
+     [
+      "R:40",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    "truncNote": [
+     "ownership-history-before-#1005-not-scanned:page-cap@1005"
+    ]
+   }
+  },
+  "d2_parent_anchor_needs_drain_after_refresh": {
+   "part": "D",
+   "pass": true,
+   "got": [
+    [
+     [
+      "R:5",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    [
+     [
+      "R:5",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    [
+     [
+      "R:5",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ]
+   ],
+   "expect": [
+    [
+     [
+      "R:5",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    [
+     [
+      "R:5",
+      "coordinator",
+      "unverified"
+     ]
+    ],
+    [
+     [
+      "R:5",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ]
+   ]
+  },
+  "d3_route_parity_assignment_brief": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "spawn": [
+     [
+      "R:1",
+      "assignment-brief",
+      "assignment:A7"
+     ]
+    ],
+    "fork": [
+     [
+      "R:1",
+      "assignment-brief",
+      "assignment:A7"
+     ]
+    ],
+    "continue": [
+     [
+      "R:1",
+      "assignment-brief",
+      "assignment:A7"
+     ]
+    ]
+   },
+   "expect": {
+    "spawn": [
+     [
+      "R:1",
+      "assignment-brief",
+      "assignment:A7"
+     ]
+    ],
+    "fork": [
+     [
+      "R:1",
+      "assignment-brief",
+      "assignment:A7"
+     ]
+    ],
+    "continue": [
+     [
+      "R:1",
+      "assignment-brief",
+      "assignment:A7"
+     ]
+    ]
+   }
+  },
+  "d3_senderless_notice_unattributed": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "reqs": [
+     [
+      "R:3",
+      "unattributed",
+      "none"
+     ]
+    ],
+    "heldWhilePending": [
+     "nt"
+    ],
+    "label": true
+   },
+   "expect": {
+    "reqs": [
+     [
+      "R:3",
+      "unattributed",
+      "none"
+     ]
+    ],
+    "heldWhilePending": [
+     "nt"
+    ],
+    "label": true
+   }
+  },
+  "d3_explicit_coordinator_not_brief": {
+   "part": "D",
+   "pass": true,
+   "got": [
+    [
+     "R:5",
+     "coordinator",
+     "native-parent-at-acceptance"
+    ]
+   ],
+   "expect": [
+    [
+     "R:5",
+     "coordinator",
+     "native-parent-at-acceptance"
+    ]
+   ]
+  },
+  "d3_mismatched_brief_not_labeled": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "trailing_newline": [
+     [
+      "R:7",
+      "unattributed",
+      "none"
+     ]
+    ],
+    "one_char": [
+     [
+      "R:7",
+      "unattributed",
+      "none"
+     ]
+    ],
+    "coordinator_mismatch": [
+     [
+      "R:7",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "two_parts": [
+     [
+      "R:9",
+      "unattributed",
+      "none"
+     ]
+    ],
+    "same_text_two_assignments": [
+     [
+      "R:11",
+      "unattributed",
+      "none"
+     ]
+    ]
+   },
+   "expect": {
+    "trailing_newline": [
+     [
+      "R:7",
+      "unattributed",
+      "none"
+     ]
+    ],
+    "one_char": [
+     [
+      "R:7",
+      "unattributed",
+      "none"
+     ]
+    ],
+    "coordinator_mismatch": [
+     [
+      "R:7",
+      "coordinator",
+      "native-parent-at-acceptance"
+     ]
+    ],
+    "two_parts": [
+     [
+      "R:9",
+      "unattributed",
+      "none"
+     ]
+    ],
+    "same_text_two_assignments": [
+     [
+      "R:11",
+      "unattributed",
+      "none"
+     ]
+    ]
+   }
+  },
+  "d3_ambiguous_human_input_no_user_attribution": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "source": "UNATTRIBUTED: user or plugin",
+    "packetSaysUser": false,
+    "anyUserClass": []
+   },
+   "expect": {
+    "source": "UNATTRIBUTED: user or plugin",
+    "packetSaysUser": false,
+    "anyUserClass": []
+   }
+  },
+  "d3_cancelled_assignment_brief_historic": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "reqs": [
+     [
+      "R:1",
+      "former-assignment-brief",
+      "assignment:A7"
+     ]
+    ],
+    "pending": []
+   },
+   "expect": {
+    "reqs": [
+     [
+      "R:1",
+      "former-assignment-brief",
+      "assignment:A7"
+     ]
+    ],
+    "pending": []
+   }
+  },
+  "d3_completion_reads_installed_brief_text": {
+   "part": "D",
+   "pass": true,
+   "got": [
+    "stale",
+    [
+     "new-accepted-instruction:b1"
+    ],
+    [
+     [
+      "R:70",
+      "assignment-brief",
+      "assignment:A1"
+     ]
+    ]
+   ],
+   "expect": [
+    "stale",
+    [
+     "new-accepted-instruction:b1"
+    ],
+    [
+     [
+      "R:70",
+      "assignment-brief",
+      "assignment:A1"
+     ]
+    ]
+   ]
+  },
+  "d4_scope_change_not_verified": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "py_class_to_module_a157": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "js_leave_describe_a157": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "js_same_indent_closer": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "py_same_indent_dedent": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "py_new_class_chain_differs": [
+     true,
+     "ok",
+     "rename-or-replacement",
+     "positional"
+    ],
+    "js_enter_scope_closer_removed_side": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ]
+   },
+   "expect": {
+    "py_class_to_module_a157": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "js_leave_describe_a157": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "js_same_indent_closer": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "py_same_indent_dedent": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ],
+    "py_new_class_chain_differs": [
+     true,
+     "ok",
+     "rename-or-replacement",
+     "positional"
+    ],
+    "js_enter_scope_closer_removed_side": [
+     true,
+     "ok",
+     "ambiguous",
+     "claimed-same-name"
+    ]
+   }
+  },
+  "d4_controls_still_verified": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "js_one_line_edit": [
+     true,
+     "ok",
+     "verified",
+     null
+    ],
+    "js_kth_after_balanced_test": [
+     true,
+     "ok",
+     "verified",
+     null
+    ],
+    "py_same_class": [
+     true,
+     "ok",
+     "verified",
+     null
+    ]
+   },
+   "expect": {
+    "js_one_line_edit": [
+     true,
+     "ok",
+     "verified",
+     null
+    ],
+    "js_kth_after_balanced_test": [
+     true,
+     "ok",
+     "verified",
+     null
+    ],
+    "py_same_class": [
+     true,
+     "ok",
+     "verified",
+     null
+    ]
+   }
+  },
+  "d1_issued_queries_admitted_by_installed_schema": {
+   "part": "D",
+   "pass": true,
+   "got": {
+    "probeSawThisRun": true,
+    "rejected": [],
+    "count": true,
+    "maxLimit": 100
+   },
+   "expect": {
+    "probeSawThisRun": true,
+    "rejected": [],
+    "count": true,
+    "maxLimit": 100
+   }
+  }
+ }
+}
