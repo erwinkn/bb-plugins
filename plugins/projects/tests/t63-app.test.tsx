@@ -35,7 +35,7 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
     await slot.behavior.emitRealtime("projects-changed", { projectId: project.id }); await beat(); expect(overview).toHaveBeenCalledTimes(2);
     fireEvent.click(slot.getByRole("tab", { name: "Threads" }));
     await waitFor(() => expect(inventory).toHaveBeenCalledTimes(1));
-    expect(overview).toHaveBeenCalledTimes(3); expect(overview.mock.calls[0][0]).toEqual({ projectId: project.id, detailed: false });
+    expect(overview).toHaveBeenCalledTimes(3); expect(overview.mock.calls[0][0]).toEqual({ projectId: project.id, detail: "summary" });
     pending.resolve(o); await beat(); slot.unmount();
     await slot.behavior.emitRealtime("projects-changed", {}); await beat(); expect(overview).toHaveBeenCalledTimes(3);
   });
@@ -107,21 +107,25 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
     const { f, project, d, o } = await setup();
     f.service.recordDecision(project.id, { decision: { description: "User choice", madeBy: "user" } }, recorder);
     const initial = await f.overview(project.id); const pre = held<Overview>(), post = held<Overview>();
-    const overview = vi.fn().mockResolvedValueOnce(initial).mockImplementationOnce(() => pre.promise).mockImplementation(() => post.promise);
+    // The summary and the Decisions history tier see the same held snapshots.
+    const tier = () => vi.fn().mockResolvedValueOnce(initial).mockImplementationOnce(() => pre.promise).mockImplementation(() => post.promise);
+    const summary = tier(), history = tier();
+    const overview = vi.fn((input: unknown) => (input as { detail?: string }).detail === "history" ? history() : summary());
     const command = vi.fn((input: unknown) => f.harness.callRpc("command", input));
     const slot = mount(project.id, { overview, command });
     fireEvent.click(await slot.findByRole("tab", { name: "Decisions" }));
+    await slot.findByText("User choice");
     await slot.behavior.emitRealtime("projects-changed", { projectId: project.id });
-    await waitFor(() => expect(overview).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(history).toHaveBeenCalledTimes(2));
     fireEvent.click(slot.getByRole("button", { name: "Accept all unchecked agent decisions" }));
     await slot.findByText("1 agent decision accepted.");
     expect(command).toHaveBeenCalledTimes(1); expect(command.mock.calls[0][0]).toEqual({ projectId: project.id, command: { action: "decision-accept-all" } });
     for (let n = 0; n < 4; n++) await slot.behavior.emitRealtime("projects-changed", { projectId: project.id });
     expect(slot.getByRole("article", { name: d.ref })).toBeTruthy(); expect(slot.queryByRole("button", { name: "Okay" })).toBeNull(); expect(slot.getByText("User choice")).toBeTruthy();
     await act(async () => { pre.resolve(o); }); expect(slot.getByRole("article", { name: d.ref })).toBeTruthy(); expect(slot.queryByRole("button", { name: "Okay" })).toBeNull();
-    await waitFor(() => expect(overview).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(history).toHaveBeenCalledTimes(3));
     await act(async () => { post.reject(new Error("Refresh failed")); });
-    await slot.findByText("Refresh failed"); expect(slot.getByText("1 agent decision accepted.")).toBeTruthy(); expect(f.send).not.toHaveBeenCalled();
+    await slot.findAllByText("Refresh failed"); expect(slot.getByText("1 agent decision accepted.")).toBeTruthy(); expect(f.send).not.toHaveBeenCalled();
   });
 
   it("a failed bulk command keeps eligible decisions and clears busy state", async () => {

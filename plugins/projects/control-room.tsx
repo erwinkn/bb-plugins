@@ -387,6 +387,8 @@ export function ControlRoom({
     p.coordinatorStatus,
   );
   const cState = `${p.coordinatorStatus}${p.paused ? "; Initiative paused" : ""}`;
+  // Open questions and blocked reports wait on the user: shown before anything else.
+  const needsYou = o.opinionNeeded.length + o.awaitingAcceptance.filter((a) => a.outcome === "blocked").length;
   const unchecked = [...o.decisions].reverse().filter(pendingReview);
   // A report's own row replaces the remaining row of the task it awaits.
   const reported = new Set(o.awaitingAcceptance.flatMap((a) => a.tasks.map((t) => t.ref)));
@@ -397,6 +399,11 @@ export function ControlRoom({
         <div className="cr-head">
           <span className="cr-mark" aria-hidden="true">{p.name.slice(0, 2).toLowerCase()}</span>
           <strong className="cr-head-name">{p.name}</strong>
+          {needsYou ? (
+            <button type="button" className="cr-needs-you" onClick={() => chooseTab("inbox")}>
+              Needs you · {needsYou}
+            </button>
+          ) : null}
           <div className="cr-menu-wrap" ref={menuRef}>
             <button
               className="cr-iconbtn"
@@ -982,6 +989,7 @@ export function ControlRoom({
                 </Fold>
               ))}
               <h2 className="cr-section-heading">Completed tasks</h2>
+              {o.historyLoaded === false ? <p className="project-muted">Loading completed tasks…</p> : null}
               {o.done.map((t) => (
                 <Fold
                   key={t.ref}
@@ -1359,7 +1367,8 @@ function Decisions({ o, run, acceptDecisions }: { o: Overview; run: Run; acceptD
           ))}
         </div>
       </div>
-      {shown.length ? shown.map(d => <DecisionItem key={d.ref} d={d} run={run} answer={answers.get(d.ref)} />) : (
+      {o.historyLoaded === false ? <p role="status" className="project-muted">Loading all decisions…</p> : null}
+      {shown.length ? shown.map(d => <DecisionItem key={d.ref} d={d} run={run} answer={answers.get(d.ref)} />) : o.historyLoaded === false ? null : (
         <p className="cr-empty">{o.decisions.length ? "None in this view." : "No decisions recorded."}</p>
       )}
       {o.closedQuestions.length ? <details className="cr-fold">

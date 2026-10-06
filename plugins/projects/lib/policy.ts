@@ -248,6 +248,8 @@ export interface DelegationFacts {
     legacy?: boolean;
     /** The holding assignment's ledger state, for the message. */
     state?: string;
+    /** What BB's thread row showed for a running or unproven hold, quoted in the message. */
+    seen?: string;
     /** The listed report's version, echoed by assignment-scope-release. */
     reportVersion?: string;
   }[];
@@ -408,9 +410,9 @@ function overlapReason(other: DelegationFacts["concurrentWork"][number]): string
   if (other.held === "listed")
     return `${who}'s report lists background work (${(other.background ?? []).slice(0, 3).join("; ")}) that is unverified and still owns overlapping paths${scope}. Wait for an updated final report; or, once those jobs are checked and BB shows the thread ended, record initiative_task {"action":"assignment-scope-release","assignment":"${other.ref}","reportVersion":"${other.reportVersion ?? "…"}","reason":"…"}; or ${exits}.${alsoListed(other.alsoListed)}`;
   if (other.held === "running")
-    return `${who} is ${other.state ?? "no longer running work"}, but its thread is still running (foreground turn, queued input or background commands) on overlapping paths in the same workspace${scope}. Wait for it to finish, ${exits}.`;
+    return `${who} is ${other.state ?? "no longer running work"}, but its thread is still running (${other.seen ?? "foreground turn, queued input or background commands"}) on overlapping paths in the same workspace${scope}. Wait for it to finish, ${exits}.`;
   if (other.held === "unknown")
-    return `${who} is ${other.state ?? "no longer running work"}, but its thread could not be proven quiet (BB's thread state was missing, unreadable or changed while checking) and it wrote overlapping paths in the same workspace${scope}. Inspect it and retry, ${exits}.`;
+    return `${who} is ${other.state ?? "no longer running work"}, but its thread could not be proven quiet (${other.seen ?? "BB's thread state was missing, unreadable or changed while checking"}) and it wrote overlapping paths in the same workspace${scope}. Inspect it and retry, ${exits}.`;
   return `${who} is writing overlapping paths in the same workspace${scope}. Wait for it, ${exits}.`;
 }
 

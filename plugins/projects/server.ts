@@ -32,7 +32,9 @@ import {
   threadsToWatch,
   type CoordinatorHome,
   type LiveThread,
+  type OverviewDetail,
 } from "./lib/overview";
+import { LiveThreads, Recent } from "./lib/live-threads";
 import { COMMAND_EXAMPLES, READ_EXAMPLES } from "./lib/examples";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { objectRootSchema } from "./lib/tool-schema";
@@ -100,44 +102,39 @@ export default function plugin(bb: BbPluginApi) {
     writes = next.catch(() => undefined);
     return next;
   };
-  const overview = async (projectId: string, detailed = true) => {
+  // Dashboard reads share native facts: lifecycle events keep them current,
+  // and a stale fact is answered at once, then re-read in the background; a
+  // change found that way announces the Initiative. Agent and CLI reads stay fresh.
+  const liveThreads = new LiveThreads((threadId) => bb.sdk.threads.get({ threadId }));
+  const nativeContext = new Recent<unknown>(10_000);
+  const instanceEpoch = Math.random().toString(36).slice(2, 10);
+  const overview = async (
+    projectId: string,
+    detail: OverviewDetail = "full",
+    { fresh = true }: { fresh?: boolean } = {},
+  ) => {
     service.requireProject(projectId);
-    const live = new Map<string, LiveThread>();
-    await Promise.all(
-      threadsToWatch(store, projectId).map(async (threadId) => {
-        try {
-          const thread = await bb.sdk.threads.get({ threadId });
-          live.set(threadId, {
-            status: thread.deletedAt !== null ? "deleted" : thread.status,
-            archived: thread.archivedAt !== null,
-            title: thread.title,
-            environmentId: thread.environmentId,
-            projectId: thread.projectId,
-            parentThreadId: thread.parentThreadId,
-          });
-        } catch (error) {
-          if ((error as { status?: number }).status !== 404) throw error;
-          live.set(threadId, {
-            status: "deleted",
-            archived: true,
-            title: null,
-          });
-        }
-      }),
-    );
+    const recent = <T,>(key: string, load: () => Promise<T>) =>
+      fresh ? load() : (nativeContext.get(key, load) as Promise<T>);
+    const live = await liveThreads.get(threadsToWatch(store, projectId), {
+      fresh,
+      revalidated: () => changed(projectId),
+    });
     const profileDefaults = (await preferences.read()).profiles;
     const result = buildOverview(
       store,
       projectId,
       live,
       Date.now(),
-      await coordinatorHome(projectId, live),
-      detailed,
+      await coordinatorHome(projectId, live, recent),
+      detail,
     );
     result.project.profileDefaults = profileDefaults;
+    result.revision = { epoch: instanceEpoch, version: ledgerVersion() };
     if (result.project.coordinatorThreadId) {
+      const threadId = result.project.coordinatorThreadId;
       try {
-        const options = await bb.sdk.threads.defaultExecutionOptions({ threadId: result.project.coordinatorThreadId });
+        const options = await recent(`options:${threadId}`, () => bb.sdk.threads.defaultExecutionOptions({ threadId }));
         result.project.coordinatorProfile = options ? [options.model, options.reasoningLevel, options.serviceTier].filter(Boolean).join(" · ") : null;
       } catch { result.project.coordinatorProfile = null; }
     }
@@ -152,14 +149,15 @@ export default function plugin(bb: BbPluginApi) {
   const coordinatorHome = async (
     projectId: string,
     live: Map<string, LiveThread>,
+    recent: <T>(key: string, load: () => Promise<T>) => Promise<T>,
   ): Promise<CoordinatorHome | null> => {
     const project = store.project(projectId);
     const bbProjectId = project?.memberProjectIds[0];
     if (!project || !bbProjectId) return null;
     try {
-      const bbProject = (await bb.sdk.projects.get({
+      const bbProject = (await recent(`project:${bbProjectId}`, () => bb.sdk.projects.get({
         projectId: bbProjectId,
-      })) as {
+      }))) as {
         name?: string;
         sources?: { hostId: string; isDefault: boolean; path?: string }[];
       };
@@ -168,7 +166,7 @@ export default function plugin(bb: BbPluginApi) {
       // sources[0].
       const source =
         (bbProject.sources ?? []).find((s) => s.isDefault === true) ?? null;
-      const envs = await bb.sdk.environments.list({ projectId: bbProjectId });
+      const envs = await recent(`environments:${bbProjectId}`, () => bb.sdk.environments.list({ projectId: bbProjectId }));
       const checkout =
         source?.hostId && source?.path
           ? (envs.find(
@@ -231,7 +229,20 @@ export default function plugin(bb: BbPluginApi) {
     workers.forEach(visit);
     return ordered;
   };
-  const tree = (): ProjectTree => ({
+  // Every ledger write goes through this one connection, so its change
+  // counter versions the ledger: the tree and list are rebuilt only after a
+  // write, and a sweep that wrote nothing announces nothing.
+  const ledgerVersion = () =>
+    (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+  const memo = <T,>(build: () => T) => {
+    let cached: { version: number; value: T } | null = null;
+    return (): T => {
+      const version = ledgerVersion();
+      if (cached?.version !== version) cached = { version, value: build() };
+      return cached.value;
+    };
+  };
+  const buildTree = (): ProjectTree => ({
     version: 1,
     projects: store.projects().map((p) => ({
       ...summary(p.id),
@@ -294,6 +305,8 @@ export default function plugin(bb: BbPluginApi) {
       ],
     })),
   });
+  const tree = memo(buildTree);
+  const list = memo(() => store.projects().map((p) => summary(p.id)));
   const read = (
     projectId: string,
     view: ReadView,
@@ -311,9 +324,10 @@ export default function plugin(bb: BbPluginApi) {
       await preferences.handle.experimental_set({ [field]: null });
       return { ok: true as const };
     },
-    list: () => store.projects().map((p) => summary(p.id)),
+    list,
     tree,
-    overview: ({ projectId, detailed }) => overview(projectId, detailed),
+    overview: ({ projectId, detailed, detail }) =>
+      overview(projectId, detail ?? (detailed === false ? "summary" : "full"), { fresh: false }),
     membership: ({ threadId }) => {
       const m = store.membership(threadId);
       return m && m.project.archivedAt === null
@@ -916,7 +930,13 @@ export default function plugin(bb: BbPluginApi) {
     if (members.length) service.discovery.invalidate(...members);
   };
   bb.events.on("thread.created", ({ thread }) => invalidateMembers(thread.parentThreadId));
-  bb.events.on("thread.unarchived", ({ thread }) => invalidateMembers(thread.id, thread.parentThreadId));
+  bb.events.on("thread.unarchived", ({ thread }) => {
+    invalidateMembers(thread.id, thread.parentThreadId);
+    service.threadUnarchived(thread.id);
+  });
+  // Lifecycle events carry the current DTO: keep dashboard facts current.
+  for (const name of ["thread.created", "thread.active", "thread.idle", "thread.failed", "thread.archived", "thread.unarchived", "thread.deleted"] as const)
+    bb.events.on(name, ({ thread }) => liveThreads.observe(thread));
   bb.events.on(
     "message.dispatched",
     event(({ entry }) => runtime.onMessageDispatched(entry.id)),
@@ -930,9 +950,10 @@ export default function plugin(bb: BbPluginApi) {
       runtime.start(signal);
       try {
         while (!signal.aborted) {
+          const before = ledgerVersion();
           await runtime.sweep(signal);
           if (signal.aborted) break;
-          changed();
+          if (ledgerVersion() !== before) changed();
           await new Promise<void>((resolve) => {
             const done = () => {
               clearTimeout(timer);

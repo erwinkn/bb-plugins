@@ -16,23 +16,35 @@ const projectsRunning = async (bb: BbPluginApi) => {
 
 export function registerProjectMode(bb: BbPluginApi) {
   const order = createProjectOrderStore(bb);
+  // The last tree served and its revision. The random epoch keeps a revision
+  // from an earlier server instance from ever matching a new tree.
+  const epoch = Math.random().toString(36).slice(2, 10);
+  let served = { json: "", revision: "" };
+  let count = 0;
+  const revisionOf = (json: string) => {
+    if (json !== served.json) served = { json, revision: `${epoch}:${++count}` };
+    return served.revision;
+  };
   bb.rpc.register(projectModeContract, {
-    projectMode: async () => {
+    projectMode: async (input) => {
       if (!(await projectsRunning(bb)))
         return { available: false, tree: null, order: null, orderError: null };
-      const tree = await bb.sdk.plugins.callRpc({
+      const fresh = await bb.sdk.plugins.callRpc({
         pluginId: "projects",
         method: "tree",
         input: null,
         outputSchema: treeSchema,
       });
+      const revision = input ? revisionOf(JSON.stringify(fresh)) : null;
+      const unchanged = !!input?.known && input.known === revision;
+      const tree = unchanged ? null : fresh;
       // A doc read failure must not take the tree down with it; the error is
       // reported so an unreadable store is visible instead of silently reset.
       let doc = null;
       let orderError = null;
       try {
         doc = await order.sync(
-          tree.projects.map((project) => project.id),
+          fresh.projects.map((project) => project.id),
         );
       } catch (cause: unknown) {
         const message =
@@ -40,7 +52,13 @@ export function registerProjectMode(bb: BbPluginApi) {
         bb.log.warn(`Could not sync the project order: ${message}`);
         orderError = message;
       }
-      return { available: true, tree, order: doc, orderError };
+      return {
+        available: true,
+        tree,
+        ...(input ? { revision, unchanged } : {}),
+        order: doc,
+        orderError,
+      };
     },
     saveProjectOrder: ({ expectedRevision, order: ids }) =>
       order.save(expectedRevision, ids),

@@ -15,10 +15,18 @@ export const threadCreateResultSchema = z.object({
 
 export const projectModeContract = defineRpcContract({
   projectMode: {
-    input: z.null(),
+    /**
+     * Pass the `revision` of the tree the client holds to have an unchanged
+     * tree answered as `unchanged` with `tree: null`, instead of resent.
+     */
+    input: z.object({ known: z.string().max(80).nullable() }).nullable(),
     output: z.object({
       available: z.boolean(),
       tree: treeSchema.nullable(),
+      /** Identifies this tree; only answered to a conditional read. */
+      revision: z.string().nullable().optional(),
+      /** The client's `known` tree is current; `tree` is null. */
+      unchanged: z.boolean().optional(),
       /**
        * The persisted sidebar order, or null when unavailable. Reading also
        * merges never-seen project ids into the stored order.

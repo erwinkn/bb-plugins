@@ -156,8 +156,24 @@ export interface WorkerItem {
   };
 }
 
+/**
+ * How much of the dashboard model to build. `summary` is the first paint:
+ * current work and attention only, with no history lists or telemetry.
+ * `history` adds every decision, completed task and retired worker; `full`
+ * adds thread telemetry (usage and member threads).
+ */
+export type OverviewDetail = "summary" | "history" | "full";
+
 export interface Overview {
+  /** Usage and member threads are present (`full`). */
   detailsLoaded?: boolean;
+  /** Every decision, completed task and retired worker is present (`history` or `full`). */
+  historyLoaded?: boolean;
+  /**
+   * The ledger state this snapshot was built from: `version` grows with every
+   * write within one server instance (`epoch`). Orders snapshots of different tiers.
+   */
+  revision?: { epoch: string; version: number };
   project: {
     id: string;
     name: string;
@@ -259,8 +275,11 @@ export function buildOverview(
   live: Map<string, LiveThread>,
   now: number,
   home?: CoordinatorHome | null,
-  detailed = true,
+  detail: boolean | OverviewDetail = true,
 ): Overview {
+  const level = detail === true ? "full" : detail === false ? "summary" : detail;
+  const detailed = level === "full";
+  const history = level !== "summary";
   const project = store.project(projectId);
   if (!project) throw new Error(`Unknown project ${projectId}`);
   const tasks = store.tasks(projectId);
@@ -490,7 +509,7 @@ export function buildOverview(
     })
     .sort((a, b) => (a.deadline ?? "9999").localeCompare(b.deadline ?? "9999"));
 
-  const unresolvedAnswerNotifications = new Set(decisions.filter(item => item.status === "answered" && item.notification && ["failed", "pending", "uncertain"].includes(item.notification.state)).map(item => item.ref));
+  const unresolvedAnswerNotifications = new Set(decisions.filter(item => item.status === "answered" && unresolvedNotification(item)).map(item => item.ref));
   const answered: AnsweredItem[] = decisions
     .filter((item) => item.status === "answered")
     .map((item) => {
@@ -578,6 +597,7 @@ export function buildOverview(
 
   return {
     detailsLoaded: detailed,
+    historyLoaded: history,
     project: {
       id: project.id,
       name: project.name,
@@ -669,7 +689,7 @@ export function buildOverview(
     opinionNeeded,
     revisit,
     answered,
-    done: tasks
+    done: !history ? [] : tasks
       .filter((task) => task.status === "done")
       .map((task) => ({
         ref: task.ref,
@@ -703,7 +723,7 @@ export function buildOverview(
       current: workers
         .filter((worker) => worker.state !== "retired")
         .map(workerItem),
-      retired: workers
+      retired: !history ? [] : workers
         .filter((worker) => worker.state === "retired")
         .map(workerItem),
     },
@@ -720,7 +740,10 @@ export function buildOverview(
         live: t.threadId ? (live.get(t.threadId) ?? null) : null,
         createdAt: t.createdAt,
       })),
-    decisions: decisions.filter(item => item.madeBy !== null && item.status !== "removed").map(item => ({
+    // The summary keeps what the Inbox acts on: unchecked agent decisions and
+    // undelivered answer notifications.
+    decisions: decisions.filter(item => item.madeBy !== null && item.status !== "removed" &&
+      (history || item.madeBy === "agent" && item.review === "pending" || unresolvedNotification(item))).map(item => ({
       acceptEligible: isAcceptableAgentDecision(item), ref: item.ref, description: item.description, madeBy: item.madeBy!, review: item.review, reviewMessage: item.reviewMessage, notification: item.notification, recordedBy: item.provenance, updatedAt: item.updatedAt,
     })),
     usage,
@@ -751,6 +774,9 @@ export function buildOverview(
   };
 }
 
+const unresolvedNotification = (item: DecisionRecord) =>
+  !!item.notification && ["failed", "pending", "uncertain"].includes(item.notification.state);
+
 /** Threads whose live status the dashboard shows. */
 export function threadsToWatch(store: Store, projectId: string): string[] {
   const project = store.project(projectId);
@@ -780,10 +806,12 @@ export function buildSummary(store: Store, projectId: string) {
   const assigned = new Set<number>(active.flatMap(a => JSON.parse(a.task_nums)));
   const tasks = store.db.prepare("SELECT num,status FROM tasks WHERE project_id=?").all(projectId) as { num: number; status: string }[];
   const attention = store.db.prepare("SELECT human_attention,decision_owner,decision_review FROM knowledge WHERE project_id=? AND status='active' AND kind='decision'").all(projectId) as { human_attention: string; decision_owner: string | null; decision_review: string | null }[];
+  const opinions = attention.filter(d => d.human_attention === "needs-opinion").length;
+  const blocked = (store.db.prepare("SELECT COUNT(*) AS n FROM assignments WHERE project_id=? AND state='reported' AND json_valid(report) AND json_extract(report, '$.outcome')='blocked'").get(projectId) as { n: number }).n;
   return { id: project.id, name: project.name, objective: project.objective, paused: project.paused,
     coordinatorThreadId: project.coordinatorThreadId, memberProjectIds: project.memberProjectIds,
     inFlight: active.length, remaining: tasks.filter(t => !["done", "cancelled"].includes(t.status) && !assigned.has(t.num)).length,
-    opinions: attention.filter(d => d.human_attention === "needs-opinion").length,
+    opinions, needsYou: opinions + blocked,
     revisit: attention.filter(d => d.decision_owner === "agent" && d.decision_review === "pending").length,
     appearance: project.appearance };
 }

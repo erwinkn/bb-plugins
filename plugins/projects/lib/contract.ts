@@ -27,7 +27,12 @@ export const projectsContract = defineRpcContract({
       .nullable(),
   },
   overview: {
-    input: z.object({ projectId: id, detailed: z.boolean().optional() }),
+    /** `detail` wins over the older `detailed` (false = summary, default full). */
+    input: z.object({
+      projectId: id,
+      detailed: z.boolean().optional(),
+      detail: z.enum(["summary", "history", "full"]).optional(),
+    }),
     output: z.custom<Overview>(),
   },
   read: {

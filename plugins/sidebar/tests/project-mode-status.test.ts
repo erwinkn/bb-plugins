@@ -57,7 +57,7 @@ describe("aggregate project status", () => {
     ).toBe("unread");
     expect(
       projectStatus({ ...project, opinions: 1 }, threads.slice(1), []),
-    ).toBe("unread");
+    ).toBe("attention");
     expect(
       projectStatus(
         project,
@@ -76,7 +76,7 @@ describe("aggregate project status", () => {
     ).toBe("working");
     expect(projectStatus(revisiting, [], ["thread:w"])).toBe("draft");
     expect(projectStatus({ ...revisiting, opinions: 1 }, [], [])).toBe(
-      "unread",
+      "attention",
     );
     expect(
       projectStatus(revisiting, [thread({ id: "c", isUnread: true })], []),
@@ -88,6 +88,13 @@ describe("aggregate project status", () => {
         [],
       ),
     ).toBe("unread");
+  });
+  it("T114 ranks what waits on the user above unread, work and drafts, and clears with it", () => {
+    const busy = [thread({ id: "c", isUnread: true }), thread({ id: "w", indicator: "runtime" })];
+    // A blocked report counts even with no open question; older trees fall back to opinions.
+    expect(projectStatus({ ...project, opinions: 0, needsYou: 1 }, busy, ["thread:c"])).toBe("attention");
+    expect(projectStatus({ ...project, opinions: 2 }, busy, [])).toBe("attention");
+    expect(projectStatus({ ...project, opinions: 0, needsYou: 0 }, busy, [])).toBe("unread");
   });
   it("lets ordinary worker completion wait for the coordinator", () => {
     expect(

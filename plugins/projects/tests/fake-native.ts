@@ -386,7 +386,7 @@ export function fixture(settings?: Record<string, string | number | boolean>) {
               },
               environmentBranchName: null,
               environmentHostId: null,
-              environmentIsWorktree: null,
+              environmentIsWorktree: t.environmentIsWorktree ?? null,
               environmentName: null,
               environmentPath: null,
               environmentProviderId: null,

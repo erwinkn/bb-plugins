@@ -32,6 +32,14 @@ export function unreleasedBackground(a: AssignmentRecord): string[] {
   return a.scopeRelease?.reportVersion === reportVersion(a) ? [] : listed;
 }
 
+/**
+ * T114: an investigation dispatched before write scopes were recorded never
+ * declared what it writes; its "whole project" scope is a fallback, not
+ * evidence, so it does not hold other writers.
+ */
+export const legacyReadOnly = (a: Pick<AssignmentRecord, "writeScope" | "workKind">) =>
+  a.writeScope === null && a.workKind === "investigation";
+
 export interface HoldGroup {
   threadId: string;
   /** The overlapping assignments on this thread, oldest first. */
@@ -52,15 +60,19 @@ export interface HoldGroup {
  */
 export function holdGroups(
   assignments: readonly AssignmentRecord[],
-  scope: { bbProjectId: string; environmentId: string | null; paths: string[]; exemptThreadId: string | null },
+  scope: {
+    bbProjectId: string; environmentId: string | null; paths: string[]; exemptThreadId: string | null;
+    /** Proven to be in another checkout than the new work (T114); defaults to differing recorded environments. */
+    separate?: (a: AssignmentRecord) => boolean;
+  },
 ): HoldGroup[] {
   const groups = new Map<string, AssignmentRecord[]>();
   for (const a of assignments) {
-    if (a.role !== "work" || a.access === "read-only" || a.bbProjectId !== scope.bbProjectId) continue;
+    if (a.role !== "work" || a.access === "read-only" || legacyReadOnly(a) || a.bbProjectId !== scope.bbProjectId) continue;
     if (!HOLD_STATES.has(a.state) || a.opState === "pending" || a.opState === "uncertain" || a.queuedMessageId !== null) continue;
     if (!a.threadId || a.threadId === scope.exemptThreadId) continue;
     // A different checkout cannot write over this one.
-    if (a.environmentId && scope.environmentId && a.environmentId !== scope.environmentId) continue;
+    if (scope.separate ? scope.separate(a) : a.environmentId && scope.environmentId && a.environmentId !== scope.environmentId) continue;
     if (a.writeScope !== null && !pathsOverlap(scope.paths, a.writeScope)) continue;
     groups.set(a.threadId, [...(groups.get(a.threadId) ?? []), a]);
   }

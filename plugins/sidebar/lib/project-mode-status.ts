@@ -32,14 +32,18 @@ export function projectThreads(
   return native.filter((thread) => ids.has(thread.id) && !thread.isArchived);
 }
 
+/** Open questions and blocked reports waiting on the user; older trees only count questions. */
+export const needsYou = (project: Project) => project.needsYou ?? project.opinions;
+
+/** The row's one status. Something waiting on the user outranks everything else. */
 export function projectStatus(
   project: Project,
   threads: readonly PluginSidebarThread[],
   drafts: string[],
-): "unread" | "working" | "draft" | "done" {
+): "attention" | "unread" | "working" | "draft" | "done" {
+  if (needsYou(project)) return "attention";
   const coordinator = threads.find((t) => t.id === project.coordinatorThreadId);
   if (
-    project.opinions ||
     coordinator?.isUnread ||
     coordinator?.indicator === "unread-success" ||
     threads.some((t) => statusOf(t) === "attention")

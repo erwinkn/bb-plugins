@@ -30,6 +30,7 @@ import type { ProjectTree } from "../lib/project-tree-schema";
 import { updateState, useClientState } from "../lib/client-state";
 import {
   currentProjectThreads,
+  needsYou,
   orderedProjects,
   projectStatus,
   projectThreads,
@@ -107,11 +108,15 @@ export function ProjectMode(props: PluginThreadListProps) {
   const mounted = useRef(false);
   const pending = useRef<Promise<void> | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Refreshes are conditional: an unchanged tree comes back as a few bytes
+  // and keeps the current tree object, so nothing re-renders for it.
+  const revision = useRef<string | null>(null);
   const refresh = useCallback(() => {
     if (pending.current) return pending.current;
-    const read = apiRef.current.call("projectMode", null).then(result => {
+    const read = apiRef.current.call("projectMode", { known: revision.current }).then(result => {
       if (mounted.current) {
-        setAvailable(result.available); setTree(result.tree);
+        setAvailable(result.available);
+        if (!result.unchanged) { setTree(result.tree); revision.current = result.revision ?? null; }
         applyRef.current(result.order, result.orderError); setError(null);
       }
     }, error => { if (mounted.current) setError(error instanceof Error ? error.message : String(error)); })
@@ -311,7 +316,7 @@ export function ProjectMode(props: PluginThreadListProps) {
                 threads.some((t) => t.id === props.activeThreadId) ||
                 p.nodes.some((n) => n.threadId === props.activeThreadId);
               const metadata = [
-                p.opinions ? `${p.opinions} need you` : null,
+                needsYou(p) ? `${needsYou(p)} need${needsYou(p) === 1 ? "s" : ""} you` : null,
                 p.inFlight ? `${p.inFlight} in flight` : null,
                 p.remaining ? `${p.remaining} remaining` : null,
                 p.revisit ? `${p.revisit} to revisit` : null,
@@ -644,7 +649,9 @@ function ProjectRow({
                 {status !== "done" && (
                   <span
                     aria-label={
-                      status === "unread"
+                      status === "attention"
+                        ? "Needs you"
+                        : status === "unread"
                         ? "Unread"
                         : status === "working"
                           ? "Working"

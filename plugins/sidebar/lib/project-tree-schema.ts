@@ -40,6 +40,12 @@ export const projectSummarySchema = z.object({
   remaining: z.number(),
   opinions: z.number(),
   revisit: z.number(),
+  /**
+   * What waits on the user: open questions plus blocked reports awaiting a
+   * decision. Readers rank it above everything else; trees from before it
+   * existed omit it, and `opinions` stands in.
+   */
+  needsYou: z.number().optional(),
   appearance: appearanceSchema.optional(),
 });
 export type ProjectSummary = z.infer<typeof projectSummarySchema>;

@@ -435,3 +435,4 @@
 .project-usage-values dt { color: var(--muted-foreground); }
 .project-usage-values dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .project-usage-link { margin: 12px 0; }
+.project-needs-you { color: var(--warning-text, #b45309); font-weight: 600; }

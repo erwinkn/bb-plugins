@@ -31,7 +31,7 @@ import {
   type DelegationFacts,
   type ReviewPartition,
 } from "./policy";
-import { holdGroups, reportVersion, unreleasedBackground, type HoldGroup } from "./write-holds";
+import { holdGroups, legacyReadOnly, reportVersion, unreleasedBackground, type HoldGroup } from "./write-holds";
 import { handoffSource, renderStandardHandoff, resolveHandoffs } from "./handoffs";
 import {
   briefSchema,
@@ -192,6 +192,31 @@ export interface DelegateResult {
   note: string | null;
 }
 
+type HoldEvidence = { verdict: "ended" | "running" | "unknown"; seen: string; signature: string };
+
+/**
+ * Where a writer's files live, as far as the ledger and BB's list row prove:
+ * an environment id, whether it is a managed worktree, and whether it is the
+ * project's default checkout (a fresh project-default dispatch, id not yet known).
+ */
+interface Checkout { id: string | null; worktree: boolean | null; projectDefault: boolean }
+
+function checkoutOf(recorded: string | null, row: ThreadListRow | undefined, projectDefault: boolean): Checkout {
+  const id = recorded ?? (typeof row?.environmentId === "string" ? row.environmentId : null);
+  const worktree = row && row.environmentId === id && typeof row.environmentIsWorktree === "boolean" ? row.environmentIsWorktree : null;
+  return { id, worktree, projectDefault };
+}
+
+/**
+ * Two writers cannot touch each other's files only when that is proven: two
+ * known, different environments, or a managed worktree against the project's
+ * default checkout. Anything unknown stays the same checkout.
+ */
+function separateCheckouts(a: Checkout, b: Checkout): boolean {
+  if (a.id && b.id) return a.id !== b.id;
+  return (a.projectDefault && !a.id && b.worktree === true) || (b.projectDefault && !b.id && a.worktree === true);
+}
+
 /**
  * The project ledger. It records delegation intent before every native call,
  * confirms or reconciles the receipt afterwards, and exposes project state.
@@ -210,6 +235,12 @@ export class ProjectsService {
   private endedReceipts = new Set<string>();
   /** Where each unfinished receipt scan resumes next sweep, by scan key. */
   private receiptCursors = new Map<string, number>();
+  /** Sweep backoff and the last logged refusal for assignment ops that could not be reconciled, by op. */
+  private opRetries = new Map<string, { reason: string; attempts: number; nextAt: number }>();
+  /** Continue-route ops whose worker thread is archived, deleted or gone: not re-read, by op → thread. */
+  private parkedOps = new Map<string, string>();
+  /** Unarchive events seen per thread: a lifecycle read that an unarchive overtook never parks. */
+  private unarchives = new Map<string, number>();
   /** Projects whose handover replacement has passed the journal boundary. */
   private handoverSpawnInflight = new Set<string>();
   /**
@@ -3943,10 +3974,25 @@ export class ProjectsService {
     // paths now, before the final re-read; nothing is awaited after that re-read.
     const holdsApply = input.role === "work" && access !== "read-only" && env.workspace === "shared";
     const exemptThreadId = input.route === "continue" ? existing?.threadId ?? null : null;
-    const holdScope = () => ({ bbProjectId, environmentId: env.environmentId, paths, exemptThreadId });
-    const holdEvidence = holdsApply
-      ? await this.holdEvidence(holdGroups(this.store.assignments(project.id), holdScope()), bbProjectId)
-      : new Map<string, { verdict: "ended" | "running" | "unknown"; signature: string }>();
+    // T114: one project listing shows each candidate thread's activity and its
+    // actual checkout, so writers in separate managed worktrees never block
+    // each other even when the ledger never recorded their environment.
+    const candidates = holdsApply ? holdGroups(this.store.assignments(project.id), { bbProjectId, environmentId: null, paths, exemptThreadId }) : [];
+    const rows = holdsApply
+      ? await this.projectListRows(bbProjectId, new Set([
+          ...candidates.map(g => g.threadId),
+          ...this.store.assignments(project.id).filter(a => a.role === "work" && a.threadId &&
+            (["dispatching", "queued", "running"].includes(a.state) || ["pending", "uncertain"].includes(a.opState))).map(a => a.threadId!),
+          ...(exemptThreadId ? [exemptThreadId] : []),
+        ]))
+      : new Map<string, ThreadListRow>();
+    const holdEvidence = await this.holdEvidence(candidates, rows);
+    const here = checkoutOf(env.environmentId, exemptThreadId ? rows.get(exemptThreadId) : undefined, env.environmentId === null && !exemptThreadId);
+    const separate = (a: AssignmentRecord) => {
+      const worker = this.store.worker(project.id, a.workerNum);
+      return separateCheckouts(here, checkoutOf(a.environmentId ?? worker?.environmentId ?? null, a.threadId ? rows.get(a.threadId) : undefined, false));
+    };
+    const holdScope = () => ({ bbProjectId, environmentId: env.environmentId, paths, exemptThreadId, separate });
     project = this.requireProject(project.id);
     // Anything awaited above may have changed task state or execution receipts.
     // These reservations must be current when the dispatch intent is recorded.
@@ -4030,16 +4076,12 @@ export class ProjectsService {
         const worker = this.store.worker(project.id, a.workerNum);
         return {
           ref: a.ref,
-          access: a.access,
+          access: legacyReadOnly(a) ? "read-only" as const : a.access,
           workerRef: workerRef(a.workerNum),
           // The scope recorded at dispatch; later brief edits never narrow it.
           paths: a.writeScope ?? [],
           ...(a.writeScope === null ? { legacy: true } : {}),
-          workspace: (worker?.environmentId &&
-          env.environmentId &&
-          worker.environmentId !== env.environmentId
-            ? "isolated"
-            : "shared") as Workspace,
+          workspace: (separate(a) ? "isolated" : "shared") as Workspace,
         };
       });
     // Rebuilt synchronously from the evidence read above: a thread without valid
@@ -4050,6 +4092,8 @@ export class ProjectsService {
         const held = group.background.length ? "listed" as const
           : !evidence || evidence.signature !== group.signature ? "unknown" as const
           : evidence.verdict === "ended" ? null : evidence.verdict;
+        const seen = held === "unknown" ? evidence?.signature === group.signature ? evidence.seen : "its records changed while checking"
+          : held === "running" ? evidence!.seen : undefined;
         if (!held) continue;
         // A listed hold names the oldest assignment whose report lists the work, with only its
         // own jobs and version to echo; other listing reports on the thread are named by ref.
@@ -4057,7 +4101,7 @@ export class ProjectsService {
         const lead = held === "listed" ? listing[0]! : group.assignments[0]!;
         concurrentWork.push({
           ref: lead.ref, access: "write", workerRef: workerRef(lead.workerNum), workspace: "shared",
-          paths: group.paths ?? [], held, state: lead.state,
+          paths: group.paths ?? [], held, state: lead.state, ...(seen ? { seen } : {}),
           ...(held === "listed" ? {
             background: unreleasedBackground(lead), reportVersion: reportVersion(lead),
             ...(listing.length > 1 ? { alsoListed: listing.slice(1).map(a => a.ref) } : {}),
@@ -4861,11 +4905,18 @@ export class ProjectsService {
       });
       if (signal?.aborted) return settled;
     }
-    for (const assignment of this.store.assignmentsWithOpState([
-      "pending",
-      "uncertain",
-    ])) {
+    const ops = this.store.assignmentsWithOpState(["pending", "uncertain"]);
+    // Ops settled by events or an explicit settle drop out of the sweep memory.
+    const open = new Set(ops.map((assignment) => assignment.opId));
+    for (const memory of [this.opRetries, this.parkedOps])
+      for (const opId of memory.keys()) if (!open.has(opId)) memory.delete(opId);
+    for (const assignment of ops) {
       if (signal?.aborted) return settled;
+      if (
+        this.parkedOps.has(assignment.opId) ||
+        (this.opRetries.get(assignment.opId)?.nextAt ?? 0) > this.now()
+      )
+        continue;
       try {
         if (assignment.route === "continue") {
           const threadId = assignment.threadId!;
@@ -4998,13 +5049,13 @@ export class ProjectsService {
               `${after.ref} for ${workerRef(after.workerNum)} is still unconfirmed: BB neither accepted nor refused it. Do not delegate it again; inspect the threads, then settle it with initiative_task action "assignment-settle".`,
             );
           }
+          await this.parkIfEnded(after);
         }
+        this.opRetries.delete(assignment.opId);
       } catch (error) {
-        this.store.log(
-          assignment.projectId,
-          "delegate",
-          `Could not reconcile ${assignment.ref} yet: ${errorMessage(error)}`,
-        );
+        if (signal?.aborted) return settled;
+        if (!(await this.parkIfEnded(assignment)))
+          this.retryOp(assignment, errorMessage(error));
       }
     }
     // A queued brief leaves the ledger's "queued" state when BB dispatches it.
@@ -5338,6 +5389,70 @@ export class ProjectsService {
   }
 
   /**
+   * An unconfirmed op stays visible and is retried next sweep. The same
+   * refusal again is not news: it is logged once and backs the op off; a
+   * changed refusal logs again and retries on the next sweep.
+   */
+  private retryOp(assignment: AssignmentRecord, reason: string) {
+    const previous = this.opRetries.get(assignment.opId);
+    const repeat = previous?.reason === reason;
+    const attempts = repeat ? previous.attempts + 1 : 1;
+    this.opRetries.set(assignment.opId, {
+      reason,
+      attempts,
+      nextAt:
+        attempts === 1
+          ? 0
+          : this.now() +
+            Math.min(FORMER_RETRY_BASE_MS * 2 ** (attempts - 2), FORMER_RETRY_MAX_MS),
+    });
+    if (!repeat)
+      this.store.log(
+        assignment.projectId,
+        "delegate",
+        `Could not reconcile ${assignment.ref} yet: ${reason}`,
+      );
+  }
+
+  /**
+   * A continuation sent to a thread that is now positively archived, deleted
+   * or gone has nothing left to observe: the sweep stops re-reading it. The op
+   * keeps its state for an explicit settle, and an unarchive makes it read
+   * again. Unreadable lifecycle evidence keeps it in the sweep.
+   */
+  private async parkIfEnded(assignment: AssignmentRecord) {
+    const threadId = assignment.threadId;
+    if (assignment.route !== "continue" || !threadId) return false;
+    const seen = this.unarchives.get(threadId) ?? 0;
+    const overtaken = () => (this.unarchives.get(threadId) ?? 0) !== seen;
+    let live: ThreadDto;
+    try {
+      live = await this.sdk.threads.get({ threadId });
+    } catch (error) {
+      if ((error as { status?: number }).status !== 404 || overtaken()) return false;
+      this.parkedOps.set(assignment.opId, threadId);
+      return true;
+    }
+    if (
+      overtaken() ||
+      !live ||
+      !ProjectsService.lifecycleWellFormed(live.archivedAt) ||
+      !ProjectsService.lifecycleWellFormed(live.deletedAt) ||
+      (live.archivedAt === null && live.deletedAt === null)
+    )
+      return false;
+    this.parkedOps.set(assignment.opId, threadId);
+    return true;
+  }
+
+  /** An unarchived thread can receive its queued continuation again: read its ops next sweep. */
+  threadUnarchived(threadId: string) {
+    this.unarchives.set(threadId, (this.unarchives.get(threadId) ?? 0) + 1);
+    for (const [opId, parked] of this.parkedOps)
+      if (parked === threadId) this.parkedOps.delete(opId);
+  }
+
+  /**
    * The same verdict, plus what positively ended it. The quiet check reads the
    * thread's own row from its project listing (bounded, filter verified on the
    * installed server; A205 F2), never a truncated global scan.
@@ -5393,33 +5508,58 @@ export class ProjectsService {
   private static rowQuiescence(
     row: ThreadListRow | null | undefined,
   ): "ended" | "running" | "unknown" {
-    if (!row) return "unknown";
+    return ProjectsService.rowEvidence(row).verdict;
+  }
+
+  /** The quiescence verdict plus what the row showed, in words a refusal can quote. */
+  private static rowEvidence(
+    row: ThreadListRow | null | undefined,
+  ): { verdict: "ended" | "running" | "unknown"; seen: string } {
+    const unknown = (seen: string) => ({ verdict: "unknown" as const, seen });
+    if (!row) return unknown("its list row was not found");
     if (
       !ProjectsService.lifecycleWellFormed(row.archivedAt) ||
       !ProjectsService.lifecycleWellFormed(row.deletedAt)
     )
-      return "unknown";
-    if (row.archivedAt !== null || row.deletedAt !== null) return "ended";
+      return unknown("its lifecycle fields were unreadable");
+    if (row.archivedAt !== null || row.deletedAt !== null)
+      return { verdict: "ended", seen: row.deletedAt !== null ? "deleted" : "archived" };
     const status = row.status as string;
     if (
       !BUSY_STATUSES.has(status) &&
       !["pending", "idle", "error"].includes(status)
     )
-      return "unknown";
-    if (BUSY_STATUSES.has(status) || status === "pending") return "running";
+      return unknown(`its status was unreadable (${String(status)})`);
+    if (BUSY_STATUSES.has(status) || status === "pending")
+      return { verdict: "running", seen: `turn ${status}` };
     const queuedWork = row.queuedWork as string;
-    if (!["waiting", "failed", "none"].includes(queuedWork)) return "unknown";
-    if (queuedWork !== "none") return "running";
+    if (!["waiting", "failed", "none"].includes(queuedWork))
+      return unknown("its queue state was unreadable");
+    if (queuedWork !== "none")
+      return {
+        verdict: "running",
+        seen: queuedWork === "waiting"
+          ? "idle, with queued input waiting to start a turn"
+          : "idle, with a queued message that failed to dispatch",
+      };
     const activity = row.activity;
-    if (!activity) return "unknown";
+    if (!activity) return unknown("its background activity was missing");
     const counts = [
       activity.activeBackgroundAgentCount,
       activity.activeBackgroundCommandCount,
       activity.activeWorkflowCount,
     ];
     if (!counts.every((count) => Number.isFinite(count) && count >= 0))
-      return "unknown";
-    return counts[0] + counts[1] + counts[2] > 0 ? "running" : "ended";
+      return unknown("its background counters were unreadable");
+    const busy = [
+      [counts[0], "background agent"],
+      [counts[1], "background command"],
+      [counts[2], "workflow"],
+    ].filter(([count]) => (count as number) > 0)
+      .map(([count, name]) => `${count} ${name}${count === 1 ? "" : "s"}`);
+    return busy.length
+      ? { verdict: "running", seen: `idle, with ${busy.join(", ")} active` }
+      : { verdict: "ended", seen: "quiet" };
   }
 
   /**
@@ -5429,23 +5569,23 @@ export class ProjectsService {
    * truncated or malformed read leaves a thread "unknown". Groups already held by
    * listed background work need no read.
    */
-  private async holdEvidence(groups: HoldGroup[], bbProjectId: string) {
-    const evidence = new Map<string, { verdict: "ended" | "running" | "unknown"; signature: string }>();
+  private async holdEvidence(groups: HoldGroup[], rows: Map<string, ThreadListRow>) {
+    const evidence = new Map<string, HoldEvidence>();
     const wanted = new Map(groups.filter(g => !g.background.length).map(g => [g.threadId, g.signature]));
-    if (!wanted.size) return evidence;
-    const rows = await this.projectListRows(bbProjectId, new Set(wanted.keys()));
     let gets = 0;
     for (const [threadId, signature] of wanted) {
       const row = rows.get(threadId);
       if (row) {
-        evidence.set(threadId, { verdict: ProjectsService.rowQuiescence(row), signature });
+        evidence.set(threadId, { ...ProjectsService.rowEvidence(row), signature });
         continue;
       }
       if (gets++ >= HOLD_GET_CAP) {
-        evidence.set(threadId, { verdict: "unknown", signature });
+        evidence.set(threadId, { verdict: "unknown", seen: "its list row was not found", signature });
         continue;
       }
-      evidence.set(threadId, { verdict: (await this.threadGone(threadId)) ? "ended" : "unknown", signature });
+      evidence.set(threadId, (await this.threadGone(threadId))
+        ? { verdict: "ended", seen: "gone", signature }
+        : { verdict: "unknown", seen: "its list row was not found", signature });
     }
     return evidence;
   }

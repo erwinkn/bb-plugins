@@ -19,7 +19,7 @@ it("Context manual Refresh reloads loaded inventory without forcing detailed tel
   fireEvent.click(await s.findByRole("tab", { name: "Context" }));
   await waitFor(() => expect(inventory).toHaveBeenCalledTimes(1)); expect(overview).toHaveBeenCalledTimes(1);
   fireEvent.click(s.getByRole("button", { name: "Initiative menu" })); fireEvent.click(s.getByRole("button", { name: "Refresh" }));
-  await waitFor(() => expect(inventory).toHaveBeenCalledTimes(2)); expect(overview.mock.calls.every(c => (c[0] as { detailed?: boolean }).detailed === false)).toBe(true);
+  await waitFor(() => expect(inventory).toHaveBeenCalledTimes(2)); expect(overview.mock.calls.every(c => (c[0] as { detail?: string }).detail === "summary")).toBe(true);
 });
 it("manual Refresh after Usage keeps global inventory lazy when it was never loaded", async () => {
   const { f, project } = await projectFixture(); const o = await f.overview(project.id);

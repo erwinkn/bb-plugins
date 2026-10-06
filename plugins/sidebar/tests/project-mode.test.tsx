@@ -231,6 +231,40 @@ describe("Projects sidebar mode", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); }); expect(read).toHaveBeenCalledTimes(2);
   });
 
+  it("T112 keeps the current tree when a refresh answers unchanged", async () => {
+    const read = vi.fn((input: { known: string | null } | null) =>
+      input?.known === "r1"
+        ? { available: true, tree: null, revision: "r1", unchanged: true, order: null, orderError: null }
+        : { available: true, tree, revision: "r1", unchanged: false, order: null, orderError: null });
+    const slot = mount(true, { rpc: { projectMode: read } });
+    const row = await slot.findByRole("link", { name: "Open Useful search" });
+    expect(read.mock.calls[0]![0]).toEqual({ known: null });
+    await slot.behavior.emitRealtime("projects-changed", { projectId: "p1" });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(read.mock.calls[1]![0]).toEqual({ known: "r1" });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    // Same row element: an unchanged answer re-renders nothing.
+    expect(slot.getByRole("link", { name: "Open Useful search" })).toBe(row);
+  });
+
+  it("T112 switches coordinators in the click's frame while a tree read is pending", async () => {
+    let calls = 0;
+    const read = vi.fn(() => (++calls === 1
+      ? { available: true, tree: richTree, order: null, orderError: null }
+      : new Promise(() => {})));
+    const slot = mount(true, { rpc: { projectMode: read }, threads: richThreads });
+    await slot.findByRole("link", { name: "Open Second push" });
+    await slot.behavior.emitRealtime("projects-changed", { projectId: "p2" });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    const rpcBefore = slot.inspection.rpcCalls.length;
+    fireEvent.click(slot.getByRole("link", { name: "Open Second push" }));
+    // Navigation is synchronous with the click, and the click reads nothing.
+    expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "c2" }));
+    expect(slot.inspection.rpcCalls.length).toBe(rpcBefore);
+    fireEvent.click(slot.getByRole("link", { name: "Open Useful search" }));
+    expect(slot.inspection.navigateCalls).toContainEqual(expect.objectContaining({ method: "toThread", threadId: "c" }));
+  });
+
   it("T106: puts the one Advisor entry right above the Initiatives header", async () => {
     const slot = mount(true, { rpc: { advisorEntry: () => ({ available: true, unseen: 2 }) } });
     const entry = await slot.findByRole("link", { name: "Advisor, 2 new findings" });
@@ -242,12 +276,13 @@ describe("Projects sidebar mode", () => {
     const slot = mount();
     await waitFor(() => expect(slot.getByRole("link", { name: "Open Useful search" })).toBeTruthy());
     expect(
-      slot.getByText(/1 need you · 2 in flight · 3 remaining · 1 to revisit/),
+      slot.getByText(/1 needs you · 2 in flight · 3 remaining · 1 to revisit/),
     ).toBeTruthy();
     expect(slot.queryByText("Search reviewer")).toBeNull();
     expect(slot.queryByText("Coordinator")).toBeNull();
     const row = slot.getByRole("link", { name: "Open Useful search" });
-    expect(row.getAttribute("data-project-status")).toBe("unread");
+    expect(row.getAttribute("data-project-status")).toBe("attention");
+    expect(within(row).getByLabelText("Needs you")).toBeTruthy();
     expect(row.querySelector("[data-project-hue]")).toBeTruthy();
     fireEvent.click(row);
     expect(slot.inspection.navigateCalls).toContainEqual(

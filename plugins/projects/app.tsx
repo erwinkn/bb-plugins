@@ -26,6 +26,7 @@ import { PROJECT_DETAILS_CONFLICT } from "./lib/project-context";
 import type { Command } from "./lib/commands";
 import { sharedReads } from "./lib/dashboard-data";
 import { applyCommitted } from "./lib/committed-result";
+import { mergeOverview } from "./lib/overview-merge";
 import type { Overview, OpinionItem } from "./lib/overview";
 import {
   DEFAULT_PROFILES,
@@ -706,13 +707,17 @@ export function Dashboard({
 }) {
   const { mode } = useCodeTheme();
   const [answerNotice, setAnswerNotice] = useState<{ projectId: string; text: string; urgent: boolean } | null>(null);
+  // First paint is the small summary; tabs that list history or telemetry
+  // load the larger tiers on first open and keep them current from then on.
+  const [historyNeeded, setHistoryNeeded] = useState(false);
   const [detailsNeeded, setDetailsNeeded] = useState(false);
   const api = useRpc<typeof projectsContract>();
   const navigate = useBbNavigate();
   const state = useData(`overview:${projectId}`, () =>
-    api.call("overview", { projectId, detailed: false }),
+    api.call("overview", { projectId, detail: "summary" }),
   );
-  const details = useData(`details:${projectId}`, () => api.call("overview", { projectId }), detailsNeeded);
+  const history = useData(`history:${projectId}`, () => api.call("overview", { projectId, detail: "history" }), historyNeeded && !detailsNeeded);
+  const details = useData(`details:${projectId}`, () => api.call("overview", { projectId, detail: "full" }), detailsNeeded);
   const [inventory, setInventory] = useState<
     {
       id: string;
@@ -759,14 +764,16 @@ export function Dashboard({
     };
   }, [loadInventory]);
   const refresh = async () => {
-    await Promise.all([state.refresh(), ...(detailsNeeded ? [details.refresh()] : []), ...(inventoryLoaded.current ? [loadInventory(true)] : [])]);
+    await Promise.all([state.refresh(), ...(detailsNeeded ? [details.refresh()] : historyNeeded ? [history.refresh()] : []), ...(inventoryLoaded.current ? [loadInventory(true)] : [])]);
   };
   const command = async (command: Command) => {
     const end = state.begin();
+    const endHistory = history.begin();
     const endDetails = details.begin();
     try {
       const result = await api.call("command", { projectId, command });
       end(data => applyCommitted(data as Overview, command, result));
+      endHistory(data => applyCommitted(data as Overview, command, result));
       endDetails(data => applyCommitted(data as Overview, command, result));
       const record = "decision" in command ? command.decision : "task" in command ? command.task : (result as { ref?: string } | null)?.ref;
       const notification = (result as { notification?: { state: string; detail?: string } } | null)?.notification;
@@ -774,12 +781,15 @@ export function Dashboard({
       setAnswerNotice(meaningful ? { projectId, urgent: !!notification && ["failed", "uncertain", "pending"].includes(notification.state), text: `${record ? `${record}: ` : ""}${command.action === "decision-accept-all" ? `${(result as { accepted: number }).accepted} agent decision${(result as { accepted: number }).accepted === 1 ? "" : "s"} accepted` : command.action === "answer" ? "answer saved" : command.action === "decision-review" ? "review saved" : command.action === "question-close" ? "closed quietly; no answer recorded" : "saved"}.${notification ? ` Coordinator notification ${notification.state === "pending" ? "unconfirmed" : notification.state}${notification.detail ? `: ${notification.detail}` : "."}` : ""}` } : null);
       return result;
     } finally {
-      end(); endDetails();
+      end(); endHistory(); endDetails();
       state.schedule();
+      history.schedule();
       details.schedule();
     }
   };
-  const o = state.data ? { ...state.data, ...(detailsNeeded && details.data ? { detailsLoaded: true, usage: details.data.usage, memberThreads: details.data.memberThreads, workers: details.data.workers } : {}) } : null;
+  const full = detailsNeeded ? details.data : null;
+  const past = full ?? (historyNeeded ? history.data : null);
+  const o = state.data ? mergeOverview(state.data, past, full) : null;
   return (
     <main
       className={`bb-projects bb-projects--control${variant === "panel" ? " bb-projects--panel" : ""}`}
@@ -791,7 +801,7 @@ export function Dashboard({
         <ControlRoom
           key={projectId}
           overview={o}
-          onTab={tab => { if (["threads", "usage", "log"].includes(tab)) { setDetailsNeeded(true); } if (["threads", "context"].includes(tab)) void loadInventory(); }}
+          onTab={tab => { if (tab === "decisions") setHistoryNeeded(true); if (["threads", "usage", "log"].includes(tab)) { setDetailsNeeded(true); } if (["threads", "context"].includes(tab)) void loadInventory(); }}
           detailNotice={detailsNeeded && !details.loaded ? "Loading thread details…" : details.error}
           inventory={inventory}
           run={command}
@@ -810,6 +820,7 @@ export function Dashboard({
               />
               {answerNotice?.projectId === projectId ? <p role={answerNotice.urgent ? "alert" : "status"} className={answerNotice.urgent ? "project-error" : "project-note"}>{answerNotice.text}</p> : null}
               <ErrorNotice message={details.error} retry={() => void details.refresh()} />
+              <ErrorNotice message={historyNeeded && !detailsNeeded ? history.error : null} retry={() => void history.refresh()} />
               {(creationNote ?? rememberedNote(projectId)) ? (
                 <p className="project-note">
                   {creationNote ?? rememberedNote(projectId)}
@@ -1149,8 +1160,9 @@ function Catalog({ open }: { open: (id: string) => void }) {
               </h2>
               <p>{p.objective}</p>
               <span className="project-meta">
+                {/* What waits on the user leads; older trees have no needsYou. */}
+                {(p.needsYou ?? p.opinions) ? <strong className="project-needs-you">{p.needsYou ?? p.opinions} need{(p.needsYou ?? p.opinions) === 1 ? "s" : ""} you · </strong> : null}
                 {p.inFlight} in flight · {p.remaining} remaining
-                {p.opinions ? ` · ${p.opinions} need your opinion` : ""}
                 {p.revisit ? ` · ${p.revisit} decision${p.revisit === 1 ? "" : "s"} to check` : ""}
               </span>
             </button>
