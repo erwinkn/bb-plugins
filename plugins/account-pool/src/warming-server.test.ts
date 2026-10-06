@@ -25,7 +25,7 @@ const UPSTREAM = "https://upstream.example";
 const EMPTY_USAGE_URL = "data:application/json,{}";
 const MINUTE = 60_000;
 const SESSION = "6f1d3c1e-1111-4111-8111-111111111111";
-const CONTEXT_ROUTE = "http://127.0.0.1:38886/api/v1/plugins/projects/http/context/v1/thread";
+const CONTEXT_ROUTE = "http://127.0.0.1:38886/api/v1/plugins/initiatives/http/context/v1/thread";
 const NATIVE_KEYS = [
   "anthropicUpstreamBaseUrl",
   "claudeMainCacheTtl",
@@ -145,7 +145,7 @@ function vendor() {
 
 type Membership = Record<string, unknown> | null;
 
-// The Projects route answers only its exact v1 path; anything else gets BB's own 404 (no version).
+// The Initiatives route answers only its exact v1 path; anything else gets BB's own 404 (no version).
 // A context value may be a list, consumed one read at a time (the last one repeats).
 function projects(contexts: Record<string, Membership | Membership[]>) {
   const reads: Array<{ url: string; token: string | null }> = [];
@@ -222,7 +222,12 @@ async function fixture(args: {
       hosts: { list: async () => [{ id: "host-one", name: "One" }] },
       system: { providerStates: async () => ({ providers: [] }) },
       plugins: {
-        list: async () => ({ plugins: [{ id: "account-pool-local", enabled: true }] }),
+        list: async () => ({
+          plugins: [
+            { id: "account-pool-local", enabled: true },
+            { id: "initiatives", enabled: true, status: "running" },
+          ],
+        }),
         token: async () => ({ token: "projects-token" }),
       },
       threads: {
@@ -517,7 +522,7 @@ describe("cache warming through the hub", () => {
   });
 
   it.each([
-    ["no Projects record (standalone or unlinked)", null, "skipped: Projects has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one"],
+    ["no Projects record (standalone or unlinked)", null, "skipped: Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one"],
     ["an adhoc thread", membership({ kind: "adhoc", role: "adhoc", generation: null, currentGeneration: null }), "no warming window for adhoc Initiative thread"],
     ["an archived Initiative", membership({ archived: true }), "no warming window for archived Initiative"],
     ["a delivered assignment pending", WORKER("pending"), "no warming window for assignment A1 pending delivery"],
@@ -555,7 +560,7 @@ describe("cache warming through the hub", () => {
     expect(f.projectReads).toHaveLength(3);
   });
 
-  it("a thread with no record first, then linked, warms only once Projects has the record", async () => {
+  it("a thread with no record first, then linked, warms only once Initiatives has the record", async () => {
     const f = await fixture({ contexts: { thr_coord: [null, COORDINATOR] } });
     await setMode(f.host, "warm");
     await nativeRequest(f.host);
@@ -564,6 +569,7 @@ describe("cache warming through the hub", () => {
     expect(f.upstream.keepAlive).toHaveLength(0);
     await nativeRequest(f.host, { turn: "second turn" });
     await idle(f.host);
+    await leased(f.host);
     await f.clock.advanceTo(15 * MINUTE);
     await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
     expect(JSON.stringify(f.upstream.keepAlive[0]?.body)).toContain("second turn");

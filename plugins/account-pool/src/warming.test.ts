@@ -563,7 +563,7 @@ describe("cache warmer context and lifecycle", () => {
     ["archived Initiative", { ...COORDINATOR, archived: true }, "skip: no warming window for archived Initiative"],
     ["pending delivery", worker("pending"), "skip: no warming window for assignment A1 pending delivery"],
     ["undelivered next assignment", worker("reported", { next: { ref: "A2", phase: "pending" } }), "skip: no warming window for next assignment A2 not delivered yet"],
-    ["thread without a Projects record", { kind: "none" }, "skip: skipped: Projects has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one"],
+    ["thread without a Projects record", { kind: "none" }, "skip: skipped: Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one"],
     ["unknown context", { kind: "unknown", reason: "Projects context read returned HTTP 503" }, "skip: skipped: Projects context read returned HTTP 503"],
   ] as const)("sends no refresh for a %s", async (_name, context, event) => {
     const h = harness();
@@ -598,7 +598,7 @@ describe("cache warmer context and lifecycle", () => {
     ["coordinator replacement", { ...COORDINATOR, state: "former" as const }, "no warming window for coordinator former"],
     ["acceptance", worker("accepted"), "no warming window for worker accepted"],
     ["a new undelivered assignment", worker("active", { next: { ref: "A2", phase: "pending" } }), "no warming window for next assignment A2 not delivered yet"],
-    ["the record disappearing", { kind: "none" as const }, "skipped: Projects has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one"],
+    ["the record disappearing", { kind: "none" as const }, "skipped: Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one"],
   ])("refuses at send time after %s", async (_name, fresh, reason) => {
     const h = harness();
     h.context.set("thr_coord", fresh.kind === "member" && fresh.memberKind === "coordinator" ? COORDINATOR : worker("active"));

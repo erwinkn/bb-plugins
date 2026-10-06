@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-  createProjectsContextReader,
+  createInitiativesContextReader,
+  initiativesPluginId,
   warmingWindow,
   type ThreadContext,
 } from "./thread-context.js";
 import { warmingConfigSchema } from "./warming-config.js";
 
-// Projects context contract v1.1, thread route (unchanged from v1; plugins/projects/README.md,
+// Initiatives context contract v1.1, thread route (unchanged from v1; plugins/initiatives/README.md,
 // "Read-only context for other plugins").
 const ROUTE =
-  "http://127.0.0.1:38886/api/v1/plugins/projects/http/context/v1/thread";
+  "http://127.0.0.1:38886/api/v1/plugins/initiatives/http/context/v1/thread";
 
 function assignment(phase: string, ref = "A1") {
   return {
@@ -55,15 +56,21 @@ function member(overrides: Record<string, unknown> = {}) {
 
 function reader(
   respond: (url: string, headers: Headers, signal: AbortSignal) => Response | Promise<Response>,
-  options: { token?: () => Promise<string>; now?: () => number; timeoutMs?: number } = {},
+  options: {
+    token?: (pluginId: string) => Promise<string>;
+    pluginId?: () => Promise<string | null>;
+    now?: () => number;
+    timeoutMs?: number;
+  } = {},
 ) {
   const calls: string[] = [];
-  const instance = createProjectsContextReader({
+  const instance = createInitiativesContextReader({
     fetch: async (input, init) => {
       calls.push(String(input));
       return respond(String(input), new Headers(init?.headers), init?.signal as AbortSignal);
     },
     baseUrl: () => "http://127.0.0.1:38886",
+    pluginId: options.pluginId ?? (async () => "initiatives"),
     token: options.token ?? (async () => "projects-token"),
     now: options.now ?? (() => 0),
     timeoutMs: options.timeoutMs,
@@ -75,7 +82,7 @@ const signal = () => new AbortController().signal;
 const ok = (threadId: string, membership: unknown) =>
   Response.json({ version: 1, threadId, observedAt: 1, membership });
 
-describe("Projects context reader (contract v1)", () => {
+describe("Initiatives context reader (contract v1)", () => {
   it("calls the exact query route with the plugin token and reads a member", async () => {
     let token: string | null = null;
     const { instance, calls } = reader((_url, headers) => {
@@ -96,25 +103,25 @@ describe("Projects context reader (contract v1)", () => {
     expect(token).toBe("projects-token");
   });
 
-  it("reads membership null as no Projects record, not as a standalone thread", async () => {
+  it("reads membership null as no Initiatives record, not as a standalone thread", async () => {
     const { instance } = reader(() => ok("thr_s", null));
     expect(await instance.read("thr_s", signal())).toEqual({ kind: "none" });
   });
 
   it.each([
-    ["a v1 error body", () => Response.json({ version: 1, observedAt: 1, error: { code: "store-unreadable", message: "x" } }, { status: 500 }), "Projects context error store-unreadable (HTTP 500)"],
-    ["BB's own 404 for a missing route", () => Response.json({ ok: false, error: "plugin \"projects\" has no GET route" }, { status: 404 }), "Projects context read returned HTTP 404 without a v1 body"],
-    ["BB's own 401", () => new Response("unauthorized", { status: 401 }), "Projects context read returned HTTP 401 without a v1 body"],
-    ["another schema version", () => Response.json({ version: 2, threadId: "thr_x", membership: null }), "Projects context response does not match contract v1"],
-    ["another thread", () => ok("thr_y", null), "Projects context response does not match contract v1"],
-    ["an unknown state", () => ok("thr_x", member({ state: "paused" })), "Projects context response does not match contract v1"],
-    ["an unknown phase", () => ok("thr_x", member({ assignment: assignment("paused") })), "Projects context response does not match contract v1"],
-    ["a missing paused flag", () => ok("thr_x", member({ paused: undefined })), "Projects context response does not match contract v1"],
-    ["a non-boolean paused flag", () => ok("thr_x", member({ paused: "yes" })), "Projects context response does not match contract v1"],
-    ["a missing next field", () => ok("thr_x", { ...member(), next: undefined }), "Projects context response does not match contract v1"],
-    ["an oversized body", () => new Response(JSON.stringify({ version: 1, threadId: "thr_x", membership: null, pad: "x".repeat(70_000) })), "Projects context response too large"],
-    ["non-JSON", () => new Response("<html>"), "Projects context read returned HTTP 200 without a v1 body"],
-    ["a network error", () => Promise.reject(new Error("ECONNREFUSED")), "Projects context read failed or timed out"],
+    ["a v1 error body", () => Response.json({ version: 1, observedAt: 1, error: { code: "store-unreadable", message: "x" } }, { status: 500 }), "Initiatives context error store-unreadable (HTTP 500)"],
+    ["BB's own 404 for a missing route", () => Response.json({ ok: false, error: "plugin \"projects\" has no GET route" }, { status: 404 }), "Initiatives context read returned HTTP 404 without a v1 body"],
+    ["BB's own 401", () => new Response("unauthorized", { status: 401 }), "Initiatives context read returned HTTP 401 without a v1 body"],
+    ["another schema version", () => Response.json({ version: 2, threadId: "thr_x", membership: null }), "Initiatives context response does not match contract v1"],
+    ["another thread", () => ok("thr_y", null), "Initiatives context response does not match contract v1"],
+    ["an unknown state", () => ok("thr_x", member({ state: "paused" })), "Initiatives context response does not match contract v1"],
+    ["an unknown phase", () => ok("thr_x", member({ assignment: assignment("paused") })), "Initiatives context response does not match contract v1"],
+    ["a missing paused flag", () => ok("thr_x", member({ paused: undefined })), "Initiatives context response does not match contract v1"],
+    ["a non-boolean paused flag", () => ok("thr_x", member({ paused: "yes" })), "Initiatives context response does not match contract v1"],
+    ["a missing next field", () => ok("thr_x", { ...member(), next: undefined }), "Initiatives context response does not match contract v1"],
+    ["an oversized body", () => new Response(JSON.stringify({ version: 1, threadId: "thr_x", membership: null, pad: "x".repeat(70_000) })), "Initiatives context response too large"],
+    ["non-JSON", () => new Response("<html>"), "Initiatives context read returned HTTP 200 without a v1 body"],
+    ["a network error", () => Promise.reject(new Error("ECONNREFUSED")), "Initiatives context read failed or timed out"],
   ] as const)("treats %s as unknown context", async (_name, respond, reason) => {
     const { instance } = reader(respond as () => Response | Promise<Response>);
     expect(await instance.read("thr_x", signal())).toEqual({ kind: "unknown", reason });
@@ -130,11 +137,11 @@ describe("Projects context reader (contract v1)", () => {
     );
     expect(await instance.read("thr_x", signal())).toEqual({
       kind: "unknown",
-      reason: "Projects context read failed or timed out",
+      reason: "Initiatives context read failed or timed out",
     });
   });
 
-  it("treats a missing Projects plugin token as unknown context", async () => {
+  it("treats a missing Initiatives plugin token as unknown context", async () => {
     const { instance, calls } = reader(() => ok("thr_x", null), {
       token: async () => {
         throw new Error("404 unknown plugin");
@@ -142,7 +149,7 @@ describe("Projects context reader (contract v1)", () => {
     });
     expect(await instance.read("thr_x", signal())).toEqual({
       kind: "unknown",
-      reason: "Projects plugin token unavailable",
+      reason: "Initiatives plugin token unavailable",
     });
     expect(calls).toHaveLength(0);
   });
@@ -163,6 +170,68 @@ describe("Projects context reader (contract v1)", () => {
     // A null read is not cached: a just-spawned worker becomes linked on the next read.
     expect(await instance.read("thr_c", signal())).toMatchObject({ kind: "member" });
     expect(calls).toHaveLength(4);
+  });
+});
+
+describe("T117 the Initiatives plugin's move from the projects ID", () => {
+  it("resolves the running plugin, else the installed one, else none, rechecking every 5 s", async () => {
+    let plugins: { id: string; enabled?: boolean; status?: string }[] = [
+      { id: "projects", enabled: true, status: "running" },
+    ];
+    let now = 0;
+    const resolve = initiativesPluginId(async () => ({ plugins }), () => now);
+    expect(await resolve()).toBe("projects");
+    plugins = [
+      { id: "projects", enabled: false, status: "disabled" },
+      { id: "initiatives", enabled: true, status: "running" },
+    ];
+    now = 4_999;
+    expect(await resolve()).toBe("projects");
+    now = 5_000;
+    expect(await resolve()).toBe("initiatives");
+    plugins = [
+      { id: "projects", enabled: false, status: "disabled" },
+      { id: "initiatives", enabled: false, status: "disabled" },
+    ];
+    now = 10_000;
+    expect(await resolve()).toBe("initiatives");
+    plugins = [{ id: "account-pool-local", enabled: true, status: "running" }];
+    now = 15_000;
+    expect(await resolve()).toBeNull();
+  });
+
+  it("follows a switch from projects to initiatives: route, token and a cleared membership cache", async () => {
+    let provider: string | null = "projects";
+    const tokens: string[] = [];
+    const { instance, calls } = reader(
+      (url) => ok("thr_c", url.includes("/plugins/projects/") ? member({ state: "retired" }) : member()),
+      { pluginId: async () => provider, token: async (id) => (tokens.push(id), `${id}-token`) },
+    );
+    expect(await instance.read("thr_c", signal())).toMatchObject({ state: "retired" });
+    provider = "initiatives";
+    // The cached membership came from the former plugin: read again, not served from cache.
+    expect(await instance.read("thr_c", signal())).toMatchObject({ state: "active" });
+    expect(calls).toEqual([
+      "http://127.0.0.1:38886/api/v1/plugins/projects/http/context/v1/thread?threadId=thr_c",
+      `${ROUTE}?threadId=thr_c`,
+    ]);
+    expect(tokens).toEqual(["projects", "initiatives"]);
+    provider = null;
+    expect(await instance.read("thr_c", signal())).toEqual({ kind: "unknown", reason: "no Initiatives plugin is installed" });
+    expect(instance.peek("thr_c")).toBeNull();
+  });
+
+  it("reads Initiatives' 503 while it is paused for its move as unknown, never as no record", async () => {
+    const { instance } = reader(() =>
+      Response.json(
+        { error: "initiatives-paused", message: "Initiatives is waiting for its one-time import from the former Projects plugin." },
+        { status: 503 },
+      ),
+    );
+    expect(await instance.read("thr_x", signal())).toEqual({
+      kind: "unknown",
+      reason: "Initiatives context read returned HTTP 503 without a v1 body",
+    });
   });
 });
 
@@ -239,7 +308,7 @@ describe("warming windows (contract v1)", () => {
     expect(warmingWindow({ kind: "none" }, standalone)).toEqual({
       ok: false,
       reason:
-        "Projects has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one",
+        "Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one",
     });
     expect(warmingWindow({ kind: "unknown", reason: "x" }, standalone)).toEqual({ ok: false, reason: "x" });
   });

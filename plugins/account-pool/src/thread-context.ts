@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { WarmingConfig } from "./warming-config.js";
 
-// What the warmer knows about a thread's Initiative role. It comes only from the Projects plugin's
-// public token-auth read: context contract v1.1, thread route (plugins/projects/README.md,
+// What the warmer knows about a thread's Initiative role. It comes only from the Initiatives
+// plugin's public token-auth read: context contract v1.1, thread route (plugins/initiatives/README.md,
 // "Read-only context for other plugins"); anything else is "unknown" and warms nothing. "none"
-// means Projects has no record of the thread: a standalone thread, a foreign or unknown id, or a
+// means Initiatives has no record of the thread: a standalone thread, a foreign or unknown id, or a
 // worker whose spawn is not linked yet. It is the absence of evidence, never proof that a thread
 // is standalone.
 export type ThreadContext =
@@ -64,8 +64,10 @@ const errorResponseSchema = z
   })
   .passthrough();
 
-export const PROJECTS_PLUGIN_ID = "projects";
-const CONTEXT_PATH = "/api/v1/plugins/projects/http/context/v1/thread";
+/** The Initiatives plugin's ID, then the one it had until its one-time move. Drop `projects` once retired. */
+export const INITIATIVE_PLUGIN_IDS = ["initiatives", "projects"] as const;
+const contextPath = (pluginId: string) => `/api/v1/plugins/${pluginId}/http/context/v1/thread`;
+const PLUGIN_ID_CACHE_MS = 5_000;
 const CONTEXT_TIMEOUT_MS = 2_000;
 const CONTEXT_CACHE_MS = 30_000;
 const MAX_CONTEXT_BYTES = 64 * 1024;
@@ -82,16 +84,53 @@ export interface ThreadContextReader {
   peek(threadId: string): ThreadContext | null;
 }
 
-export function createProjectsContextReader(deps: {
+/**
+ * Which plugin answers context reads: the running one of INITIATIVE_PLUGIN_IDS, else an installed
+ * one (its 503 is an unknown read, never "no record"), else none. Cached briefly: every warming
+ * check reads context.
+ */
+export function initiativesPluginId(
+  list: () => Promise<{ plugins: { id: string; enabled?: boolean; status?: string }[] }>,
+  now: () => number,
+): () => Promise<string | null> {
+  let cached: { id: string | null; at: number } | null = null;
+  return async () => {
+    if (cached && now() - cached.at < PLUGIN_ID_CACHE_MS) return cached.id;
+    const { plugins } = await list();
+    const installed = INITIATIVE_PLUGIN_IDS.filter((id) => plugins.some((p) => p.id === id));
+    const running = installed.find((id) =>
+      plugins.some((p) => p.id === id && p.enabled === true && p.status === "running"),
+    );
+    cached = { id: running ?? installed[0] ?? null, at: now() };
+    return cached.id;
+  };
+}
+
+export function createInitiativesContextReader(deps: {
   fetch: typeof fetch;
   baseUrl: () => string;
-  token: () => Promise<string>;
+  /** The plugin to read (see initiativesPluginId); null when none is installed. */
+  pluginId: () => Promise<string | null>;
+  token: (pluginId: string) => Promise<string>;
   now: () => number;
   timeoutMs?: number;
 }): ThreadContextReader {
   const cache = new Map<string, { at: number; context: ThreadContext }>();
+  let source: string | null = null;
   return {
     async read(threadId, signal, options = {}) {
+      let pluginId: string | null;
+      try {
+        pluginId = await deps.pluginId();
+      } catch {
+        return { kind: "unknown", reason: "the installed plugins could not be listed" };
+      }
+      // A membership read from one plugin says nothing once another one answers, or none does.
+      if (pluginId !== source) {
+        cache.clear();
+        source = pluginId;
+      }
+      if (pluginId === null) return { kind: "unknown", reason: "no Initiatives plugin is installed" };
       const cached = cache.get(threadId);
       if (
         !options.fresh &&
@@ -99,7 +138,7 @@ export function createProjectsContextReader(deps: {
         deps.now() - cached.at < CONTEXT_CACHE_MS
       )
         return cached.context;
-      const context = await readOnce(deps, threadId, signal);
+      const context = await readOnce(deps, pluginId, threadId, signal);
       cache.delete(threadId);
       // Only a membership is cached. "none" may be a worker whose spawn is not linked yet, and an
       // unknown or canceled read says nothing about the thread.
@@ -116,17 +155,18 @@ export function createProjectsContextReader(deps: {
 }
 
 async function readOnce(
-  deps: Parameters<typeof createProjectsContextReader>[0],
+  deps: Parameters<typeof createInitiativesContextReader>[0],
+  pluginId: string,
   threadId: string,
   signal: AbortSignal,
 ): Promise<ThreadContext> {
   let token: string;
   try {
-    token = await deps.token();
+    token = await deps.token(pluginId);
   } catch {
-    return { kind: "unknown", reason: "Projects plugin token unavailable" };
+    return { kind: "unknown", reason: "Initiatives plugin token unavailable" };
   }
-  const url = new URL(CONTEXT_PATH, deps.baseUrl());
+  const url = new URL(contextPath(pluginId), deps.baseUrl());
   url.searchParams.set("threadId", threadId);
   let response: Response;
   let text: string;
@@ -144,8 +184,8 @@ async function readOnce(
       kind: "unknown",
       reason:
         error instanceof ContextTooLarge
-          ? "Projects context response too large"
-          : "Projects context read failed or timed out",
+          ? "Initiatives context response too large"
+          : "Initiatives context read failed or timed out",
     };
   }
   let body: unknown;
@@ -154,7 +194,7 @@ async function readOnce(
   } catch {
     return {
       kind: "unknown",
-      reason: `Projects context read returned HTTP ${response.status} without a v1 body`,
+      reason: `Initiatives context read returned HTTP ${response.status} without a v1 body`,
     };
   }
   if (!response.ok) {
@@ -162,15 +202,15 @@ async function readOnce(
     return {
       kind: "unknown",
       reason: failure.success
-        ? `Projects context error ${failure.data.error.code} (HTTP ${response.status})`
-        : `Projects context read returned HTTP ${response.status} without a v1 body`,
+        ? `Initiatives context error ${failure.data.error.code} (HTTP ${response.status})`
+        : `Initiatives context read returned HTTP ${response.status} without a v1 body`,
     };
   }
   const result = threadContextResponseSchema.safeParse(body);
   if (!result.success || result.data.threadId !== threadId)
     return {
       kind: "unknown",
-      reason: "Projects context response does not match contract v1",
+      reason: "Initiatives context response does not match contract v1",
     };
   const membership = result.data.membership;
   if (membership === null) return { kind: "none" };
@@ -218,11 +258,11 @@ export type WarmingWindow =
   | { ok: true; minutes: number; label: string }
   | { ok: false; reason: string };
 
-// The idle window for a thread, from Projects context only. Supported windows: an active
+// The idle window for a thread, from Initiatives context only. Supported windows: an active
 // coordinator, a worker whose last delivered assignment is active, reported or accepted, a
 // reviewer whose assignment is active or reported (reviewerMinutes), and a member that ended.
 // Everything else is a visible zero or skip:
-// - no Projects record: not evidence of a standalone thread, so no warming at all;
+// - no Initiatives record: not evidence of a standalone thread, so no warming at all;
 // - an archived Initiative, or an adhoc Initiative thread: no warming;
 // - a paused Initiative, unless pauseStopsWarming is off;
 // - an undelivered next assignment, or a delivered one still pending: its turn will start from a
@@ -236,7 +276,7 @@ export function warmingWindow(
     return {
       ok: false,
       reason:
-        "Projects has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one",
+        "Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one",
     };
   if (context.archived)
     return { ok: true, minutes: 0, label: "archived Initiative" };

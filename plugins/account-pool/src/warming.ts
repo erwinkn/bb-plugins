@@ -1019,7 +1019,7 @@ export class CacheWarmer {
     this.applyKeepAlive(lease, result, this.deps.config());
   }
 
-  // Whether the lease's thread still qualifies, from BB's session link and Projects context. Sets
+  // Whether the lease's thread still qualifies, from BB's session link and Initiatives context. Sets
   // the lease's window and deadline; returns null or why the lease must end.
   private async qualify(
     lease: Lease,

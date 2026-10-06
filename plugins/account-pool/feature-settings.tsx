@@ -235,7 +235,7 @@ const WINDOWS: Array<{
     key: "standaloneMinutes",
     label: "Standalone thread",
     description:
-      "Inactive: Projects reports standalone, unknown and not-yet-linked threads the same way, so none of them is warmed until a verified way to tell them apart exists.",
+      "Inactive: Initiatives reports standalone, unknown and not-yet-linked threads the same way, so none of them is warmed until a verified way to tell them apart exists.",
     inactive: true,
   },
 ];

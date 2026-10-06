@@ -78,7 +78,7 @@ const fieldSchemas = {
   // Reviewers whose review was accepted but who are not retired. Independent of
   // workerAcceptedMinutes, so a worker grace never warms reviewers (D362, an agent default).
   reviewerAcceptedMinutes: windowMinutesSchema,
-  // Inactive: Projects reports standalone and unknown threads the same way (membership null).
+  // Inactive: Initiatives reports standalone and unknown threads the same way (membership null).
   standaloneMinutes: windowMinutesSchema,
   // A paused Initiative's threads get no window (D357, an agent default).
   pauseStopsWarming: z.boolean(),

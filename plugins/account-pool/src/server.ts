@@ -48,8 +48,8 @@ import {
   RoutingStore,
 } from "./store.js";
 import {
-  createProjectsContextReader,
-  PROJECTS_PLUGIN_ID,
+  createInitiativesContextReader,
+  initiativesPluginId,
 } from "./thread-context.js";
 import {
   CacheWarmer,
@@ -83,7 +83,7 @@ export interface AccountPoolPluginOptions {
   oauthTokenUrl?: string;
   oauthProfileUrl?: string;
   codexAuthBaseUrl?: string;
-  // Loopback fetch for the Projects context read; tests stub it.
+  // Loopback fetch for the Initiatives context read; tests stub it.
   projectsFetch?: typeof fetch;
   warmingTimers?: WarmingTimers;
 }
@@ -173,7 +173,7 @@ export function createAccountPoolPlugin(
     let retentionDays = storedLedgerConfig.success
       ? storedLedgerConfig.data.retentionDays
       : DEFAULT_RETENTION_DAYS;
-    // Assigned below, once the warmer and the Projects reader exist.
+    // Assigned below, once the warmer and the Initiatives reader exist.
     let threadLabel: (sessionKey: string) => {
       threadId: string;
       role: string | null;
@@ -191,11 +191,12 @@ export function createAccountPoolPlugin(
       options.fetch === undefined ? createUpstreamTransport() : null;
     const upstreamFetch = options.fetch ?? transport?.fetch;
     let hubRef: AccountPoolHub | null = null;
-    const projectsContext = createProjectsContextReader({
+    const projectsContext = createInitiativesContextReader({
       fetch: options.projectsFetch ?? fetch,
       baseUrl: () => bb.server.loopbackBaseUrl,
-      token: async () =>
-        (await bb.sdk.plugins.token({ pluginId: PROJECTS_PLUGIN_ID })).token,
+      pluginId: initiativesPluginId(() => bb.sdk.plugins.list(), now),
+      token: async (pluginId) =>
+        (await bb.sdk.plugins.token({ pluginId })).token,
       now,
     });
     const warmer = new CacheWarmer({

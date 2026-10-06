@@ -138,7 +138,7 @@ read, with no output tokens. It is not a thread message, turn or agent run.
 | `workerEndedMinutes` | 0 | Retired, stopped, replaced, finished, or between assignments |
 | `reviewerMinutes` | 0 | Reviewers with an active or reported assignment; worker windows never apply to them |
 | `reviewerAcceptedMinutes` | 0 | Reviewers whose review was accepted, not yet retired. Separate from `workerAcceptedMinutes`, so a worker grace never warms reviewers (an agent default, D362) |
-| `standaloneMinutes` | 0 | Inactive and ignored: Projects cannot tell a standalone thread from an unknown or unlinked one |
+| `standaloneMinutes` | 0 | Inactive and ignored: Initiatives cannot tell a standalone thread from an unknown or unlinked one |
 | `pauseStopsWarming` | `true` | No refreshes while the thread's Initiative is paused (an agent default, D357); `false` keeps the role windows |
 | `families` | `opus` | Model families whose requests can start a lease; a request in any family ends one |
 | `safetyMarginSeconds` | 60 | Refresh this long before expiry |
@@ -175,12 +175,15 @@ claude-code thread, the plugin reads the public `bb.sdk.threads.context` and lin
 the thread to that session. Leases are keyed by session. A session no thread
 reported, or one that two threads reported, never warms.
 
-**Windows.** They come from the Projects plugin's token-auth read,
-`GET /api/v1/plugins/projects/http/context/v1/thread?threadId=<id>`: Projects
-context contract v1.1, thread route (v1.1 changed only the record route). Projects
-documents it in [its README](../projects/README.md#read-only-context-for-other-plugins).
+**Windows.** They come from the Initiatives plugin's token-auth read,
+`GET /api/v1/plugins/<id>/http/context/v1/thread?threadId=<thread>`: Initiatives
+context contract v1.1, thread route (v1.1 changed only the record route). Initiatives
+documents it in [its README](../initiatives/README.md#read-only-context-for-other-plugins).
+`<id>` is `initiatives`, or `projects` until the plugin's one-time move: the running one, else
+the installed one (rechecked every 5 s). A plugin that is installed but disabled or paused for
+its move answers 503 without a v1 body, which is unknown context and warms nothing.
 
-| Projects context | Window |
+| Initiatives context | Window |
 | --- | --- |
 | Active coordinator | `coordinatorMinutes` |
 | Worker whose last delivered assignment is active / reported / accepted | `workerActiveMinutes` / `workerReportedMinutes` / `workerAcceptedMinutes` |
@@ -196,7 +199,7 @@ documents it in [its README](../projects/README.md#read-only-context-for-other-p
 after BB links its session to a thread and the thread's context gives it a
 window. Until then it waits without a slot: at most `maxLeases` requests wait
 (a newer one replaces the oldest), each for at most 60 s or until its first due
-refresh. So a thread with no Projects record, an adhoc or archived thread, or a
+refresh. So a thread with no Initiatives record, an adhoc or archived thread, or a
 reviewer at 0 never holds a slot that a coordinator needs. A 1h entry that already
 outlasts the longest active window (`standaloneMinutes` does not count) is skipped
 before any read.
@@ -205,7 +208,7 @@ before any read.
 membership; `null` and unknown results are never cached. Immediately before every
 keep-alive, after credential preparation, the hub re-checks two things with
 fresh, uncached reads: BB still links the thread to the lease's session, and
-Projects still qualifies the thread. The current mode and model families are
+Initiatives still qualifies the thread. The current mode and model families are
 checked before and after those reads. A settings change, retirement, Stop,
 replacement, acceptance, pause, new assignment or new session since
 classification refuses the send. This also applies to the dry runs in `observe`.
@@ -236,7 +239,7 @@ classification refuses the send. This also applies to the dry runs in `observe`.
 - A settings change ends at once the leases its new mode or families no longer
   allow, including an in-flight refresh. Thread archival or deletion and reload
   cancel leases at once.
-- Projects records no coordinator Stop, and BB's public thread record has no Stop
+- Initiatives records no coordinator Stop, and BB's public thread record has no Stop
   flag. A stopped coordinator therefore keeps its lease until its window ends.
 
 Keep-alives go only to the lease's account and never mark, hold or repair it. A

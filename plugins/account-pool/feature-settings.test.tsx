@@ -134,9 +134,9 @@ describe("Cache warming settings", () => {
     expect(slot.getByRole("switch", { name: "Warm opus" }).getAttribute("aria-checked")).toBe("true");
     expect(slot.getByRole("switch", { name: "Warm sonnet" }).getAttribute("aria-checked")).toBe("false");
     expect(slot.queryByText(/matched to threads/u)).toBeNull();
-    // Projects cannot tell a standalone thread from an unknown one, so the setting is inactive.
+    // Initiatives cannot tell a standalone thread from an unknown one, so the setting is inactive.
     expect((await input(slot, "Standalone thread window (minutes)")).disabled).toBe(true);
-    expect(slot.getByText(/Inactive: Projects reports standalone/u)).toBeTruthy();
+    expect(slot.getByText(/Inactive: Initiatives reports standalone/u)).toBeTruthy();
   });
 
   it("saves the reviewer window and the pause switch", async () => {
