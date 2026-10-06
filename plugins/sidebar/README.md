@@ -54,12 +54,9 @@ choice persists in Initiatives, travels in the tree as optional `appearance`,
 and never moves the row or changes its identity. An older Initiatives without
 the field, or a value this sidebar does not know, shows the default look.
 
-Links go through whichever Initiatives plugin serves the tree: `initiatives`, or
-`projects` until its one-time move. Composer links target
-`/plugins/initiatives/initiatives/<encoded-initiative-id>/compose` (or the
-`projects` form while that plugin serves). The plugin calls `initiativesChanged`
-(an older build `projectsChanged`); both refresh the view, and a client that
-saved the view as `projects` reads it as Initiatives.
+Links go through the `initiatives` plugin. Composer links target
+`/plugins/initiatives/initiatives/<encoded-initiative-id>/compose`. The plugin
+calls `initiativesChanged` to refresh the view.
 The public `toPluginPanel` helper is scoped to the calling plugin, so Sidebar
 uses the SDK's `UrlLink` to open Initiatives through native internal navigation. The old `createProjectThread` server RPC
 remains for already-loaded Sidebar bundles; the new UI does not call it.

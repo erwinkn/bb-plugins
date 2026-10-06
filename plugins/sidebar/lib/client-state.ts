@@ -52,8 +52,7 @@ export function parseState(raw: string | null): ClientState {
     const value = JSON.parse(raw ?? "null");
     if (!value || typeof value !== "object") return DEFAULT;
     return {
-      // "projects" is what clients saved before the Initiatives rename.
-      mode: value.mode === "initiatives" || value.mode === "projects" ? "initiatives" : "threads",
+      mode: value.mode === "initiatives" ? "initiatives" : "threads",
       groupBy: value.groupBy === "project" ? "project" : "status",
       sortBy: value.sortBy === "created" ? "created" : "updated",
       sortDirection:

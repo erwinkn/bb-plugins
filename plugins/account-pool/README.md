@@ -176,12 +176,11 @@ the thread to that session. Leases are keyed by session. A session no thread
 reported, or one that two threads reported, never warms.
 
 **Windows.** They come from the Initiatives plugin's token-auth read,
-`GET /api/v1/plugins/<id>/http/context/v1/thread?threadId=<thread>`: Initiatives
+`GET /api/v1/plugins/initiatives/http/context/v1/thread?threadId=<thread>`: Initiatives
 context contract v1.1, thread route (v1.1 changed only the record route). Initiatives
 documents it in [its README](../initiatives/README.md#read-only-context-for-other-plugins).
-`<id>` is `initiatives`, or `projects` until the plugin's one-time move: the running one, else
-the installed one (rechecked every 5 s). A plugin that is installed but disabled or paused for
-its move answers 503 without a v1 body, which is unknown context and warms nothing.
+A plugin that is installed but disabled answers 503 without a v1 body, which is unknown context
+and warms nothing.
 
 | Initiatives context | Window |
 | --- | --- |

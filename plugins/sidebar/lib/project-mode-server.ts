@@ -8,25 +8,14 @@ import {
   threadCreateResultSchema,
 } from "./project-mode-contract";
 
-/**
- * The Initiatives plugin is installed as `initiatives`; until its one-time
- * move it was `projects`. Whichever of them is running serves the tree, so
- * the order of the switch does not matter. Remove the fallback once
- * `projects` is retired.
- */
-export const INITIATIVE_PLUGIN_IDS = ["initiatives", "projects"] as const;
-export const initiativesProvider = async (bb: BbPluginApi) => {
-  const plugins = (await bb.sdk.plugins.list()).plugins;
-  return (
-    INITIATIVE_PLUGIN_IDS.find((id) =>
-      plugins.some((p) => p.id === id && p.enabled && p.status === "running"),
-    ) ?? null
+/** The Initiatives plugin, which serves the tree. */
+export const INITIATIVES_PLUGIN_ID = "initiatives";
+const initiativesRunning = async (bb: BbPluginApi) =>
+  (await bb.sdk.plugins.list()).plugins.some(
+    (p) => p.id === INITIATIVES_PLUGIN_ID && p.enabled && p.status === "running",
   );
-};
-const requireProvider = async (bb: BbPluginApi) => {
-  const provider = await initiativesProvider(bb);
-  if (!provider) throw new Error("The Initiatives plugin is not running.");
-  return provider;
+const requireRunning = async (bb: BbPluginApi) => {
+  if (!(await initiativesRunning(bb))) throw new Error("The Initiatives plugin is not running.");
 };
 
 export function registerProjectMode(bb: BbPluginApi) {
@@ -42,11 +31,10 @@ export function registerProjectMode(bb: BbPluginApi) {
   };
   bb.rpc.register(projectModeContract, {
     projectMode: async (input) => {
-      const provider = await initiativesProvider(bb);
-      if (!provider)
+      if (!(await initiativesRunning(bb)))
         return { available: false, tree: null, order: null, orderError: null };
       const fresh = await bb.sdk.plugins.callRpc({
-        pluginId: provider,
+        pluginId: INITIATIVES_PLUGIN_ID,
         method: "tree",
         input: null,
         outputSchema: treeSchema,
@@ -70,7 +58,6 @@ export function registerProjectMode(bb: BbPluginApi) {
       }
       return {
         available: true,
-        pluginId: provider,
         tree,
         ...(input ? { revision, unchanged } : {}),
         order: doc,
@@ -80,16 +67,18 @@ export function registerProjectMode(bb: BbPluginApi) {
     saveProjectOrder: ({ expectedRevision, order: ids }) =>
       order.save(expectedRevision, ids),
     renameTreeProject: async ({ projectId, name }) => {
+      await requireRunning(bb);
       return bb.sdk.plugins.callRpc({
-        pluginId: await requireProvider(bb),
+        pluginId: INITIATIVES_PLUGIN_ID,
         method: "command",
         input: { projectId, command: { action: "edit", name } },
         outputSchema: z.unknown(),
       });
     },
     setTreeProjectAppearance: async ({ projectId, icon, color }) => {
+      await requireRunning(bb);
       return bb.sdk.plugins.callRpc({
-        pluginId: await requireProvider(bb),
+        pluginId: INITIATIVES_PLUGIN_ID,
         method: "command",
         input: {
           projectId,
@@ -103,8 +92,9 @@ export function registerProjectMode(bb: BbPluginApi) {
       });
     },
     createProjectThread: async ({ projectId, bbProjectId, prompt }) => {
+      await requireRunning(bb);
       return bb.sdk.plugins.callRpc({
-        pluginId: await requireProvider(bb),
+        pluginId: INITIATIVES_PLUGIN_ID,
         method: "command",
         input: {
           projectId,
@@ -118,11 +108,6 @@ export function registerProjectMode(bb: BbPluginApi) {
       });
     },
     initiativesChanged: (payload) => {
-      bb.realtime.publish(INITIATIVES_CHANGED, payload);
-      return { ok: true as const };
-    },
-    // The name the plugin called before its move to `initiatives`.
-    projectsChanged: (payload) => {
       bb.realtime.publish(INITIATIVES_CHANGED, payload);
       return { ok: true as const };
     },

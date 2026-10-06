@@ -101,13 +101,12 @@ BB, not on the plugin:
   unstamped BB 500 is ambiguous; exact BB pre-handler 401/404/503 messages are
   pre-upstream.
 - **Initiatives** (contract v1.1 in T96/A222): `GET …/http/context/v1/thread` and
-  `…/record` of whichever Initiatives plugin runs (`initiatives`, or `projects`
-  until its one-time move), else the installed one. Only BB's own 404 (the route
-  is not installed) or no Initiatives plugin means "unavailable": threads are
-  then reviewed as standalone, and threads the plugin created (either origin ID)
-  get partial requirement coverage. Anything else is an unknown read, never
-  "standalone", including BB's 503 while the plugin is not running or paused for
-  its move. The last delivered assignment stays the thread's brief in every
+  `…/record` of the `initiatives` plugin. Only BB's own 404 (the route is not
+  installed) or no Initiatives plugin means "unavailable": threads are then
+  reviewed as standalone, and threads the plugin created (origin `initiatives`,
+  or `projects` from before its rename) get partial requirement coverage.
+  Anything else is an unknown read, never "standalone", including BB's 503
+  while the plugin is not running. The last delivered assignment stays the thread's brief in every
   phase (reported and accepted are progress; cancelled, rejected and failed are
   history); a queued `next` assignment is shown as a note, never a requirement.
 - **Initiative watches** (T103) list `…/context/v1/initiatives` and

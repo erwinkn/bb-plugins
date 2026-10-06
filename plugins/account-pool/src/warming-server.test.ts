@@ -228,7 +228,7 @@ async function fixture(args: {
             { id: "initiatives", enabled: true, status: "running" },
           ],
         }),
-        token: async () => ({ token: "projects-token" }),
+        token: async ({ pluginId }: { pluginId: string }) => ({ token: `${pluginId}-token` }),
       },
       threads: {
         context: async ({ threadId }: { threadId: string }) => {
@@ -456,9 +456,9 @@ describe("cache warming through the hub", () => {
     // Exact v1 route and token: once to admit the lease, once at the timer (the 30 s cache has
     // expired by then) and once fresh right before the send.
     expect(f.projectReads).toEqual([
-      { url: `${CONTEXT_ROUTE}?threadId=thr_coord`, token: "projects-token" },
-      { url: `${CONTEXT_ROUTE}?threadId=thr_coord`, token: "projects-token" },
-      { url: `${CONTEXT_ROUTE}?threadId=thr_coord`, token: "projects-token" },
+      { url: `${CONTEXT_ROUTE}?threadId=thr_coord`, token: "initiatives-token" },
+      { url: `${CONTEXT_ROUTE}?threadId=thr_coord`, token: "initiatives-token" },
+      { url: `${CONTEXT_ROUTE}?threadId=thr_coord`, token: "initiatives-token" },
     ]);
     await vi.waitFor(async () =>
       expect((await warmingStatus(f.host)).totals.refreshesConfirmed).toBe(1),

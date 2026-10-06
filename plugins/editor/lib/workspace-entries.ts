@@ -7,7 +7,7 @@
  * name the coordinator, work, review and adhoc threads of an Initiative
  * with stable labels and worker refs, across every member BB project. When
  * Initiatives is absent the per-thread metadata tag
- * (`pluginMetadata` under the "initiatives" plugin id, or "projects" before the move:
+ * (`pluginMetadata` under the "initiatives" plugin id:
  * `{role: "coordinator"|"worker"|"adhoc", projectId, worker?, v}`) still
  * applies; an unmanaged thread falls back to the native title and role
  * "thread" — nothing is invented.

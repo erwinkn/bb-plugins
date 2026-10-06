@@ -19,19 +19,15 @@ it("keeps the sidebar usable when Initiatives is missing or disabled", async () 
   }
 });
 
-it("republishes the Initiatives bump, under its current and former name, on its own realtime channel", async () => {
+it("republishes the Initiatives bump on its own realtime channel", async () => {
   const h = createFakePluginHost({
     sdk: { plugins: { list: async () => ({ plugins: [] }) } },
   });
   registerProjectMode(h.bb);
   try {
     expect(await h.harness.callRpc("initiativesChanged", { projectId: "p1" })).toEqual({ ok: true });
-    expect(await h.harness.callRpc("projectsChanged", {})).toEqual({
-      ok: true,
-    });
     expect(h.harness.inspection.realtimeSignals).toEqual([
       { channel: "initiatives-changed", payload: { projectId: "p1" } },
-      { channel: "initiatives-changed", payload: {} },
     ]);
   } finally {
     await h.harness.dispose();
@@ -43,7 +39,7 @@ it("T112 answers an unchanged tree with its revision instead of resending it", a
   const h = createFakePluginHost({
     sdk: {
       plugins: {
-        list: async () => ({ plugins: [{ id: "projects", enabled: true, status: "running" }] }),
+        list: async () => ({ plugins: [{ id: "initiatives", enabled: true, status: "running" }] }),
         callRpc: async () => ({
           version: 1,
           projects: names.map((name, index) => ({
@@ -69,13 +65,13 @@ it("T112 answers an unchanged tree with its revision instead of resending it", a
     expect(changed.tree?.projects.map((p) => p.name)).toEqual(["One", "Two"]);
     expect(changed.revision).not.toBe(first.revision);
     // The unconditional read keeps its original shape.
-    expect(Object.keys(await h.harness.callRpc("projectMode", null) as object).sort()).toEqual(["available", "order", "orderError", "pluginId", "tree"]);
+    expect(Object.keys(await h.harness.callRpc("projectMode", null) as object).sort()).toEqual(["available", "order", "orderError", "tree"]);
   } finally {
     await h.harness.dispose();
   }
 });
 
-it("T100 serves the tree from whichever Initiatives plugin runs, preferring initiatives, so switch order does not matter", async () => {
+it("T120 serves the tree from the initiatives plugin only, and is unavailable while it does not run", async () => {
   let plugins: { id: string; enabled: boolean; status: string }[] = [];
   const h = createFakePluginHost({
     sdk: {
@@ -86,16 +82,16 @@ it("T100 serves the tree from whichever Initiatives plugin runs, preferring init
     },
   });
   registerProjectMode(h.bb);
-  const mode = () => h.harness.callRpc("projectMode", null) as Promise<{ available: boolean; pluginId?: string }>;
+  const mode = () => h.harness.callRpc("projectMode", null) as Promise<{ available: boolean }>;
   const asked = () => h.harness.inspection.sdk.callsTo("plugins.callRpc").map((call) => (call as [{ pluginId: string }])[0].pluginId);
   try {
+    // The former `projects` ID is never asked, even when something runs under it.
     plugins = [{ id: "projects", enabled: true, status: "running" }];
-    expect(await mode()).toMatchObject({ available: true, pluginId: "projects" });
-    plugins = [{ id: "projects", enabled: false, status: "disabled" }, { id: "initiatives", enabled: true, status: "running" }];
-    expect(await mode()).toMatchObject({ available: true, pluginId: "initiatives" });
-    expect(asked()).toEqual(["projects", "initiatives"]);
-    // Mid-switch neither runs: unavailable, never an empty tree.
-    plugins = [{ id: "projects", enabled: false, status: "disabled" }, { id: "initiatives", enabled: true, status: "starting" }];
+    expect(await mode()).toMatchObject({ available: false });
+    plugins = [{ id: "initiatives", enabled: true, status: "running" }];
+    expect(await mode()).toMatchObject({ available: true });
+    expect(asked()).toEqual(["initiatives"]);
+    plugins = [{ id: "initiatives", enabled: true, status: "starting" }];
     expect(await mode()).toMatchObject({ available: false });
     await expect(h.harness.callRpc("renameTreeProject", { projectId: "p1", name: "New" })).rejects.toThrow(/not running/);
   } finally {
@@ -103,9 +99,8 @@ it("T100 serves the tree from whichever Initiatives plugin runs, preferring init
   }
 });
 
-it("T100 reads a view mode saved before the Initiatives rename", async () => {
+it("reads the saved view mode", async () => {
   const { parseState } = await import("../lib/client-state");
-  expect(parseState(JSON.stringify({ mode: "projects" })).mode).toBe("initiatives");
   expect(parseState(JSON.stringify({ mode: "initiatives" })).mode).toBe("initiatives");
   expect(parseState(JSON.stringify({ mode: "other" })).mode).toBe("threads");
 });

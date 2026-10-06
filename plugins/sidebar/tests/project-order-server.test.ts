@@ -23,7 +23,7 @@ const host = (projectIds: () => string[]) =>
     sdk: {
       plugins: {
         list: async () => ({
-          plugins: [{ id: "projects", enabled: true, status: "running" }],
+          plugins: [{ id: "initiatives", enabled: true, status: "running" }],
         }),
         callRpc: async () => ({
           version: 1,
@@ -60,7 +60,6 @@ describe("project order", () => {
       const first = await readMode(h);
       expect(first).toEqual({
         available: true,
-        pluginId: "projects",
         tree: expect.anything(),
         order: { revision: 1, order: ["a", "b"] },
         orderError: null,
@@ -253,16 +252,16 @@ describe("project order", () => {
     }
   });
 
-  it("forwards renames to the Projects plugin's command RPC", async () => {
-    const calls: { method: string; input: unknown }[] = [];
+  it("forwards renames to the Initiatives plugin's command RPC", async () => {
+    const calls: { pluginId?: string; method: string; input: unknown }[] = [];
     const h = createFakePluginHost({
       sdk: {
         plugins: {
           list: async () => ({
-            plugins: [{ id: "projects", enabled: true, status: "running" }],
+            plugins: [{ id: "initiatives", enabled: true, status: "running" }],
           }),
-          callRpc: async (args: { method: string; input?: unknown }) => {
-            calls.push({ method: args.method, input: args.input });
+          callRpc: async (args: { pluginId: string; method: string; input?: unknown }) => {
+            calls.push({ pluginId: args.pluginId, method: args.method, input: args.input });
             return args.method === "tree"
               ? { version: 1, projects: [project("p1")] }
               : { renamed: true };
@@ -279,6 +278,7 @@ describe("project order", () => {
       expect(out).toEqual({ renamed: true });
       expect(calls).toEqual([
         {
+          pluginId: "initiatives",
           method: "command",
           input: {
             projectId: "p1",
@@ -297,7 +297,7 @@ describe("project order", () => {
       sdk: {
         plugins: {
           list: async () => ({
-            plugins: [{ id: "projects", enabled: true, status: "running" }],
+            plugins: [{ id: "initiatives", enabled: true, status: "running" }],
           }),
           callRpc: async (args: { method: string; input?: unknown }) => {
             calls.push({ method: args.method, input: args.input });
@@ -344,7 +344,7 @@ describe("project order", () => {
       sdk: {
         plugins: {
           list: async () => ({
-            plugins: [{ id: "projects", enabled: true, status: "running" }],
+            plugins: [{ id: "initiatives", enabled: true, status: "running" }],
           }),
           callRpc: async (args: { method: string; input?: unknown }) => {
             calls.push({ method: args.method, input: args.input });

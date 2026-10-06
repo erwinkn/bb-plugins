@@ -331,7 +331,7 @@ comes from its package name and BB refuses to change it on update, so a rename
 is a new install. Settings, data, per-thread metadata and thread tabs move
 through public APIs, but `threads.origin_plugin_id` does not: core writes it
 only in `createThread`, and `UpdateThreadRequest` (SDK 0.4.87 d.ts L13484) has
-no such field. About 320 threads keep `originPluginId: "projects"`, so the
+no such field. About 400 threads keep `originPluginId: "projects"`, so the
 plugin must accept both IDs in every origin check, and `threads.list({
 originPluginId })` scans miss old threads.
 

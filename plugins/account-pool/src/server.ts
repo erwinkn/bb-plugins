@@ -49,7 +49,7 @@ import {
 } from "./store.js";
 import {
   createInitiativesContextReader,
-  initiativesPluginId,
+  INITIATIVES_PLUGIN_ID,
 } from "./thread-context.js";
 import {
   CacheWarmer,
@@ -194,9 +194,8 @@ export function createAccountPoolPlugin(
     const projectsContext = createInitiativesContextReader({
       fetch: options.projectsFetch ?? fetch,
       baseUrl: () => bb.server.loopbackBaseUrl,
-      pluginId: initiativesPluginId(() => bb.sdk.plugins.list(), now),
-      token: async (pluginId) =>
-        (await bb.sdk.plugins.token({ pluginId })).token,
+      token: async () =>
+        (await bb.sdk.plugins.token({ pluginId: INITIATIVES_PLUGIN_ID })).token,
       now,
     });
     const warmer = new CacheWarmer({

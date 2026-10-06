@@ -2,19 +2,15 @@
 // read routes (T96/A222 context contract v1). Read-only: no Initiatives
 // database, no Initiatives code, no writes.
 //
-//   GET /api/v1/plugins/<id>/http/context/v1/thread?threadId=…
-//   GET /api/v1/plugins/<id>/http/context/v1/record?initiativeId=…&ref=…&part=brief
-//
-// <id> is `initiatives`, or `projects` until the plugin's one-time move: the
-// running one, else the installed one (see initiativesPluginId).
+//   GET /api/v1/plugins/initiatives/http/context/v1/thread?threadId=…
+//   GET /api/v1/plugins/initiatives/http/context/v1/record?initiativeId=…&ref=…&part=brief
 //
 // A response without `version: 1` is unknown context. When the route itself
 // does not exist (BB's own 404 without `version`, or no Initiatives plugin
-// installed), the source reports itself unavailable and threads are treated as
+// token), the source reports itself unavailable and threads are treated as
 // standalone, exactly as without Initiatives (D356). Everything else is a
-// failed read, never "standalone": a timeout, a 500, an unparseable body, BB's
-// 503 while the plugin is not running (a reload or a crash is not absence), and
-// its own 503 while it is paused for its one-time import.
+// failed read, never "standalone": a timeout, a 500, an unparseable body, and
+// BB's 503 while the plugin is not running (a reload or a crash is not absence).
 
 import { z } from "zod";
 import { failed, ok, type AssignmentRecord, type Membership, type Read, type RefsResult, type TaskBriefRecord } from "../rules/snapshot.js";
@@ -22,29 +18,12 @@ import type { InitiativeSource, Listing } from "./initiatives.js";
 import { unavailableInitiatives } from "./initiatives.js";
 import type { FetchLike } from "../transport/types.js";
 
-/** The Initiatives plugin's ID, then the one it had until its one-time move. Drop `projects` once retired. */
-export const INITIATIVE_PLUGIN_IDS = ["initiatives", "projects"] as const;
-
+export const INITIATIVES_PLUGIN_ID = "initiatives";
 /**
- * Which plugin answers context reads: the running one of INITIATIVE_PLUGIN_IDS,
- * else an installed one (its 503 is a failed read, never absence), else none
- * (standalone). Cached briefly: every watched thread reads context.
+ * Origins of threads the Initiatives plugin created. BB cannot re-stamp a
+ * thread's origin, so threads from before its rename keep `projects`.
  */
-export function initiativesPluginId(
-  list: () => Promise<{ plugins: { id: string; enabled?: boolean; status?: string }[] }>,
-  now: () => number = Date.now,
-  ttlMs = 5000,
-): () => Promise<string | null> {
-  let cached: { id: string | null; at: number } | null = null;
-  return async () => {
-    if (cached && now() - cached.at < ttlMs) return cached.id;
-    const { plugins } = await list();
-    const installed = INITIATIVE_PLUGIN_IDS.filter((id) => plugins.some((p) => p.id === id));
-    const running = installed.find((id) => plugins.some((p) => p.id === id && p.enabled && p.status === "running"));
-    cached = { id: running ?? installed[0] ?? null, at: now() };
-    return cached.id;
-  };
-}
+export const INITIATIVE_ORIGINS = [INITIATIVES_PLUGIN_ID, "projects"] as const;
 const TIMEOUT_MS = 2000;
 const BRIEF_MAX_CHARS = 64 * 1024;
 
@@ -147,10 +126,8 @@ const PHASE_STATE: Record<string, string> = {
 export interface ProjectsDeps {
   fetch: FetchLike;
   loopbackBaseUrl: () => string;
-  /** bb.sdk.plugins.token({ pluginId }); throws when that plugin is not installed. */
-  token: (pluginId: string) => Promise<string>;
-  /** The plugin to read; null when no Initiatives plugin is installed. Defaults to `initiatives`. */
-  pluginId?: () => Promise<string | null>;
+  /** bb.sdk.plugins.token({ pluginId: "initiatives" }); throws when it is not installed. */
+  token: () => Promise<string>;
 }
 
 class Unavailable extends Error {}
@@ -162,15 +139,13 @@ export function projectsInitiatives(d: ProjectsDeps): InitiativeSource {
   const context = new Map<string, z.infer<typeof threadContext>>(); // threadId -> last thread context
 
   async function get(path: string, signal: AbortSignal): Promise<unknown> {
-    const pluginId = d.pluginId ? await d.pluginId() : INITIATIVE_PLUGIN_IDS[0];
-    if (pluginId === null) throw new Unavailable("no Initiatives plugin is installed");
     let token: string;
     try {
-      token = await d.token(pluginId);
+      token = await d.token();
     } catch (err) {
       throw new Unavailable(`Initiatives plugin token unavailable: ${err instanceof Error ? err.message : String(err)}`);
     }
-    const res = await d.fetch(`${d.loopbackBaseUrl()}/api/v1/plugins/${pluginId}/http/context/v1/${path}`, {
+    const res = await d.fetch(`${d.loopbackBaseUrl()}/api/v1/plugins/${INITIATIVES_PLUGIN_ID}/http/context/v1/${path}`, {
       method: "GET",
       headers: { "x-bb-plugin-token": token },
       signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),

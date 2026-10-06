@@ -11,7 +11,7 @@ import { rpcContract, type SettingsView } from "./src/rpc.js";
 import { Advisor } from "./src/runtime/advisor.js";
 import { sdkHost, type AdvisorHost } from "./src/runtime/host.js";
 import { DEFERRED_STAGES, type InitiativeSource } from "./src/runtime/initiatives.js";
-import { initiativesPluginId, projectsInitiatives } from "./src/runtime/projects.js";
+import { INITIATIVES_PLUGIN_ID, projectsInitiatives } from "./src/runtime/projects.js";
 import { openStore } from "./src/store/store.js";
 import type { FetchLike } from "./src/transport/types.js";
 import type { TransportDeps } from "./src/transport/transports.js";
@@ -84,12 +84,7 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
     const loopback = opts.loopbackBaseUrl ?? (() => bb.server.loopbackBaseUrl);
     const initiatives =
       opts.initiatives ??
-      projectsInitiatives({
-        fetch: fetchImpl,
-        loopbackBaseUrl: loopback,
-        token: async (pluginId) => (await bb.sdk.plugins.token({ pluginId })).token,
-        pluginId: initiativesPluginId(() => bb.sdk.plugins.list()),
-      });
+      projectsInitiatives({ fetch: fetchImpl, loopbackBaseUrl: loopback, token: async () => (await bb.sdk.plugins.token({ pluginId: INITIATIVES_PLUGIN_ID })).token });
     const advisor = new Advisor({
       host,
       store,

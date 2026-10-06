@@ -64,10 +64,8 @@ const errorResponseSchema = z
   })
   .passthrough();
 
-/** The Initiatives plugin's ID, then the one it had until its one-time move. Drop `projects` once retired. */
-export const INITIATIVE_PLUGIN_IDS = ["initiatives", "projects"] as const;
-const contextPath = (pluginId: string) => `/api/v1/plugins/${pluginId}/http/context/v1/thread`;
-const PLUGIN_ID_CACHE_MS = 5_000;
+export const INITIATIVES_PLUGIN_ID = "initiatives";
+const CONTEXT_PATH = "/api/v1/plugins/initiatives/http/context/v1/thread";
 const CONTEXT_TIMEOUT_MS = 2_000;
 const CONTEXT_CACHE_MS = 30_000;
 const MAX_CONTEXT_BYTES = 64 * 1024;
@@ -84,53 +82,16 @@ export interface ThreadContextReader {
   peek(threadId: string): ThreadContext | null;
 }
 
-/**
- * Which plugin answers context reads: the running one of INITIATIVE_PLUGIN_IDS, else an installed
- * one (its 503 is an unknown read, never "no record"), else none. Cached briefly: every warming
- * check reads context.
- */
-export function initiativesPluginId(
-  list: () => Promise<{ plugins: { id: string; enabled?: boolean; status?: string }[] }>,
-  now: () => number,
-): () => Promise<string | null> {
-  let cached: { id: string | null; at: number } | null = null;
-  return async () => {
-    if (cached && now() - cached.at < PLUGIN_ID_CACHE_MS) return cached.id;
-    const { plugins } = await list();
-    const installed = INITIATIVE_PLUGIN_IDS.filter((id) => plugins.some((p) => p.id === id));
-    const running = installed.find((id) =>
-      plugins.some((p) => p.id === id && p.enabled === true && p.status === "running"),
-    );
-    cached = { id: running ?? installed[0] ?? null, at: now() };
-    return cached.id;
-  };
-}
-
 export function createInitiativesContextReader(deps: {
   fetch: typeof fetch;
   baseUrl: () => string;
-  /** The plugin to read (see initiativesPluginId); null when none is installed. */
-  pluginId: () => Promise<string | null>;
-  token: (pluginId: string) => Promise<string>;
+  token: () => Promise<string>;
   now: () => number;
   timeoutMs?: number;
 }): ThreadContextReader {
   const cache = new Map<string, { at: number; context: ThreadContext }>();
-  let source: string | null = null;
   return {
     async read(threadId, signal, options = {}) {
-      let pluginId: string | null;
-      try {
-        pluginId = await deps.pluginId();
-      } catch {
-        return { kind: "unknown", reason: "the installed plugins could not be listed" };
-      }
-      // A membership read from one plugin says nothing once another one answers, or none does.
-      if (pluginId !== source) {
-        cache.clear();
-        source = pluginId;
-      }
-      if (pluginId === null) return { kind: "unknown", reason: "no Initiatives plugin is installed" };
       const cached = cache.get(threadId);
       if (
         !options.fresh &&
@@ -138,7 +99,7 @@ export function createInitiativesContextReader(deps: {
         deps.now() - cached.at < CONTEXT_CACHE_MS
       )
         return cached.context;
-      const context = await readOnce(deps, pluginId, threadId, signal);
+      const context = await readOnce(deps, threadId, signal);
       cache.delete(threadId);
       // Only a membership is cached. "none" may be a worker whose spawn is not linked yet, and an
       // unknown or canceled read says nothing about the thread.
@@ -156,17 +117,16 @@ export function createInitiativesContextReader(deps: {
 
 async function readOnce(
   deps: Parameters<typeof createInitiativesContextReader>[0],
-  pluginId: string,
   threadId: string,
   signal: AbortSignal,
 ): Promise<ThreadContext> {
   let token: string;
   try {
-    token = await deps.token(pluginId);
+    token = await deps.token();
   } catch {
     return { kind: "unknown", reason: "Initiatives plugin token unavailable" };
   }
-  const url = new URL(contextPath(pluginId), deps.baseUrl());
+  const url = new URL(CONTEXT_PATH, deps.baseUrl());
   url.searchParams.set("threadId", threadId);
   let response: Response;
   let text: string;

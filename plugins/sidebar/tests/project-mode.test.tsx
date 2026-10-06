@@ -150,7 +150,6 @@ function mount(
       order: string[];
     }) => { revision: number; order: string[] } | Promise<never>;
     rpc?: Record<string, (input: never) => unknown>;
-    pluginId?: "initiatives" | "projects";
   } = {},
 ) {
   const props = {
@@ -166,7 +165,6 @@ function mount(
     rpc: {
       projectMode: () => ({
         available,
-        ...(overrides.pluginId ? { pluginId: overrides.pluginId } : {}),
         tree: available ? (overrides.treeData ?? tree) : null,
         order: available ? (overrides.order ?? null) : null,
         orderError: null,
@@ -632,12 +630,6 @@ describe("Projects sidebar mode", () => {
     expect(item.getAttribute("href")).toBe("/plugins/initiatives/initiatives/p1");
     fireEvent.click(item);
     expect(onNavigate).toHaveBeenCalled();
-  });
-  it("T100 links through the former projects plugin while it still serves the tree", async () => {
-    const slot = mount(true, { pluginId: "projects", treeData: richTree, threads: richThreads });
-    const menu = await openContextMenu(slot, "Useful search");
-    expect(within(menu).getByRole("menuitem", { name: "Initiative overview" }).getAttribute("href")).toBe("/plugins/projects/projects/p1");
-    slot.unmount();
   });
 
   it("renames a project through the Projects command RPC", async () => {

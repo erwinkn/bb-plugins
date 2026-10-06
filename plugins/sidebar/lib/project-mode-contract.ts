@@ -22,8 +22,6 @@ export const projectModeContract = defineRpcContract({
     input: z.object({ known: z.string().max(80).nullable() }).nullable(),
     output: z.object({
       available: z.boolean(),
-      /** The running Initiatives plugin's ID, which its links go through. */
-      pluginId: z.enum(["initiatives", "projects"]).optional(),
       tree: treeSchema.nullable(),
       /** Identifies this tree; only answered to a conditional read. */
       revision: z.string().nullable().optional(),
@@ -91,11 +89,6 @@ export const projectModeContract = defineRpcContract({
    * subscribe to; `useRealtime` only delivers the owning plugin's signals.
    */
   initiativesChanged: {
-    input: z.object({ projectId: projectId.optional() }),
-    output: z.object({ ok: z.literal(true) }),
-  },
-  /** The same bump under the name the plugin used before its move to `initiatives`. */
-  projectsChanged: {
     input: z.object({ projectId: projectId.optional() }),
     output: z.object({ ok: z.literal(true) }),
   },

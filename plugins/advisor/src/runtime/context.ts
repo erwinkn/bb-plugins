@@ -7,7 +7,7 @@ import type { ForkOrigin } from "../rules/requests.js";
 import type { AdvisorHost, ThreadDto } from "./host.js";
 import { readSignal } from "./host.js";
 import type { InitiativeSource } from "./initiatives.js";
-import { INITIATIVE_PLUGIN_IDS } from "./projects.js";
+import { INITIATIVE_ORIGINS } from "./projects.js";
 
 export interface WatchContext {
   thread: ThreadDto | null;
@@ -69,7 +69,7 @@ export async function readContext(
   if (!initiatives.available) {
     notes.push(initiatives.label);
     // A thread the Initiatives plugin created, under its current or former ID.
-    if (INITIATIVE_PLUGIN_IDS.some((id) => id === thread?.originPluginId)) gaps.push("initiative-context-unavailable");
+    if (INITIATIVE_ORIGINS.some((id) => id === thread?.originPluginId)) gaps.push("initiative-context-unavailable");
   }
   const snap = snapshot(threadRead, settings, membership, assignments, tasks, dispatchRefs);
   // Labels may use cached fork facts after a failed read; the failed read still gates dispatch (dispatchGate).

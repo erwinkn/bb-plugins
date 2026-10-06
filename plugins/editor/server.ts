@@ -14,7 +14,7 @@ import { WatchRegistry, WATCH_TTL_MS } from "./lib/watch-registry.js";
 import { hostOfflineMessage, isHostOfflineMessage } from "./lib/host-offline.js";
 import { findPanelTab, solePanelTabParams } from "./lib/panel-target.js";
 import { orderWorkspaceEntries, shapeWorkspaceEntry, type WorkspaceThreadMetadata, type WorkspaceThreadRow } from "./lib/workspace-entries.js";
-import { INITIATIVE_PLUGIN_IDS, treeSchema, type ProjectTree, type TreeNode } from "./lib/projects-tree.js";
+import { INITIATIVES_PLUGIN_ID, treeSchema, type ProjectTree, type TreeNode } from "./lib/projects-tree.js";
 
 type EditorEnvironment = Awaited<ReturnType<BbPluginApi["sdk"]["environments"]["get"]>>;
 type CheckoutDefaultBranch = { name: string; ref: string };
@@ -1115,14 +1115,10 @@ export default async function plugin(bb: BbPluginApi) {
     },
 
     async workspaces({ threadId }) {
-      // A thread's Initiative tag: the current namespace, or the former one
-      // until the one-time import has copied it.
+      // A thread's Initiative tag, or null when it has none.
       const initiativeMetadata = async (id: string) => {
-        for (const pluginId of INITIATIVE_PLUGIN_IDS) {
-          const data = await bb.sdk.threads.getPluginMetadata({ threadId: id, pluginId }).catch(() => null);
-          if (data !== null && Object.keys(data).length) return data as WorkspaceThreadMetadata;
-        }
-        return null;
+        const data = await bb.sdk.threads.getPluginMetadata({ threadId: id, pluginId: INITIATIVES_PLUGIN_ID }).catch(() => null);
+        return data !== null && Object.keys(data).length ? (data as WorkspaceThreadMetadata) : null;
       };
       const self = await bb.sdk.threads.get({ threadId });
       const coordinatorId = self.parentThreadId ?? self.id;
@@ -1133,15 +1129,10 @@ export default async function plugin(bb: BbPluginApi) {
       // error is reported as degraded naming, not dropped rows.
       let tree: ProjectTree | null = null;
       let degraded: string | null = null;
-      // The plugin moved from `projects` to `initiatives`; whichever runs
-      // serves the tree, so the order of the switch does not matter.
-      const plugins = (await bb.sdk.plugins.list()).plugins;
-      const provider = INITIATIVE_PLUGIN_IDS.find((id) =>
-        plugins.some((plugin) => plugin.id === id && plugin.enabled && plugin.status === "running"),
-      );
-      if (provider) {
+      const initiatives = (await bb.sdk.plugins.list()).plugins.find((plugin) => plugin.id === INITIATIVES_PLUGIN_ID);
+      if (initiatives?.enabled && initiatives.status === "running") {
         try {
-          tree = await bb.sdk.plugins.callRpc({ pluginId: provider, method: "tree", input: null, outputSchema: treeSchema });
+          tree = await bb.sdk.plugins.callRpc({ pluginId: INITIATIVES_PLUGIN_ID, method: "tree", input: null, outputSchema: treeSchema });
         } catch (error) {
           degraded = `The Initiatives tree could not be read; names are native fallbacks. ${error instanceof Error ? error.message : String(error)}`;
         }

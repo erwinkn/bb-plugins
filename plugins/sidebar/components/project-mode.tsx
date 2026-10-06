@@ -26,7 +26,7 @@ import {
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import type { projectModeContract } from "../lib/project-mode-contract";
-import { INITIATIVES_CHANGED, initiativesPanel } from "../lib/project-mode-names";
+import { INITIATIVES_CHANGED, INITIATIVES_PANEL } from "../lib/project-mode-names";
 import type { ProjectTree } from "../lib/project-tree-schema";
 import { updateState, useClientState } from "../lib/client-state";
 import {
@@ -98,7 +98,6 @@ export function ProjectMode(props: PluginThreadListProps) {
   const connection = useRealtimeConnectionState();
   const [tree, setTree] = useState<ProjectTree | null>(null);
   const [available, setAvailable] = useState<boolean | null>(null);
-  const [panel, setPanel] = useState(initiativesPanel());
   const [error, setError] = useState<string | null>(null);
   const report = (cause: unknown) =>
     setError(cause instanceof Error ? cause.message : String(cause));
@@ -118,7 +117,6 @@ export function ProjectMode(props: PluginThreadListProps) {
     const read = apiRef.current.call("projectMode", { known: revision.current }).then(result => {
       if (mounted.current) {
         setAvailable(result.available);
-        if (result.pluginId) setPanel(initiativesPanel(result.pluginId));
         if (!result.unchanged) { setTree(result.tree); revision.current = result.revision ?? null; }
         applyRef.current(result.order, result.orderError); setError(null);
       }
@@ -257,7 +255,7 @@ export function ProjectMode(props: PluginThreadListProps) {
         <a
           className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
           onClick={props.onNavigate}
-          href={panel}
+          href={INITIATIVES_PANEL}
         >
           Overview
         </a>
@@ -296,7 +294,7 @@ export function ProjectMode(props: PluginThreadListProps) {
             <a
               className="underline"
               onClick={props.onNavigate}
-              href={`${panel}/new`}
+              href={`${INITIATIVES_PANEL}/new`}
             >
               Start an initiative
             </a>
@@ -334,7 +332,7 @@ export function ProjectMode(props: PluginThreadListProps) {
                   href={
                     p.coordinatorThreadId && coordinator
                       ? `/projects/${coordinator.bbProjectId}/threads/${p.coordinatorThreadId}`
-                      : `${panel}/${p.id}`
+                      : `${INITIATIVES_PANEL}/${p.id}`
                   }
                   canReorder={displayed.length > 1}
                   active={active}
@@ -361,7 +359,6 @@ export function ProjectMode(props: PluginThreadListProps) {
                     props.onNavigate();
                   }}
                   onOverview={props.onNavigate}
-                  panel={panel}
                   onRename={(name) => renameProject(p.id, name)}
                   onAppearance={(patch) => restyleProject(p.id, patch)}
                   onNewThread={props.onNavigate}
@@ -420,7 +417,6 @@ function ProjectRow({
   onNewThread,
   onMenuOpen,
   isCompactViewport,
-  panel,
 }: {
   project: TreeProject;
   href: string;
@@ -436,12 +432,11 @@ function ProjectRow({
   onNewThread: () => void;
   onMenuOpen: () => void;
   isCompactViewport: boolean;
-  panel: string;
 }) {
   const scope = usePortalScopeProps();
   // toPluginPanel is scoped to Sidebar. A cross-plugin link opens the frozen
   // Initiatives composer route; BB/Initiatives own selection, creation and parenting.
-  const composeHref = `${panel}/${encodeURIComponent(project.id)}/compose`;
+  const composeHref = `${INITIATIVES_PANEL}/${encodeURIComponent(project.id)}/compose`;
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [styling, setStyling] = useState(false);
@@ -713,7 +708,7 @@ function ProjectRow({
                 </ContextMenu.Item>
                 <ContextMenu.Item className={menuItemClass} asChild>
                   <a
-                    href={`${panel}/${project.id}`}
+                    href={`${INITIATIVES_PANEL}/${project.id}`}
                     onClick={onOverview}
                   >
                     Initiative overview
