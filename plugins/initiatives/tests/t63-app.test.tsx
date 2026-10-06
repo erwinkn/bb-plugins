@@ -36,8 +36,9 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
     fireEvent.click(slot.getByRole("tab", { name: "Threads" }));
     await waitFor(() => expect(inventory).toHaveBeenCalledTimes(1));
     expect(overview).toHaveBeenCalledTimes(3); expect(overview.mock.calls[0][0]).toEqual({ projectId: project.id, detail: "summary" });
-    pending.resolve(o); await beat(); slot.unmount();
-    await slot.behavior.emitRealtime("initiatives-changed", {}); await beat(); expect(overview).toHaveBeenCalledTimes(3);
+    // T125: the signal that landed during the held read may postdate it, so one read follows it.
+    pending.resolve(o); await waitFor(() => expect(overview).toHaveBeenCalledTimes(4)); await beat(); expect(overview).toHaveBeenCalledTimes(4); slot.unmount();
+    await slot.behavior.emitRealtime("initiatives-changed", {}); await beat(); expect(overview).toHaveBeenCalledTimes(4);
   });
 
   it("first realtime connection does not duplicate the mount; a genuine reconnect refreshes once", async () => {

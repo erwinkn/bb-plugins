@@ -816,7 +816,12 @@ README; none were filed.
 
 The dashboard requests one compact overview on mount. Realm-local reads share an
 in-flight request per Initiative/key, keep the last valid value on refresh
-failure, and invalidate pre-save reads at the command boundary. The catalog owns
+failure, and invalidate pre-save reads at the command boundary. A ledger signal
+that lands while a read or save is in flight schedules one more read after it
+instead of joining it, because that read may predate the change (T125: a
+just-delegated worker stayed missing until the 15 s poll). The Sidebar's tree
+refresh follows the same rule; there BB's own thread listing starts such a read,
+since it shows the spawned thread before the ledger records it. The catalog owns
 its list subscription only while visible. Threads, Usage and Log load detailed
 member/usage data when first opened; repository controls load native inventory on
 demand. Ledger signals carry Initiative identity when known, with global polling

@@ -217,18 +217,44 @@ describe("Projects sidebar mode", () => {
   it("T63 shares pending reads and coalesces ledger signals without withholding the initial tree", async () => {
     let release!: (value: unknown) => void;
     const held = new Promise(resolve => { release = resolve; });
-    const read = vi.fn(() => held);
+    const read = vi.fn((_input: unknown) => read.mock.calls.length === 1 ? held : { available: true, tree, order: null, orderError: null });
     const slot = mount(true, { rpc: { projectMode: read } });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
     for (let n = 0; n < 5; n++) await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); });
     expect(read).toHaveBeenCalledTimes(1);
+    // T125: the signals may postdate the held read, so exactly one read follows it.
     await act(async () => { release({ available: true, tree, order: null, orderError: null }); });
     await slot.findByRole("link", { name: "Open Useful search" });
-    for (let n = 0; n < 5; n++) await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    for (let n = 0; n < 5; n++) await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); }); expect(read).toHaveBeenCalledTimes(3);
     await slot.behavior.emitRealtime("initiatives-changed", {}); slot.unmount();
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); }); expect(read).toHaveBeenCalledTimes(2);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); }); expect(read).toHaveBeenCalledTimes(3);
+  });
+
+  it("T125 lists a just-delegated worker when its signal lands during a read that predates it", async () => {
+    // The tree before the delegate recorded W1, and after.
+    const before = { ...tree, projects: [{ ...tree.projects[0], nodes: tree.projects[0].nodes.filter(n => n.role === "coordinator") }] };
+    const answers: ((value: unknown) => void)[] = [];
+    const read = vi.fn((_input: unknown) => read.mock.calls.length === 1
+      ? { available: true, tree: before, order: null, orderError: null }
+      : new Promise(resolve => answers.push(resolve)));
+    const slot = mount(true, { rpc: { projectMode: read } });
+    await slot.findByRole("link", { name: "Open Useful search" });
+    expect(slot.queryByText("W1 Search reviewer")).toBeNull();
+    // BB lists the spawned thread first: a read starts before the ledger has W1.
+    await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    // The delegate's own signal arrives while that read is still in flight.
+    await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); });
+    await act(async () => { answers[0]!({ available: true, tree: before, order: null, orderError: null }); });
+    // No reload and no 15 s poll: one more read lists the worker.
+    await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    await act(async () => { answers[1]!({ available: true, tree, order: null, orderError: null }); });
+    expect(await slot.findByText("W1 Search reviewer")).toBeTruthy();
   });
 
   it("T112 keeps the current tree when a refresh answers unchanged", async () => {

@@ -4,6 +4,8 @@ export class SharedReads {
     data: unknown; error: string | null; loaded: boolean; epoch: number;
     pending: Promise<void> | null; listeners: Set<() => void>; holds: number;
     timer?: ReturnType<typeof setTimeout>;
+    /** A change arrived while a read or save was in flight: read again once it clears. */
+    again?: () => Promise<unknown>;
   }>();
   entry(key: string) {
     let entry = this.entries.get(key);
@@ -23,17 +25,32 @@ export class SharedReads {
       if (entry.epoch === epoch) { entry.data = data; entry.error = null; entry.loaded = true; this.publish(key); }
     }, error => {
       if (entry.epoch === epoch) { entry.error = error instanceof Error ? error.message : String(error); entry.loaded = true; this.publish(key); }
-    }).finally(() => { if (entry.pending === pending) entry.pending = null; });
+    }).finally(() => { if (entry.pending === pending) entry.pending = null; this.catchUp(key); });
     entry.pending = pending;
     return pending;
   }
+  /**
+   * A change announced while a read is in flight may postdate what that read
+   * returns (a delegate's signal during a read another signal started), so the
+   * scheduled read runs after it instead of joining it. A save in progress
+   * defers it the same way.
+   */
   schedule(key: string, fetch: () => Promise<unknown>) {
     const entry = this.entry(key);
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
       entry.timer = undefined;
-      if (entry.listeners.size) void this.refresh(key, fetch);
+      if (!entry.listeners.size) return;
+      if (entry.pending || entry.holds) entry.again = fetch;
+      else void this.refresh(key, fetch);
     }, 150);
+  }
+  private catchUp(key: string) {
+    const entry = this.entry(key);
+    const again = entry.again;
+    if (!again || entry.pending || entry.holds) return;
+    entry.again = undefined;
+    if (entry.listeners.size) void this.refresh(key, again);
   }
   subscribe(key: string, listener: () => void) {
     const entry = this.entry(key); entry.listeners.add(listener);
@@ -68,6 +85,7 @@ export class SharedReads {
       if (ended) return; ended = true;
       entry.holds--; entry.epoch++; entry.pending = null;
       if (update && entry.data !== null) { entry.data = update(entry.data); this.publish(key); }
+      this.catchUp(key);
     };
   }
 }

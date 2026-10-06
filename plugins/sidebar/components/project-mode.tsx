@@ -113,22 +113,35 @@ export function ProjectMode(props: PluginThreadListProps) {
   // Refreshes are conditional: an unchanged tree comes back as a few bytes
   // and keeps the current tree object, so nothing re-renders for it.
   const revision = useRef<string | null>(null);
-  const refresh = useCallback(() => {
+  // A change announced while a read is in flight may postdate what that read
+  // returns: BB lists a spawned worker's thread before Initiatives records it,
+  // and the Initiatives signal can land during the read that listing started.
+  // A scheduled refresh then runs once more after it instead of joining it.
+  const again = useRef(false);
+  const refresh = useCallback(function read(): Promise<void> {
     if (pending.current) return pending.current;
-    const read = apiRef.current.call("projectMode", { known: revision.current }).then(result => {
+    const call = apiRef.current.call("projectMode", { known: revision.current }).then(result => {
       if (mounted.current) {
         setAvailable(result.available);
         if (!result.unchanged) { setTree(result.tree); revision.current = result.revision ?? null; }
         applyRef.current(result.order, result.orderError); setError(null);
       }
     }, error => { if (mounted.current) setError(error instanceof Error ? error.message : String(error)); })
-      .finally(() => { if (pending.current === read) pending.current = null; });
-    pending.current = read;
-    return read;
+      .finally(() => {
+        if (pending.current === call) pending.current = null;
+        if (again.current && mounted.current) { again.current = false; void read(); }
+      });
+    pending.current = call;
+    return call;
   }, []);
   const schedule = useCallback(() => {
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => { timer.current = null; if (mounted.current) void refresh(); }, 200);
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      if (!mounted.current) return;
+      if (pending.current) again.current = true;
+      else void refresh();
+    }, 200);
   }, [refresh]);
   useEffect(() => {
     mounted.current = true; void refresh();
