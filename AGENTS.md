@@ -30,7 +30,7 @@ requests for routine work.
   orchestrator reloads and commits. When a child has reported and its work is
   committed or reverted, the orchestrator archives it.
 - Spawn children on the Linux checkout environment `env_kdfdhsjp6x` (path
-  `/home/exedev/Code/bb-plugins`), never on `env_pepnyn24rr` (its registered
+  `/home/erwin/Code/bb-plugins`), never on `env_pepnyn24rr` (its registered
   path is the Mac checkout), always with `--permission-mode full`.
   Implementation children run on Devin SWE-2 at high reasoning; investigation
   and feasibility children run on Codex GPT-5.6 Sol at high reasoning. Keep
