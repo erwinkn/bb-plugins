@@ -77,6 +77,24 @@ export default function plugin(bb: BbPluginApi) {
       /* sidebar absent */
     }
   };
+  // Every ledger write goes through this one connection, so its change
+  // counter versions the ledger: the tree and list are rebuilt only after a
+  // write, and a sweep that wrote nothing announces nothing.
+  const ledgerVersion = () =>
+    (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+  // Every entry point that can write (RPC command, agent tool, CLI, sweep)
+  // runs in one announcing scope: a write announces itself once, also when
+  // the work throws after saving, and work that wrote nothing announces nothing.
+  const announcing = async <T,>(work: () => T | Promise<T>, scope?: () => string | undefined): Promise<T> => {
+    const before = ledgerVersion();
+    try {
+      return await work();
+    } finally {
+      if (ledgerVersion() !== before) changed(scope?.());
+    }
+  };
+  const projectOf = (threadId?: string) =>
+    threadId ? store.membership(threadId, true)?.project.id : undefined;
   // Native calls yield. Serialize mutations so concurrent requests cannot both
   // decide that a worker or shared workspace is available.
   let writes: Promise<unknown> = Promise.resolve();
@@ -86,13 +104,7 @@ export default function plugin(bb: BbPluginApi) {
     author: "user" | "coordinator",
     threadId: string | null,
   ) => {
-    const run = async () => {
-      try {
-        return await runCommand(service, id, command, author, threadId);
-      } finally {
-        changed(id);
-      }
-    };
+    const run = () => runCommand(service, id, command, author, threadId);
     if (
       ["answer", "blocker-answer", "blocker-dismiss", "pause", "assignment-stop", "stop-work"].includes(
         command.action,
@@ -230,11 +242,6 @@ export default function plugin(bb: BbPluginApi) {
     workers.forEach(visit);
     return ordered;
   };
-  // Every ledger write goes through this one connection, so its change
-  // counter versions the ledger: the tree and list are rebuilt only after a
-  // write, and a sweep that wrote nothing announces nothing.
-  const ledgerVersion = () =>
-    (db.prepare("SELECT total_changes() AS n").get() as { n: number }).n;
   const memo = <T,>(build: () => T) => {
     let cached: { version: number; value: T } | null = null;
     return (): T => {
@@ -357,15 +364,12 @@ export default function plugin(bb: BbPluginApi) {
     command: ({ projectId, command }) => {
       if (command.action === "thread-create" && "prompt" in command) {
         if (!projectId) throw new ProjectError("Pass an Initiative ID.");
-        const run = async () => {
-          try { return await service.createLegacyUserThread(projectId, command); }
-          finally { changed(); }
-        };
+        const run = () => service.createLegacyUserThread(projectId, command);
         const next = writes.then(run, run);
         writes = next.catch(() => undefined);
-        return next;
+        return announcing(() => next, () => projectId);
       }
-      return perform(projectId, command, "user", null);
+      return announcing(() => perform(projectId, command, "user", null), () => projectId);
     },
     inventory: async () => {
       const projects = await bb.sdk.projects.list({ includePersonal: false });
@@ -575,7 +579,11 @@ export default function plugin(bb: BbPluginApi) {
   });
   // New configurations advertise canonical names only. Retained native sessions
   // may still call their already-constructed old allowlist; no runtime restart.
-  const registerTool: typeof bb.agents.registerTool = (definition: Parameters<typeof bb.agents.registerTool>[0]) => {
+  const registerTool: typeof bb.agents.registerTool = (tool: Parameters<typeof bb.agents.registerTool>[0]) => {
+    const definition: typeof tool = {
+      ...tool,
+      execute: (input, context) => announcing(() => tool.execute(input, context), () => projectOf(context.threadId)),
+    };
     bb.agents.registerTool(definition);
     const suffix = definition.name.replace(/^initiative_/, "");
     if (!LEGACY_TOOL_NAMES.includes(suffix as typeof LEGACY_TOOL_NAMES[number])) return;
@@ -682,7 +690,6 @@ export default function plugin(bb: BbPluginApi) {
       if (input.action === "answer") {
         const { projectId, recordedBy } = chatAnswerRecorder(threadId);
         const answered = await service.answerOpinion(projectId, input.decision, input, recordedBy);
-        changed();
         return JSON.stringify({ ref: answered.ref, description: answered.description, madeBy: answered.madeBy, status: answered.status, recordedBy, notification: answered.notification });
       }
       const { projectId, recordedBy: provenance } = chatAnswerRecorder(threadId);
@@ -695,13 +702,11 @@ export default function plugin(bb: BbPluginApi) {
         result = await service.cleanupDecision(projectId, input.decision, input.operation, input.reason, threadId);
       } else if (input.action === "question-withdraw") {
         const withdrawn = service.withdrawQuestion(projectId, input.decision, input.reason, provenance);
-        changed();
         const body = withdrawn.body as { question?: string };
         return JSON.stringify({ ref: withdrawn.ref, status: withdrawn.status, madeBy: withdrawn.madeBy, question: body.question ?? withdrawn.title,
           resolution: withdrawn.body.resolution, recordedBy: withdrawn.provenance, notification: withdrawn.notification,
           tasks: withdrawn.blocks.map(num => store.task(projectId, num)).filter(task => task !== null).map(task => ({ ref: task.ref, status: task.status, progress: task.progress })) });
       } else result = service.recordDecision(projectId, input, provenance);
-      changed();
       return JSON.stringify({ ref: result.ref, description: result.description, madeBy: result.madeBy, status: result.status, review: result.review, cleanupHistory: result.body.cleanupHistory, recordedBy: result.provenance });
     },
   });
@@ -770,7 +775,6 @@ export default function plugin(bb: BbPluginApi) {
       if (!threadId) throw new ProjectError("Report from the worker thread.");
       await ensureMember(threadId);
       const result = await service.report(threadId, input);
-      changed();
       return JSON.stringify(result);
     },
   });
@@ -789,7 +793,6 @@ export default function plugin(bb: BbPluginApi) {
         throw new ProjectError("Report progress from the worker thread.");
       await ensureMember(threadId);
       const result = service.progress(threadId, input);
-      changed();
       return JSON.stringify(result);
     },
   });
@@ -828,7 +831,7 @@ export default function plugin(bb: BbPluginApi) {
         usage: "bb initiative reconcile",
       },
     ],
-    async run(argv, ctx) {
+    run: (argv, ctx) => announcing(async () => {
       try {
         const args = argv.filter((a) => a !== "--json");
         const [action, value, explicitId] = args;
@@ -869,11 +872,9 @@ export default function plugin(bb: BbPluginApi) {
           } else if (ctx.threadId && command.action === "answer") {
             const { projectId, recordedBy } = chatAnswerRecorder(ctx.threadId, id);
             result = await service.answerOpinion(projectId, command.decision, command, recordedBy);
-            changed();
           } else if (ctx.threadId && command.action === "decision" && member?.workerNum !== 0) {
             const { projectId, recordedBy } = chatAnswerRecorder(ctx.threadId, id);
             result = service.recordDecision(projectId, command, recordedBy);
-            changed();
           } else {
             if (ctx.threadId && command.action !== "create") {
               if (!member || member.former || member.workerNum !== 0)
@@ -895,10 +896,8 @@ export default function plugin(bb: BbPluginApi) {
               .safeExtend({ assignment: z.string().optional() })
               .parse(JSON.parse(value)),
           );
-          changed();
         } else if (action === "reconcile" && args.length === 1) {
           result = await service.reconcile();
-          changed();
         } else
           throw new ProjectError(
             "Usage: bb initiative list | overview [id] | read <view> [id] | message '<json>' | command '<json>' [id] | report '<json>' | reconcile",
@@ -912,7 +911,7 @@ export default function plugin(bb: BbPluginApi) {
       } catch (error) {
         return { exitCode: 1, stderr: errorMessage(error) };
       }
-    },
+    }, () => projectOf(ctx.threadId)),
   });
   const event = scopedNativeEvent(store, changed);
   bb.events.on(
@@ -979,5 +978,7 @@ export default function plugin(bb: BbPluginApi) {
       }
     },
   });
-  return { service, store, runtime, perform, overview, tree, preferences };
+  // Tests drive commands as an entry point would, announcement included.
+  const command = (...args: Parameters<typeof perform>) => announcing(() => perform(...args), () => args[0]);
+  return { service, store, runtime, perform: command, overview, tree, preferences };
 }

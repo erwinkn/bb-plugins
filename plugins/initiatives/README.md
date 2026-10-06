@@ -825,7 +825,10 @@ since it shows the spawned thread before the ledger records it. The catalog owns
 its list subscription only while visible. Threads, Usage and Log load detailed
 member/usage data when first opened; repository controls load native inventory on
 demand. Ledger signals carry Initiative identity when known, with global polling
-and reconnect fallbacks. Native navigation, queues and authority guards remain BB's.
+and reconnect fallbacks. Every entry point that can write (dashboard command, agent
+tool, CLI, sweep) runs in one announcing scope that compares the ledger's change
+counter around its work: a write announces itself exactly once, also when the work
+throws after saving, and a refused command or a read announces nothing (T129). Native navigation, queues and authority guards remain BB's.
 
 A command returns after its durable save and any required native receipt, without
 awaiting optional dashboard or Sidebar refreshes. The UI displays that committed

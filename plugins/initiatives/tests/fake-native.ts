@@ -223,6 +223,8 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
       return envs.get(environmentId);
     },
   );
+  // The Threads sidebar's change bump (initiativesChanged) and any other plugin RPC.
+  const pluginRpc = vi.fn(async (_args: { pluginId: string; method: string; input?: unknown }) => ({ ok: true }));
   const send = vi.fn<(...args: any[]) => Promise<any>>(
     async (args: Record<string, any>) => {
       const previous = execution.get(args.threadId);
@@ -258,6 +260,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     ...(options.dataDir ? { dataDir: options.dataDir } : {}),
     agentSkillIds: ["initiative-coordinator", "initiative-worker"],
     sdk: {
+      plugins: { callRpc: pluginRpc },
       projects: {
         get: async () => ({
           id: "proj_a",
@@ -483,6 +486,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     spawn,
     fork,
     send,
+    pluginRpc,
     archive,
     update,
     stop,
