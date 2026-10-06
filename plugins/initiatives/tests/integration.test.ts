@@ -207,7 +207,7 @@ describe("uncertain operations", () => {
 });
 
 describe("reports and acceptance", () => {
-  it("records a report, holds tasks for acceptance, and skips a notify for native children", async () => {
+  it("records a report, keeps the task open, and skips a notify for native children", async () => {
     const { f, project } = await projectFixture();
     const t1 = f.task(project.id);
     const [d] = await f.service.delegate(project.id, {
@@ -217,9 +217,8 @@ describe("reports and acceptance", () => {
     await f.service.report(d.threadId!, report());
     const a = f.store.assignments(project.id)[0]!;
     expect(a.state).toBe("reported");
-    expect(f.store.task(project.id, t1.num)!.status).toBe(
-      "awaiting_acceptance",
-    );
+    // T136: a report never closes a task; the coordinator does.
+    expect(f.store.task(project.id, t1.num)!.status).toBe("in_progress");
     // Native parenting already delivers the notice; no plugin copy is sent.
     expect(f.send).not.toHaveBeenCalled();
   });
@@ -250,7 +249,7 @@ describe("reports and acceptance", () => {
     expect(f.send.mock.calls[0]![0].threadId).toBe("coordinator");
   });
 
-  it("accepts verified work and leaves retirement to an explicit action", async () => {
+  it("closes a reported task without any acceptance and leaves retirement to an explicit action", async () => {
     const { f, project } = await projectFixture();
     const t1 = f.task(project.id);
     const [d] = await f.service.delegate(project.id, {
@@ -258,12 +257,11 @@ describe("reports and acceptance", () => {
       tasks: [t1.ref],
     });
     await f.service.report(d.threadId!, report());
-    const result = await f.service.acceptTask(project.id, t1.ref, {});
-    expect(result.task.status).toBe("done");
-    expect(result.workerNote).toMatch(/Retire W1/);
-    expect(
-      f.store.assignments(project.id)[0]!.state,
-    ).toBe("accepted");
+    const task = await f.service.closeTask(project.id, t1.ref, "done");
+    expect(task.status).toBe("done");
+    expect(task.acceptedAssignment).toBe(1);
+    // The report stays as filed: nothing is accepted.
+    expect(f.store.assignments(project.id)[0]!.state).toBe("reported");
     // No automatic archive: the worker's thread stays live until the
     // coordinator explicitly retires it after confirming idle.
     expect(f.archive).not.toHaveBeenCalled();
@@ -279,7 +277,7 @@ describe("explicit retirement", () => {
       tasks: [t1.ref],
     });
     await f.service.report(d.threadId!, report());
-    await f.service.acceptTask(project.id, t1.ref, {});
+    await f.service.closeTask(project.id, t1.ref, "done");
     return { f, project, worker: f.store.workers(project.id)[0]!, d };
   }
 
@@ -489,7 +487,7 @@ describe("overview", () => {
     // for acceptance instead — old accepted work never counts.
     expect(o.inFlight.map((i) => i.assignment)).toEqual(["A1"]);
     expect(o.awaitingAcceptance.map((i) => i.assignment)).toEqual(["A2"]);
-    await f.service.acceptTask(project.id, t2.ref, {});
+    await f.service.closeTask(project.id, t2.ref, "done");
     const after = buildOverview(f.store, project.id, live, f.store.now());
     expect(after.inFlight.map((i) => i.assignment)).toEqual(["A1"]);
     expect(after.awaitingAcceptance).toHaveLength(0);
@@ -602,159 +600,31 @@ describe("explicit assignment access", () => {
   });
 });
 
-describe("assignment access guards and persistence", () => {
-  const restart = (f: ReturnType<typeof fixture>) =>
-    new ProjectsService(f.service.bb, new Store(f.store.db), f.preferences);
-
-  it("exposes read-only coordination in the canonical schema and retained-session CLI", async () => {
+describe("overlapping writers (T136)", () => {
+  it("warns about another writer in the same checkout and never refuses", async () => {
     const { f, project } = await projectFixture();
-    const tool = f.harness.registrations.agentTools.find((t) => t.name === "initiative_delegate")!;
-    const schema = tool.inputSchema as any;
-    expect(schema.properties.access.enum).toEqual(["read-only", "write"]);
-    expect(schema.properties.access.description).toContain("not a filesystem sandbox");
-    expect(schema.properties.access.description).toContain("full native permissions");
-    expect(schema.required ?? []).not.toContain("access");
-    const task = f.task(project.id);
-    const result = await f.harness.runCli(["command", JSON.stringify({
-      action: "delegate", route: "fresh", tasks: [task.ref], label: "Audit", area: "Search audit", access: "read-only", permissionMode: "full",
-    }), project.id]);
-    expect(result.exitCode).toBe(0);
-    expect(f.store.assignments(project.id)[0]).toMatchObject({ access: "read-only", role: "work" });
-    expect(f.spawn.mock.calls[0][0].permissionMode).toBe("full");
-    const prompt = f.spawn.mock.calls[0][0].prompt;
-    expect(prompt).toContain("Access: read-only");
-    expect(prompt).toContain("Do not write source or install state, even with full native permissions");
-    expect(prompt).toContain("actual revision/source state checked");
-    expect(prompt).toContain("not a filesystem sandbox");
+    const first = f.task(project.id, "First");
+    const second = f.task(project.id, "Second");
+    await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref] });
+    const [result] = await f.service.delegate(project.id, { route: "fresh", tasks: [second.ref] });
+    expect(result.state).toBe("running");
+    expect(result.warnings).toEqual([expect.stringMatching(/^W1 is also writing in this checkout \(A1, running\)/)]);
   });
 
-  it.each(["read", true, null, ""])('rejects invalid explicit access %j', (access) => {
-    expect(commandSchema.safeParse({ action: "delegate", route: "fresh", tasks: ["T1"], label: "Audit", area: "src", access }).success).toBe(false);
+  it("does not warn for a writer in a worktree or for reviewers", async () => {
+    const { f, project } = await projectFixture();
+    const first = f.task(project.id, "First");
+    const second = f.task(project.id, "Second");
+    await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref] });
+    const [isolated] = await f.service.delegate(project.id, { route: "fresh", tasks: [second.ref], environment: { type: "worktree" } });
+    expect(isolated.warnings).toBeUndefined();
   });
 
-  it.each([
-    [undefined, undefined], ["write", "write"], [undefined, "write"], ["write", undefined],
-  ] as const)("keeps overlapping writers blocked with %s then %s", async (firstAccess, secondAccess) => {
+  it("warns when a task is also with another live worker", async () => {
     const { f, project } = await projectFixture();
-    const first = f.task(project.id);
-    const second = f.task(project.id, "Other work");
-    await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref], access: firstAccess });
-    await expect(restart(f).delegate(project.id, { route: "fresh", tasks: [second.ref], access: secondAccess })).rejects.toThrow(/overlapping paths/);
-    expect(f.spawn).toHaveBeenCalledTimes(1);
-    expect(f.store.assignments(project.id)[0].access).toBe("write");
-  });
-
-  it("does not infer read-only from investigation kind, labels or task text", async () => {
-    const { f, project } = await projectFixture();
-    const audit = f.service.createTask(project.id, {
-      title: "Read-only audit", summary: "Only investigate; do not change anything", brief: brief(), workKind: "investigation",
-    }, "coordinator");
-    await f.service.delegate(project.id, { route: "fresh", tasks: [audit.ref], label: "Read-only auditor", area: "Investigation" });
-    const other = f.task(project.id);
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [other.ref] })).rejects.toThrow(/overlapping paths/);
-    expect(f.store.assignments(project.id)[0].access).toBe("write");
-  });
-
-  it("allows overlapping writers in different environments", async () => {
-    const { f, project } = await projectFixture();
-    const first = f.task(project.id);
-    const second = f.task(project.id);
-    await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref], environment: { type: "reuse", environmentId: "env_a" }, access: "write" });
-    await f.service.delegate(project.id, { route: "fresh", tasks: [second.ref], environment: { type: "reuse", environmentId: "env_b" }, access: "write" });
-    expect(f.store.assignments(project.id).map((a) => a.environmentId)).toEqual(["env_a", "env_b"]);
-  });
-
-  it("read-only still obeys Pause and same-task ownership", async () => {
-    const { f, project } = await projectFixture();
-    const task = f.task(project.id);
-    f.service.setPaused(project.id, true);
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref], access: "read-only" })).rejects.toThrow(/paused/);
-    expect(f.spawn).not.toHaveBeenCalled();
-    f.service.setPaused(project.id, false);
-    await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref], access: "read-only" });
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref], access: "read-only" })).rejects.toThrow(/already has A1/);
-    expect(f.spawn).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps reviewers read-only even when write is requested", async () => {
-    const { f, project } = await projectFixture();
-    const task = f.task(project.id);
-    const [implementation] = await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
-    await f.service.report(implementation.threadId!, report());
-    const [review] = await f.service.delegate(project.id, { route: "fresh", role: "review", reviewOf: [task.ref], access: "write" });
-    expect(f.store.assignments(project.id).at(-1)).toMatchObject({ role: "review", access: "read-only" });
-    expect(f.spawn.mock.calls.at(-1)![0].prompt).toContain("Access: read-only");
-    await f.service.report(review.threadId!, report());
-    f.idle(review.threadId!);
-    const other = f.task(project.id);
-    await expect(f.service.delegate(project.id, { route: "continue", worker: review.worker, tasks: [other.ref], access: "read-only" })).rejects.toThrow(/reviewer/);
-  });
-
-  it.each(["continue", "fork"] as const)("%s persists an explicit audit declaration in a retained context", async (route) => {
-    const { f, project } = await projectFixture();
-    const first = f.task(project.id);
-    const [source] = await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref], access: "read-only" });
-    await f.service.report(source.threadId!, report());
-    await f.service.acceptTask(project.id, first.ref, {});
-    f.idle(source.threadId!);
-    const writer = f.task(project.id);
-    await f.service.delegate(project.id, { route: "fresh", tasks: [writer.ref] });
-    const next = f.task(project.id);
-    await restart(f).delegate(project.id, { route, worker: source.worker, tasks: [next.ref], access: "read-only", environment: { type: "reuse", environmentId: "env_a" } });
-    expect(new Store(f.store.db).assignments(project.id).at(-1)).toMatchObject({ route, access: "read-only", role: "work" });
-    const prompt = route === "continue" ? f.send.mock.calls.at(-1)![0].input[0].text : f.fork.mock.calls.at(-1)![0].input[0].text;
-    expect(prompt).toContain("Access: read-only");
-  });
-
-  it.each(["continue", "fork"] as const)("%s omission defaults to a writer instead of inheriting audit access", async (route) => {
-    const { f, project } = await projectFixture();
-    const first = f.task(project.id);
-    const [source] = await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref], access: "read-only" });
-    await f.service.report(source.threadId!, report());
-    await f.service.acceptTask(project.id, first.ref, {});
-    f.idle(source.threadId!);
-    const next = f.task(project.id);
-    await restart(f).delegate(project.id, { route, worker: source.worker, tasks: [next.ref], environment: { type: "reuse", environmentId: "env_a" } });
-    expect(new Store(f.store.db).assignments(project.id).at(-1)).toMatchObject({ route, access: "write" });
-    const other = f.task(project.id);
-    await expect(restart(f).delegate(project.id, { route: "fresh", tasks: [other.ref] })).rejects.toThrow(/overlapping paths/);
-  });
-
-  it.each(["read-only", "write"] as const)("queued %s access survives restart and dispatch", async (access) => {
-    const { f, project } = await projectFixture();
-    const first = f.task(project.id);
-    const [source] = await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref], access });
-    await f.service.report(source.threadId!, report());
-    await f.service.acceptTask(project.id, first.ref, {});
-    f.idle(source.threadId!);
-    const next = f.task(project.id);
-    f.queueSend("audit-queue");
-    await f.service.delegate(project.id, { route: "continue", worker: source.worker, tasks: [next.ref], access });
-    const service = restart(f);
-    expect(service.store.assignment(project.id, 2)).toMatchObject({ access, state: "queued", queuedMessageId: "audit-queue" });
-    const other = f.task(project.id);
-    const dispatch = service.delegate(project.id, { route: "fresh", tasks: [other.ref] });
-    if (access === "write") await expect(dispatch).rejects.toThrow(/overlapping paths/);
-    else expect((await dispatch)[0].state).toBe("running");
-    f.runtime.onMessageDispatched("audit-queue");
-    expect(new Store(f.store.db).assignment(project.id, 2)).toMatchObject({ access, state: "running", queuedMessageId: null });
-  });
-
-  it.each(["read-only", "write"] as const)("uncertain %s reservations survive restart and cancellation", async (access) => {
-    const { f, project } = await projectFixture();
-    const first = f.task(project.id);
-    f.spawn.mockImplementationOnce(async () => { throw Object.assign(new Error("connection reset"), { status: 0 }); });
-    const [source] = await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref], access });
-    const service = restart(f);
-    expect(service.store.assignment(project.id, 1)).toMatchObject({ access, state: "dispatching", opState: "uncertain" });
-    await expect(service.delegate(project.id, { route: "fresh", tasks: [first.ref], access: "read-only" })).rejects.toThrow(/already has A1/);
-    await expect(service.delegate(project.id, { route: "continue", worker: source.worker, tasks: [first.ref], access: "read-only" })).rejects.toThrow(/unconfirmed operation/);
-    // Cancellation cannot erase an unknown execution's declared access.
-    service.store.updateAssignment(project.id, 1, { state: "cancelled", cancelRequested: true });
-    expect(new Store(f.store.db).assignment(project.id, 1)).toMatchObject({ access, state: "cancelled", opState: "uncertain" });
-    const other = f.task(project.id);
-    const dispatch = restart(f).delegate(project.id, { route: "fresh", tasks: [other.ref] });
-    if (access === "write") await expect(dispatch).rejects.toThrow(/overlapping paths/);
-    else expect((await dispatch)[0].state).toBe("running");
+    const t = f.task(project.id, "Shared");
+    await f.service.delegate(project.id, { route: "fresh", tasks: [t.ref] });
+    const [again] = await f.service.delegate(project.id, { route: "fresh", tasks: [t.ref], environment: { type: "worktree" } });
+    expect(again.warnings).toEqual([`${t.ref} is also with W1 (A1, running).`]);
   });
 });

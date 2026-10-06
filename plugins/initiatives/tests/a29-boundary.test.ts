@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeThreadResponse } from '@get-bb/plugin-sdk/testing';
 import { projectFixture, report } from './fake-native';
+import { expectWarned } from './helpers';
 import type { Sdk, ThreadDto } from '../lib/bb';
 
 /**
@@ -28,7 +29,7 @@ async function continuation() {
   const t1 = f.task(project.id);
   const [d] = await f.service.delegate(project.id, { route:'fresh', tasks:[t1.ref] });
   await f.service.report(d.threadId!, report());
-  await f.service.acceptTask(project.id, t1.ref, {});
+  await f.service.closeTask(project.id, t1.ref, "done");
   f.idle(d.threadId!);
   const worker=f.store.workers(project.id)[0]!;
   return {f,project,worker,t2:f.task(project.id,'Next')};
@@ -57,7 +58,9 @@ async function lostSend() {
   await x.f.service.stopAssignment(x.project.id,'A2','cancel');
   return x;
 }
-const held=(x:any)=>expect(x.f.service.delegate(x.project.id,{route:'fresh',tasks:[x.t2.ref]})).rejects.toThrow();
+// T136: a held reservation is the cancelled operation staying unsettled; new work on its
+// task is then warned about (never refused), so the stored state is the check.
+const held=(x:any)=>expect(['pending','uncertain']).toContain(x.f.store.assignment(x.project.id,2)!.opState);
 
 
 // All activity fields below belong to the installed SDK 0.4.87 list DTO.
@@ -194,7 +197,7 @@ describe('A29 positive, unknown, and fresh-state controls',()=>{
     x.f.harness.sdk.stub('threads.get',async()=>{throw Object.assign(new Error('host unavailable'),{status:503})});
     await x.f.service.reconcile();
     const other=x.f.task(x.project.id,'Other overlapping work');
-    await expect(x.f.service.delegate(x.project.id,{route:'fresh',tasks:[other.ref]})).rejects.toThrow(/overlap|shared|writer|conflict/i);
+    await expectWarned(x.f.service.delegate(x.project.id,{route:'fresh',tasks:[other.ref]}),/W1 is also writing in this checkout \(A2, cancelled\)/);
   });
   it('fresh report during quiet lookup wins over stale thread evidence',async()=>{
     const x=await cancelledDispatched();let first=true;

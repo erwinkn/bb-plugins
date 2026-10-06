@@ -17,7 +17,7 @@ import type { ProjectsService } from "./service";
 import { ProjectError } from "./bb";
 import { messageSchema } from "./messaging";
 import { DECISION_ACTIONS, decisionIssues, normalizeDecisionInput } from "./decision-input";
-import { reportedRetryHint, settlementReceipt } from "./receipts";
+import { settlementReceipt } from "./receipts";
 import { PROJECT_COLORS, PROJECT_ICONS } from "./tree-schema";
 
 const text = (max = 2000) => z.string().trim().min(1).max(max);
@@ -25,7 +25,7 @@ const ref = text(80);
 const refs = z.array(ref).max(30);
 const taskFields = {
   title: text(200),
-  summary: text(),
+  summary: text(20000).optional(),
   brief: briefSchema.optional(),
   priority: z.number().int().min(0).max(5).optional(),
   dependsOn: refs.optional(),
@@ -51,15 +51,15 @@ export const createSchema = z
     ]),
   })
   .strict();
+/** Internal and legacy: spawn (fresh) or work message (continue). Agents use initiative_spawn/initiative_message. */
 export const delegateSchema = z
   .object({
     action: z.literal("delegate"),
-    route: z.enum(["fresh", "continue", "fork"]).default("fresh"),
+    route: z.enum(["fresh", "continue"]).default("fresh"),
     role: z.enum(ROLES).default("work"),
-    access: z.enum(ASSIGNMENT_ACCESS).optional().describe(
-      "Checkout coordination: read-only forbids source/install writes even with full native permissions. Omitted work access is write on every route; reviewers stay read-only. Readers may overlap live edits and must report the exact source state checked. This is not a filesystem sandbox.",
-    ),
+    access: z.enum(ASSIGNMENT_ACCESS).optional(),
     tasks: refs.optional(),
+    reviews: ref.optional(),
     reviewOf: refs.optional(),
     reviewTargets: z.array(z.object({ task: ref, assignment: ref, revision: text(200) }).strict()).min(1).max(20).optional(),
     worker: ref.optional(),
@@ -67,46 +67,24 @@ export const delegateSchema = z
     profile: profileSchema.optional(),
     bbProjectId: ref.optional(),
     environment: environmentSchema.optional(),
-    // Logical identity: required on fresh, an explicit rename on continue,
-    // and inherited-with-optional-rename on fork.
     label: text(200).optional(),
     area: text(300).optional(),
-    note: text(4000).optional(),
-    delivery: z.enum(["steer", "queue"]).optional().describe("Continue only: urgent correction/blocker uses steer; future work uses queue (default). Native BB decides provisioning/interaction/offline queue behavior."),
-    forkAtSeq: z.number().int().positive().optional(),
+    note: text(20000).optional(),
+    delivery: z.enum(["steer", "queue"]).optional(),
     rationale: text().optional(),
-    handoffs: z.array(ref).max(3).optional().describe(
-      "Up to 3 prior A# whose stored reports the brief embeds as standard handoffs: bounded, with provenance and exact evidence pointers. Each must cover these tasks, their dependsOn or their brief contextRefs. Reference only: it transfers no authority, acceptance, receipts, permissions or write scope. Work assignments only.",
-    ),
-    // Approval posture: set on the created thread for fresh/fork and on this
-    // turn's send for continue. Omitting it inherits the environment's
-    // configured default — pass "full" where the repository expects it.
+    handoffs: z.array(ref).max(3).optional(),
     permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    // A plugin-created worker needs a logical name and a purpose; continue
-    // and fork reuse the existing worker's identity instead.
-    if (value.handoffs?.length && value.role === "review") ctx.addIssue({ code: "custom", path: ["handoffs"], message: "Reviews bind reviewTargets and read reports themselves; handoffs are for work assignments." });
-    if (value.delivery && value.route !== "continue") ctx.addIssue({ code: "custom", path: ["delivery"], message: "delivery applies only to continue; fresh/fork have native creation dispatch." });
+    if (value.delivery && value.route !== "continue") ctx.addIssue({ code: "custom", path: ["delivery"], message: "delivery applies only to a message to an existing worker." });
     if (value.route !== "fresh") return;
     if (!value.label?.trim())
-      ctx.addIssue({
-        code: "custom",
-        path: ["label"],
-        message:
-          "A fresh worker needs a logical name (label), shown as its W# title.",
-      });
+      ctx.addIssue({ code: "custom", path: ["label"], message: "A new worker needs a label, shown in its W# title." });
     if (!value.area?.trim())
-      ctx.addIssue({
-        code: "custom",
-        path: ["area"],
-        message:
-          "A fresh worker needs a purpose (area) describing what it is for.",
-      });
+      ctx.addIssue({ code: "custom", path: ["area"], message: "A new worker needs a purpose describing what it is for." });
   });
 export const taskCommands = [
-  z.object({ action: z.literal("task-checkpoint"), task: ref, worker: ref, assignment: ref.optional(), report: reportSchema }).strict(),
   z.object({ action: z.literal("task-create"), ...taskFields }).strict(),
   z
     .object(taskFields)
@@ -115,21 +93,15 @@ export const taskCommands = [
       action: z.literal("task-update"),
       task: ref,
       profile: profileSchema.nullable().optional(),
+      note: text().optional(),
     })
     .strict(),
-  z
-    .object({
-      action: z.literal("task-accept"),
-      task: ref,
-      assignment: ref.optional(),
-      result: text().optional(),
-    })
-    .strict(),
+  z.object({ action: z.literal("task-close"), task: ref, outcome: z.enum(["done", "cancelled"]), note: text().optional() }).strict(),
   z
     .object({ action: z.literal("task-cancel"), task: ref, reason: text() })
     .strict(),
   z
-    .object({ action: z.literal("task-reopen"), task: ref, reason: text() })
+    .object({ action: z.literal("task-reopen"), task: ref, reason: text().optional() })
     .strict(),
   z
     .object({
@@ -146,32 +118,6 @@ export const taskCommands = [
         z.object({ threadId: ref }).strict(),
         z.object({ notSent: z.literal(true) }).strict(),
       ]),
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("review-accept"),
-      assignment: ref,
-    })
-    .strict(),
-  z
-    .object({
-      action: z.literal("assignment-reject"),
-      assignment: ref,
-      reason: text(),
-    })
-    .strict(),
-  // D343: release the write scope a report's listed, unverified background work still
-  // holds, after checking those jobs and once BB shows the thread ended.
-  z
-    .object({
-      action: z.literal("assignment-scope-release"),
-      assignment: ref,
-      // The report version the caller inspected; the release binds to exactly that report.
-      reportVersion: z
-        .string({ error: 'reportVersion is required: copy it from initiative_read {"refs":["A#"]} (reportVersion) or from the hold message.' })
-        .regex(/^[0-9a-f]{16}$/, "reportVersion must be the 16 hex characters initiative_read shows for this assignment."),
-      reason: text(),
     })
     .strict(),
 ] as const;
@@ -191,10 +137,6 @@ export const workerCommands = [
     })
     .strict(),
 ] as const;
-export const decisionCleanupSchema = z.object({
-  action: z.literal("decision-cleanup"), decision: ref,
-  operation: z.enum(["accept", "veto", "remove"]), reason: text(2000),
-}).strict();
 export const decisionCommands = [
   z.object({
     action: z.literal("decision"), decision: lightweightDecisionSchema,
@@ -235,6 +177,9 @@ export const manageCommands = [
         .optional(),
     })
     .strict(),
+  /** T136: write (or rewrite) the handover a replacement coordinator will start from. */
+  z.object({ action: z.literal("handover-draft"), restart: z.boolean().optional(), note: text(6000).optional() }).strict(),
+  z.object({ action: z.literal("handover-draft-discard") }).strict(),
   z.object({ action: z.literal("pause"), paused: z.boolean() }).strict(),
   z.object({ action: z.literal("stop-work") }).strict(),
   z.object({ action: z.literal("archive") }).strict(),
@@ -243,6 +188,9 @@ export const manageCommands = [
       action: z.literal("replace-coordinator"),
       reason: text(),
       profile: profileSchema.optional(),
+      /** T136: the reviewed handover text, used as the new coordinator's first message as-is. */
+      handover: text(20000).optional(),
+      /** Legacy checkpoint text: passed to the generated handover as the outgoing note. */
       checkpoint: text(6000).optional(),
       adoptThreadId: ref.optional(),
       bbProjectId: ref.optional(),
@@ -253,6 +201,9 @@ export const manageCommands = [
     .object({
       action: z.literal("coordinator-handover"),
       reason: text().optional(),
+      /** Optional note from the outgoing coordinator, given to the handover writer. */
+      note: text(6000).optional(),
+      /** Legacy name for note. */
       checkpoint: text(6000).optional(),
       profile: profileSchema.optional(),
       environment: environmentSchema.optional(),
@@ -346,11 +297,15 @@ export const questionWithdrawSchema = z.object({
 export const updateSchema = z
   .object({
     action: z.literal("update"),
-    summary: text(1000),
-    body: text(6000),
+    /** T136: one short update; summary/body remain for the dashboard and older sessions. */
+    text: text(6000).optional(),
+    summary: text(1000).optional(),
+    body: text(6000).optional(),
+    /** Ignored since T136: the coordinator keeps no persistent checkpoint. */
     checkpoint: text(6000).optional(),
   })
-  .strict();
+  .strict()
+  .refine(v => v.text || (v.summary && v.body), { message: "Write the update as text." });
 /** T16: user-only Initiative icon and color. Omitted keeps a field, null resets it to the default look. */
 export const appearanceCommandSchema = z
   .object({
@@ -367,7 +322,6 @@ export const commandSchema = z.discriminatedUnion("action", [
   ...taskCommands,
   ...workerCommands,
   ...decisionCommands,
-  decisionCleanupSchema,
   z.object({ action: z.literal("decision-accept-all") }).strict(),
   z.object({ action: z.literal("decision-clear") }).strict().describe("Retired bulk removal: always refuses with refresh/decision-accept-all instructions; never changes data."),
   ...manageCommands,
@@ -385,7 +339,7 @@ export const commandSchema = z.discriminatedUnion("action", [
 ]);
 export type Command = z.infer<typeof commandSchema>;
 
-const decisionCommandSchema = z.discriminatedUnion("action", [...decisionCommands, answerSchema, decisionCleanupSchema, questionWithdrawSchema]);
+const decisionCommandSchema = z.discriminatedUnion("action", [...decisionCommands, answerSchema, questionWithdrawSchema]);
 export type DecisionCommand = z.infer<typeof decisionCommandSchema>;
 /** The one agent boundary for initiative_decision and its CLI: flat or legacy input, errors with an example. */
 export function parseDecisionCommand(raw: unknown): DecisionCommand {
@@ -395,11 +349,30 @@ export function parseDecisionCommand(raw: unknown): DecisionCommand {
   if (!parsed.success) throw new ProjectError(decisionIssues(String(normalized.value.action), parsed.error, normalized.flat));
   return parsed.data;
 }
+/** T136: actions that no longer exist, with what replaces them. */
+export const REMOVED_ACTIONS: Record<string, string> = {
+  "task-accept": 'Acceptance was removed: close the task with initiative_task {"action":"close","task":"T#","outcome":"done"}.',
+  "review-accept": "Review acceptance was removed: read the review's final message, send fixes to the worker, and retire the reviewer.",
+  "assignment-reject": 'Rejection was removed: message the worker with the fixes (initiative_message {"to":"W#","text":"…","work":true}).',
+  "assignment-scope-release": "Write holds were removed; overlapping writers only get a warning.",
+  "task-checkpoint": 'Checkpoints were removed: record the outcome with initiative_task {"action":"update","task":"T#","note":"…"} or close the task.',
+  "decision-cleanup": "Decision cleanup was removed; the user checks agent decisions in the Inbox.",
+  fork: "Forking was removed: spawn a fresh worker with handoffs, or message the existing one.",
+};
+export function refuseRemoved(raw: unknown) {
+  if (typeof raw !== "object" || raw === null) return;
+  const { action, route } = raw as { action?: unknown; route?: unknown };
+  const why = typeof action === "string" ? REMOVED_ACTIONS[action] : undefined;
+  if (why) throw new ProjectError(why);
+  if (action === "delegate" && route === "fork") throw new ProjectError(REMOVED_ACTIONS.fork!);
+}
 /** CLI command input: decision-family actions go through the agent boundary; the rest are unchanged. */
-export const parseCommandInput = (raw: unknown): Command =>
-  typeof raw === "object" && raw !== null && (DECISION_ACTIONS as readonly unknown[]).includes((raw as { action?: unknown }).action)
+export const parseCommandInput = (raw: unknown): Command => {
+  refuseRemoved(raw);
+  return typeof raw === "object" && raw !== null && (DECISION_ACTIONS as readonly unknown[]).includes((raw as { action?: unknown }).action)
     ? parseDecisionCommand(raw)
     : commandSchema.parse(raw);
+};
 
 /** Shared entry point for tools, UI and CLI. Agent authority is checked by the caller. */
 export async function runCommand(
@@ -443,24 +416,22 @@ export async function runCommand(
       return c.cancel
         ? service.cancelHandover(projectId, author)
         : service.requestHandover(projectId, c, author);
+    case "handover-draft":
+      return service.startHandoverDraft(projectId, { ...(c.note ? { note: c.note } : {}), ...(c.restart ? { restart: true } : {}) });
+    case "handover-draft-discard":
+      return service.discardHandoverDraft(projectId);
     case "coordinator-settle":
       return service.settleCoordinator(projectId, c.outcome);
-    case "task-checkpoint":
-      return service.checkpointTask(projectId, c, threadId);
     case "task-create":
       return service.createTask(projectId, c, author);
     case "task-update":
       return service.updateTask(projectId, c.task, c, author);
-    case "task-accept":
-      return service.acceptTask(projectId, c.task, c);
+    case "task-close":
+      return service.closeTask(projectId, c.task, c.outcome, c.note);
     case "task-cancel":
       return service.cancelTask(projectId, c.task, c.reason);
-    case "task-reopen": {
-      const task = service.reopenTask(projectId, c.task, c.reason);
-      // Reopening changes only the task; a reported assignment still holds it.
-      const held = service.store.assignments(projectId).find(a => a.role === "work" && a.state === "reported" && a.taskNums.includes(task.num));
-      return held ? { note: `${task.ref} is planned again, but ${held.ref} is still reported and still holds ${task.ref}: reopening does not release it. ${reportedRetryHint(held, task.ref)}`, ...task } : task;
-    }
+    case "task-reopen":
+      return service.reopenTask(projectId, c.task, c.reason ?? "Reopened.");
     case "assignment-stop":
       return service.stopAssignment(projectId, c.assignment, c.reason);
     case "assignment-settle": {
@@ -468,12 +439,6 @@ export async function runCommand(
       const settled = await service.settleUncertain(projectId, c.assignment, c.outcome);
       return { settlement: settlementReceipt(settled, c.outcome), ...settled };
     }
-    case "review-accept":
-      return service.acceptReview(projectId, c.assignment);
-    case "assignment-reject":
-      return service.rejectReport(projectId, c.assignment, c.reason);
-    case "assignment-scope-release":
-      return service.releaseScope(projectId, c.assignment, c.reportVersion, c.reason, author, threadId);
     case "delegate":
       return service.delegate(projectId, c);
     case "adopt":
@@ -489,8 +454,6 @@ export async function runCommand(
     case "decision-accept-all":
       if (author !== "user") throw new ProjectError("Only the human dashboard can accept unchecked agent decisions in bulk.");
       return service.acceptAgentDecisions(projectId);
-    case "decision-cleanup":
-      return service.cleanupDecision(projectId, c.decision, c.operation, c.reason, threadId);
     case "decision-review":
       if (author !== "user") throw new ProjectError("Only the user reviews agent decisions.");
       return service.reviewDecision(projectId, c.decision, c.verdict, c.message);
@@ -503,7 +466,7 @@ export async function runCommand(
       if (author !== "user") throw new ProjectError("Only the user answers a worker's blocker from the Inbox. Agents continue the worker with the answer instead.");
       return service.answerBlocker(projectId, c.assignment, { question: c.question, context: c.context }, c.note, c.to);
     case "blocker-dismiss":
-      if (author !== "user") throw new ProjectError("Only the user dismisses a worker's blocker from the Inbox. Agents reject or accept the report instead.");
+      if (author !== "user") throw new ProjectError("Only the user dismisses a worker's blocker from the Inbox. Agents answer the worker instead.");
       return service.dismissBlocker(projectId, c.assignment, { question: c.question, context: c.context }, { notify: c.notify, note: c.note });
     case "blocker-dismiss-undo":
       if (author !== "user") throw new ProjectError("Only the user undoes their dismissal of a blocker.");

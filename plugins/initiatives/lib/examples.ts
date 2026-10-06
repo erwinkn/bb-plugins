@@ -1,29 +1,25 @@
-/** Small validated examples, rather than a second schema/command implementation. */
-const report = {
-  outcome: "succeeded", summary: "Streaming milestone implemented; awaiting independent review.",
-  evidence: [{ kind: "check", label: "Focused streaming checks", result: "passed" }],
-  handoff: { summary: "Streaming implementation", workspaceRevision: "checked-sha", verificationRevision: "checked-sha", files: ["src/stream.ts"] },
-};
+/** Small validated examples for `bb initiative command`, rather than a second schema. */
 export const COMMAND_EXAMPLES = {
-  message: { action: "message", target: "W4", text: "The agreed RPC contract is ready in the linked handoff; no scope change.", mode: "queue" },
-  "task-checkpoint": { action: "task-checkpoint", task: "T11", worker: "W4", report },
-  review: { action: "delegate", role: "review", route: "fresh", label: "Streaming review", area: "Streaming", reviewOf: ["T11"], reviewTargets: [{ task: "T11", assignment: "A34", revision: "checked-sha" }], access: "read-only" },
-  question: { action: "question", question: "Who signs off the macOS bridge?", context: "Requires a native machine check before rollout.", options: [{ label: "Erwin", consequences: "Wait for the human machine check." }, "Skip the check"], recommendation: "Erwin runs the native check.", blocksTaskIds: ["T11"] },
+  spawn: { action: "delegate", route: "fresh", label: "Search index", area: "search ranking", tasks: ["T11"], note: "Index archived records and rank them below live ones. Verify with npm test." },
+  review: { action: "delegate", route: "fresh", role: "review", label: "Review search", area: "review W4", reviews: "W4", note: "Check ranking and the archived-record tests." },
+  "work-message": { action: "delegate", route: "continue", worker: "W4", tasks: ["T11"], note: "Fix the two review findings below…", delivery: "queue" },
+  "fresh-with-handoff": { action: "delegate", route: "fresh", label: "Search ranking", area: "ranking", handoffs: ["W4"], note: "Start from W4's report and verify it against the current source." },
+  message: { action: "message", target: "W4", text: "The agreed RPC contract is in the linked artifact; no scope change.", mode: "queue" },
+  "task-close": { action: "task-close", task: "T11", outcome: "done", note: "Shipped in W4's report; review found nothing blocking." },
+  question: { action: "question", question: "Who signs off the macOS bridge?", context: "Requires a native machine check before rollout.", options: [{ label: "Erwin", consequences: "Wait for the human machine check." }, "Skip the check"], recommendation: "Erwin" },
   answer: { action: "answer", ref: "D12", choice: "Erwin", note: "I will run the check." },
   "quiet-answer": { action: "answer", ref: "D12", choice: null, note: "Already resolved in this chat.", notify: false },
-  decision: { action: "decision", madeBy: "user", description: "Erwin chose one per-key batch-size setting." },
-  supersede: { action: "decision", madeBy: "user", description: "Erwin now wants two batch-size settings, per input.", supersedes: "D7" },
-  "scope-release": { action: "assignment-scope-release", assignment: "A34", reportVersion: "3f9c2a7d1e0b4c6a", reason: "Checked: the nohup migrate job A34 listed is gone; release its write scope." },
-  reject: { action: "assignment-reject", assignment: "A34", reason: "Blocked on the staging credential; retry the same task with the answer." },
-  "decision-cleanup": { action: "cleanup", ref: "D13", operation: "remove", reason: "Erwin requested removing routine execution steps from active decisions." },
+  "user-choice": { action: "user-choice", description: "Erwin chose one per-key batch-size setting." },
+  "veto-request": { action: "veto-request", description: "I'm keeping the old index format for one release so rollbacks stay possible." },
+  supersede: { action: "user-choice", description: "Erwin now wants two batch-size settings, per input.", supersedes: "D7" },
   withdraw: { action: "withdraw", ref: "D12", reason: "Settled by D15: Erwin chose Base UI in chat." },
-  "fresh-with-handoff": { action: "delegate", route: "fresh", label: "Search ranking", area: "Ranking", tasks: ["T12"], handoffs: ["A34"], note: "A34 finished search; start from its handoff and verify it against current source." },
-  "urgent-continue": { action: "delegate", route: "continue", worker: "W4", tasks: ["T11"], delivery: "steer", note: "Urgent correction: use the agreed wire contract before continuing." },
+  handover: { action: "coordinator-handover", reason: "Context is getting long", note: "W4 is mid-way through T11; the review of T9 is due." },
 } as const;
 export const READ_EXAMPLES = {
-  mixed: { refs: ["A34", "T11", "D12"], detailed: true },
-  report: { view: "assignments", refs: ["A34"], detailed: true, fields: ["report.handoff", "report.evidence"] },
-  handoff: { refs: ["A34"], detailed: true, fields: ["standardHandoff"] },
-  peers: { view: "workers", offset: 0, limit: 8 },
-  page: { view: "tasks", offset: 0, limit: 5 },
+  overview: {},
+  exact: { refs: ["W4", "T11"] },
+  reports: { view: "reports", limit: 5 },
+  fullReport: { refs: ["A34"], detailed: true, fields: ["report"] },
+  workers: { view: "workers", limit: 8 },
+  context: { view: "context" },
 } as const;

@@ -26,7 +26,7 @@ async function retirementReady() {
     tasks: [task.ref],
   });
   await f.service.report(d.threadId!, report());
-  await f.service.acceptTask(project.id, task.ref, {});
+  await f.service.closeTask(project.id, task.ref, "done");
   return {
     f,
     project,

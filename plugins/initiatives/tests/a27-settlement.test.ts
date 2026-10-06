@@ -26,7 +26,7 @@ async function continuation() {
   const t1 = f.task(project.id);
   const [d] = await f.service.delegate(project.id, { route:'fresh', tasks:[t1.ref] });
   await f.service.report(d.threadId!, report());
-  await f.service.acceptTask(project.id, t1.ref, {});
+  await f.service.closeTask(project.id, t1.ref, "done");
   f.idle(d.threadId!);
   const worker=f.store.workers(project.id)[0]!;
   return {f,project,worker,t2:f.task(project.id,'Next')};
@@ -55,7 +55,9 @@ async function lostSend() {
   await x.f.service.stopAssignment(x.project.id,'A2','cancel');
   return x;
 }
-const held=(x:any)=>expect(x.f.service.delegate(x.project.id,{route:'fresh',tasks:[x.t2.ref]})).rejects.toThrow();
+// T136: a held reservation is the cancelled operation staying unsettled; new work on its
+// task is then warned about (never refused), so the stored state is the check.
+const held=(x:any)=>expect(['pending','uncertain']).toContain(x.f.store.assignment(x.project.id,2)!.opState);
 
 describe('A27 execution-settlement boundaries',()=>{
   it('holds a cancelled report when native thread lookup returns 503',async()=>{

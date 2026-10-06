@@ -11,15 +11,28 @@ import {
 import {
   createSchema,
   delegateSchema,
-  taskCommands,
-  workerCommands,
   parseCommandInput,
   parseDecisionCommand,
-  manageCommands,
+  refuseRemoved,
+  REMOVED_ACTIONS,
   updateSchema,
   runCommand,
   type Command,
 } from "./lib/commands";
+import {
+  manageCommand,
+  manageToolSchema,
+  messageCommand,
+  messageToolSchema,
+  reportToolSchema,
+  spawnCommand,
+  spawnToolSchema,
+  taskCommand,
+  taskToolSchema,
+  updateToolSchema,
+  workerCommand,
+  workerToolSchema,
+} from "./lib/agent-tools";
 import { legacyReportSchema, LEGACY_TOOL_NAMES } from "./lib/legacy";
 import { reportSchema } from "./lib/schema";
 import { definePreferences } from "./lib/settings";
@@ -45,7 +58,7 @@ import { scopedNativeEvent } from "./lib/native-events";
 import { initiativesContext, membersContext, recordText, threadContext } from "./lib/context";
 import { messageSchema, currentIdentity, workerWork } from "./lib/messaging";
 import {
-  readCollection, readRefs, readRows, compactOverview, agentReadSchema, validateSelection,
+  readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, validateSelection,
   readOptionsSchema,
   READ_VIEWS,
   type ReadOptions,
@@ -56,7 +69,7 @@ export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
   const store = new Store(db);
-  const preferences = definePreferences(bb);
+  const preferences = definePreferences(bb, { has: (key) => store.hasFlag(key), set: (key) => store.setFlag(key) });
   const service = new ProjectsService(bb, store, preferences);
   const runtime = new Runtime(service);
   bb.onDispose(() => runtime.dispose());
@@ -491,17 +504,20 @@ export default function plugin(bb: BbPluginApi) {
   };
   const coordinatorTools = [
     "initiative_read",
+    "initiative_spawn",
     "initiative_message",
-    "initiative_manage",
     "initiative_task",
-    "initiative_delegate",
     "initiative_worker",
     "initiative_decision",
     "initiative_update",
+    "initiative_manage",
   ];
   bb.agents.configure((ctx) => {
     const guidance = () => preferences.configuration();
     const meta = ctx.pluginMetadata;
+    // T136: the short-lived handover writer gets no Initiative tools; its prompt is everything it needs.
+    // This plugin's metadata namespace is its own, so only its writer can carry this role.
+    if (meta.role === "handover-writer") return { tools: [], skills: [] };
     // A coordinator configures before its spawn response and home validation
     // land. The durable start receipt supplies its first-turn context — never
     // authority: only the validated spawn/settle/reconcile paths confirm a
@@ -580,9 +596,9 @@ export default function plugin(bb: BbPluginApi) {
     const work = m?.worker ? workerWork(store, m.project.id, m.worker.num, m.worker.generation).assignments[0] : null;
     if (worker)
       return {
-        tools: ["initiative_read", "initiative_report", "initiative_progress", "initiative_decision", "initiative_message"],
+        tools: ["initiative_read", "initiative_report", "initiative_message", "initiative_decision"],
         skills: ["initiative-worker"],
-        instructions: guidance().workerInstructions + "\n\n" + (m && !m.former ? `Current membership: ${worker.ref}, generation ${worker.generation}, role ${worker.role}, assignment ${work?.ref ?? "none unfinished"}${work ? `, tasks ${work.tasks.join(", ") || "review"}` : ""}. Trust this membership over inherited fork headers; reads do not grant messaging authority.\n` : `Pending worker ${worker.ref}; confirmed membership is required for messaging.\n`) + `Your immutable role is ${worker.role}. ${worker.role === "review" ? "Review and report findings. Delegate implementation fixes back to the coordinator." : "Follow your assignment's declared access and report its verification."}`,
+        instructions: guidance().workerInstructions + "\n\n" + `You are ${worker.ref} "${worker.label}" (${worker.area}), role ${worker.role}${m && !m.former ? "" : " (membership still being confirmed)"}.`,
       };
     return { tools: ["initiative_create"], skills: [] };
   });
@@ -632,32 +648,6 @@ export default function plugin(bb: BbPluginApi) {
     parameters: z.record(z.string(), z.unknown()),
     execute: async () => { throw new ProjectError("This publisher was removed. Use initiative_decision for lightweight user and agent choices. Retained sessions can use bb initiative command without restarting."); },
   });
-  const registerCommands = (
-    name: string,
-    parameters: z.ZodType<Command>,
-    description: string,
-  ) => {
-    // Published as plain JSON with an object root (Claude blanks union roots); the strict
-    // command schema still parses every call first, as the host parsed it before.
-    const options = "options" in parameters ? (parameters as unknown as { options: readonly z.ZodType[] }).options : null;
-    registerTool({
-      name,
-      parameters: options ? objectRootSchema(options) : z.toJSONSchema(parameters, { io: "input" }) as Record<string, unknown>,
-      description,
-      async execute(raw, { threadId }) {
-        const parsed = parameters.safeParse(raw);
-        if (!parsed.success) throw new ProjectError(`Invalid arguments for ${name}: ${parsed.error.issues.map(issue => `${issue.path.join(".") || "(input)"}: ${issue.message}`).join("; ")}`);
-        const input = parsed.data;
-        if (!threadId)
-          throw new ProjectError("Use Initiative tools from a BB thread.");
-        await ensureMember(threadId);
-        const p = service.coordinatorOf(threadId);
-        return JSON.stringify(
-          await perform(p.id, input, "coordinator", threadId),
-        );
-      },
-    });
-  };
   registerTool({
     name: "initiative_create",
     description:
@@ -666,32 +656,125 @@ export default function plugin(bb: BbPluginApi) {
     execute: async (input, { threadId }) =>
       JSON.stringify(await perform(undefined, input, "user", threadId ?? null)),
   });
-  registerCommands(
-    "initiative_manage",
-    z.discriminatedUnion("action", [...manageCommands]),
-    "Manage the initiative, pause new work, stop workers, or replace the coordinator using its checkpoint. To hand over to a fresh coordinator at the end of your own turn, use coordinator-handover with a checkpoint; the request is durable and the replacement starts once you go idle. Pausing leaves running work alone.",
-  );
-  registerCommands(
-    "initiative_task",
-    z.discriminatedUnion("action", [...taskCommands]),
-    "Create/brief actual tasks. task-checkpoint takes task, worker, optional matching assignment and a complete report with checked handoff revision; record external/native work without waking the worker or accepting it. Use bb initiative describe task-checkpoint for a valid example. Reviews bind actual task/assignment/revision; never borrow an unrelated task. task-accept remains explicit. Stop/uncertain receipts still need native inspection; retire separately once idle. assignment-scope-release frees a write scope held only by a report's listed, unverified background work, after you checked it and BB shows the thread ended; echo the reportVersion you read (initiative_read shows it); it keeps the report and is not evidence the jobs finished.",
-  );
-  registerCommands(
-    "initiative_delegate",
-    delegateSchema,
-    "Delegate fresh, continue or fork with complete scoped tasks, logical label/purpose and execution settings. Fresh creates one native child and assignment; existing native children remain valid visible members. Reviews bind reviewTargets [{task,assignment,revision}] to the successful final report/checkpoint and actual implementer; reviewOf must agree. Tasks/status alone cannot invent implemented work. Continue delivery steer is for urgent correction/blocker, queue (default) is future work; BB owns any native queueing. Native sender provenance is recorded where the SDK supports it. profile.serviceTier accepts default|fast; fresh and continue pass it natively, fork inherits its source's last model/reasoning/tier and rejects incompatible overrides. Pass permissionMode accept-edits|auto|full explicitly where instructed. Declare access read-only for each audit, including continue/fork; omitted work may write and reviewers stay read-only. Readers may overlap readers/writers, overlapping writers remain blocked. This is coordination, not a filesystem sandbox: full permissions still forbid source/install writes for audits, which must identify actual source state checked amid live edits. Explicit user/task and Initiative profiles win over plugin Settings defaults. handoffs:[\"A#\"] (max 3) embeds prior reports' standard handoffs in a work brief, bounded, with provenance and evidence pointers; each must cover the tasks, their dependsOn or contextRefs, and transfers no authority, acceptance, receipts, permissions or write scope. Follow the configured coordinator guidance for communication, handoffs, retirement, scoped context and milestone reviews.",
-  );
-  registerCommands(
-    "initiative_worker",
-    z.discriminatedUnion("action", [...workerCommands]),
-    "Adopt an existing thread or retire a worker. Retirement is explicit and guarded: the thread must be idle with no queued work, background agents or live descendants, and the worker's assignments must all be settled. Its reports stay readable as standard handoffs for later fresh work (initiative_delegate handoffs).",
-  );
+  /**
+   * T136 tools. Each publishes plain JSON Schema and validates in execute, so a session
+   * constructed before T136 can still send its older payloads: those run as the commands
+   * they always were, and removed actions answer with what replaces them.
+   */
+  const coordinatorProject = async (threadId: string | undefined) => {
+    if (!threadId) throw new ProjectError("Use Initiative tools from a BB thread.");
+    await ensureMember(threadId);
+    return service.coordinatorOf(threadId);
+  };
+  const parsed = <T,>(schema: z.ZodType<T>, raw: unknown, tool: string): T => {
+    const result = schema.safeParse(raw);
+    if (!result.success) throw new ProjectError(`Invalid arguments for ${tool}: ${result.error.issues.map(issue => `${issue.path.join(".") || "(input)"}: ${issue.message}`).join("; ")}`);
+    return result.data;
+  };
+  /** An older session's payload for a reused tool name: run it as the command it always was. */
+  const legacyCommand = async (raw: unknown, threadId: string, actions: readonly string[]) => {
+    const action = (raw as { action?: unknown } | null)?.action;
+    if (typeof action !== "string" || !actions.includes(action)) return null;
+    refuseRemoved(raw);
+    const p = await coordinatorProject(threadId);
+    return JSON.stringify(await perform(p.id, parseCommandInput(raw), "coordinator", threadId));
+  };
+  /** initiative_message and `bb initiative message`: a plain message, or more work for a worker. */
+  const sendMessage = async (raw: unknown, threadId: string) => {
+    await ensureMember(threadId);
+    const command = messageCommand(parsed(messageToolSchema, raw, "initiative_message"));
+    if (command.action === "message") return service.message(threadId, command);
+    const p = service.coordinatorOf(threadId);
+    return perform(p.id, command, "coordinator", threadId);
+  };
+  const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>;
+  registerTool({
+    name: "initiative_spawn",
+    parameters: jsonSchema(spawnToolSchema),
+    description: 'Give work to a new worker. Example: {label:"Search index",purpose:"search ranking",text:"<brief: task, context, explicit user instructions, how to verify>",tasks:["T40"]}. A review: {role:"review",reviews:"W12",label:"Review search",purpose:"review W12",text:"What to check"}; the reviewed report is embedded. handoffs:["W9"] embeds earlier reports. The result lists warnings, such as another writer in the same checkout.',
+    async execute(raw, { threadId }) {
+      const p = await coordinatorProject(threadId);
+      return JSON.stringify(await perform(p.id, spawnCommand(parsed(spawnToolSchema, raw, "initiative_spawn")), "coordinator", threadId!));
+    },
+  });
+  registerTool({
+    name: "initiative_message",
+    parameters: jsonSchema(messageToolSchema),
+    description: 'Send one message to a worker (W#) or the coordinator. {to:"W4",text:"…"}. The coordinator gives an existing worker more work with tasks:["T41"] or work:true; its next final message is a report. mode steer for urgent corrections, queue (default) otherwise. Messages never resume a stopped or retired worker.',
+    async execute(raw, { threadId }) {
+      if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
+      return JSON.stringify(await sendMessage(raw, threadId));
+    },
+  });
+  registerTool({
+    name: "initiative_task",
+    parameters: jsonSchema(taskToolSchema),
+    description: 'Optional tasks. {action:"create",title,text?} · {action:"update",task:"T4",title?,text?,note?} · {action:"close",task:"T4",outcome:"done"|"cancelled",note?} (cancelling stops its running work) · {action:"reopen",task:"T4",note?}.',
+    async execute(raw, { threadId }) {
+      const legacy = await legacyCommand(raw, threadId!, ["task-create", "task-update", "task-cancel", "task-reopen", "assignment-stop", "assignment-settle", ...Object.keys(REMOVED_ACTIONS)]);
+      if (legacy) return legacy;
+      const p = await coordinatorProject(threadId);
+      return JSON.stringify(await perform(p.id, taskCommand(parsed(taskToolSchema, raw, "initiative_task")), "coordinator", threadId!));
+    },
+  });
+  registerTool({
+    name: "initiative_worker",
+    parameters: jsonSchema(workerToolSchema),
+    description: 'Retire a finished worker ({action:"retire",worker:"W4"}; its thread must be idle and its reports stay readable), stop its running work ({action:"stop",worker:"W4",reason}), or adopt an existing thread ({action:"adopt",threadId,role,label,purpose}).',
+    async execute(raw, { threadId }) {
+      const legacy = await legacyCommand(raw, threadId!, ["worker-retire"]);
+      if (legacy) return legacy;
+      // An older session's adopt payload (area, tasks, detachNativeParent) runs as it always did.
+      const old = raw as Record<string, unknown> | null;
+      if (old?.action === "adopt" && ["area", "tasks", "detachNativeParent"].some(key => key in old) && !("purpose" in old)) {
+        const p = await coordinatorProject(threadId);
+        return JSON.stringify(await perform(p.id, parseCommandInput(raw), "coordinator", threadId!));
+      }
+      const p = await coordinatorProject(threadId);
+      const command = workerCommand(parsed(workerToolSchema, raw, "initiative_worker"));
+      if (command.action === "worker-stop") {
+        const worker = service.requireWorker(p, command.worker);
+        const open = store.openAssignment(p.id, worker.num);
+        if (!open) throw new ProjectError(`${worker.ref} has no running work to stop.`);
+        return JSON.stringify(await perform(p.id, { action: "assignment-stop", assignment: open.ref, reason: command.reason }, "coordinator", threadId!));
+      }
+      return JSON.stringify(await perform(p.id, command, "coordinator", threadId!));
+    },
+  });
+  registerTool({
+    name: "initiative_manage",
+    parameters: jsonSchema(manageToolSchema),
+    description: 'Manage the Initiative: {action:"pause"|"resume"|"stop-work"|"archive"} · {action:"edit",name?,objective?,memberProjectIds?} · {action:"handover",reason?,note?} hands over to a fresh coordinator once your turn ends; GPT-6 Luna writes its first message from recent activity. cancel:true withdraws it.',
+    async execute(raw, { threadId }) {
+      const legacy = await legacyCommand(raw, threadId!, ["coordinator-settle", "replace-coordinator", "coordinator-handover"]);
+      if (legacy) return legacy;
+      const action = (raw as { action?: unknown } | null)?.action;
+      // An older session's {action:"pause",paused} still works, exactly as it was.
+      if (action === "pause" && typeof (raw as { paused?: unknown }).paused === "boolean" && Object.keys(raw as object).length === 2) {
+        const p = await coordinatorProject(threadId);
+        return JSON.stringify(await perform(p.id, { action: "pause", paused: (raw as { paused: boolean }).paused }, "coordinator", threadId!));
+      }
+      const p = await coordinatorProject(threadId);
+      return JSON.stringify(await perform(p.id, manageCommand(parsed(manageToolSchema, raw, "initiative_manage")), "coordinator", threadId!));
+    },
+  });
+  // Older sessions only: their constructed allowlists still name these.
+  registerTool({
+    name: "initiative_delegate",
+    parameters: jsonSchema(z.object({ action: z.string().optional() }).passthrough()),
+    description: "Older sessions only. Use initiative_spawn for a new worker and initiative_message (tasks or work:true) for an existing one.",
+    async execute(raw, { threadId }) {
+      refuseRemoved({ action: "delegate", ...(raw as object) });
+      const p = await coordinatorProject(threadId);
+      return JSON.stringify(await perform(p.id, parsed(delegateSchema, { action: "delegate", ...(raw as object) }, "initiative_delegate"), "coordinator", threadId!));
+    },
+  });
   registerTool({
     name: "initiative_decision",
     // Plain JSON Schema with an object root: Claude's bridge blanks union roots. Validation is
     // parseDecisionCommand, shared with the CLI, so every refusal carries a valid example.
     parameters: decisionToolJsonSchema as Record<string, unknown>,
-    description: "Record Initiative choices and questions with flat fields. The log is the user's steering record: record significant choices for the user; never consult it for your own work. decision: {action:\"decision\",madeBy:\"user\"|\"agent\",description,supersedes?:\"D7\"}. Choose madeBy explicitly; it is never defaulted: user for the user's explicit choice (the recorder is only provenance; leave out agent-added defaults), agent only for independently chosen, non-obvious significant design forks, not normal steps, checks, restatements, mandated work, routine reporting, audit/review setup and requested clean SHA/execution settings. One or two sentences, no quotes. Agent choices already reach the user's Inbox for Okay/Not okay. question (coordinators only, for a choice work waits on): {action:\"question\",question,context,options?:[\"label\" or {label,consequences}],recommendation?,blocksTaskIds?}; never infer questions from transcript prose. answer, only for the user's explicit answer to an open question: {action:\"answer\",ref:\"D12\",choice,note?}; never infer one. Worker answers notify the coordinator unless notify:false; coordinator answers stay quiet. cleanup, only for the current coordinator on the user's explicit request: {action:\"cleanup\",ref:\"D13\",operation:\"accept\"|\"veto\"|\"remove\",reason}; user choices and questions are protected, removal keeps history, never silence Inbox. withdraw, only for the current coordinator's own open question that no longer needs the user: {action:\"withdraw\",ref:\"D12\",reason}; it records no answer, keeps history and releases only that question's tasks. Older nested decision:{...}/question:{...} payloads still work. Examples: bb initiative describe <action>.",
+    description: 'Record choices for the user, who follows and redirects the work with them; never consult the log for your own work. {action:"user-choice",description} records the user\'s explicit choice from chat. {action:"veto-request",description} records a choice of yours the user may want to veto; you proceed unless they do. Routine steps are not decisions. Coordinator only: {action:"question",question,context,options?,recommendation?,blocksTaskIds?} asks a real open choice (never inferred from prose); {action:"withdraw",ref:"D12",reason} retracts your own open question. {action:"answer",ref:"D12",choice,note?} records the user\'s explicit answer; workers notify the coordinator unless notify:false.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Record decisions from an Initiative thread.");
       await ensureMember(threadId);
@@ -704,11 +787,8 @@ export default function plugin(bb: BbPluginApi) {
       const { projectId, recordedBy: provenance } = chatAnswerRecorder(threadId);
       let result;
       if (input.action === "question") {
-        if (provenance.author !== "coordinator") throw new ProjectError("Ask blocking user questions through the coordinator.");
+        if (provenance.author !== "coordinator") throw new ProjectError("Ask the user questions through the coordinator.");
         result = service.recordQuestion(projectId, input.question, provenance);
-      } else if (input.action === "decision-cleanup") {
-        if (provenance.author !== "coordinator") throw new ProjectError("Only the current coordinator may clean up agent decisions on an explicit user request.");
-        result = await service.cleanupDecision(projectId, input.decision, input.operation, input.reason, threadId);
       } else if (input.action === "question-withdraw") {
         const withdrawn = service.withdrawQuestion(projectId, input.decision, input.reason, provenance);
         const body = withdrawn.body as { question?: string };
@@ -716,15 +796,14 @@ export default function plugin(bb: BbPluginApi) {
           resolution: withdrawn.body.resolution, recordedBy: withdrawn.provenance, notification: withdrawn.notification,
           tasks: withdrawn.blocks.map(num => store.task(projectId, num)).filter(task => task !== null).map(task => ({ ref: task.ref, status: task.status, progress: task.progress })) });
       } else result = service.recordDecision(projectId, input, provenance);
-      return JSON.stringify({ ref: result.ref, description: result.description, madeBy: result.madeBy, status: result.status, review: result.review, cleanupHistory: result.body.cleanupHistory, recordedBy: result.provenance });
+      return JSON.stringify({ ref: result.ref, description: result.description, madeBy: result.madeBy, status: result.status, review: result.review, recordedBy: result.provenance });
     },
   });
   registerTool({
     name: "initiative_update",
-    description:
-      "Publish a concise, self-contained update: what changed, what is happening next, blockers and decisions. Write for a human who has not read the implementation threads. Save a checkpoint when useful.",
-    parameters: updateSchema,
-    async execute(input, { threadId }) {
+    description: "Tell the user how things stand in a short update: what is done, what is next, what you need. Write for someone who has not read the threads.",
+    parameters: jsonSchema(updateToolSchema),
+    async execute(raw, { threadId }) {
       if (!threadId)
         throw new ProjectError("Publish updates from an initiative thread.");
       await ensureMember(threadId);
@@ -733,10 +812,11 @@ export default function plugin(bb: BbPluginApi) {
         throw new ProjectError(
           "Publish updates from the coordinator or the user's own initiative thread.",
         );
+      const input = parsed(updateToolSchema, raw, "initiative_update");
       return JSON.stringify(
         await perform(
           m.project.id,
-          input,
+          parsed(updateSchema, { action: "update", ...input }, "initiative_update"),
           m.workerNum === 0 ? "coordinator" : "user",
           threadId,
         ),
@@ -744,18 +824,8 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
   registerTool({
-    name: "initiative_message",
-    parameters: messageSchema,
-    description: "Send one native message to a current W# work peer or coordinator in your Initiative. Example {target:\"W4\",text:\"The agreed RPC is ready; see the contract artifact.\",mode:\"queue\"}. Use steer for urgent blockers/corrections, queue for future facts. Sender comes from actual caller membership. No work grant, role change, resume, retry or separate inbox. Independent reviewers communicate through coordinator. Finished/stopped/cancelled/former/retired threads are refused. Return the actual native receipt and resolved thread/generation; inspect uncertain errors before another send. Retained sessions: bb initiative message '<json>'.",
-    async execute(input, { threadId }) {
-      if (!threadId) throw new ProjectError("Message from a current managed Initiative thread.");
-      await ensureMember(threadId);
-      return JSON.stringify(await service.message(threadId, input));
-    },
-  });
-  registerTool({
     name: "initiative_read",
-    description: "Read compact Initiative state or exactly selected records. Refs-only infers mixed T/W/A/D/U collections: {refs:[\"A7\",\"T3\"],detailed:true}. Explicit view must agree with refs. Collection pages default to summaries with total/nextOffset/missingRefs/truncated; limit1..30. For a selective report: {view:\"assignments\",refs:[\"A7\"],detailed:true,fields:[\"report.handoff\",\"report.evidence\"]}. A reported assignment's standard handoff (outcome, revisions, files, checks, artifacts, open issues, next steps, dirty and background state): {refs:[\"A7\"],detailed:true,fields:[\"standardHandoff\"]}. Full native inventory/telemetry require view threads/usage; dashboard RPC stays separate. Oversized records need field selection; JSON is never clipped. Reading never wakes agents.",
+    description: 'Read the Initiative. {} is the overview. {refs:["W12","T40","A301"]} reads exact records (a W# includes its latest report). {view:"workers"|"tasks"|"reports"|"context"|"activity"} lists them; limit 1..30, offset to page. detailed:true for full records. Reading never wakes agents.',
     parameters: agentReadSchema,
     async execute(input, { threadId }) {
       if (!threadId) throw new ProjectError("Use initiative_read from an Initiative thread.");
@@ -765,44 +835,37 @@ export default function plugin(bb: BbPluginApi) {
       const { view, ...rawOptions } = input;
       const options = readOptionsSchema.parse(rawOptions);
       if (view === "overview" && Object.keys(rawOptions).length)
-        throw new ProjectError("overview has no refs/detail/pagination selectors. Omit view for refs, or select a collection such as assignments, threads or usage.");
+        throw new ProjectError("overview has no refs/detail/pagination selectors. Omit view for refs, or select a collection such as workers or reports.");
       if (!view && !options.refs && Object.keys(rawOptions).length)
-        throw new ProjectError("Specify view or refs for detail/pagination selectors, for example view:assignments, limit:5.");
+        throw new ProjectError("Specify view or refs for detail/pagination selectors, for example view:reports, limit:5.");
       if (!view && options.refs || view === "records") return JSON.stringify(readRefs(store, m.project.id, options));
       if (!view || view === "overview") return JSON.stringify(compactOverview(store, m.project.id));
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
+      if (view === "context") return JSON.stringify(readContext(store, m.project.id));
       return JSON.stringify(read(m.project.id, view, options));
     },
   });
-
   registerTool({
     name: "initiative_report",
-    description:
-      "Record the assignment outcome, exact checked revision, evidence and a bounded handoff. Record implementation choices in a linked artifact and list background work and unverified checks. Follow the configured worker guidance for communication and completion; native notification/fallback delivery stays in place. Idle is not a report.",
-    parameters: reportSchema.safeExtend({ assignment: z.string().optional() }),
-    async execute(input, { threadId }) {
+    description: 'Optional: one line for the dashboard. {outcome:"done"|"blocked"|"failed",summary}; blocked needs question. Your final message is the report itself, so still end your turn with it.',
+    parameters: jsonSchema(reportToolSchema),
+    async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Report from the worker thread.");
       await ensureMember(threadId);
-      const result = await service.report(threadId, input);
-      return JSON.stringify(result);
+      // An older session's full structured report still records as it always did.
+      if (typeof raw === "object" && raw !== null && "handoff" in raw)
+        return JSON.stringify(await service.report(threadId, parsed(reportSchema.safeExtend({ assignment: z.string().optional() }), raw, "initiative_report")));
+      const input = parsed(reportToolSchema, raw, "initiative_report");
+      if (input.outcome === "blocked" && !input.question) throw new ProjectError("A blocked report needs the question you need answered.");
+      return JSON.stringify(await service.shortReport(threadId, input));
     },
   });
   registerTool({
     name: "initiative_progress",
-    description:
-      "Record assigned work's human-readable progress and next checkpoint without waking agents. Follow the configured worker guidance for actionable native communication and routine phases. Note decision forks.",
-    parameters: z
-      .object({
-        note: z.string().trim().min(1).max(2000),
-        nextCheckpoint: z.string().trim().min(1).max(500).optional(),
-      })
-      .strict(),
-    async execute(input, { threadId }) {
-      if (!threadId)
-        throw new ProjectError("Report progress from the worker thread.");
-      await ensureMember(threadId);
-      const result = service.progress(threadId, input);
-      return JSON.stringify(result);
+    description: "Older sessions only; progress is no longer recorded. Your final message is your report.",
+    parameters: jsonSchema(z.object({ note: z.string().optional(), nextCheckpoint: z.string().optional() }).passthrough()),
+    async execute() {
+      return JSON.stringify({ note: "Progress is no longer recorded. Keep working; your final message is your report." });
     },
   });
 
@@ -810,8 +873,8 @@ export default function plugin(bb: BbPluginApi) {
     name: "initiative",
     summary: "Durable initiatives, worker lifecycles, decisions and overview",
     commands: [
-      { name: "message", summary: "One native current-peer/coordinator message; no work grant, retry or resume", usage: "bb initiative message '{\"target\":\"W4\",\"text\":\"Interface fact\",\"mode\":\"queue\"}'" },
-      { name: "describe", summary: "Show valid short JSON examples for reads, checkpoints, reviews and questions", usage: "bb initiative describe [read|task-checkpoint|review|question|answer|quiet-answer|decision|supersede|reject|scope-release|urgent-continue|fresh-with-handoff|decision-cleanup|withdraw|message]" },
+      { name: "message", summary: "One message to a worker or the coordinator; the coordinator adds tasks or work:true to give a worker more work", usage: "bb initiative message '{\"to\":\"W4\",\"text\":\"Interface fact\"}'" },
+      { name: "describe", summary: "Show short valid JSON examples for commands and reads", usage: "bb initiative describe [read|spawn|review|work-message|fresh-with-handoff|message|task-close|question|answer|quiet-answer|user-choice|veto-request|supersede|withdraw|handover]" },
       { name: "list", summary: "List initiatives", usage: "bb initiative list" },
       {
         name: "overview",
@@ -822,11 +885,11 @@ export default function plugin(bb: BbPluginApi) {
         name: "read",
         summary: "Read a stored collection",
         usage:
-          "bb initiative read <records|tasks|workers|assignments|decisions|inbox|updates|activity|usage|threads> [initiative-id] [options-json]; records takes mixed refs; inbox is historical rows only",
+          "bb initiative read <records|tasks|workers|reports|assignments|decisions|updates|activity|usage|threads> [initiative-id] [options-json]; records takes mixed refs",
       },
       {
         name: "command",
-        summary: "Run typed Initiative JSON. Decisions require madeBy: user for explicit user choices, agent only for significant independent forks; exclude routine steps/setup and agent-added defaults. Answers notify by default, notify:false is quiet; coordinator chat stays quiet. Current coordinator decision-cleanup accept/veto/remove requires an explicit user request/reason, retains history and never self-notifies. withdraw retracts the current coordinator's own open question with a reason and records no answer. profile.serviceTier accepts default|fast",
+        summary: "Run typed Initiative JSON (see bb initiative describe). Decisions: user-choice for the user's explicit choices, veto-request for your own choices the user may want to veto.",
         usage: "bb initiative command '<json>' [initiative-id]",
       },
       {
@@ -839,6 +902,11 @@ export default function plugin(bb: BbPluginApi) {
         summary: "Reconcile uncertain operations using native receipts",
         usage: "bb initiative reconcile",
       },
+      {
+        name: "recreate-coordinators",
+        summary: "Start a fresh coordinator for each Initiative from a GPT-6 Luna handover; --dry-run only writes and prints the handovers",
+        usage: "bb initiative recreate-coordinators (--all | <initiative-id>...) [--dry-run] [--wait=<seconds>]",
+      },
     ],
     run: (argv, ctx) => announcing(async () => {
       try {
@@ -849,7 +917,7 @@ export default function plugin(bb: BbPluginApi) {
         const id = explicitId ?? member?.project.id;
         let result: unknown;
         if (action === "describe" && args.length <= 2) {
-          if (!value) result = { commands: Object.keys(COMMAND_EXAMPLES), reads: READ_EXAMPLES, note: "bb initiative describe <name>; replace fixture refs/revision with actual recorded work." };
+          if (!value) result = { commands: Object.keys(COMMAND_EXAMPLES), reads: READ_EXAMPLES, note: "bb initiative describe <name>; replace the example refs with real ones." };
           else if (value === "read") result = READ_EXAMPLES;
           else if (value in COMMAND_EXAMPLES) result = COMMAND_EXAMPLES[value as keyof typeof COMMAND_EXAMPLES];
           else throw new ProjectError(`Unknown example ${value}. Use bb initiative describe for available names.`);
@@ -865,7 +933,7 @@ export default function plugin(bb: BbPluginApi) {
             : read(id ?? "", view, options);
         } else if (action === "message" && value && args.length === 2) {
           if (!ctx.threadId) throw new ProjectError("Message from a current managed Initiative thread.");
-          result = await service.message(ctx.threadId, messageSchema.parse(JSON.parse(value)));
+          result = await sendMessage(JSON.parse(value), ctx.threadId);
         } else if (action === "command" && value && args.length <= 3) {
           const command = parseCommandInput(JSON.parse(value));
           if (
@@ -907,9 +975,19 @@ export default function plugin(bb: BbPluginApi) {
           );
         } else if (action === "reconcile" && args.length === 1) {
           result = await service.reconcile();
+        } else if (action === "recreate-coordinators") {
+          if (member && (member.former || member.workerNum !== 0))
+            throw new ProjectError("Run this from a terminal or from a coordinator thread.");
+          const flags = args.slice(1);
+          const ids = flags.filter(a => !a.startsWith("--"));
+          const all = flags.includes("--all");
+          if (all === (ids.length > 0)) throw new ProjectError("Pass --all, or the Initiative ids to recreate.");
+          const wait = flags.find(a => a.startsWith("--wait="));
+          const waitMs = wait ? Math.max(0, Math.min(1800, Number(wait.slice(7)) || 0)) * 1000 : 12 * 60_000;
+          result = await service.recreateCoordinators(all ? store.projects().filter(p => p.archivedAt === null).map(p => p.id) : ids, { dryRun: flags.includes("--dry-run"), waitMs });
         } else
           throw new ProjectError(
-            "Usage: bb initiative list | overview [id] | read <view> [id] | message '<json>' | command '<json>' [id] | report '<json>' | reconcile",
+            "Usage: bb initiative list | overview [id] | read <view> [id] | message '<json>' | command '<json>' [id] | report '<json>' | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]",
           );
         const stdout = JSON.stringify(result, null, 2);
         if (Buffer.byteLength(stdout) > 900_000)

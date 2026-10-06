@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { expectWarned } from "./helpers";
 import { projectFixture, report } from "./fake-native";
 import {
   currentProjectThreads,
@@ -20,7 +21,7 @@ async function continuation() {
     tasks: [t1.ref],
   });
   await f.service.report(d.threadId!, report());
-  await f.service.acceptTask(project.id, t1.ref, {});
+  await f.service.closeTask(project.id, t1.ref, "done");
   f.idle(d.threadId!);
   const worker = f.store.workers(project.id)[0]!;
   const t2 = f.task(project.id, "Next");
@@ -45,10 +46,13 @@ async function lostSend() {
   return x;
 }
 
-const held = (f: any, project: any, t: any) =>
-  expect(
-    f.service.delegate(project.id, { route: "fresh", tasks: [t.ref] }),
-  ).rejects.toThrow();
+// T136: new work on a reserved task is warned about, never refused; the reservation itself
+// is the cancelled operation staying unsettled.
+const held = async (f: any, project: any, t: any) => {
+  expect(["pending", "uncertain"]).toContain(f.store.assignments(project.id).filter((a: any) => a.taskNums.includes(t.num) && a.state === "cancelled").at(-1)!.opState);
+  const [r] = await f.service.delegate(project.id, { route: "fresh", tasks: [t.ref] });
+  expect(r.warnings?.join(" ")).toMatch(new RegExp(`${t.ref} is also with`));
+};
 
 describe("cancelled reservations hold until native execution settles", () => {
   it("keeps the task reserved when a cancelled lost send is found executing", async () => {
@@ -104,13 +108,13 @@ describe("cancelled reservations hold until native execution settles", () => {
     expect(a2.briefDelivered).toBe(true);
     expect(a2.opState).toBe("uncertain");
     const other = f.task(project.id, "Overlapping work");
-    await held(f, project, other);
-    // Idle settles the dispatched turn and frees the workspace.
+    // T136: the shared checkout is a warning, not a hold.
+    await expectWarned(f.service.delegate(project.id, { route: "fresh", tasks: [other.ref] }), /W1 is also writing in this checkout \(A2, cancelled\)/);
+    // Idle settles the dispatched turn and frees the workspace: no more warning.
     await f.runtime.onThreadIdle(f.idle(worker.threadId!));
-    await f.service.delegate(project.id, {
-      route: "fresh",
-      tasks: [other.ref],
-    });
+    const third = f.task(project.id, "Later work");
+    const [later] = await f.service.delegate(project.id, { route: "fresh", tasks: [third.ref] });
+    expect(later.warnings?.some(w => w.includes("A2"))).toBeFalsy();
   });
 
   it("does not release a queued cancellation on delete 404 when its brief may have dispatched", async () => {
@@ -305,7 +309,7 @@ describe("reconciliation is monotonic against newer evidence", () => {
     });
   });
 
-  it("a rejected report can be reassigned after stale reconciliation", async () => {
+  it("a reported task can be given out again after stale reconciliation", async () => {
     const { f, project, worker, t2 } = await lostSend();
     let first = true;
     f.harness.sdk.stub("threads.queuedMessages.list", async () => {
@@ -321,7 +325,6 @@ describe("reconciliation is monotonic against newer evidence", () => {
       return stale;
     });
     await f.service.reconcile();
-    await f.service.rejectReport(project.id, "A2", "redo with the corrected scope");
     f.idle(worker.threadId!);
     const replacement = await f.service.delegate(project.id, {
       route: "fresh",

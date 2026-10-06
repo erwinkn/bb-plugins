@@ -36,8 +36,8 @@ describe("T85 Claude receives meaningful initiative_decision parameters", () => 
     const schema = record.inputSchema;
     expect(schema.type).toBe("object");
     for (const key of ["oneOf", "anyOf", "allOf"]) expect(schema[key]).toBeUndefined();
-    expect(schema.properties.action.enum).toEqual(expect.arrayContaining(["decision", "question", "answer", "cleanup"]));
-    for (const field of ["description", "madeBy", "question", "context", "options", "recommendation", "blocksTaskIds", "title", "ref", "choice", "note", "notify", "operation", "reason", "topic", "scope", "supersedes"])
+    expect(schema.properties.action.enum).toEqual(expect.arrayContaining(["user-choice", "veto-request", "question", "answer", "withdraw"]));
+    for (const field of ["description", "madeBy", "question", "context", "options", "recommendation", "blocksTaskIds", "title", "ref", "choice", "note", "notify", "reason", "topic", "scope", "supersedes"])
       expect(Object.keys(schema.properties)).toContain(field);
     expect(schema.properties.madeBy.enum).toEqual(["user", "agent"]);
     expect(schema.required).toEqual(["action"]);
@@ -162,7 +162,7 @@ describe("T85 decisions: explicit owner, flat fields, legacy nesting", () => {
     // Solera 19369: no owner is never defaulted.
     const missing = await refused(f, { action: "decision", description: "Vocabulary for the observed-set model." });
     expect(missing).toMatch(/madeBy/);
-    expect(missing).toContain('"action":"decision"');
+    expect(missing).toContain('"action":"user-choice"');
     expect(f.store.decisions(project.id)).toHaveLength(before);
   });
 
@@ -216,13 +216,13 @@ describe("T85 decisions: explicit owner, flat fields, legacy nesting", () => {
   it("Coffre 32460 / Solera 13804 / Solera 11753: guessed actions and fields are refused with an example", async () => {
     const { f, project } = await projectFixture();
     const record = await refused(f, { action: "record", madeBy: "user", text: "Erwin chose Base UI." });
-    expect(record).toMatch(/decision, question, answer or cleanup/);
+    expect(record).toMatch(/user-choice, veto-request, question, answer or withdraw/);
     expect(record).toMatch(/bb initiative describe/);
-    expect(await refused(f, { action: "list-actions" })).toMatch(/decision, question, answer or cleanup/);
+    expect(await refused(f, { action: "list-actions" })).toMatch(/user-choice, veto-request, question, answer or withdraw/);
     const text = await refused(f, { action: "decision", madeBy: "user", text: "Erwin chose Base UI." });
     expect(text).toMatch(/"text"/);
     expect(text).toMatch(/description/);
-    expect(text).toContain('"action":"decision"');
+    expect(text).toContain('"action":"user-choice"');
     expect(await refused(f, { action: "decision", madeBy: "user", description: "X", review: "needs Erwin" })).toMatch(/"review"/);
     expect(f.store.decisions(project.id)).toHaveLength(0);
   });
@@ -277,17 +277,13 @@ describe("T85 answers and cleanup", () => {
     expect(f.store.decisionItem(project.id, Number(d.ref.slice(1)))).toMatchObject({ review: "pending", status: "active" });
   });
 
-  it("runs flat cleanup and the decision-cleanup alias for the current coordinator only", async () => {
+  it("user-choice and veto-request carry their owner; cleanup is refused with what replaces it (T136)", async () => {
     const { f, project } = await projectFixture();
-    const d = await tool(f, { action: "decision", madeBy: "agent", description: "Keep native dispatch." });
-    const reason = "Erwin asked to mark all agent decisions OK.";
-    expect(await tool(f, { action: "cleanup", ref: d.ref, operation: "accept", reason })).toMatchObject({ review: "okay", madeBy: "agent" });
-    expect((await cli(f, { action: "cleanup", ref: d.ref, operation: "veto", reason }, "coordinator", project.id)).exitCode).toBe(0);
-    expect(await tool(f, { action: "decision-cleanup", decision: d.ref, operation: "accept", reason })).toMatchObject({ review: "okay" });
-    const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
-    expect(await refused(f, { action: "cleanup", ref: d.ref, operation: "remove", reason }, worker.threadId!)).toMatch(/current coordinator/);
-    expect(await refused(f, { action: "cleanup", ref: d.ref, operation: "remove" })).toMatch(/reason/);
-    expect(f.store.decisionItem(project.id, Number(d.ref.slice(1)))?.status).toBe("active");
+    expect(await tool(f, { action: "user-choice", description: "Erwin chose Linux." })).toMatchObject({ madeBy: "user", status: "active" });
+    expect(await tool(f, { action: "veto-request", description: "Keeping the old index for one release." })).toMatchObject({ madeBy: "agent", review: "pending" });
+    expect(await refused(f, { action: "user-choice", madeBy: "agent", description: "X" })).toMatch(/drop madeBy/);
+    expect(await refused(f, { action: "cleanup", ref: "D2", operation: "accept", reason: "x" })).toMatch(/cleanup was removed/);
+    expect(f.store.decisions(project.id)).toHaveLength(2);
     expect(f.send).not.toHaveBeenCalled();
   });
 });
@@ -296,7 +292,7 @@ describe("T85 describe examples are canonical and valid", () => {
   it("every decision-family example records through the real tool", async () => {
     const { f, project } = await projectFixture();
     const examples = JSON.parse((await f.harness.runCli(["describe"], { threadId: "coordinator" })).stdout!).commands as string[];
-    for (const name of ["question", "decision"]) {
+    for (const name of ["question", "user-choice", "veto-request"]) {
       const example = JSON.parse((await f.harness.runCli(["describe", name], { threadId: "coordinator" })).stdout!);
       expect(examples).toContain(name);
       expect(example.decision === undefined || typeof example.decision === "string").toBe(true);

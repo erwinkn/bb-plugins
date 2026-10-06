@@ -234,3 +234,5 @@
 .cr-accept-decisions .project-error { overflow-wrap: anywhere; }
 
 .cr-accept-decisions button { max-width: 100%; text-align: left; white-space: normal; }
+.bb-projects .cr .cr-final-message { margin: 6px 0; padding: 8px 10px; border-left: 2px solid var(--border); background: color-mix(in srgb, var(--muted) 40%, transparent); border-radius: 4px; }
+.bb-projects .cr .cr-final-message-text { margin: 0; white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; }

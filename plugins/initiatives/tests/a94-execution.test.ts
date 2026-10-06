@@ -16,7 +16,7 @@ async function completedWorker() {
   const task = f.task(project.id);
   const [d] = await f.service.delegate(project.id, fresh(task.ref));
   await f.service.report(d.threadId!, report());
-  await f.service.acceptTask(project.id, task.ref, {});
+  await f.service.closeTask(project.id, task.ref, "done");
   f.idle(d.threadId!);
   f.send.mockClear();
   return { f, project, d };
@@ -50,12 +50,12 @@ describe("A94 native execution and complete startup", () => {
 
   it("publishes service-tier enum and full permissions in generated native tool schema", async () => {
     const { f } = await projectFixture();
-    const tool = f.harness.registrations.agentTools.find((tool) => tool.name === "initiative_delegate")!;
+    const tool = f.harness.registrations.agentTools.find((tool) => tool.name === "initiative_spawn")!;
     expect(tool).toBeDefined();
     const schema = tool.inputSchema as any;
     expect((schema.properties!.profile as any).properties.serviceTier.enum).toEqual(["default", "fast"]);
     expect((schema.properties!.permissionMode as any).enum).toEqual(["accept-edits", "auto", "full"]);
-    expect(tool.description).toContain("one native child");
+    expect(tool.description).toContain("Give work to a new worker");
   });
 
   it("CLI launches one native child with full brief, identity, assignment and explicit execution", async () => {
@@ -67,8 +67,7 @@ describe("A94 native execution and complete startup", () => {
     expect(f.send).not.toHaveBeenCalled();
     const spawn = f.spawn.mock.calls[0][0];
     expect(spawn).toMatchObject({ ...fast, permissionMode: "full", parentThreadId: "coordinator", title: "W1 Search — Archived search" });
-    expect(spawn.prompt).toContain('T1 "Historical search"');
-    expect(spawn.prompt).toContain("A1");
+    expect(spawn.prompt).toMatch(/^W1 "Search" \(Archived search\) · work · T1\n\nT1 Historical search\n/);
     expect(spawn.prompt).toContain("Objective: Make the thing work");
     expect(spawn.prompt).toContain("npm test");
     expect(spawn.prompt).toContain("codex / gpt-6.1-sol / high / fast; permissions: full");
@@ -167,42 +166,10 @@ describe("A94 native execution and complete startup", () => {
     expect(f.send.mock.calls[0][0].serviceTier).toBe("fast");
   });
 
-  it("inherits native fork model/reasoning/tier in one full-brief fork, with explicit full permissions", async () => {
-    const { f, project, d } = await completedWorker();
-    f.execution.set(d.threadId!, { ...fast, reasoningLevel: "xhigh", permissionMode: "auto" });
-    const task = f.task(project.id, "Bounded milestone");
-    const [forked] = await f.service.delegate(project.id, { route: "fork", worker: d.worker, tasks: [task.ref], environment: { type: "reuse", environmentId: "env_a" }, permissionMode: "full" });
-    expect(f.fork).toHaveBeenCalledTimes(1);
-    expect(f.send).not.toHaveBeenCalled();
-    const args = f.fork.mock.calls[0][0];
-    expect(args).toMatchObject({ sourceThreadId: d.threadId, permissionMode: "full" });
-    expect(args).not.toHaveProperty("serviceTier"); // not a native fork request field
-    expect(args.input[0].text).toContain("xhigh / fast; permissions: full");
-    expect(args.input[0].text).toContain("Bounded milestone");
-    expect(f.execution.get(forked.threadId!)).toMatchObject({ model: fast.model, reasoningLevel: "xhigh", serviceTier: "fast", permissionMode: "full" });
-    expect(f.store.assignment(project.id, 2)!.profile).toEqual({ ...fast, reasoningLevel: "xhigh" });
-    expect(f.threads.get(forked.threadId!)!.parentThreadId).toBe("coordinator");
-  });
 
-  it("accepts an explicit fork profile matching native inheritance", async () => {
-    const { f, project, d } = await completedWorker();
-    const task = f.task(project.id, "Milestone");
-    await f.service.delegate(project.id, { route: "fork", worker: d.worker, tasks: [task.ref], profile: fast });
-    expect(f.fork).toHaveBeenCalledTimes(1);
-  });
 
-  it.each([
-    { ...fast, serviceTier: "default" as const },
-    { ...fast, reasoningLevel: "xhigh" as const },
-  ])("refuses incompatible fork execution overrides before dispatch: %j", async (profile) => {
-    const { f, project, d } = await completedWorker();
-    const task = f.task(project.id, "Milestone");
-    await expect(f.service.delegate(project.id, { route: "fork", worker: d.worker, tasks: [task.ref], profile })).rejects.toThrow(/cannot override model, reasoning or service tier/);
-    expect(f.fork).not.toHaveBeenCalled();
-    expect(f.store.assignments(project.id)).toHaveLength(1);
-  });
 
-  it.each(["continue", "fork"] as const)("rejects %s when native settings cannot be proven", async (route) => {
+  it.each(["continue"] as const)("rejects %s when native settings cannot be proven", async (route) => {
     const { f, project, d } = await completedWorker();
     f.harness.sdk.stub("threads.defaultExecutionOptions", async () => null);
     const task = f.task(project.id, "Correction");

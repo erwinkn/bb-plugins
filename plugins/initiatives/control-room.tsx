@@ -100,6 +100,18 @@ function Glyph({ name }: { name: keyof typeof glyphs }) {
     </svg>
   );
 }
+/** T136: a worker's final message is its report; long ones open on demand. */
+function FinalMessage({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 600;
+  return (
+    <div className="cr-final-message">
+      <p className="cr-final-message-text">{open || !long ? text : `${text.slice(0, 600).trimEnd()}…`}</p>
+      {long ? <button type="button" className="cr-link" onClick={() => setOpen(!open)}>{open ? "Show less" : "Show the whole report"}</button> : null}
+    </div>
+  );
+}
+
 function Fold({
   title,
   meta,
@@ -555,6 +567,20 @@ export function ControlRoom({
             can finish.
           </p>
         ) : null}
+        {p.handoverDraft?.startsReplacement && !p.coordinatorHandover ? (
+          <div className="cr-handover" role="status">
+            <p>
+              {p.handoverDraft.state === "ready" ? "Handover ready" : "Writing the handover"} · GPT-6 Luna High{" "}
+              <Age at={p.handoverDraft.updatedAt} />
+            </p>
+            <p className="project-muted">The new coordinator starts as soon as it is ready.</p>
+            <div className="project-actions">
+              <Action run={run} command={{ action: "handover-draft-discard" }}>
+                Cancel
+              </Action>
+            </div>
+          </div>
+        ) : null}
         {p.coordinatorHandover ? (
           <div className="cr-handover" role="status">
             <p>
@@ -777,17 +803,6 @@ export function ControlRoom({
                         Open work thread
                       </button>
                     ) : null}
-                    {a.role === "review" && a.state === "reported" ? (
-                      <Action
-                        run={run}
-                        command={{
-                          action: "review-accept",
-                          assignment: a.assignment,
-                        }}
-                      >
-                        Accept review
-                      </Action>
-                    ) : null}
                     <ReasonAction
                       label="Cancel assignment"
                       run={run}
@@ -822,8 +837,9 @@ export function ControlRoom({
                   >
                     {a.checkpoint ? <p className="project-meta" title={`Recorded by the coordinator from ${a.owner.worker}`}>Coordinator checkpoint</p> : null}
                     <p>{a.summary}</p>
+                    {a.finalMessage && a.finalMessage !== a.summary ? <FinalMessage text={a.finalMessage} /> : null}
                     <p className="project-meta">
-                      {a.owner.worker} · {a.assignment} · {a.outcome}
+                      {a.owner.worker} · {a.assignment} · {a.outcome === "succeeded" ? "done" : a.outcome}
                     </p>
                     {a.owner.threadId ? (
                       <button onClick={() => openThread(a.owner.threadId!)}>
@@ -831,39 +847,17 @@ export function ControlRoom({
                       </button>
                     ) : null}
                     <div className="project-actions">
-                      {a.role === "review" ? (
-                        <Action
-                          run={run}
-                          command={{
-                            action: "review-accept",
-                            assignment: a.assignment,
-                          }}
-                        >
-                          Accept review
-                        </Action>
-                      ) : (
-                        a.tasks.map((t) => (
-                          <Action
-                            key={t.ref}
-                            run={run}
-                            command={{
-                              action: "task-accept",
-                              task: t.ref,
-                              assignment: a.assignment,
-                            }}
-                          >
-                            Accept {t.ref}
-                          </Action>
-                        ))
-                      )}
+                      {a.role === "work"
+                        ? a.tasks.map((t) => (
+                            <Action key={t.ref} run={run} command={{ action: "task-close", task: t.ref, outcome: "done" }}>
+                              Close {t.ref}
+                            </Action>
+                          ))
+                        : null}
                       <ReasonAction
-                        label="Reject report"
+                        label={`Retire ${a.owner.worker}`}
                         run={run}
-                        make={(reason) => ({
-                          action: "assignment-reject",
-                          assignment: a.assignment,
-                          reason,
-                        })}
+                        make={(reason) => ({ action: "worker-retire", worker: a.owner.worker, reason })}
                       />
                     </div>
                   </Fold>
@@ -887,7 +881,7 @@ export function ControlRoom({
                           title={t.status.replaceAll("_", " ")}
                         >
                           {t.status === "awaiting_acceptance"
-                            ? "awaiting"
+                            ? "reported"
                             : t.status === "in_progress"
                               ? "working"
                               : t.status}
@@ -907,14 +901,9 @@ export function ControlRoom({
                     <p>{t.summary}</p>
                     <p>{t.why}</p>
                     <TaskEdit task={t} run={run} />
-                    {t.status === "awaiting_acceptance" ? (
-                      <Action
-                        run={run}
-                        command={{ action: "task-accept", task: t.ref }}
-                      >
-                        Accept result
-                      </Action>
-                    ) : null}
+                    <Action run={run} command={{ action: "task-close", task: t.ref, outcome: "done" }}>
+                      Close as done
+                    </Action>
                     <ReasonAction
                       label="Cancel task"
                       run={run}

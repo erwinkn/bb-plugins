@@ -208,7 +208,7 @@ describe("T56 proven coordinator default checkout", () => {
     expect(f.threads.get(worker.threadId!)!.parentThreadId).toBe("coordinator");
     expect(f.threads.get("coordinator")!.archivedAt).toBeNull();
     const seed = f.spawn.mock.calls[0][0].prompt;
-    expect(seed).toContain("Until confirmation");
+    expect(seed).toContain("Until it is, do not give out work or change Initiative state");
     expect(seed).toContain("membership is unavailable");
     expect(seed).not.toContain("are your native children now");
     expect(seed).not.toContain("You are taking over as coordinator");

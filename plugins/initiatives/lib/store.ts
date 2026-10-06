@@ -372,6 +372,26 @@ export const MIGRATIONS = [
   // T110: why a former coordinator generation still stays live, so an
   // unchanged refusal is logged once and the dashboard can show it.
   `ALTER TABLE generations ADD COLUMN hold_reason TEXT`,
+  // T136: the handover a replacement coordinator receives as its first message, written by
+  // a short-lived GPT-6 Luna thread from recent activity. One row per Initiative, consumed
+  // when the replacement starts; nothing else keeps it.
+  `CREATE TABLE plugin_flags (key TEXT PRIMARY KEY, set_at INTEGER NOT NULL)`,
+  `CREATE TABLE handover_drafts (
+    project_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('requested','generating','ready')),
+    note TEXT,
+    text TEXT,
+    source TEXT CHECK (source IN ('luna','fallback','user')),
+    thread_id TEXT,
+    detail TEXT,
+    then_replace TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  // A296: the plain-listing handover, built from the same messages as the writer's packet.
+  `ALTER TABLE handover_drafts ADD COLUMN fallback TEXT`,
+  // A296: every handover writer thread until BB confirms it archived.
+  `CREATE TABLE handover_writers (thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, created_at INTEGER NOT NULL)`,
 ];
 
 export const ACTIVITY_LIMIT = 300;
@@ -545,6 +565,43 @@ export interface AssignmentRecord {
   stopReason: string | null;
   createdAt: number;
   updatedAt: number;
+}
+
+/** T136: a generated (or user-edited) handover waiting to become a new coordinator's first message. */
+export interface HandoverDraft {
+  projectId: string;
+  /** requested: waits for its writer to start (a note may be saved); generating: Luna is writing; ready: text is final. */
+  state: "requested" | "generating" | "ready";
+  /** Optional note from the outgoing coordinator or user, given to the writer. */
+  note: string | null;
+  text: string | null;
+  source: "luna" | "fallback" | "user" | null;
+  /** The short-lived writer thread while generating. */
+  threadId: string | null;
+  /** Why a fallback was used, or the writer's state. */
+  detail: string | null;
+  /** The plain listing to use when the writer fails, built when the writer started. */
+  fallback?: string | null;
+  /** A replacement to start as soon as the text is ready. */
+  thenReplace: { reason: string; profile?: Profile; environment?: EnvironmentChoice; expectedCoordinator?: string | null } | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+function toDraft(row: Row): HandoverDraft {
+  return {
+    projectId: String(row.project_id),
+    state: row.state as HandoverDraft["state"],
+    note: (row.note as string | null) ?? null,
+    text: (row.text as string | null) ?? null,
+    source: (row.source as HandoverDraft["source"]) ?? null,
+    threadId: (row.thread_id as string | null) ?? null,
+    detail: (row.detail as string | null) ?? null,
+    thenReplace: row.then_replace ? JSON.parse(String(row.then_replace)) : null,
+    fallback: (row.fallback as string | null | undefined) ?? null,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
 }
 
 /**
@@ -1611,6 +1668,63 @@ export class Store {
     return row ? toHandover(row) : null;
   }
 
+  hasFlag(key: string): boolean {
+    return this.db.prepare("SELECT 1 FROM plugin_flags WHERE key=?").get(key) !== undefined;
+  }
+
+  setFlag(key: string) {
+    this.db.prepare("INSERT OR IGNORE INTO plugin_flags(key, set_at) VALUES(?, ?)").run(key, Date.now());
+  }
+
+  handoverDraft(projectId: string): HandoverDraft | null {
+    const row = this.db.prepare("SELECT * FROM handover_drafts WHERE project_id=?").get(projectId) as Row | undefined;
+    return row ? toDraft(row) : null;
+  }
+
+  handoverDraftByThread(threadId: string): HandoverDraft | null {
+    const row = this.db.prepare("SELECT * FROM handover_drafts WHERE thread_id=? AND state='generating'").get(threadId) as Row | undefined;
+    return row ? toDraft(row) : null;
+  }
+
+  /** Requested drafts waiting for a writer slot, oldest first. */
+  queuedDrafts(): HandoverDraft[] {
+    return (this.db.prepare("SELECT * FROM handover_drafts WHERE state='requested' AND detail='queued' ORDER BY created_at, project_id").all() as Row[]).map(toDraft);
+  }
+
+  generatingDrafts(): HandoverDraft[] {
+    return (this.db.prepare("SELECT * FROM handover_drafts WHERE state='generating'").all() as Row[]).map(toDraft);
+  }
+
+  saveHandoverDraft(draft: Omit<HandoverDraft, "createdAt" | "updatedAt"> & { createdAt?: number }): HandoverDraft {
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT INTO handover_drafts(project_id, state, note, text, source, thread_id, detail, then_replace, fallback, created_at, updated_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id) DO UPDATE SET state=excluded.state, note=excluded.note, text=excluded.text, source=excluded.source,
+         thread_id=excluded.thread_id, detail=excluded.detail, then_replace=excluded.then_replace, fallback=excluded.fallback, updated_at=excluded.updated_at`,
+    ).run(draft.projectId, draft.state, draft.note, draft.text, draft.source, draft.threadId, draft.detail,
+      draft.thenReplace ? JSON.stringify(draft.thenReplace) : null, draft.fallback ?? null, draft.createdAt ?? now, now);
+    return this.handoverDraft(draft.projectId)!;
+  }
+
+  /** A296: writer threads stay listed until their archive is confirmed. */
+  trackWriter(threadId: string, projectId: string) {
+    this.db.prepare("INSERT OR IGNORE INTO handover_writers(thread_id, project_id, created_at) VALUES(?, ?, ?)").run(threadId, projectId, Date.now());
+  }
+
+  untrackWriter(threadId: string) {
+    this.db.prepare("DELETE FROM handover_writers WHERE thread_id=?").run(threadId);
+  }
+
+  trackedWriters(): { threadId: string; projectId: string }[] {
+    return (this.db.prepare("SELECT thread_id, project_id FROM handover_writers ORDER BY created_at").all() as { thread_id: string; project_id: string }[])
+      .map(row => ({ threadId: row.thread_id, projectId: row.project_id }));
+  }
+
+  clearHandoverDraft(projectId: string) {
+    this.db.prepare("DELETE FROM handover_drafts WHERE project_id=?").run(projectId);
+  }
+
   pendingHandover(projectId: string): HandoverRecord | null {
     const row = this.db
       .prepare(
@@ -2211,6 +2325,22 @@ export class Store {
   }
 
   /** The newest assignment for a worker that is not finished from the worker's side. */
+  /** A worker's latest assignment of any state, without scanning the whole ledger. */
+  latestAssignment(projectId: string, workerNum: number): AssignmentRecord | null {
+    const row = this.db
+      .prepare(`SELECT * FROM assignments WHERE project_id = ? AND worker_num = ? ORDER BY num DESC LIMIT 1`)
+      .get(projectId, workerNum) as Row | undefined;
+    return row ? toAssignment(row) : null;
+  }
+
+  /** T136: a worker's latest assignment with a report, without scanning the whole ledger. */
+  latestReported(projectId: string, workerNum: number): AssignmentRecord | null {
+    const row = this.db
+      .prepare(`SELECT * FROM assignments WHERE project_id = ? AND worker_num = ? AND report IS NOT NULL ORDER BY num DESC LIMIT 1`)
+      .get(projectId, workerNum) as Row | undefined;
+    return row ? toAssignment(row) : null;
+  }
+
   openAssignment(
     projectId: string,
     workerNum: number,

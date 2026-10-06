@@ -523,6 +523,13 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
 /** Adopted coordinator + project, the common starting point. */
 export async function projectFixture(settings?: Record<string, string | number | boolean>) {
   const f = fixture(settings);
+  // Instructions given to a fixture are the user's own edits, made after the one-time T136
+  // reset to the new defaults; save them again once that reset has run.
+  const saved = Object.fromEntries(Object.entries(settings ?? {}).filter(([key]) => key === "coordinatorInstructions" || key === "workerInstructions"));
+  if (Object.keys(saved).length) {
+    await f.preferences.ready;
+    await f.preferences.handle.experimental_set(saved as never);
+  }
   const { project } = await f.create();
   return { f, project };
 }

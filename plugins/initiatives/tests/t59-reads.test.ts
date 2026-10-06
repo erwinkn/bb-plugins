@@ -68,12 +68,12 @@ describe("T59 selective agent reads", () => {
   });
 
   it("publishes valid short tool/CLI examples and native inventory/usage selectors", async () => {
-    for (const example of Object.values(COMMAND_EXAMPLES)) expect(() => parseCommandInput(example)).not.toThrow();
-    for (const example of Object.values(READ_EXAMPLES)) expect(agentReadSchema.safeParse(example).success).toBe(true);
+    for (const [name, example] of Object.entries(COMMAND_EXAMPLES)) expect(() => parseCommandInput(example), name).not.toThrow();
+    for (const [name, example] of Object.entries(READ_EXAMPLES)) expect(agentReadSchema.safeParse(example).success, name).toBe(true);
     const { f, project } = await projectFixture();
-    const reply = await f.harness.runCli(["describe", "task-checkpoint"], { threadId: "coordinator" });
+    const reply = await f.harness.runCli(["describe", "spawn"], { threadId: "coordinator" });
     expect(reply.exitCode).toBe(0);
-    expect(JSON.parse(reply.stdout!)).toEqual(COMMAND_EXAMPLES["task-checkpoint"]);
+    expect(JSON.parse(reply.stdout!)).toEqual(COMMAND_EXAMPLES.spawn);
     const threads = JSON.parse(await f.harness.callAgentTool("initiative_read", { view: "threads", refs: ["coordinator"], detailed: true }, { threadId: "coordinator" }) as string);
     expect(threads.items).toHaveLength(1);
     expect(threads.items[0].threadId).toBe("coordinator");
@@ -106,7 +106,9 @@ describe("T59 selective agent reads", () => {
     f.store.updateProject(project.id, { checkpoint: "History ".repeat(2000) });
     for (let i = 0; i < 500; i++) f.task(project.id, `Work ${i}`);
     const overview = JSON.parse(await f.harness.callAgentTool("initiative_read", {}, { threadId: "coordinator" }) as string);
-    expect(overview.counts.tasks).toBe(500);
+    expect(overview.counts.openTasks).toBe(500);
+    // T136: the old persistent checkpoint is never injected into the overview.
+    expect(JSON.stringify(overview)).not.toContain("History");
     expect(overview).not.toHaveProperty("usage");
     expect(overview).not.toHaveProperty("memberThreads");
     expect(JSON.stringify(overview).length).toBeLessThan(16000);

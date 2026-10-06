@@ -77,7 +77,7 @@ describe("A96 lightweight decisions and safe history", () => {
     expect(c.tools.every(tool => tool.name.startsWith("initiative_"))).toBe(true);
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
     const w = await config(f, worker.threadId!);
-    expect(w.tools.map(tool => tool.name).sort()).toEqual(["initiative_decision", "initiative_message", "initiative_progress", "initiative_read", "initiative_report"]);
+    expect(w.tools.map(tool => tool.name).sort()).toEqual(["initiative_decision", "initiative_message", "initiative_read", "initiative_report"]);
     for (const instructions of [c.instructions!, w.instructions!, DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) {
       expect(instructions).not.toMatch(/proposedKnowledge|knowledge-review|scoped knowledge|project_read|project_report/);
       expect(instructions.length).toBeLessThanOrEqual(4096);

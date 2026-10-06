@@ -283,7 +283,19 @@ function CoordinatorSwitch({
   // carries the incumbent's effective model, reasoning, approval mode and
   // service tier. Choosing a model is an explicit override.
   const [profileOverride, setProfileOverride] = useState<Profile | null>(null);
-  const [checkpoint, setCheckpoint] = useState(project.checkpoint ?? "");
+  // T136: GPT-6 Luna High writes the handover from recent activity as soon as the form
+  // opens; it becomes the new coordinator's first message, editable here first.
+  const draft = project.handoverDraft;
+  const [handover, setHandover] = useState<string | null>(draft?.state === "ready" ? draft.text : null);
+  const requested = useRef(false);
+  useEffect(() => {
+    if (requested.current || draft) return;
+    requested.current = true;
+    void command({ action: "handover-draft" }).catch((e) => setError(describeError(e)));
+  }, [draft, command]);
+  useEffect(() => {
+    if (draft?.state === "ready" && handover === null) setHandover(draft.text);
+  }, [draft?.state, draft?.text, handover]);
   const [reason, setReason] = useState("Switch coordinator model");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -312,7 +324,7 @@ function CoordinatorSwitch({
             action: "replace-coordinator",
             ...(profileOverride ? { profile: profileOverride } : {}),
             reason,
-            ...(checkpoint.trim() ? { checkpoint } : {}),
+            ...(handover?.trim() ? { handover } : {}),
           })) as { state?: string } | null;
           // "checkout-pending" started the replacement; the strip shows
           // its confirmation, so the form closes as on success.
@@ -330,9 +342,9 @@ function CoordinatorSwitch({
     >
       <h3>Replace coordinator</h3>
       <p className="project-muted">
-        Start a fresh coordinator with the initiative's tasks, decisions and
-        this checkpoint. Every recorded member moves before the old coordinator
-        archives; it stays in history.
+        Start a fresh coordinator whose first message is the handover below.
+        Every worker moves to it before the old coordinator archives; the old
+        thread stays in history.
       </p>
       <label className="project-option">
         <input
@@ -380,15 +392,36 @@ function CoordinatorSwitch({
           onChange={(e) => setReason(e.target.value)}
         />
       </label>
-      <label className="project-field">
-        Handoff checkpoint
-        <AutoTextarea
-          value={checkpoint}
-          rows={4}
-          maxLength={6000}
-          onChange={(e) => setCheckpoint(e.target.value)}
-        />
-      </label>
+      {handover !== null ? (
+        <label className="project-field">
+          Handover{draft?.source === "fallback" ? " (written without Luna)" : draft?.source === "luna" ? " (GPT-6 Luna High)" : ""}
+          <AutoTextarea
+            value={handover}
+            rows={10}
+            maxLength={20000}
+            onChange={(e) => setHandover(e.target.value)}
+          />
+        </label>
+      ) : (
+        <p className="project-note" role="status">
+          GPT-6 Luna High is writing the handover from recent activity. You can
+          start now: the new coordinator then starts as soon as it is ready.
+        </p>
+      )}
+      {draft?.source === "fallback" && draft.detail ? <p className="project-muted">{draft.detail}</p> : null}
+      {handover !== null ? (
+        <button
+          type="button"
+          className="project-link"
+          disabled={busy}
+          onClick={() => {
+            setHandover(null);
+            void command({ action: "handover-draft", restart: true }).catch((e) => setError(describeError(e)));
+          }}
+        >
+          Write it again
+        </button>
+      ) : null}
       {queued ? (
         <p className="project-note">
           Queued — the replacement starts when the current coordinator's turn

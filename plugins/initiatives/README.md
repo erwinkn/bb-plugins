@@ -3,12 +3,92 @@
 Plugin ID `initiatives` (package `bb-plugin-initiatives`). Until its one-time
 move it was installed as `projects`; see "One-time move from the projects ID".
 
-One coordinator across one or more BB repositories, ordinary worker threads,
-and durable tasks, reports, decisions and updates. Native tools remain available.
+One coordinator across one or more BB repositories and ordinary worker threads:
+threads, labels and messages, with optional tasks, reports, decisions and updates.
+Native tools remain available.
 The Control Room dashboard sits beside coordinator chat. Its compact coordinator
 strip opens state/home details, replacement and the Initiative menu. Inbox,
 Decisions, Threads, Tasks, Context, Log and Usage keep everyday controls in this
 panel.
+
+## How it works
+
+An example, in the bb-plugins Initiative:
+
+1. The coordinator creates T40 "Archived records in search" (optional).
+2. It spawns W190 "Search index" (purpose "search ranking"): `initiative_spawn
+   {label, purpose, text, tasks:["T40"]}`. The brief is the label, the task, the
+   coordinator's text and one report line; standing rules live in the worker
+   instructions, given once per session.
+3. W190's **final message is its report**. It may also call `initiative_report
+   {outcome:"done"|"blocked"|"failed", summary}` for a one-line dashboard summary;
+   blocked needs the question, which then waits in the Inbox.
+4. A reviewer: `initiative_spawn {role:"review", reviews:"W190", ...}`. Its brief
+   embeds W190's latest report, it reads W190's checkout, and it reports findings
+   as its final message. No revision strings.
+5. Fixes go back to the same worker: `initiative_message {to:"W190", text,
+   work:true}` (or `tasks:[...]`). A message without them is just a message.
+6. Done: the coordinator closes T40 (`initiative_task {action:"close", task:"T40",
+   outcome:"done"}`) and retires W190 and the reviewer. Nothing is accepted or
+   rejected.
+
+Details:
+
+- **Workers** are a thread, a W#, a role (work or review) and a purpose. Each spawn
+  or work message creates an A# that links a report to the work that asked for it.
+- **Prior reports**: `handoffs:["W171"]` (latest report) or `["A280"]`, up to three,
+  with no rules about which tasks they cover. Long ones are clipped at 1,500
+  characters with a pointer to the full report.
+- **Overlap** is a warning, never a refusal: a spawn or work message returns
+  `warnings` when another worker is writing in the same checkout or has the same
+  task. Give one of them a worktree (`environment:{type:"worktree"}`) or sequence
+  them.
+- **Decisions** are for the user (D402): `user-choice` records the user's explicit
+  choice from chat, `veto-request` records a choice of the agent's that the user may
+  want to veto (the agent proceeds; Not okay sends the user's message back).
+  Agents never read the log back. Questions and answers are unchanged.
+- **Instructions**: the coordinator and worker defaults in `lib/guidance.ts` are
+  about 1,300 and 1,050 characters. Saved instructions were replaced by these
+  defaults once at upgrade (D406); later edits are the user's.
+- **Coordinator handover**: Replace coordinator (dashboard), `initiative_manage
+  {action:"handover"}` or the restart command below start a short-lived thread on
+  Codex / `gpt-6-luna` / high, titled "Handover · <Initiative>", with no Initiative
+  tools. Its prompt is a bounded packet (about 60k characters) built from the
+  plugin's records and the old coordinator's last 30 messages: objective, open
+  tasks, live workers, the last 10 reports, what waits on the user, the last 5
+  updates. The decision log is not included. Its final message becomes the new
+  coordinator's first message and is kept nowhere else; the writer thread is
+  archived. If Luna is unavailable, fails or takes more than 10 minutes, a plain
+  listing of the same packet is used, so a replacement never blocks. The dashboard
+  shows the handover in an editable box before **Start replacement**. Old
+  checkpoints stay in the database and are never injected.
+- **Restart**: `bb initiative recreate-coordinators (--all | <id>...) [--dry-run]
+  [--wait=<seconds>]` writes a fresh handover for each open Initiative (at most
+  three writers at a time) and starts a fresh coordinator with it; a busy
+  coordinator is replaced when its turn ends, so the coordinator running the
+  command is replaced last. `--dry-run` prints the handovers without starting
+  anything; a real run within the hour reuses them. Workers keep their threads
+  and move to the new coordinator.
+- **Older sessions** keep working: `initiative_delegate`, the full structured
+  `initiative_report`, `initiative_progress` (now a no-op) and the old
+  `initiative_task`/`initiative_manage`/`initiative_worker` actions still run.
+  Removed actions (task-accept, review-accept, assignment-reject,
+  assignment-scope-release, task-checkpoint, decision-cleanup, fork) answer with
+  what replaces them.
+- **Existing data** stays readable and nothing is dropped: old structured reports,
+  accepted/rejected assignments, D# history and checkpoints render as before.
+  Tasks left "awaiting acceptance" show as reported and open until closed. The
+  only additions are the `handover_drafts` and `plugin_flags` tables and an
+  optional `finalMessage` in the report JSON.
+
+Coordinator tools: `initiative_read`, `initiative_spawn`, `initiative_message`,
+`initiative_task`, `initiative_worker`, `initiative_decision`, `initiative_update`,
+`initiative_manage`. Workers get `initiative_read`, `initiative_report`,
+`initiative_message` and `initiative_decision`. User-owned threads get
+`initiative_read` and `initiative_update`; unmanaged threads get
+`initiative_create`. Every tool publishes one flat object schema (Claude's bridge
+blanks union roots) and validates it on the server. The CLI is `bb initiative`;
+`bb initiative describe` lists valid examples.
 
 ## Install and use
 
@@ -23,13 +103,13 @@ bb plugin reload initiatives
 Open Initiatives in the navigation, or Initiative from a thread's panel menu. Start a
 new coordinator in a selected checkout, or adopt the current thread. Adoption
 preserves its runtime; tools activate at the next natural session construction.
-The CLI works immediately. Change coordinator opens a live model picker and
-starts a fresh thread from the Initiative records and handoff checkpoint. The old
-thread stays in history, and unfinished worker reports reach the replacement.
-Let the current coordinator finish its turn or stop it before switching — or
-ask the coordinator to hand over: it records a durable request and checkpoint
-with coordinator-handover — optionally naming a target environment — finishes
-its own turn, and the replacement starts at
+The CLI works immediately. Replace coordinator opens a live model picker and
+the handover GPT-6 Luna High writes from recent activity, then starts a fresh
+thread with it as the first message. The old thread stays in history, and
+unfinished worker reports reach the replacement. Let the current coordinator
+finish its turn or stop it before switching — or ask the coordinator to hand
+over: it records a durable request with coordinator-handover — optionally naming
+a target environment — finishes its own turn, and the replacement starts at
 the natural idle boundary. The queued request survives restarts, waits through
 a pause, holds while the predecessor is busy, interrupted, unhealthy or cannot
 be positively confirmed, and is visible — with its hold reason — and
@@ -88,10 +168,10 @@ records that upstream candidate; no issue was filed.
 | Review of Claude work                     | GPT-6 Astra Extra High |
 | Review of GPT work                        | Fable 5.1 Extra High   |
 
-Review substantial milestones. A reviewer remains a reviewer across continuation,
-forks and adoption. Each review starts as a fresh, read-only thread bound to the
-reported task, assignment and revision, never a continuation or fork of an
-implementer's context. A reviewer from a different model family is the default
+Review substantial milestones. A reviewer remains a reviewer across messages and
+adoption. Each review starts as a fresh, read-only thread with the reviewed
+worker's latest report embedded, never a continuation of an implementer's
+context. A reviewer from a different model family is the default
 recommendation, not a requirement: the "Review of Claude/GPT work" profiles are
 used as configured, even when they share the implementer's family, and an
 explicit reviewer profile wins. Without a chosen profile, mixed Claude/GPT
@@ -157,45 +237,21 @@ validate stored JSON and fail visibly on corruption.
 
 ## Editable plugin Settings
 
-BB Settings exposes populated coordinator and worker instructions plus a
-validated JSON map of default execution profiles. The native multiline fields
-are the editors. A compact section shows effective global fallbacks and resets
-each field to its populated default. The canonical guidance defaults are in
-`lib/guidance.ts`; skills point to this configured guidance instead of keeping a
-second behavioral copy. Instruction edits allow at most 3,584 characters,
-reserving 512 of BB's 4,096-character dynamic instruction limit for immutable
-role/start notices. Empty, overlong or invalid profile edits are rejected before
-persisting, without losing valid settings. Profile save validation checks the
-existing schema; target-machine model, reasoning and Fast availability are
-checked on dispatch, where unavailable choices fail without fallback.
+BB Settings exposes the coordinator and worker instructions plus a JSON map of
+default execution profiles. Instruction edits allow at most 3,584 characters,
+reserving 512 of BB's 4,096-character limit for the identity line. Empty,
+overlong or invalid edits are rejected before saving. BB applies instructions
+when it constructs a session; saving never restarts or wakes an agent, and
+briefs never repeat them.
 
-Settings saves update the configuration snapshot through the existing native
-settings change notification. SDK 0.4.87's synchronous configure callback reads
-that current snapshot and fails closed until its persisted initial load resolves.
-BB applies dynamic instructions when it constructs a new or resumed provider
-session; it does not hot-update an already-constructed session. A normal next
-turn can retain that session, so saving alone does not guarantee new instructions
-on that turn. Skills follow BB's safe runtime relaunch boundary. Dispatch awaits
-a fresh settings read: continue/fork briefs carry current worker guidance into
-retained contexts, while fresh workers receive it through session configuration.
-No Settings save restarts, spawns or wakes agents. Root owns reload/live checks.
+Profiles: `coordinator`, `implementation` (the default work profile),
+`reviewOfClaude` and `reviewOfGpt` (the default reviewer for work done by that
+model family, so a different family reviews by default). Other stored keys are
+kept but unused. An explicit `profile` on spawn wins; a user-chosen task profile
+still wins over the coordinator's; a work message keeps the worker's native
+model. Settings never rewrite stored Initiative policies.
 
-Profiles follow explicit user task choices, explicit delegation/task profiles,
-recorded Initiative policy, then plugin Settings global fallbacks and existing
-built-in defaults. A profile without a tier leaves native tier inheritance
-available; an explicitly selected user tier wins. Continue/fork keep current
-native worker execution and replacement keeps incumbent settings unless explicitly
-overridden through supported fields. Settings never rewrite stored Initiative
-policies, including bb-plugins' GPT preference. The existing replacement picker
-uses the current global fallback only when no Initiative coordinator profile
-exists. Worker details show the latest delivered assignment profile, including
-native settings recorded by its report; unobserved tiers say "tier unspecified".
-
-Coordinator defaults call for light context/status upkeep and closing superseded
-tasks after meaningful batches. Knowledge removal and the dependent dashboard
-contract redesign is described below.
-
-## Scoped delegation and worker choices
+## Execution choices and native details
 
 Read recorded Initiative policy and explicit user/task choices before selecting
 settings. The current bb-plugins policy remains GPT workers. Good means a
@@ -205,104 +261,13 @@ through editable profiles; they do not create presets or change other
 Initiatives. Existing profiles without `serviceTier` still decode.
 
 `profile.serviceTier` optionally accepts `default` or `fast` on policy, task,
-delegation and coordinator commands. Fresh and continue forward it through
-native execution fields. Omission uses native defaults on fresh threads and
-preserves the worker's current native settings on continue/fork. An explicit
+spawn and coordinator commands. Spawns and work messages forward it through
+native execution fields. Omission uses native defaults on new threads and
+preserves the worker's current native settings on a work message. An explicit
 user task tier wins; an unavailable Fast tier is rejected without fallback.
-Native fork in SDK 0.4.87 copies the source's last model, reasoning and tier and
-has no override fields for them. Initiatives checks that inheritance and rejects
-incompatible fork choices before creation. Use continue or fresh to select
-different settings. `permissionMode` remains the existing explicit parameter
-on fresh/fork and the continuation send; pass `full` when instructed. Replacement
+`permissionMode` is an explicit parameter on spawn; pass `full` when instructed. Replacement
 coordinators inherit effective tier and permissions unless the profile explicitly
 changes the tier, preserving the existing replacement controls.
-
-Start a worker with its complete scoped task brief in one native spawn. There is
-no Ready-only turn or raw-spawn/adopt/rebrief ritual: a raw native start can
-bypass the worker identity, assignment and guidance that initiative_delegate
-provides. Existing native children remain visible members; reuse or adopt
-relevant context rather than recreating work to fit the ledger. For example,
-after creating and briefing T12:
-
-```sh
-bb initiative command '{"action":"delegate","route":"fresh","tasks":["T12"],"label":"Search","area":"Archived search","profile":{"providerId":"codex","model":"gpt-6.1-sol","reasoningLevel":"high","serviceTier":"fast"},"permissionMode":"full"}' PROJECT_ID
-```
-
-Declare `access: "read-only"` on a delegation for an audit that must not write
-source or install state. Access belongs to the assignment and is persisted before
-dispatch, including queued and uncertain operations. Work defaults to `write`
-when omitted on every route, including continue and fork; repeat the declaration
-for each audit. Legacy work assignments remain potential writers. Reviewers
-remain read-only under their existing role and independence rules.
-
-Readers can share overlapping paths with readers or writers; overlapping writers
-must wait or use separate checkouts. Task ownership, Pause and Stop reservations
-still apply.
-
-A write assignment's paths are recorded when it is dispatched or checkpointed;
-later brief edits do not change them, and an assignment recorded before this
-has no scope and is held as the whole project. After a writer reports (and also
-once it is accepted, rejected, idle, stopped, cancelled or failed), its scope stays held while its
-native thread is still running, cannot be proven quiet, or its report lists
-background work. Every past write on the thread counts, not only the latest. A
-delegation reads this once, before its final reservation check: one project
-listing pass plus a GET only for threads it did not return. Listed background
-work is unverified and holds even after BB shows the thread ended, the report is
-rejected or the worker is retired. It is released by a refreshed final report
-without it (a rejected assignment takes no later report), or by
-`assignment-scope-release` with a reason once you have checked those jobs and BB
-shows the thread ended (`bb initiative describe scope-release`). The release
-echoes the `reportVersion` you read (shown by initiative_read and in the hold
-message), so it applies only to that filing: any later report, even an identical
-re-file after a relaunch, has a new version and needs a new check. When several
-reports on one thread list work, the hold message shows the oldest one's own
-jobs and version and names the others. BB's end evidence comes from the thread
-itself (archived, deleted, missing, or quiet in its own project listing) and is
-recorded with the release. A release keeps the report as filed and is not
-evidence that the jobs finished. Retiring a worker requires its thread's own
-list row to be quiet (no background commands, workflows, agents or queued work)
-before anything is archived or stopped. Continuing the same worker is exempt: BB
-queues the brief behind its foreground turn, but its background jobs are not
-ordered behind it, and the same agent context owns them. A fork into the same
-checkout is a new writer; the default fork runs in its own worktree. Access is a
-coordination rule, not a filesystem sandbox: an audit with `permissionMode:
-"full"` must still refrain from source/install writes. When reading paths under
-live edits, report the actual revision/source state checked, including
-dirty-file hashes or a captured snapshot where needed.
-
-Retained sessions can use the existing CLI if their tool schema lacks `access`:
-
-```sh
-bb initiative command '{"action":"delegate","route":"fresh","tasks":["T13"],"label":"Audit","area":"Search audit","access":"read-only","permissionMode":"full"}' PROJECT_ID
-```
-
-Use that fallback without restarting or waking agents to refresh instructions.
-
-Native messages carry decisions, blockers or new facts that change another
-agent's next action. Routine phases belong in `initiative_progress` or human-facing
-commentary. Submit one canonical `initiative_report`, then a short final pointer;
-do not also tell the coordinator the same result before native completion.
-Native completion and the existing fallback for workers without a native parent
-stay intact. Genuine errors, Stop requests and permission boundaries still need
-attention. Do not automatically wake agents just to publish progress.
-
-Keep follow-up briefs to the remaining outcome, scope, necessary interfaces,
-exact checked revision, remaining checks and evidence references. Reuse worker
-context; use fresh bounded handoffs at real milestones when useful. Review
-substantial milestones and focus correction checks on the changed behavior.
-Productive design exploration and verification remain necessary; every repeated
-test or design revision is not waste. Fast tier alone and combined usage
-telemetry do not establish cache hit rates, subscription or monetary savings.
-
-Coordinator tools: initiative_read, initiative_manage, initiative_task,
-initiative_delegate, initiative_worker, initiative_decision and initiative_update.
-Workers get initiative_read, initiative_progress, initiative_report and
-initiative_decision. User-owned threads get initiative_read and initiative_update;
-unmanaged threads get initiative_create. The CLI is `bb initiative`. Every tool
-publishes an object-root schema, because Claude's bridge blanks a top-level union:
-initiative_task, initiative_manage and initiative_worker (and their `project_*`
-aliases) list each action with its required fields and every field's real nested
-type, while the strict per-action command schema still validates each call.
 
 The decision log is the user's steering record, not an input for agents (D402).
 Past decisions in an agent's context make it overfit to what was already done,
@@ -315,16 +280,14 @@ overview still counts open questions and unchecked agent decisions (with refs,
 no bodies) so the coordinator can relay them; `initiative_read` view
 `decisions` stays available for the dashboard and explicit lookups.
 
-Decisions have automatic D numbers and one or two sentences. The dedicated
-initiative_decision API requires `madeBy` user or agent and records the originating
-thread/assignment separately as provenance. Current coordinators and workers can
+Decisions have automatic D numbers and one or two sentences. `user-choice` and
+`veto-request` carry their owner (user or agent); the older `decision` +
+`madeBy` form still works. The originating thread/assignment is recorded
+separately as provenance. Current coordinators and workers can
 record explicit user choices from their own chat as `madeBy: user`; the recorder
 does not become the choice's owner. Never infer a user choice or include defaults
-added by an agent in that user's choice. Record agent choices
-only for independently chosen, non-obvious significant design forks. Normal steps,
-checks, restatements, mandated implementation, routine reporting, audit/review
-setup and requested clean SHA/execution settings belong in progress or handoff
-artifacts. An agent choice cannot supersede
+added by an agent in that user's choice. Record agent choices only
+when the user may want to veto them; routine steps are not decisions. An agent choice cannot supersede
 an explicit user choice, and workers revise only choices recorded in their own thread. Quotes, citations, titles and
 rationale are optional implementation detail, not input requirements. Agent
 choices can be marked Okay or Not okay. Okay is private bookkeeping and sends
@@ -337,26 +300,25 @@ initiative_decision takes one flat object, so Claude's bridge (which blanks
 union roots) still shows every field. Canonical payloads:
 
 ```json
-{"action":"decision","madeBy":"user","description":"Erwin chose Base UI.","supersedes":"D7"}
+{"action":"user-choice","description":"Erwin chose Base UI.","supersedes":"D7"}
+{"action":"veto-request","description":"I'm keeping the old index for one release."}
 {"action":"question","question":"Where is the Monolith repo?","context":"Not under ~/Code.","options":["Point me to it",{"label":"Skip","consequences":"Monolith waits."}]}
 {"action":"answer","ref":"D12","choice":"Skip","note":"Erwin said so here."}
-{"action":"cleanup","ref":"D13","operation":"accept","reason":"Erwin asked to accept agent choices."}
 {"action":"withdraw","ref":"D12","reason":"Settled by D15: Erwin chose Base UI in chat."}
 ```
 
 A question is always an open user choice: no `humanAttention`, and its title
 defaults to the question. The tool and `bb initiative command` share one parser;
-older nested `decision:{…}`/`question:{…}` payloads, `decision:"D#"` targets and
-`decision-cleanup` keep working. A question shaped like a taken decision
+older nested `decision:{…}`/`question:{…}` payloads and `decision:"D#"` targets
+keep working. A question shaped like a taken decision
 (`outcome`/`rationale`) is refused unless it is a legacy payload with
 `humanAttention: "needs-opinion"`. Conflicting duplicates, unknown fields and a
-missing `madeBy` are refused with a valid example. Answering an agent choice
-points to coordinator cleanup, and superseding an open question explains that
+missing `madeBy` are refused with a valid example. Superseding an open question explains that
 only the user's explicit answer closes it. Open questions display their question
 rather than a proposed outcome.
 
 ```sh
-bb initiative command '{"action":"decision","decision":{"description":"Reuse the existing index.","madeBy":"agent"}}' INITIATIVE_ID
+bb initiative command '{"action":"veto-request","description":"Reuse the existing index."}' INITIATIVE_ID
 bb initiative read decisions INITIATIVE_ID '{"refs":["D12"],"detailed":true}'
 ```
 
@@ -451,19 +413,16 @@ native parenting but use explicit report fallback, as do adopted parentless or
 reparented workers. The durable report record never depends on that send. BB
 sends an ordinary native child's parent a completion notice each time a turn
 ends, not only the last one: a worker whose watcher reports each matching test
-or log line can wake the coordinator per matching line. Assignment briefs and
-the default worker guidance therefore ask workers to wait for their own checks
-within the turn where the tool allows, or on their tool's single completion
-notification. Monitors for actionable events stay fine. Saved copies of the
-previous defaults upgrade by exact clause; edited text is left alone. There is
+or log line can wake the coordinator per matching line. Since T136 a turn end
+with open work also records its final message as the report, so the default
+worker instructions ask workers to end their turn only when the work is done and
+to wait for their own checks inside the turn. There is
 no plugin inbox, batching or wake layer; routine progress is ledger state the
 coordinator reads when it next acts. Reported work stays in flight while its
-native thread is active, then waits in awaiting-acceptance until the coordinator
-accepts or rejects it. A blocked or failed report cannot be accepted, and Stop
-does not apply to reported work: to retry, `assignment-reject` it with a reason
-(`bb initiative describe reject`). Its report, blocker and handoff stay in the
-ledger, the task becomes plannable, and the coordinator delegates it again,
-usually as a continuation to the same worker with the blocker's answer. A
+native thread is active, then shows as reported until the coordinator closes its
+task or retires the worker. A blocked report waits in the Inbox until the
+coordinator sends the worker more work, closes the task, or the user answers or
+dismisses it. Stop does not apply to reported work. A
 rejected assignment is closed: a late report from its worker is refused without
 a write, so the rejected report, its task and any successor stay as they are.
 The refusal names the worker's current assignment, or says its next brief is not
@@ -503,23 +462,18 @@ retains failed or uncertain delivery state. Only a definite failure offers an
 explicit same-answer retry; pending, sent, queued and uncertain receipts never
 authorize a duplicate send.
 
-On reload, recognized old decision-recording clauses in saved guidance are
-upgraded in place. Custom text outside those clauses and execution profiles stay
-unchanged. No agents are restarted or woken. Already-constructed sessions keep
-their old instructions; corrected tool guards and `bb initiative command` remain
-available, and the next session/continuation uses the updated guidance.
-
 ```sh
 bb initiative list
 bb initiative overview PROJECT_ID
 bb initiative read assignments PROJECT_ID '{"refs":["A7"],"detailed":true}'
 bb initiative command '{"action":"pause","paused":true}' PROJECT_ID
-bb initiative report '{...structured report...}'
 bb initiative reconcile
+bb initiative recreate-coordinators --all --dry-run
 ```
 
 Agent `initiative_read` with no selectors returns a compact overview: counts,
-current work, human attention and a short checkpoint. It does not fetch/duplicate
+live workers with their current work and latest report, open tasks and what
+waits on the user (open questions, and unchecked agent decisions by ref only). It does not fetch/duplicate
 per-thread inventories or usage. The dashboard retains the full `overview` RPC.
 Refs-only calls infer T/W/A/D/U collections (K remains a legacy D alias), including
 mixed refs; an explicitly incompatible view fails with a corrective error.
@@ -536,51 +490,18 @@ Use `fields:["payload"]` for inbox/activity, `fields:["body"]` for updates. Defa
 are 20 rows, maximum 30; pagination stops between complete records at a 64 KiB budget.
 A single oversized detailed record fails with field-selection guidance. No JSON
 is mechanically clipped. Selective details use `detailed:true` and `fields`, e.g.
-`report.handoff`/`report.evidence` for assignments. Explicit `threads` and `usage`
-views are independently paginated. `bb initiative describe` provides valid short
-JSON examples for reads, questions, checkpoints, reviews and urgent continuations.
-
-Reviews bind to a successful final work report or coordinator-recorded checkpoint,
-its actual task and checked revision. `reviewTargets:[{task,assignment,revision}]`
-and `reviewOf` must agree; assigning an unrelated task to bypass a stale status
-fails at the boundary. The generated brief and reviewer policy use the linked
-assignment's actual recorded implementer profile. Native uncertain/queued/stopped
-work cannot be used as settled review evidence. Task status alone is no proof.
-
-`task-checkpoint` records explicitly described external/native work from the
-actual managed worker on the actual task, with a complete report/handoff revision.
-It sends no turn, invents no worker-authored report, and records the coordinator's
-provenance. An optional source assignment must belong to exactly that worker,
-generation and task and still be running/idle with no report; reported worker
-evidence cannot be replaced. Omit assignment to append a separate milestone and preserve earlier work. A worker's own later report clears coordinator-checkpoint attribution,
-even for an identical evidence body. Existing report details display a small
-Coordinator checkpoint label with recorder/source provenance. It records reported
-work; verified evidence, explicit acceptance and task
-completion remain distinct. Stop/current-coordinator/role/ownership/receipt guards
-still apply: an unresolved (pending/uncertain) operation or a live queued brief
-blocks a checkpoint, also when it appears during the native read. A cancellation
-whose operation is already settled is history and does not block a new,
-separate checkpoint. Never infer a checkpoint from arbitrary transcript prose.
-
-Only the current coordinator may use `decision-cleanup` (`accept`, `veto`,
-`remove`) when the user explicitly requests a scoped cleanup. Pass the request's
-reason; never approve/reject/remove decisions merely to silence Inbox. Accept/veto
-uses existing Okay/Not okay semantics without a self-notification. Removal hides
-an agent choice from active Inbox/Decisions, preserving owner, original recorder,
-any existing native delivery receipt and an append-only cleanup history. Detailed
-refs/history reads retain removed records. Review/acknowledge and supersession
-refuse any non-active decision before saving or sending. User choices and questions are protected;
-workers, former/foreign coordinators and ad-hoc agents have no cleanup authority.
-`bb initiative describe decision-cleanup` shows a valid example. No transcript
-classifier, approval token, automatic cleanup or native queue cancellation is added.
+`report` for assignments. View `reports` lists reports newest first with a
+600-character excerpt of each final message; view `context` returns the shared
+vision, objectives and ideas. A W# read includes its latest report. Explicit
+`threads` and `usage` views are independently paginated.
 
 Use action `question` for an unresolved human choice: question/context, options
 with consequences, recommendation and affected `blocksTaskIds`. Ask intentionally;
 never infer user questions/answers from transcripts. Explicit chat answers resolve
 that D ref via `answer`; notification/quiet/close behavior above stays available.
-After the last blocking question resolves, the task returns to its recorded
-running/reported stage (or planned if there is no such work). Quiet close records
-no answer and never accepts or completes the task.
+After the last blocking question resolves, the task returns to in progress
+(blocked if its latest report was), or planned if no work is recorded. Quiet
+close records no answer and never completes the task.
 
 The current coordinator may withdraw an open question it recorded itself once
 the user no longer needs to answer it (D340), with a required reason of up to
@@ -610,8 +531,8 @@ The rows stay in the database unchanged, and D# numbers are never reused
 panel answer is discarded when the question disappears after an external
 withdrawal, answer or close; the form lifecycle is unchanged here.
 
-Continue dispatch uses `delivery:"queue"` (default) for future work and
-`delivery:"steer"` for an urgent correction/blocker. Actionable human answers and
+A work message uses `mode:"queue"` (default) for future work and `mode:"steer"`
+for an urgent correction or blocker. Actionable human answers and
 Not okay reviews steer-if-active; worker chat sends carry the recording thread as
 native sender. Fresh briefs carry the coordinator sender and native parent;
 replacement seeds carry the predecessor when there is one. Unparented report
@@ -622,16 +543,9 @@ An explicit repeat of the same canonical report may retry a definite failed
 fallback notification. Pending/sent/queued/uncertain receipts never authorize
 another send; concurrent identical calls see pending before native inspection.
 
-Upstream candidate (no issue filed): SDK 0.4.87's fork request has no senderThreadId,
-although spawn/send do. A fork brief therefore keeps native source-thread lineage
-and durable assignment provenance; it cannot accurately set the coordinator as
-native sender without SDK support. Propose that optional field upstream rather
-than adding a second bootstrap/send. Existing event filters and queued receipts
-support inspection; a vanished queued row or lost send response still proves no
-delivery outcome by itself. Do not infer dispatch from absence or force a resend.
-
 Native operations are journaled before sending. A lost response remains uncertain
-and reserves its task/workspace. Reconciliation requires positive metadata,
+and keeps its task/workspace reserved: new work on them is warned about, and the
+worker cannot be messaged or retired until it settles. Reconciliation requires positive metadata,
 history or queue receipts — absence from a bounded listing proves nothing.
 Cancelling an assignment keeps its queue receipt and task reservation until the
 native row is positively gone: a failed delete retries on the next reconcile,
@@ -652,72 +566,29 @@ the runnable native row is positively settled. Reconciliation re-reads
 assignment state after every native await, so a newer dispatch, running or
 reported state always wins over a stale queue or history snapshot. After
 inspection, assignment-settle or coordinator-settle can explicitly
-resolve an uncertain operation. A refused reuse names each blocking A#, its op
-id and state, and whether only native quiet confirmation is pending (the sweep
-releases that by itself). An assignment-settle result leads with what it
+resolve an uncertain operation. A refused retirement or work message names each
+blocking A#, its op id and state, and whether only native quiet confirmation is
+pending (the sweep releases that by itself). An assignment-settle result leads with what it
 confirmed: for a cancelled continuation, delivery only, not quiet or release. Never repeat a send based only on absence of a
 receipt, and never remove foreign queued messages: only a positively
 identified stale notice can be deleted.
 
 ## Handoffs, retirement and fresh workers
 
-A worker's canonical report is its handoff. Nothing is stored twice: the
-standard handoff is rendered on demand from the assignment's report (outcome,
-result, revisions, files, checks, artifacts, open questions or blocker, next
-steps, uncommitted files, pending commands and listed background work with its
-release state). It leaves out decisions, which are the user's record. Read it with
+A worker's report is its handoff. The standard handoff is rendered on demand from
+the stored report (outcome, final message or structured fields, files, checks,
+open questions, uncommitted files, pending commands). It leaves out decisions,
+which are the user's record. Read it with
 `initiative_read {refs:["A7"],detailed:true,fields:["standardHandoff"]}`; the
-dashboard's thread details offer **Copy handoff** and **Copy delegate field**
-for a worker's latest report, next to **Retire worker**.
+dashboard's thread details offer **Copy handoff**, next to **Retire worker**.
 
-Default guidance (Settings) follows the user's choice: once a worker finishes
-its set of tasks, the coordinator retires it when it is settled and quiet,
-unless ready same-scope work or direct review fixes remain. Later related work
-starts a fresh worker with `initiative_delegate {..., handoffs:["A7"]}`. Reuse
-through continue/fork stays available; the guidance is a default, not a refusal.
-Reporting never stops, archives, retires or accepts anything, and retirement
-keeps its existing guards (idle thread, no queued work, background agents or
-live descendants, settled assignments).
-
-`handoffs` takes up to three A# with a stored report. Each must cover the new
-tasks, one of their `dependsOn`, or a T#/A# named in their briefs'
-`contextRefs`; reviews refuse it (they bind `reviewTargets`). A refusal suggests
-naming the source T# or A# in `contextRefs` or delegating the source task itself;
-`dependsOn` is suggested only once the source task is done, because it also holds
-dispatch until then. The fresh brief
-embeds each handoff as reference only: it says it grants no authority,
-acceptance, receipts, permissions or write scope, and asks the worker to verify
-it against current source. Narrative fields and long lists are shortened with
-an explicit note and a pointer to the full record; uncommitted files, pending
-commands and listed background work are never shortened. The new assignment
-records only provenance (`handoffSources`: source A#, W#, generation, tasks,
-state, report version and revision); its own identity, tasks, write scope and
-receipts are its own. Sources are re-read after the last native await, and a
-re-filed or re-stated source refuses the dispatch instead of embedding a stale
-filing.
-
-Default coordinator guidance also follows the user's staffing choice (D365,
-D366). Each related batch starts with one work worker, combining related tasks
-and features instead of one worker per plugin or small task. A substantial batch
-gets one fresh independent review, and small fixes are not re-reviewed
-automatically. More work workers need an explicit user request, or a question
-the user answered yes. Asking alone, silence, elapsed time, existing profiles, a
-busy worker or a parallelizable plan are not approval. Raw spawns, spawns
-started from a shell and work subagents count as workers; other shell commands
-do not. Audits declare their access read-only on every route, even with full
-permissions, because omitted work access writes. This is guidance,
-not an engine limit: there is no approval protocol or worker cap, and explicit
-user and Initiative profiles still win. Routine progress notices get no reply;
-the coordinator acts on final results, blockers and user questions. Native
-notices still arrive and cannot be muted. Worker guidance adds one matching
-sentence: start no extra work workers or work subagents unless the brief says
-so.
-
-Saved guidance upgrades by exact clause. Each rewrite applies only while the
-text still fits the 3,584-character bound, so a long custom text keeps the
-longer retirement clause in its earlier wording while shorter rewrites still
-apply. Passes repeat until nothing changes, so the saved text is already the
-stable result and the next load rewrites nothing. Edited clauses and custom text stay untouched; nothing restarts.
+The coordinator retires a worker once its batch is finished and its thread is
+quiet; later related work starts a fresh worker with `handoffs:["W7"]`.
+Retirement keeps its guards (idle thread, no queued work, background agents or
+live descendants, no running or unconfirmed work). A spawn records which reports
+it embedded (`handoffSources`: A#, W#, generation, tasks, state, report version
+and revision); a report re-filed while the spawn checks BB refuses that spawn
+instead of embedding a stale filing.
 
 ## The former projects ID
 
@@ -771,8 +642,8 @@ Every Initiatives response has `version: 1`; errors are `bad-request`,
 
 ## Cache, telemetry and recovery
 
-Continue and fork reuse a worker's context. A coordinator handoff carries a
-bounded checkpoint into the replacement's seed. Usage-limit recovery should
+A work message reuses a worker's context. A coordinator handover is written fresh
+from recent activity, never from a stored checkpoint. Usage-limit recovery should
 resume affected unfinished work; a 429 alone justifies nothing.
 
 The dedicated Usage page shows **Observed usage** from bounded idle samples.

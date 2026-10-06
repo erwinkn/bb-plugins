@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { makePluginAgentConfigurationContext, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { projectFixture, fixture, report } from "./fake-native";
 import { readCollection, readOptionsSchema } from "../lib/read";
-import { upgradeDecisionGuidance, DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS } from "../lib/guidance";
+import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 async function work() {
   const { f, project } = await projectFixture(); const task = f.task(project.id);
@@ -15,20 +15,6 @@ describe("T66 native origin/report contract", () => {
     const { f, w } = await work();
     const r = await f.service.report(w.threadId!, report());
     expect(r.note).toContain("native completion"); expect(f.send).not.toHaveBeenCalled();
-  });
-  it("a genuine fork stays parented and sends one deduped canonical fallback, with its current identity", async () => {
-    const { f, project, task, w } = await work(); await f.service.report(w.threadId!, report()); await f.service.acceptTask(project.id, task.ref, {}); f.idle(w.threadId!);
-    const [fork] = await f.service.delegate(project.id, { route: "fork", worker: w.worker, tasks: [f.task(project.id).ref] });
-    expect(f.threads.get(fork.threadId!)).toMatchObject({ parentThreadId: "coordinator", originKind: "fork" });
-    expect(f.fork.mock.calls[0][0]).not.toHaveProperty("senderThreadId"); expect(f.fork.mock.calls[0][0]).not.toHaveProperty("startedOnBehalfOf");
-    const config = await f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(fork.threadId!)!, pluginMetadata: { role: "worker", worker: 1, projectId: project.id } }));
-    expect(config.instructions).toContain("W2, generation 1, role work, assignment A2");
-    const stale = await f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(w.threadId!)! }));
-    expect(stale.instructions).toContain("assignment none unfinished");
-    await expect(f.service.message(w.threadId!, { target: "W2", text: "Old finished source", mode: "queue" })).rejects.toThrow(/finished/);
-    await Promise.all([f.service.report(fork.threadId!, report()), f.service.report(fork.threadId!, report())]);
-    expect(f.send).toHaveBeenCalledTimes(1); expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: "coordinator", senderThreadId: fork.threadId, mode: "queue-if-active" });
-    expect(f.store.assignment(project.id, 2)?.reportNotice?.state).toBe("sent");
   });
   it.each(["queued", "uncertain"])("fork fallback %s never authorizes a second send", async state => {
     const { f, project, w } = await work(); f.threads.set(w.threadId!, { ...f.threads.get(w.threadId!)!, originKind: "fork" });
@@ -100,7 +86,7 @@ describe("T66 native ordinary fresh creation", () => {
     expect(result.exitCode).toBe(0); expect(f.spawn).toHaveBeenCalledTimes(1);
     const args = f.spawn.mock.calls[0][0];
     expect(args).toMatchObject({ parentThreadId: "coordinator", origin: "plugin", originPluginId: "initiatives", permissionMode: "full", providerId: "codex", pluginMetadata: { projectId: project.id, role: "worker", worker: 2 } });
-    expect(args.prompt).toMatch(/\bA2\b/); expect(args.prompt).toContain("T1 ← A1");
+    expect(args.prompt).toMatch(/^W2 "Independent review" \(Review\) · review · T1/); expect(args.prompt).toContain('Review W1 "Historical search" (A1 · T1, done');
     expect(args).not.toHaveProperty("startedOnBehalfOf"); expect(args).not.toHaveProperty("originKind"); expect(args).not.toHaveProperty("senderThreadId");
     expect(f.threads.get([...f.threads.keys()].at(-1)!)).toMatchObject({ parentThreadId: "coordinator", originKind: null, originPluginId: "initiatives" });
     expect(f.send).not.toHaveBeenCalled();
@@ -113,7 +99,7 @@ describe("T66 native ordinary fresh creation", () => {
     expect(f.spawn.mock.calls[0][0]).not.toHaveProperty("startedOnBehalfOf");
     expect(f.spawn.mock.calls[0][0]).not.toHaveProperty("originKind");
     expect(f.spawn.mock.calls[0][0]).toMatchObject({ origin: "plugin", originPluginId: "initiatives", pluginMetadata: { projectId: project.id, role: "worker" } });
-    expect(f.spawn.mock.calls[0][0].prompt).toMatch(/\bA1\b/);
+    expect(f.spawn.mock.calls[0][0].prompt).toMatch(/^W1 "Search" \(Search\) · work · T1/);
     expect(f.spawn.mock.calls[0][0]).not.toHaveProperty("senderThreadId"); expect(f.send).not.toHaveBeenCalled();
   });
   it("fresh dashboard delegation is human creation even though it has a native coordinator parent", async () => {
@@ -143,19 +129,6 @@ describe("T66 bounded configuration/discovery/default migration", () => {
     const rows = readCollection(f.store, project.id, "workers", readOptionsSchema.parse({ limit: 8 }));
     expect(rows.items).toHaveLength(8); expect(rows.total).toBe(151); expect(rows.items[0]).toMatchObject({ assignments: [{ ref: "A1", tasks: ["T1"] }] });
     expect(JSON.stringify(rows).length).toBeLessThan(5000); expect(usage).not.toHaveBeenCalled(); expect(allAssignments).not.toHaveBeenCalled(); expect(f.harness.inspection.sdk.calls).toHaveLength(calls);
-  });
-  it.each(["worker", "coordinator"] as const)("upgrades only exact saved %s clauses, preserves custom text/profiles and stays idempotent", async role => {
-    const old = {"worker": "Use native steer for urgent blockers/corrections and queue future work. For an open human choice, send coordinator question/context, options/consequences, recommendation and task refs to record a durable question; never infer from text. Routine phases use initiative_progress/commentary, without agent wakes. Preserve errors, Stop, permissions and ownership. BB owns interaction/provisioning/offline queues; inspect uncertain receipts before another send.", "coordinator": "Use native steer for urgent corrections/blockers and blocker-resolving answers; queue future work. Sends carry senderThreadId where supported. BB owns interaction/provisioning/offline queues; inspect uncertain receipts, never retry blindly. Routine phases use initiative_progress/commentary. Preserve errors, Stop, permissions and ownership. Require one canonical initiative_report and short pointer, no duplicate result tell. Native completion and the existing fallback deliver reports."}[role];
-    const maxCustom = old + "x".repeat(MAX_GUIDANCE_CHARACTERS - old.length);
-    const maxUpgraded = upgradeDecisionGuidance(maxCustom, role, MAX_GUIDANCE_CHARACTERS);
-    expect(maxUpgraded).toContain("initiative_message");
-    expect(maxUpgraded.endsWith(maxCustom.slice(old.length))).toBe(true);
-    expect(maxUpgraded.length).toBeLessThanOrEqual(maxCustom.length);
-    const upgraded = upgradeDecisionGuidance(old + "\nCustom note.", role, MAX_GUIDANCE_CHARACTERS);
-    expect(upgraded).toContain("initiative_message"); expect(upgraded).toContain("Custom note."); expect(upgradeDecisionGuidance(upgraded, role, MAX_GUIDANCE_CHARACTERS)).toBe(upgraded);
-    const { f } = await projectFixture({ [`${role}Instructions`]: old, executionProfiles: "{}" });
-    expect(f.preferences.configuration()[`${role}Instructions`]).toContain("initiative_message"); expect((await f.preferences.handle.get()).executionProfiles).toBe("{}"); expect(f.send).not.toHaveBeenCalled();
-    expect(upgradeDecisionGuidance("Only custom text", role, MAX_GUIDANCE_CHARACTERS)).toBe("Only custom text");
   });
   it("defaults remain within the editable guidance bound", () => {
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);

@@ -30,7 +30,7 @@ async function continuation() {
   const t1 = f.task(project.id);
   const [d] = await f.service.delegate(project.id, { route:'fresh', tasks:[t1.ref] });
   await f.service.report(d.threadId!, report());
-  await f.service.acceptTask(project.id, t1.ref, {});
+  await f.service.closeTask(project.id, t1.ref, "done");
   f.idle(d.threadId!);
   const worker=f.store.workers(project.id)[0]!;
   return {f,project,worker,t2:f.task(project.id,'Next')};
@@ -59,7 +59,9 @@ async function lostSend() {
   await x.f.service.stopAssignment(x.project.id,'A2','cancel');
   return x;
 }
-const held=(x:any)=>expect(x.f.service.delegate(x.project.id,{route:'fresh',tasks:[x.t2.ref]})).rejects.toThrow();
+// T136: a held reservation is the cancelled operation staying unsettled; new work on its
+// task is then warned about (never refused), so the stored state is the check.
+const held=(x:any)=>expect(['pending','uncertain']).toContain(x.f.store.assignment(x.project.id,2)!.opState);
 
 
 // All activity fields below belong to the installed SDK 0.4.87 list DTO.
@@ -113,12 +115,13 @@ async function settleVia(x: any, path: string) {
 }
 
 
+// T136: a replacement writer is warned, never refused, while cancelled native execution
+// still holds the task: the cancelled operation stays unsettled and the warning names it.
 const expectHeld = async (x: any) => {
-  // Save the actual consequence: whether a replacement writer was allowed.
-  let replacement: unknown; let rejected = false;
-  try { replacement = await x.f.service.delegate(x.project.id, {route:'fresh', tasks:[x.t2.ref]}); }
-  catch { rejected = true; }
-  expect(rejected, 'cancelled native execution must reserve its task; actual replacement: '+JSON.stringify(replacement)).toBe(true);
+  const cancelled = x.f.store.assignments(x.project.id).filter((a: any) => a.taskNums.includes(x.t2.num) && (a.state === 'cancelled' || a.cancelRequested)).at(-1)!;
+  expect(['pending','uncertain'], 'cancelled native execution must stay unsettled').toContain(cancelled.opState);
+  const [replacement] = await x.f.service.delegate(x.project.id, {route:'fresh', tasks:[x.t2.ref]});
+  expect(replacement.warnings?.join(' ')).toMatch(new RegExp(`${x.t2.ref} is also with W${cancelled.workerNum} \\(${cancelled.ref}`));
 };
 const finishEvent = async (x:any, path:string, event:ThreadDto) => path === 'idle'
   ? x.f.runtime.onThreadIdle(event) : x.f.runtime.onThreadFailed(event, 'earlier failed turn');
@@ -163,8 +166,9 @@ it('A33 cancelled creation records execution before awaiting Stop',async()=>{
   f.threads.set(thread.id,thread);finish(thread);await stopping;
   let settleRejected=false;
   try{await f.service.settleUncertain(project.id,'A1',{notSent:true})}catch{settleRejected=true}
-  let replacement:unknown; let held=false;
-  try{replacement=await f.service.delegate(project.id,{route:'fresh',tasks:[t2.ref]})}catch{held=true}
+  // T136: a replacement is warned, never refused, while the known creation is unsettled.
+  const [replacement]=await f.service.delegate(project.id,{route:'fresh',tasks:[t2.ref]});
+  const held=(replacement!.warnings??[]).some(w=>/T1 is also with W1 \(A1/.test(w));
   stopFinish({});await dispatch;
   expect({settleRejected,held,replacement},'known creation must forbid never-sent settlement while Stop is pending').toMatchObject({settleRejected:true,held:true});
 });

@@ -91,69 +91,59 @@ export function handoffSource(a: AssignmentRecord): HandoffSource {
   };
 }
 
-const refNums = (text: string, letter: "T" | "A") =>
-  [...text.matchAll(new RegExp(`\\b${letter}(\\d+)\\b`, "g"))].map(m => Number(m[1]));
-
 /**
- * The prior handoffs a new work assignment may receive. Each must be a stored report in
- * this Initiative whose tasks the new tasks name: as themselves, as dependencies, or in
- * their briefs' context refs (an A# context ref names the assignment directly).
+ * T136: the reports a brief embeds. Each ref is an A# with a stored report, or a W# meaning
+ * that worker's latest reported work. No coverage rules: any prior report in this Initiative
+ * may inform new work, up to MAX_HANDOFF_SOURCES.
  */
-export function resolveHandoffs(store: Store, projectId: string, refs: readonly string[], tasks: readonly TaskRecord[]): AssignmentRecord[] {
+export function resolveHandoffs(store: Store, projectId: string, refs: readonly string[]): AssignmentRecord[] {
   if (refs.length > MAX_HANDOFF_SOURCES)
-    throw new ProjectError(`Select at most ${MAX_HANDOFF_SOURCES} prior handoffs; read the others with initiative_read and summarize them in the note.`);
-  const related = new Set<number>();
-  const namedAssignments = new Set<number>();
-  for (const task of tasks) {
-    related.add(task.num);
-    task.dependsOn.forEach(n => related.add(n));
-    for (const ref of task.brief?.contextRefs ?? []) {
-      refNums(ref, "T").forEach(n => related.add(n));
-      refNums(ref, "A").forEach(n => namedAssignments.add(n));
-    }
-  }
+    throw new ProjectError(`Embed at most ${MAX_HANDOFF_SOURCES} prior reports; mention the others in the brief text.`);
   const seen = new Set<number>();
   return refs.flatMap(ref => {
-    const num = parseRef("A", ref);
-    const a = num === null ? null : store.assignment(projectId, num);
-    if (!a) throw new ProjectError(`handoffs: ${ref} is not an assignment in this Initiative. Pass A# refs whose reports you read.`);
+    const a = latestReport(store, projectId, ref);
     if (seen.has(a.num)) return [];
     seen.add(a.num);
-    if (!a.report) throw new ProjectError(`handoffs: ${a.ref} (${a.state}) has no stored report, so it has no handoff yet.`);
-    const covered = [...a.taskNums, ...(a.reviewOf ?? [])];
-    if (!namedAssignments.has(a.num) && !covered.some(n => related.has(n))) throw new ProjectError(relationHint(store, projectId, a, covered, tasks));
     return [a];
   });
 }
 
-/** "T1", "T1 and T2", "T1, T2 and T3". */
-const listRefs = (refs: string[]) => (refs.length <= 1 ? refs.join("") : `${refs.slice(0, -1).join(", ")} and ${refs.at(-1)}`);
+/** A# → its report; W# → that worker's latest reported work. Refused when there is no report yet. */
+export function latestReport(store: Store, projectId: string, ref: string): AssignmentRecord {
+  const trimmed = ref.trim();
+  if (/^w/i.test(trimmed)) {
+    const num = parseRef("W", trimmed);
+    const worker = num === null ? null : store.worker(projectId, num);
+    if (!worker) throw new ProjectError(`${ref} is not a worker in this Initiative.`);
+    const a = store.latestReported(projectId, worker.num);
+    if (!a) throw new ProjectError(`${worker.ref} has no report yet. Wait for its final message, or name an earlier A#.`);
+    return a;
+  }
+  const num = parseRef("A", trimmed);
+  const a = num === null ? null : store.assignment(projectId, num);
+  if (!a) throw new ProjectError(`${ref} is not a worker (W#) or assignment (A#) in this Initiative.`);
+  if (!a.report) throw new ProjectError(`${a.ref} (${a.state}) has no report yet.`);
+  return a;
+}
+
+const PRIOR_REPORT_MAX = 1500;
 
 /**
- * Why a selected handoff does not relate to the delegated tasks, and the routes that do.
- * contextRefs always works and leads. dependsOn also gates dispatch on the source task being
- * done, so it is offered only once it is (A223). The source's own task can be delegated again
- * directly only after a rejection; a reported source needs that rejection first, offered only
- * as a retry (A226), and a report still listing background work cannot be rejected yet.
+ * T136: a prior report as a brief embeds it. The worker's final message is the report;
+ * reports filed before T136 show their summary and handoff summary instead. Long text keeps
+ * its head and says where the full report is.
  */
-function relationHint(store: Store, projectId: string, a: AssignmentRecord, covered: number[], tasks: readonly TaskRecord[]): string {
-  const source = listRefs(covered.map(taskRef)) || "no task";
-  const many = covered.length > 1;
-  const name = `${covered[0] ? `"${taskRef(covered[0])}" or ` : ""}"${a.ref}"`;
-  if (!tasks.length)
-    return `handoffs: ${a.ref} covers ${source}, but this delegation names no tasks. Pass the tasks this work is for; if the handoff belongs to it, add ${name} to the contextRefs of one of their briefs (initiative_task task-update).`;
-  const target = listRefs(tasks.map(t => t.ref));
-  const plural = tasks.length > 1;
-  const done = covered.length > 0 && covered.every(n => store.task(projectId, n)?.status === "done");
-  const retry = a.role === "work" && covered.length > 0 && !done && !a.report?.pendingBackgroundWork.length;
-  const itself = many ? "themselves" : "itself";
-  return (
-    `handoffs: ${a.ref} covers ${source}, which ${target} ${plural ? "do" : "does"} not name. If the handoff belongs to this work, ` +
-    `add ${name} to the contextRefs of ${plural ? "one of their briefs" : `${target}'s brief`} (initiative_task task-update)` +
-    (retry && a.state === "rejected" ? `, or delegate ${source} ${itself} with this handoff.` : ".") +
-    (retry && a.state === "reported"
-      ? ` To retry ${source} ${itself} instead, first reject ${a.ref}'s report with initiative_task {"action":"assignment-reject","assignment":"${a.ref}","reason":"…"}, then delegate ${source} with this handoff.`
-      : "") +
-    (done ? ` ${source} ${many ? "are" : "is"} done, so adding ${many ? "them" : "it"} to dependsOn also works.` : "")
-  );
+export function renderPriorReport(store: Store, a: AssignmentRecord, label: "Review" | "Prior report"): string {
+  const report = a.report;
+  if (!report) throw new ProjectError(`${a.ref} has no stored report.`);
+  const worker = store.worker(a.projectId, a.workerNum);
+  const tasks = [...a.taskNums, ...(a.reviewOf ?? [])].map(taskRef);
+  const when = a.reportedAt === null ? "" : `, ${new Date(a.reportedAt).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  const outcome = report.outcome === "succeeded" ? "done" : report.outcome;
+  const head = `${label === "Review" ? "Review" : "Prior report from"} ${worker ? `${worker.ref} "${worker.label}"` : workerRef(a.workerNum)} (${a.ref}${tasks.length ? ` · ${tasks.join(", ")}` : ""}, ${outcome}${when})${label === "Review" ? ". Its report:" : ":"}`;
+  const body = report.finalMessage ?? [report.summary, report.handoff.summary !== report.summary ? report.handoff.summary : null].filter(Boolean).join("\n\n");
+  const clipped = body.length > PRIOR_REPORT_MAX
+    ? `${body.slice(0, PRIOR_REPORT_MAX).trimEnd()}… (full report: initiative_read {refs:["${a.ref}"]})`
+    : body;
+  return `${head}\n${clipped}`;
 }

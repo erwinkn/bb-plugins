@@ -18,7 +18,7 @@ describe("T119 one request per Initiative switch", () => {
     const t1 = f.task(project.id, "First");
     const [a1] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref] });
     await f.service.report(a1.threadId!, report());
-    await f.service.acceptTask(project.id, t1.ref, {});
+    await f.service.closeTask(project.id, t1.ref, "done");
     f.idle(a1.threadId!);
     const t2 = f.task(project.id, "Second");
     const [a2] = await f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref] });

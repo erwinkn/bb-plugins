@@ -83,6 +83,8 @@ export interface AwaitingItem {
   owner: { worker: string; label: string; threadId: string | null };
   outcome: string;
   summary: string;
+  /** T136: the worker's final message, which is the report itself. */
+  finalMessage: string | null;
   reportedAt: number | null;
   checkpoint?: AssignmentRecord["checkpoint"];
 }
@@ -247,7 +249,10 @@ export interface Overview {
       live: LiveThread | null;
     }[];
     coordinatorHome: CoordinatorHome | null;
+    /** Historical: the last persistent checkpoint before T136; never written or injected now. */
     checkpoint: string | null;
+    /** T136: the handover a replacement coordinator will start from, while one is being prepared. */
+    handoverDraft: { state: "requested" | "generating" | "ready"; source: "luna" | "fallback" | "user" | null; text: string | null; detail: string | null; startsReplacement: boolean; updatedAt: number } | null;
     policy: Policy;
     /** Global fallbacks only; recorded Initiative policy remains separate. */
     profileDefaults?: Policy["profiles"];
@@ -432,18 +437,18 @@ export function buildOverview(
     ["done", "cancelled"].includes(
       tasks.find((task) => task.num === num)?.status ?? "done",
     );
+  // T136: nothing is accepted. A report stays here while it is its live worker's latest and
+  // its tasks are still open; closing the tasks or retiring the worker moves it to history.
+  const latestByWorker = new Map<number, number>();
+  for (const a of assignments) latestByWorker.set(a.workerNum, Math.max(latestByWorker.get(a.workerNum) ?? 0, a.num));
   const awaitingAcceptance: AwaitingItem[] = assignments
-    .filter(
-      (assignment) =>
-        assignment.state === "reported" &&
-        !isBusy(assignment) &&
-        // A review whose whole scope is already decided belongs to history,
-        // not to current acceptance work.
-        !(
-          assignment.role === "review" &&
-          (assignment.reviewOf ?? []).every(closedTask)
-        ),
-    )
+    .filter((assignment) => {
+      if (assignment.state !== "reported" || isBusy(assignment)) return false;
+      if (latestByWorker.get(assignment.workerNum) !== assignment.num) return false;
+      if (workerByNum.get(assignment.workerNum)?.state === "retired") return false;
+      const subject = assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums;
+      return !(subject.length && subject.every(closedTask));
+    })
     .map((assignment) => {
       const worker = workerByNum.get(assignment.workerNum)!;
       return {
@@ -460,6 +465,7 @@ export function buildOverview(
         },
         outcome: assignment.report?.outcome ?? "reported",
         summary: assignment.report?.summary ?? "",
+        finalMessage: assignment.report?.finalMessage ?? null,
         reportedAt: assignment.reportedAt,
         checkpoint: assignment.checkpoint,
       };
@@ -520,18 +526,17 @@ export function buildOverview(
         (num) => taskByNum.get(num)?.status !== "done",
       );
       const questions = blockingQuestions.get(task.num) ?? [];
+      const reportedBy = assignments.filter(a => a.taskNums.includes(task.num) && a.state === "reported").at(-1);
       const why =
-        task.status === "awaiting_acceptance"
-          ? `Done by ${latestOwner(task) ?? "a worker"}; waiting for the coordinator to accept it.`
+        task.status === "awaiting_acceptance" || (reportedBy && task.status === "in_progress")
+          ? `Reported by ${reportedBy ? workerRef(reportedBy.workerNum) : (latestOwner(task) ?? "a worker")}; open until it is closed.`
           : questions.length
             ? `Waiting for your opinion on ${questions.map((item) => item.ref).join(", ")}.`
             : unmet.length
               ? `Waiting on ${unmet.map(taskRef).join(", ")}.`
               : task.status === "blocked"
                 ? (task.progress ?? "Blocked.")
-                : task.brief
-                  ? "Ready; not assigned yet."
-                  : "Not briefed or assigned yet.";
+                : "Not given out yet.";
       return {
         ref: task.ref,
         title: task.title,
@@ -733,6 +738,10 @@ export function buildOverview(
         })),
       coordinatorHome: home ?? null,
       checkpoint: project.checkpoint,
+      handoverDraft: (() => {
+        const d = store.handoverDraft(projectId);
+        return d ? { state: d.state, source: d.source, text: d.text, detail: d.detail === "queued" ? null : d.detail, startsReplacement: d.thenReplace !== null, updatedAt: d.updatedAt } : null;
+      })(),
       policy: project.policy,
       context: project.context,
       updatedAt: project.updatedAt,

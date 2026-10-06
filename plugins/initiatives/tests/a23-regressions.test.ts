@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
+import { expectWarned } from "./helpers";
 import { projectFixture, report } from "./fake-native";
 
 // A23: regressions for the seven A22 review findings. Each pins an invariant
@@ -14,7 +15,7 @@ async function queuedFixture() {
     tasks: [t1.ref],
   });
   await f.service.report(d.threadId!, report());
-  await f.service.acceptTask(project.id, t1.ref, {});
+  await f.service.closeTask(project.id, t1.ref, "done");
   f.idle(d.threadId!);
   const worker = f.store.workers(project.id)[0]!;
   const t2 = f.task(project.id, "Next task");
@@ -53,10 +54,8 @@ describe("cancellation keeps the native receipt and reservation", () => {
     }).toEqual({ state: "cancelled", queue: "own-q", op: "uncertain" });
     expect(f.queued.get(worker.threadId!)!.map((q) => q.id)).toEqual(["own-q"]);
     expect(f.store.task(project.id, t2.num)!.status).toBe("blocked");
-    // The reservation blocks a replacement delegation while the row is runnable.
-    await expect(
-      f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref] }),
-    ).rejects.toThrow();
+    // The reservation warns a replacement delegation while the row is runnable (T136).
+    await expectWarned(f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref] }), /T2 is also with W1 \(A2, cancelled\)/);
   });
 
   it("deletes a lost-response send found queued, keeping the op uncertain", async () => {
@@ -93,10 +92,8 @@ describe("cancellation keeps the native receipt and reservation", () => {
     await f.service.stopAssignment(project.id, "A2", "cancel uncertain send");
     await f.service.reconcile();
     // The row is deleted but a dispatch could have raced it: one clean sweep
-    // keeps the reservation, so a same-task replacement still cannot start.
-    await expect(
-      f.service.delegate(project.id, { route: "fresh", tasks: [t2.ref] }),
-    ).rejects.toThrow();
+    // keeps the reservation (T136: unsettled, and new work on it is warned).
+    expect(f.store.assignment(project.id, 2)!.opState).toBe("uncertain");
     // The next clean sweep — no queue row, no matching prompt — is positive
     // settlement: the op closes and the task is released.
     await f.service.reconcile();
@@ -108,6 +105,7 @@ describe("cancellation keeps the native receipt and reservation", () => {
       tasks: [t2.ref],
     });
     expect(d3.state).toBe("running");
+    expect(d3.warnings ?? []).toEqual([]);
   });
 
   it("settles immediately when the queued row is positively deleted", async () => {
@@ -177,9 +175,9 @@ describe("terminal assignments never reopen on late reports", () => {
     expect(a.report?.summary).toBe("Second send of the same result");
     expect(a.stopReason).toMatch(/cancel/);
     expect(f.store.task(project.id, t.num)!.status).toBe("planned");
-    await expect(
-      f.service.acceptTask(project.id, t.ref, { assignment: "A1" }),
-    ).rejects.toThrow();
+    // T136: closing is the coordinator's call; the cancelled report stays as filed.
+    await f.service.closeTask(project.id, t.ref, "done");
+    expect(f.store.assignment(project.id, 1)!.state).toBe("cancelled");
   });
 
   it("settles a cancelled uncertain dispatch when its report proves it ran", async () => {
@@ -284,7 +282,6 @@ describe("reviewers are always fresh", () => {
       reviewOf: [t.ref],
     });
     await f.service.report(d.threadId!, report());
-    await f.service.acceptReview(project.id, d.assignment);
     f.idle(d.threadId!);
     await expect(
       f.service.delegate(project.id, {
@@ -301,8 +298,8 @@ describe("reviewers are always fresh", () => {
         worker: d.worker,
         reviewOf: [t.ref],
         forkAtSeq: 1,
-      }),
-    ).rejects.toThrow(/fresh/);
+      } as never),
+    ).rejects.toThrow(/fresh|Fork/);
   });
 
   it("still permits continuing a work worker", async () => {

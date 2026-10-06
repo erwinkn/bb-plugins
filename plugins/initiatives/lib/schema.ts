@@ -163,6 +163,9 @@ export const handoffSchema = z
   .strict();
 export type Handoff = z.infer<typeof handoffSchema>;
 
+/** A final message is stored up to this length; longer ones keep their head and tail. */
+export const FINAL_MESSAGE_MAX = 20000;
+
 export const reportSchema = z
   .object({
     outcome: z.enum(["succeeded", "blocked", "failed"]),
@@ -187,6 +190,8 @@ export const reportSchema = z
       .optional(),
     handoff: handoffSchema,
     pendingBackgroundWork: z.array(line(300)).max(10).default([]),
+    /** T136: the worker's final message, captured when its turn ends; the report itself. */
+    finalMessage: z.string().max(FINAL_MESSAGE_MAX).optional(),
   })
   .strict()
   .refine((report) => report.outcome !== "blocked" || report.blocker, {

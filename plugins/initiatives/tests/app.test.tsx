@@ -43,6 +43,8 @@ function overview() {
   });
   const o = buildOverview(store, "p1", new Map(), Date.now());
   db.close();
+  // T136: a handover is already written, so opening Replace coordinator asks for nothing.
+  o.project.handoverDraft = { state: "ready", source: "luna", text: "Written handover", detail: null, startsReplacement: false, updatedAt: Date.now() };
   o.updates = [
     {
       ref: "U1",
@@ -132,7 +134,7 @@ describe("project dashboard", () => {
     const o = overview();
     const checkpoint = { recordedBy: "coordinator", recordedAt: Date.now(), sourceThreadId: "worker-thread" };
     o.inFlight = stage === "in-flight" ? [{ ...o.inFlight[0]!, assignment: "A9", tasks: [{ ref: "T9", title: "Checkpointed work" }], checkpoint }] : [];
-    o.awaitingAcceptance = stage === "reported" ? [{ assignment: "A9", role: "work", tasks: [{ ref: "T9", title: "Checkpointed work" }], owner: { worker: "W9", label: "Builder", threadId: "worker-thread" }, outcome: "succeeded", summary: "Verified checkpoint", reportedAt: Date.now(), checkpoint }] : [];
+    o.awaitingAcceptance = stage === "reported" ? [{ assignment: "A9", role: "work", tasks: [{ ref: "T9", title: "Checkpointed work" }], owner: { worker: "W9", label: "Builder", threadId: "worker-thread" }, outcome: "succeeded", summary: "Verified checkpoint", finalMessage: null, reportedAt: Date.now(), checkpoint }] : [];
     const command = vi.fn();
     const slot = mount({ list: () => [], overview: () => o, command });
     fireEvent.click(await slot.findByRole("tab", { name: "Tasks" }));
@@ -258,7 +260,7 @@ describe("project dashboard", () => {
     await slot.findByText("Recorded worker profile: codex / gpt-6.1-sol / high / fast");
   });
 
-  it("starts a replacement using the selected model and checkpoint", async () => {
+  it("starts a replacement using the selected model and the reviewed handover", async () => {
     const o = overview();
     const command = vi.fn().mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => o, command });
@@ -268,7 +270,8 @@ describe("project dashboard", () => {
       ).toBeTruthy(),
     );
     fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
-    fireEvent.change(slot.getByLabelText("Handoff checkpoint"), {
+    expect((slot.getByLabelText(/^Handover/) as HTMLTextAreaElement).value).toBe("Written handover");
+    fireEvent.change(slot.getByLabelText(/^Handover/), {
       target: {
         value: "Keep the accepted index; finish the privacy decision.",
       },
@@ -282,7 +285,7 @@ describe("project dashboard", () => {
       projectId: "p1",
       command: {
         action: "replace-coordinator",
-        checkpoint: "Keep the accepted index; finish the privacy decision.",
+        handover: "Keep the accepted index; finish the privacy decision.",
         profile: {
           providerId: "claude-code",
           model: "claude-opus-5-5",
@@ -309,7 +312,7 @@ describe("project dashboard", () => {
     expect(slot.getByRole("region", { name: "In flight" })).toBeTruthy();
     expect(slot.getByRole("region", { name: "Remaining" })).toBeTruthy();
     fireEvent.click(slot.getByText("Search verification"));
-    expect(slot.getByRole("button", { name: "Accept review" })).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Accept review" })).toBeNull();
     fireEvent.click(slot.getByRole("tab", { name: "Log" }));
     fireEvent.click(slot.getByText(o.updates[0]!.summary));
     expect(slot.getByText(o.updates[0]!.body)).toBeTruthy();
@@ -802,20 +805,20 @@ describe("project dashboard", () => {
     const slot = mount({ list: () => [], overview: () => o, command });
     await slot.findByRole("button", { name: "Replace coordinator" });
     fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
-    fireEvent.change(slot.getByLabelText("Handoff checkpoint"), {
+    fireEvent.change(slot.getByLabelText(/^Handover/), {
       target: { value: "Preserve this checkpoint" },
     });
     fireEvent.click(slot.getByRole("button", { name: "Start replacement" }));
     await slot.findByText("Replacement refused");
     expect(
-      (slot.getByLabelText("Handoff checkpoint") as HTMLTextAreaElement).value,
+      (slot.getByLabelText(/^Handover/) as HTMLTextAreaElement).value,
     ).toBe("Preserve this checkpoint");
     fireEvent.click(slot.getByRole("button", { name: "Start replacement" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
     expect(command.mock.calls[1]![0].command).toEqual({
       action: "replace-coordinator",
       reason: "Switch coordinator model",
-      checkpoint: "Preserve this checkpoint",
+      handover: "Preserve this checkpoint",
     });
     expect(command.mock.calls[1]![0].command).not.toHaveProperty("profile");
   });
@@ -1133,7 +1136,7 @@ describe("project dashboard", () => {
       decision("D3", "Already checked.", { review: "okay" }),
       decision("D4", "Use the main checkout.", { madeBy: "user", review: null }),
     ];
-    o.awaitingAcceptance = [{ assignment: "A8", role: "work", tasks: [{ ref: "T8", title: "Delivered work" }], owner: { worker: "W8", label: "Builder", threadId: "r" }, outcome: "succeeded", summary: "Verified", reportedAt: at }];
+    o.awaitingAcceptance = [{ assignment: "A8", role: "work", tasks: [{ ref: "T8", title: "Delivered work" }], owner: { worker: "W8", label: "Builder", threadId: "r" }, outcome: "succeeded", summary: "Verified", finalMessage: null, reportedAt: at }];
     const command = vi.fn();
     const slot = mount({ list: () => [], overview: () => o, command });
     await slot.findByRole("tab", { name: /Inbox/ });
@@ -1222,7 +1225,7 @@ describe("project dashboard", () => {
     expect(slot.queryByText(/Knowledge and decisions/)).toBeNull();
   });
 
-  it("accepts and rejects reports with real ledger actions and preserves failures", async () => {
+  it("closes a reported task and retires its worker with real ledger actions, showing the final message (T136)", async () => {
     const o = overview();
     o.awaitingAcceptance = [
       {
@@ -1232,44 +1235,28 @@ describe("project dashboard", () => {
         owner: { worker: "W8", label: "Builder", threadId: "report-thread" },
         outcome: "succeeded",
         summary: "Verified behavior",
+        finalMessage: "Verified behavior.\n\nRan npm test: 14 passed. Nothing uncommitted.",
         reportedAt: Date.now(),
       },
     ];
     const command = vi
       .fn()
-      .mockRejectedValueOnce(new Error("Acceptance refused"))
+      .mockRejectedValueOnce(new Error("Close refused"))
       .mockResolvedValue({});
     const slot = mount({ list: () => [], overview: () => o, command });
     await slot.findByRole("tab", { name: "Tasks" });
     fireEvent.click(slot.getByRole("tab", { name: "Tasks" }));
     fireEvent.click(slot.getByText("Delivered work"));
-    fireEvent.click(slot.getByRole("button", { name: "Accept T8" }));
-    await slot.findByText("Acceptance refused");
-    expect(command.mock.calls[0]![0].command).toEqual({
-      action: "task-accept",
-      task: "T8",
-      assignment: "A8",
-    });
-    fireEvent.click(slot.getByRole("button", { name: "Reject report" }));
-    expect(
-      (
-        slot.getByRole("button", {
-          name: "Confirm reject report",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
-    fireEvent.change(slot.getByLabelText("Reason for reject report"), {
-      target: { value: "Missing a required check" },
-    });
-    fireEvent.click(
-      slot.getByRole("button", { name: "Confirm reject report" }),
-    );
+    expect(slot.getByText(/Ran npm test: 14 passed/)).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Accept T8" })).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "Close T8" }));
+    await slot.findByText("Close refused");
+    expect(command.mock.calls[0]![0].command).toEqual({ action: "task-close", task: "T8", outcome: "done" });
+    fireEvent.click(slot.getByRole("button", { name: "Retire W8" }));
+    fireEvent.change(slot.getByLabelText("Reason for retire w8"), { target: { value: "Batch finished" } });
+    fireEvent.click(slot.getByRole("button", { name: "Confirm retire w8" }));
     await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
-    expect(command.mock.calls[1]![0].command).toEqual({
-      action: "assignment-reject",
-      assignment: "A8",
-      reason: "Missing a required check",
-    });
+    expect(command.mock.calls[1]![0].command).toEqual({ action: "worker-retire", worker: "W8", reason: "Batch finished" });
   });
 
   it("preserves answer and context drafts across tabs and replacement inspection", async () => {
@@ -1417,11 +1404,11 @@ describe("project dashboard", () => {
     ).toBe("true");
     expect(slot.getByText("Spawn refused")).toBeTruthy();
     fireEvent.click(slot.getByRole("button", { name: "Retry replacement" }));
-    expect(slot.getByLabelText("Handoff checkpoint")).toBeTruthy();
+    expect(slot.getByLabelText(/^Handover/)).toBeTruthy();
     expect(slot.queryByRole("tab", { name: /Inbox/ })).toBeNull();
     expect(command).not.toHaveBeenCalled();
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(slot.queryByLabelText("Handoff checkpoint")).toBeNull();
+    expect(slot.queryByLabelText(/^Handover/)).toBeNull();
     expect(slot.getByRole("tab", { name: /Inbox/ })).toBeTruthy();
   });
 

@@ -184,7 +184,7 @@ describe("T98 task blocking and answer races", () => {
     await tool(f, withdraw(q.ref));
     expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: `Waiting for your opinion on ${second.ref}` });
     expect(f.store.task(project.id, unrelated.num)).toMatchObject({ status: "blocked", progress: "Waiting for upstream SDK" });
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] })).rejects.toThrow(/waiting for the user's opinion/);
+    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] })).rejects.toThrow(/waiting for the user's answer to a question/);
     expect((await f.overview(project.id)).opinionNeeded.map(o => o.ref)).toEqual([second.ref]);
   });
 
@@ -196,7 +196,7 @@ describe("T98 task blocking and answer races", () => {
     expect(f.store.task(project.id, task.num)?.status).toBe("blocked");
     const before = f.store.assignments(project.id).find(a => a.ref === work.assignment)!;
     await tool(f, withdraw(q.ref));
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "in_progress", nextCheckpoint: "Worker report" });
+    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "in_progress", nextCheckpoint: null });
     expect(f.store.assignments(project.id).find(a => a.ref === work.assignment)).toEqual(before);
   });
 
@@ -296,7 +296,7 @@ describe("T98 published schema", () => {
     const record = f.harness.registrations.agentTools.find(t => t.name === "initiative_decision")! as { inputSchema: any; description: string };
     const schema = claudeNormalize()(record.inputSchema);
     expect(schema).toBe(record.inputSchema);
-    expect(schema.properties.action.enum).toEqual(["decision", "question", "answer", "cleanup", "decision-cleanup", "withdraw"]);
+    expect(schema.properties.action.enum).toEqual(["user-choice", "veto-request", "question", "answer", "withdraw", "decision"]);
     expect(schema.properties.action.description).toMatch(/withdraw/);
     expect(schema.properties.ref.description).toMatch(/withdraw/);
     expect(schema.properties.reason).toMatchObject({ type: "string", maxLength: 2000 });

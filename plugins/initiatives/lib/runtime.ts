@@ -49,6 +49,8 @@ export class Runtime {
   // BB lifecycle events ----------------------------------------------------------
 
   async onThreadIdle(thread: ThreadDto) {
+    // T136: a handover writer finished; its final message is the handover.
+    if (await this.service.finishHandoverDraft(thread.id)) return;
     let membership = this.store.membership(thread.id);
     if (!membership) {
       // An unclaimed thread whose live parent is a coordinator generation is
@@ -63,8 +65,13 @@ export class Runtime {
     // A cancelled assignment whose brief provably dispatched keeps its
     // reservation while the turn can run: this idle is its positive settle
     // only when no queued or background native work can still execute.
-    if (membership.workerNum > 0)
+    if (membership.workerNum > 0) {
       await this.service.settleCancelledExecutions(thread);
+      // T136: the turn's final message is the worker's report.
+      await this.service.captureFinalMessage(thread).catch((error) =>
+        this.log.warn(`Final-message capture failed: ${errorMessage(error)}`),
+      );
+    }
     // A former coordinator generation going quiet may be the last blocker a
     // pending parenting transfer was waiting on.
     if (membership.workerNum === 0 && membership.former) {
@@ -85,6 +92,7 @@ export class Runtime {
   }
 
   async onThreadFailed(thread: ThreadDto, error: string | null) {
+    if (await this.service.finishHandoverDraft(thread.id, `the writer failed (${error ?? "unknown error"})`)) return;
     const membership = this.store.membership(thread.id);
     if (!membership) {
       this.service.associateNativeChild(thread);
@@ -333,6 +341,12 @@ export class Runtime {
             );
         });
     }
+    await this.service.pumpHandoverWriters().catch((error) =>
+      this.log.warn(`Handover writer start failed: ${errorMessage(error)}`),
+    );
+    await this.service.sweepHandoverDrafts().catch((error) =>
+      this.log.warn(`Handover writer sweep failed: ${errorMessage(error)}`),
+    );
     for (const projectId of this.store.pendingHandoverProjects()) {
       if (signal?.aborted) return;
       await this.service.drainHandover(projectId, signal).catch((error) =>

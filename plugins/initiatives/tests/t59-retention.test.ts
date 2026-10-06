@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { projectFixture, report } from "./fake-native";
+import { DEFAULT_WORKER_INSTRUCTIONS } from "../lib/guidance";
 import { definePreferences } from "../lib/settings";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
@@ -40,44 +41,6 @@ describe("A108 reviewed retention/state boundaries", () => {
     expect(f.send).toHaveBeenCalledTimes(1);
   });
 
-  it("refuses a reported source checkpoint and appends a separate milestone without changing worker evidence", async () => {
-    const { f, project, task, worker } = await work();
-    await f.service.report(worker.threadId!, blocked());
-    const before = f.store.assignment(project.id, 1)!;
-    const input = { task: task.ref, worker: worker.worker, assignment: before.ref, report: rev("coordinator-sha") };
-    await expect(f.service.checkpointTask(project.id, input, "coordinator")).rejects.toThrow(/reported|separate milestone/);
-    expect(f.store.assignment(project.id, 1)).toEqual(before);
-    const { assignment: _source, ...separate } = input;
-    const milestone = await f.service.checkpointTask(project.id, separate, "coordinator");
-    expect(milestone).toMatchObject({ ref: "A2", route: "checkpoint", checkpoint: { recordedBy: "coordinator" }, report: { outcome: "succeeded" } });
-    expect(f.store.assignment(project.id, 1)).toEqual(before);
-    expect(f.send).not.toHaveBeenCalled();
-    const [review] = await f.service.delegate(project.id, { route: "fresh", role: "review", reviewTargets: [{ task: task.ref, assignment: milestone.ref, revision: "coordinator-sha" }] });
-    expect(review.rationale).toContain("from A2 at coordinator-sha");
-  });
-
-  it("refuses a checkpoint if a worker report arrives during native inspection", async () => {
-    const { f, project, task, worker } = await work();
-    f.harness.sdk.stub("threads.get", () => {
-      f.store.updateAssignment(project.id, 1, { state: "reported", report: blocked() });
-      return f.threads.get(worker.threadId!);
-    });
-    await expect(f.service.checkpointTask(project.id, { task: task.ref, worker: worker.worker, assignment: "A1", report: rev("coordinator-sha") }, "coordinator")).rejects.toThrow(/changed or was reported/);
-    expect(f.store.assignment(project.id, 1)).toMatchObject({ report: blocked(), checkpoint: null });
-    expect(f.send).not.toHaveBeenCalled();
-  });
-
-  it.each([false, true])("a worker's own report clears checkpoint provenance, including identical body=%s", async sameBody => {
-    const { f, project, task, worker } = await work();
-    await f.service.checkpointTask(project.id, { task: task.ref, worker: worker.worker, assignment: "A1", report: rev("coordinator-sha") }, "coordinator");
-    expect(f.store.assignment(project.id, 1)?.checkpoint).not.toBeNull();
-    const own = rev(sameBody ? "coordinator-sha" : "worker-sha");
-    await f.service.report(worker.threadId!, own);
-    expect(f.store.assignment(project.id, 1)).toMatchObject({ checkpoint: null, report: own });
-    const o = await f.overview(project.id);
-    expect([...o.awaitingAcceptance, ...o.inFlight].find(a => a.assignment === "A1")?.checkpoint).toBeNull();
-  });
-
   it.each(["blocked", "failed"] as const)("answer/quiet close restores the recorded %s report and clears Answer D checkpoint", async outcome => {
     const { f, project, task, worker } = await work();
     const ask = () => f.service.recordQuestion(project.id, { title: "Scope", question: "Include archives?", context: "Need scope", humanAttention: "needs-opinion", blocksTaskIds: [task.ref] }, coordinator);
@@ -86,14 +49,14 @@ describe("A108 reviewed retention/state boundaries", () => {
     await f.service.answerOpinion(project.id, first.ref, { choice: null, note: "Yes", notify: false });
     expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: `Waiting for your opinion on ${second.ref}`, nextCheckpoint: `Answer ${second.ref}` });
     f.service.closeQuestion(project.id, second.ref, "Already settled in chat.");
-    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: "Blocked on contract", nextCheckpoint: "Coordinator decision", acceptedAssignment: null });
+    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "blocked", progress: "W1 reported: Blocked on contract", nextCheckpoint: null, acceptedAssignment: null });
     expect(f.send).not.toHaveBeenCalled();
   });
 
   it("planned and running task releases reset stale question checkpoints", async () => {
     const { f, project, task } = await work();
     const planned = f.task(project.id, "Next");
-    for (const [t, state, checkpoint] of [[task, "in_progress", "Worker report"], [planned, "planned", null]] as const) {
+    for (const [t, state, checkpoint] of [[task, "in_progress", null], [planned, "planned", null]] as const) {
       const q = f.service.recordQuestion(project.id, { title: "Scope", question: "Include archives?", context: "Need scope", humanAttention: "needs-opinion", blocksTaskIds: [t.ref] }, coordinator);
       f.store.updateTask(project.id, t.num, { nextCheckpoint: `Answer ${q.ref}` });
       f.service.closeQuestion(project.id, q.ref, "Already settled.");
@@ -148,20 +111,6 @@ describe("A108 reviewed retention/state boundaries", () => {
     expect(f.store.assignment(project.id, 1)?.reportNotice?.state).toBe("sent");
   });
 
-  it("cannot reopen a report accepted while worker execution metadata was being read", async () => {
-    const { f, project, task, worker } = await work();
-    await f.service.report(worker.threadId!, rev("accepted-sha"));
-    const before = f.store.assignment(project.id, 1)!;
-    f.harness.sdk.stub("threads.defaultExecutionOptions", async () => {
-      await f.service.acceptTask(project.id, task.ref, {});
-      return f.execution.get(worker.threadId!);
-    });
-    await expect(f.service.report(worker.threadId!, blocked())).rejects.toThrow(/already accepted/);
-    expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "accepted", report: before.report });
-    expect(f.store.task(project.id, task.num)?.status).toBe("done");
-    expect(f.send).not.toHaveBeenCalled();
-  });
-
   it("retry claims pending before parent inspection and uses the current coordinator", async () => {
     const { f, project, worker } = await work();
     f.threads.set(worker.threadId!, { ...f.threads.get(worker.threadId!)!, parentThreadId: null });
@@ -189,17 +138,18 @@ describe("A108 reviewed retention/state boundaries", () => {
     expect(f.store.assignment(project.id, 1)?.reportNotice).toBeNull();
   });
 
-  it("names migration persistence failure correctly while retaining decoded custom guidance", async () => {
+  it("names a failed guidance reset correctly and still runs on the new defaults (T136)", async () => {
     const { f } = await projectFixture();
     const raw = await f.preferences.handle.get();
-    raw.workerInstructions = "Custom prefix.\nRecord your choices separately with initiative_decision: one or two sentences, madeBy agent.";
+    raw.workerInstructions = "Old agent-upgraded worker guidance.";
     const error = vi.fn();
+    const flags = { has: vi.fn(() => false), set: vi.fn() };
     const handle = { get: async () => raw, onChange: vi.fn(), experimental_set: vi.fn().mockRejectedValue(new Error("disk refused")) };
-    const preferences = definePreferences({ settings: { define: () => handle }, log: { error } } as unknown as BbPluginApi);
+    const preferences = definePreferences({ settings: { define: () => handle }, log: { error } } as unknown as BbPluginApi, flags);
     await preferences.ready;
     expect(error).toHaveBeenCalledWith(expect.stringMatching(/migration.*persist.*disk refused/i));
     expect(error).not.toHaveBeenCalledWith(expect.stringMatching(/could not load/i));
-    expect(preferences.configuration().workerInstructions).toContain("Custom prefix.");
-    expect(preferences.configuration().workerInstructions).toContain("user choices use madeBy user");
+    expect(preferences.configuration().workerInstructions).toBe(DEFAULT_WORKER_INSTRUCTIONS);
+    expect(flags.set).not.toHaveBeenCalled();
   });
 });

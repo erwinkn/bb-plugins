@@ -13,14 +13,15 @@ export const readOptionsSchema = z.object({
   detailed: z.boolean().default(false),
   fields: z.array(z.enum(READ_FIELDS)).min(1).max(10).optional(),
 }).strict();
-export const READ_VIEWS = ["tasks", "workers", "assignments", "decisions", "inbox", "updates", "activity", "usage", "threads"] as const;
+export const READ_VIEWS = ["tasks", "workers", "assignments", "reports", "decisions", "inbox", "updates", "activity", "usage", "threads"] as const;
 export type ReadView = (typeof READ_VIEWS)[number];
 export type ReadOptions = z.infer<typeof readOptionsSchema>;
-export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overview", "records", ...READ_VIEWS]).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(30).optional(), detailed: z.boolean().optional() }).strict();
+export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overview", "records", "context", ...READ_VIEWS]).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(30).optional(), detailed: z.boolean().optional() }).strict();
 export const MAX_READ_BYTES = 65536;
 const refViews: Record<string, ReadView> = { T: "tasks", W: "workers", A: "assignments", D: "decisions", K: "decisions", U: "updates" };
 export const fieldsByView: Partial<Record<ReadView, readonly string[]>> = {
   tasks: ["brief"], workers: ["handoff"], assignments: ["briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "checkpoint", "reviewTargets", "reportNotice"],
+  reports: ["briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "reportNotice"],
   decisions: ["answer", "resolution", "body"], updates: ["body"], inbox: ["payload"], activity: ["payload"],
 };
 const canonical = (ref: string) => ref.replace(/^K(?=\d+$)/, "D");
@@ -57,8 +58,9 @@ function summary(view: ReadView, row: Record<string, any>) {
   let item: Record<string, unknown>;
   switch (view) {
     case "tasks": item = { ...common, title: text("title", row.title, 200), summary: text("summary", row.summary), progress: text("progress", row.progress, 240), priority: row.priority, dependsOn: refs("dependsOn", row.dependsOn), acceptedAssignment: row.acceptedAssignment ? `A${row.acceptedAssignment}` : null }; break;
-    case "workers": item = { ...common, label: text("label", row.label, 200), area: text("area", row.area, 200), role: row.role, threadId: row.threadId, generation: row.generation, bbProjectId: row.bbProjectId, userStopped: row.userStopped, assignments: row.assignments, assignmentsTruncated: row.assignmentsTruncated }; break;
+    case "workers": item = { ...common, label: text("label", row.label, 200), area: text("area", row.area, 200), role: row.role, threadId: row.threadId, generation: row.generation, bbProjectId: row.bbProjectId, userStopped: row.userStopped, assignments: row.assignments, assignmentsTruncated: row.assignmentsTruncated, ...(row.latestReport !== undefined ? { latestReport: row.latestReport } : {}) }; break;
     case "assignments": item = { ...common, reportVersion: row.report ? reportVersion(row as AssignmentRecord) : null, worker: `W${row.workerNum}`, tasks: refs("tasks", row.taskNums), role: row.role, access: row.access, route: row.route, opState: row.opState, queuedMessageId: row.queuedMessageId, profile: row.actualProfile ?? row.profile, reviewOf: refs("reviewOf", row.reviewOf), report: row.report ? { outcome: row.report.outcome, summary: text("report.summary", row.report.summary) } : null, notification: row.reportNotice ? { ...row.reportNotice, ...(row.reportNotice.detail ? { detail: text("notification.detail", row.reportNotice.detail, 240) } : {}) } : null, verificationRevision: text("verificationRevision", row.report?.handoff.verificationRevision ?? row.report?.handoff.workspaceRevision, 200), checkpoint: row.checkpoint ? { recordedBy: row.checkpoint.recordedBy } : null, ...(row.handoffSources?.length ? { handoffSources: row.handoffSources.map((h: { assignment: string }) => h.assignment) } : {}) }; break;
+    case "reports": item = { ...common, worker: `W${row.workerNum}`, tasks: refs("tasks", row.taskNums), role: row.role, outcome: row.report?.outcome === "succeeded" ? "done" : row.report?.outcome ?? null, summary: text("summary", row.report?.summary), reportedAt: row.reportedAt, finalMessage: text("finalMessage", row.report?.finalMessage ?? null, 600) }; break;
     case "decisions": item = { ...common, description: text("description", row.description), madeBy: row.madeBy, review: row.review, recordedBy: row.body.answer?.recordedBy ?? row.provenance, supersedes: row.supersedes, notification: row.notification ? { ...row.notification, ...(row.notification.detail ? { detail: text("notification.detail", row.notification.detail, 240) } : {}) } : null }; break;
     case "updates": item = { ...common, summary: text("summary", row.summary), createdAt: row.createdAt }; break;
     case "inbox": case "activity": item = { ...common, kind: row.kind, summary: text("summary", row.summary), createdAt: row.createdAt ?? row.at }; break;
@@ -72,6 +74,7 @@ const rowsFor = (store: Store, projectId: string, view: ReadView): Record<string
   if (view === "workers") return store.workers(projectId);
   if (view === "usage") return store.projectUsage(projectId) as unknown as Record<string, any>[];
   if (view === "inbox" || view === "activity") return store[view](projectId, -1) as unknown as Record<string, any>[];
+  if (view === "reports") return store.assignments(projectId).filter(a => a.report).sort((a, b) => (b.reportedAt ?? 0) - (a.reportedAt ?? 0)) as unknown as Record<string, any>[];
   return (view === "decisions" ? store.decisions(projectId, { includeHistory: true }) : store[view](projectId)) as unknown as Record<string, any>[];
 };
 export function validateSelection(view: ReadView, options: ReadOptions) {
@@ -113,9 +116,25 @@ export function readRows(rows: { view: ReadView; row: Record<string, any> }[], o
 
 // The standard handoff is rendered from the canonical report on request, never stored twice.
 const selectedWorker = (store: Store, projectId: string, options: ReadOptions) => (view: ReadView, row: Record<string, any>) =>
-  view === "workers" && !options.fields ? { ...row, ...workerWork(store, projectId, row.num, row.generation) }
-  : view === "assignments" && options.fields?.includes("standardHandoff") ? { ...row, standardHandoff: row.report ? renderStandardHandoff(store, row as AssignmentRecord, false) : null }
+  view === "workers" && !options.fields ? { ...row, ...workerWork(store, projectId, row.num, row.generation), latestReport: latestReportOf(store, projectId, row.num, options.detailed) }
+  : (view === "assignments" || view === "reports") && options.fields?.includes("standardHandoff") ? { ...row, standardHandoff: row.report ? renderStandardHandoff(store, row as AssignmentRecord, false) : null }
   : row;
+
+/** T136: a worker read carries its latest report, the final message in full only when detailed. */
+function latestReportOf(store: Store, projectId: string, workerNum: number, detailed: boolean) {
+  const a = store.latestReported(projectId, workerNum);
+  if (!a?.report) return null;
+  const final = a.report.finalMessage ?? null;
+  return { ref: a.ref, outcome: a.report.outcome === "succeeded" ? "done" : a.report.outcome, summary: a.report.summary, reportedAt: a.reportedAt,
+    finalMessage: final && !detailed && final.length > 1500 ? `${final.slice(0, 1500)}… (detailed:true for the full text)` : final };
+}
+
+/** T136: the shared, user-editable context, read on demand; it is never injected into prompts. */
+export function readContext(store: Store, projectId: string) {
+  const p = store.project(projectId);
+  if (!p) throw new ProjectError("Unknown Initiative.");
+  return { name: p.name, objective: p.objective, vision: p.context.vision, objectives: p.context.objectives, ideas: p.context.ideas };
+}
 
 export function readCollection(store: Store, projectId: string, view: ReadView, options: ReadOptions) {
   validateSelection(view, options);
@@ -138,23 +157,29 @@ export function readRefs(store: Store, projectId: string, options: ReadOptions) 
   return readRows(rows, options, [], selectedWorker(store, projectId, options));
 }
 
-/** Agent overview has no native inventory/usage calls. The dashboard retains its separate full RPC. */
+/** Agent overview (T136): live workers with their latest report, open tasks, and what waits on the user. No native calls. */
 export function compactOverview(store: Store, projectId: string) {
   const p = store.project(projectId);
   if (!p) throw new ProjectError("Unknown Initiative.");
   const tasks = store.tasks(projectId), assignments = store.assignments(projectId), decisions = store.decisions(projectId);
-  const current = assignments.filter(a => ["dispatching", "queued", "running", "idle_no_report", "reported", "stopped"].includes(a.state) || ["pending", "uncertain"].includes(a.opState));
+  const open = tasks.filter(t => !["done", "cancelled"].includes(t.status));
+  const workers = store.workers(projectId).filter(w => w.state !== "retired");
   const questions = decisions.filter(d => d.status === "active" && d.humanAttention === "needs-opinion" && d.madeBy === null);
   const unchecked = decisions.filter(d => d.madeBy === "agent" && d.review === "pending");
-  const limit = 8;
+  const limit = 12;
+  const working = (num: number) => assignments.find(a => a.workerNum === num && (["dispatching", "queued", "running", "idle_no_report"].includes(a.state) || ["pending", "uncertain"].includes(a.opState)));
   return {
-    stateSource: "Recorded Initiative work; native execution is available in explicit threads reads.",
-    project: { id: p.id, name: p.name, paused: p.paused, coordinatorThreadId: p.coordinatorThreadId, checkpoint: p.checkpoint?.slice(0, 1200) ?? null },
-    counts: { tasks: tasks.length, remaining: tasks.filter(t => !["done", "cancelled"].includes(t.status)).length, currentWork: current.length, awaitingAcceptance: tasks.filter(t => t.status === "awaiting_acceptance").length, questions: questions.length, uncheckedAgentDecisions: unchecked.length },
-    currentWork: current.slice(0, limit).map(row => summary("assignments", row)),
-    tasks: tasks.filter(t => !["done", "cancelled"].includes(t.status)).slice(0, limit).map(row => summary("tasks", row)),
+    project: { id: p.id, name: p.name, objective: p.objective.slice(0, 1200), paused: p.paused, coordinatorThreadId: p.coordinatorThreadId },
+    counts: { openTasks: open.length, liveWorkers: workers.length, questions: questions.length, uncheckedAgentDecisions: unchecked.length },
+    workers: workers.slice(-limit).map(w => {
+      const now = working(w.num);
+      const last = latestReportOf(store, projectId, w.num, false);
+      return { ref: w.ref, label: w.label, purpose: w.area, role: w.role, working: now ? { ref: now.ref, state: now.state, tasks: now.taskNums.map(n => `T${n}`) } : null,
+        latestReport: last ? { ref: last.ref, outcome: last.outcome, summary: last.summary } : null };
+    }),
+    tasks: open.slice(0, limit).map(row => summary("tasks", row)),
     humanAttention: { questions: questions.slice(0, limit).map(row => ({ ...summary("decisions", row), question: (row.body as { question?: string }).question?.slice(0, 400), ...(((row.body as { question?: string }).question?.length ?? 0) > 400 ? { questionTruncated: true } : {}) })), uncheckedAgentDecisions: unchecked.slice(-limit).map(row => row.ref) },
-    truncated: current.length > limit || tasks.length > limit || questions.length > limit || unchecked.length > limit || (p.checkpoint?.length ?? 0) > 1200,
-    selectors: { refs: "T/W/A/D/U; mixed refs need no view", views: READ_VIEWS, fields: fieldsByView, limit: "1..30", details: "detailed:true; fields optionally selects exact large fields", histories: "Explicit collection reads with offset/limit; native inventory uses view threads, telemetry uses view usage." },
+    truncated: workers.length > limit || open.length > limit || questions.length > limit || unchecked.length > limit,
+    reads: 'refs:["W12","T40"] for exact records; view workers, tasks, reports, context or activity to list.',
   };
 }

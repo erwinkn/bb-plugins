@@ -25,7 +25,7 @@ describe("T66 trusted thin native messaging", () => {
     if (mode === "queue") expect(result.receipt).toEqual(queued);
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: target, senderThreadId: caller, mode: `${mode}-if-active` });
-    expect(f.send.mock.calls[0][0].input[0].text).toContain("From W1/A1 (work)");
+    expect(f.send.mock.calls[0][0].input[0].text).toContain("From W1 (work)");
     expect(f.stop).not.toHaveBeenCalled();
   });
   it("retained worker CLI and typed command use the same boundary; coordinator is resolved now", async () => {
@@ -39,7 +39,14 @@ describe("T66 trusted thin native messaging", () => {
     const foreign = await f.harness.runCli(["command", JSON.stringify({ action: "message", ...message }), "foreign"], { threadId: caller });
     expect(foreign.exitCode).toBe(1); expect(f.send).toHaveBeenCalledTimes(2);
   });
-  it.each(["stopped", "cancelled", "finished", "retired", "former", "uncertain", "foreign", "adhoc"])("refuses %s caller and target without sending", async kind => {
+  it("T136: a worker that already reported can still send and receive messages", async () => {
+    const { f, project, caller } = await peers();
+    f.store.updateAssignment(project.id, 2, { state: "reported", report: report() });
+    f.store.updateAssignment(project.id, 1, { state: "reported", report: report() });
+    await f.service.message(caller, message);
+    expect(f.send).toHaveBeenCalledTimes(1);
+  });
+  it.each(["stopped", "cancelled", "retired", "former", "uncertain", "foreign", "adhoc"])("refuses %s caller and target without sending", async kind => {
     for (const side of ["caller", "target"] as const) {
       const { f, project, caller, target } = await peers(); const tid = side === "caller" ? caller : target; const num = side === "caller" ? 1 : 2;
       if (kind === "stopped") f.store.updateWorker(project.id, num, { userStopped: true });
@@ -72,13 +79,12 @@ describe("T66 trusted thin native messaging", () => {
     await f.service.message("coordinator", message);
     expect(f.send).toHaveBeenCalledTimes(2);
   });
-  it.each(["coordinator", "generation", "cancel", "caller-finish"])("rechecks %s change during native reads, with no reroute or send", async kind => {
+  it.each(["coordinator", "generation", "cancel"])("rechecks %s change during native reads, with no reroute or send", async kind => {
     const { f, project, caller } = await peers();
     f.harness.sdk.stub("threads.get", async ({ threadId }) => {
       if (kind === "coordinator") f.store.db.prepare("UPDATE projects SET coordinator_thread_id='replacement' WHERE id=?").run(project.id);
       if (kind === "generation") f.store.updateWorker(project.id, 2, { threadId: "replacement", generation: 2 });
       if (kind === "cancel") f.store.updateAssignment(project.id, 2, { cancelRequested: true });
-      if (kind === "caller-finish") f.store.updateAssignment(project.id, 1, { state: "reported", report: report() });
       return f.threads.get(threadId);
     });
     await expect(f.service.message(caller, { ...message, target: kind === "coordinator" ? "coordinator" : "W2" })).rejects.toThrow();
@@ -99,7 +105,7 @@ describe("T66 trusted thin native messaging", () => {
     const before = f.harness.inspection.sdk.calls.length;
     const config = await f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(caller)! }));
     expect(config.tools.map(t => t.name)).toContain("initiative_message"); expect(config.tools.map(t => t.name)).not.toContain("project_message");
-    expect(config.instructions).toContain("W1, generation 1, role work, assignment A1");
+    expect(config.instructions).toContain('You are W1 "Historical search" (src), role work.');
     expect(f.harness.inspection.sdk.calls).toHaveLength(before);
     await f.preferences.handle.experimental_set({ workerInstructions: "x".repeat(MAX_GUIDANCE_CHARACTERS) });
     const max = await f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(caller)! }));
@@ -112,10 +118,6 @@ it.each(["error", "stopping", "archived", "deleted"])("native unavailable %s tar
   const row = f.threads.get(target)!;
   f.threads.set(target, { ...row, ...(state === "archived" ? { archivedAt: Date.now() } : state === "deleted" ? { deletedAt: Date.now() } : { status: state as "error" | "stopping" }) });
   await expect(f.service.message(caller, message)).rejects.toThrow(/unavailable/); expect(f.send).not.toHaveBeenCalled();
-});
-it.each(["done", "cancelled"] as const)("finished/cancelled task %s cannot be awakened even with a stale running assignment", async status => {
-  const { f, project, caller } = await peers(); f.store.updateTask(project.id, 2, { status });
-  await expect(f.service.message(caller, message)).rejects.toThrow(/cancelled or finished/); expect(f.send).not.toHaveBeenCalled();
 });
 it("definite native refusal is distinct from uncertainty, with resolved receipt-inspection target", async () => {
   const { f, caller, target } = await peers(); f.send.mockRejectedValueOnce(Object.assign(new Error("Refused"), { status: 400 }));

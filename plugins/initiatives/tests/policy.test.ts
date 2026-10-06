@@ -3,8 +3,6 @@ import {
   chooseWorkProfile,
   delegationViolations,
   foldUsage,
-  pathsOverlap,
-  planReview,
   seriesOf,
   type DelegationFacts,
 } from "../lib/policy";
@@ -66,35 +64,12 @@ const facts = (patch: Partial<DelegationFacts> = {}): DelegationFacts => ({
   route: "fresh",
   role: "work",
   tasks: [task(1)],
-  allTasks: [task(1)],
   bbProjectId: "proj_a",
   worker: null,
   workerOpenAssignment: null,
   thread: null,
   requestedProfile: DEFAULT_PROFILES.implementation,
-  workspace: "shared",
-  concurrentWork: [],
-  paths: ["src"],
-  providerSupportsFork: true,
-  forkAtCompletedPoint: true,
-  reviewOf: [],
-  reviewOfTasks: [],
   ...patch,
-});
-
-const implemented = (
-  taskNums: number[],
-  providerId: string,
-  model: string,
-): Pick<
-  AssignmentRecord,
-  "taskNums" | "role" | "state" | "actualProfile" | "profile"
-> => ({
-  taskNums,
-  role: "work",
-  state: "accepted",
-  profile: DEFAULT_PROFILES.implementation,
-  actualProfile: { providerId, model, reasoningLevel: "high" },
 });
 
 describe("profiles", () => {
@@ -166,60 +141,11 @@ describe("profiles", () => {
   });
 });
 
-describe("review routing", () => {
-  it("routes by the recorded implementer, not the project default", () => {
-    expect(seriesOf({ providerId: "codex", model: "gpt-6.1-sol" })).toBe("gpt");
-    expect(
-      seriesOf({ providerId: "claude-code", model: "claude-opus-5-5" }),
-    ).toBe("claude");
-    const plan = planReview({
-      policy: DEFAULT_POLICY,
-      taskNums: [1],
-      assignments: [implemented([1], "codex", "gpt-6.1-sol")],
-    });
-    expect(plan).toHaveLength(1);
-    expect(plan[0]!.profile).toEqual(DEFAULT_PROFILES.reviewOfGpt);
-  });
-
-  it("by default splits a mixed milestone into one recommended reviewer per implementing family", () => {
-    const plan = planReview({
-      policy: DEFAULT_POLICY,
-      taskNums: [1, 2, 3],
-      assignments: [
-        implemented([1], "claude-code", "claude-opus-5-5"),
-        implemented([2], "codex", "gpt-6.1-sol"),
-        implemented([3], "claude-code", "claude-opus-5-5"),
-        implemented([3], "codex", "gpt-6.1-sol"),
-      ],
-    });
-    const byKey = Object.fromEntries(
-      plan.map((part) => [part.key, part.taskNums]),
-    );
-    expect(byKey).toEqual({ reviewOfClaude: [1, 3], reviewOfGpt: [2, 3] });
-    // The built-in defaults are cross-family, so no part is flagged as same-family.
-    expect(plan.every((part) => /Configured reviewer: /.test(part.rationale))).toBe(true);
-    expect(plan.some((part) => /same model family/.test(part.rationale))).toBe(false);
-  });
-
-  it("ignores review assignments when finding implementers", () => {
-    const plan = planReview({
-      policy: DEFAULT_POLICY,
-      taskNums: [1],
-      assignments: [
-        implemented([1], "codex", "gpt-6.1-sol"),
-        {
-          ...implemented([1], "claude-code", "claude-fable-5-1"),
-          role: "review",
-        },
-      ],
-    });
-    expect(plan.map((part) => part.key)).toEqual(["reviewOfGpt"]);
-  });
-});
-
-describe("delegation eligibility", () => {
-  it("accepts a valid fresh delegation", () => {
+describe("delegation eligibility (T136)", () => {
+  const idle = { archived: false, status: "idle", model: "claude-opus-5-5" };
+  it("accepts a valid fresh delegation, with or without tasks", () => {
     expect(delegationViolations(facts())).toEqual([]);
+    expect(delegationViolations(facts({ tasks: [] }))).toEqual([]);
   });
 
   it("holds new work while paused and enforces the project boundary", () => {
@@ -230,166 +156,29 @@ describe("delegation eligibility", () => {
     expect(reasons.join(" ")).toMatch(/not a member/);
   });
 
-  it("checks dependencies without scheduling them", () => {
-    const blocked = task(2, { dependsOn: [1] });
-    const reasons = delegationViolations(
-      facts({ tasks: [blocked], allTasks: [task(1), blocked] }),
-    );
-    expect(reasons).toEqual(["T2 depends on T1, which is not done."]);
-    expect(
-      delegationViolations(
-        facts({
-          tasks: [blocked],
-          allTasks: [task(1, { status: "done" }), blocked],
-        }),
-      ),
-    ).toEqual([]);
+  it("asks to reopen a closed task before more work on it", () => {
+    expect(delegationViolations(facts({ tasks: [task(1, { status: "done" })] }))).toEqual(["T1 is done. Reopen it first if it needs more work."]);
   });
 
-  it("keeps roles immutable across reuse", () => {
+  it("keeps reviewers out of implementation and reviews fresh", () => {
     const reviewer = worker({ role: "review", ref: "W2", num: 2 });
-    expect(
-      delegationViolations(
-        facts({
-          route: "continue",
-          worker: reviewer,
-          thread: { archived: false, status: "idle", model: "claude-opus-5-5" },
-        }),
-      ).join(" "),
-    ).toMatch(/Reviewers never implement/);
-    expect(
-      delegationViolations(
-        facts({
-          route: "continue",
-          role: "review",
-          worker: worker(),
-          reviewOf: [1],
-          reviewOfTasks: [task(1, { status: "awaiting_acceptance" })],
-          thread: { archived: false, status: "idle", model: "claude-opus-5-5" },
-        }),
-      ).join(" "),
-    ).toMatch(/cannot review/);
+    expect(delegationViolations(facts({ route: "continue", worker: reviewer, thread: idle })).join(" ")).toMatch(/Reviewers never implement/);
+    expect(delegationViolations(facts({ route: "continue", role: "review", worker: worker(), thread: idle })).join(" ")).toMatch(/always a fresh worker/);
   });
 
-  it("never continues or forks a reviewer: reviews are fresh threads only", () => {
-    const reviewer = worker({
-      role: "review",
-      model: "gpt-6-astra",
-      providerId: "codex",
-    });
-    expect(
-      delegationViolations(
-        facts({
-          route: "continue",
-          role: "review",
-          tasks: [],
-          worker: reviewer,
-          reviewOf: [1],
-          reviewOfTasks: [task(1, { status: "awaiting_acceptance" })],
-          requestedProfile: DEFAULT_PROFILES.reviewOfClaude,
-          thread: { archived: false, status: "idle", model: "gpt-6-astra" },
-        }),
-      ).join(" "),
-    ).toMatch(/fresh/);
-    expect(
-      delegationViolations(
-        facts({
-          route: "fork",
-          role: "review",
-          tasks: [],
-          worker: reviewer,
-          reviewOf: [1],
-          reviewOfTasks: [task(1, { status: "awaiting_acceptance" })],
-          requestedProfile: DEFAULT_PROFILES.reviewOfClaude,
-          thread: { archived: false, status: "idle", model: "gpt-6-astra" },
-          forkAtCompletedPoint: true,
-        }),
-      ).join(" "),
-    ).toMatch(/fresh/);
-  });
-
-  it("refuses to fork an implementer into a reviewer and requires a completed point", () => {
-    const reasons = delegationViolations(
-      facts({
-        route: "fork",
-        role: "review",
-        worker: worker(),
-        reviewOf: [1],
-        reviewOfTasks: [task(1, { status: "awaiting_acceptance" })],
-        forkAtCompletedPoint: false,
-      }),
-    );
-    expect(reasons.join(" ")).toMatch(
-      /Do not fork an implementer's transcript/,
-    );
-    expect(reasons.join(" ")).toMatch(/completed point/);
-  });
-
-  it("blocks a worker with an open assignment; BB owns queueing", () => {
+  it("asks to steer or wait while a worker is still working", () => {
     const open = { ref: "A3", state: "running" } as AssignmentRecord;
-    const busy = facts({
-      route: "continue",
-      worker: worker(),
-      workerOpenAssignment: open,
-      thread: { archived: false, status: "active", model: "claude-opus-5-5" },
-    });
-    expect(delegationViolations(busy).join(" ")).toMatch(/still has A3 open/);
+    const busy = facts({ route: "continue", worker: worker(), workerOpenAssignment: open, thread: { ...idle, status: "active" } });
+    expect(delegationViolations(busy).join(" ")).toMatch(/W1 is still working on A3 \(running\)\. Send a plain initiative_message/);
   });
 
   it("does not continue a worker on a different model", () => {
-    expect(
-      delegationViolations(
-        facts({
-          route: "continue",
-          worker: worker(),
-          requestedProfile: DEFAULT_PROFILES.investigation,
-          thread: { archived: false, status: "idle", model: "claude-opus-5-5" },
-        }),
-      ).join(" "),
-    ).toMatch(/mix models/);
+    expect(delegationViolations(facts({ route: "continue", worker: worker(), requestedProfile: DEFAULT_PROFILES.investigation, thread: idle })).join(" ")).toMatch(/mix models/);
   });
 
   it("refuses a retired worker's thread and an archived one", () => {
-    const retired = facts({
-      route: "continue",
-      worker: worker({ state: "retired" }),
-      thread: { archived: true, status: "idle", model: "claude-opus-5-5" },
-    });
+    const retired = facts({ route: "continue", worker: worker({ state: "retired" }), thread: { ...idle, archived: true } });
     expect(delegationViolations(retired).join(" ")).toMatch(/retired/);
-  });
-
-  it.each([
-    ["read-only", "read-only"],
-    ["read-only", "write"],
-    ["write", "read-only"],
-  ] as const)("allows overlapping %s / %s assignments", (access, otherAccess) => {
-    expect(delegationViolations(facts({
-      access,
-      concurrentWork: [{ ref: "A2", workerRef: "W2", paths: ["src/auth"], workspace: "shared", access: otherAccess }],
-    }))).toEqual([]);
-  });
-
-  it("serializes overlapping writes in a shared workspace", () => {
-    const concurrentWork = [
-      {
-        ref: "A2",
-        workerRef: "W2",
-        paths: ["src/auth"],
-        workspace: "shared" as const,
-      },
-    ];
-    expect(
-      delegationViolations(facts({ concurrentWork, paths: ["src"] })).join(" "),
-    ).toMatch(/overlapping paths/);
-    expect(
-      delegationViolations(facts({ concurrentWork, paths: ["docs"] })),
-    ).toEqual([]);
-    expect(
-      delegationViolations(
-        facts({ concurrentWork, paths: ["src"], workspace: "isolated" }),
-      ),
-    ).toEqual([]);
-    expect(pathsOverlap([], ["x"])).toBe(true);
   });
 });
 

@@ -6,16 +6,18 @@ import { z } from "zod";
  * normalizeDecisionInput, which maps flat and legacy nested payloads onto the
  * existing nested command shapes. Nothing here defaults an owner or an answer.
  */
-export const DECISION_ACTIONS = ["decision", "question", "answer", "cleanup", "decision-cleanup", "withdraw"] as const;
-type Action = "decision" | "question" | "answer" | "cleanup" | "withdraw";
+export const DECISION_ACTIONS = ["user-choice", "veto-request", "question", "answer", "withdraw", "decision"] as const;
+type Action = "decision" | "question" | "answer" | "withdraw";
+/** T136: the two kinds of decision, each with its owner built in; decision+madeBy stays for older sessions. */
+const OWNER = { "user-choice": "user", "veto-request": "agent" } as const;
 
 const text = (max: number) => z.string().max(max);
 const optionSchema = z.union([text(200), z.object({ label: text(200), consequences: text(1000).optional() }).strict()]);
 export const decisionToolSchema = z.object({
-  action: z.enum(DECISION_ACTIONS).describe("decision: record a choice already made. question: ask the user an unresolved choice (coordinator only). answer: record the user's explicit answer to an open question. cleanup: current coordinator accepts/vetoes/removes an agent choice on the user's explicit request. withdraw: current coordinator withdraws its own open question with a reason; records no answer."),
-  madeBy: z.enum(["user", "agent"]).optional().describe("decision: user for the user's explicit choice (any recorder), agent for your own significant fork. Never defaulted."),
-  description: text(2000).optional().describe("decision: one or two sentences."),
-  supersedes: text(80).optional().describe("decision: D# of an active decision this one replaces; history is kept."),
+  action: z.enum(DECISION_ACTIONS).describe("user-choice: record the user's explicit choice from chat. veto-request: a choice of yours the user may want to veto; you proceed unless they do. question: ask the user an unresolved choice (coordinator only). answer: record the user's explicit answer to an open question. withdraw: retract your own open question with a reason. decision+madeBy is the older form of the first two."),
+  madeBy: z.enum(["user", "agent"]).optional().describe("decision (older form): user or agent. Never defaulted."),
+  description: text(2000).optional().describe("user-choice/veto-request: one or two sentences."),
+  supersedes: text(80).optional().describe("user-choice/veto-request: D# of an active decision this one replaces; history is kept."),
   topic: text(200).optional(),
   scope: text(80).optional(),
   question: text(1000).optional().describe("question: what the user must decide."),
@@ -24,28 +26,25 @@ export const decisionToolSchema = z.object({
   recommendation: text(1000).optional().describe("question: your proposal, if any."),
   blocksTaskIds: z.array(text(40)).max(20).optional().describe("question: T# tasks that wait for the answer."),
   title: text(200).optional().describe("question: short title; defaults to the question."),
-  ref: text(80).optional().describe("answer/cleanup/withdraw: target D#."),
+  ref: text(80).optional().describe("answer/withdraw: target D#."),
   choice: text(200).nullable().optional().describe("answer: the option label the user picked, or null with a written note."),
   note: text(4000).optional().describe("answer: the user's words or detail."),
   notify: z.boolean().optional().describe("answer: false records quietly; workers notify the coordinator by default."),
-  operation: z.enum(["accept", "veto", "remove"]).optional().describe("cleanup: what the user explicitly asked for."),
-  reason: text(2000).optional().describe("cleanup: the user's request. withdraw: why the user no longer needs to answer (required)."),
+  reason: text(2000).optional().describe("withdraw: why the user no longer needs to answer (required)."),
 }).strict();
 export const decisionToolJsonSchema = z.toJSONSchema(decisionToolSchema, { io: "input" });
 
 /** Minimal valid payloads appended to every error. */
 export const DECISION_ERROR_EXAMPLES: Record<Action, object> = {
-  decision: { action: "decision", madeBy: "user", description: "Erwin chose Base UI for the kit." },
+  decision: { action: "user-choice", description: "Erwin chose Base UI for the kit." },
   question: { action: "question", question: "Where is the Monolith repo?", context: "It is not under ~/Code.", options: ["Point me to it", "Skip Monolith tonight"] },
   answer: { action: "answer", ref: "D12", choice: "Skip Monolith tonight", note: "Erwin said so in this chat." },
-  cleanup: { action: "cleanup", ref: "D13", operation: "accept", reason: "Erwin asked to mark all agent decisions OK." },
   withdraw: { action: "withdraw", ref: "D12", reason: "Settled by D15: Erwin chose Base UI in chat." },
 };
 const FIELDS: Record<Action, readonly string[]> = {
   decision: ["madeBy", "description", "supersedes", "topic", "scope"],
   question: ["question", "context", "options", "recommendation", "blocksTaskIds", "title", "humanAttention"],
   answer: ["ref", "choice", "note", "notify"],
-  cleanup: ["ref", "operation", "reason"],
   withdraw: ["ref", "reason"],
 };
 // Likely meanings of common guesses; hints only, never silent aliases.
@@ -53,7 +52,6 @@ const HINTS: Record<Action, Record<string, string>> = {
   decision: { text: "description", summary: "description", body: "description", title: "description", outcome: "description", decidedBy: "madeBy", owner: "madeBy" },
   question: { description: "question or context", text: "question", body: "context", summary: "context", consequence: "consequences" },
   answer: { target: "ref", answer: "choice" },
-  cleanup: { target: "ref", verdict: "operation" },
   withdraw: { target: "ref", note: "reason", choice: "action answer (only for the user's explicit answer)", answer: "action answer (only for the user's explicit answer)" },
 };
 // Question-only fields on a decision suggest the user may still have to choose. Only the
@@ -65,7 +63,7 @@ const asksUser = (fields: Record<string, unknown>) =>
 const TAKEN = ["outcome", "rationale", "tradeoff", "revisitReason", "deadline"];
 
 export const decisionExample = (action: Action, problem: string) =>
-  `${problem} Example: ${JSON.stringify(DECISION_ERROR_EXAMPLES[action])}. See bb initiative describe ${action === "cleanup" ? "decision-cleanup" : action}.`;
+  `${problem} Example: ${JSON.stringify(DECISION_ERROR_EXAMPLES[action])}. See bb initiative describe ${action}.`;
 
 type Result = { ok: true; value: Record<string, unknown>; flat: boolean } | { ok: false; message: string };
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -105,15 +103,21 @@ const defaultTitle = (question: string) => {
 export function normalizeDecisionInput(raw: unknown): Result {
   if (!isObject(raw)) return { ok: false, message: decisionExample("decision", "Pass one JSON object with an action.") };
   const { action: rawAction, ...input } = raw;
+  if (rawAction === "cleanup" || rawAction === "decision-cleanup")
+    return { ok: false, message: "Decision cleanup was removed; the user checks agent decisions in the Inbox." };
   if (!(DECISION_ACTIONS as readonly unknown[]).includes(rawAction))
-    return { ok: false, message: `Unknown initiative_decision action ${JSON.stringify(rawAction ?? null)}. Use decision, question, answer or cleanup (withdraw retracts your own open question), for example ${JSON.stringify(DECISION_ERROR_EXAMPLES.decision)}. See bb initiative describe for each action.` };
-  const action: Action = rawAction === "decision-cleanup" ? "cleanup" : rawAction as Action;
+    return { ok: false, message: `Unknown initiative_decision action ${JSON.stringify(rawAction ?? null)}. Use user-choice, veto-request, question, answer or withdraw, for example ${JSON.stringify(DECISION_ERROR_EXAMPLES.decision)}. See bb initiative describe.` };
+  if (rawAction === "user-choice" || rawAction === "veto-request") {
+    if ("madeBy" in input) return { ok: false, message: `${rawAction} already says who made the choice; drop madeBy.` };
+    return normalizeDecisionInput({ ...input, action: "decision", madeBy: OWNER[rawAction] });
+  }
+  const action = rawAction as Action;
   const fail = (message: string): Result => ({ ok: false, message });
 
   if (action === "decision") {
     let fields: Record<string, unknown> | string = input;
     const flat = !isObject(input.decision);
-    if (typeof input.decision === "string") return fail(decisionExample("decision", "A decision is recorded with madeBy and description; D# targets belong to answer or cleanup ref, or supersedes."));
+    if (typeof input.decision === "string") return fail(decisionExample("decision", "A decision is recorded with madeBy and description; D# targets belong to answer or withdraw ref, or supersedes."));
     if (isObject(input.decision)) {
       const { decision, ...rest } = input;
       fields = merge(rest, decision, "decision");
@@ -172,17 +176,16 @@ export function normalizeDecisionInput(raw: unknown): Result {
       return fail(decisionExample("answer", "Pick an option or write an answer: the user's choice (an option label) or their written answer in note."));
     return { ok: true, flat: true, value: { action, decision: ref, ...rest, choice } };
   }
-  if (action === "withdraw") return { ok: true, flat: true, value: { action: "question-withdraw", decision: ref, ...rest } };
-  return { ok: true, flat: true, value: { action: "decision-cleanup", decision: ref, ...rest } };
+  return { ok: true, flat: true, value: { action: "question-withdraw", decision: ref, ...rest } };
 }
 
 /** Formats nested-schema issues in the caller's own field names, with an example. */
 export function decisionIssues(action: string, error: z.ZodError, flat: boolean) {
-  const named: Action = action === "decision-cleanup" ? "cleanup" : action === "question-withdraw" ? "withdraw" : action as Action;
+  const named: Action = action === "question-withdraw" ? "withdraw" : action as Action;
   const issues = error.issues.map(issue => {
     let path = issue.path.map(String);
     if (flat && (named === "decision" || named === "question") && path[0] === named) path = path.slice(1);
-    if (named === "answer" || named === "cleanup" || named === "withdraw") path = path.map(key => key === "decision" ? "ref" : key);
+    if (named === "answer" || named === "withdraw") path = path.map(key => key === "decision" ? "ref" : key);
     return `${path.join(".") || "input"}: ${issue.message.replace(/\.+$/, "")}`;
   });
   return decisionExample(named, `Invalid ${named}: ${issues.join("; ")}.`);

@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { projectFixture, report } from "./fake-native";
 import { readCollection, readRefs, readOptionsSchema } from "../lib/read";
-import { DEFAULT_WORKER_INSTRUCTIONS, DEFAULT_COORDINATOR_INSTRUCTIONS, upgradeDecisionGuidance } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 
 describe("A115 notification and native pending boundaries", () => {
@@ -82,13 +81,5 @@ describe("A115 bounded summary work and native ordinary start paths", () => {
     expect(r.exitCode).toBe(1); expect(r.stderr).toContain("message '<json>'");
     const manifest = JSON.parse(readFileSync("package.json", "utf8"));
     expect(manifest.name).toBe("bb-plugin-initiatives"); expect(manifest.bb.name).toBe("Initiatives"); expect(manifest.bb.server).toBe("./server.ts");
-  });
-  it("readable defaults and exact A113 phrasing upgrade preserve maximum-sized custom text", () => {
-    const old = 'initiative_read {view:"workers",limit:8}: peers. initiative_message {target:"W4",text:"RPC",mode:"queue"}: facts; steer blockers/corrections. Reviewers use coordinator. Escalate scope/dependencies; no work grants. Human choices: coordinator question/context, options/consequences, recommendation, tasks; never infer. Routine progress never wakes. Keep errors/Stop/ownership/permissions. BB owns queues; inspect uncertain receipts.';
-    const custom = old + "x".repeat(MAX_GUIDANCE_CHARACTERS - old.length);
-    const updated = upgradeDecisionGuidance(custom, "worker", MAX_GUIDANCE_CHARACTERS);
-    expect(updated).toContain("Use initiative_message for peer facts"); expect(updated.endsWith(custom.slice(old.length))).toBe(true);
-    expect(updated.length).toBeLessThanOrEqual(custom.length); expect(upgradeDecisionGuidance(updated, "worker", MAX_GUIDANCE_CHARACTERS)).toBe(updated);
-    for (const text of [DEFAULT_WORKER_INSTRUCTIONS, DEFAULT_COORDINATOR_INSTRUCTIONS]) { expect(text).toContain("Reviewers use the coordinator."); expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS); }
   });
 });

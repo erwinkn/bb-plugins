@@ -1,12 +1,11 @@
 import { z } from "zod";
 import type { Store, Membership } from "./store";
 import { ProjectError, errorMessage, isDefiniteRejection, textInput, type Sdk, type ThreadDto } from "./bb";
-import { noDeliverableWorkReason } from "./receipts";
 
 export const messageSchema = z.object({
   target: z.union([z.literal("coordinator"), z.string().max(32).regex(/^W[1-9]\d*$/, "Use a current W# or coordinator.")]),
-  text: z.string().trim().min(1).max(4000),
-  mode: z.enum(["steer", "queue"]).describe("Steer urgent corrections/blockers; queue future interface facts. Neither grants work nor resumes stopped/finished workers."),
+  text: z.string().trim().min(1).max(20000),
+  mode: z.enum(["steer", "queue"]).default("queue").describe("steer: urgent corrections and blockers; queue (default): everything else."),
 }).strict();
 export type InitiativeMessage = z.infer<typeof messageSchema>;
 const activeStates = ["dispatching", "queued", "running", "idle_no_report", "stopped"];
@@ -31,14 +30,15 @@ function currentMember(store: Store, threadId: string) {
   const m = store.membership(threadId);
   if (!m || m.former || m.kind === "adhoc") throw new ProjectError("Messages require current managed Initiative membership; former and user-owned threads cannot use this wrapper.");
   if (m.worker) {
+    // T136: a worker stays reachable after it reports, until it is retired or stopped.
     const w = m.worker;
     if (w.threadId !== threadId || w.userStopped || w.state === "retired") throw new ProjectError(`${w.ref} is stopped, retired or no longer current.`);
+    // A Stop or an unconfirmed start that has not settled must not be woken by a message.
+    const latest = store.latestAssignment(m.project.id, w.num);
+    if (latest && ((latest.cancelRequested && latest.state !== "cancelled") || ["pending", "uncertain"].includes(latest.opState)))
+      throw new ProjectError(`${w.ref}'s ${latest.ref} is being stopped or is not confirmed yet; message it once that settles.`);
     const a = store.openAssignment(m.project.id, w.num);
-    if (!a || a.generation !== w.generation || a.threadId !== threadId || a.cancelRequested || !["running", "queued", "idle_no_report"].includes(a.state) || a.opState !== "done")
-      throw new ProjectError(noDeliverableWorkReason(w.ref, a ?? store.assignments(m.project.id).filter(x => x.workerNum === w.num).at(-1)));
-    if (w.role === "work" && (a.taskNums.some(n => store.task(m.project.id, n)?.status === "cancelled") || a.taskNums.length && a.taskNums.every(n => store.task(m.project.id, n)?.status === "done")))
-      throw new ProjectError(`${w.ref} tasks are cancelled or finished; ask the coordinator instead of messaging it.`);
-    return { m, assignment: a.ref };
+    return { m, assignment: a && a.generation === w.generation ? a.ref : null };
   }
   return { m, assignment: null };
 }
@@ -58,7 +58,7 @@ export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: stri
     if (projectId && from.m.project.id !== projectId) throw new ProjectError("Cannot message another Initiative.");
     const id = input.target === "coordinator" ? from.m.project.coordinatorThreadId : store.worker(from.m.project.id, Number(input.target.slice(1)))?.threadId;
     if (!id) throw new ProjectError("Target has no current native thread. Read workers and ask the coordinator.");
-    if (id === caller) throw new ProjectError("Use initiative_progress for your own checkpoint; do not send yourself a message.");
+    if (id === caller) throw new ProjectError("Don't send yourself a message.");
     const to = currentMember(store, id);
     if (to.m.project.id !== from.m.project.id || input.target !== "coordinator" && to.m.worker?.ref !== input.target)
       throw new ProjectError("Target is not a current member of this Initiative.");
@@ -73,7 +73,7 @@ export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: stri
     throw new ProjectError("Caller, target or assignment changed while checking native state; read current membership before a new message.");
   if (sender.id !== caller || target.id !== fresh.id) throw new ProjectError("Native lookup did not confirm caller/target identity; no message sent.");
   nativeAvailable(sender, fresh.from.m); nativeAvailable(target, fresh.to.m, input.mode === "queue");
-  const identity = fresh.from.m.worker ? `${fresh.from.m.worker.ref}/${fresh.from.assignment} (${fresh.from.m.worker.role})` : "coordinator";
+  const identity = fresh.from.m.worker ? `${fresh.from.m.worker.ref} (${fresh.from.m.worker.role})` : "coordinator";
   try {
     const receipt = await sdk.threads.send({ threadId: fresh.id, senderThreadId: caller,
       mode: input.mode === "steer" ? "steer-if-active" : "queue-if-active",

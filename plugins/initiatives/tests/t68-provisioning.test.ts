@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { expectWarned } from "./helpers";
 import { projectFixture, report } from "./fake-native";
 
 async function failedProvision() {
@@ -50,7 +51,7 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
     if (kind === "missing-row") f.harness.sdk.stub("threads.list", async () => []);
     if (kind === "unknown-status") f.harness.sdk.stub("threads.list", async () => [{ ...thread, status: "unrecognized" }] as never);
     await f.service.stopAssignment(project.id, "A1", "Stop requested");
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] })).rejects.toThrow(/A1/);
+    // T136: the reservation is the unsettled operation; new work on the task is only warned.
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "cancelled", opState: "uncertain" });
     expect(f.spawn).toHaveBeenCalledTimes(1);
   });
@@ -72,7 +73,7 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
         activeWorkflowCount: kind === "workflow" ? 1 : 0 },
     }));
     await f.service.stopAssignment(project.id, "A1", "Stop requested");
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] })).rejects.toThrow(/A1/);
+    await expectWarned(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] }), /also with W\d+ \(A1[,)]/);
     expect(f.store.assignment(project.id, 1)?.opState).toBe("uncertain");
   });
   it("a received prompt and empty bounded history do not become proof that an uncertain create never ran", async () => {
@@ -81,7 +82,7 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
     await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
     await f.service.stopAssignment(project.id, "A1", "Unknown outcome");
     f.history.splice(0);
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] })).rejects.toThrow(/A1/);
+    await expectWarned(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] }), /also with W\d+ \(A1[,)]/);
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "cancelled", opState: "uncertain", threadId: null });
   });
   it("late real work reports remain cancelled evidence, and quiet settlement names that proof", async () => {
@@ -126,7 +127,6 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
     const dispatch = f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
     await started; await f.service.stopAssignment(project.id, "A1", "Cancel pending create");
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "cancelled", opState: "uncertain", threadId: null });
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] })).rejects.toThrow(/A1/);
     release(); await dispatch;
     expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "cancelled", opState: "done", briefDelivered: true });
     expect(f.store.task(project.id, task.num)?.progress).toContain("execution is not established");
@@ -135,7 +135,7 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
   it("a quiet old thread cannot settle Stop racing an unconfirmed continuation or its later queue receipt", async () => {
     const { f, project } = await projectFixture(); const first = f.task(project.id);
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [first.ref] });
-    await f.service.report(worker.threadId!, report()); await f.service.acceptTask(project.id, first.ref, {}); f.idle(worker.threadId!);
+    await f.service.report(worker.threadId!, report()); await f.service.closeTask(project.id, first.ref, "done"); f.idle(worker.threadId!);
     const task = f.task(project.id, "Next"); let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
@@ -147,9 +147,9 @@ describe("T68 accepted creation, provisioning failure and same-task recovery", (
     });
     const dispatch = f.service.delegate(project.id, { route: "continue", worker: worker.worker, tasks: [task.ref] });
     await started; await f.service.stopAssignment(project.id, "A2", "Stop pending send");
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] })).rejects.toThrow(/A2/);
+    await expectWarned(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] }), /also with W\d+ \(A2[,)]/);
     release(); await dispatch;
     expect(f.store.assignment(project.id, 2)).toMatchObject({ state: "cancelled", opState: "uncertain", queuedMessageId: "late-queue", briefDelivered: false });
-    await expect(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] })).rejects.toThrow(/A2/);
+    await expectWarned(f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] }), /also with W\d+ \(A2[,)]/);
   });
 });

@@ -334,7 +334,7 @@ describe("A38 named workers", () => {
         area: "search pipeline",
       }).label,
     ).toBe("Search implementation");
-    // Continue and fork reuse identity: no label requirement there.
+    // A work message reuses identity: no label requirement there. Forks were removed (T136).
     expect(() =>
       delegateSchema.parse({
         action: "delegate",
@@ -348,7 +348,7 @@ describe("A38 named workers", () => {
         route: "fork",
         worker: "W1",
       }),
-    ).not.toThrow();
+    ).toThrow();
   });
 
   it("titles a fresh worker's native thread with its W# identity and purpose", async () => {
@@ -396,46 +396,12 @@ describe("A38 named workers", () => {
     expect(f.envs.get(envId)?.name).toBe("W1 Search implementation");
   });
 
-  it("forks under the same logical identity and reparents the fork to the coordinator", async () => {
+  it("refuses a fork with what replaces it (T136)", async () => {
     const { f, project } = await projectFixture();
     const t = f.task(project.id);
-    const [d1] = await f.service.delegate(project.id, {
-      route: "fresh",
-      tasks: [t.ref],
-      label: "Search implementation",
-      area: "search pipeline",
-    });
-    const source = f.store.workers(project.id)[0]!;
-    // The fork takes a different task — the first one already has a running
-    // assignment on the source worker.
-    const t2 = f.task(project.id, "Second task");
-    const [d2] = await f.service.delegate(project.id, {
-      route: "fork",
-      worker: source.ref,
-      tasks: [t2.ref],
-      forkAtSeq: 1,
-    });
-    const forked = f.store
-      .workers(project.id)
-      .find((w) => w.num !== source.num)!;
-    // A fork is a new generation of the same worker? No: fork creates a new
-    // worker record derived from the source — but the identity (label/area)
-    // is inherited, never re-derived.
-    expect(forked.label).toBe("Search implementation");
-    expect(forked.area).toBe("search pipeline");
-    expect(forked.forkedFrom).toBe(source.num);
-    expect(f.fork).toHaveBeenCalledTimes(1);
-    expect(f.fork.mock.calls[0][0].sourceThreadId).toBe(source.threadId);
-    // The fork's native title leads with its own W# and carries the
-    // inherited label plus purpose — not the source's stale title.
-    expect(f.fork.mock.calls[0][0].title).toBe(
-      `${forked.ref} Search implementation — search pipeline`,
-    );
-    // Native fork carries no parent argument; the plugin reparents after
-    // the create is confirmed.
-    const forkThread = f.threads.get(d2.threadId!)!;
-    expect(forkThread.parentThreadId).toBe("coordinator");
-    expect(forked.nativeParent).toBe(true);
+    await f.service.delegate(project.id, { route: "fresh", tasks: [t.ref], label: "Search implementation", area: "search pipeline" });
+    await expect(f.service.delegate(project.id, { route: "fork", worker: "W1" } as never)).rejects.toThrow(/Spawn a fresh worker with handoffs, or message the existing one/);
+    expect(f.fork).not.toHaveBeenCalled();
   });
 
   it("passes an explicit permission mode through to the native spawn", async () => {
@@ -461,7 +427,7 @@ describe("A38 named workers", () => {
       area: "search pipeline",
     });
     await f.service.report(d.threadId!, report());
-    await f.service.acceptTask(project.id, t.ref, {});
+    await f.service.closeTask(project.id, t.ref, "done");
     f.idle(d.threadId!);
     const t2 = f.task(project.id, "Second task");
     await f.service.delegate(project.id, {
@@ -483,7 +449,7 @@ describe("A38 named workers", () => {
       }),
     );
     expect(f.send.mock.calls.at(-1)![0].input[0].text).toMatch(
-      /W1 Search hardening/,
+      /W1 "Search hardening" \(index pipeline\)/,
     );
   });
 
@@ -497,7 +463,7 @@ describe("A38 named workers", () => {
       area: "old purpose",
     });
     await f.service.report(d.threadId!, report());
-    await f.service.acceptTask(project.id, t.ref, {});
+    await f.service.closeTask(project.id, t.ref, "done");
     f.idle(d.threadId!);
     const t2 = f.task(project.id, "Second task");
     f.queueSend("q-rename");
@@ -532,7 +498,7 @@ describe("A38 named workers", () => {
       area: "old purpose",
     });
     await f.service.report(d.threadId!, report());
-    await f.service.acceptTask(project.id, t.ref, {});
+    await f.service.closeTask(project.id, t.ref, "done");
     f.idle(d.threadId!);
     const t2 = f.task(project.id, "Second task");
     // BB refuses the cosmetic title update; the brief send itself lands.

@@ -60,11 +60,8 @@ describe("T88 a cancelled assignment awaiting native quiet confirmation", () => 
     const [peer] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref], access: "read-only" });
     setStatus(f, peer.threadId!, "active");
     const message = await refused(f.harness.callAgentTool("initiative_message", { target: worker, text: "The replay inputs moved.", mode: "queue" }, { threadId: peer.threadId! }));
-    expect(message).toMatch(/no current deliverable work/);
-    expect(message).toContain(a1.ref);
-    expect(message).toMatch(/grant(s)? no work/);
-    expect(message).toMatch(/continuation/);
-    expect(message).not.toMatch(/settle/i);
+    // T136: a stop that has not settled must not be woken by a message.
+    expect(message).toMatch(new RegExp(`${worker}'s ${a1.ref} is being stopped or is not confirmed yet; message it once that settles`));
     expect(f.send).not.toHaveBeenCalled();
   });
 
@@ -111,7 +108,7 @@ describe("T88 A189: each refusal names the real prerequisite and next step", () 
     const t1 = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref] });
     await f.service.report(d.threadId!, report());
-    await f.service.acceptTask(project.id, t1.ref, {});
+    await f.service.closeTask(project.id, t1.ref, "done");
     f.idle(d.threadId!);
     const worker = f.store.workers(project.id)[0]!;
     return { f, project, worker, t2: f.task(project.id, "Next") };
@@ -172,24 +169,18 @@ describe("T88 A189: each refusal names the real prerequisite and next step", () 
     const [peer] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id, "Other").ref], access: "read-only" });
     setStatus(f, peer.threadId!, "active");
     const message = await refused(f.harness.callAgentTool("initiative_message", { target: "W1", text: "hi", mode: "queue" }, { threadId: peer.threadId! }));
-    expect(message).toMatch(/no current deliverable work/);
-    expect(message).toMatch(/grant no work/);
-    expect(message).toMatch(/A1 is existing work whose dispatch is not confirmed yet/);
-    expect(message).not.toMatch(/continuation/);
+    expect(message).toMatch(/W1's A1 is being stopped or is not confirmed yet/);
   });
 
-  it("checkpoint and retirement refusals name the blocking assignment and the sweep, not settle-by-hand", async () => {
+  it("retirement refusals name the blocking assignment and the sweep, not settle-by-hand", async () => {
     const { f, project, a1, worker } = await stoppedWhileRunning();
     const next = f.task(project.id, "External milestone");
-    const checkpoint = await refused(tool(f, "initiative_task", { action: "task-checkpoint", task: next.ref, worker, report: report() }));
-    const retire = await refused(tool(f, "initiative_worker", { action: "worker-retire", worker, reason: "Done." }));
-    for (const message of [checkpoint, retire]) {
-      expect(message).toContain(a1.ref);
-      expect(message).toContain(a1.opId!);
-      expect(message).toMatch(/positively quiet/);
-      expect(message).not.toMatch(/Inspect and settle|Settle this worker/);
-    }
-    expect(checkpoint).toMatch(/checkpoint/);
+    void next;
+    const retire = await refused(tool(f, "initiative_worker", { action: "retire", worker, reason: "Done." }));
+    expect(retire).toContain(a1.ref);
+    expect(retire).toContain(a1.opId!);
+    expect(retire).toMatch(/positively quiet/);
+    expect(retire).not.toMatch(/Inspect and settle|Settle this worker/);
     expect(retire).toMatch(/retire/);
     expect(f.store.workers(project.id)[0]!.state).not.toBe("retired");
     // "Never sent" stays refused for a delivered brief, and points to the sweep rather than another settle.
@@ -208,7 +199,7 @@ describe("T88 A191: a cancelled operation already settled as failed is terminal"
     const t1 = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { route: "fresh", tasks: [t1.ref] });
     await f.service.report(d.threadId!, report());
-    await f.service.acceptTask(project.id, t1.ref, {});
+    await f.service.closeTask(project.id, t1.ref, "done");
     f.idle(d.threadId!);
     const worker = f.store.workers(project.id)[0]!;
     const t2 = f.task(project.id, "Next");
@@ -228,27 +219,13 @@ describe("T88 A191: a cancelled operation already settled as failed is terminal"
 
   // Was A192's known-defect control (permanent refusal, see w113-a192/red-a190.txt and
   // A191's probe). T89 corrected the guard: a terminal settled cancellation is history.
-  it("checkpointing is allowed again, before and after a sweep, as a separate assignment that leaves A2's history intact", async () => {
-    const { f, project, worker } = await settledNotSent();
-    const a2 = f.store.assignment(project.id, 2)!;
-    const a1Report = f.store.assignment(project.id, 1)!.report;
-    const first = JSON.parse(await tool(f, "initiative_task", { action: "task-checkpoint", task: f.task(project.id, "Milestone").ref, worker: worker.ref, report: report() }) as string);
-    await f.runtime.sweep();
-    const second = JSON.parse(await tool(f, "initiative_task", { action: "task-checkpoint", task: f.task(project.id, "Milestone 2").ref, worker: worker.ref, report: report() }) as string);
-    expect(first).toMatchObject({ ref: "A3", route: "checkpoint", state: "reported", checkpoint: { recordedBy: "coordinator" } });
-    expect(second).toMatchObject({ ref: "A4", route: "checkpoint", state: "reported" });
-    expect(f.store.assignment(project.id, 2)).toEqual(a2);
-    expect(f.store.assignment(project.id, 2)).toMatchObject({ state: "cancelled", opState: "failed", cancelRequested: true, report: null });
-    expect(f.store.assignment(project.id, 1)!.report).toEqual(a1Report);
-  });
 
-  it("a peer message refusal offers an immediate continuation, and the continuation starts", async () => {
+  it("a plain message reaches the worker at once, and more work starts", async () => {
     const { f, project, worker, t2 } = await settledNotSent();
-    const message = await refused(f.harness.callAgentTool("initiative_message", { target: worker.ref, text: "hi", mode: "queue" }, { threadId: "coordinator" }));
-    expect(message).toMatch(/no current deliverable work/);
-    expect(message).toMatch(/grant no work/);
-    expect(message).toMatch(/continuation/);
-    expect(message).not.toMatch(/once A2's reservation is released|positively quiet/);
+    void project;
+    const sends = f.send.mock.calls.length;
+    await f.harness.callAgentTool("initiative_message", { to: worker.ref, text: "hi" }, { threadId: "coordinator" });
+    expect(f.send).toHaveBeenCalledTimes(sends + 1);
     const [a3] = JSON.parse(await tool(f, "initiative_delegate", { action: "delegate", route: "continue", worker: worker.ref, tasks: [t2.ref] }) as string);
     expect(a3).toMatchObject({ worker: worker.ref, assignment: "A3" });
   });

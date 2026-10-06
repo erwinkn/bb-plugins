@@ -21,3 +21,10 @@ export const brief = (
   constraints: [],
   verification: ["npm test"],
 });
+
+/** T136: new work on a held task or checkout is warned about, never refused. */
+export async function expectWarned(dispatch: Promise<{ warnings?: string[] }[]>, pattern: RegExp) {
+  const [result] = await dispatch;
+  if (!(result!.warnings ?? []).some((w) => pattern.test(w)))
+    throw new Error(`expected a warning matching ${pattern}, got ${JSON.stringify(result!.warnings ?? [])}`);
+}

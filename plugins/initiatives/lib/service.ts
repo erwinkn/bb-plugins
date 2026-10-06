@@ -22,22 +22,21 @@ import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
 import { queueTargets } from "./not-delivered";
 import { opMarker, renderAssignment, renderCoordinatorSeed } from "./brief";
+import { fallbackBody, finalAgentMessage, handoverPacket, handoverPrompt, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestCompletedTurn, recentMessages, withReason } from "./handover";
 import { isOwnOrigin } from "./identity";
 import {
   chooseWorkProfile,
   delegationViolations,
   describeProfile,
-  planReview,
   profileFor,
   sameProfile,
   seriesOf,
-  type DelegationFacts,
-  type ReviewPartition,
 } from "./policy";
-import { holdGroups, legacyReadOnly, reportVersion, unreleasedBackground, type HoldGroup } from "./write-holds";
-import { handoffSource, renderStandardHandoff, resolveHandoffs } from "./handoffs";
+import { reportVersion } from "./write-holds";
+import { handoffSource, latestReport, renderPriorReport, resolveHandoffs } from "./handoffs";
 import {
   briefSchema,
+  FINAL_MESSAGE_MAX,
   reportSchema,
   decisionSchema,
   policySchema,
@@ -58,6 +57,7 @@ import {
   taskRef,
   workerRef,
   type AssignmentRecord,
+  type HandoverDraft,
   type HandoverRecord,
   type DecisionRecord,
   type Delivery,
@@ -84,9 +84,8 @@ const RECEIPT_SCAN_PAGES = LIST_SCAN_BUDGET / LIST_PAGE;
 /** A former coordinator refusing the same way again waits this long before the sweep retries, doubling up to the cap. */
 const FORMER_RETRY_BASE_MS = 60_000;
 const FORMER_RETRY_MAX_MS = 15 * 60_000;
-/** T91 project-filtered evidence reads: at most this many list pages and bytes, then GETs. */
+/** Project-filtered thread list reads stop after this many bytes. */
 const HOLD_LIST_BYTES = 2_000_000;
-const HOLD_GET_CAP = 20;
 const CHECKOUT_PENDING_NOTE =
   "The coordinator started; BB has not reported its checkout yet. It is confirmed automatically once the checkout proves to be the default source checkout.";
 
@@ -135,7 +134,6 @@ export type { EnvironmentChoice };
  * (key null when it spans families). `shared` is true only when other
  * reviewers from the same plan cover the rest of the scope.
  */
-type ReviewDispatch = ReviewPartition & { shared: boolean };
 
 /** Execution settings carried from the predecessor through a handover. */
 type HandoverExecution = {
@@ -162,7 +160,9 @@ class HandoverAbort extends Error {
 }
 
 export interface DelegateInput {
-  route: "fresh" | "continue" | "fork";
+  route: "fresh" | "continue";
+  /** T136: the W# (its latest report) or A# a review reviews. */
+  reviews?: string;
   role?: Role;
   /** Per-assignment coordination promise; omitted work may write on every route. */
   access?: AssignmentAccess;
@@ -177,7 +177,6 @@ export interface DelegateInput {
   label?: string;
   area?: string;
   note?: string;
-  forkAtSeq?: number;
   delivery?: "steer" | "queue";
   rationale?: string;
   /** Prior A# whose standard handoffs this work brief embeds (T96); provenance only. */
@@ -194,32 +193,10 @@ export interface DelegateResult {
   profile: string;
   rationale: string | null;
   note: string | null;
+  /** T136: writers sharing a checkout, or a task another worker also has. Never a refusal. */
+  warnings?: string[];
 }
 
-type HoldEvidence = { verdict: "ended" | "running" | "unknown"; seen: string; signature: string };
-
-/**
- * Where a writer's files live, as far as the ledger and BB's list row prove:
- * an environment id, whether it is a managed worktree, and whether it is the
- * project's default checkout (a fresh project-default dispatch, id not yet known).
- */
-interface Checkout { id: string | null; worktree: boolean | null; projectDefault: boolean }
-
-function checkoutOf(recorded: string | null, row: ThreadListRow | undefined, projectDefault: boolean): Checkout {
-  const id = recorded ?? (typeof row?.environmentId === "string" ? row.environmentId : null);
-  const worktree = row && row.environmentId === id && typeof row.environmentIsWorktree === "boolean" ? row.environmentIsWorktree : null;
-  return { id, worktree, projectDefault };
-}
-
-/**
- * Two writers cannot touch each other's files only when that is proven: two
- * known, different environments, or a managed worktree against the project's
- * default checkout. Anything unknown stays the same checkout.
- */
-function separateCheckouts(a: Checkout, b: Checkout): boolean {
-  if (a.id && b.id) return a.id !== b.id;
-  return (a.projectDefault && !a.id && b.worktree === true) || (b.projectDefault && !b.id && a.worktree === true);
-}
 
 /**
  * The project ledger. It records delegation intent before every native call,
@@ -516,6 +493,8 @@ export class ProjectsService {
     options?: {
       /** Extra execution settings carried to the spawn (e.g. preserved handover mode/tier). */
       execution?: HandoverExecution;
+      /** T136: the handover text that becomes the replacement's first message. */
+      handover?: string | null;
       /** Runs after the last awaited lookup and before the start is journaled; throws to abort. */
       revalidate?: () => Promise<void>;
       /** Marks the point of no return, invoked right before the spawn call. */
@@ -621,9 +600,13 @@ export class ProjectsService {
     }
     this.store.db
       .prepare(
-        "INSERT INTO coordinator_starts(project_id, op_id, state, reason, created_at) VALUES(?, ?, 'pending', ?, ?) ON CONFLICT(project_id) DO UPDATE SET op_id=excluded.op_id, state='pending', thread_id=NULL, reason=excluded.reason, created_at=excluded.created_at",
+        "INSERT INTO coordinator_starts(project_id, op_id, state, reason, created_at) VALUES(?, ?, 'pending', ?, ?) ON CONFLICT(project_id) DO UPDATE SET op_id=excluded.op_id, state='pending', thread_id=NULL, reason=excluded.reason, created_at=excluded.created_at WHERE coordinator_starts.state NOT IN ('pending','uncertain')",
       )
       .run(project.id, op, reason, this.now());
+    // A start claimed meanwhile is never overwritten: its receipt stays the one to reconcile.
+    const claimed = this.store.db.prepare("SELECT op_id FROM coordinator_starts WHERE project_id=?").get(project.id) as { op_id: string } | undefined;
+    if (claimed?.op_id !== op)
+      throw new ProjectError("Another coordinator start is still unconfirmed. Reconcile it before starting another coordinator.");
     let thread: ThreadDto;
     options?.onCommit?.();
     try {
@@ -646,6 +629,7 @@ export class ProjectsService {
           project,
           replacing: reason !== null,
           reason,
+          handover: options?.handover ?? null,
         }),
         pluginMetadata: {
           role: "coordinator",
@@ -1254,15 +1238,47 @@ export class ProjectsService {
     }
   }
 
-  async replaceCoordinator(
+  /** One coordinator replacement at a time per Initiative, across dashboard, CLI, drain and sweep. */
+  private replacementQueues = new Map<string, Promise<unknown>>();
+
+  /**
+   * T136 (A296): replacements of one Initiative run one after another, queued before any
+   * await. A request made for an incumbent that has since been replaced is dropped, so a
+   * dashboard Replace racing recreate-coordinators starts one coordinator, not two.
+   */
+  replaceCoordinator(
+    projectId: string,
+    input: Parameters<ProjectsService["replaceCoordinatorNow"]>[1],
+    options?: Parameters<ProjectsService["replaceCoordinatorNow"]>[2],
+  ): Promise<Awaited<ReturnType<ProjectsService["replaceCoordinatorNow"]>> | { state: "superseded"; note: string }> {
+    const expected = input.expectedCoordinator !== undefined ? input.expectedCoordinator : (this.store.project(projectId)?.coordinatorThreadId ?? null);
+    const run = async () => {
+      if (!options?.revalidate && !input.adoptThreadId && this.store.project(projectId)?.coordinatorThreadId !== expected)
+        return { state: "superseded" as const, note: "The coordinator was already replaced while this request waited; nothing more was started." };
+      return this.replaceCoordinatorNow(projectId, input, options);
+    };
+    const previous = this.replacementQueues.get(projectId) ?? Promise.resolve();
+    const next = previous.then(run, run);
+    const settled = next.catch(() => undefined);
+    this.replacementQueues.set(projectId, settled);
+    void settled.then(() => { if (this.replacementQueues.get(projectId) === settled) this.replacementQueues.delete(projectId); });
+    return next;
+  }
+
+  private async replaceCoordinatorNow(
     projectId: string,
     input: {
       reason: string;
       profile?: Profile;
+      /** The new coordinator's first message; generated by Luna when absent. */
+      handover?: string;
+      /** Legacy: a note for the handover writer. */
       checkpoint?: string;
       adoptThreadId?: string;
       bbProjectId?: string;
       environment?: EnvironmentChoice;
+      /** The incumbent this request replaces; defaults to the one current when it was made. */
+      expectedCoordinator?: string | null;
     },
     options?: {
       execution?: HandoverExecution;
@@ -1294,12 +1310,28 @@ export class ProjectsService {
         projectId,
         {
           reason: input.reason,
-          checkpoint: input.checkpoint,
+          note: input.checkpoint,
+          handover: input.handover,
           profile: input.profile,
           environment: input.environment,
         },
         "user",
       );
+    // T136: a new coordinator starts from a written handover. Without reviewed text, the
+    // replacement waits for Luna to write one and then starts on its own.
+    if (!options?.revalidate && !input.adoptThreadId && !input.handover) {
+      const ready = this.store.handoverDraft(projectId);
+      if (ready?.state === "ready" && ready.text) input = { ...input, handover: ready.text };
+      else {
+        const thenReplace = { reason: input.reason, expectedCoordinator: project.coordinatorThreadId, ...(input.profile ? { profile: input.profile } : {}), ...(input.environment ? { environment: input.environment } : {}) };
+        const draft = await this.startHandoverDraft(projectId, { note: input.checkpoint ?? null, thenReplace });
+        if (draft.state !== "ready")
+          return { state: "writing-handover" as const, note: "GPT-6 Luna High is writing the handover from recent activity; the new coordinator starts as soon as it is ready." };
+        // Written at once (the plain listing): start now, so a refusal reaches this caller.
+        this.store.saveHandoverDraft({ ...draft, thenReplace: null });
+        input = { ...input, handover: draft.text! };
+      }
+    }
     this.coordinatorSwitches.set(projectId, project.coordinatorThreadId);
     try {
       return await this.performCoordinatorReplacement(projectId, input, options);
@@ -1335,8 +1367,8 @@ export class ProjectsService {
 
   private async performCoordinatorReplacement(
     projectId: string,
-    input: Parameters<ProjectsService["replaceCoordinator"]>[1],
-    options?: Parameters<ProjectsService["replaceCoordinator"]>[2],
+    input: Parameters<ProjectsService["replaceCoordinatorNow"]>[1],
+    options?: Parameters<ProjectsService["replaceCoordinatorNow"]>[2],
   ) {
     const project = this.requireProject(projectId);
     if (input.adoptThreadId && input.profile)
@@ -1344,8 +1376,6 @@ export class ProjectsService {
         "Adopting keeps that thread’s execution settings. Choose a profile when starting a new coordinator.",
       );
     await this.assertCoordinatorIdle(project.coordinatorThreadId);
-    if (input.checkpoint)
-      this.store.updateProject(projectId, { checkpoint: input.checkpoint });
     if (input.adoptThreadId) {
       const start = this.coordinatorStart(projectId);
       if (start && ["pending", "uncertain"].includes(start.state))
@@ -1489,8 +1519,10 @@ export class ProjectsService {
       input.reason,
       input.environment,
       profile,
-      { ...options, execution },
+      { ...options, execution, handover: input.handover ?? null },
     );
+    // The handover now lives only as the new coordinator's first message.
+    this.store.clearHandoverDraft(projectId);
     // The sweep confirms a late checkout and then converges the predecessor.
     if (!confirmed)
       return { threadId: thread.id, state: "checkout-pending" as const, note: CHECKOUT_PENDING_NOTE };
@@ -1977,7 +2009,11 @@ export class ProjectsService {
     projectId: string,
     input: {
       reason?: string;
+      /** A note for the handover writer; checkpoint is its legacy name. */
+      note?: string;
       checkpoint?: string;
+      /** Final handover text the user already reviewed. */
+      handover?: string;
       profile?: Profile;
       environment?: EnvironmentChoice;
     },
@@ -2002,9 +2038,15 @@ export class ProjectsService {
         ? "an unconfirmed coordinator start"
         : null,
     ].filter((hold): hold is string => hold !== null);
+    const note = input.note ?? input.checkpoint ?? null;
     this.store.tx(() => {
-      if (input.checkpoint !== undefined)
-        this.store.updateProject(projectId, { checkpoint: input.checkpoint });
+      // T136: the drain writes a fresh handover once the incumbent is idle, unless the user
+      // already reviewed one. A note is kept for the writer.
+      const draft = this.store.handoverDraft(projectId);
+      if (input.handover)
+        this.store.saveHandoverDraft({ projectId, state: "ready", note, text: input.handover, source: "user", threadId: null, detail: null, thenReplace: null });
+      else if (draft?.source !== "user" && draft?.state !== "generating")
+        this.store.saveHandoverDraft({ projectId, state: "requested", note, text: null, source: null, threadId: null, detail: null, thenReplace: null });
       this.store.upsertHandover({
         projectId,
         threadId: project.coordinatorThreadId,
@@ -2069,6 +2111,226 @@ export class ProjectsService {
       detail: handover.detail,
       note: "The recorded handover was withdrawn; the current coordinator stays in charge.",
     };
+  }
+
+  // Handover drafts (T136) ------------------------------------------------------
+
+  /**
+   * Start writing the handover with a short-lived GPT-6 Luna High thread, or return the draft
+   * already writing or ready. Falls back to a plain listing when Luna can't start.
+   */
+  async startHandoverDraft(
+    projectId: string,
+    input: { note?: string | null; thenReplace?: HandoverDraft["thenReplace"]; restart?: boolean } = {},
+  ): Promise<HandoverDraft> {
+    const project = this.requireProject(projectId);
+    const existing = this.store.handoverDraft(projectId);
+    if (existing && existing.state !== "requested" && !input.restart)
+      return input.thenReplace ? this.store.saveHandoverDraft({ ...existing, thenReplace: input.thenReplace }) : existing;
+    const note = input.note ?? existing?.note ?? null;
+    const thenReplace = input.thenReplace ?? existing?.thenReplace ?? null;
+    // A296: claim the draft before any await, so a concurrent dashboard command, sweep or drain
+    // sees "generating" and never starts a second writer. The token marks this claim.
+    const token = `starting ${newOpId()}`;
+    this.store.saveHandoverDraft({ projectId, state: "generating", note, text: null, source: null, threadId: null, detail: token, thenReplace, fallback: null });
+    const ours = () => {
+      const d = this.store.handoverDraft(projectId);
+      return d?.state === "generating" && d.detail === token ? d : null;
+    };
+    if (existing?.threadId) await this.archiveWriter(existing.threadId);
+    const transcript = project.coordinatorThreadId
+      ? await recentMessages(this.sdk, project.coordinatorThreadId).catch(() => [])
+      : [];
+    const body = fallbackBody(this.store, projectId, note, transcript);
+    const fallback = (why: string) => {
+      const claim = ours();
+      if (!claim) return this.store.handoverDraft(projectId)!;
+      this.store.log(projectId, "coordinator", `Coordinator handover written without Luna: ${why}`);
+      return this.store.saveHandoverDraft({ ...claim, state: "ready", text: withReason(body, why), source: "fallback", detail: why, fallback: body });
+    };
+    const bbProjectId = project.memberProjectIds[0]!;
+    let thread: ThreadDto;
+    try {
+      const catalog = await checkCatalog(this.sdk, HANDOVER_PROFILE, { hostId: await projectHostId(this.sdk, bbProjectId) });
+      if (!catalog.ok) return fallback(`GPT-6 Luna is not available (${catalog.reason})`);
+      if (!ours()) return this.store.handoverDraft(projectId)!;
+      thread = await this.sdk.threads.spawn({
+        projectId: bbProjectId,
+        environment: { type: "project-default" },
+        providerId: HANDOVER_PROFILE.providerId,
+        model: HANDOVER_PROFILE.model,
+        reasoningLevel: HANDOVER_PROFILE.reasoningLevel,
+        title: `Handover · ${project.name}`,
+        prompt: handoverPrompt(project.name, handoverPacket(this.store, projectId, transcript, note)),
+        pluginMetadata: { role: "handover-writer", projectId, v: METADATA_VERSION },
+      });
+    } catch (error) {
+      return fallback(`the writer could not start (${errorMessage(error)})`);
+    }
+    this.store.trackWriter(thread.id, projectId);
+    const claim = ours();
+    if (!claim) {
+      // Superseded while starting (discarded or restarted): this writer has no draft.
+      await this.archiveWriter(thread.id);
+      return this.store.handoverDraft(projectId) ?? { projectId, state: "requested", note, text: null, source: null, threadId: null, detail: "discarded", thenReplace: null, fallback: null, createdAt: this.now(), updatedAt: this.now() };
+    }
+    this.store.log(projectId, "coordinator", `GPT-6 Luna High is writing the coordinator handover (${thread.id})`);
+    return this.store.saveHandoverDraft({ ...claim, threadId: thread.id, detail: null, fallback: body });
+  }
+
+  /**
+   * The writer thread ended: its final message is the handover (or the plain listing when it
+   * failed). Then a waiting replacement continues. Returns false for unrelated threads.
+   */
+  async finishHandoverDraft(threadId: string, failure?: string): Promise<boolean> {
+    const draft = this.store.handoverDraftByThread(threadId);
+    if (!draft) return false;
+    let text: string | null = null;
+    let why = failure ?? null;
+    if (!failure)
+      try {
+        text = (await finalAgentMessage(this.sdk, threadId))?.text ?? null;
+        if (!text) why = "the writer ended without a handover";
+      } catch (error) {
+        why = `the writer's message could not be read (${errorMessage(error)})`;
+      }
+    const current = this.store.handoverDraftByThread(threadId);
+    if (!current) return true;
+    this.store.saveHandoverDraft({
+      ...current, state: "ready", threadId: null,
+      text: text ?? withReason(current.fallback ?? fallbackBody(this.store, current.projectId, current.note), why!),
+      source: text ? "luna" : "fallback", detail: text ? null : why,
+    });
+    this.store.log(current.projectId, "coordinator", text ? "The coordinator handover is ready (GPT-6 Luna High)" : `Coordinator handover written without Luna: ${why}`);
+    // The writer stays tracked until BB confirms the archive; the sweep retries it.
+    await this.archiveWriter(threadId);
+    await this.continueAfterDraft(current.projectId);
+    return true;
+  }
+
+  /** Queued drafts start here, at most MAX_WRITERS writers at a time. */
+  async pumpHandoverWriters() {
+    const MAX_WRITERS = 3;
+    let running = this.store.generatingDrafts().length;
+    const queued = this.store.queuedDrafts();
+    for (const draft of queued) {
+      if (running >= MAX_WRITERS) return;
+      const started = await this.startHandoverDraft(draft.projectId, {});
+      if (started.state === "generating") running++;
+      else if (started.state === "ready") await this.continueAfterDraft(draft.projectId);
+    }
+  }
+
+  /**
+   * T136: recreate coordinators, e.g. at a BB restart. Each Initiative gets a fresh handover
+   * from GPT-6 Luna High (at most 3 writers at a time) and then a fresh coordinator that starts
+   * with it; the old coordinator retires through the usual transfer. A busy coordinator is
+   * replaced once its turn ends. dryRun writes and returns the handovers without starting
+   * anything; a later real run within the hour reuses them. Waits up to waitMs, then reports
+   * what is still writing: those start on their own when ready.
+   */
+  async recreateCoordinators(projectIds: string[], options: { dryRun: boolean; waitMs: number; reason?: string }) {
+    const reason = options.reason ?? "Coordinator recreated after the BB restart";
+    const projects = projectIds.map(id => this.requireProject(id)).filter(p => p.archivedAt === null);
+    const fresh = (d: HandoverDraft | null) => d?.state === "ready" && d.source !== "fallback" && this.now() - d.updatedAt < 60 * 60_000;
+    const started = new Map<string, unknown>();
+    for (const p of projects) {
+      const draft = this.store.handoverDraft(p.id);
+      if (fresh(draft)) {
+        if (!options.dryRun) started.set(p.id, await this.replaceCoordinator(p.id, { reason, handover: draft!.text! }, { author: "user" }).catch(error => ({ state: "failed", note: errorMessage(error) })));
+        continue;
+      }
+      if (draft?.state === "generating") {
+        if (!options.dryRun) this.store.saveHandoverDraft({ ...draft, thenReplace: { reason, expectedCoordinator: p.coordinatorThreadId } });
+        continue;
+      }
+      this.store.saveHandoverDraft({ projectId: p.id, state: "requested", note: null, text: null, source: null, threadId: null, detail: "queued", thenReplace: options.dryRun ? null : { reason, expectedCoordinator: p.coordinatorThreadId } });
+    }
+    const deadline = this.now() + options.waitMs;
+    for (;;) {
+      await this.pumpHandoverWriters();
+      await this.sweepHandoverDrafts();
+      const pending = projects.filter(p => !started.has(p.id) && this.store.handoverDraft(p.id) && this.store.handoverDraft(p.id)!.state !== "ready");
+      if (!pending.length || this.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+    return projects.map(p => {
+      const draft = this.store.handoverDraft(p.id);
+      const current = this.store.project(p.id)!;
+      const base = { initiative: p.id, name: p.name, oldCoordinator: p.coordinatorThreadId };
+      if (started.has(p.id)) return { ...base, newCoordinator: current.coordinatorThreadId, result: started.get(p.id) };
+      if (options.dryRun)
+        return { ...base, state: draft?.state ?? "missing", source: draft?.source ?? null, chars: draft?.text?.length ?? 0, ...(draft?.detail && draft.detail !== "queued" ? { detail: draft.detail } : {}), handover: draft?.text ?? null };
+      if (!draft) return { ...base, state: current.coordinatorThreadId !== p.coordinatorThreadId ? "started" : "queued for its idle turn end", newCoordinator: current.coordinatorThreadId };
+      return { ...base, state: draft.state === "ready" ? "ready" : "writing; it starts on its own when ready", source: draft.source };
+    });
+  }
+
+  /** Writers that ran too long or stopped are replaced by the plain listing. */
+  async sweepHandoverDrafts() {
+    for (const draft of this.store.generatingDrafts()) {
+      if (!draft.threadId) {
+        // A writer start that never finished (a crash mid-start): use the plain listing.
+        if (this.now() - draft.updatedAt > HANDOVER_TIMEOUT_MS) {
+          const why = "the writer did not start";
+          this.store.saveHandoverDraft({ ...draft, state: "ready", text: withReason(draft.fallback ?? fallbackBody(this.store, draft.projectId, draft.note), why), source: "fallback", detail: why });
+          await this.continueAfterDraft(draft.projectId);
+        }
+        continue;
+      }
+      if (this.now() - draft.updatedAt > HANDOVER_TIMEOUT_MS) {
+        await this.finishHandoverDraft(draft.threadId, "the writer took longer than 10 minutes");
+        continue;
+      }
+      const thread = await this.sdk.threads.get({ threadId: draft.threadId }).catch(() => null);
+      if (thread && (thread.archivedAt !== null || thread.deletedAt !== null || thread.status === "error"))
+        await this.finishHandoverDraft(draft.threadId, `the writer thread is ${thread.status === "error" ? "in error" : "archived"}`);
+      else if (thread?.status === "idle") await this.finishHandoverDraft(draft.threadId);
+    }
+    // Writers whose archive BB has not confirmed yet, unless still writing a draft.
+    const writing = new Set(this.store.generatingDrafts().map(d => d.threadId).filter(Boolean));
+    for (const writer of this.store.trackedWriters())
+      if (!writing.has(writer.threadId)) await this.archiveWriter(writer.threadId);
+  }
+
+  /** Throw away the draft (and stop its writer); the next replacement writes a fresh one. */
+  async discardHandoverDraft(projectId: string) {
+    const draft = this.store.handoverDraft(projectId);
+    if (draft?.threadId) await this.archiveWriter(draft.threadId);
+    this.store.clearHandoverDraft(projectId);
+    return { discarded: draft !== null };
+  }
+
+  private async continueAfterDraft(projectId: string): Promise<object> {
+    const draft = this.store.handoverDraft(projectId);
+    if (draft?.state !== "ready") return { state: "writing-handover" as const, note: null };
+    if (draft.thenReplace) {
+      const thenReplace = draft.thenReplace;
+      this.store.saveHandoverDraft({ ...draft, thenReplace: null });
+      try {
+        return await this.replaceCoordinator(projectId, { ...thenReplace, handover: draft.text! }, { author: "user" });
+      } catch (error) {
+        this.store.log(projectId, "coordinator", `The replacement coordinator could not start: ${errorMessage(error)}`);
+        return { state: "failed" as const, note: errorMessage(error) };
+      }
+    }
+    if (this.store.pendingHandover(projectId)) await this.drainHandover(projectId);
+    return { state: "ready" as const, note: null };
+  }
+
+  /** Archive a writer; it stays tracked (and the sweep retries) until BB confirms it. */
+  private async archiveWriter(threadId: string) {
+    try {
+      await this.sdk.threads.archive({ threadId });
+      this.store.untrackWriter(threadId);
+      return true;
+    } catch (error) {
+      if ((error as { status?: number }).status === 404) {
+        this.store.untrackWriter(threadId);
+        return true;
+      }
+      return false;
+    }
   }
 
   private coordinatorStart(projectId: string) {
@@ -2252,6 +2514,7 @@ export class ProjectsService {
       checkGates() ??
       (await checkPredecessor()) ?? { kind: "ok", predecessor: readPredecessor() };
 
+
     const apply = (outcome: HandoverRecheck): "resolved" | "rescan" => {
       if (outcome.kind === "rescan") return "rescan";
       if (outcome.kind === "hold")
@@ -2264,8 +2527,43 @@ export class ProjectsService {
       return "resolved";
     };
 
+    // A296: a replacement the user (or the restart command) asked for does not wait for a
+    // natural turn end that will never come. Once the incumbent is positively errored or gone,
+    // it takes the guarded recovery path, which keeps every start-receipt check.
+    if (request.requestedBy === "user" && request.threadId) {
+      const gates = checkGates();
+      if (gates) return apply(gates);
+      const state = await this.incumbentRecoverable(request.threadId);
+      if (state) {
+        const again = checkGates();
+        if (again) return apply(again);
+        const draft = this.store.handoverDraft(projectId);
+        this.store.tx(() => {
+          if (this.store.clearHandover(projectId, revision))
+            this.store.log(projectId, "coordinator", `The current coordinator is ${state}; the requested replacement starts now.`);
+        });
+        await this.replaceCoordinator(projectId, {
+          reason: request.reason,
+          ...(request.profile ? { profile: request.profile } : {}),
+          ...(request.environment ? { environment: request.environment } : {}),
+          ...(draft?.state === "ready" && draft.text ? { handover: draft.text } : {}),
+          expectedCoordinator: request.threadId,
+        }, { author: "user" }).catch(error =>
+          this.store.log(projectId, "coordinator", `The requested replacement could not start: ${errorMessage(error)}`));
+        return "resolved";
+      }
+    }
+
     const first = await recheck();
     if (first.kind !== "ok") return apply(first);
+    // T136: the replacement's first message is a handover written once the incumbent is idle.
+    if (this.store.handoverDraft(projectId)?.state !== "ready") {
+      const draft = this.store.handoverDraft(projectId);
+      if (!draft || draft.state === "requested") await this.startHandoverDraft(projectId, {});
+      if (this.store.handoverDraft(projectId)?.state !== "ready")
+        return apply({ kind: "hold", reason: "GPT-6 Luna High is writing the handover" });
+    }
+    const handoverText = this.store.handoverDraft(projectId)!.text ?? undefined;
 
     // Execution settings to preserve: the model/effort/provider only for a
     // context-only request; permission mode and service tier ride along
@@ -2373,6 +2671,7 @@ export class ProjectsService {
         {
           reason: request.reason,
           ...(profile ? { profile } : {}),
+          ...(handoverText ? { handover: handoverText } : {}),
           bbProjectId,
           environment,
         },
@@ -2441,6 +2740,24 @@ export class ProjectsService {
     // Consumed only if the same revision is still pending.
     this.store.clearHandover(projectId, revision);
     return "resolved";
+  }
+
+  /**
+   * Why an incumbent can be replaced without waiting for its turn to end naturally: it is
+   * archived, deleted, missing, or in error with nothing queued or in the background. Null
+   * while it may still be working (an interrupted idle turn still waits), or when BB cannot
+   * be read.
+   */
+  private async incumbentRecoverable(threadId: string): Promise<string | null> {
+    try {
+      const thread = await this.sdk.threads.get({ threadId });
+      if (thread.archivedAt !== null) return "archived";
+      if (thread.deletedAt !== null) return "deleted";
+      if (thread.queuedMessageCount > 0 || thread.activeBackgroundAgentCount > 0) return null;
+      return thread.status === "error" ? "in error" : null;
+    } catch (error) {
+      return (error as { status?: number }).status === 404 ? "missing" : null;
+    }
   }
 
   /** Record why a pending handover is waiting; logs only when the reason changes. */
@@ -2671,7 +2988,7 @@ export class ProjectsService {
     projectId: string,
     input: {
       title: string;
-      summary: string;
+      summary?: string;
       brief?: unknown;
       priority?: number;
       dependsOn?: string[];
@@ -2689,7 +3006,7 @@ export class ProjectsService {
       const task = this.store.createTask({
         projectId,
         title: input.title,
-        summary: input.summary,
+        summary: input.summary ?? "",
         brief,
         priority: input.priority ?? 2,
         dependsOn,
@@ -2729,12 +3046,14 @@ export class ProjectsService {
       dependsOn?: string[];
       workKind?: WorkKind;
       profile?: Profile | null;
+      note?: string;
     },
     author: "coordinator" | "user",
   ) {
     const project = this.requireProject(projectId);
     const task = this.requireTask(project, ref);
     const next: Parameters<Store["updateTask"]>[2] = {};
+    if (patch.note !== undefined) next.progress = patch.note;
     if (patch.title !== undefined) next.title = patch.title;
     if (patch.summary !== undefined) next.summary = patch.summary;
     if (patch.brief !== undefined) next.brief = this.parseBrief(patch.brief);
@@ -2813,287 +3132,29 @@ export class ProjectsService {
   }
 
   /**
-   * The coordinator accepts a result; only then is a task done. Retiring the
-   * worker is a separate explicit step (worker-retire) once its turn ends.
+   * T136: done is a decision, not a ceremony. The coordinator (or the user) closes a task as
+   * done or cancelled; reports stay as filed and nothing has to be accepted first. Cancelling
+   * stops the task's still-running work; closing as done leaves running work alone.
    */
-  async acceptTask(
-    projectId: string,
-    ref: string,
-    input: {
-      assignment?: string;
-      result?: string;
-    },
-  ) {
+  async closeTask(projectId: string, ref: string, outcome: "done" | "cancelled", note?: string) {
+    if (outcome === "cancelled") return this.cancelTask(projectId, ref, note ?? "Closed as cancelled.");
     const project = this.requireProject(projectId);
     const task = this.requireTask(project, ref);
-    if (task.status === "done")
-      throw new ProjectError(`${task.ref} is already done.`);
-    if (task.status === "cancelled")
-      throw new ProjectError(`${task.ref} was cancelled.`);
-    const candidates = this.store
-      .assignments(project.id)
-      .filter(
-        (assignment) =>
-          assignment.role === "work" && assignment.taskNums.includes(task.num),
-      );
-    const assignment = input.assignment
-      ? this.requireAssignment(project, input.assignment)
-      : [...candidates]
-          .reverse()
-          .find((candidate) => candidate.state === "reported");
-    if (assignment && !assignment.taskNums.includes(task.num))
-      throw new ProjectError(`${assignment.ref} did not work on ${task.ref}.`);
-    if (assignment && assignment.state !== "reported")
-      throw new ProjectError(
-        `${assignment.ref} has no report to accept (${assignment.state}).`,
-      );
-    if (assignment && assignment.report?.outcome !== "succeeded")
-      throw new ProjectError(
-        `${assignment.ref} reported ${assignment.report?.outcome}, so it cannot be accepted. ${reportedRetryHint(assignment, task.ref)} To drop ${task.ref} instead, use task-cancel.`,
-      );
-    if (assignment?.report?.pendingBackgroundWork.length)
-      throw new ProjectError(
-        "The report still lists background work. Wait for a final report before accepting it.",
-      );
-    if (assignment?.role !== undefined && assignment.role !== "work")
-      throw new ProjectError(
-        "Accept review reports separately; a reviewer cannot complete implementation tasks.",
-      );
-    if (
-      assignment?.report?.evidence.some(
-        (e) => e.kind === "check" && e.result === "failed",
-      ) &&
-      !input.result
-    )
-      throw new ProjectError(
-        "The report contains failed checks. Resolve them or supply a result explaining what you verified.",
-      );
-    if (
-      !assignment &&
-      candidates.some(
-        (a) =>
-          [
-            "dispatching",
-            "queued",
-            "running",
-            "idle_no_report",
-            "stopped",
-          ].includes(a.state) || ["pending", "uncertain"].includes(a.opState),
-      )
-    )
-      throw new ProjectError(
-        "Managed work is still outstanding. Obtain its report before accepting this task.",
-      );
-    if (!assignment && !input.result)
-      throw new ProjectError(
-        `${task.ref} has no worker report to accept. Ask the worker to call initiative_report, or pass result to accept work you verified yourself.`,
-      );
-    const result = input.result ?? assignment!.report!.summary;
-    this.store.tx(() => {
-      this.store.updateTask(project.id, task.num, {
+    if (task.status === "done") return task;
+    const latest = this.store.assignments(project.id).filter(a => a.role === "work" && a.taskNums.includes(task.num) && a.report).at(-1) ?? null;
+    return this.store.tx(() => {
+      const updated = this.store.updateTask(project.id, task.num, {
         status: "done",
-        result,
-        acceptedAssignment: assignment?.num ?? null,
+        result: note ?? latest?.report?.summary ?? null,
+        acceptedAssignment: latest?.num ?? null,
         progress: null,
         nextCheckpoint: null,
       });
-      if (assignment) {
-        const others = assignment.taskNums.filter(
-          (num) =>
-            num !== task.num &&
-            this.store.task(project.id, num)?.status !== "done",
-        );
-        if (!others.length)
-          this.store.updateAssignment(project.id, assignment.num, {
-            state: "accepted",
-          });
-      }
-      this.store.log(
-        project.id,
-        "task",
-        `${task.ref} accepted${assignment ? ` from ${assignment.ref}` : " (verified by the coordinator)"}`,
-        { task: task.num },
-      );
-    });
-    let workerNote: string | null = null;
-    if (assignment) {
-      const worker = this.store.worker(project.id, assignment.workerNum)!;
-      workerNote = this.store.openAssignment(project.id, worker.num)
-        ? `${worker.ref} still has ${this.store.openAssignment(project.id, worker.num)!.ref} open.`
-        : `Retire ${worker.ref} with initiative_worker once its native turn ends; its report and handoff stay in the ledger either way.`;
-    }
-    return { task: this.store.task(project.id, task.num)!, workerNote };
-  }
-
-  async acceptReview(projectId: string, ref: string) {
-    const project = this.requireProject(projectId);
-    const assignment = this.requireAssignment(project, ref);
-    if (
-      assignment.role !== "review" ||
-      assignment.state !== "reported" ||
-      !assignment.report
-    )
-      throw new ProjectError("A reported review assignment is required.");
-    if (assignment.report.pendingBackgroundWork.length)
-      throw new ProjectError(
-        "Wait for the review's background work to finish.",
-      );
-    const worker = this.store.worker(projectId, assignment.workerNum)!;
-    this.store.tx(() => {
-      this.store.updateAssignment(projectId, assignment.num, {
-        state: "accepted",
-      });
-      this.store.log(
-        projectId,
-        "review",
-        `${assignment.ref} accepted; findings are preserved in its report`,
-      );
-    });
-    const workerNote = this.store.openAssignment(projectId, worker.num)
-      ? `${worker.ref} still has ${this.store.openAssignment(projectId, worker.num)!.ref} open.`
-      : `Retire ${worker.ref} with initiative_worker once its native turn ends.`;
-    return { assignment: assignment.ref, workerNote };
-  }
-
-  async rejectReport(projectId: string, ref: string, reason: string) {
-    const project = this.requireProject(projectId);
-    const assignment = this.requireAssignment(project, ref);
-    if (assignment.state !== "reported")
-      throw new ProjectError("Only a reported assignment can be rejected.");
-    // Same recorded-background rule as acceptance: the report is not final yet,
-    // unless the worker's context has positively ended and can never update it.
-    if (assignment.report?.pendingBackgroundWork.length)
-      return this.rejectOrphanedReport(projectId, assignment, reason);
-    return this.commitReject(projectId, assignment, reason);
-  }
-
-  private commitReject(projectId: string, assignment: AssignmentRecord, stopReason: string) {
-    return this.store.tx(() => {
-      this.store.updateAssignment(projectId, assignment.num, {
-        state: "rejected",
-        stopReason,
-      });
-      for (const num of assignment.taskNums) {
-        const task = this.store.task(projectId, num)!;
-        if (!["done", "cancelled"].includes(task.status))
-          this.store.updateTask(projectId, num, {
-            status: "planned",
-            progress: stopReason,
-          });
-      }
-      this.store.log(
-        projectId,
-        "report",
-        `${assignment.ref} rejected: ${stopReason}`,
-      );
-      return this.store.assignment(projectId, assignment.num)!;
+      this.store.log(project.id, "task", `${task.ref} closed as done${note ? `: ${note}` : ""}`, { task: task.num });
+      return updated;
     });
   }
 
-  /**
-   * D342: a report that still lists background work can be rejected only when its
-   * worker can never update it, proven natively — a retired worker whose thread BB
-   * confirms can no longer run, or a thread BB shows archived, deleted or missing. A
-   * retired label with a running or unreadable thread is not enough. The report and
-   * its listed work are kept as filed; the reason records that work as unverified.
-   */
-  private async rejectOrphanedReport(projectId: string, assignment: AssignmentRecord, reason: string) {
-    const hint = reportedRetryHint(assignment, assignment.taskNums.map((n) => `T${n}`).join(", "));
-    const worker = this.store.worker(projectId, assignment.workerNum)!;
-    const retired = worker.state === "retired";
-    const threadId = assignment.threadId;
-    let ended: string | null = null;
-    if (threadId && retired) {
-      const evidence = await this.executionEvidence(threadId);
-      if (evidence === "ended") ended = `${worker.ref} is retired and BB confirms its thread is no longer running`;
-      else
-        throw new ProjectError(
-          `${worker.ref} is retired, but its thread is not confirmed ended (${evidence === "running" ? "BB shows it running" : "BB's thread state could not be read"}), so the listed background work may still be running. Nothing was recorded; assignment-reject proceeds once the thread is positively quiet or gone.`,
-        );
-    } else if (threadId) {
-      const gone = await this.threadGone(threadId);
-      if (gone) ended = `${worker.ref}'s thread is ${gone} in BB`;
-    }
-    if (!ended) throw new ProjectError(hint);
-    // Native reads took time: only commit what was checked.
-    const current = this.store.assignment(projectId, assignment.num);
-    const now = this.store.worker(projectId, assignment.workerNum);
-    if (
-      !current || current.state !== "reported" || current.threadId !== threadId ||
-      JSON.stringify(current.report) !== JSON.stringify(assignment.report) ||
-      now?.state !== worker.state || now.threadId !== worker.threadId
-    )
-      throw new ProjectError(`${assignment.ref} or ${worker.ref} changed while checking BB; nothing was recorded. Read ${assignment.ref} again.`);
-    return this.commitReject(projectId, current, `${reason} [${ended}; the report's listed background work remains unverified: those jobs may still be running and keep ${assignment.ref}'s write scope until an explicit assignment-scope-release; a rejected assignment takes no later report.]`);
-  }
-
-  /**
-   * D343: release the write scope that a report's listed background work still holds.
-   * Requires a reason, the current coordinator (or the user), no unresolved receipt,
-   * and BB's positive end evidence for the thread. The report and its listed work stay
-   * as filed; the release is bound to this report version and is not evidence that
-   * those jobs finished.
-   */
-  async releaseScope(projectId: string, ref: string, expectedVersion: string, reason: string, by: "coordinator" | "user", recordedBy: string | null) {
-    const project = this.requireProject(projectId);
-    if (by === "coordinator" && (!recordedBy || recordedBy !== project.coordinatorThreadId))
-      throw new ProjectError("Only the current coordinator or the user releases an assignment's write scope.");
-    const assignment = this.requireAssignment(project, ref);
-    if (assignment.role !== "work" || assignment.access === "read-only")
-      throw new ProjectError(`${assignment.ref} holds no write scope.`);
-    if (["pending", "uncertain"].includes(assignment.opState) || assignment.queuedMessageId)
-      throw new ProjectError(`${assignment.ref} still has an unconfirmed operation or queued brief, so its scope follows those receipts and cannot be released. ${receiptBlockReason(assignment)}`);
-    if (["dispatching", "queued", "running"].includes(assignment.state))
-      throw new ProjectError(`${assignment.ref} is ${assignment.state}; running work keeps its scope. Stop it or wait for its report.`);
-    if (!assignment.report?.pendingBackgroundWork.length)
-      throw new ProjectError(`${assignment.ref}'s report lists no background work, so there is nothing to release; its scope follows its native thread state.`);
-    // Bind to the report filing the caller inspected, not whichever is current now: an
-    // identical re-file is a new version, so a release never carries over to it.
-    const currentVersion = reportVersion(assignment);
-    if (expectedVersion !== currentVersion)
-      throw new ProjectError(
-        `${assignment.ref}'s report changed since you read it (you sent ${expectedVersion}; it is now ${currentVersion}, from a later filing, possibly with identical content). Nothing was recorded. Read it again with initiative_read {"refs":["${assignment.ref}"],"detailed":true,"fields":["report"]}, check its listed background work, and release with "reportVersion":"${currentVersion}".`,
-      );
-    if (!unreleasedBackground(assignment).length) return assignment;
-    if (!assignment.threadId) throw new ProjectError(`${assignment.ref} has no native thread to check.`);
-    const end = await this.nativeEnd(assignment.threadId);
-    if (end.verdict !== "ended")
-      throw new ProjectError(
-        `${assignment.ref}'s thread is not confirmed ended (${end.verdict === "running" ? "BB shows it running" : "BB's thread state could not be read"}). Nothing was recorded; release once BB shows the thread ended and you have checked its listed background work.`,
-      );
-    const current = this.store.assignment(projectId, assignment.num);
-    if (
-      !current || current.state !== assignment.state || current.threadId !== assignment.threadId ||
-      current.opState !== assignment.opState || current.queuedMessageId !== assignment.queuedMessageId ||
-      reportVersion(current) !== currentVersion ||
-      JSON.stringify(current.scopeRelease) !== JSON.stringify(assignment.scopeRelease) ||
-      (by === "coordinator" && this.store.project(projectId)?.coordinatorThreadId !== recordedBy)
-    )
-      throw new ProjectError(`${assignment.ref} changed while checking BB; nothing was recorded. Read ${assignment.ref} again.`);
-    const listed = current.report!.pendingBackgroundWork;
-    return this.store.tx(() => {
-      const released = this.store.updateAssignment(projectId, current.num, {
-        scopeRelease: {
-          by, recordedBy, reason: reason.trim(), at: this.now(), reportVersion: currentVersion,
-          evidence: `BB shows ${current.ref}'s thread ended: ${end.seen}, at release.`,
-        },
-      });
-      this.store.log(projectId, "report", `${current.ref}'s write scope was released by the ${by}: ${reason.trim()} Its report still lists ${listed.length} background job${listed.length === 1 ? "" : "s"}, unverified; this release is not evidence that it finished.`);
-      return released;
-    });
-  }
-
-  /** Positive native evidence that a thread can never act again: archived, deleted or missing (404). */
-  private async threadGone(threadId: string): Promise<"archived" | "deleted" | "missing" | null> {
-    let thread: ThreadDto;
-    try {
-      thread = await this.sdk.threads.get({ threadId });
-    } catch (error) {
-      return (error as { status?: number }).status === 404 ? "missing" : null;
-    }
-    if (!thread || !ProjectsService.lifecycleWellFormed(thread.archivedAt) || !ProjectsService.lifecycleWellFormed(thread.deletedAt)) return null;
-    return thread.deletedAt !== null ? "deleted" : thread.archivedAt !== null ? "archived" : null;
-  }
 
   // Decisions and updates -------------------------------------------------------
 
@@ -3515,12 +3576,12 @@ export class ProjectsService {
       const next = this.store.decisions(projectId).find(d => d.status === "active" && d.humanAttention === "needs-opinion" && d.blocks.includes(num));
       const work = this.store.assignments(projectId).filter(a => a.role === "work" && a.taskNums.includes(num) && ["dispatching", "queued", "running", "idle_no_report", "reported"].includes(a.state)).at(-1);
       const reported = work?.state === "reported" && work.report ? work.report : null;
-      const resume = reported ? reported.outcome === "succeeded" ? "awaiting_acceptance" : "blocked"
+      // T136: a done report leaves its task open (in progress) until the coordinator closes it.
+      const resume = reported ? reported.outcome === "succeeded" ? "in_progress" : "blocked"
         : work && ["dispatching", "queued", "running", "idle_no_report"].includes(work.state) ? "in_progress" : "planned";
       this.store.updateTask(projectId, num, next
         ? { status: "blocked", progress: `Waiting for your opinion on ${next.ref}`, nextCheckpoint: `Answer ${next.ref}` }
-        : { status: resume, progress: reported && resume === "blocked" ? reported.summary : progress,
-            nextCheckpoint: resume === "awaiting_acceptance" ? "Coordinator acceptance" : resume === "blocked" ? "Coordinator decision" : resume === "in_progress" ? "Worker report" : null });
+        : { status: resume, progress: reported ? `${workerRef(work!.workerNum)} reported: ${reported.summary}` : progress, nextCheckpoint: null });
     }
   }
 
@@ -3556,158 +3617,76 @@ export class ProjectsService {
     return { outcome: operation === "send" ? "sent" as const : "deleted" as const };
   }
 
+  /**
+   * A short human update for the user. The first line is its summary. Since T136 a
+   * checkpoint field is ignored: the coordinator keeps no persistent checkpoint.
+   */
   recordUpdate(
     projectId: string,
-    input: { summary: string; body: string; checkpoint?: string },
+    input: { text?: string; summary?: string; body?: string },
     threadId: string | null,
   ) {
     this.requireProject(projectId);
+    const body = input.text ?? input.body ?? input.summary ?? "";
+    const summary = input.summary ?? (body.split("\n").find(line => line.trim())?.trim() ?? body).slice(0, 200);
     return this.store.tx(() => {
-      const update = this.store.addUpdate(
-        projectId,
-        input.summary,
-        input.body,
-        threadId,
-      );
-      if (input.checkpoint)
-        this.store.updateProject(projectId, { checkpoint: input.checkpoint });
-      this.store.log(
-        projectId,
-        "update",
-        `Initiative update ${update.ref}: ${input.summary}`,
-      );
+      const update = this.store.addUpdate(projectId, summary, body, threadId);
+      this.store.log(projectId, "update", `Initiative update ${update.ref}: ${summary}`);
       return update;
     });
   }
 
   // Delegation -------------------------------------------------------------------
 
-  private reviewTargets(project: ProjectRecord, input: DelegateInput): ReviewTargetRecord[] {
-    if (input.role !== "review") {
-      if (input.reviewOf?.length || input.reviewTargets?.length) throw new ProjectError("reviewOf/reviewTargets require role review.");
-      return [];
-    }
-    if (input.tasks?.length) throw new ProjectError("Review tasks go in reviewOf/reviewTargets, not tasks. Never substitute an unrelated in-progress task.");
-    const refs = input.reviewOf ?? [...new Set(input.reviewTargets?.map(t => t.task) ?? [])];
-    if (!refs.length) throw new ProjectError("A review needs reviewOf tasks or explicit reviewTargets {task,assignment,revision}.");
-    if (input.reviewTargets && [...new Set(input.reviewTargets.map(t => t.task))].sort().join() !== [...new Set(refs)].sort().join())
-      throw new ProjectError("reviewOf and reviewTargets must name exactly the same tasks.");
-    const targets = input.reviewTargets ?? refs.map(ref => {
-      const task = this.requireTask(project, ref);
-      const source = this.store.assignments(project.id).filter(a => a.role === "work" && a.taskNums.includes(task.num) && ["reported", "accepted"].includes(a.state) && a.report?.outcome === "succeeded").at(-1);
-      if (!source) throw new ProjectError(`${ref} has no recorded implemented result. Use task-checkpoint with the actual worker and report before review; do not borrow another task.`);
-      return { task: ref, assignment: source.ref, revision: source.report!.handoff.verificationRevision ?? source.report!.handoff.workspaceRevision };
-    });
-    return targets.map(target => {
-      const task = this.requireTask(project, target.task), a = this.requireAssignment(project, target.assignment);
-      if (!task.brief) throw new ProjectError(`${task.ref} needs its actual brief before review.`);
-      if (task.status === "cancelled") throw new ProjectError(`${task.ref} was cancelled.`);
-      if (a.role !== "work" || !a.taskNums.includes(task.num)) throw new ProjectError(`${a.ref} did not implement ${task.ref}. Check the task/assignment association.`);
-      if (!["reported", "accepted"].includes(a.state) || a.cancelRequested || a.opState !== "done" || a.queuedMessageId)
-        throw new ProjectError(`${a.ref} is ${a.state}/${a.opState}; its native operation must be settled before review.`);
-      if (a.report?.outcome !== "succeeded" || a.report.pendingBackgroundWork.length) throw new ProjectError(`${a.ref} needs a successful final report or checkpoint before review.`);
-      const revision = a.report.handoff.verificationRevision ?? a.report.handoff.workspaceRevision;
-      if (revision !== target.revision) throw new ProjectError(`${a.ref} reports revision ${revision}, not ${target.revision}. Read its report or checkpoint the newly checked revision.`);
-      return { ...target, worker: workerRef(a.workerNum), profile: a.actualProfile ?? a.profile };
-    });
-  }
 
   /** Record explicitly described external/native work. No dispatch, wake, inferred acceptance or unrelated task rewrite. */
-  async checkpointTask(projectId: string, input: { task: string; worker: string; assignment?: string; report: Report }, recordedBy: string | null) {
-    const project = this.requireProject(projectId), task = this.requireTask(project, input.task), worker = this.requireWorker(project, input.worker);
-    if (!recordedBy || recordedBy !== project.coordinatorThreadId) throw new ProjectError("Only the current coordinator records a task-checkpoint; workers use initiative_report.");
-    if (worker.role !== "work" || worker.userStopped || !worker.threadId || ["done", "cancelled"].includes(task.status)) throw new ProjectError("Checkpoint needs an unstopped work worker, its native thread, and an unfinished actual task.");
-    if (!task.brief) throw new ProjectError(`${task.ref} needs its actual brief before checkpointing.`);
-    const source = input.assignment ? this.requireAssignment(project, input.assignment) : null;
-    const managed = this.store.assignments(projectId).find(a => a.workerNum === worker.num && a.taskNums.includes(task.num) && ["dispatching", "queued", "running", "idle_no_report", "stopped"].includes(a.state));
-    if (!source && managed) throw new ProjectError(`${task.ref} already has ${managed.ref}. Pass that assignment to checkpoint its actual work; do not create a duplicate association.`);
-    if (source && (source.workerNum !== worker.num || !source.taskNums.includes(task.num) || source.taskNums.length !== 1 || source.generation !== worker.generation || source.threadId !== worker.threadId || source.role !== "work"))
-      throw new ProjectError("Checkpoint assignment must be this worker/generation's work on exactly the named task. Omit assignment to record a separate external milestone.");
-    // Only an unresolved operation or a live queue receipt can still execute. A Stop
-    // whose op is settled (done, or failed: provably never delivered and released)
-    // is history, and the checkpoint below creates its own assignment beside it.
-    const holdsCheckpoint = (a: AssignmentRecord) =>
-      a.workerNum === worker.num && (["pending", "uncertain"].includes(a.opState) || !!a.queuedMessageId);
-    const unsettled = this.store.assignments(projectId).filter(holdsCheckpoint);
-    if (unsettled.length) throw new ProjectError(`${worker.ref} cannot be checkpointed while an operation or queue receipt is unsettled. ${unsettled.slice(0, 3).map(receiptBlockReason).join(" ")}${unsettled.length > 3 ? ` ${unsettled.length - 3} more are listed in initiative_read {"view":"assignments"}.` : ""}`);
-    if (source && (!["running", "idle_no_report"].includes(source.state) || source.report)) throw new ProjectError(`${source.ref} is ${source.state}${source.report ? " with a report" : ""}; a checkpoint cannot overwrite reported evidence. Omit assignment to append a separate milestone.`);
-    const native = await this.sdk.threads.get({ threadId: worker.threadId });
-    const execution = await threadExecution(this.sdk, worker.threadId);
-    if (native.deletedAt !== null || native.projectId !== worker.bbProjectId || !project.memberProjectIds.includes(native.projectId) || !execution)
-      throw new ProjectError("Native worker ownership/execution could not be proven; inspect its thread before checkpointing.");
-    const current = this.requireWorker(this.requireProject(projectId), input.worker);
-    if (this.store.project(projectId)?.coordinatorThreadId !== recordedBy || current.threadId !== worker.threadId || current.generation !== worker.generation || current.userStopped)
-      throw new ProjectError("Coordinator/worker changed while checkpointing; read current state first.");
-    const changedReceipt = this.store.assignments(projectId).find(holdsCheckpoint);
-    if (changedReceipt)
-      throw new ProjectError(`A native receipt or Stop changed while checkpointing; nothing was recorded. ${receiptBlockReason(changedReceipt)}`);
-    if (source && (this.store.assignment(projectId, source.num)?.state !== source.state || this.store.assignment(projectId, source.num)?.report)) throw new ProjectError("Checkpoint source outcome changed or was reported; read it again and use a separate milestone.");
-    if (["done", "cancelled"].includes(this.requireTask(this.requireProject(projectId), input.task).status)) throw new ProjectError("Task completed or cancelled while checkpointing; read current state.");
-    const profile = source?.actualProfile ?? { providerId: native.providerId, ...execution };
-    return this.store.tx(() => {
-      const a = source ?? this.store.createAssignment({ projectId, workerNum: worker.num, taskNums: [task.num], route: "checkpoint", role: "work", workKind: task.workKind, threadId: worker.threadId, generation: worker.generation, profile, bbProjectId: worker.bbProjectId, environmentId: worker.environmentId, state: "reported", opId: newOpId(), opState: "done", briefText: "Coordinator-recorded external work checkpoint; no brief dispatched.", reviewOf: null, rationale: "Explicit task checkpoint from native/external work; acceptance remains separate.", writeScope: task.brief?.areas.filter(area => area.bbProjectId === worker.bbProjectId).flatMap(area => area.paths) ?? [] });
-      const result = this.store.updateAssignment(projectId, a.num, { state: "reported", report: input.report, reportedAt: this.now(), actualProfile: profile, checkpoint: { recordedBy, recordedAt: this.now(), sourceThreadId: worker.threadId! } });
-      const waiting = this.store.decisions(projectId).find(d => d.status === "active" && d.humanAttention === "needs-opinion" && d.blocks.includes(task.num));
-      this.store.updateTask(projectId, task.num, { status: waiting ? "blocked" : input.report.outcome === "succeeded" ? "awaiting_acceptance" : "blocked", progress: waiting ? `Waiting for your opinion on ${waiting.ref}` : input.report.summary, nextCheckpoint: input.report.outcome === "succeeded" ? "Coordinator acceptance" : "Coordinator decision" });
-      this.store.log(projectId, "checkpoint", `${task.ref} checkpointed as ${a.ref} from ${worker.ref}; reported, not accepted`, { task: task.num, assignment: a.num, recordedBy });
-      return result;
-    });
+  /**
+   * T136: giving work is a spawn (route fresh) or a message to an existing worker (route
+   * continue). Tasks are optional. A review names the worker or A# it reviews and its brief
+   * embeds that report; handoffs embed any prior reports. Writers sharing a checkout get a
+   * warning, never a refusal.
+   */
+  async delegate(projectId: string, input: DelegateInput): Promise<DelegateResult[]> {
+    const project = this.requireProject(projectId);
+    if ((input.route as string) === "fork")
+      throw new ProjectError("Forking a worker was removed. Spawn a fresh worker with handoffs, or message the existing one.");
+    return [await this.dispatch(project, { ...input, role: input.role ?? "work" })];
   }
 
-  async delegate(
-    projectId: string,
-    input: DelegateInput,
-  ): Promise<DelegateResult[]> {
-    const project = this.requireProject(projectId);
-    const settings = await this.preferences.read();
-    const role: Role = input.role ?? "work";
-    const targets = this.reviewTargets(project, { ...input, role });
-    if (role === "review") input = { ...input, reviewTargets: targets, reviewOf: [...new Set(targets.map(t => t.task))] };
-    if (role === "review" && input.route === "fresh") {
-      const reviewOf = (input.reviewOf ?? []).map((ref) =>
-        this.requireTask(project, ref),
-      );
-      if (!reviewOf.length)
-        throw new ProjectError(
-          "A review needs reviewOf: the tasks it reviews.",
-        );
-      const plan = planReview({
-        policy: withProfileDefaults(project.policy, settings),
-        taskNums: reviewOf.map((task) => task.num),
-        assignments: this.store.assignments(project.id).filter(a => targets.some(t => t.assignment === a.ref)),
-      });
-      // An explicitly chosen reviewer is honored once over the whole
-      // requested scope, whatever its family; only the default plan splits a
-      // mixed scope into one reviewer per implementing family, and only when
-      // those families' configured profiles differ.
-      if (input.profile) {
-        const only = plan.length === 1 ? plan[0]! : null;
-        return [
-          await this.dispatch(
-            project,
-            { ...input, role, tasks: [] },
-            {
-              key: only?.key ?? null,
-              profile: input.profile,
-              taskNums: reviewOf.map((task) => task.num),
-              rationale: `Reviewer chosen explicitly for ${reviewOf.map((task) => task.ref).join(", ")}: ${describeProfile(input.profile)}.`,
-              shared: false,
-            },
-          ),
-        ];
+  /** The report a review embeds: the named W#/A#, or (legacy reviewOf) the latest report on those tasks. */
+  private reviewSource(project: ProjectRecord, input: DelegateInput): AssignmentRecord {
+    const ref = input.reviews ?? input.reviewTargets?.[0]?.assignment ?? null;
+    if (ref) return latestReport(this.store, project.id, ref);
+    const nums = (input.reviewOf ?? []).map(r => this.requireTask(project, r).num);
+    const found = nums.length
+      ? this.store.assignments(project.id).filter(a => a.role === "work" && a.report && a.taskNums.some(n => nums.includes(n))).at(-1)
+      : undefined;
+    if (!found) throw new ProjectError('A review names the worker it reviews, e.g. reviews:"W12"; its latest report is embedded in the brief.');
+    return found;
+  }
+
+  /**
+   * Other live writers in the same checkout, as warnings. Only a proven separate checkout
+   * (a different known environment, or a managed worktree) is left out.
+   */
+  private async overlapWarnings(project: ProjectRecord, bbProjectId: string, env: { workspace: Workspace; environmentId: string | null }, self: WorkerRecord | null): Promise<string[]> {
+    if (env.workspace === "isolated") return [];
+    const live = this.store.assignments(project.id).filter(a =>
+      a.role === "work" && a.access === "write" && a.bbProjectId === bbProjectId && a.workerNum !== self?.num &&
+      (["dispatching", "queued", "running"].includes(a.state) || ["pending", "uncertain"].includes(a.opState)));
+    const worktree = new Map<string, boolean | null>();
+    const warnings: string[] = [];
+    for (const a of live) {
+      const theirs = a.environmentId ?? this.store.worker(project.id, a.workerNum)?.environmentId ?? null;
+      if (theirs && env.environmentId && theirs !== env.environmentId) continue;
+      if (theirs && !env.environmentId) {
+        if (!worktree.has(theirs))
+          worktree.set(theirs, await this.sdk.environments.get({ environmentId: theirs }).then(e => (e as { isWorktree?: boolean }).isWorktree ?? null, () => null));
+        if (worktree.get(theirs) === true) continue;
       }
-      const results: DelegateResult[] = [];
-      for (const part of plan)
-        results.push(
-          await this.dispatch(
-            project,
-            { ...input, role, reviewOf: part.taskNums.map(taskRef), reviewTargets: targets.filter(t => part.taskNums.map(taskRef).includes(t.task)), tasks: [] },
-            { ...part, shared: plan.length > 1 },
-          ),
-        );
-      return results;
+      warnings.push(`${workerRef(a.workerNum)} is also writing in this checkout (${a.ref}, ${a.state}). Sequence the work, or give one of them a worktree (environment {"type":"worktree"}).`);
     }
-    return [await this.dispatch(project, { ...input, role }, null)];
+    return warnings;
   }
 
   /**
@@ -3931,134 +3910,58 @@ export class ProjectsService {
   private async dispatch(
     project: ProjectRecord,
     input: DelegateInput & { role: Role },
-    review: ReviewDispatch | null,
   ): Promise<DelegateResult> {
     const settings = await this.preferences.read();
+    const policy = withProfileDefaults(project.policy, settings);
     const access: AssignmentAccess =
       input.role === "review" ? "read-only" : input.access ?? "write";
-    const initialReviewTargets = this.reviewTargets(project, input);
-    let all = this.store.tasks(project.id);
-    let tasks = (input.tasks ?? []).map((ref) =>
-      this.requireTask(project, ref),
-    );
-    let reviewOfTasks = (input.reviewOf ?? []).map((ref) =>
-      this.requireTask(project, ref),
-    );
-    const existing = input.worker
-      ? this.requireWorker(project, input.worker)
-      : null;
-    const kind: WorkKind = input.kind ?? tasks[0]?.workKind ?? "implementation";
-    // T96: selected prior handoffs are validated before any native call and
-    // re-resolved after the last await; the brief embeds the filing checked then.
+    const existing = input.worker ? this.requireWorker(project, input.worker) : null;
+    const reviewed = input.role === "review" ? this.reviewSource(project, input) : null;
+    const taskRefs = input.role === "review" ? [] : input.tasks ?? [];
+    let tasks = taskRefs.map((ref) => this.requireTask(project, ref));
+    const reviewOfRefs = reviewed
+      ? (input.tasks?.length ? input.tasks : (input.reviewOf ?? reviewed.taskNums.map(taskRef)))
+      : [];
+    let reviewOfTasks = reviewOfRefs.map((ref) => this.requireTask(project, ref));
     const handoffRefs = input.handoffs ?? [];
-    if (handoffRefs.length && input.role === "review")
-      throw new ProjectError("Reviews bind reviewTargets and read reports themselves; handoffs are for work assignments.");
-    const initialHandoffs = resolveHandoffs(this.store, project.id, handoffRefs, tasks).map(handoffSource);
+    // The embedded reports are re-resolved after the last await: the brief carries the filing checked then.
+    const sources = () => [...(reviewed ? [latestReport(this.store, project.id, reviewed.ref)] : []), ...resolveHandoffs(this.store, project.id, handoffRefs)];
+    const initialSources = sources().map(handoffSource);
 
-    // Profile: forks and continues keep the worker's model; reviews follow the
-    // review plan; work follows the user's choice, then the coordinator's, then
-    // the policy default for its kind.
+    // Profile: a review defaults to the reviewer configured for the reviewed worker's model
+    // family; work follows the explicit choice, then a user-chosen task profile, then the
+    // default work profile. A continuation keeps the worker's native model (read below).
     let profile: Profile;
-    if (review) profile = review.profile;
-    else if (
-      (input.route === "fork" || input.route === "continue") &&
-      existing?.providerId &&
-      existing.model &&
-      !input.profile
-    )
-      profile = {
-        providerId: existing.providerId,
-        model: existing.model,
-        reasoningLevel: (existing.reasoningLevel ??
-          "high") as Profile["reasoningLevel"],
-      };
+    if (reviewed)
+      profile = input.profile ?? profileFor(policy, seriesOf(reviewed.actualProfile ?? reviewed.profile) === "claude" ? "reviewOfClaude" : "reviewOfGpt");
     else {
-      const choice = chooseWorkProfile({
-        policy: withProfileDefaults(project.policy, settings),
-        kind,
-        task: tasks[0] ?? null,
-        explicit: input.profile ?? null,
-      });
-      if (!choice.ok) throw new ProjectError(choice.reason);
-      profile = choice.profile;
-      for (const task of tasks.slice(1)) {
-        const other = chooseWorkProfile({
-          policy: withProfileDefaults(project.policy, settings),
-          kind,
-          task,
-          explicit: profile,
-        });
-        if (!other.ok) throw new ProjectError(other.reason);
-        profile = other.profile;
+      profile = input.profile ?? profileFor(policy, "implementation");
+      for (const task of tasks) {
+        const choice = chooseWorkProfile({ policy, kind: "implementation", task, explicit: input.profile ?? (task.profileSource === "user" ? null : profile) });
+        if (!choice.ok) throw new ProjectError(choice.reason);
+        profile = choice.profile;
       }
     }
 
+    const reviewedWorker = reviewed ? this.store.worker(project.id, reviewed.workerNum) : null;
     const bbProjectId =
       input.bbProjectId ??
-      (input.route !== "fresh" && existing
-        ? existing.bbProjectId
-        : undefined) ??
+      (input.route === "continue" && existing ? existing.bbProjectId : undefined) ??
       tasks[0]?.brief?.areas[0]?.bbProjectId ??
-      reviewOfTasks[0]?.brief?.areas[0]?.bbProjectId ??
+      reviewed?.bbProjectId ??
       project.memberProjectIds[0]!;
     if (!project.memberProjectIds.includes(bbProjectId))
       throw new ProjectError(
-        `${bbProjectId} is not a member BB project of ${project.name}; the members are ${project.memberProjectIds.join(", ")}. A task brief's areas name the BB project ids, not the Initiative id.`,
+        `${bbProjectId} is not a member BB project of ${project.name}; the members are ${project.memberProjectIds.join(", ")}.`,
       );
-    let paths = [...tasks, ...reviewOfTasks].flatMap(
+    const paths = [...tasks, ...reviewOfTasks].flatMap(
       (task) =>
         task.brief?.areas
           .filter((area) => area.bbProjectId === bbProjectId)
           .flatMap((area) => area.paths) ?? [],
     );
-    if (
-      existing &&
-      ["continue", "fork"].includes(input.route) &&
-      existing.bbProjectId !== bbProjectId
-    )
-      throw new ProjectError(
-        "Continuing or forking keeps the source BB project. Start a fresh worker in the other project.",
-      );
-    // Reviewer independence comes from a fresh, read-only context bound to
-    // the reported task/assignment/revision targets (checked above and in
-    // evaluateDelegation), not from model family. A different family is only
-    // the default plan's recommendation; an explicit or configured reviewer of
-    // the same or an unclassified family is dispatched as chosen. The family
-    // still describes the scope, and the partition key is recorded only when
-    // the scope actually contains the family it names.
-    let reviewScopeLabel: string | null = null;
-    let reviewKey: ReviewPartition["key"] | null = null;
-    if (input.role === "review") {
-      const implementers = this.store
-        .assignments(project.id)
-        .filter(
-          (a) =>
-            a.role === "work" &&
-            input.reviewTargets?.some(t => t.assignment === a.ref) &&
-            !["cancelled", "failed", "rejected"].includes(a.state),
-        );
-      const scopeSeries = new Set(
-        implementers.map((a) => seriesOf(a.actualProfile ?? a.profile)),
-      );
-      const named = [...scopeSeries].filter((s) => s !== "unknown");
-      const keyed =
-        review?.key === "reviewOfClaude"
-          ? ("claude" as const)
-          : review?.key === "reviewOfGpt"
-            ? ("gpt" as const)
-            : null;
-      reviewKey = keyed && scopeSeries.has(keyed) ? review!.key : null;
-      reviewScopeLabel =
-        keyed && scopeSeries.has(keyed)
-          ? `the ${keyed === "claude" ? "Claude" : "GPT"} implementation contributions`
-          : named.length === 1
-            ? `the ${named[0] === "claude" ? "Claude" : "GPT"} implementation contributions`
-            : named.length > 1
-              ? "the mixed Claude and GPT implementation contributions"
-              : implementers.length
-                ? "the recorded implementation contributions (its model family is unknown — not Claude or GPT)"
-                : "the recorded implementation contributions";
-    }
+    if (existing && input.route === "continue" && existing.bbProjectId !== bbProjectId)
+      throw new ProjectError("Messaging work keeps the worker's BB project. Spawn a fresh worker in the other project.");
     const unconfirmed = existing
       ? this.store
           .assignments(project.id)
@@ -4070,19 +3973,19 @@ export class ProjectsService {
       : [];
     if (existing && unconfirmed.length)
       throw new ProjectError(
-        `${existing.ref} has an unconfirmed operation, so its context cannot be reused yet. ${unconfirmed
+        `${existing.ref} has an unconfirmed operation, so it cannot take more work yet. ${unconfirmed
           .slice(0, 3)
           .map(unsettledReason)
-          .join(" ")}${unconfirmed.length > 3 ? ` ${unconfirmed.length - 3} more are listed in initiative_read {"view":"assignments"}.` : ""}`,
+          .join(" ")}`,
       );
+    // A reviewer reads the reviewed worker's checkout unless told otherwise.
+    const reviewedEnv = reviewedWorker && reviewedWorker.state !== "retired" ? (reviewed!.environmentId ?? reviewedWorker.environmentId) : null;
     const envChoice: EnvironmentChoice =
       input.environment ??
-      (input.route === "fork" && input.role === "work"
-        ? { type: "worktree" }
-        : existing?.environmentId &&
-            input.route !== "fresh" &&
-            existing.state !== "retired"
-          ? { type: "reuse", environmentId: existing.environmentId }
+      (existing?.environmentId && input.route === "continue" && existing.state !== "retired"
+        ? { type: "reuse", environmentId: existing.environmentId }
+        : reviewedEnv && reviewedWorker?.bbProjectId === bbProjectId
+          ? { type: "reuse", environmentId: reviewedEnv }
           : { type: "project-default" });
     const env = this.environmentFor(
       envChoice,
@@ -4095,10 +3998,7 @@ export class ProjectsService {
     // Live facts, read just before dispatch.
     let thread: ThreadDto | null = null;
     let threadModel: string | null = null;
-    if (
-      existing?.threadId &&
-      (input.route === "continue" || input.route === "fork")
-    ) {
+    if (existing?.threadId && input.route === "continue") {
       try {
         thread = await this.sdk.threads.get({ threadId: existing.threadId });
       } catch {
@@ -4108,11 +4008,11 @@ export class ProjectsService {
         const execution = await threadExecution(this.sdk, existing.threadId);
         if (!execution?.model || !execution.reasoningLevel)
           throw new ProjectError(
-            `${existing.ref}'s native execution settings could not be resolved. Reuse cannot preserve its model, reasoning and service tier; inspect the thread before retrying.`,
+            `${existing.ref}'s native execution settings could not be resolved, so its model cannot be kept; inspect the thread before retrying.`,
           );
         threadModel = execution.model;
         const inherited: Profile = { providerId: thread.providerId, ...execution };
-        const requested = input.profile ?? tasks[0]?.profileOverride;
+        const requested = input.profile ?? (tasks.find(t => t.profileSource === "user")?.profileOverride ?? undefined);
         profile = requested
           ? {
               ...requested,
@@ -4121,20 +4021,6 @@ export class ProjectsService {
                 : {}),
             }
           : inherited;
-        // Reapply task choices after reading native inheritance, including a
-        // user tier on another task in this bounded batch.
-        for (const task of tasks) {
-          const choice = chooseWorkProfile({ policy: withProfileDefaults(project.policy, settings), kind, task, explicit: profile });
-          if (!choice.ok) throw new ProjectError(choice.reason);
-          profile = choice.profile;
-        }
-        // Native fork takes these fields from the source's last execution.
-        // It has no override fields in SDK 0.4.87. Never advertise settings
-        // that a fork cannot apply or add a second bootstrap/send path.
-        if (input.route === "fork" && !sameProfile(profile, inherited))
-          throw new ProjectError(
-            `A native fork inherits ${describeProfile(inherited)} and cannot override model, reasoning or service tier. Continue the source with the requested settings or start a fresh worker.`,
-          );
       }
     }
     const routing = env.environmentId
@@ -4153,187 +4039,43 @@ export class ProjectsService {
           ["pending", "uncertain"].includes(cancelled.opState) &&
           cancelled.taskNums.some(num => requestedTasks.has(num)))
         await this.settleCancelledIfQuiet(cancelled);
-    // T91: read native evidence for every past write that could still hold these
-    // paths now, before the final re-read; nothing is awaited after that re-read.
-    const holdsApply = input.role === "work" && access !== "read-only" && env.workspace === "shared";
-    const exemptThreadId = input.route === "continue" ? existing?.threadId ?? null : null;
-    // T114: one project listing shows each candidate thread's activity and its
-    // actual checkout, so writers in separate managed worktrees never block
-    // each other even when the ledger never recorded their environment.
-    const candidates = holdsApply ? holdGroups(this.store.assignments(project.id), { bbProjectId, environmentId: null, paths, exemptThreadId }) : [];
-    const rows = holdsApply
-      ? await this.projectListRows(bbProjectId, new Set([
-          ...candidates.map(g => g.threadId),
-          ...this.store.assignments(project.id).filter(a => a.role === "work" && a.threadId &&
-            (["dispatching", "queued", "running"].includes(a.state) || ["pending", "uncertain"].includes(a.opState))).map(a => a.threadId!),
-          ...(exemptThreadId ? [exemptThreadId] : []),
-        ]))
-      : new Map<string, ThreadListRow>();
-    const holdEvidence = await this.holdEvidence(candidates, rows);
-    const here = checkoutOf(env.environmentId, exemptThreadId ? rows.get(exemptThreadId) : undefined, env.environmentId === null && !exemptThreadId);
-    const separate = (a: AssignmentRecord) => {
-      const worker = this.store.worker(project.id, a.workerNum);
-      return separateCheckouts(here, checkoutOf(a.environmentId ?? worker?.environmentId ?? null, a.threadId ? rows.get(a.threadId) : undefined, false));
-    };
-    const holdScope = () => ({ bbProjectId, environmentId: env.environmentId, paths, exemptThreadId, separate });
+    const warnings = input.role === "work" && access === "write"
+      ? await this.overlapWarnings(project, bbProjectId, env, input.route === "continue" ? existing : null)
+      : [];
     project = this.requireProject(project.id);
-    // Anything awaited above may have changed task state or execution receipts.
-    // These reservations must be current when the dispatch intent is recorded.
-    all = this.store.tasks(project.id);
-    tasks = (input.tasks ?? []).map((ref) => this.requireTask(project, ref));
-    reviewOfTasks = (input.reviewOf ?? []).map((ref) =>
-      this.requireTask(project, ref),
-    );
-    paths = [...tasks, ...reviewOfTasks].flatMap(
-      (task) =>
-        task.brief?.areas
-          .filter((area) => area.bbProjectId === bbProjectId)
-          .flatMap((area) => area.paths) ?? [],
-    );
-    if (input.role === "work")
-      for (const task of tasks) {
-        const choice = chooseWorkProfile({
-          policy: withProfileDefaults(project.policy, settings),
-          kind,
-          task,
-          explicit: profile,
-        });
-        if (!choice.ok) throw new ProjectError(choice.reason);
-        if (!sameProfile(profile, choice.profile))
-          throw new ProjectError(
-            `${task.ref}'s execution choice changed during dispatch. Read the task again before delegating.`,
-          );
-        if (
-          this.store
-            .decisions(project.id)
-            .some(
-              (k) =>
-                k.status === "active" &&
-                k.humanAttention === "needs-opinion" &&
-                k.blocks.includes(task.num),
-            )
-        )
-          throw new ProjectError(
-            `${task.ref} is waiting for the user's opinion. Answer it before delegation.`,
-          );
-        const active = this.store
-          .assignments(project.id)
-          .find(
-            (a) =>
-              a.role === "work" &&
-              a.taskNums.includes(task.num) &&
-              ([
-                "dispatching",
-                "queued",
-                "running",
-                "idle_no_report",
-                "stopped",
-                "reported",
-              ].includes(a.state) ||
-                ["pending", "uncertain"].includes(a.opState) ||
-                a.queuedMessageId !== null),
-          );
-        if (active)
-          throw new ProjectError(
-            active.state === "reported"
-              ? `${task.ref} already has ${active.ref} (reported ${active.report?.outcome}). ${reportedRetryHint(active, task.ref)}`
-              : `${task.ref} already has ${active.ref} (${active.state}). Accept or stop it before delegating again.`,
-          );
-      }
-
-    const open = existing
-      ? this.store.openAssignment(project.id, existing.num)
-      : null;
-    const concurrentWork: DelegationFacts["concurrentWork"] = this.store
-      .assignments(project.id)
-      .filter(
-        (a) =>
-          a.role === "work" &&
-          (["dispatching", "queued", "running"].includes(a.state) ||
-            ["pending", "uncertain"].includes(a.opState)) &&
-          a.bbProjectId === bbProjectId &&
-          // Only a continuation shares the worker's own context; a fork is a new writer.
-          !(input.route === "continue" && a.workerNum === existing?.num),
-      )
-      .map((a) => {
-        const worker = this.store.worker(project.id, a.workerNum);
-        return {
-          ref: a.ref,
-          access: legacyReadOnly(a) ? "read-only" as const : a.access,
-          workerRef: workerRef(a.workerNum),
-          // The scope recorded at dispatch; later brief edits never narrow it.
-          paths: a.writeScope ?? [],
-          ...(a.writeScope === null ? { legacy: true } : {}),
-          workspace: (separate(a) ? "isolated" : "shared") as Workspace,
-        };
-      });
-    // Rebuilt synchronously from the evidence read above: a thread without valid
-    // evidence for its current records (new, re-reported or settled meanwhile) is unknown.
-    if (holdsApply)
-      for (const group of holdGroups(this.store.assignments(project.id), holdScope())) {
-        const evidence = holdEvidence.get(group.threadId);
-        const held = group.background.length ? "listed" as const
-          : !evidence || evidence.signature !== group.signature ? "unknown" as const
-          : evidence.verdict === "ended" ? null : evidence.verdict;
-        const seen = held === "unknown" ? evidence?.signature === group.signature ? evidence.seen : "its records changed while checking"
-          : held === "running" ? evidence!.seen : undefined;
-        if (!held) continue;
-        // A listed hold names the oldest assignment whose report lists the work, with only its
-        // own jobs and version to echo; other listing reports on the thread are named by ref.
-        const listing = group.assignments.filter(a => unreleasedBackground(a).length);
-        const lead = held === "listed" ? listing[0]! : group.assignments[0]!;
-        concurrentWork.push({
-          ref: lead.ref, access: "write", workerRef: workerRef(lead.workerNum), workspace: "shared",
-          paths: group.paths ?? [], held, state: lead.state, ...(seen ? { seen } : {}),
-          ...(held === "listed" ? {
-            background: unreleasedBackground(lead), reportVersion: reportVersion(lead),
-            ...(listing.length > 1 ? { alsoListed: listing.slice(1).map(a => a.ref) } : {}),
-          } : {}),
-          ...(group.paths === null ? { legacy: true } : {}),
-        });
-      }
+    // Anything awaited above may have changed task state or receipts; the
+    // facts below must be current when the dispatch intent is recorded.
+    tasks = taskRefs.map((ref) => this.requireTask(project, ref));
+    reviewOfTasks = reviewOfRefs.map((ref) => this.requireTask(project, ref));
+    for (const task of tasks) {
+      if (this.store.decisions(project.id).some(k => k.status === "active" && k.humanAttention === "needs-opinion" && k.blocks.includes(task.num)))
+        throw new ProjectError(`${task.ref} is waiting for the user's answer to a question. Get the answer before giving it out.`);
+      const other = this.store.assignments(project.id).find(a =>
+        a.role === "work" && a.taskNums.includes(task.num) && a.workerNum !== existing?.num &&
+        (["dispatching", "queued", "running"].includes(a.state) || ["pending", "uncertain"].includes(a.opState)));
+      if (other) warnings.push(`${task.ref} is also with ${workerRef(other.workerNum)} (${other.ref}, ${other.state}).`);
+    }
     const reasons = delegationViolations({
       project,
       route: input.route,
       role: input.role,
-      access,
       tasks,
-      allTasks: all,
       bbProjectId,
       worker: existing ? this.store.worker(project.id, existing.num) : null,
-      workerOpenAssignment: open,
+      workerOpenAssignment: existing ? this.store.openAssignment(project.id, existing.num) : null,
       thread: thread
-        ? {
-            archived: thread.archivedAt !== null,
-            status: thread.status,
-            model: threadModel,
-          }
+        ? { archived: thread.archivedAt !== null, status: thread.status, model: threadModel }
         : null,
       requestedProfile: profile,
-      workspace: env.workspace,
-      concurrentWork,
-      paths,
-      providerSupportsFork: catalog.supportsFork,
-      forkAtCompletedPoint:
-        input.route !== "fork" ||
-        input.forkAtSeq !== undefined ||
-        !open ||
-        open.state === "reported" ||
-        (thread !== null && !BUSY_STATUSES.has(thread.status)),
-      reviewOf: reviewOfTasks.map((task) => task.num),
-      reviewOfTasks,
     });
     if (reasons.length) throw new ProjectError(reasons.join(" "));
 
-    const checkedReviewTargets = this.reviewTargets(project, input);
-    if (JSON.stringify(checkedReviewTargets) !== JSON.stringify(initialReviewTargets)) throw new ProjectError("Review source profile/revision changed during dispatch; read it again before review.");
-    const handoffs = resolveHandoffs(this.store, project.id, handoffRefs, tasks);
-    const handoffSources = handoffs.map(handoffSource);
-    if (JSON.stringify(handoffSources) !== JSON.stringify(initialHandoffs))
-      throw new ProjectError(`A selected handoff's report or state changed during dispatch (${handoffSources.map(h => `${h.assignment} ${h.state}`).join(", ")}); read it again before delegating.`);
+    const embedded = sources();
+    const handoffSources = embedded.map(handoffSource);
+    if (JSON.stringify(handoffSources) !== JSON.stringify(initialSources))
+      throw new ProjectError(`An embedded report changed during dispatch (${handoffSources.map(h => `${h.assignment} ${h.state}`).join(", ")}); read it again before giving out the work.`);
     const opId = newOpId();
-    const rationale =
-      [review?.rationale, input.reviewTargets?.map(t => `${t.task} from ${t.assignment} at ${t.revision}`).join("; "), input.rationale].filter(Boolean).join(" ") || null;
+    const rationale = input.rationale ?? null;
 
     // Recheck the worker snapshot after the awaited catalog call.
     if (existing) {
@@ -4344,32 +4086,22 @@ export class ProjectsService {
         (input.route === "continue" && current.state === "retired")
       )
         throw new ProjectError(
-          "The worker context changed during dispatch. Read it again before delegating.",
+          "The worker context changed during dispatch. Read it again before giving out the work.",
         );
     }
     // Record intent before calling BB so a crash leaves a reconcilable operation.
     const { worker, assignment } = this.store.tx(() => {
       const worker =
-        input.route === "fresh" || input.route === "fork"
+        input.route === "fresh"
           ? this.store.createWorker({
               projectId: project.id,
-              role: input.route === "fork" ? existing!.role : input.role,
-              // A fork keeps the source worker's logical identity unless the
-              // caller explicitly renames it.
+              role: input.role,
               label:
                 input.label ??
-                (input.route === "fork"
-                  ? existing!.label
-                  : review
-                    ? `Review of ${review.taskNums.map(taskRef).join(", ")}`
-                    : (tasks[0]?.title ?? "Worker")),
-              area:
-                input.area ??
-                (input.route === "fork"
-                  ? existing!.area
-                  : paths.join(", ") || bbProjectId),
+                (reviewed ? `Review of ${workerRef(reviewed.workerNum)}` : (tasks[0]?.title ?? "Worker")),
+              area: input.area ?? (paths.join(", ") || bbProjectId),
               bbProjectId,
-              forkedFrom: input.route === "fork" ? existing!.num : null,
+              forkedFrom: null,
             })
           : // An explicit rename on continue is staged on the assignment, not
             // committed: the worker's logical identity changes only once the
@@ -4384,7 +4116,7 @@ export class ProjectsService {
         route: input.route,
         role: worker.role,
         access,
-        workKind: input.role === "work" ? kind : null,
+        workKind: input.role === "work" ? "implementation" : null,
         threadId: input.route === "continue" ? worker.threadId : null,
         generation: input.route === "continue" ? worker.generation : 1,
         profile,
@@ -4399,7 +4131,7 @@ export class ProjectsService {
           : null,
         writeScope: input.role === "work" ? paths : null,
         handoffSources,
-        reviewKey,
+        reviewKey: null,
         rationale,
         pendingIdentity:
           input.route === "continue" &&
@@ -4410,19 +4142,18 @@ export class ProjectsService {
               }
             : null,
       });
-      if (checkedReviewTargets.length) this.store.updateAssignment(project.id, assignment.num, { reviewTargets: checkedReviewTargets });
       for (const task of tasks)
         if (task.status === "planned" || task.status === "blocked")
           this.store.updateTask(project.id, task.num, {
             status: "in_progress",
-            progress: `Delegated to ${worker.ref}`,
-            nextCheckpoint: "Worker report",
+            progress: `With ${worker.ref}`,
+            nextCheckpoint: null,
           });
       this.store.updateWorker(project.id, worker.num, { state: "active" });
       this.store.log(
         project.id,
         "delegate",
-        `${assignment.ref}: ${input.route} → ${worker.ref} (${describeProfile(profile)})`,
+        `${assignment.ref}: ${input.route === "fresh" ? "spawn" : "message"} → ${worker.ref} (${describeProfile(profile)})${warnings.length ? ` with ${warnings.length} warning${warnings.length > 1 ? "s" : ""}` : ""}`,
         { assignment: assignment.num, worker: worker.num },
       );
       return { worker, assignment };
@@ -4433,7 +4164,6 @@ export class ProjectsService {
       assignment.pendingIdentity?.label ?? worker.label;
     const effectiveArea = assignment.pendingIdentity?.area ?? worker.area;
     const text = renderAssignment({
-      project,
       assignmentRef: assignment.ref,
       workerRef: worker.ref,
       workerLabel: effectiveLabel,
@@ -4442,20 +4172,11 @@ export class ProjectsService {
       access: assignment.access,
       profile,
       permissionMode: input.permissionMode,
-      guidance: input.route === "fresh" ? null : settings.workerInstructions,
       tasks,
       reviewOf: reviewOfTasks,
-      reviewTargets: checkedReviewTargets,
-      handoffs: handoffs.map((source) => renderStandardHandoff(this.store, source, true)),
-      note:
-        [
-          input.note,
-          reviewScopeLabel
-            ? `Review scope: ${reviewScopeLabel}.${review?.shared ? " Another reviewer covers the other model family's contributions in this milestone." : ""}`
-            : null,
-        ]
-          .filter(Boolean)
-          .join("\n") || null,
+      reviewed: reviewed ? renderPriorReport(this.store, embedded[0]!, "Review") : null,
+      priorReports: embedded.slice(reviewed ? 1 : 0).map((source) => renderPriorReport(this.store, source, "Prior report")),
+      text: input.note ?? null,
       opId,
     });
     this.store.db
@@ -4537,22 +4258,7 @@ export class ProjectsService {
         });
       } else {
         const created =
-          input.route === "fork"
-            ? await this.sdk.threads.fork({
-                sourceThreadId: existing!.threadId!,
-                // SDK0.4.87 fork has no senderThreadId; no unsupported field or extra bootstrap send.
-                ...(input.forkAtSeq !== undefined
-                  ? { sourceSeqEnd: input.forkAtSeq }
-                  : {}),
-                input: textInput(text),
-                title,
-                environment: env.request as never,
-                ...(input.permissionMode
-                  ? { permissionMode: input.permissionMode }
-                  : {}),
-                pluginMetadata: metadata,
-              })
-            : await (async () => {
+          await (async () => {
                 // Native parenting: BB delivers this worker's completion
                 // notices straight to the coordinator thread. The target is
                 // re-read at issue time and the issued spawn registers under
@@ -4581,7 +4287,7 @@ export class ProjectsService {
                 } finally {
                   this.parentOpEnd(project.id, parentId);
                 }
-              })();
+          })();
         await this.confirmCreated(project.id, assignment.num, created);
         if (env.workspace === "isolated" && created.environmentId) {
           // BB names managed worktree branches itself; the supported display
@@ -4677,12 +4383,13 @@ export class ProjectsService {
             ? "BB accepted thread creation and the initial brief; this receipt does not establish that an agent turn started."
             : null,
           final.handoffSources?.length
-            ? `The brief embeds the standard handoff of ${final.handoffSources.map(h => `${h.assignment} (${h.state}, report ${h.reportVersion})`).join(", ")} as reference only.`
+            ? `The brief embeds the report${final.handoffSources.length > 1 ? "s" : ""} of ${final.handoffSources.map(h => `${h.worker} (${h.assignment})`).join(", ")}.`
             : null,
           ...notes,
         ]
           .filter(Boolean)
           .join(" ") || null,
+      ...(warnings.length ? { warnings } : {}),
     };
   }
 
@@ -5728,33 +5435,6 @@ export class ProjectsService {
       : { verdict: "ended", seen: "quiet" };
   }
 
-  /**
-   * T91: native evidence for hold candidates, read in one project-filtered list pass
-   * (bounded pages and bytes, rows matched by id) plus a GET only for threads the pass
-   * did not return, which can prove archived/deleted/404 but never quiet. A failed,
-   * truncated or malformed read leaves a thread "unknown". Groups already held by
-   * listed background work need no read.
-   */
-  private async holdEvidence(groups: HoldGroup[], rows: Map<string, ThreadListRow>) {
-    const evidence = new Map<string, HoldEvidence>();
-    const wanted = new Map(groups.filter(g => !g.background.length).map(g => [g.threadId, g.signature]));
-    let gets = 0;
-    for (const [threadId, signature] of wanted) {
-      const row = rows.get(threadId);
-      if (row) {
-        evidence.set(threadId, { ...ProjectsService.rowEvidence(row), signature });
-        continue;
-      }
-      if (gets++ >= HOLD_GET_CAP) {
-        evidence.set(threadId, { verdict: "unknown", seen: "its list row was not found", signature });
-        continue;
-      }
-      evidence.set(threadId, (await this.threadGone(threadId))
-        ? { verdict: "ended", seen: "gone", signature }
-        : { verdict: "unknown", seen: "its list row was not found", signature });
-    }
-    return evidence;
-  }
 
   /** List rows of one BB project, matched by id; stops when all ids are found or the page/byte budget is spent. */
   private async projectListRows(bbProjectId: string, ids: Set<string>) {
@@ -6390,10 +6070,7 @@ export class ProjectsService {
             "stopped",
           ].includes(a.state),
       );
-    if (!input.assignment && unsettled.length > 1)
-      throw new ProjectError(
-        "Several assignments share this worker. Pass the assignment ref from your brief when reporting.",
-      );
+    void unsettled;
     let assignment = input.assignment
       ? this.requireAssignment(project, input.assignment)
       : (this.store.openAssignment(project.id, worker.num) ??
@@ -6526,24 +6203,20 @@ export class ProjectsService {
       this.store.updateWorker(project.id, worker.num, {
         handoff: report.handoff,
       });
-      if (!terminalNow) {
-        const taskStatus =
-          report.outcome === "succeeded" ? "awaiting_acceptance" : "blocked";
+      // T136: a report never closes a task; the coordinator does. A blocked or failed report
+      // marks its tasks blocked, a done one leaves them open with the report as progress.
+      if (!terminalNow)
         for (const num of [...assignment.taskNums]) {
           const task = this.store.task(project.id, num);
           if (task && !["done", "cancelled"].includes(task.status)) {
             const waiting = this.store.decisions(project.id).find(d => d.status === "active" && d.humanAttention === "needs-opinion" && d.blocks.includes(num));
             this.store.updateTask(project.id, num, {
-              status: waiting ? "blocked" : taskStatus,
-              progress: waiting ? `Waiting for your opinion on ${waiting.ref}` : report.summary,
-              nextCheckpoint: waiting ? `Answer ${waiting.ref}` :
-                report.outcome === "succeeded"
-                  ? "Coordinator acceptance"
-                  : "Coordinator decision",
+              status: waiting || report.outcome !== "succeeded" ? "blocked" : "in_progress",
+              progress: waiting ? `Waiting for your opinion on ${waiting.ref}` : `${worker.ref} reported: ${report.summary}`,
+              nextCheckpoint: waiting ? `Answer ${waiting.ref}` : null,
             });
           }
         }
-      }
       const subject =
         assignment.role === "review"
           ? `review ${assignment.ref}`
@@ -6621,6 +6294,73 @@ export class ProjectsService {
             : " Put anything the coordinator should know in your final reply: it stays in this thread, and if this thread is an ordinary native child, BB sends its native parent a completion notice when the turn ends." +
               (listed.length ? ` The background work it lists (${jobs}) is not recorded either: stop it before ending your turn and name it in your final reply.` : "")),
     );
+  }
+
+  /** Short reports waiting for their turn's final message: key `${projectId}:${num}`, value the filing time. */
+  private awaitingFinal = new Map<string, number>();
+
+  /**
+   * T136: a worker's final message is its report. When a worker's turn completes normally,
+   * the turn's last agent message becomes the report of the open work whose brief that very
+   * turn received (its op marker is among the turn's inputs). A short report filed during the
+   * turn gets that message attached. An interrupted, failed or message-less turn records and
+   * attaches nothing, and drops any attachment still waiting, so a later reply never lands.
+   */
+  async captureFinalMessage(thread: ThreadDto) {
+    const m = this.store.membership(thread.id);
+    if (!m?.worker || m.former || m.workerNum <= 0 || m.worker.threadId !== thread.id) return;
+    const { project, worker } = m;
+    const waiting = [...this.awaitingFinal.keys()].filter(key => {
+      const [pid, num] = key.split(":");
+      return pid === project.id && this.store.assignment(project.id, Number(num))?.workerNum === worker.num;
+    });
+    const turn = await latestCompletedTurn(this.sdk, thread.id).catch(() => null);
+    const drop = () => waiting.forEach(key => this.awaitingFinal.delete(key));
+    if (!turn?.final) return drop();
+    const finalMessage = clipFinal(turn.final.text);
+    // A short report filed during this turn: its filing time lies inside the turn.
+    for (const key of waiting) {
+      const filedAt = this.awaitingFinal.get(key)!;
+      this.awaitingFinal.delete(key);
+      const num = Number(key.split(":")[1]);
+      const current = this.store.assignment(project.id, num);
+      const inTurn = turn.startedAt !== null && turn.endedAt !== null
+        ? filedAt >= turn.startedAt - 1000 && filedAt <= turn.endedAt + 1000
+        : current !== null && turn.inputs.some(text => text.includes(opMarker(current.opId)));
+      if (current?.report && !current.report.finalMessage && inTurn)
+        this.store.updateAssignment(project.id, num, { report: { ...current.report, finalMessage } });
+    }
+    const open = this.store.openAssignment(project.id, worker.num);
+    if (!open || !["running", "idle_no_report"].includes(open.state) || open.threadId !== thread.id ||
+        !open.briefDelivered || open.queuedMessageId || open.cancelRequested || open.report) return;
+    // Only the turn that received this work's brief reports it; an older turn never does.
+    if (!turn.inputs.some(text => text.includes(opMarker(open.opId)))) return;
+    const summary = summaryOf(turn.final.text);
+    await this.report(thread.id, {
+      assignment: open.ref,
+      outcome: "succeeded",
+      summary,
+      evidence: [],
+      handoff: { summary, workspaceRevision: "not recorded", files: [], openQuestions: [], nextSteps: [], dirtyFiles: [], recoveryArtifacts: [], pendingCommands: [] },
+      pendingBackgroundWork: [],
+      finalMessage,
+    });
+  }
+
+  /** The new short report (T136): outcome and summary for the dashboard; the final message follows. */
+  async shortReport(threadId: string, input: { outcome: "done" | "blocked" | "failed"; summary: string; question?: string }) {
+    const result = await this.report(threadId, {
+      outcome: input.outcome === "done" ? "succeeded" : input.outcome,
+      summary: input.summary,
+      evidence: [],
+      ...(input.outcome === "blocked" ? { blocker: { question: input.question ?? input.summary, context: input.summary } } : {}),
+      handoff: { summary: input.summary, workspaceRevision: "not recorded", files: [], openQuestions: [], nextSteps: [], dirtyFiles: [], recoveryArtifacts: [], pendingCommands: [] },
+      pendingBackgroundWork: [],
+    });
+    const { project } = this.workerOf(threadId);
+    const a = this.requireAssignment(project, result.assignment);
+    this.awaitingFinal.set(`${project.id}:${a.num}`, this.now());
+    return { ...result, note: "Recorded. End your turn with your report as the final message; it is attached to this summary." };
   }
 
   /** One explicit notice attempt; a repeat can retry only a definite failed receipt. */
@@ -6723,6 +6463,19 @@ export class ProjectsService {
   private async reloadToolsIfIdle(thread: ThreadDto): Promise<string | null> {
     return "Adopted without releasing its runtime. Initiative tools load at the next natural session restart; bb initiative works immediately.";
   }
+}
+
+/** A final message stored as the report: its head and tail when longer than the cap. */
+function clipFinal(text: string) {
+  if (text.length <= FINAL_MESSAGE_MAX) return text;
+  const half = Math.floor(FINAL_MESSAGE_MAX / 2) - 20;
+  return `${text.slice(0, half)}\n\n[… ${text.length - 2 * half} characters cut …]\n\n${text.slice(-half)}`;
+}
+
+/** The dashboard line for a report taken from a final message: its first paragraph, plain. */
+export function summaryOf(text: string) {
+  const first = text.split(/\n\s*\n/).map(p => p.replace(/^#+\s*/gm, "").replace(/\s+/g, " ").trim()).find(Boolean) ?? "Reported.";
+  return first.length > 300 ? `${first.slice(0, 297).trimEnd()}…` : first;
 }
 
 export function slug(text: string) {
