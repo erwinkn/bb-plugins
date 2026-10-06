@@ -305,6 +305,11 @@ blocking work. `TimelineWindowedItems` adds 50–85 ms of
   to animate a toggle), or read every height before writing any, or rely on
   the ResizeObserver path alone.
 - **Suggested issue title:** `Timeline collapsible groups force a layout each on mount`.
+- **Status (2026-10-07, T127):** fixed upstream in 0.45.0, where the groups
+  measure through a shared ResizeObserver: 2–7 ms of `offsetHeight` forcing
+  per switch instead of 166–331 ms. A switch still pays one first layout of
+  the new rows (about 50 ms in headless Chromium on this server), now forced
+  by whichever layout effect reads first. Nothing left to file.
 
 ### Thread switch: paint the header and latest rows before the full commit (2026-10-06)
 
@@ -323,6 +328,74 @@ every switch:
 
 Suggested issue title: `Thread switches block on one long commit; paint the
 header and latest rows first`.
+
+**Status (2026-10-07, T127), measured on 0.45.0 with the T118 harness on a
+copy of live data:** a warm switch's longest task is now 134–161 ms (was
+275–500 ms on 0.43.1).
+
+- Patched in fork `4f6627576`: a windowed timeline mounts the visible rows with
+  an overscan of 1 and widens it to 8 after the first paint. First row
+  151/185/180 → 132/154/149 ms, longest task 134/158/161 → 123/135/139 ms
+  (Coffre, Equisafe, bb-plugins).
+- Patched in fork `9606ade0b`: the plugin SDK's `navigate.toThread` fetched
+  `/threads/<id>` before navigating, outside React Query, so every switch from
+  a plugin (the Sidebar's Initiative rows) waited a round trip, and the view
+  fetched the thread again. It now takes the project from cached thread data
+  and navigates at once. One `/threads/<id>` per switch, no round trip before
+  the switch.
+- `/environments/<id>/status` is fetched once per switch in 0.45.0.
+- `/pull-request` still refetches on every mount (`refetchOnMount: "always"`,
+  on purpose: a closed PR must refresh after a missed realtime update). It is
+  served from a 10 s server cache and does not block the paint. Left as is.
+- Still open: one 120–140 ms commit (React render about 60–75 ms, first layout
+  about 50 ms). React time-slicing does not apply because router state is read
+  through `useSyncExternalStore`, which makes the transition blocking; a
+  `useDeferredValue` at the thread view measured no gain. The next lever is
+  keeping recently viewed thread views mounted (React `<Activity>`), which
+  needs care with `document.querySelector` users and focus.
+
+### Timeline ordering context rebuilt on every new turn (2026-10-07)
+
+Candidate from T127; not filed. Patched in fork `abab3f35b`. Each new turn
+invalidates the timeline's cached ordering context, and the next build
+re-read every ordering row of the thread (`json_extract` over 3.4k rows and
+1.7 MB on Coffre PM's coordinator). Live 0.43.1 logged 117 slow builds of
+that thread in one day at about 250 ms. The fork keeps the rows per thread
+and reads only the new ones: 25–35 → 9–14 ms warm per new turn, and about
+300 ms → a few ms with a cold page cache. Suggested issue title: `Extend the
+timeline ordering context incrementally`.
+
+### Event-loop stall attribution (2026-10-07)
+
+Candidate from T127; not filed. Patched in fork `45661e3d7`. On live 0.43.1,
+"Event loop stalled" named the culprit in none of 261 stalls in a day (154
+over 1 s). The fork adds, per stall:
+
+- database time by work label (routes, `plugin:<id> <rpc>`, sweeps), the
+  slowest statement, and GC pauses;
+- a CPU profile of the stalled main thread, taken from a worker through
+  `inspector.Session.connectToMainThread()` only while the stall lasts, with
+  the heaviest functions and stack.
+
+Suggested issue title: `Attribute event-loop stalls to queries, GC and code`.
+
+### Reconnect revives threads without a turn (2026-10-07)
+
+Candidate from T134; not filed. Patched in fork `329ac507a`. In 0.43.1 a
+daemon socket closed for over 30 s interrupted every running turn on the
+host, and the same daemon's reconnect revived the threads to `active` with
+their turn still closed. In the last week this happened to 71 turns in 11
+incidents, lasting 18 min on average and 70 min at most; 50 of those agents
+finished normally. Upstream #4271 (0.45.0) removed the timer.
+`reconcileDaemonReportedThreads` still revives any `error` thread the daemon
+reports, open turn or not. The fork re-adopts a turn BB itself closed
+(retracting its interruption rows) and otherwise revives only threads with a
+turn or a pending request.
+
+Related gap: the lifecycle table has no `active + stop.settled` transition,
+so a provider that reports `interrupted` by itself leaves the thread
+`active`. This is rare. Suggested issue title: `Do not revive a thread
+without an open turn on reconnect`.
 
 ### Re-attribute thread origin when a plugin changes ID (2026-10-06)
 
