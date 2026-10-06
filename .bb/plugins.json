@@ -24,6 +24,10 @@
       "source": "./plugins/provider-usage-compact"
     },
     {
+      "name": "machine-load",
+      "source": "./plugins/machine-load"
+    },
+    {
       "name": "sidebar",
       "source": "./plugins/sidebar"
     },

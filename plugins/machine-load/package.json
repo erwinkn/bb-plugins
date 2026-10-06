@@ -1,0 +1,48 @@
+{
+  "name": "bb-plugin-machine-load",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.43.1",
+    "bbPluginSdk": ">=0.4.87"
+  },
+  "bb": {
+    "name": "Machine load",
+    "description": "Live CPU, memory, disk, and load for each machine, as a gauge in the sidebar footer.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts",
+    "host": "./host.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "dependencies": {
+    "@radix-ui/react-slot": "^1.3.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.87",
+    "@radix-ui/react-dropdown-menu": "^2.1.20",
+    "@testing-library/react": "^16.0.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "clsx": "^2.1.1",
+    "hono": "^4.13.13",
+    "jsdom": "^26.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}

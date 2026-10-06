@@ -37,6 +37,11 @@ views, session history, and spoken thread updates. See [Voice Mode](plugins/voic
 `provider-usage-compact` supplies the compact usage popup. See [Provider usage
 compact](plugins/provider-usage-compact/README.md) for installation and rollback.
 
+`machine-load` puts a live three-bar gauge (CPU, memory, fullest disk) in the
+sidebar footer beside Provider usage. Clicking it opens sparklines, per-core
+load, disks, throughput, and top processes for any enrolled machine. See
+[Machine load](plugins/machine-load/README.md).
+
 `remove-plugin-ellipsis` hides the ellipsis button on plugin sidebar rows, including
 Automations. See [Hide plugin nav menus](plugins/remove-plugin-ellipsis/README.md).
 
@@ -1076,6 +1081,20 @@ Status: recorded 2026-09-12; the Threads plugin ports the native behaviour
 instead. Suggested issue title: `Expose thread nesting to plugin thread lists
 and add a keyboard nest action`.
 File in [BB issues](https://github.com/get-bb/bb/issues).
+
+### Live badges on sidebar footer items (2026-10-06)
+
+Sidebar footer items (`experimental_sidebarFooter`) are static icon buttons
+with a fixed label. A plugin cannot show a value, badge, or warning dot on
+one. `machine-load` gets a live gauge by registering an app icon
+(`experimental_icons.register`) whose component reads its own store, then
+naming that icon in the footer item. This works because BB 0.43.1 resolves
+footer icons through the app icon registry. That behavior is undocumented, the
+component renders outside the plugin's style scope and React context, and the
+tooltip cannot carry current values. A supported `badge`, or a small
+`component` for the button face plus a dynamic label, would make it
+deliberate. No issue filed. Suggested title: `Plugin sidebar footer items:
+live badge or icon component with a dynamic label`.
 
 ### Enumerable host icon names
 
