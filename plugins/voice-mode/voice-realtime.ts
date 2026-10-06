@@ -5,6 +5,7 @@
 import React, { useEffect, useRef, useSyncExternalStore } from "react";
 import {
   experimental_useSidebarThreadActions,
+  experimental_useSidebarThreads,
   useBbContext,
   useBbNavigate,
   useComposer,
@@ -18,6 +19,9 @@ import { nativeUi } from "./native-ui";
 import { LiveCallControls } from "./voice-chrome";
 import { useShortcutSync } from "./shortcut-store";
 import type { rpcContract } from "./server";
+
+/** BB's built-in side-chat plugin, which spawns each side chat as a hidden fork (BB 0.45+). */
+const SIDE_CHAT_PLUGIN_ID = "side-chat";
 
 /** Route prefix of the Voice page, which draws its own call console. */
 const VOICE_ROUTE_PREFIX = "/plugins/voice-mode/sessions";
@@ -145,6 +149,11 @@ export function VoiceComposerBinding() {
   composerRef.current = composer;
   const viewRef = useRef(view);
   viewRef.current = view;
+  // BB 0.45 scopes a side chat as a plain thread composer; its thread (a
+  // hidden fork the side-chat plugin spawned) tells it apart, read live.
+  const { threads } = experimental_useSidebarThreads();
+  const threadsRef = useRef(threads);
+  threadsRef.current = threads;
   useEffect(() => nativeUi.bind({
     kind: "composer",
     view: () => ({ scope: viewRef.current.scope, draft: viewRef.current.draft, run: viewRef.current.run }),
@@ -153,6 +162,12 @@ export function VoiceComposerBinding() {
       updateText: (updater) => composerRef.current.updateText(updater),
     },
     openFilePreview: (options) => navigateRef.current.experimental_openFilePreview(options),
+    sideChatParent: () => {
+      const scope = viewRef.current.scope;
+      if (scope.kind !== "thread") return null;
+      const thread = threadsRef.current.find((t) => t.id === scope.threadId);
+      return thread?.originPluginId === SIDE_CHAT_PLUGIN_ID ? thread.parentThreadId : null;
+    },
   }), []);
   // A scope change is a binding change for anyone waiting on a composer.
   const scopeKey = JSON.stringify(view.scope);

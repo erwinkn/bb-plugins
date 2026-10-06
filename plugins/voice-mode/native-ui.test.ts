@@ -27,9 +27,12 @@ function fakeApp(initial: { threadId?: string | null; projectId?: string | null;
   return { binding, state, calls };
 }
 
-function fakeComposer(initialScope: PluginComposerScope, text = "", run = { isRunning: false, isSubmitting: false }) {
+/** BB 0.43's side-chat scope, which BB 0.45's SDK types no longer list. */
+type LegacySideChatScope = { kind: "side-chat"; projectId: string; parentThreadId: string; tabId: string; childThreadId: string | null };
+
+function fakeComposer(initialScope: PluginComposerScope | LegacySideChatScope, text = "", run = { isRunning: false, isSubmitting: false }, sideChatParent?: string) {
   const draft = { text, attachmentCount: 0, get isEmpty() { return draft.text.length === 0; } };
-  let scope = initialScope;
+  let scope = initialScope as PluginComposerScope;
   const previews: unknown[] = [];
   let previewAccepted = true;
   const binding: NativeUiComposerBinding = {
@@ -40,6 +43,7 @@ function fakeComposer(initialScope: PluginComposerScope, text = "", run = { isRu
       updateText: (updater) => { draft.text = updater(draft.text); },
     },
     openFilePreview: (options) => { previews.push(options); return previewAccepted; },
+    ...(sideChatParent ? { sideChatParent: () => sideChatParent } : {}),
   };
   return { binding, draft, previews, setScope: (next: PluginComposerScope) => { scope = next; }, setPreviewAccepted: (value: boolean) => { previewAccepted = value; } };
 }
@@ -193,6 +197,37 @@ test("prepare_draft targets exactly one scope: queued edits and side chats are p
   assert.equal(sideResult.status, "failed");
   assert.match(sideResult.detail, /side chat/);
   assert.equal(side.draft.text, "side");
+});
+
+test("BB 0.45 side chats, plain thread composers on a side-chat fork, are protected like BB 0.43's", async () => {
+  const ui = fast();
+  const app = fakeApp({ threadId: "thr_c" });
+  ui.bind(app.binding);
+  // The side chat on thr_c: a thread composer for its hidden fork thr_s.
+  const side = fakeComposer({ kind: "thread", threadId: "thr_s" }, "side", undefined, "thr_c");
+  const unbindSide = ui.bind(side.binding);
+  // With thr_c's own composer hidden, drafting there is refused, as on 0.43.
+  const parent = await ui.execute({ kind: "prepare_draft", target: { kind: "thread", threadId: "thr_c" }, text: "new", mode: "replace" }, current);
+  assert.equal(parent.status, "failed");
+  assert.match(parent.detail, /side chat is open on thread thr_c/);
+  // The side chat's own thread is never written through its side chat.
+  const child = await ui.execute({ kind: "prepare_draft", target: { kind: "thread", threadId: "thr_s" }, text: "new", mode: "replace" }, current);
+  assert.equal(child.status, "failed");
+  assert.match(child.detail, /side chat/);
+  assert.equal(side.draft.text, "side");
+  assert.equal(app.calls.length, 0);
+  // Next to thr_c's own composer, the draft lands there and nowhere else.
+  const own = fakeComposer({ kind: "thread", threadId: "thr_c" }, "");
+  ui.bind(own.binding);
+  assert.equal((await ui.execute({ kind: "prepare_draft", target: { kind: "thread", threadId: "thr_c" }, text: "hello", mode: "replace" }, current)).status, "succeeded");
+  assert.equal(own.draft.text, "hello");
+  assert.equal(side.draft.text, "side");
+  // A thread composer without a side-chat parent (a split) is a plain target.
+  unbindSide();
+  const split = fakeComposer({ kind: "thread", threadId: "thr_s" }, "");
+  ui.bind(split.binding);
+  assert.equal((await ui.execute({ kind: "prepare_draft", target: { kind: "thread", threadId: "thr_s" }, text: "x", mode: "replace" }, current)).status, "succeeded");
+  assert.equal(split.draft.text, "x");
 });
 
 test("prepare_draft opens the target thread on request and waits for its composer, cancelling on hangup", async () => {

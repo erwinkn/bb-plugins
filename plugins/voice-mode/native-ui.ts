@@ -48,6 +48,24 @@ export interface NativeUiComposerBinding {
   view: () => Pick<ComposerView, "scope" | "draft" | "run">;
   composer: Pick<PluginComposerApi, "setText" | "updateText">;
   openFilePreview: NativeUiPreview;
+  /**
+   * BB 0.45+: a side chat is a plain thread composer on a hidden fork the
+   * built-in side-chat plugin spawned. Returns that thread's parent, else
+   * null. BB 0.43 gives side chats their own `side-chat` scope instead.
+   */
+  sideChatParent?: () => string | null;
+}
+
+/** BB 0.43's side-chat composer scope; BB 0.45's SDK types no longer list it. */
+type LegacySideChatScope = { kind: "side-chat"; parentThreadId: string; childThreadId: string | null };
+
+/** A side chat's parent and child thread, on either BB version, or null. */
+function sideChatOf(binding: NativeUiComposerBinding): { parentThreadId: string; childThreadId: string | null } | null {
+  const scope = binding.view().scope as PluginComposerScope | LegacySideChatScope;
+  if (scope.kind === "side-chat") return { parentThreadId: scope.parentThreadId, childThreadId: scope.childThreadId };
+  if (scope.kind !== "thread") return null;
+  const parentThreadId = binding.sideChatParent?.() ?? null;
+  return parentThreadId ? { parentThreadId, childThreadId: scope.threadId } : null;
 }
 
 /** The mounted, visible Voice panel; lets show_voice select the live conversation. */
@@ -202,20 +220,23 @@ export class NativeUi {
     return failed("Unsupported UI action.");
   }
 
-  private findComposer(match: (scope: PluginComposerScope) => boolean): NativeUiComposerBinding | null {
-    return [...this.composers.values()].find(c => match(c.view().scope)) ?? null;
+  private findComposer(match: (scope: PluginComposerScope, binding: NativeUiComposerBinding) => boolean): NativeUiComposerBinding | null {
+    return [...this.composers.values()].find(c => match(c.view().scope, c)) ?? null;
   }
 
+  /** The thread's own composer; a side chat on it is not one, even when BB 0.45 scopes it as a thread. */
   private threadComposer(threadId: string): NativeUiComposerBinding | null {
-    return this.findComposer(scope => scope.kind === "thread" && scope.threadId === threadId);
+    return this.findComposer((scope, binding) => scope.kind === "thread" && scope.threadId === threadId && !sideChatOf(binding));
   }
 
   /** A protected editing surface on this thread (queued-message editor, side chat). */
-  private threadEditing(threadId: string): PluginComposerScope | null {
-    return this.findComposer(scope =>
-      (scope.kind === "queued-message" && scope.threadId === threadId) ||
-      (scope.kind === "side-chat" && (scope.parentThreadId === threadId || scope.childThreadId === threadId)),
-    )?.view().scope ?? null;
+  private threadEditing(threadId: string): "queued-message" | "side-chat" | null {
+    const binding = this.findComposer((scope, binding) => {
+      if (scope.kind === "queued-message") return scope.threadId === threadId;
+      const side = sideChatOf(binding);
+      return !!side && (side.parentThreadId === threadId || side.childThreadId === threadId);
+    });
+    return !binding ? null : binding.view().scope.kind === "queued-message" ? "queued-message" : "side-chat";
   }
 
   private newThreadComposer(): NativeUiComposerBinding | null {
@@ -290,9 +311,9 @@ export class NativeUi {
       label = `thread ${target.threadId}`;
       binding = this.threadComposer(target.threadId);
       if (!binding) {
-        const protectedScope = this.threadEditing(target.threadId);
-        if (protectedScope) {
-          return failed(protectedScope.kind === "queued-message"
+        const editing = this.threadEditing(target.threadId);
+        if (editing) {
+          return failed(editing === "queued-message"
             ? `A queued message is being edited in ${label}. Finish that edit first.`
             : `A side chat is open on ${label}. Close it first to draft in the thread itself.`);
         }
@@ -335,7 +356,7 @@ export class NativeUi {
     // Re-read the live scope right before writing: the composer instance may
     // have been handed to another scope since it was matched.
     const view = binding.view();
-    if (!NativeUi.draftScopeMatches(view.scope, target)) return failed(`The composer of ${label} changed before the draft was written. Nothing was changed.`);
+    if (!NativeUi.draftScopeMatches(view.scope, target) || sideChatOf(binding)) return failed(`The composer of ${label} changed before the draft was written. Nothing was changed.`);
     if (view.run.isSubmitting) return failed(`The composer of ${label} is sending right now. Try again in a moment.`);
     const existing = view.draft.text;
     if (mode === "replace") {
