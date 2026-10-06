@@ -35,6 +35,7 @@ import {
   type OverviewDetail,
 } from "./lib/overview";
 import { LiveThreads, Recent } from "./lib/live-threads";
+import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, READ_EXAMPLES } from "./lib/examples";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { objectRootSchema } from "./lib/tool-schema";
@@ -144,6 +145,14 @@ export default function plugin(bb: BbPluginApi) {
     );
     result.project.profileDefaults = profileDefaults;
     result.revision = { epoch: instanceEpoch, version: ledgerVersion() };
+    // One workspace-wide queue read, shared by every Initiative's refresh. A
+    // failed read shows nothing rather than guessing (T133).
+    try {
+      const queue = await recent("queue", () => bb.sdk.threads.queue.list());
+      result.notDelivered = notDeliveredMessages(queue, queueTargets(store, projectId), live, Date.now());
+    } catch {
+      result.notDelivered = [];
+    }
     if (result.project.coordinatorThreadId) {
       const threadId = result.project.coordinatorThreadId;
       try {

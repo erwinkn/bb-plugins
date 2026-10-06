@@ -1,3 +1,4 @@
+import type { NotDeliveredMessage } from "./not-delivered";
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { BUSY_STATUSES } from "./bb";
 import { blockerAnswerItem, blockerKey, dismissalItem, openBlockers, undismissed } from "./blockers";
@@ -302,6 +303,8 @@ export interface Overview {
     nativeStatus: string | null;
   })[];
   activity: { at: number; kind: string; summary: string }[];
+  /** Messages BB is holding for member threads with nothing running to deliver them (T133); filled by the server's native read. */
+  notDelivered?: NotDeliveredMessage[];
 }
 
 /** Assignment states where work is still owed; reported work is separate. */

@@ -68,6 +68,10 @@ function createInterceptableHost(
 export interface QueuedRow {
   id: string;
   content: unknown;
+  createdAt?: number;
+  updatedAt?: number;
+  waitingOn?: { kind: string } | null;
+  failureReason?: string | null;
 }
 
 export function fixture(settings?: Record<string, string | number | boolean>, options: { dataDir?: string } = {}) {
@@ -110,6 +114,14 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
   // Native queues live in BB, not the plugin. Tests queue via send's
   // {delivery:'queued'} receipt and clear rows to simulate BB dispatching them.
   const queued = new Map<string, QueuedRow[]>();
+  // BB's Send now: the row leaves the queue as it dispatches.
+  const sendQueued = vi.fn(async ({ threadId, queuedMessageId }: { threadId: string; queuedMessageId: string; mode: string }) => {
+    const rows = queued.get(threadId) ?? [];
+    if (!rows.some((row) => row.id === queuedMessageId))
+      throw Object.assign(new Error("Queued message not found"), { status: 404 });
+    queued.set(threadId, rows.filter((row) => row.id !== queuedMessageId));
+    return { ok: true, delivery: "sent" };
+  });
   const spawn = vi.fn(async (args: Record<string, any>) => {
     // BB 0.43.1 thread-create cross-field validation, absent from the SDK
     // harness's structural spawn checks. Reject before creating any fixture
@@ -424,7 +436,13 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
               )
               .slice(0, Number(args.limit ?? history.length)),
         },
+        queue: {
+          list: async () =>
+            [...queued.entries()].flatMap(([threadId, rows]) =>
+              rows.map((row) => ({ threadId, waitingOn: null, failureReason: null, createdAt: 0, updatedAt: 0, ...row }))),
+        },
         queuedMessages: {
+          send: sendQueued,
           list: async ({ threadId }: { threadId: string }) =>
             queued.get(threadId) ?? [],
           delete: async ({ threadId, queuedMessageId }: any) => {
@@ -481,6 +499,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     execution,
     history,
     queued,
+    sendQueued,
     envs,
     envUpdate,
     spawn,

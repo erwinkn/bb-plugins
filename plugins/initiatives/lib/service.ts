@@ -20,6 +20,7 @@ import {
 import { blockerKey, openBlockers } from "./blockers";
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
+import { queueTargets } from "./not-delivered";
 import { opMarker, renderAssignment, renderCoordinatorSeed } from "./brief";
 import { isOwnOrigin } from "./identity";
 import {
@@ -3525,6 +3526,34 @@ export class ProjectsService {
 
   acknowledgeDecision(projectId: string, ref: string, _note: string) {
     return this.reviewDecision(projectId, ref, "okay");
+  }
+
+  /**
+   * Send or remove one message BB is holding for a member thread (T133). It
+   * acts only on the row still in BB's queue, so a message that was already
+   * dispatched or removed is reported as such and never sent again.
+   */
+  async resolveHeldMessage(projectId: string, threadId: string, queuedMessageId: string, operation: "send" | "delete") {
+    this.requireProject(projectId);
+    const target = queueTargets(this.store, projectId).get(threadId);
+    if (!target) throw new ProjectError(`${threadId} is not this Initiative's coordinator, a recent former coordinator or a current worker.`);
+    const row = (await this.sdk.threads.queuedMessages.list({ threadId })).find((r) => r.id === queuedMessageId);
+    if (!row) return { outcome: "gone" as const, note: `BB no longer holds ${queuedMessageId}: it was sent or removed already. Nothing was sent.` };
+    try {
+      if (operation === "send") {
+        const thread = await this.sdk.threads.get({ threadId });
+        if (thread.archivedAt !== null || thread.deletedAt !== null)
+          throw new ProjectError(`${target}'s thread is archived or deleted, so the message cannot run there. Remove it instead.`);
+        await this.sdk.threads.queuedMessages.send({ threadId, queuedMessageId, mode: "auto" });
+      } else {
+        await this.sdk.threads.queuedMessages.delete({ threadId, queuedMessageId });
+      }
+    } catch (error) {
+      if (error instanceof ProjectError) throw error;
+      throw new ProjectError(`BB ${isDefiniteRejection(error) ? "refused" : "did not confirm"} ${operation === "send" ? "sending" : "removing"} ${queuedMessageId}: ${errorMessage(error)}. Refresh the Inbox: a message that left the queue is never sent twice.`);
+    }
+    this.store.log(projectId, "message", `${operation === "send" ? "You sent" : "You removed"} a message BB was holding for ${target} (${queuedMessageId})`, { threadId, queuedMessageId });
+    return { outcome: operation === "send" ? "sent" as const : "deleted" as const };
   }
 
   recordUpdate(

@@ -399,6 +399,8 @@ export function ControlRoom({
   const undelivered = o.decisions.filter(d =>
     d.dismissal?.notify && !d.dismissal.undoneAt && undeliveredState(d.notification) ||
     d.blockerAnswer && !carded.has(d.ref) && (undeliveredState(d.notification) || undeliveredState(d.blockerAnswer.delivery)));
+  // Messages BB is holding for members with nothing running to deliver them (T133).
+  const held = o.notDelivered ?? [];
   // A report's own row replaces the remaining row of the task it awaits.
   const reported = new Set(o.awaitingAcceptance.flatMap((a) => a.tasks.map((t) => t.ref)));
   const remaining = o.remaining.filter((t) => !(t.status === "awaiting_acceptance" && reported.has(t.ref)));
@@ -694,9 +696,10 @@ export function ControlRoom({
                   ))}
                 </section>
               ) : null}
-              {undelivered.length ? <section aria-label="Not delivered">
+              {undelivered.length || held.length ? <section aria-label="Not delivered">
                 <h2 className="cr-section-heading">Not delivered</h2>
                 {undelivered.map(d => <DecisionItem key={d.ref} d={d} run={run} />)}
+                {held.map(m => <HeldMessage key={m.id} m={m} run={run} openThread={openThread} />)}
               </section> : null}
               {unchecked.length || acceptDecisions.eligible ? <section aria-label="Agent decisions to check">
                 <div className="cr-inbox-decision-head">
@@ -705,7 +708,7 @@ export function ControlRoom({
                 </div>
                 {unchecked.map(d => <DecisionItem key={d.ref} d={d} run={run} />)}
               </section> : null}
-              {!o.opinionNeeded.length && !o.blockers.length && !unchecked.length && !undelivered.length ? (
+              {!o.opinionNeeded.length && !o.blockers.length && !unchecked.length && !undelivered.length && !held.length ? (
                 <p className="cr-empty">You’re up to date.</p>
               ) : null}
             </div>
@@ -1535,6 +1538,25 @@ function moveBetweenFolds(event: React.KeyboardEvent<HTMLElement>) {
 }
 
 /** One decision: its text first, then who made it, when, and its review. */
+/** One message BB still holds: what it says, why it is held, and the user's two ways out. */
+function HeldMessage({ m, run, openThread }: { m: NonNullable<Overview["notDelivered"]>[number]; run: Run; openThread: (threadId: string) => void }) {
+  return (
+    <article className="cr-decision" aria-label={`Message held for ${m.target}`}>
+      <p role="status">{m.reason}</p>
+      <div className="cr-decision-text cr-clamp">{m.preview || "(no text)"}</div>
+      <div className="cr-decision-meta">
+        <a className="cr-worker-link" href="#" title={`Open ${m.target}'s thread`}
+          onClick={(event) => { event.preventDefault(); openThread(m.threadId); }}>{m.target}</a>
+        <Age at={m.queuedAt} />
+        <Action run={run} command={{ action: "queued-message", thread: m.threadId, message: m.id, operation: "send" }}
+          title={`Send it to ${m.target} now. BB starts a turn there.`}>Send now</Action>
+        <Action run={run} command={{ action: "queued-message", thread: m.threadId, message: m.id, operation: "delete" }}
+          title="Remove it from BB's queue. Nothing is sent.">Remove</Action>
+      </div>
+    </article>
+  );
+}
+
 function DecisionItem({ d, run, answer }: { d: DecisionRow; run: Run; answer?: Overview["answered"][number] }) {
   const [full, setFull] = useState(false);
   const reviewable = d.madeBy === "agent" && (d.review === "pending" || d.notification?.state === "failed");

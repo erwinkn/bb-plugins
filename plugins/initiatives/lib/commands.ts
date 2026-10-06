@@ -295,6 +295,15 @@ export const acknowledgeSchema = z
     note: z.string().trim().max(4000).default(""),
   })
   .strict();
+/** The user sends or removes a message BB is holding for a member thread (T133). */
+export const queuedMessageSchema = z
+  .object({
+    action: z.literal("queued-message"),
+    thread: z.string().regex(/^thr_[a-z0-9]+$/),
+    message: z.string().regex(/^qmsg_[a-z0-9]+$/),
+    operation: z.enum(["send", "delete"]),
+  })
+  .strict();
 export const answerSchema = z
   .object({
     action: z.literal("answer"),
@@ -370,6 +379,7 @@ export const commandSchema = z.discriminatedUnion("action", [
   questionWithdrawSchema,
   decisionReviewSchema,
   acknowledgeSchema,
+  queuedMessageSchema,
   updateSchema,
   appearanceCommandSchema,
 ]);
@@ -509,6 +519,9 @@ export async function runCommand(
         throw new ProjectError("Only the user marks decisions as reviewed.");
       return service.acknowledgeDecision(projectId, c.decision, c.note);
     }
+    case "queued-message":
+      if (author !== "user") throw new ProjectError("Only the user sends or removes a held message from the Inbox. Agents use bb thread queue.");
+      return service.resolveHeldMessage(projectId, c.thread, c.message, c.operation);
     case "update":
       return service.recordUpdate(projectId, c, threadId);
   }
