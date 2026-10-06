@@ -15,7 +15,7 @@ interface NativeThread {
 /** How long a native fact serves dashboard reads before it is read again. */
 export const LIVE_TTL_MS = 30_000;
 /** Facts no read asked for in this long are dropped. */
-const LIVE_IDLE_MS = 10 * 60_000;
+const LIVE_IDLE_MS = 2 * 60 * 60_000;
 
 const liveOf = (thread: NativeThread): LiveThread => ({
   status: thread.deletedAt !== null ? "deleted" : thread.status,
@@ -145,15 +145,31 @@ export class LiveThreads {
  * For slow-changing context (project sources, environments, defaults).
  */
 export class Recent<T> {
-  private entries = new Map<string, { value: Promise<T>; at: number }>();
+  private entries = new Map<string, { value: Promise<T>; at: number; reloading?: Promise<T> }>();
   constructor(
     private readonly ttl: number,
     private readonly now: () => number = () => Date.now(),
   ) {}
 
+  /**
+   * A first read waits for `load`. After `ttl` the last good value is
+   * answered at once while one background reload replaces it; a failed
+   * reload keeps the old value. Dashboard facts, never authority.
+   */
   get(key: string, load: () => Promise<T>): Promise<T> {
     const entry = this.entries.get(key);
     if (entry && this.now() - entry.at < this.ttl) return entry.value;
+    if (entry) {
+      if (!entry.reloading) {
+        const reloading = load();
+        entry.reloading = reloading;
+        reloading.then(
+          () => { if (this.entries.get(key) === entry) this.entries.set(key, { value: reloading, at: this.now() }); },
+          () => { if (this.entries.get(key) === entry) entry.reloading = undefined; },
+        );
+      }
+      return entry.value;
+    }
     const value = load();
     this.entries.set(key, { value, at: this.now() });
     value.catch(() => {

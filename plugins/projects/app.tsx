@@ -24,7 +24,7 @@ import {
 import type { projectsContract, ProjectSummary } from "./lib/contract";
 import { PROJECT_DETAILS_CONFLICT } from "./lib/project-context";
 import type { Command } from "./lib/commands";
-import { sharedReads } from "./lib/dashboard-data";
+import { appReads } from "./lib/dashboard-data";
 import { applyCommitted } from "./lib/committed-result";
 import { mergeOverview } from "./lib/overview-merge";
 import type { Overview, OpinionItem } from "./lib/overview";
@@ -56,24 +56,28 @@ const rememberedNote = (id: string) => {
   }
 };
 
-/** Shared by RPC realm and key; route changes synchronously select their own data. */
-function useData<T>(key: string, fetchData: () => Promise<T>, enabled = true) {
-  const api = useRpc<typeof projectsContract>();
-  const cache = sharedReads(api);
+/**
+ * Shared by key across the app session; route changes synchronously select
+ * their own data. A passive read only follows its key: another read keeps it
+ * current (the panel read seeds its Initiative's summary overview).
+ */
+function useData<T>(key: string, fetchData: () => Promise<T>, enabled = true, passive = false) {
+  const cache = appReads;
   const [, render] = useState(0);
   const refresh = useCallback(() => enabled ? cache.refresh(key, fetchData) : Promise.resolve(), [cache, key, enabled]);
   useEffect(() => {
     if (!enabled) return;
     const unsubscribe = cache.subscribe(key, () => render(n => n + 1));
-    void refresh();
+    if (!passive) void refresh();
     return unsubscribe;
-  }, [cache, key, enabled, refresh]);
+  }, [cache, key, enabled, passive, refresh]);
   const schedule = () => cache.schedule(key, fetchData);
   useRealtime("projects-changed", payload => {
     const id = (payload as { projectId?: string } | null)?.projectId;
-    if (!enabled || key === "inventory") return;
+    if (!enabled || passive || key === "inventory") return;
     const scoped = ["overview:", "details:", "compose:"].some(prefix => key.startsWith(prefix));
-    const membershipId = (cache.entry(key).data as { projectId?: string } | null)?.projectId;
+    const data = cache.entry(key).data as { projectId?: string; membership?: { projectId?: string } | null } | null;
+    const membershipId = data?.projectId ?? data?.membership?.projectId;
     if (!id || scoped && key.endsWith(`:${id}`) || !scoped && (!membershipId || membershipId === id)) schedule();
   });
   const connection = useRealtimeConnectionState();
@@ -81,16 +85,16 @@ function useData<T>(key: string, fetchData: () => Promise<T>, enabled = true) {
   const connectedOnce = useRef(connection === "connected");
   useEffect(() => {
     if (connection === "connected") {
-      if (enabled && connectedOnce.current && previousConnection.current !== "connected") schedule();
+      if (enabled && !passive && connectedOnce.current && previousConnection.current !== "connected") schedule();
       connectedOnce.current = true;
     }
     previousConnection.current = connection;
   }, [connection, cache, key, enabled]);
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || passive) return;
     const interval = setInterval(() => { if (document.visibilityState !== "hidden") schedule(); }, 15000);
     return () => clearInterval(interval);
-  }, [cache, key, enabled]);
+  }, [cache, key, enabled, passive]);
   const entry = cache.entry(key);
   return { data: entry.data as T | null, error: entry.error, loaded: entry.loaded, refresh,
     schedule, begin: () => cache.begin(key) };
@@ -700,10 +704,13 @@ export function Dashboard({
   projectId,
   creationNote,
   variant = "page",
+  seeded = false,
 }: {
   projectId: string;
   creationNote?: string | null;
   variant?: "page" | "panel";
+  /** A panel read keeps this Initiative's summary current; the dashboard only follows it. */
+  seeded?: boolean;
 }) {
   const { mode } = useCodeTheme();
   const [answerNotice, setAnswerNotice] = useState<{ projectId: string; text: string; urgent: boolean } | null>(null);
@@ -713,9 +720,10 @@ export function Dashboard({
   const [detailsNeeded, setDetailsNeeded] = useState(false);
   const api = useRpc<typeof projectsContract>();
   const navigate = useBbNavigate();
+  // In a thread's panel the panel read supplies (and refreshes) this summary.
   const state = useData(`overview:${projectId}`, () =>
     api.call("overview", { projectId, detail: "summary" }),
-  );
+  true, seeded && appReads.entry(`overview:${projectId}`).loaded);
   const history = useData(`history:${projectId}`, () => api.call("overview", { projectId, detail: "history" }), historyNeeded && !detailsNeeded);
   const details = useData(`details:${projectId}`, () => api.call("overview", { projectId, detail: "full" }), detailsNeeded);
   const [inventory, setInventory] = useState<
@@ -1170,14 +1178,25 @@ function Catalog({ open }: { open: (id: string) => void }) {
         </main>
   );
 }
-export function ProjectPanel({ threadId }: PluginThreadPanelProps) {
+/**
+ * A thread's membership and its Initiative's summary in one request, shared
+ * by the header button and the panel. The summary seeds the dashboard's own
+ * entry, so a switch costs one request and a revisit paints from cache.
+ */
+function usePanel(threadId: string) {
   const api = useRpc<typeof projectsContract>();
+  return useData(`panel:${threadId}`, async () => {
+    const panel = await api.call("panel", { threadId });
+    if (panel.membership && panel.summary) appReads.seed(`overview:${panel.membership.projectId}`, panel.summary);
+    return panel;
+  });
+}
+
+export function ProjectPanel({ threadId }: PluginThreadPanelProps) {
   const [createdId, setCreatedId] = useState<string | null>(null);
   const [creationNote, setCreationNote] = useState<string | null>(null);
-  const state = useData(`membership:${threadId}`, () =>
-    api.call("membership", { threadId }),
-  );
-  const id = createdId ?? state.data?.projectId;
+  const state = usePanel(threadId);
+  const id = createdId ?? state.data?.membership?.projectId;
   return (
     <div className="project-page">
       <ErrorNotice message={state.error} retry={() => void state.refresh()} />
@@ -1187,6 +1206,7 @@ export function ProjectPanel({ threadId }: PluginThreadPanelProps) {
           projectId={id}
           creationNote={creationNote}
           variant="panel"
+          seeded={!createdId}
         />
       ) : state.error ? null : !state.loaded ? (
         <p className="bb-projects bb-projects--panel project-muted">
@@ -1208,11 +1228,9 @@ export function ProjectHeader({
   threadId,
   isCompactViewport,
 }: PluginThreadHeaderActionProps) {
-  const api = useRpc<typeof projectsContract>();
   const navigate = useBbNavigate();
-  const membership = useData(`header:${threadId}`, () =>
-    api.call("membership", { threadId }),
-  );
+  const panel = usePanel(threadId);
+  const membership = { data: panel.data?.membership ?? null };
   if (!membership.data) return null;
   return (
     <button

@@ -357,29 +357,55 @@ describe("project dashboard", () => {
   });
   it("keeps membership loading from flashing a project-creation form", async () => {
     let finish!: (v: unknown) => void;
-    const membership = new Promise((r) => {
+    const panel = new Promise((r) => {
       finish = r;
     });
     const slot = renderSlot(
       app.threadPanelActions[0],
       { threadId: "worker", params: {} },
-      { rpc: { membership: () => membership, overview: () => overview() } },
+      { rpc: { panel: () => panel, overview: () => overview() } },
     );
     mounted.push(slot);
     expect(
       slot.queryByRole("heading", { name: "Start an initiative" }),
     ).toBeNull();
     finish({
-      projectId: "p1",
-      name: "Useful search",
-      role: "work",
-      former: false,
+      membership: {
+        projectId: "p1",
+        name: "Useful search",
+        role: "work",
+        former: false,
+      },
+      summary: overview(),
     });
     await waitFor(() =>
       expect(
         slot.getByRole("button", { name: /Coordinator:.*Open thread/ }),
       ).toBeTruthy(),
     );
+  });
+  it("T119 a switch costs one panel request, and a revisit paints the cached dashboard in its first render", async () => {
+    const membership = { projectId: "p1", name: "Useful search", role: "work", former: false };
+    const calls: string[] = [];
+    const rpc = (held?: Promise<unknown>) => ({
+      panel: () => { calls.push("panel"); return held ?? { membership, summary: overview() }; },
+      overview: () => { calls.push("overview"); return overview(); },
+      membership: () => { calls.push("membership"); return membership; },
+    });
+    const first = renderSlot(app.threadPanelActions[0], { threadId: "worker", params: {} }, { rpc: rpc() });
+    const header = renderSlot(app.threadHeaderActions[0], { threadId: "worker", projectId: "proj_a", isCompactViewport: false }, { rpc: rpc() });
+    mounted.push(first, header);
+    await waitFor(() => expect(first.getByRole("button", { name: /Coordinator:.*Open thread/ })).toBeTruthy());
+    await waitFor(() => expect(header.getByRole("button", { name: "Initiative overview: Useful search" })).toBeTruthy());
+    expect(calls).toEqual(["panel"]);
+    first.unmount();
+    header.unmount();
+    // Revisit while the revalidation is still in flight: the cached dashboard is there at once.
+    calls.length = 0;
+    const revisit = renderSlot(app.threadPanelActions[0], { threadId: "worker", params: {} }, { rpc: rpc(new Promise(() => {})) });
+    mounted.push(revisit);
+    expect(revisit.getByRole("button", { name: /Coordinator:.*Open thread/ })).toBeTruthy();
+    await waitFor(() => expect(calls).toEqual(["panel"]));
   });
   it("creates a coordinator in the selected checkout", async () => {
     const note =

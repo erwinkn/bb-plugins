@@ -1,4 +1,4 @@
-/** Realm-local read sharing. Native RPC/realtime remain the transport. */
+/** Read sharing for the app session. Native RPC/realtime remain the transport. */
 export class SharedReads {
   private entries = new Map<string, {
     data: unknown; error: string | null; loaded: boolean; epoch: number;
@@ -42,6 +42,23 @@ export class SharedReads {
       if (!entry.listeners.size && entry.timer) { clearTimeout(entry.timer); entry.timer = undefined; }
     };
   }
+  /**
+   * Store data another read returned for this key (the panel read carries the
+   * summary overview). A held key keeps its pending save; a newer seed wins
+   * over any older fetch still in flight.
+   */
+  seed(key: string, data: unknown) {
+    const entry = this.entry(key);
+    if (entry.holds) return;
+    entry.epoch++; entry.pending = null;
+    entry.data = data; entry.error = null; entry.loaded = true;
+    this.publish(key);
+  }
+  /** Forget every entry (tests). */
+  clear() {
+    for (const entry of this.entries.values()) if (entry.timer) clearTimeout(entry.timer);
+    this.entries.clear();
+  }
   /** Reject pre-save snapshots and hold optional reads until the RPC settles. */
   begin(key: string) {
     const entry = this.entry(key); entry.holds++; entry.epoch++; entry.pending = null;
@@ -54,9 +71,9 @@ export class SharedReads {
     };
   }
 }
-const caches = new WeakMap<object, SharedReads>();
-export function sharedReads(scope: object) {
-  let cache = caches.get(scope);
-  if (!cache) { cache = new SharedReads(); caches.set(scope, cache); }
-  return cache;
-}
+/**
+ * One cache for the app session, shared by every mounted panel and page: a
+ * thread revisited later paints its Initiative from here at once, then
+ * revalidates. RPC clients are per mount, so they cannot scope it.
+ */
+export const appReads = new SharedReads();

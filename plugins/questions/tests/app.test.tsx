@@ -1015,6 +1015,17 @@ describe("Header control", () => {
     return { slot, openThreadPanel };
   }
 
+  it("T119 header controls mounting together for a thread share one read, and a re-render does not read again", async () => {
+    const server = backend({ rounds: [round("r1", 1, [question("q1")])], openRoundId: "r1" });
+    const { slot } = mountHeader(server);
+    mountHeader(server);
+    await slot.findByRole("button", { name: /Questions, 1 open/ });
+    expect(server.calls.filter((call) => call.method === "questions_header")).toHaveLength(1);
+    const Component = app.threadHeaderActions[0]!.component;
+    await act(async () => slot.lifecycle.rerender(createElement(Component, { threadId: THREAD, projectId: "proj", isCompactViewport: true })));
+    expect(server.calls.filter((call) => call.method === "questions_header")).toHaveLength(1);
+  });
+
   it("keeps the launcher after a failed refresh", async () => {
     const server = backend({ rounds: [round("r1", 1, [question("q1")])], openRoundId: "r1" });
     const original = server.handlers.questions_header;

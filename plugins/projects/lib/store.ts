@@ -2131,6 +2131,41 @@ export class Store {
     ).map(toAssignment);
   }
 
+  /**
+   * The dashboard's first paint, without decoding what it never shows: a
+   * report only while awaiting acceptance, a checkpoint only on open or
+   * reported work, and never review targets, notices, staged identities,
+   * write scopes, releases or handoff sources. Those fields are null here;
+   * use `assignments` for anything else.
+   */
+  assignmentsForSummary(projectId: string): AssignmentRecord[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM assignments WHERE project_id = ? ORDER BY num`)
+        .all(projectId) as Row[]
+    ).map((row) => {
+      const settled = ["accepted", "rejected", "cancelled", "failed"].includes(String(row.state));
+      return toAssignment({
+        ...row,
+        report: row.state === "reported" ? row.report : null,
+        checkpoint: settled ? null : row.checkpoint,
+        review_targets: null, report_notice: null, pending_identity: null,
+        write_scope: null, scope_release: null, handoff_sources: null,
+      });
+    });
+  }
+
+  /** Each worker's latest assignment that carries a report, by worker number. */
+  lastReportedAssignments(projectId: string): Map<number, number> {
+    return new Map(
+      (
+        this.db
+          .prepare(`SELECT worker_num AS worker, MAX(num) AS num FROM assignments WHERE project_id = ? AND report IS NOT NULL GROUP BY worker_num`)
+          .all(projectId) as { worker: number; num: number }[]
+      ).map((row) => [row.worker, row.num]),
+    );
+  }
+
   /** One worker's assignments, oldest first. */
   workerAssignments(projectId: string, workerNum: number): AssignmentRecord[] {
     return (

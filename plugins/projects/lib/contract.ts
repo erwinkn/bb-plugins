@@ -8,6 +8,15 @@ import { readOptionsSchema, READ_VIEWS } from "./read";
 export type { ProjectSummary, ProjectTree } from "./tree-schema";
 
 const id = z.string().min(1).max(80);
+const membershipSchema = z
+  .object({
+    projectId: id,
+    name: z.string(),
+    role: z.enum(["coordinator", "work", "review", "adhoc"]),
+    former: z.boolean(),
+  })
+  .nullable();
+export type PanelMembership = z.infer<typeof membershipSchema>;
 export const projectsContract = defineRpcContract({
   resetSetting: {
     input: z.object({ field: z.enum(["coordinatorInstructions", "workerInstructions", "executionProfiles"]) }).strict(),
@@ -17,14 +26,15 @@ export const projectsContract = defineRpcContract({
   tree: { input: z.null(), output: treeSchema },
   membership: {
     input: z.object({ threadId: id }),
-    output: z
-      .object({
-        projectId: id,
-        name: z.string(),
-        role: z.enum(["coordinator", "work", "review", "adhoc"]),
-        former: z.boolean(),
-      })
-      .nullable(),
+    output: membershipSchema,
+  },
+  /**
+   * Everything a thread's Initiative panel and header need in one request:
+   * the thread's membership and, for a member, the summary-tier overview.
+   */
+  panel: {
+    input: z.object({ threadId: id }),
+    output: z.object({ membership: membershipSchema, summary: z.custom<Overview>().nullable() }),
   },
   overview: {
     /** `detail` wins over the older `detailed` (false = summary, default full). */

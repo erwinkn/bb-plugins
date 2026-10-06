@@ -15,6 +15,23 @@ import { QUESTIONS_ACTION_ID } from "./InlineRound";
 
 const OPENED_KEY = "bb-questions-opened";
 
+type HeaderRpc = ReturnType<typeof useRpc<typeof rpcContract>>;
+/**
+ * Header controls mounting together for one thread (a switch can mount more
+ * than one) share their first read, for a moment only. A change signal for
+ * the thread ends the sharing: later reads must start after the change.
+ */
+const MOUNT_SHARE_MS = 1000;
+const mountReads = new Map<string, { read: Promise<HeaderState>; at: number }>();
+function readOnMount(rpc: HeaderRpc, threadId: string): Promise<HeaderState> {
+  const shared = mountReads.get(threadId);
+  if (shared && Date.now() - shared.at < MOUNT_SHARE_MS) return shared.read;
+  const entry = { read: rpc.call("questions_header", { threadId }), at: Date.now() };
+  mountReads.set(threadId, entry);
+  void entry.read.finally(() => { if (mountReads.get(threadId) === entry) mountReads.delete(threadId); }).catch(() => {});
+  return entry.read;
+}
+
 function rememberOpened(threadId: string, roundId: string): boolean {
   try {
     const key = `${OPENED_KEY}:${threadId}`;
@@ -31,6 +48,10 @@ function rememberOpened(threadId: string, roundId: string): boolean {
 export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeaderActionProps) {
   const rpc = useRpc<typeof rpcContract>();
   const navigate = useBbNavigate();
+  // The read effect follows the thread only: a renewed RPC client or
+  // navigate callback must not read the header again.
+  const rpcRef = useRef(rpc);
+  rpcRef.current = rpc;
   const [header, setHeader] = useState<HeaderState | null>(null);
   const currentThread = useRef(threadId);
   currentThread.current = threadId;
@@ -48,6 +69,8 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
     if (!opened && roundId) takeRequestedRound(threadId);
     return opened;
   }, [navigate, threadId]);
+  const openRef = useRef(open);
+  openRef.current = open;
   useEffect(() => {
     // Each effect owns a generation. Cleanup invalidates even a reply for a
     // thread we have since left and returned to, without touching its RPC.
@@ -55,15 +78,20 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
     let inFlight = false;
     let invalidated = false;
     let createdRoundId: string | undefined;
+    let mounting = true;
     const refresh = () => {
       if (!active) return;
       if (inFlight) { invalidated = true; return; }
       inFlight = true;
-      void read();
+      const shared = mounting;
+      mounting = false;
+      void read(shared);
     };
-    const read = async () => {
+    const read = async (shared: boolean) => {
       try {
-        const state = await rpc.call("questions_header", { threadId });
+        const state = shared
+          ? await readOnMount(rpcRef.current, threadId)
+          : await rpcRef.current.call("questions_header", { threadId });
         // A signal received during the read requires one trailing refresh.
         // Its earlier snapshot must not briefly reopen a closed prompt.
         if (!active || currentThread.current !== threadId || state.threadId !== threadId || invalidated) return;
@@ -71,7 +99,7 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
         const round = state.round;
         if (round && round.id === createdRoundId) {
           createdRoundId = undefined;
-          if (round.mode === "panel" && rememberOpened(threadId, round.id)) open(round.id);
+          if (round.mode === "panel" && rememberOpened(threadId, round.id)) openRef.current(round.id);
         }
       } catch {
         // Keep successful counts. A later signal or reconnect can refresh;
@@ -97,9 +125,10 @@ export function HeaderControl({ threadId, isCompactViewport }: PluginThreadHeade
       active = false;
       if (reader.current === currentReader) reader.current = null;
     };
-  }, [threadId, rpc, open]);
+  }, [threadId]);
   useRealtime(REALTIME_CHANNEL, (payload) => {
     const signal = payload as Partial<ChangeSignal> | null;
+    if (typeof signal?.threadId === "string") mountReads.delete(signal.threadId);
     if (!signal || signal.threadId !== threadId || reader.current?.threadId !== threadId) return;
     if (!signal.kind || !["round-created", "answers", "submission", "prompt-opened", "prompt-closed"].includes(signal.kind)) return;
     reader.current.signal(signal);

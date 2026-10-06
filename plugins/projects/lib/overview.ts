@@ -17,7 +17,7 @@ import type {
   TaskRecord,
   WorkerRecord,
 } from "./store";
-import { taskRef, workerRef } from "./store";
+import { assignmentRef, taskRef, workerRef } from "./store";
 
 // The dashboard model. Built only from stored records and BB thread status;
 // building it never wakes the coordinator. Native status is the liveness
@@ -284,7 +284,8 @@ export function buildOverview(
   if (!project) throw new Error(`Unknown project ${projectId}`);
   const tasks = store.tasks(projectId);
   const workers = store.workers(projectId);
-  const assignments = store.assignments(projectId);
+  const assignments = history ? store.assignments(projectId) : store.assignmentsForSummary(projectId);
+  const lastReported = store.lastReportedAssignments(projectId);
   const decisions = store.decisions(projectId);
   const taskByNum = new Map(tasks.map((task) => [task.num, task]));
   const link = (num: number): TaskLink => ({
@@ -572,7 +573,7 @@ export function buildOverview(
           : null,
       forkedFrom: worker.forkedFrom ? workerRef(worker.forkedFrom) : null,
       nativeParent: worker.nativeParent,
-      lastHandoff: assignments.filter((a) => a.workerNum === worker.num && a.report !== null).at(-1)?.ref ?? null,
+      lastHandoff: lastReported.has(worker.num) ? assignmentRef(lastReported.get(worker.num)!) : null,
       runtime: !worker.threadId
         ? "no thread"
         : thread

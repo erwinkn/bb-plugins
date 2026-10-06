@@ -319,6 +319,22 @@ export default function plugin(bb: BbPluginApi) {
     validateSelection("threads", options);
     return readRows((await overview(projectId)).memberThreads.map(row => ({ view: "threads", row })), options);
   };
+  const membershipOf = (threadId: string) => {
+    const m = store.membership(threadId);
+    return m && m.project.archivedAt === null
+      ? {
+          projectId: m.project.id,
+          name: m.project.name,
+          role:
+            m.kind === "adhoc"
+              ? ("adhoc" as const)
+              : m.workerNum === 0
+                ? ("coordinator" as const)
+                : m.worker!.role,
+          former: m.former,
+        }
+      : null;
+  };
   bb.rpc.register(projectsContract, {
     resetSetting: async ({ field }) => {
       await preferences.handle.experimental_set({ [field]: null });
@@ -328,21 +344,13 @@ export default function plugin(bb: BbPluginApi) {
     tree,
     overview: ({ projectId, detailed, detail }) =>
       overview(projectId, detail ?? (detailed === false ? "summary" : "full"), { fresh: false }),
-    membership: ({ threadId }) => {
-      const m = store.membership(threadId);
-      return m && m.project.archivedAt === null
-        ? {
-            projectId: m.project.id,
-            name: m.project.name,
-            role:
-              m.kind === "adhoc"
-                ? ("adhoc" as const)
-                : m.workerNum === 0
-                  ? ("coordinator" as const)
-                  : m.worker!.role,
-            former: m.former,
-          }
-        : null;
+    membership: ({ threadId }) => membershipOf(threadId),
+    panel: async ({ threadId }) => {
+      const membership = membershipOf(threadId);
+      return {
+        membership,
+        summary: membership ? await overview(membership.projectId, "summary", { fresh: false }) : null,
+      };
     },
     read: async ({ projectId, view, ...options }) => view === "threads" ? readThreads(projectId, options) : read(projectId, view, options),
     command: ({ projectId, command }) => {
