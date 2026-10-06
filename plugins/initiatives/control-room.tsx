@@ -676,10 +676,15 @@ export function ControlRoom({
                           {item.owner.label} is blocked
                         </>
                       }
-                      meta={<span className="cr-inbox-meta">{item.owner.worker} · {item.assignment}{item.tasks.length ? ` · ${item.tasks.map(t => t.ref).join(", ")}` : ""} · <Age at={item.reportedAt} />{item.answer ? " · answered" : ""}</span>}
+                      meta={<span className="cr-inbox-meta">{item.owner.threadId ? (
+                        // A link inside the summary: it opens the worker without toggling the fold.
+                        <a className="cr-worker-link" href="#" title={`Open ${item.owner.worker}'s thread`}
+                          onClick={(event) => { event.preventDefault(); event.stopPropagation(); openThread(item.owner.threadId!); }}
+                          onKeyDown={(event) => { if (event.key === " ") { event.preventDefault(); event.stopPropagation(); openThread(item.owner.threadId!); } }}>{item.owner.worker}</a>
+                      ) : item.owner.worker} · {item.assignment}{item.tasks.length ? ` · ${item.tasks.map(t => t.ref).join(", ")}` : ""} · <Age at={item.reportedAt} />{item.answer ? " · answered" : ""}</span>}
                       initial={!o.opinionNeeded.length && index === 0}
                     >
-                      <Blocker item={item} run={run} openThread={openThread} coordinatorThreadId={p.coordinatorThreadId} />
+                      <Blocker item={item} run={run} coordinatorThreadId={p.coordinatorThreadId} />
                     </Fold>
                   ))}
                 </section>
@@ -1296,64 +1301,137 @@ function Threads({
   );
 }
 /**
+ * T130: a primary action with a chevron menu of alternatives. The menu opens
+ * from the chevron (click, Enter, Space or ↓), moves with ↑/↓, closes on
+ * Escape, outside press or a choice, and returns focus to the chevron.
+ */
+function SplitButton({ label, main, items, align = "start", className }: {
+  label: string;
+  className?: string;
+  main: ReactNode;
+  items: { label: string; disabled?: boolean; onSelect: () => void }[];
+  align?: "start" | "end";
+}) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
+  const close = (focus = true) => { setOpen(false); if (focus) toggle.current?.focus(); };
+  useEffect(() => {
+    if (!open) return;
+    wrap.current?.querySelector<HTMLButtonElement>("[role=menuitem]:not(:disabled)")?.focus();
+    const outside = (event: PointerEvent) => { if (!wrap.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [open]);
+  const keys = (event: React.KeyboardEvent) => {
+    if (event.key === "Escape" && open) { event.preventDefault(); event.stopPropagation(); close(); return; }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!open) { setOpen(true); return; }
+    const choices = Array.from(wrap.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not(:disabled)") ?? []);
+    const at = choices.indexOf(document.activeElement as HTMLButtonElement);
+    choices[(at + (event.key === "ArrowDown" ? 1 : choices.length - 1)) % choices.length]?.focus();
+  };
+  return (
+    <div className={`cr-split${className ? ` ${className}` : ""}`} role="group" aria-label={label} ref={wrap} onKeyDown={keys}>
+      {main}
+      {items.length ? (
+        <>
+          <button type="button" ref={toggle} className="cr-split-toggle" aria-label={`More ${label.toLowerCase()} options`}
+            aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined} onClick={() => setOpen(!open)}>
+            <Glyph name="down" />
+          </button>
+          {open ? (
+            <div role="menu" id={menuId} aria-label={label} className={`cr-split-menu cr-split-menu--${align}`}>
+              {items.map((item) => (
+                <button type="button" role="menuitem" key={item.label} disabled={item.disabled}
+                  onClick={() => { close(false); item.onSelect(); }}>{item.label}</button>
+              ))}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * D386: a worker's blocker, answerable here. The answer goes to the
  * coordinator, who continues the worker; the item stays until it does.
+ * T130: it can go straight to the worker instead, with an FYI to the
+ * coordinator. The coordinator stays the default; the worker is the default
+ * only when there is no coordinator to send to.
  */
-function Blocker({ item, run, openThread, coordinatorThreadId }: { item: BlockerItem; run: Run; openThread: (id: string) => void; coordinatorThreadId: string | null }) {
+function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: Run; coordinatorThreadId: string | null }) {
   const [revising, setRevising] = useState(false);
   const [telling, setTelling] = useState(false);
   const [note, setNote] = useState(item.answer?.note ?? "");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"answer" | "dismiss" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const notice = item.answer?.notification;
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (busy || !note.trim()) return;
-    setBusy(true);
+  const worker = item.owner.worker;
+  const fallback = !coordinatorThreadId && item.owner.threadId ? "worker" : "coordinator";
+  const other = fallback === "coordinator" && item.owner.threadId ? "worker" : null;
+  const sendTo = (to: "coordinator" | "worker") => to === "worker" ? `Send to ${worker}` : "Send to coordinator";
+  const act = async (kind: "answer" | "dismiss", command: Command) => {
+    if (busy) return;
+    setBusy(kind);
     setError(null);
     try {
-      await run({ action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note });
-      setRevising(false);
+      await run(command);
+      if (kind === "answer") setRevising(false);
     } catch (e) {
       setError(message(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
+  const answer = (to: "coordinator" | "worker") => {
+    if (note.trim()) void act("answer", { action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note, to });
+  };
+  const notice = item.answer?.notification;
+  const target = item.answer?.to === "worker" ? worker : "the coordinator";
+  const dismiss = telling ? null : (
+    <SplitButton label="Dismiss" align="end" className="cr-split--quiet"
+      main={<button type="button" disabled={!!busy} title="Leave the coordinator to settle it; nothing is sent. Undo from Decisions."
+        onClick={() => void act("dismiss", { action: "blocker-dismiss", assignment: item.assignment, question: item.question, context: item.context, notify: false, note: "" })}>
+        {busy === "dismiss" ? "Saving…" : "Dismiss"}
+      </button>}
+      items={coordinatorThreadId ? [{ label: "Dismiss and tell coordinator…", onSelect: () => setTelling(true) }] : []} />
+  );
   return (
     <div className="project-card project-opinion cr-blocker">
       <Markdown className="project-question" content={item.question} />
       {item.context ? <Markdown className="project-context" content={item.context} /> : null}
       {item.tasks.length ? <p className="project-muted">Blocks {item.tasks.map((t) => `${t.ref} ${t.title}`).join(", ")}</p> : null}
-      <div className="project-actions">
-        {item.owner.threadId ? <button type="button" onClick={() => openThread(item.owner.threadId!)}>Open worker thread</button> : null}
-        {coordinatorThreadId ? <button type="button" onClick={() => openThread(coordinatorThreadId)}>Open coordinator</button> : null}
-      </div>
       {item.answer && !revising ? (
         <>
           <div className="cr-blocker-answer">
-            <span className="project-meta">Your answer · {item.answer.ref}</span>
+            <span className="project-meta">Your answer · {item.answer.ref}{item.answer.to === "worker" ? ` · sent to ${worker}` : ""}</span>
             <Markdown content={item.answer.note} />
           </div>
           {notice ? (
             <p role={notice.state === "failed" || notice.state === "uncertain" ? "alert" : "status"} className="project-muted">
-              {notice.state === "failed" ? `Coordinator notification failed: ${notice.detail ?? "Unknown error"}`
-                : notice.state === "pending" || notice.state === "uncertain" ? "Coordinator notification unconfirmed; check its thread before sending again."
-                : notice.state === "queued" ? `Queued for the coordinator. This stays here until it continues ${item.owner.worker} or settles ${item.assignment}.`
-                : `Sent to the coordinator. This stays here until it continues ${item.owner.worker} or settles ${item.assignment}.`}
+              {notice.state === "failed" ? `Sending to ${target} failed: ${notice.detail ?? "Unknown error"}`
+                : notice.state === "pending" || notice.state === "uncertain" ? `Delivery to ${target} unconfirmed; check its thread before sending again.`
+                : item.answer.to === "worker" ? `${notice.state === "queued" ? "Queued for" : "Sent to"} ${worker}, which continues ${item.assignment} with it; the coordinator got an FYI. This stays here until ${worker} reports again.`
+                : `${notice.state === "queued" ? "Queued for" : "Sent to"} the coordinator. This stays here until it continues ${worker} or settles ${item.assignment}.`}
             </p>
           ) : null}
-          <div className="project-actions">
+          {error ? <p role="alert" className="project-error">{error}</p> : null}
+          <div className="project-actions cr-blocker-actions">
             {notice?.state === "failed" ? (
-              <Action run={run} command={{ action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note: item.answer.note }}>
-                Retry coordinator notification
-              </Action>
+              <button type="button" disabled={!!busy} onClick={() => void act("answer", { action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note: item.answer!.note, to: item.answer!.to })}>
+                {busy === "answer" ? "Sending…" : `Retry sending to ${target}`}
+              </button>
             ) : null}
             <button type="button" onClick={() => { setNote(item.answer!.note); setRevising(true); }}>Change answer</button>
+            {dismiss}
           </div>
         </>
       ) : (
-        <form onSubmit={submit} onKeyDown={(event) => {
+        <form onSubmit={(event) => { event.preventDefault(); answer(fallback); }} onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
             event.preventDefault();
             event.currentTarget.requestSubmit();
@@ -1364,22 +1442,19 @@ function Blocker({ item, run, openThread, coordinatorThreadId }: { item: Blocker
             <AutoTextarea rows={3} value={note} maxLength={4000} required placeholder="Write your answer." onChange={(e) => setNote(e.target.value)} />
           </label>
           {error ? <p role="alert" className="project-error">{error}</p> : null}
-          <p className="project-hint">Sent to the coordinator, which continues {item.owner.worker} with it.</p>
-          <div className="project-actions">
-            <button className="project-primary" disabled={busy || !note.trim()}>{busy ? "Sending…" : "Send to coordinator"}</button>
+          <div className="project-actions cr-blocker-actions">
+            <SplitButton label="Send"
+              main={<button className="project-primary" disabled={!!busy || !note.trim()}
+                title={fallback === "worker" ? `No current coordinator: ${worker} continues ${item.assignment} with your answer.` : `The coordinator continues ${worker} with your answer.`}>
+                {busy === "answer" ? "Sending…" : sendTo(fallback)}
+              </button>}
+              items={other ? [{ label: sendTo(other), disabled: !!busy || !note.trim(), onSelect: () => answer(other) }] : []} />
             {revising ? <button type="button" onClick={() => setRevising(false)}>Cancel</button> : null}
+            {dismiss}
           </div>
         </form>
       )}
-      {telling ? (
-        <DismissNotify item={item} run={run} cancel={() => setTelling(false)} />
-      ) : (
-        <div className="project-actions cr-blocker-dismiss">
-          <Action run={run} command={{ action: "blocker-dismiss", assignment: item.assignment, question: item.question, context: item.context, notify: false, note: "" }}
-            title="Leave the coordinator to settle it; nothing is sent. Undo from Decisions.">Dismiss</Action>
-          <button type="button" onClick={() => setTelling(true)}>Dismiss and tell coordinator…</button>
-        </div>
-      )}
+      {telling ? <DismissNotify item={item} run={run} cancel={() => setTelling(false)} /> : null}
     </div>
   );
 }

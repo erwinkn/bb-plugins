@@ -137,7 +137,8 @@ describe("T128 dismissing a blocker", () => {
     slots.push(slot);
     expect(await slot.findByRole("button", { name: "Needs you · 1" })).toBeTruthy();
     expect(slot.getByRole("button", { name: "Dismiss" })).toBeTruthy();
-    fireEvent.click(slot.getByRole("button", { name: "Dismiss and tell coordinator…" }));
+    fireEvent.click(slot.getByRole("button", { name: "More dismiss options" }));
+    fireEvent.click(slot.getByRole("menuitem", { name: "Dismiss and tell coordinator…" }));
     fireEvent.change(slot.getByLabelText("Note for the coordinator (optional)"), { target: { value: "Skip the deploy." } });
     fireEvent.click(slot.getByRole("button", { name: "Dismiss and send" }));
     await waitFor(() => expect(commands).toEqual([{ action: "blocker-dismiss", assignment: "A1", question, context, notify: true, note: "Skip the deploy." }]));

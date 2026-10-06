@@ -100,6 +100,24 @@
 .cr-blocker-answer p { margin: 2px 0 0; }
 .cr-blocker-dismiss { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
 .cr-blocker-dismiss button:not(.project-primary) { color: var(--muted-foreground); }
+/* T130: one row: answer actions on the left, a quiet Dismiss on the right. */
+.cr .cr-blocker-actions { display: flex; flex-wrap: wrap; align-items: center; }
+.cr-blocker-actions > .cr-split--quiet { margin-left: auto; }
+.cr-split { position: relative; display: inline-flex; align-items: stretch; }
+.cr-split > button:first-child:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.bb-projects .cr-split-toggle { display: inline-grid; place-items: center; margin-left: -1px; padding: 0 5px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.bb-projects .cr-split-toggle svg { width: 14px; height: 14px; }
+.bb-projects .cr-split:has(> .project-primary) .cr-split-toggle { background: var(--foreground); color: var(--background); border-color: var(--foreground); border-left-color: color-mix(in srgb, var(--background) 35%, var(--foreground)); }
+.bb-projects .cr-split:has(> .project-primary:disabled) .cr-split-toggle { opacity: .5; }
+.bb-projects .cr-split--quiet button { color: var(--muted-foreground); }
+.bb-projects .cr-split--quiet button:hover:not(:disabled) { color: var(--foreground); }
+.cr-split-menu { position: absolute; top: calc(100% + 4px); z-index: 5; display: grid; gap: 2px; min-width: max-content; padding: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--cr-surface); box-shadow: 0 6px 18px #0003; }
+.cr-split-menu--start { left: 0; }
+.cr-split-menu--end { right: 0; }
+.bb-projects .cr-split-menu button { border: 0; background: transparent; color: var(--foreground); text-align: left; white-space: nowrap; }
+.bb-projects .cr-split-menu button:hover:not(:disabled), .bb-projects .cr-split-menu button:focus-visible { background: var(--accent); outline: none; }
+.cr-worker-link { color: inherit; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); text-underline-offset: 2px; }
+.cr-worker-link:hover { color: var(--foreground); text-decoration-color: currentColor; }
 .cr-inbox .cr-fold { border: 0; margin-bottom: 6px; }
 .cr-inbox .cr-fold > summary { display: grid; grid-template-columns: minmax(0, 1fr) 14px; gap: 2px 0; padding: 8px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--cr-surface); }
 .cr-inbox .cr-fold > summary:hover { background: var(--muted); }

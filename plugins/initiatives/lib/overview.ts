@@ -94,8 +94,8 @@ export interface BlockerItem {
   question: string;
   context: string;
   reportedAt: number | null;
-  /** The user's answer, kept until the coordinator acts on the report. */
-  answer: { ref: string; note: string; at: number; notification: DecisionRecord["notification"] } | null;
+  /** The user's answer, kept until the coordinator acts on the report. to: who received it (T130); the notification is that delivery. */
+  answer: { ref: string; note: string; at: number; to: "coordinator" | "worker"; notification: DecisionRecord["notification"] } | null;
 }
 
 /** T128: a blocker the user dismissed, as its decision row carries it; the assignment and blocker let a failed notice retry. */
@@ -468,7 +468,7 @@ export function buildOverview(
       question: blocker?.question ?? assignment.report?.summary ?? "",
       context: blocker?.context ?? "",
       reportedAt: assignment.reportedAt,
-      answer: answer ? { ref: answer.ref, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, notification: answer.notification } : null,
+      answer: answer ? { ref: answer.ref, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, to: answer.body.answer?.to ?? "coordinator", notification: answer.notification } : null,
     };
   });
 

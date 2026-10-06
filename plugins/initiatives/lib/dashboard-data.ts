@@ -1,3 +1,17 @@
+/**
+ * A read that has not answered by then counts as failed, so an RPC that never
+ * settles cannot hold its key, and every refresh that would join it, until a
+ * reload. The next signal or poll reads again; a late answer is ignored.
+ */
+export const READ_TIMEOUT_MS = 30_000;
+const withTimeout = <T,>(read: Promise<T>, ms: number) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("The Initiative did not answer in time. Retrying.")), ms);
+  });
+  return Promise.race([read, late]).finally(() => clearTimeout(timer));
+};
+
 /** Read sharing for the app session. Native RPC/realtime remain the transport. */
 export class SharedReads {
   private entries = new Map<string, {
@@ -21,7 +35,7 @@ export class SharedReads {
     if (entry.holds) return Promise.resolve();
     if (entry.pending) return entry.pending;
     const epoch = entry.epoch;
-    const pending = Promise.resolve().then(fetch).then(data => {
+    const pending = Promise.resolve().then(() => withTimeout(fetch(), READ_TIMEOUT_MS)).then(data => {
       if (entry.epoch === epoch) { entry.data = data; entry.error = null; entry.loaded = true; this.publish(key); }
     }, error => {
       if (entry.epoch === epoch) { entry.error = error instanceof Error ? error.message : String(error); entry.loaded = true; this.publish(key); }

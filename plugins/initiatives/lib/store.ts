@@ -606,8 +606,8 @@ export interface DecisionRecord {
 }
 
 export type DecisionBody = (Decision | { description: string }) & {
-  /** recordedBy: the agent that recorded the user's explicit chat answer. */
-  answer?: { choice: string | null; note: string; at: number; recordedBy?: Provenance };
+  /** recordedBy: the agent that recorded the user's explicit chat answer. to: a blocker answer sent straight to the worker (T130). */
+  answer?: { choice: string | null; note: string; at: number; recordedBy?: Provenance; to?: "worker" };
   /** D386: the user's answer to this assignment's blocked report, keyed by its blocker question. */
   blocker?: { assignment: number; question: string; context: string };
   /** T128: the user dismissed that blocker instead of answering; notify sent a note to the coordinator. undoneAt: the user took it back. */
@@ -835,7 +835,7 @@ const legacyDecisionBodySchema = decisionFieldsSchema.extend({
 const blockerAnswerBodySchema = z.object({
   description: z.string(), cleanupHistory: cleanupHistorySchema,
   blocker: z.object({ assignment: z.number().int(), question: z.string(), context: z.string() }).strict(),
-  answer: z.object({ choice: z.null(), note: z.string(), at: z.number() }).strict(),
+  answer: z.object({ choice: z.null(), note: z.string(), at: z.number(), to: z.literal("worker").optional() }).strict(),
 }).strict();
 /** T128: the user's Inbox dismissal of a blocked report, keyed like an answer. */
 const blockerDismissalBodySchema = z.object({

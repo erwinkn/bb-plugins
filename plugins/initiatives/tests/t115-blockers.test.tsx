@@ -128,12 +128,12 @@ describe("T115 blocked reports in the Inbox and Needs you", () => {
     expect(section.textContent).toContain(question);
     // Question and context render through BB's Markdown (the test host keeps the source text).
     expect(Array.from(section.querySelectorAll("[data-testid=bb-markdown]")).map((el) => el.textContent)).toEqual([question, blocked.blocker.context]);
-    fireEvent.click(slot.getByRole("button", { name: "Open worker thread" }));
-    fireEvent.click(slot.getByRole("button", { name: "Open coordinator" }));
-    expect(slot.navigateCalls).toEqual([{ method: "toThread", threadId }, { method: "toThread", threadId: "coordinator" }]);
+    // T130: the worker label links its thread; the coordinator is not linked here.
+    fireEvent.click(slot.getByRole("link", { name: "W1" }));
+    expect(slot.navigateCalls).toEqual([{ method: "toThread", threadId }]);
     fireEvent.change(slot.getByLabelText("Your answer"), { target: { value: "Use the staging key." } });
     fireEvent.click(slot.getByRole("button", { name: "Send to coordinator" }));
-    await waitFor(() => expect(commands).toEqual([{ action: "blocker-answer", assignment: "A1", question, context: blocked.blocker.context, note: "Use the staging key." }]));
+    await waitFor(() => expect(commands).toEqual([{ action: "blocker-answer", assignment: "A1", question, context: blocked.blocker.context, note: "Use the staging key.", to: "coordinator" }]));
     await waitFor(() => expect(slot.queryByRole("button", { name: /Needs you/ })).toBeNull());
     expect(slot.getByRole("region", { name: "Blocked workers" }).textContent).toContain("Use the staging key.");
   });
