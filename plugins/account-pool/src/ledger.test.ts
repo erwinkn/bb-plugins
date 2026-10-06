@@ -162,6 +162,50 @@ describe("usage ledger request rows", () => {
     expect(JSON.stringify(requestRows(r.db))).not.toContain("secret");
   });
 
+  it("reads at most 8 MiB of request bodies per flush and leaves the rest for the next", () => {
+    const r = rig();
+    // Three 3 MB bodies: one flush takes two, a later flush the third.
+    const large = () => {
+      const body = new Uint8Array(3 * 1024 * 1024).fill(0x20);
+      body.set(claudeBody());
+      return body;
+    };
+    for (let index = 0; index < 3; index += 1) r.ledger.request(record({ body: large() }));
+    r.flushes[0]?.();
+    expect(requestRows(r.db)).toHaveLength(2);
+    expect(r.flushes).toHaveLength(2);
+    expect(r.delays[1]).toBe(0);
+    r.flushes[1]?.();
+    expect(requestRows(r.db).map((row) => row.model)).toEqual([
+      "claude-opus-5-5",
+      "claude-opus-5-5",
+      "claude-opus-5-5",
+    ]);
+  });
+
+  it("writes every queued row on close, whatever their bodies weigh", () => {
+    const r = rig();
+    const large = () => {
+      const body = new Uint8Array(3 * 1024 * 1024).fill(0x20);
+      body.set(claudeBody());
+      return body;
+    };
+    for (let index = 0; index < 3; index += 1) r.ledger.request(record({ body: large() }));
+    r.ledger.close();
+    expect(requestRows(r.db)).toHaveLength(3);
+    expect(r.ledger.status().dropped).toBe(0);
+  });
+
+  it("writes a row with no model for a body that is not JSON", () => {
+    const r = rig();
+    r.ledger.request(
+      record({ body: new TextEncoder().encode('{"model":"bad\\q"}'), status: 400, usage: null }),
+    );
+    r.flushes[0]?.();
+    expect(requestRows(r.db).map((row) => [row.model, row.ttl, row.status])).toEqual([[null, null, 400]]);
+    expect(r.ledger.status()).toMatchObject({ dropped: 0, writeErrors: 0 });
+  });
+
   it("measures the idle gap per session and model, also across a restart", () => {
     const db = database();
     const first = rig(db);

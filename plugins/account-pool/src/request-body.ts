@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ModelFamily } from "./contracts.js";
+import { JsonBytes, splice, topLevelFields, type Span } from "./json-scan.js";
 import { modelFamily } from "./quota.js";
 
 const requestSchema = z
@@ -83,12 +84,42 @@ function parseUserId(userId: string): {
   };
 }
 
+// Only model and metadata.user_id are read, in one pass over the bytes (see json-scan.ts): the rest
+// of a multi-MB body is never decoded, and the account rewrite replaces metadata.user_id's bytes
+// alone. A value of a type the schema refuses is read as 0, which fails it the same way.
 export function parseRequestBody(body: Uint8Array): ParsedRequestBody {
   const original = body;
   try {
-    const parsed = requestSchema.safeParse(
-      JSON.parse(new TextDecoder().decode(body)),
-    );
+    const json = new JsonBytes(body);
+    const fields: Record<string, unknown> = {};
+    let userIdSpan: Span | null = null;
+    // A string or null as parsed; any other value as 0.
+    const stringOrNull = (span: Span) =>
+      json.isString(span.start) || json.isNull(span.start)
+        ? json.parse(span)
+        : 0;
+    const valid = json.eachTopLevelMember((key, value) => {
+      if (key === "model") {
+        const span = json.span(value);
+        if (span !== null) fields.model = stringOrNull(span);
+        return span?.end ?? -1;
+      }
+      if (key !== "metadata") return undefined;
+      userIdSpan = null;
+      if (!json.isObject(value)) {
+        fields.metadata = json.isNull(value) ? null : 0;
+        return undefined;
+      }
+      const metadata: Record<string, unknown> = {};
+      fields.metadata = metadata;
+      return json.eachMember(value, (field, at) => {
+        if (field !== "user_id") return undefined;
+        userIdSpan = json.span(at);
+        if (userIdSpan !== null) metadata.user_id = stringOrNull(userIdSpan);
+        return userIdSpan?.end ?? -1;
+      });
+    });
+    const parsed = requestSchema.safeParse(valid ? fields : null);
     if (!parsed.success)
       return {
         family: "other",
@@ -100,6 +131,8 @@ export function parseRequestBody(body: Uint8Array): ParsedRequestBody {
     const userId = request.metadata?.user_id;
     const user =
       userId === undefined || userId === null ? null : parseUserId(userId);
+    // Set inside the visitor, which TypeScript's narrowing does not follow.
+    const span: Span | null = userIdSpan;
     return {
       family: modelFamily(request.model ?? null),
       affinityId:
@@ -111,13 +144,21 @@ export function parseRequestBody(body: Uint8Array): ParsedRequestBody {
           ? null
           : `session:${user.parentSessionId}`,
       forAccount(accountUuid) {
-        if (accountUuid === null || user === null) return original;
+        if (accountUuid === null || user === null || span === null)
+          return original;
         const rewritten = user.forAccount(accountUuid);
         if (rewritten === null) return original;
+        if (json.canonicalNumbers)
+          return splice(original, [{ span, text: JSON.stringify(rewritten) }]);
+        // A number JSON.parse and JSON.stringify would rewrite (1.0, 1e400): re-serialize the
+        // whole body, as before byte-level edits, so it reaches the vendor the same way.
+        const whole = requestSchema.parse(
+          JSON.parse(new TextDecoder().decode(original)),
+        );
         return new TextEncoder().encode(
           JSON.stringify({
-            ...request,
-            metadata: { ...request.metadata, user_id: rewritten },
+            ...whole,
+            metadata: { ...whole.metadata, user_id: rewritten },
           }),
         );
       },
@@ -131,6 +172,8 @@ export function parseRequestBody(body: Uint8Array): ParsedRequestBody {
     };
   }
 }
+
+const CODEX_FIELDS = new Set(["client_metadata", "prompt_cache_key"]);
 
 function parseMetadata(
   value: string | null,
@@ -148,7 +191,12 @@ export function parseCodexRequestBody(
   body: Uint8Array,
   headers: Headers,
 ): ParsedRequestBody {
-  const request = parseMetadata(new TextDecoder().decode(body));
+  let request: Record<string, unknown> | null;
+  try {
+    request = topLevelFields(body, CODEX_FIELDS);
+  } catch {
+    request = null;
+  }
   const parsedClient = encodedUserSchema.safeParse(request?.client_metadata);
   const client = parsedClient.success ? parsedClient.data : null;
   const headerTurn = parseMetadata(headers.get("x-codex-turn-metadata"));

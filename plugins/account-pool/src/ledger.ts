@@ -6,15 +6,16 @@ import {
   type CacheTtl,
   type CacheUsage,
 } from "./cache-usage.js";
+import { topLevelFields } from "./json-scan.js";
 
 // A durable record of what the Pooler forwarded and what each account's quota did, kept so a
 // later report can tell whether cache warming saves more quota than it costs. Rows hold counts,
 // ids and times only: never a request or response body, never prompt content.
 //
 // Nothing here may stall routing. request() and quota() only queue in memory. A flush on a later
-// event-loop turn writes at most MAX_BATCH rows per table through the ledger's own connection,
-// which never waits for a lock: if another writer holds it, the rows stay queued and the flush
-// retries a second later. Queues are bounded and drop their oldest row, counted. Any other write
+// event-loop turn reads at most MAX_BATCH_BODY_BYTES of request bodies and writes at most
+// MAX_BATCH rows per table through the ledger's own connection, which never waits for a lock: if
+// another writer holds it, the rows stay queued and the flush retries a second later. Queues are bounded and drop their oldest row, counted. Any other write
 // error is logged (at most once a minute) and counted, and its rows are dropped.
 
 export const USAGE_LEDGER_KEY = "usage-ledger";
@@ -24,6 +25,7 @@ const PRUNE_INTERVAL_MS = 60 * 60_000;
 const MAX_QUEUED_REQUESTS = 10_000;
 const MAX_QUEUED_QUOTAS = 1_000;
 const MAX_BATCH = 500;
+const MAX_BATCH_BODY_BYTES = 8 * 1024 * 1024;
 const BUSY_RETRY_MS = 1_000;
 const MAX_IDLE_KEYS = 4_096;
 const ERROR_LOG_INTERVAL_MS = 60_000;
@@ -281,9 +283,23 @@ export class UsageLedger {
   // Writes up to MAX_BATCH queued rows per table, then one prune chunk when due. Leaves the rest
   // queued for the next flush; a held lock postpones everything by BUSY_RETRY_MS.
   flush(): void {
+    this.flushWithin(Number.POSITIVE_INFINITY);
+  }
+
+  // A flush on its own event-loop turn. Reading a body costs about 1 ms per MB (see
+  // describeClaudeRequest), so it reads at most bodyBytes of them (and at least one record); the
+  // next turn takes the rest. An explicit flush (close, a report) is not limited.
+  private flushWithin(bodyBytes: number): void {
     this.scheduled = false;
     if (this.closed) return;
-    for (const record of this.records.splice(0, MAX_BATCH)) {
+    let taken = 0;
+    let bytes = 0;
+    while (taken < Math.min(this.records.length, MAX_BATCH)) {
+      bytes += this.records[taken].body.byteLength;
+      if (taken > 0 && bytes > bodyBytes) break;
+      taken += 1;
+    }
+    for (const record of this.records.splice(0, taken)) {
       try {
         this.rows.push(this.requestRow(record));
       } catch (error) {
@@ -411,7 +427,7 @@ export class UsageLedger {
         if (delay === 0) setImmediate(flush);
         else setTimeout(flush, delay).unref();
       })
-    )(() => this.flush(), delayMs);
+    )(() => this.flushWithin(MAX_BATCH_BODY_BYTES), delayMs);
   }
 
   private requestRow(record: RequestRecord): UsageRequestRow {
@@ -507,6 +523,8 @@ function isBusy(error: unknown): boolean {
   return code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED");
 }
 
+const MODEL_FIELD = new Set(["model"]);
+
 function requestModel(record: RequestRecord): {
   model: string | null;
   ttl: CacheTtl | null;
@@ -516,11 +534,7 @@ function requestModel(record: RequestRecord): {
     return { model: shape.model, ttl: shape.tailTtl };
   }
   try {
-    const parsed = JSON.parse(new TextDecoder().decode(record.body)) as unknown;
-    const model =
-      typeof parsed === "object" && parsed !== null && "model" in parsed
-        ? parsed.model
-        : null;
+    const model = topLevelFields(record.body, MODEL_FIELD)?.model;
     return { model: typeof model === "string" ? model : null, ttl: null };
   } catch {
     return { model: null, ttl: null };

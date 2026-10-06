@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ModelFamily } from "./contracts.js";
+import { carryStringCheck, JsonBytes, type Span } from "./json-scan.js";
 import { modelFamily } from "./quota.js";
 
 // Anthropic prompt caching facts this module relies on (Anthropic's prompt-caching guide, as
@@ -75,15 +76,112 @@ export function describeClaudeRequest(body: Uint8Array): ClaudeRequestShape {
   return shape;
 }
 
+const BLOCK_LISTS = new Set(["tools", "system", "messages"]);
+// A longer string cannot equal any value describeOnce compares a field with.
+const MAX_COMPARED_STRING_BYTES = 256;
+
+// What describeOnce reads of a request, in one pass over its bytes (see json-scan.ts): model, and
+// of every caller object it looks into only the member it compares (cache_control.ttl,
+// thinking.type, tool_choice.type, whether output_config.format is set), with each tools, system
+// and messages block reduced to its cache_control. Nothing else is decoded, however large (a
+// prompt, an output schema). null when the body is not a JSON object. As with JSON.parse, a
+// repeated key's last value wins.
+function requestSkeleton(body: Uint8Array): JsonObject | null {
+  const json = new JsonBytes(body);
+  const request: JsonObject = {};
+  // A string short enough to compare, parsed; anything else is false, which matches nothing.
+  const comparable = (span: Span): unknown =>
+    json.isString(span.start) &&
+    span.end - span.start <= MAX_COMPARED_STRING_BYTES
+      ? json.parse(span)
+      : false;
+  const presence = (span: Span): unknown =>
+    json.isNull(span.start) ? null : true;
+  // The object at `at` reduced to one member, as read returns it; a non-object becomes null.
+  const reduce = (
+    at: number,
+    into: JsonObject,
+    key: string,
+    member: string,
+    read: (span: Span) => unknown,
+  ) => {
+    if (!json.isObject(at)) {
+      into[key] = null;
+      return undefined;
+    }
+    const kept: JsonObject = {};
+    into[key] = kept;
+    return json.eachMember(at, (name, value) => {
+      if (name !== member) return undefined;
+      const span = json.span(value);
+      if (span !== null) kept[member] = read(span);
+      return span?.end ?? -1;
+    });
+  };
+  const blocks = (at: number, out: unknown[]) =>
+    json.eachElement(at, (block) => {
+      if (!json.isObject(block)) {
+        out.push(null);
+        return undefined;
+      }
+      const kept: JsonObject = {};
+      out.push(kept);
+      return json.eachMember(block, (key, value) =>
+        key === "cache_control"
+          ? reduce(value, kept, key, "ttl", comparable)
+          : undefined,
+      );
+    });
+  const valid = json.eachTopLevelMember((key, value) => {
+    if (BLOCK_LISTS.has(key)) {
+      if (!json.isArray(value)) {
+        request[key] = null;
+        return undefined;
+      }
+      const out: unknown[] = [];
+      request[key] = out;
+      if (key !== "messages") return blocks(value, out);
+      return json.eachElement(value, (message) => {
+        if (!json.isObject(message)) {
+          out.push(null);
+          return undefined;
+        }
+        const kept: JsonObject = { content: null };
+        out.push(kept);
+        return json.eachMember(message, (field, at) => {
+          if (field !== "content") return undefined;
+          const content: unknown[] = [];
+          kept.content = json.isArray(at) ? content : null;
+          return json.isArray(at) ? blocks(at, content) : undefined;
+        });
+      });
+    }
+    if (key === "model") {
+      const span = json.span(value);
+      if (span !== null)
+        request.model = json.isString(value) ? json.parse(span) : null;
+      return span?.end ?? -1;
+    }
+    if (key === "cache_control")
+      return reduce(value, request, key, "ttl", comparable);
+    if (key === "thinking" || key === "tool_choice")
+      return reduce(value, request, key, "type", comparable);
+    if (key === "output_config")
+      return reduce(value, request, key, "format", presence);
+    return undefined;
+  });
+  return valid ? request : null;
+}
+
 function describeOnce(body: Uint8Array): ClaudeRequestShape {
   const hash = bodyHash(body);
-  let request: unknown;
+  let request: JsonObject | null;
   try {
-    request = JSON.parse(new TextDecoder().decode(body));
+    request = requestSkeleton(body);
   } catch {
     request = null;
   }
-  if (!isObject(request))
+  if (request === null)
     return {
       model: null,
       family: "other",
@@ -131,12 +229,51 @@ function describeOnce(body: Uint8Array): ClaudeRequestShape {
 }
 
 // The exact native body with only max_tokens set to 0 and stream removed. Neither field is part of
-// the cached prefix, so the re-send reads the same entry.
+// the cached prefix, so the re-send reads the same entry. Every other top-level member keeps its
+// bytes; nothing is parsed or re-serialized, unless a number would not survive JSON.parse and
+// JSON.stringify unchanged (1.0, 1e400): that rare body is re-serialized whole, as it always was.
 export function keepAliveBody(body: Uint8Array): Uint8Array {
-  const request = JSON.parse(new TextDecoder().decode(body)) as JsonObject;
-  const { stream: _stream, ...rest } = request;
-  return new TextEncoder().encode(JSON.stringify({ ...rest, max_tokens: 0 }));
+  const json = new JsonBytes(body);
+  const parts: Uint8Array[] = [];
+  let maxTokens = false;
+  const valid = json.eachTopLevelMember((key, value, keyStart) => {
+    const end = json.skip(value);
+    if (end === -1 || key === "stream") return end;
+    if (parts.length > 0) parts.push(COMMA);
+    if (key === "max_tokens") {
+      maxTokens = true;
+      parts.push(body.subarray(keyStart, value), ZERO);
+    } else parts.push(body.subarray(keyStart, end));
+    return end;
+  });
+  if (!valid) throw new SyntaxError("request body is not a JSON object");
+  if (!json.canonicalNumbers) {
+    const { stream: _stream, ...rest } = JSON.parse(
+      new TextDecoder().decode(body),
+    ) as JsonObject;
+    return new TextEncoder().encode(JSON.stringify({ ...rest, max_tokens: 0 }));
+  }
+  if (!maxTokens) {
+    if (parts.length > 0) parts.push(COMMA);
+    parts.push(MAX_TOKENS_ZERO);
+  }
+  const out = new Uint8Array(
+    parts.reduce((total, part) => total + part.byteLength, 2),
+  );
+  out[0] = 0x7b;
+  let offset = 1;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  out[offset] = 0x7d;
+  carryStringCheck(body, out);
+  return out;
 }
+
+const COMMA = new Uint8Array([0x2c]);
+const ZERO = new Uint8Array([0x30]);
+const MAX_TOKENS_ZERO = new TextEncoder().encode('"max_tokens":0');
 
 function count(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0

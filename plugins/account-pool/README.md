@@ -293,7 +293,8 @@ whether cache warming saves more quota than it costs:
 Rows hold counts, ids and times, never a request or response body. Every
 dispatched attempt gets a row, including one that failed to connect or was
 canceled after it was sent (status and usage empty). Recording only queues in
-memory; a later event-loop turn writes at most 500 rows per table through the
+memory; a later event-loop turn reads at most 8 MiB of request bodies (shutdown
+and a report read them all) and writes at most 500 rows per table through the
 ledger's own SQLite connection, which never waits for a lock: when another
 writer holds it, the rows stay queued and retry a second later. Queues are
 bounded and drop their oldest row, counted. A failed write is logged (at most
@@ -321,6 +322,33 @@ estimate weighs tokens at API price ratios to uncached input (cache read 0.1×,
 subscription quota. Subagents share their main session id, so a subagent on the
 main model can hide a cold start but never invents one. The thread and role
 columns are filled only while warming links sessions (any mode but `off`).
+
+## Request-path cost
+
+The Pooler runs on BB's server event loop, which every BB request and plugin
+shares, and Claude Code and Codex request bodies are often several MB. No step
+of the request path parses, re-serializes or decodes a body whole.
+`src/json-scan.ts` walks the bytes once and reads only what routing, warming and
+the ledger compare: `model`, `metadata.user_id`, cache breakpoint TTLs,
+`thinking.type`, `tool_choice.type` and whether `output_config.format` is set.
+It accepts exactly the bodies `JSON.parse` accepts. Strings are checked 64 KiB
+at a time while the body arrives (about 0.15 ms per chunk), so the walk that
+follows skips them with a native search. The account rewrite and the warming
+re-send edit bytes in place, so Anthropic receives the client's bytes except
+the edited field. A body holding a number that `JSON.parse` and
+`JSON.stringify` would write differently (`1.0`, `1e400`, `-0`) is
+re-serialized whole instead, as before. On a 4 MB body: parse 1.2 ms, rewrite
+0.2 ms, and a 3.7 ms describe (2.2 of it SHA-256) when the response ends.
+
+```sh
+npx tsx scripts/bench-request-path.ts            # 20 concurrent 3-8 MB requests
+npx tsx scripts/bench-request-path.ts --rewrite  # each one rewrites the account
+npx tsx scripts/bench-request-path.ts --stages   # each step on 1, 4 and 8 MB
+```
+
+`src/request-path.test.ts` fails when any step handles a body over 64 KiB whole,
+including a large output schema, and pins the pre-scanner results for bodies
+that are not JSON and for non-canonical numbers.
 
 ## Source and identity
 
@@ -528,6 +556,7 @@ npm run typecheck
 npx vitest run src/packaging.test.ts src/server.test.ts \
   -t 'packages only|loads handed-off|resolves distinct secret machine|local fork controls|session affinity|fills defaults|reads and updates one full config|applies config threshold changes'
 npx vitest run src/request-body.test.ts src/provider-adapter.test.ts src/store.test.ts src/upstream-transport.test.ts
+npx vitest run src/json-scan.test.ts src/request-path.test.ts src/ledger.test.ts
 npx vitest run app.test.tsx -t 'validates and saves main TTL|edits Advanced config fields'
 npx vitest run src/advisor-config.test.ts src/advisor-transport.test.ts \
   src/warming.test.ts src/warming-server.test.ts src/cache-usage.test.ts \

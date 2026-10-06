@@ -18,6 +18,7 @@ import {
   createUsageTap,
 } from "./cache-usage.js";
 import { createClaudeAdapter } from "./claude-adapter.js";
+import { StringCheck } from "./json-scan.js";
 import {
   createCodexAdapter,
   DEFAULT_CODEX_REFRESH_URL,
@@ -60,6 +61,8 @@ const DEFAULT_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const DEFAULT_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
 const DEFAULT_USAGE_REFRESH_INTERVAL_MS = 5 * 60 * 1_000;
 const MAX_INLINE_HOLD_MS = 20_000;
+// A declared content-length up to this is trusted to size the request body buffer.
+const MAX_PREALLOCATED_BODY_BYTES = 32 * 1024 * 1024;
 const ADVISOR_MAX_BODY_BYTES = 256 * 1024;
 const ADVISOR_DISPATCH_HEADER = "x-account-pool-dispatch";
 const OAUTH_BETA = "oauth-2025-04-20";
@@ -457,7 +460,7 @@ export class AccountPoolHub {
       );
     return this.forward(
       request,
-      new Uint8Array(await request.arrayBuffer()),
+      await readRequestBytes(request),
       adapter,
       hostId,
     );
@@ -969,8 +972,6 @@ export class AccountPoolHub {
       headers.set("anthropic-beta", betas.join(","));
     } else headers.set("x-api-key", secret.apiKey);
     headers.set("user-agent", WARMING_CLIENT);
-    const body = new ArrayBuffer(request.body.byteLength);
-    new Uint8Array(body).set(request.body);
     const startedAt = this.options.now();
     let response: Response;
     const ledgerStart: LedgerStart = {
@@ -985,7 +986,7 @@ export class AccountPoolHub {
       response = await this.options.fetch(request.url, {
         method: "POST",
         headers,
-        body,
+        body: fetchBody(request.body),
         signal: aborted,
       });
     } catch {
@@ -1534,8 +1535,6 @@ export class AccountPoolHub {
       this.decrement(account.id);
     };
     try {
-      const upstreamBody = new ArrayBuffer(body.byteLength);
-      new Uint8Array(upstreamBody).set(body);
       const url = adapter.upstreamUrl(request, this.options.getSettings());
       const headers = adapter.requestHeaders(request.headers, account, secret);
       isolatedHeaders?.(headers);
@@ -1545,7 +1544,7 @@ export class AccountPoolHub {
           headers,
           ...(request.method === "GET" || request.method === "HEAD"
             ? {}
-            : { body: upstreamBody }),
+            : { body: fetchBody(body) }),
           signal: controller.signal,
         })
         .catch((cause: unknown) => {
@@ -1902,6 +1901,56 @@ async function readBounded(
   } catch {
     return null;
   }
+}
+
+// The request body, copied into one buffer chunk by chunk as it arrives. Request.arrayBuffer()
+// would instead copy a multi-MB body in a single event-loop turn at the end. The buffer is sized
+// from content-length when it is declared, and doubles when a chunk does not fit. JSON strings
+// are checked chunk by chunk too, so the parse that follows need not check them in one turn.
+async function readRequestBytes(request: Request): Promise<Uint8Array> {
+  const reader = request.body?.getReader();
+  if (reader === undefined) return new Uint8Array(0);
+  const declared = Number(request.headers.get("content-length"));
+  let buffer = new Uint8Array(
+    Number.isSafeInteger(declared) &&
+      declared > 0 &&
+      declared <= MAX_PREALLOCATED_BODY_BYTES
+      ? declared
+      : 64 * 1024,
+  );
+  let length = 0;
+  const strings = new StringCheck();
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    strings.push(chunk.value);
+    if (length + chunk.value.byteLength > buffer.byteLength) {
+      const grown = new Uint8Array(
+        Math.max(buffer.byteLength * 2, length + chunk.value.byteLength),
+      );
+      grown.set(buffer.subarray(0, length));
+      buffer = grown;
+    }
+    buffer.set(chunk.value, length);
+    length += chunk.value.byteLength;
+  }
+  const body = buffer.subarray(0, length);
+  strings.finish(body);
+  return body;
+}
+
+// The body as an ArrayBuffer for fetch, which copies it anyway: a body that fills its own buffer
+// (the usual case) is passed without another copy.
+function fetchBody(body: Uint8Array): ArrayBuffer {
+  if (
+    body.buffer instanceof ArrayBuffer &&
+    body.byteOffset === 0 &&
+    body.byteLength === body.buffer.byteLength
+  )
+    return body.buffer;
+  const copy = new ArrayBuffer(body.byteLength);
+  new Uint8Array(copy).set(body);
+  return copy;
 }
 
 // Reads a body of at most limit bytes. Past the limit it stops, cancels the stream and returns
