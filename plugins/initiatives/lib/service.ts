@@ -17,10 +17,11 @@ import {
   type ThreadDto,
   type ThreadListRow,
 } from "./bb";
+import { blockerKey, openBlockers } from "./blockers";
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
-import { carriesOpMarker, opMarker, renderAssignment, renderCoordinatorSeed } from "./brief";
-import { isOwnOrigin, ownMetadata } from "./identity";
+import { opMarker, renderAssignment, renderCoordinatorSeed } from "./brief";
+import { isOwnOrigin } from "./identity";
 import {
   chooseWorkProfile,
   delegationViolations,
@@ -781,7 +782,7 @@ export class ProjectsService {
       );
     if ("threadId" in outcome) {
       const thread = await this.sdk.threads.get({ threadId: outcome.threadId });
-      const meta = await ownMetadata(this.sdk, this.bb.pluginId, thread.id);
+      const meta = await this.sdk.threads.getPluginMetadata({ threadId: thread.id, pluginId: this.bb.pluginId });
       if (
         !isOwnOrigin(this.bb.pluginId, thread.originPluginId) ||
         meta.op !== start.op_id ||
@@ -859,7 +860,7 @@ export class ProjectsService {
             });
             for (const row of rows) {
               if (row.archivedAt !== null || row.deletedAt !== null) continue;
-              const meta = await ownMetadata(this.sdk, this.bb.pluginId, row.id);
+              const meta = await this.sdk.threads.getPluginMetadata({ threadId: row.id, pluginId: this.bb.pluginId });
               if (meta.op === start.op_id && meta.projectId === projectId) {
                 this.store.db
                   .prepare(
@@ -3209,22 +3210,32 @@ export class ProjectsService {
     });
     // Okay is private bookkeeping. Rejection sends exactly one ordinary native
     // message to the current coordinator; BB owns dispatch/queueing. No wake loop.
-    if (verdict === "not-okay") {
-      if (!coordinatorThreadId) {
-        this.store.updateDecision(projectId, item.num, { notification: { op, state: "failed", coordinatorThreadId, detail: "No current coordinator. Your review is saved." } });
-      } else {
-        try {
-          const sent = await this.sdk.threads.send({
-            threadId: coordinatorThreadId, mode: "steer-if-active",
-            input: textInput(`Initiative · ${project.name} · Your review of ${item.ref}\n\nNot okay: ${item.description}\n\n${message.trim()}\n\n${opMarker(op)}`),
-          });
-          if (this.store.decisionItem(projectId, item.num)?.notification?.op === op) this.store.updateDecision(projectId, item.num, { notification: { op, state: sent.delivery === "queued" ? "queued" : "sent", coordinatorThreadId, ...(sent.delivery === "queued" ? { queuedId: sent.queuedMessage.id } : {}) } });
-        } catch (error) {
-          if (this.store.decisionItem(projectId, item.num)?.notification?.op === op) this.store.updateDecision(projectId, item.num, { notification: { op, state: isDefiniteRejection(error) ? "failed" : "uncertain", coordinatorThreadId, detail: errorMessage(error) } });
-        }
-      }
-    }
+    if (verdict === "not-okay")
+      await this.sendDecisionNotice(projectId, item.num, op, coordinatorThreadId, "Your review is saved.",
+        `Initiative · ${project.name} · Your review of ${item.ref}\n\nNot okay: ${item.description}\n\n${message.trim()}`);
     return this.store.decisionItem(projectId, item.num)!;
+  }
+
+  /**
+   * Send one decision's pending coordinator notice and record its receipt. A
+   * newer notice for the same decision owns the record; this send never
+   * overwrites it.
+   */
+  private async sendDecisionNotice(projectId: string, num: number, op: string, coordinatorThreadId: string | null, saved: string, text: string, senderThreadId?: string | null) {
+    const settle = (notification: NonNullable<DecisionRecord["notification"]>) => {
+      if (this.store.decisionItem(projectId, num)?.notification?.op === op) this.store.updateDecision(projectId, num, { notification });
+    };
+    if (!coordinatorThreadId) return settle({ op, state: "failed", coordinatorThreadId, detail: `No current coordinator. ${saved}` });
+    try {
+      const sent = await this.sdk.threads.send({
+        threadId: coordinatorThreadId, mode: "steer-if-active",
+        ...(senderThreadId ? { senderThreadId } : {}),
+        input: textInput(`${text}\n\n${opMarker(op)}`),
+      });
+      settle({ op, state: sent.delivery === "queued" ? "queued" : "sent", coordinatorThreadId, ...(sent.delivery === "queued" ? { queuedId: sent.queuedMessage.id } : {}) });
+    } catch (error) {
+      settle({ op, state: isDefiniteRejection(error) ? "failed" : "uncertain", coordinatorThreadId, detail: errorMessage(error) });
+    }
   }
 
   requireDecision(project: ProjectRecord, ref: string): DecisionRecord {
@@ -3281,22 +3292,61 @@ export class ProjectsService {
           : `You answered ${item.ref}`, recordedBy?.threadId ? { threadId: recordedBy.threadId } : undefined);
       }
     });
-    if (notify) {
-      if (!coordinatorThreadId) {
-        this.store.updateDecision(project.id, item.num, { notification: { op, state: "failed", coordinatorThreadId, detail: "No current coordinator. Your answer is saved." } });
-      } else {
-        try {
-          const sent = await this.sdk.threads.send({
-            threadId: coordinatorThreadId, mode: "steer-if-active",
-            ...(recordedBy?.threadId ? { senderThreadId: recordedBy.threadId } : {}),
-            input: textInput(`Initiative · ${project.name} · Your answer to ${item.ref}\n\n${body.question ?? item.title}\nChoice: ${input.choice ?? "Written answer"}${note ? `\nNote: ${note}` : ""}${recordedBy ? `\nRecorded from chat by ${recordedBy.threadId}.` : ""}\n\n${opMarker(op)}`),
-          });
-          this.store.updateDecision(project.id, item.num, { notification: { op, state: sent.delivery === "queued" ? "queued" : "sent", coordinatorThreadId, ...(sent.delivery === "queued" ? { queuedId: sent.queuedMessage.id } : {}) } });
-        } catch (error) {
-          this.store.updateDecision(project.id, item.num, { notification: { op, state: isDefiniteRejection(error) ? "failed" : "uncertain", coordinatorThreadId, detail: errorMessage(error) } });
-        }
+    if (notify)
+      await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, "Your answer is saved.",
+        `Initiative · ${project.name} · Your answer to ${item.ref}\n\n${body.question ?? item.title}\nChoice: ${input.choice ?? "Written answer"}${note ? `\nNote: ${note}` : ""}${recordedBy ? `\nRecorded from chat by ${recordedBy.threadId}.` : ""}`,
+        recordedBy?.threadId);
+    return this.store.decisionItem(project.id, item.num)!;
+  }
+
+  /**
+   * D386: the user answers a worker's blocked report from the Inbox. The answer
+   * is recorded as the user's decision and sent to the coordinator, who
+   * continues, rejects or accepts the report; the Inbox item stays until then.
+   * Repeating the same answer retries only a failed notice; a different answer
+   * supersedes the previous one and is sent again. `seen` is the blocker the
+   * user answered; an answer to an older question or context is refused.
+   */
+  async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string) {
+    const project = this.requireProject(projectId);
+    const assignment = this.requireAssignment(project, ref);
+    const tasks = this.store.tasks(project.id);
+    const open = openBlockers(
+      this.store.assignments(project.id).map((a) => ({ ...a, outcome: a.report?.outcome ?? null })),
+      (num) => ["done", "cancelled"].includes(tasks.find((task) => task.num === num)?.status ?? "done"),
+    ).some((a) => a.num === assignment.num);
+    if (!open) throw new ProjectError(`${assignment.ref} is no longer waiting on a blocker; the coordinator already acted on it. Your answer was not saved.`);
+    const blocker = assignment.report!.blocker;
+    if (!blocker || blocker.question !== seen.question || blocker.context !== seen.context)
+      throw new ProjectError(`${assignment.ref}'s blocker changed since you opened it. Read the new question and context; your answer was not saved.`);
+    const text = note.trim();
+    if (!text) throw new ProjectError("Write an answer.");
+    const key = blockerKey(assignment.num, blocker);
+    const previous = this.store.decisions(project.id).find((item) => item.body.blocker && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
+    if (previous?.body.answer?.note === text && previous.notification?.state !== "failed") return previous;
+    const worker = this.store.worker(project.id, assignment.workerNum)!;
+    const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
+    const op = newOpId();
+    const coordinatorThreadId = project.coordinatorThreadId;
+    const item = this.store.tx(() => {
+      if (previous?.body.answer?.note === text) {
+        this.store.updateDecision(project.id, previous.num, { notification: { op, state: "pending", coordinatorThreadId } });
+        return previous;
       }
-    }
+      const description = `Answer to ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref}): ${text}`;
+      const added = this.store.addDecision({
+        projectId: project.id, title: description.slice(0, 100),
+        topic: previous?.topic ?? `blocker-${assignment.ref.toLowerCase()}`, scope: "project", status: "active",
+        body: { description, blocker: { assignment: assignment.num, question: blocker.question, context: blocker.context }, answer: { choice: null, note: text, at: this.now() } },
+        madeBy: "user", humanAttention: "none", blocks: [], deadline: null,
+        provenance: { author: "user", threadId: null, assignment: null }, supersedes: previous?.num ?? null,
+      });
+      this.store.updateDecision(project.id, added.num, { notification: { op, state: "pending", coordinatorThreadId } });
+      this.store.log(project.id, "decision", `${added.ref} You answered ${worker.ref}'s blocker (${assignment.ref}): ${text}`);
+      return added;
+    });
+    await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, "Your answer is saved.",
+      `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${assignment.ref}${subject ? `, ${subject}` : ""}, ${item.ref})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\nAnswer: ${text}\n\nContinue ${worker.ref} with this answer, or reject or accept ${assignment.ref}. The Inbox item clears when you do.`);
     return this.store.decisionItem(project.id, item.num)!;
   }
 
@@ -4740,7 +4790,7 @@ export class ProjectsService {
       )
         return null;
       if (thread.archivedAt !== null || thread.deletedAt !== null) return "ended";
-      const metadata = await ownMetadata(this.sdk, this.bb.pluginId, thread.id);
+      const metadata = await this.sdk.threads.getPluginMetadata({ threadId: thread.id, pluginId: this.bb.pluginId });
       return metadata.op === start.op_id && metadata.projectId === start.project_id
         ? thread
         : "unknown";
@@ -4862,7 +4912,7 @@ export class ProjectsService {
         ) - 60_000;
       let remaining = unlocated.length + pendingThreads.length;
       await this.scanLiveReceipts("reconcile", since, signal, async (row) => {
-        const metadata = await ownMetadata(this.sdk, this.bb.pluginId, row.id);
+        const metadata = await this.sdk.threads.getPluginMetadata({ threadId: row.id, pluginId: this.bb.pluginId });
         if (signal?.aborted) return false;
         const start = unlocated.find(
           (s) => s.op_id === metadata.op && s.project_id === metadata.projectId,
@@ -4940,7 +4990,7 @@ export class ProjectsService {
           const cancelled =
             fresh.state === "cancelled" || fresh.cancelRequested;
           const queuedRow = queued.find((row) =>
-            carriesOpMarker(JSON.stringify(row.content), assignment.opId),
+            JSON.stringify(row.content).includes(opMarker(assignment.opId)),
           );
           if (queuedRow) {
             if (cancelled) {
@@ -4975,7 +5025,7 @@ export class ProjectsService {
                 fresh.num,
                 queuedRow.id,
               );
-          } else if (history.some((text) => carriesOpMarker(text, assignment.opId))) {
+          } else if (history.some((text) => text.includes(opMarker(assignment.opId)))) {
             if (cancelled) {
               // The cancelled brief provably dispatched: delivery is
               // confirmed, but the turn may still be executing. The op stays
@@ -5141,7 +5191,7 @@ export class ProjectsService {
           again.cancelRequested !== current.cancelRequested
         )
           continue;
-        const ran = history.some((text) => carriesOpMarker(text, assignment.opId));
+        const ran = history.some((text) => text.includes(opMarker(assignment.opId)));
         if (cancelled) {
           if (ran) {
             // The cancelled brief provably dispatched: delivery is confirmed,
@@ -5672,7 +5722,7 @@ export class ProjectsService {
       assignment.createdAt - 60_000,
       signal,
       async (row) => {
-        const metadata = await ownMetadata(this.sdk, this.bb.pluginId, row.id);
+        const metadata = await this.sdk.threads.getPluginMetadata({ threadId: row.id, pluginId: this.bb.pluginId });
         if ((metadata as { op?: unknown }).op === assignment.opId) {
           found = row.id;
           return true;
@@ -5686,7 +5736,7 @@ export class ProjectsService {
             limit: "5",
           }),
         );
-        if (!history.some((text) => carriesOpMarker(text, assignment.opId))) return false;
+        if (!history.some((text) => text.includes(opMarker(assignment.opId)))) return false;
         found = row.id;
         return true;
       },
@@ -5708,8 +5758,8 @@ export class ProjectsService {
     signal: AbortSignal | undefined,
     visit: (row: ThreadListRow) => Promise<boolean>,
   ) {
-    // Only the current origin: the import refuses while any operation is
-    // unsettled, so no open receipt can carry the former plugin ID.
+    // Only the current origin: no operation left unsettled at the rename,
+    // so no open receipt can carry the former plugin ID.
     let offset = this.receiptCursors.get(key) ?? 0;
     for (let page = 0; page < RECEIPT_SCAN_PAGES; page++) {
       if (signal?.aborted) break;

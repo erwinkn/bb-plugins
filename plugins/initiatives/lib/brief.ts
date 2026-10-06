@@ -2,7 +2,7 @@ import type { AssignmentAccess, Brief, Profile } from "./schema";
 import { describeProfile } from "./policy";
 import type { DecisionRecord, ProjectRecord, TaskRecord } from "./store";
 import { decisionRef } from "./store";
-import { LEGACY_PLUGIN_ID, PLUGIN_ID } from "./identity";
+import { PLUGIN_ID } from "./identity";
 
 // Per-assignment text sent as an ordinary message. Standing instructions live
 // in the plugin skills and tool snippets, so this is an appended delta that
@@ -10,10 +10,7 @@ import { LEGACY_PLUGIN_ID, PLUGIN_ID } from "./identity";
 
 /** Marks a message as plugin-sent so the dispatch hook can tell it from a user's. */
 export const opMarker = (opId: string) => `[${PLUGIN_ID}:${opId}]`;
-/** Messages sent before the rename carry the former plugin ID in their marker. */
-export const carriesOpMarker = (text: string, opId: string) =>
-  text.includes(opMarker(opId)) || text.includes(`[${LEGACY_PLUGIN_ID}:${opId}]`);
-export const OP_MARKER_PATTERN = new RegExp(`\\[(?:${PLUGIN_ID}|${LEGACY_PLUGIN_ID}):(op_[a-z0-9]+)\\]`, "u");
+export const OP_MARKER_PATTERN = new RegExp(`\\[${PLUGIN_ID}:(op_[a-z0-9]+)\\]`, "u");
 
 const list = (items: string[]) => items.map((item) => `- ${item}`).join("\n");
 

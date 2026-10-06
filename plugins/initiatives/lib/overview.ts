@@ -1,5 +1,6 @@
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { BUSY_STATUSES } from "./bb";
+import { blockerKey, openBlockers } from "./blockers";
 import { describeProfile } from "./policy";
 import { buildUsage, unloadedUsage, type InitiativeUsage } from "./usage";
 import type {
@@ -82,6 +83,19 @@ export interface AwaitingItem {
   summary: string;
   reportedAt: number | null;
   checkpoint?: AssignmentRecord["checkpoint"];
+}
+
+/** D386: a blocked report the coordinator has not acted on; it waits on the user until answered. */
+export interface BlockerItem {
+  assignment: string;
+  role: Role;
+  tasks: TaskLink[];
+  owner: { worker: string; label: string; threadId: string | null };
+  question: string;
+  context: string;
+  reportedAt: number | null;
+  /** The user's answer, kept until the coordinator acts on the report. */
+  answer: { ref: string; note: string; at: number; notification: DecisionRecord["notification"] } | null;
 }
 
 export interface RemainingItem {
@@ -223,6 +237,8 @@ export interface Overview {
   updates: { ref: string; summary: string; body: string; createdAt: number }[];
   inFlight: InFlightItem[];
   awaitingAcceptance: AwaitingItem[];
+  /** Unresolved blocked reports, oldest first; unanswered ones count toward Needs you. */
+  blockers: BlockerItem[];
   remaining: RemainingItem[];
   opinionNeeded: OpinionItem[];
   revisit: RevisitItem[];
@@ -418,6 +434,28 @@ export function buildOverview(
       };
     })
     .sort((a, b) => (a.reportedAt ?? 0) - (b.reportedAt ?? 0));
+
+  const blockerAnswers = new Map(
+    decisions.flatMap((item) => (item.body.blocker ? [[blockerKey(item.body.blocker.assignment, item.body.blocker), item] as const] : [])),
+  );
+  const blockers: BlockerItem[] = openBlockers(
+    assignments.map((a) => ({ ...a, outcome: a.report?.outcome ?? null })),
+    closedTask,
+  ).map((assignment) => {
+    const worker = workerByNum.get(assignment.workerNum)!;
+    const blocker = assignment.report?.blocker;
+    const answer = blocker ? blockerAnswers.get(blockerKey(assignment.num, blocker)) : undefined;
+    return {
+      assignment: assignment.ref,
+      role: assignment.role,
+      tasks: (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(link),
+      owner: { worker: worker.ref, label: worker.label, threadId: assignment.threadId },
+      question: blocker?.question ?? assignment.report?.summary ?? "",
+      context: blocker?.context ?? "",
+      reportedAt: assignment.reportedAt,
+      answer: answer ? { ref: answer.ref, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, notification: answer.notification } : null,
+    };
+  });
 
   const openDecisions = decisions.filter(
     (item) => item.status === "active",
@@ -686,6 +724,7 @@ export function buildOverview(
     })),
     inFlight,
     awaitingAcceptance,
+    blockers,
     remaining,
     opinionNeeded,
     revisit,
@@ -799,6 +838,18 @@ export function threadsToWatch(store: Store, projectId: string): string[] {
   return [...ids];
 }
 
+/** Unanswered open blockers, from the few columns `openBlockers` reads. */
+function summaryBlockers(store: Store, projectId: string, tasks: { num: number; status: string }[]) {
+  const rows = store.db.prepare("SELECT num, worker_num, role, task_nums, review_of, state, CASE WHEN json_valid(report) THEN json_extract(report, '$.outcome') END AS outcome, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.question') END AS question, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.context') END AS context FROM assignments WHERE project_id=? ORDER BY num").all(projectId) as { num: number; worker_num: number; role: "work" | "review"; task_nums: string; review_of: string | null; state: string; outcome: string | null; question: string | null; context: string | null }[];
+  if (!rows.some((row) => row.state === "reported" && row.outcome === "blocked")) return 0;
+  const answered = new Set((store.db.prepare("SELECT json_extract(body, '$.blocker.assignment') AS assignment, json_extract(body, '$.blocker.question') AS question, json_extract(body, '$.blocker.context') AS context FROM knowledge WHERE project_id=? AND kind='decision' AND status NOT IN ('superseded','removed') AND json_valid(body) AND json_extract(body, '$.blocker') IS NOT NULL").all(projectId) as { assignment: number; question: string; context: string }[]).map((row) => blockerKey(row.assignment, row)));
+  const closed = new Set(tasks.filter((t) => ["done", "cancelled"].includes(t.status)).map((t) => t.num));
+  return openBlockers(
+    rows.map((row) => ({ num: row.num, workerNum: row.worker_num, role: row.role, taskNums: JSON.parse(row.task_nums) as number[], reviewOf: row.review_of ? (JSON.parse(row.review_of) as number[]) : null, state: row.state, outcome: row.outcome, blocker: row.question === null ? null : { question: row.question, context: row.context ?? "" } })),
+    (num) => closed.has(num),
+  ).filter((row) => !row.blocker || !answered.has(blockerKey(row.num, row.blocker))).length;
+}
+
 /** Compact list/tree projection, without parsing report bodies or telemetry histories. */
 export function buildSummary(store: Store, projectId: string) {
   const project = store.project(projectId)!;
@@ -808,7 +859,7 @@ export function buildSummary(store: Store, projectId: string) {
   const tasks = store.db.prepare("SELECT num,status FROM tasks WHERE project_id=?").all(projectId) as { num: number; status: string }[];
   const attention = store.db.prepare("SELECT human_attention,decision_owner,decision_review FROM knowledge WHERE project_id=? AND status='active' AND kind='decision'").all(projectId) as { human_attention: string; decision_owner: string | null; decision_review: string | null }[];
   const opinions = attention.filter(d => d.human_attention === "needs-opinion").length;
-  const blocked = (store.db.prepare("SELECT COUNT(*) AS n FROM assignments WHERE project_id=? AND state='reported' AND json_valid(report) AND json_extract(report, '$.outcome')='blocked'").get(projectId) as { n: number }).n;
+  const blocked = summaryBlockers(store, projectId, tasks);
   return { id: project.id, name: project.name, objective: project.objective, paused: project.paused,
     coordinatorThreadId: project.coordinatorThreadId, memberProjectIds: project.memberProjectIds,
     inFlight: active.length, remaining: tasks.filter(t => !["done", "cancelled"].includes(t.status) && !assigned.has(t.num)).length,

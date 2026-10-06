@@ -39,8 +39,7 @@ import { COMMAND_EXAMPLES, READ_EXAMPLES } from "./lib/examples";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { objectRootSchema } from "./lib/tool-schema";
 import { ProjectError, errorMessage } from "./lib/bb";
-import { isOwnOrigin, ownMetadata } from "./lib/identity";
-import { LegacyMigration, defaultMigrationPaths } from "./lib/migration/legacy";
+import { isOwnOrigin } from "./lib/identity";
 import { scopedNativeEvent } from "./lib/native-events";
 import { initiativesContext, membersContext, recordText, threadContext } from "./lib/context";
 import { messageSchema, currentIdentity, workerWork } from "./lib/messaging";
@@ -52,8 +51,6 @@ import {
   type ReadView,
 } from "./lib/read";
 
-type ThreadMoveSummary = { threadId: string; kind: string; state: string; detail: string | null };
-
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, MIGRATIONS);
@@ -62,42 +59,20 @@ export default function plugin(bb: BbPluginApi) {
   const service = new ProjectsService(bb, store, preferences);
   const runtime = new Runtime(service);
   bb.onDispose(() => runtime.dispose());
-  // The one-time import from the former `projects` ID. While it is pending,
-  // or while the former plugin is enabled, every entry point refuses with
-  // the reason instead of serving an empty or competing ledger.
-  const migration = new LegacyMigration(bb, db, preferences, defaultMigrationPaths(bb, db));
-  const guard = () => {
-    const reason = migration.gate();
-    if (reason) throw new ProjectError(reason);
-  };
-  // Every admitted call or job that may write the ledger, so the rollback
-  // hand-back can pause new ones and then wait for these to finish.
-  const admitted = new Set<Promise<unknown>>();
-  const admit = <T,>(work: () => T | Promise<T>): Promise<T> => {
-    const run = Promise.resolve().then(work);
-    admitted.add(run);
-    void run.then(() => admitted.delete(run), () => admitted.delete(run));
-    return run;
-  };
-  const settled = async () => {
-    while (admitted.size) await Promise.allSettled([...admitted]);
-  };
-  runtime.detached = (work) => void admit(() => work).catch(() => {});
   const changed = (projectId?: string) => {
     const payload: Record<string, string> = projectId ? { projectId } : {};
     bb.realtime.publish("initiatives-changed", payload);
     // A plugin app only hears its own realtime signals: the Threads sidebar
-    // republishes this bump on its own channel and refetches the tree. An
-    // older Sidebar only knows the former method name.
-    const notify = (method: string) =>
-      bb.sdk.plugins.callRpc({
-        pluginId: "sidebar",
-        method,
-        input: payload,
-        outputSchema: z.object({ ok: z.literal(true) }),
-      });
+    // republishes this bump on its own channel and refetches the tree.
     try {
-      void notify("initiativesChanged").catch(() => notify("projectsChanged")).catch(() => {});
+      void bb.sdk.plugins
+        .callRpc({
+          pluginId: "sidebar",
+          method: "initiativesChanged",
+          input: payload,
+          outputSchema: z.object({ ok: z.literal(true) }),
+        })
+        .catch(() => {});
     } catch {
       /* sidebar absent */
     }
@@ -119,7 +94,7 @@ export default function plugin(bb: BbPluginApi) {
       }
     };
     if (
-      ["answer", "pause", "assignment-stop", "stop-work"].includes(
+      ["answer", "blocker-answer", "pause", "assignment-stop", "stop-work"].includes(
         command.action,
       )
     )
@@ -361,31 +336,25 @@ export default function plugin(bb: BbPluginApi) {
         }
       : null;
   };
-  const guarded = <A extends unknown[], R>(handler: (...args: A) => R) => (...args: A): Promise<Awaited<R>> =>
-    admit(async (): Promise<Awaited<R>> => {
-      guard();
-      return await handler(...args);
-    });
   bb.rpc.register(projectsContract, {
     resetSetting: async ({ field }) => {
       await preferences.handle.experimental_set({ [field]: null });
       return { ok: true as const };
     },
-    migration: async () => migration.status(),
-    list: guarded(list),
-    tree: guarded(tree),
-    overview: guarded(({ projectId, detailed, detail }) =>
-      overview(projectId, detail ?? (detailed === false ? "summary" : "full"), { fresh: false })),
-    membership: guarded(({ threadId }) => membershipOf(threadId)),
-    panel: guarded(async ({ threadId }) => {
+    list,
+    tree,
+    overview: ({ projectId, detailed, detail }) =>
+      overview(projectId, detail ?? (detailed === false ? "summary" : "full"), { fresh: false }),
+    membership: ({ threadId }) => membershipOf(threadId),
+    panel: async ({ threadId }) => {
       const membership = membershipOf(threadId);
       return {
         membership,
         summary: membership ? await overview(membership.projectId, "summary", { fresh: false }) : null,
       };
-    }),
-    read: guarded(async ({ projectId, view, ...options }) => view === "threads" ? readThreads(projectId, options) : read(projectId, view, options)),
-    command: guarded(({ projectId, command }) => {
+    },
+    read: async ({ projectId, view, ...options }) => view === "threads" ? readThreads(projectId, options) : read(projectId, view, options),
+    command: ({ projectId, command }) => {
       if (command.action === "thread-create" && "prompt" in command) {
         if (!projectId) throw new ProjectError("Pass an Initiative ID.");
         const run = async () => {
@@ -397,7 +366,7 @@ export default function plugin(bb: BbPluginApi) {
         return next;
       }
       return perform(projectId, command, "user", null);
-    }),
+    },
     inventory: async () => {
       const projects = await bb.sdk.projects.list({ includePersonal: false });
       return Promise.all(
@@ -441,10 +410,6 @@ export default function plugin(bb: BbPluginApi) {
   // (Pooler warming, Advisor). Token auth; own store only; reads never write or wake.
   for (const [path, read] of [["/context/v1/thread", threadContext], ["/context/v1/record", recordText], ["/context/v1/initiatives", initiativesContext], ["/context/v1/members", membersContext]] as const)
     bb.http.route("GET", path, (c) => {
-      // No `version` while paused: consumers read the context as unavailable
-      // (fail closed), never as "this thread has no Initiative".
-      const paused = migration.gate();
-      if (paused) return c.json({ error: "initiatives-paused", message: paused }, 503);
       const { status, body } = read(store, new URL(c.req.url).searchParams);
       return c.json(body, status);
     }, { auth: "token" });
@@ -495,7 +460,10 @@ export default function plugin(bb: BbPluginApi) {
   };
   const ensureMember = async (threadId: string) => {
     if (store.membership(threadId)) return;
-    const meta = await ownMetadata(bb.sdk, bb.pluginId, threadId);
+    const meta = await bb.sdk.threads.getPluginMetadata({
+      threadId,
+      pluginId: bb.pluginId,
+    });
     if (typeof meta.op !== "string") return;
     const a = store.assignmentByOp(meta.op);
     const thread = await bb.sdk.threads.get({ threadId });
@@ -527,10 +495,7 @@ export default function plugin(bb: BbPluginApi) {
     // coordinator, and mutating tools re-check confirmed membership per call.
     // A pending or unconfirmed coordinator keeps its receipt and tools but is
     // not membership, so it can never be misclaimed as a worker either.
-    // While paused, configuration reads but never writes the ledger.
-    const paused = migration.gate() !== null;
     if (
-      !paused &&
       isOwnOrigin(bb.pluginId, ctx.origin.pluginId) &&
       meta.role === "coordinator" &&
       typeof meta.projectId === "string" &&
@@ -563,7 +528,6 @@ export default function plugin(bb: BbPluginApi) {
     }
     // A user thread can configure before the create RPC's own confirm lands.
     if (
-      !paused &&
       isOwnOrigin(bb.pluginId, ctx.origin.pluginId) &&
       meta.role === "adhoc" &&
       typeof meta.projectId === "string" &&
@@ -611,15 +575,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   // New configurations advertise canonical names only. Retained native sessions
   // may still call their already-constructed old allowlist; no runtime restart.
-  const registerTool: typeof bb.agents.registerTool = (unguarded: Parameters<typeof bb.agents.registerTool>[0]) => {
-    const definition = {
-      ...unguarded,
-      execute: (input: any, context: any) =>
-        admit(() => {
-          guard();
-          return unguarded.execute(input, context);
-        }),
-    } as Parameters<typeof bb.agents.registerTool>[0];
+  const registerTool: typeof bb.agents.registerTool = (definition: Parameters<typeof bb.agents.registerTool>[0]) => {
     bb.agents.registerTool(definition);
     const suffix = definition.name.replace(/^initiative_/, "");
     if (!LEGACY_TOOL_NAMES.includes(suffix as typeof LEGACY_TOOL_NAMES[number])) return;
@@ -838,44 +794,6 @@ export default function plugin(bb: BbPluginApi) {
     },
   });
 
-  const MIGRATE_USAGE = "Usage: bb initiative migrate status | import --settings <file>|--no-settings [--backup-dir <dir>] [--overwrite-conflicts] [--again] | start-fresh | abandon | export [--backup-dir <dir>] | resume --settings <file>|--no-settings [--backup-dir <dir>]";
-  const migrate = async (args: string[]) => {
-    const [step, ...rest] = args;
-    const flag = (name: string) => {
-      const at = rest.indexOf(name);
-      if (at === -1) return undefined;
-      const value = rest[at + 1];
-      if (!value || value.startsWith("--")) throw new ProjectError(`${name} needs a value.`);
-      return value;
-    };
-    const known = new Set(["--settings", "--backup-dir", "--no-settings", "--overwrite-conflicts", "--again"]);
-    const unknown = rest.filter((arg, i) => arg.startsWith("--") ? !known.has(arg) : !["--settings", "--backup-dir"].includes(rest[i - 1] ?? ""));
-    if (unknown.length) throw new ProjectError(`Unknown migrate arguments: ${unknown.join(" ")}`);
-    const backupDir = flag("--backup-dir");
-    if (step === "status" && !rest.length) return migration.status();
-    if (step === "import") {
-      const settings = flag("--settings");
-      if (!settings === !rest.includes("--no-settings"))
-        throw new ProjectError("Pass --settings <file> (saved with bb plugin config projects --json before disabling it), or --no-settings.");
-      return migration.importLegacy({ settings: settings ?? null, backupDir, overwrite: rest.includes("--overwrite-conflicts"), again: rest.includes("--again") });
-    }
-    if (step === "start-fresh" && !rest.length) return migration.startFresh();
-    if (step === "export")
-      return migration.exportForRollback({ backupDir }, async () => {
-        await settled();
-        await writes.catch(() => undefined);
-        await sweeping?.catch(() => undefined);
-        await settled();
-      });
-    if (step === "resume") {
-      const settings = flag("--settings");
-      if (!settings === !rest.includes("--no-settings"))
-        throw new ProjectError("Pass --settings <file> (saved with bb plugin config projects --json while it ran after the rollback), or --no-settings if Projects never ran.");
-      return migration.resume({ backupDir, settings: settings ?? null });
-    }
-    if (step === "abandon" && !rest.length) return migration.abandon();
-    throw new ProjectError(MIGRATE_USAGE);
-  };
   bb.cli.register({
     name: "initiative",
     summary: "Durable initiatives, worker lifecycles, decisions and overview",
@@ -909,27 +827,11 @@ export default function plugin(bb: BbPluginApi) {
         summary: "Reconcile uncertain operations using native receipts",
         usage: "bb initiative reconcile",
       },
-      {
-        name: "migrate",
-        summary: "One-time move from the former Projects plugin: status, import (with the saved settings; --again after a rollback), start-fresh, abandon an unfinished import, and the rollback hand-back (export, resume)",
-        usage: "bb initiative migrate status | import --settings <file>|--no-settings [--backup-dir <dir>] [--overwrite-conflicts] [--again] | start-fresh | abandon | export [--backup-dir <dir>] | resume --settings <file>|--no-settings [--backup-dir <dir>]",
-      },
     ],
     async run(argv, ctx) {
       try {
         const args = argv.filter((a) => a !== "--json");
         const [action, value, explicitId] = args;
-        if (action === "migrate") {
-          const result = (await migrate(args.slice(1))) as { finished?: boolean; open?: ThreadMoveSummary[] };
-          changed();
-          const stdout = JSON.stringify(result, null, 2);
-          // An unfinished step is a failure: the runbook stops on a non-zero exit.
-          if (result.finished === false)
-            return { exitCode: 1, stdout, stderr: `Not finished: ${(result.open ?? []).length} open item(s): ${(result.open ?? []).slice(0, 5).map((o) => `${o.kind} ${o.threadId} ${o.state}${o.detail ? ` (${o.detail})` : ""}`).join("; ")}` };
-          return { exitCode: 0, stdout };
-        }
-        const result: unknown = await admit(async () => {
-        if (action !== "describe") guard();
         if (ctx.threadId) await ensureMember(ctx.threadId);
         const member = ctx.threadId ? store.membership(ctx.threadId) : null;
         const id = explicitId ?? member?.project.id;
@@ -999,10 +901,8 @@ export default function plugin(bb: BbPluginApi) {
           changed();
         } else
           throw new ProjectError(
-            "Usage: bb initiative list | overview [id] | read <view> [id] | message '<json>' | command '<json>' [id] | report '<json>' | reconcile | migrate <status|import|start-fresh|abandon|export|resume>",
+            "Usage: bb initiative list | overview [id] | read <view> [id] | message '<json>' | command '<json>' [id] | report '<json>' | reconcile",
           );
-        return result;
-        });
         const stdout = JSON.stringify(result, null, 2);
         if (Buffer.byteLength(stdout) > 900_000)
           throw new ProjectError(
@@ -1014,10 +914,7 @@ export default function plugin(bb: BbPluginApi) {
       }
     },
   });
-  // While paused nothing is recorded from native events; once open, the
-  // sweep reconciles whatever happened meanwhile from native state.
-  const scoped = scopedNativeEvent(store, changed);
-  const event: typeof scoped = (work) => scoped((data) => admit(() => (migration.gate() === null ? work(data) : undefined)));
+  const event = scopedNativeEvent(store, changed);
   bb.events.on(
     "thread.idle",
     event(({ thread }) => runtime.onThreadIdle(thread)),
@@ -1057,25 +954,15 @@ export default function plugin(bb: BbPluginApi) {
     "message.cancelled",
     event(({ entry }) => runtime.onMessageCancelled(entry.id)),
   );
-  let sweeping: Promise<unknown> | null = null;
   bb.background.service("initiatives-sweep", {
     async start(signal) {
       runtime.start(signal);
       try {
         while (!signal.aborted) {
           const before = ledgerVersion();
-          // Never sweep beside an enabled former plugin, nor before the
-          // import lands; a paused import resumes its thread phase here.
-          await migration.refreshLegacy().catch((error) => bb.log.warn(`Could not read the former plugin's state: ${errorMessage(error)}`));
-          const wasPaused = migration.gate() !== null;
-          if (wasPaused) await migration.continuePending(signal).catch((error) => bb.log.warn(`Import thread phase: ${errorMessage(error)}`));
-          if (migration.gate() === null) {
-            sweeping = admit(() => runtime.sweep(signal));
-            await sweeping;
-            sweeping = null;
-          }
+          await runtime.sweep(signal);
           if (signal.aborted) break;
-          if (ledgerVersion() !== before || wasPaused !== (migration.gate() !== null)) changed();
+          if (ledgerVersion() !== before) changed();
           await new Promise<void>((resolve) => {
             const done = () => {
               clearTimeout(timer);

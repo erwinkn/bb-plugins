@@ -708,79 +708,19 @@ longer retirement clause in its earlier wording while shorter rewrites still
 apply. Passes repeat until nothing changes, so the saved text is already the
 stable result and the next load rewrites nothing. Edited clauses and custom text stay untouched; nothing restarts.
 
-## One-time move from the projects ID
+## The former projects ID
 
-This plugin was installed as `projects` until the rename. BB derives a plugin
-ID from its package name and refuses to change it in place, so the move is a
-new install plus a one-time import. In order: save the former settings,
-disable `projects`, install this path, import, verify, then restart each
-coordinator once. This is what the plugin does at each step.
+This plugin was installed as `projects` until the rename. A one-time import
+copied the ledger byte for byte, the settings, every thread's metadata and the
+Initiative tabs; the import, rollback and migration gate have since been
+removed. Two traces remain:
 
-- **Paused until imported.** An empty ledger beside a former one
-  (`<BB data>/plugins/projects/data.db`) answers every entry point — tools,
-  RPC, CLI, the context routes (503 `initiatives-paused`, no `version`) — with
-  the reason, records nothing from native events and does not sweep. It never
-  starts empty by accident. On a BB without a former ledger it starts open.
-- **Never beside the former plugin.** While `projects` is enabled, this
-  plugin refuses everything and does not sweep, so the two never own the same
-  Initiatives at once. The sweep re-checks before every pass.
-- **Import:** `bb initiative migrate import --settings <file>`, after
-  `bb plugin config projects --json > <file>` and `bb plugin disable projects`.
-  It refuses while the former plugin is enabled or not cleanly disabled, while
-  its `data.db-wal` is not empty, while this ledger holds any row, and while
-  the former ledger has an unsettled native operation (listed). It never
-  opens the former file: it copies it byte for byte (same SHA-256), and reads
-  and verifies the copy. One transaction copies every row with its rowid and
-  the AUTOINCREMENT counters, then an independent check compares every row
-  both ways and a per-table SHA-256 of every value with its storage class;
-  any difference rolls it all back. The internal schema and migration history
-  are identical, so the copy is exact. Then, each step resumable and
-  recorded:
-  - The customized settings from the saved file are applied and read back.
-    A failure keeps the plugin paused, and the next import call (or the
-    sweep) retries it.
-  - Each thread's metadata moves from the `projects` namespace to
-    `initiatives`.
-  - Initiative tabs are repointed, with before-images.
-  A namespace that already differs is a conflict left for a person
-  (`--overwrite-conflicts` after reading it). Only when all of this is done
-  does the plugin open. Any unfinished step exits non-zero, so a script stops
-  there. `bb initiative migrate status` shows every step, and re-running is
-  safe.
-- **Both IDs stay valid.** BB cannot re-stamp `originPluginId`, so threads
-  created before the move keep `projects`. Origin checks accept both, metadata
-  reads fall back to the former namespace until a thread is copied, and
-  receipts match both `[initiatives:op_…]` and `[projects:op_…]` markers.
-- **Giving up an unfinished import:** `bb initiative migrate abandon` points
-  every moved tab back at `projects` and keeps this install paused. The former
-  plugin can then be enabled again.
-- **Rollback after a completed import:** `bb initiative migrate export`.
-  - It pauses this install, so new calls are refused, then waits for every
-    call and native-event job it had already admitted.
-  - It copies thread metadata and tabs back and saves the current settings
-    (`initiatives-settings-<time>.json`). It exits non-zero until all of that
-    is done.
-  - With this plugin disabled, `scripts/ledger.ts restore --from <this
-    data.db>` replaces the former ledger's rows from the closed database, so
-    even a write that finished after the export is included. It refuses a
-    ledger whose hand-back did not finish, and keeps the former `data.db`
-    beside it.
-  - `scripts/ledger.ts apply-settings` gives the former plugin the saved
-    settings and verifies them.
-- **Coming back after a rollback:** `bb initiative migrate resume --settings
-  <file>|--no-settings` reopens this install. It applies and verifies the
-  former plugin's saved settings, every field including resets to defaults,
-  and points tabs forward. It is allowed only while the former ledger still
-  equals what was handed back, or was never restored. Once Projects has done
-  any work, resume refuses; `bb initiative migrate import --again --settings
-  <file>` brings that work forward instead (this ledger is backed up first,
-  and the former plugin's thread metadata wins).
-- **One migration step at a time.** Import, its retries, abandon, export and
-  resume never run concurrently. An abandon waits for an import pass already
-  in flight, and that pass never reopens the plugin. Every export first
-  withdraws the previous export's restore authorization.
-- **Dry run:** `npx vite-node scripts/ledger.ts -- dry-run <copy of the former
-  data.db>` imports a copy into a scratch ledger and prints the verification.
+- BB cannot re-stamp `originPluginId`, so threads created before the move keep
+  `projects`. Origin checks accept both IDs; everything else, metadata and op
+  markers included, uses `initiatives` only.
+- The import's bookkeeping tables (`_initiatives_migration`,
+  `_initiatives_migration_threads`) stay in the ledger, unused. Nothing drops
+  them.
 
 ## Read-only context for other plugins
 
@@ -816,9 +756,7 @@ or model call:
 Send `x-bb-plugin-token` from `bb.sdk.plugins.token({pluginId:"initiatives"})`.
 Every Initiatives response has `version: 1`; errors are `bad-request`,
 `not-found`, `no-report` or `store-unreadable`; any other response (BB's own
-401, 404 or 500, or this plugin's 503 `initiatives-paused` during its one-time
-move) means the context is unknown. Readers bridging the move ask whichever of
-`initiatives` and `projects` is running.
+401, 404 or 500) means the context is unknown.
 
 ## Cache, telemetry and recovery
 

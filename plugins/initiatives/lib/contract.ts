@@ -3,13 +3,11 @@ import { z } from "zod";
 import { commandSchema } from "./commands";
 import { legacyThreadCreateSchema } from "./legacy";
 import type { Overview } from "./overview";
-import type { LegacyMigration } from "./migration/legacy";
 import { projectSummarySchema, treeSchema } from "./tree-schema";
 import { readOptionsSchema, READ_VIEWS } from "./read";
 export type { ProjectSummary, ProjectTree } from "./tree-schema";
 
 const id = z.string().min(1).max(80);
-export type MigrationStatus = Awaited<ReturnType<LegacyMigration["status"]>>;
 const membershipSchema = z
   .object({
     projectId: id,
@@ -24,8 +22,6 @@ export const projectsContract = defineRpcContract({
     input: z.object({ field: z.enum(["coordinatorInstructions", "workerInstructions", "executionProfiles"]) }).strict(),
     output: z.object({ ok: z.literal(true) }),
   },
-  /** The one-time import's state; answered even while every other method is paused. */
-  migration: { input: z.null(), output: z.custom<MigrationStatus>() },
   list: { input: z.null(), output: z.array(projectSummarySchema) },
   tree: { input: z.null(), output: treeSchema },
   membership: {

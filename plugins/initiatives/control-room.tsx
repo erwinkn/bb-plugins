@@ -6,11 +6,13 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type FormEvent,
   type ReactNode,
   type TextareaHTMLAttributes,
 } from "react";
 import { Markdown } from "@get-bb/plugin-sdk/app";
-import type { Overview, OpinionItem } from "./lib/overview";
+import type { BlockerItem, Overview, OpinionItem } from "./lib/overview";
+import { needsYouCount } from "./lib/blockers";
 import type { DecisionRecord } from "./lib/store";
 import type { Command } from "./lib/commands";
 import type { projectsContract } from "./lib/contract";
@@ -388,7 +390,7 @@ export function ControlRoom({
   );
   const cState = `${p.coordinatorStatus}${p.paused ? "; Initiative paused" : ""}`;
   // Open questions and blocked reports wait on the user: shown before anything else.
-  const needsYou = o.opinionNeeded.length + o.awaitingAcceptance.filter((a) => a.outcome === "blocked").length;
+  const needsYou = needsYouCount(o);
   const unchecked = [...o.decisions].reverse().filter(pendingReview);
   // A report's own row replaces the remaining row of the task it awaits.
   const reported = new Set(o.awaitingAcceptance.flatMap((a) => a.tasks.map((t) => t.ref)));
@@ -531,8 +533,8 @@ export function ControlRoom({
             tab={tab}
             change={chooseTab}
             prefix={prefix}
-            counts={{ inbox: o.opinionNeeded.length + unchecked.length }}
-            urgent={o.opinionNeeded.length > 0}
+            counts={{ inbox: o.opinionNeeded.length + o.blockers.length + unchecked.length }}
+            urgent={needsYou > 0}
           />
         </div>
       </div>
@@ -661,6 +663,25 @@ export function ControlRoom({
                   ))}
                 </section>
               ) : null}
+              {o.blockers.length ? (
+                <section aria-label="Blocked workers" onKeyDown={moveBetweenFolds}>
+                  {o.blockers.map((item, index) => (
+                    <Fold group={`${prefix}-inbox`}
+                      key={item.assignment}
+                      title={
+                        <>
+                          <span className="cr-kind" aria-hidden="true">!</span>
+                          {item.owner.label} is blocked
+                        </>
+                      }
+                      meta={<span className="cr-inbox-meta">{item.owner.worker} · {item.assignment}{item.tasks.length ? ` · ${item.tasks.map(t => t.ref).join(", ")}` : ""} · <Age at={item.reportedAt} />{item.answer ? " · answered" : ""}</span>}
+                      initial={!o.opinionNeeded.length && index === 0}
+                    >
+                      <Blocker item={item} run={run} openThread={openThread} coordinatorThreadId={p.coordinatorThreadId} />
+                    </Fold>
+                  ))}
+                </section>
+              ) : null}
               {unchecked.length || acceptDecisions.eligible ? <section aria-label="Agent decisions to check">
                 <div className="cr-inbox-decision-head">
                   <h2 className="cr-section-heading">Agent decisions to check</h2>
@@ -668,7 +689,7 @@ export function ControlRoom({
                 </div>
                 {unchecked.map(d => <DecisionItem key={d.ref} d={d} run={run} />)}
               </section> : null}
-              {!o.opinionNeeded.length && !unchecked.length ? (
+              {!o.opinionNeeded.length && !o.blockers.length && !unchecked.length ? (
                 <p className="cr-empty">You’re up to date.</p>
               ) : null}
             </div>
@@ -1268,6 +1289,85 @@ function Threads({
     </div>
   );
 }
+/**
+ * D386: a worker's blocker, answerable here. The answer goes to the
+ * coordinator, who continues the worker; the item stays until it does.
+ */
+function Blocker({ item, run, openThread, coordinatorThreadId }: { item: BlockerItem; run: Run; openThread: (id: string) => void; coordinatorThreadId: string | null }) {
+  const [revising, setRevising] = useState(false);
+  const [note, setNote] = useState(item.answer?.note ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const notice = item.answer?.notification;
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy || !note.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await run({ action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note });
+      setRevising(false);
+    } catch (e) {
+      setError(message(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="project-card project-opinion cr-blocker">
+      <Markdown className="project-question" content={item.question} />
+      {item.context ? <Markdown className="project-context" content={item.context} /> : null}
+      {item.tasks.length ? <p className="project-muted">Blocks {item.tasks.map((t) => `${t.ref} ${t.title}`).join(", ")}</p> : null}
+      <div className="project-actions">
+        {item.owner.threadId ? <button type="button" onClick={() => openThread(item.owner.threadId!)}>Open worker thread</button> : null}
+        {coordinatorThreadId ? <button type="button" onClick={() => openThread(coordinatorThreadId)}>Open coordinator</button> : null}
+      </div>
+      {item.answer && !revising ? (
+        <>
+          <div className="cr-blocker-answer">
+            <span className="project-meta">Your answer · {item.answer.ref}</span>
+            <Markdown content={item.answer.note} />
+          </div>
+          {notice ? (
+            <p role={notice.state === "failed" || notice.state === "uncertain" ? "alert" : "status"} className="project-muted">
+              {notice.state === "failed" ? `Coordinator notification failed: ${notice.detail ?? "Unknown error"}`
+                : notice.state === "pending" || notice.state === "uncertain" ? "Coordinator notification unconfirmed; check its thread before sending again."
+                : notice.state === "queued" ? `Queued for the coordinator. This stays here until it continues ${item.owner.worker} or settles ${item.assignment}.`
+                : `Sent to the coordinator. This stays here until it continues ${item.owner.worker} or settles ${item.assignment}.`}
+            </p>
+          ) : null}
+          <div className="project-actions">
+            {notice?.state === "failed" ? (
+              <Action run={run} command={{ action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note: item.answer.note }}>
+                Retry coordinator notification
+              </Action>
+            ) : null}
+            <button type="button" onClick={() => { setNote(item.answer!.note); setRevising(true); }}>Change answer</button>
+          </div>
+        </>
+      ) : (
+        <form onSubmit={submit} onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+            event.preventDefault();
+            event.currentTarget.requestSubmit();
+          }
+        }}>
+          <label className="project-field">
+            Your answer
+            <AutoTextarea rows={3} value={note} maxLength={4000} required placeholder="Write your answer." onChange={(e) => setNote(e.target.value)} />
+          </label>
+          {error ? <p role="alert" className="project-error">{error}</p> : null}
+          <p className="project-hint">Sent to the coordinator, which continues {item.owner.worker} with it.</p>
+          <div className="project-actions">
+            <button className="project-primary" disabled={busy || !note.trim()}>{busy ? "Sending…" : "Send to coordinator"}</button>
+            {revising ? <button type="button" onClick={() => setRevising(false)}>Cancel</button> : null}
+          </div>
+        </form>
+      )}
+    </div>
+  );
+}
+
 type DecisionRow = Overview["decisions"][number];
 const pendingReview = (d: DecisionRow) => d.madeBy === "agent" && d.review === "pending";
 const owner = (d: DecisionRow) =>

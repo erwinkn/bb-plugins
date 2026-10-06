@@ -27,6 +27,12 @@ export function applyCommitted(o: Overview, command: Command, result: unknown): 
       }
     }
   }
+  if (command.action === "blocker-answer") {
+    const d = result as DecisionRecord;
+    if (!d?.ref || !d.body?.answer) return o;
+    const answer = { ref: d.ref, note: d.body.answer.note, at: d.body.answer.at, notification: d.notification };
+    next.blockers = next.blockers.map(b => b.assignment === command.assignment ? { ...b, answer } : b);
+  }
   next.counts.opinionNeeded = next.opinionNeeded.length;
   next.counts.revisit = next.revisit.length;
   next.counts.answered = next.answered.length;

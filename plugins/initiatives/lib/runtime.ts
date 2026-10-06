@@ -24,8 +24,6 @@ export class Runtime {
   // aborts, idle events stop starting handovers and convergence.
   private stopSignal?: AbortSignal;
   private usageSamples = new Map<string, Promise<void>>();
-  /** Work that outlives the event that started it; the plugin tracks it so a rollback hand-back can wait for it. */
-  detached: (work: Promise<unknown>) => void = () => {};
 
   constructor(private readonly service: ProjectsService) {}
 
@@ -59,9 +57,9 @@ export class Runtime {
       membership = this.store.membership(thread.id);
       if (!membership) return;
     }
-    this.detached(this.sampleUsage(membership, thread.id).catch((error) =>
+    void this.sampleUsage(membership, thread.id).catch((error) =>
       this.log.warn(`Usage sampling failed: ${errorMessage(error)}`),
-    ));
+    );
     // A cancelled assignment whose brief provably dispatched keeps its
     // reservation while the turn can run: this idle is its positive settle
     // only when no queued or background native work can still execute.
@@ -270,10 +268,10 @@ export class Runtime {
         );
       });
       if (dropped && staged)
-        this.detached(this.service.syncWorkerTitle(
+        void this.service.syncWorkerTitle(
           assignment.projectId,
           assignment.workerNum,
-        ));
+        );
       return;
     }
     if (assignment.state !== "queued") return;
@@ -302,10 +300,10 @@ export class Runtime {
       );
     });
     if (staged)
-      this.detached(this.service.syncWorkerTitle(
+      void this.service.syncWorkerTitle(
         assignment.projectId,
         assignment.workerNum,
-      ));
+      );
   }
 
   // Periodic pass -----------------------------------------------------------

@@ -304,6 +304,13 @@ export const answerSchema = z
     notify: z.boolean().optional(),
   })
   .strict();
+/** D386: the user's Inbox answer to a blocked report; question and context are the blocker they saw. */
+export const blockerAnswerSchema = z.object({
+  action: z.literal("blocker-answer"), assignment: ref,
+  question: z.string().max(1000),
+  context: z.string().max(2000),
+  note: z.string().trim().min(1, "Write an answer.").max(4000),
+}).strict();
 export const closeQuestionSchema = z.object({
   action: z.literal("question-close"), decision: ref,
   note: z.string().trim().max(4000).default(""),
@@ -342,6 +349,7 @@ export const commandSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("decision-clear") }).strict().describe("Retired bulk removal: always refuses with refresh/decision-accept-all instructions; never changes data."),
   ...manageCommands,
   answerSchema,
+  blockerAnswerSchema,
   closeQuestionSchema,
   questionWithdrawSchema,
   decisionReviewSchema,
@@ -465,6 +473,9 @@ export async function runCommand(
         throw new ProjectError("The user answers their own opinion requests.");
       return service.answerOpinion(projectId, c.decision, c);
     }
+    case "blocker-answer":
+      if (author !== "user") throw new ProjectError("Only the user answers a worker's blocker from the Inbox. Agents continue the worker with the answer instead.");
+      return service.answerBlocker(projectId, c.assignment, { question: c.question, context: c.context }, c.note);
     case "question-close": {
       if (author !== "user") throw new ProjectError("Only the user closes a question quietly.");
       return service.closeQuestion(projectId, c.decision, c.note);
