@@ -13,12 +13,13 @@ all reachable. See [BB MCP](plugins/bb-mcp/README.md).
 review panel, comments, revision history, and feedback to the original agent. See
 [Plans](plugins/plans/README.md) for installation, the agent workflow, and storage limits.
 
-`projects` adds a project coordinator, durable tasks and decisions, native worker
-threads, shared context, and an editable project overview. See [Projects](plugins/projects/README.md).
+`initiatives` adds an Initiative coordinator, durable tasks and decisions, native
+worker threads, shared context, and an editable Initiative overview. It was
+installed as `projects` until a one-time move; see [Initiatives](plugins/initiatives/README.md).
 
 `sidebar` adds a status-first thread list: Needs Attention, Unread,
 Working, Draft, and Done. It also supports project grouping and spaces, named
-project selections shared by every client, plus a Projects view with one colored row per project that opens its coordinator. See
+project selections shared by every client, plus an Initiatives view with one colored row per Initiative that opens its coordinator. See
 [Sidebar](plugins/sidebar/README.md) for local installation and draft limits.
 
 `editor` adds a Pierre file editor: a Files panel with a file tree,
@@ -288,6 +289,74 @@ Record potential BB issues here for later review and filing. Never open
 issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
+
+### Thread timeline: no forced layout per collapsible group on mount (2026-10-06)
+
+Candidate from T118's switch measurement (local BB 0.43.1, headless Chromium);
+not filed. Opening a thread mounts every visible "Worked for N s" group. Each
+one reads `offsetHeight` in a layout effect and then writes `style.height`
+(function `HV` in `assets/workspace-checkout-display-*.js`, about line 201).
+The read after the previous group's write forces a full-page layout every
+time: 166–331 ms of forced layout per Initiative switch, about half of the
+blocking work. `TimelineWindowedItems` adds 50–85 ms of
+`getBoundingClientRect` layouts on long threads.
+
+- **Smallest change:** skip the measurement on first mount (it is only needed
+  to animate a toggle), or read every height before writing any, or rely on
+  the ResizeObserver path alone.
+- **Suggested issue title:** `Timeline collapsible groups force a layout each on mount`.
+
+### Thread switch: paint the header and latest rows before the full commit (2026-10-06)
+
+Candidate from T118; not filed. Clicking another thread runs one synchronous
+React commit of 275–500 ms locally (up to about 1.2 s under profiling) before
+anything paints. The URL, header and first message appear together when it
+ends, and nothing responds while it runs. A transition, or an incremental
+mount (header and the last few rows first, the rest after a frame), would
+make a switch feel immediate. The same measurement found work repeated on
+every switch:
+
+- `/api/v1/threads/<id>` is fetched twice.
+- `/api/v1/environments/<id>/status` is fetched twice, at 190–250 ms and
+  32 KB each.
+- Worker environments' `/pull-request` lookups take 1.5–6.5 s on Equisafe.
+
+Suggested issue title: `Thread switches block on one long commit; paint the
+header and latest rows first`.
+
+### Re-attribute thread origin when a plugin changes ID (2026-10-06)
+
+Candidate from the Projects -> Initiatives move (T100); not filed. A plugin's ID
+comes from its package name and BB refuses to change it on update, so a rename
+is a new install. Settings, data, per-thread metadata and thread tabs move
+through public APIs, but `threads.origin_plugin_id` does not: core writes it
+only in `createThread`, and `UpdateThreadRequest` (SDK 0.4.87 d.ts L13484) has
+no such field. About 320 threads keep `originPluginId: "projects"`, so the
+plugin must accept both IDs in every origin check, and `threads.list({
+originPluginId })` scans miss old threads.
+
+- **Smallest operation:** an owner-only `bb plugin reattribute-threads <fromId>
+  <toId> [--dry-run]` (or the API equivalent). Preconditions: `toId` installed
+  and enabled, `fromId` disabled or removed. One transaction updates
+  `origin_plugin_id` on archived and live threads, skips deleted ones, returns
+  the exact thread IDs (so it can be reversed with `--thread-ids`), emits
+  `thread:changed`, and is idempotent.
+- **Better:** a `bb plugin rename <from> <to>` that also moves settings,
+  secrets, kv, the data directory, metadata namespaces and plugin-panel tabs;
+  core's plugin state snapshot/restore already covers most per-ID state.
+- **Suggested issue title:** `Re-attribute thread origin when a plugin changes ID`.
+
+### CLI aliases for plugin commands (2026-10-06)
+
+Candidate from T100; not filed. A plugin registers exactly one top-level CLI
+name (`PluginCliRegistration.name`; a second `bb.cli.register` is rejected),
+and the `bb` CLI matches it exactly. The Initiatives plugin keeps `bb
+initiative`, singular like `bb thread` and `bb project`, because coordinators,
+workers, skills and an automation already call it; `bb initiatives` cannot also
+exist without a second plugin. An optional `aliases: string[]` on the
+registration, listed in help and checked against core names like `name`, would
+let a plugin rename its command without breaking retained sessions.
+Suggested issue title: `Allow aliases for plugin CLI commands`.
 
 ### Automations status and thread link from the same run (2026-10-04)
 
@@ -1551,6 +1620,26 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
 - **Status:** not filed. Suggested title: `Thread timeline build blocks the
   event loop on large threads`.
 
+### Event-loop stall reports cannot name what blocked (2026-10-06)
+
+- **Where:** BB server's `Event loop stalled` monitor (`currentWork`,
+  `lastWork`, `slowestWork`).
+- **Symptom:** on 2026-10-06, `~/.bb/logs/server.1.log` held 168 stalls over
+  ~9.5 h, 60 of them over 2 s, worst 18.2 s. Every large one has a tracked
+  `slowestWork` of at most ~1 ms (timeline builds aside, at most 255 ms), so
+  the blocking code was untracked. `currentWork` lists what was in flight, and
+  long-lived work is always in flight: Account Pooler HTTP requests stream for
+  minutes, and each `completed-event-output-migration` sweep advance measures
+  0.1 ms. Neither can be confirmed as the cause. The Pooler's own request path
+  measured at most ~120 ms of synchronous work per 8 MB request before
+  2026-10-06, and about 1 ms per MB since.
+- **Ask:** time the synchronous part of plugin HTTP, RPC and tool handlers per
+  plugin, record GC pauses (`perf_hooks` `gc` entries), and on a stall over a
+  few seconds capture a stack or CPU-profile sample, so a report names what
+  held the loop.
+- **Status:** not filed. Suggested title: `Event-loop stall reports: attribute
+  synchronous time to plugins, GC and stacks`.
+
 ### Account Pooler reconnect storm on transport timeout (2026-09-19)
 
 - **Where:** the builtin `account-pool` plugin's Codex/Claude transports.
@@ -1565,7 +1654,7 @@ File in [BB issues](https://github.com/get-bb/bb/issues).
 - **Status:** not filed. Suggested title: `Account Pooler transport
   reconnect storm and log spam on ETIMEDOUT`.
 
-### Projects: native notifications, receipts, navigation and cache evidence (2026-10-01)
+### Initiatives (then Projects): native notifications, receipts, navigation and cache evidence (2026-10-01)
 
 These are upstream candidates; no issues have been filed.
 
@@ -1591,18 +1680,18 @@ These are upstream candidates; no issues have been filed.
   filter and turn text. Evidence: `thr_4y757tsgix/T90-review-chatter-report.md`
   in BB thread storage. This extends the same unfiled candidate.
 - **Idempotent native sends and creation:** accept a caller operation ID, return a
-  durable delivery receipt, and offer lookup by that ID. Projects journals intents
+  durable delivery receipt, and offer lookup by that ID. Initiatives journals intents
   and reconciles positive receipts; it never retries an uncertain operation merely
   because a thread or prompt was not found.
 - **Idle thread creation or composer association:** `threads.spawn` requires a
   non-empty `input` and always starts a turn — there is no way to create an idle
   thread, and the root composer (the one lazy path) carries no plugin metadata or
   project-association field. Either an idle-capable spawn or a metadata/association
-  slot on the new-thread pipeline would let Projects open a user-owned linked
+  slot on the new-thread pipeline would let Initiatives open a user-owned linked
   thread without consuming a first message.
 - **Cross-plugin navigation:** expose navigation to another plugin's panel.
   SDK 0.4.87's `toPluginPanel` targets the calling plugin. Sidebar therefore uses
-  SDK `UrlLink` to open `/plugins/projects/projects/<initiative-id>/compose` in
+  SDK `UrlLink` to open `/plugins/initiatives/initiatives/<initiative-id>/compose` in
   BB's internal navigation and closes the mobile drawer through `onNavigate`.
   This works, but requires knowing another plugin's route structure.
   The Initiative dashboard also needs to open Editor Files or Changes in the
@@ -1615,7 +1704,7 @@ These are upstream candidates; no issues have been filed.
 - **Per-message sender attribution:** distinguish a human CLI send from an agent's
   native CLI send in message.dispatch. Thread creation attribution cannot establish
   who sent a later message. This would support diagnostics and native safeguards
-  around interrupted work; the minimal Projects plugin leaves Stop semantics to BB.
+  around interrupted work; the minimal Initiatives plugin leaves Stop semantics to BB.
   SDK 0.4.87 supports `senderThreadId` on sends. Its types also expose
   `startedOnBehalfOf`, but BB 0.43.1 rejects that field on an ordinary spawn
   with `startedOnBehalfOf requires an originKind`. A123's real reviewer start
@@ -1641,7 +1730,7 @@ These are upstream candidates; no issues have been filed.
   forks with visible input`. No issue filed.
 - **Preserve agent-tool argument schemas:** BB 0.43.1's Claude bridge
   replaces a tool schema whose root is not `type: "object"` with an empty
-  object. The SDK accepts the Projects command unions, but Claude then sees
+  object. The SDK accepts the Initiatives command unions, but Claude then sees
   no argument definitions. A172 traced 62 Claude coordinator decision-call
   failures in 48 hours and reproduced the schema loss. Plugins can publish
   explicit object roots and validate each action internally. BB should
@@ -1683,7 +1772,7 @@ These are upstream candidates; no issues have been filed.
   separate read/write token counts alone would only support a token-share metric.
   A Claude runtime counter can restart while its provider conversation ID survives,
   even with a larger new
-  cumulative count. Projects preserves observed epochs conservatively, but cannot
+  cumulative count. Initiatives preserves observed epochs conservatively, but cannot
   guarantee lifetime totals, cache hits, subscription quota savings or cost.
 - **Scoped failure cause:** `thread.failed.error` currently carries the latest
   system error, which may belong to an older turn. Include the failed turn ID and
@@ -1693,7 +1782,7 @@ These are upstream candidates; no issues have been filed.
   user or checkout through Claude settings sources (verified 2026-10-02: provider
   query loads user/project/local settings). The remaining gap is plugin-scoped:
   no per-thread TTL override exists in BB, and the Claude bridge's
-  `cachedInputTokens` normalization loses the read/write split. Projects keeps
+  `cachedInputTokens` normalization loses the read/write split. Initiatives keeps
   combined cached-input telemetry only and builds no provider plumbing.
 - **Cancellable cache maintenance and request-gap evidence:** expose a supported
   provider request lease for warming an unchanged cached prefix without adding a
@@ -1727,7 +1816,7 @@ These are upstream candidates; no issues have been filed.
   `thread.failed` event DTOs expose `activeBackgroundAgentCount` but not
   `activeBackgroundCommandCount` or `activeWorkflowCount`; only `threads.list`
   rows carry the full `activity` object (verified on SDK 0.4.87). To prove a
-  cancelled worker's turn can no longer execute, Projects must scan the global
+  cancelled worker's turn can no longer execute, Initiatives must scan the global
   list (bounded paging) for the thread's row — and an unreadable or absent row
   must conservatively hold the reservation. The SDK also returns parsed JSON
   without runtime DTO validation, so absent or malformed lifecycle/activity
@@ -1738,7 +1827,7 @@ These are upstream candidates; no issues have been filed.
 - **Positive stop confirmation:** the installed `threads.stop` route can
   return `{ ok: true }` even when the host interrupt command fails, because
   the handler swallows the failure unless `requireStopped` is requested — and
-  the public route never requests it. Projects therefore treats every Stop
+  the public route never requests it. Initiatives therefore treats every Stop
   response as an observation, releasing cancelled reservations only on the
   positive quiet/gone evidence above. An SDK-level `requireStopped` option or
   an execution-ended receipt would let cancellation settle directly. No

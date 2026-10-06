@@ -12,8 +12,8 @@
       "source": "./plugins/plans"
     },
     {
-      "name": "projects",
-      "source": "./plugins/projects"
+      "name": "initiatives",
+      "source": "./plugins/initiatives"
     },
     {
       "name": "voice-mode",
