@@ -22,9 +22,9 @@ export interface WorkspacesState {
   kind: "loading" | "error" | "ready";
   message: string | null;
   coordinatorThreadId: string | null;
-  /** Whether Projects named the entries; false rows are native fallbacks. */
+  /** Whether Initiatives named the entries; false rows are native fallbacks. */
   named: boolean;
-  /** Set when Projects ran but its tree could not be read. */
+  /** Set when Initiatives ran but its tree could not be read. */
   degraded: string | null;
   entries: readonly WorkspaceEntry[];
 }

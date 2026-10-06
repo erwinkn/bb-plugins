@@ -46,7 +46,7 @@ const capOrder = (
 };
 
 /**
- * One kv document orders the flat Projects rows. It is the only place the
+ * One kv document orders the flat Initiatives rows. It is the only place the
  * displayed order lives, so activity, selection, polling, and reloads never
  * move a project the user did not move. `sync` runs inside the read path: it
  * keeps ids the current tree no longer lists and appends never-seen ids in

@@ -15,7 +15,7 @@ const Component = app.threadLists[0].component;
 const slots: ReturnType<typeof renderSlot>[] = [];
 beforeEach(() => {
   localStorage.clear();
-  updateState(() => ({ ...parseState(null), mode: "projects" }));
+  updateState(() => ({ ...parseState(null), mode: "initiatives" }));
 });
 afterEach(() => {
   for (const s of slots.splice(0)) s.unmount();
@@ -150,6 +150,7 @@ function mount(
       order: string[];
     }) => { revision: number; order: string[] } | Promise<never>;
     rpc?: Record<string, (input: never) => unknown>;
+    pluginId?: "initiatives" | "projects";
   } = {},
 ) {
   const props = {
@@ -165,6 +166,7 @@ function mount(
     rpc: {
       projectMode: () => ({
         available,
+        ...(overrides.pluginId ? { pluginId: overrides.pluginId } : {}),
         tree: available ? (overrides.treeData ?? tree) : null,
         order: available ? (overrides.order ?? null) : null,
         orderError: null,
@@ -220,14 +222,14 @@ describe("Projects sidebar mode", () => {
     const read = vi.fn(() => held);
     const slot = mount(true, { rpc: { projectMode: read } });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
-    for (let n = 0; n < 5; n++) await slot.behavior.emitRealtime("projects-changed", { projectId: "p1" });
+    for (let n = 0; n < 5; n++) await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); });
     expect(read).toHaveBeenCalledTimes(1);
     await act(async () => { release({ available: true, tree, order: null, orderError: null }); });
     await slot.findByRole("link", { name: "Open Useful search" });
-    for (let n = 0; n < 5; n++) await slot.behavior.emitRealtime("projects-changed", { projectId: "p1" });
+    for (let n = 0; n < 5; n++) await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
-    await slot.behavior.emitRealtime("projects-changed", {}); slot.unmount();
+    await slot.behavior.emitRealtime("initiatives-changed", {}); slot.unmount();
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); }); expect(read).toHaveBeenCalledTimes(2);
   });
 
@@ -239,7 +241,7 @@ describe("Projects sidebar mode", () => {
     const slot = mount(true, { rpc: { projectMode: read } });
     const row = await slot.findByRole("link", { name: "Open Useful search" });
     expect(read.mock.calls[0]![0]).toEqual({ known: null });
-    await slot.behavior.emitRealtime("projects-changed", { projectId: "p1" });
+    await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
     expect(read.mock.calls[1]![0]).toEqual({ known: "r1" });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
@@ -254,7 +256,7 @@ describe("Projects sidebar mode", () => {
       : new Promise(() => {})));
     const slot = mount(true, { rpc: { projectMode: read }, threads: richThreads });
     await slot.findByRole("link", { name: "Open Second push" });
-    await slot.behavior.emitRealtime("projects-changed", { projectId: "p2" });
+    await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p2" });
     await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
     const rpcBefore = slot.inspection.rpcCalls.length;
     fireEvent.click(slot.getByRole("link", { name: "Open Second push" }));
@@ -304,11 +306,11 @@ describe("Projects sidebar mode", () => {
     expect(prevented).toBe(false);
     expect(slot.inspection.navigateCalls).toHaveLength(0);
   });
-  it("offers a return to Threads when Projects is disabled", async () => {
+  it("offers a return to Threads when Initiatives is disabled", async () => {
     const slot = mount(false);
     await waitFor(() =>
       expect(
-        slot.getByText(/Install or enable the Projects plugin/),
+        slot.getByText(/Install or enable the Initiatives plugin/),
       ).toBeTruthy(),
     );
     expect(
@@ -625,12 +627,19 @@ describe("Projects sidebar mode", () => {
     const item = within(menu).getByRole("menuitem", {
       name: "Initiative overview",
     });
-    // A real link to the Projects plugin's panel route — the app router owns
+    // A real link to the Initiatives plugin's panel route — the app router owns
     // the navigation; the click also closes a compact drawer.
-    expect(item.getAttribute("href")).toBe("/plugins/projects/projects/p1");
+    expect(item.getAttribute("href")).toBe("/plugins/initiatives/initiatives/p1");
     fireEvent.click(item);
     expect(onNavigate).toHaveBeenCalled();
   });
+  it("T100 links through the former projects plugin while it still serves the tree", async () => {
+    const slot = mount(true, { pluginId: "projects", treeData: richTree, threads: richThreads });
+    const menu = await openContextMenu(slot, "Useful search");
+    expect(within(menu).getByRole("menuitem", { name: "Initiative overview" }).getAttribute("href")).toBe("/plugins/projects/projects/p1");
+    slot.unmount();
+  });
+
   it("renames a project through the Projects command RPC", async () => {
     const renamed: { projectId: string; name: string }[] = [];
     const slot = mount(true, {
@@ -708,7 +717,7 @@ describe("Projects sidebar mode", () => {
       threads: richThreads,
       rpc: {
         setTreeProjectAppearance: async () => {
-          throw new Error("The Projects plugin is not running.");
+          throw new Error("The Initiatives plugin is not running.");
         },
       },
     });
@@ -716,7 +725,7 @@ describe("Projects sidebar mode", () => {
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Icon and color…" }));
     const editor = await slot.findByRole("group", { name: "Icon and color for Useful search" });
     fireEvent.click(within(editor).getByRole("button", { name: "red" }));
-    expect((await within(editor).findByRole("alert")).textContent).toBe("The Projects plugin is not running.");
+    expect((await within(editor).findByRole("alert")).textContent).toBe("The Initiatives plugin is not running.");
     expect(within(editor).getByRole("button", { name: "red" }).getAttribute("aria-pressed")).toBe("false");
   });
   const expectNativeComposerLink = (
@@ -728,7 +737,7 @@ describe("Projects sidebar mode", () => {
     // UrlLink asks BB to open the same-origin route. toPluginPanel is scoped
     // to Sidebar and would navigate to the wrong plugin.
     expect(link.getAttribute("href")).toBe(
-      `/plugins/projects/projects/${encodeURIComponent(initiativeId)}/compose`,
+      `/plugins/initiatives/initiatives/${encodeURIComponent(initiativeId)}/compose`,
     );
     fireEvent.click(link);
     expect(onNavigate).toHaveBeenCalledOnce();
@@ -737,7 +746,7 @@ describe("Projects sidebar mode", () => {
     expect(slot.inspection.navigateCalls).toEqual([
       {
         method: "openUrl",
-        url: `/plugins/projects/projects/${encodeURIComponent(initiativeId)}/compose`,
+        url: `/plugins/initiatives/initiatives/${encodeURIComponent(initiativeId)}/compose`,
       },
     ]);
     expect(
@@ -799,7 +808,7 @@ describe("Projects sidebar mode", () => {
     });
     const link = await slot.findByRole("link", { name: "New thread in Useful search" });
     expect(link.getAttribute("href")).toBe(
-      "/plugins/projects/projects/p%2Fwith%20space%3F%23/compose",
+      "/plugins/initiatives/initiatives/p%2Fwith%20space%3F%23/compose",
     );
     expectNativeComposerLink(slot, link, initiativeId, onNavigate);
   });
@@ -1056,7 +1065,7 @@ describe("Projects sidebar mode", () => {
       },
     });
     await waitFor(() => expect(calls).toBe(1));
-    expect(slot.getByText("W1 Search reviewer")).toBeTruthy();
+    expect(await slot.findByText("W1 Search reviewer")).toBeTruthy();
     treeData = {
       ...richTree,
       projects: richTree.projects.map((project) => ({
@@ -1067,7 +1076,7 @@ describe("Projects sidebar mode", () => {
       })),
     };
     // The republished signal refreshes immediately, without polling timers.
-    await slot.emitRealtime("projects-changed", {});
+    await slot.emitRealtime("initiatives-changed", {});
     await waitFor(() => expect(calls).toBeGreaterThan(1));
     await waitFor(() => expect(slot.getByText("W1 Queue reviewer")).toBeTruthy());
     expect(slot.queryByText("W1 Search reviewer")).toBeNull();

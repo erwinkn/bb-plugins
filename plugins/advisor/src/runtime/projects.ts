@@ -1,16 +1,20 @@
-// Initiative context through Projects' public, token-authenticated read routes
-// (T96/A222 context contract v1). Read-only: no Projects database, no Projects
-// code, no writes.
+// Initiative context through the Initiatives plugin's public, token-authenticated
+// read routes (T96/A222 context contract v1). Read-only: no Initiatives
+// database, no Initiatives code, no writes.
 //
-//   GET /api/v1/plugins/projects/http/context/v1/thread?threadId=…
-//   GET /api/v1/plugins/projects/http/context/v1/record?initiativeId=…&ref=…&part=brief
+//   GET /api/v1/plugins/<id>/http/context/v1/thread?threadId=…
+//   GET /api/v1/plugins/<id>/http/context/v1/record?initiativeId=…&ref=…&part=brief
+//
+// <id> is `initiatives`, or `projects` until the plugin's one-time move: the
+// running one, else the installed one (see initiativesPluginId).
 //
 // A response without `version: 1` is unknown context. When the route itself
-// does not exist (BB's own 404 without `version`, or no Projects plugin token),
-// the source reports itself unavailable and threads are treated as standalone,
-// exactly as without Projects (D356). Everything else is a failed read, never
-// "standalone": a timeout, a 500, an unparseable body, and BB's 503 while
-// Projects is not running (a reload or a crash is not absence).
+// does not exist (BB's own 404 without `version`, or no Initiatives plugin
+// installed), the source reports itself unavailable and threads are treated as
+// standalone, exactly as without Initiatives (D356). Everything else is a
+// failed read, never "standalone": a timeout, a 500, an unparseable body, BB's
+// 503 while the plugin is not running (a reload or a crash is not absence), and
+// its own 503 while it is paused for its one-time import.
 
 import { z } from "zod";
 import { failed, ok, type AssignmentRecord, type Membership, type Read, type RefsResult, type TaskBriefRecord } from "../rules/snapshot.js";
@@ -18,7 +22,29 @@ import type { InitiativeSource, Listing } from "./initiatives.js";
 import { unavailableInitiatives } from "./initiatives.js";
 import type { FetchLike } from "../transport/types.js";
 
-export const PROJECTS_PLUGIN_ID = "projects";
+/** The Initiatives plugin's ID, then the one it had until its one-time move. Drop `projects` once retired. */
+export const INITIATIVE_PLUGIN_IDS = ["initiatives", "projects"] as const;
+
+/**
+ * Which plugin answers context reads: the running one of INITIATIVE_PLUGIN_IDS,
+ * else an installed one (its 503 is a failed read, never absence), else none
+ * (standalone). Cached briefly: every watched thread reads context.
+ */
+export function initiativesPluginId(
+  list: () => Promise<{ plugins: { id: string; enabled?: boolean; status?: string }[] }>,
+  now: () => number = Date.now,
+  ttlMs = 5000,
+): () => Promise<string | null> {
+  let cached: { id: string | null; at: number } | null = null;
+  return async () => {
+    if (cached && now() - cached.at < ttlMs) return cached.id;
+    const { plugins } = await list();
+    const installed = INITIATIVE_PLUGIN_IDS.filter((id) => plugins.some((p) => p.id === id));
+    const running = installed.find((id) => plugins.some((p) => p.id === id && p.enabled && p.status === "running"));
+    cached = { id: running ?? installed[0] ?? null, at: now() };
+    return cached.id;
+  };
+}
 const TIMEOUT_MS = 2000;
 const BRIEF_MAX_CHARS = 64 * 1024;
 
@@ -121,8 +147,10 @@ const PHASE_STATE: Record<string, string> = {
 export interface ProjectsDeps {
   fetch: FetchLike;
   loopbackBaseUrl: () => string;
-  /** bb.sdk.plugins.token({ pluginId: "projects" }); throws when Projects is not installed. */
-  token: () => Promise<string>;
+  /** bb.sdk.plugins.token({ pluginId }); throws when that plugin is not installed. */
+  token: (pluginId: string) => Promise<string>;
+  /** The plugin to read; null when no Initiatives plugin is installed. Defaults to `initiatives`. */
+  pluginId?: () => Promise<string | null>;
 }
 
 class Unavailable extends Error {}
@@ -134,13 +162,15 @@ export function projectsInitiatives(d: ProjectsDeps): InitiativeSource {
   const context = new Map<string, z.infer<typeof threadContext>>(); // threadId -> last thread context
 
   async function get(path: string, signal: AbortSignal): Promise<unknown> {
+    const pluginId = d.pluginId ? await d.pluginId() : INITIATIVE_PLUGIN_IDS[0];
+    if (pluginId === null) throw new Unavailable("no Initiatives plugin is installed");
     let token: string;
     try {
-      token = await d.token();
+      token = await d.token(pluginId);
     } catch (err) {
-      throw new Unavailable(`Projects plugin token unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Unavailable(`Initiatives plugin token unavailable: ${err instanceof Error ? err.message : String(err)}`);
     }
-    const res = await d.fetch(`${d.loopbackBaseUrl()}/api/v1/plugins/${PROJECTS_PLUGIN_ID}/http/context/v1/${path}`, {
+    const res = await d.fetch(`${d.loopbackBaseUrl()}/api/v1/plugins/${pluginId}/http/context/v1/${path}`, {
       method: "GET",
       headers: { "x-bb-plugin-token": token },
       signal: AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]),
@@ -150,14 +180,14 @@ export function projectsInitiatives(d: ProjectsDeps): InitiativeSource {
     try {
       body = JSON.parse(text);
     } catch {
-      throw new Error(`unparseable Projects response (${res.status})`);
+      throw new Error(`unparseable Initiatives response (${res.status})`);
     }
     if (body?.version !== 1) {
       // BB's own envelope: only a 404 says the route or the plugin is not there.
-      if (res.status === 404) throw new Unavailable(`Projects context route unavailable (404: ${String(body?.error ?? "").slice(0, 120)})`);
-      throw new Error(`unknown Projects context (${res.status}, no version 1)`);
+      if (res.status === 404) throw new Unavailable(`Initiatives context route unavailable (404: ${String(body?.error ?? "").slice(0, 120)})`);
+      throw new Error(`unknown Initiatives context (${res.status}, no version 1${typeof body?.message === "string" ? `: ${body.message.slice(0, 200)}` : ""})`);
     }
-    if (!res.ok) throw new Error(`Projects ${res.status} ${String(body?.error?.code ?? "")}: ${String(body?.error?.message ?? "").slice(0, 200)}`);
+    if (!res.ok) throw new Error(`Initiatives ${res.status} ${String(body?.error?.code ?? "")}: ${String(body?.error?.message ?? "").slice(0, 200)}`);
     return body;
   }
 
@@ -199,11 +229,11 @@ export function projectsInitiatives(d: ProjectsDeps): InitiativeSource {
     throw new Error(`record ${ref} changed while it was read twice (textVersion)`);
   }
 
-  /** A listing never changes `available`: a Projects build without these routes still serves thread context. */
+  /** A listing never changes `available`: an Initiatives build without these routes still serves thread context. */
   async function listing<T>(path: string, schema: z.ZodType<T>, signal: AbortSignal): Promise<Listing<T>> {
     try {
       const parsed = schema.safeParse(await get(path, signal));
-      return parsed.success ? { status: "ok", value: parsed.data } : { status: "failed", error: `Projects ${path.split("?")[0]} does not match contract v1` };
+      return parsed.success ? { status: "ok", value: parsed.data } : { status: "failed", error: `Initiatives ${path.split("?")[0]} does not match contract v1` };
     } catch (err) {
       return { status: err instanceof Unavailable ? "unavailable" : "failed", error: err instanceof Error ? err.message : String(err) };
     }
@@ -234,7 +264,7 @@ export function projectsInitiatives(d: ProjectsDeps): InitiativeSource {
       return available;
     },
     get label() {
-      return available ? "Initiative context from Projects (read-only context contract v1)." : `${unavailableInitiatives.label} ${reason}`.trim();
+      return available ? "Initiative context from the Initiatives plugin (read-only context contract v1)." : `${unavailableInitiatives.label} ${reason}`.trim();
     },
     async membership(threadId, signal): Promise<Read<Membership | null>> {
       let raw: unknown;
@@ -250,7 +280,7 @@ export function projectsInitiatives(d: ProjectsDeps): InitiativeSource {
       }
       available = true;
       const parsed = threadContext.safeParse(raw);
-      if (!parsed.success) return failed("Projects thread context does not match contract v1");
+      if (!parsed.success) return failed("Initiatives thread context does not match contract v1");
       const m = parsed.data.membership;
       context.set(threadId, parsed.data);
       if (m === null) {

@@ -100,12 +100,14 @@ BB, not on the plugin:
   is pre-upstream; `sent` + 499 is cut; `sent` + 5xx/529/502 is ambiguous;
   unstamped BB 500 is ambiguous; exact BB pre-handler 401/404/503 messages are
   pre-upstream.
-- **Projects** (contract v1.1 in T96/A222): `GET …/http/context/v1/thread` and
-  `…/record`. Only BB's own 404 (the route is not installed) or a missing
-  Projects token means "unavailable": threads are then reviewed as standalone,
-  and threads Projects created get partial requirement coverage. Anything else
-  is an unknown read, never "standalone", including BB's 503 while Projects is
-  not running. The last delivered assignment stays the thread's brief in every
+- **Initiatives** (contract v1.1 in T96/A222): `GET …/http/context/v1/thread` and
+  `…/record` of whichever Initiatives plugin runs (`initiatives`, or `projects`
+  until its one-time move), else the installed one. Only BB's own 404 (the route
+  is not installed) or no Initiatives plugin means "unavailable": threads are
+  then reviewed as standalone, and threads the plugin created (either origin ID)
+  get partial requirement coverage. Anything else is an unknown read, never
+  "standalone", including BB's 503 while the plugin is not running or paused for
+  its move. The last delivered assignment stays the thread's brief in every
   phase (reported and accepted are progress; cancelled, rejected and failed are
   history); a queued `next` assignment is shown as a note, never a requirement.
 - **Initiative watches** (T103) list `…/context/v1/initiatives` and
@@ -122,7 +124,7 @@ BB, not on the plugin:
   on is read from its first event. A member that turns `retired` or `former`,
   whose thread is archived or deleted (BB answers 404; any other read failure
   ends nothing), or whose Initiative is archived, is disabled with the reason
-  kept; history stays and a user re-enable is not undone. Projects
+  kept; history stays and a user re-enable is not undone. Initiatives
   does not know native archive state, so the Advisor learns it cheaply: a
   member with an enabled watch from that watch's own thread read, any other
   member from one thread read before it would be (re)started, at most 20 reads
@@ -160,7 +162,7 @@ BB, not on the plugin:
 - **Dispatch gate.** Each observation pass and each dispatch reads the thread
   and its Initiative context. A failed or incomplete read (thread, membership,
   assignment or task brief), a former member (a replaced coordinator or a
-  superseded generation) or a user Stop recorded by Projects sends nothing;
+  superseded generation) or a user Stop recorded by Initiatives sends nothing;
   the reason is shown on the watch and observation continues.
 - **Cancellation.** A review canceled before its request (pause, disable,
   unwatch, a settings change, unload) reserves nothing and never calls fetch.
@@ -176,7 +178,7 @@ BB, not on the plugin:
   fixed verdict); the next occurrence then notifies. A model "resolved" note
   counts only with such a newer edit in the packet: passing commands, claims
   and the citing card itself never resolve anything.
-- **Later stages:** `recordsGet` is the read-only RPC a future Projects intake
+- **Later stages:** `recordsGet` is the read-only RPC a future Initiatives intake
   (S5) or decision capture (T80) can pull. Intake, coordinator wakes and
   decision recording do not exist and are shown as unavailable.
 

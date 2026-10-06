@@ -66,7 +66,7 @@ export interface ProjectOrderState {
 }
 
 /**
- * Sidebar-side view of the persisted Projects order. The doc arrives with
+ * Sidebar-side view of the persisted Initiatives order. The doc arrives with
  * every projectMode read and on the order realtime channel; out-of-order
  * snapshots are dropped by revision. A committed order applies optimistically
  * and survives a failed save, the acknowledgement of an earlier save, foreign

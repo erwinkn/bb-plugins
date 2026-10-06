@@ -112,7 +112,7 @@ export function ThreadRow({
   status: Status;
   project: string;
   /**
-   * A logical identity shown instead of the native title — e.g. a Projects
+   * A logical identity shown instead of the native title — e.g. a Initiatives
    * worker's "W# label". The native title still drives rename edits and
    * renders as secondary metadata on the second line.
    */

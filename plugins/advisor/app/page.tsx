@@ -143,7 +143,7 @@ function InitiativePicker({ open, onClose }: { open: boolean; onClose: () => voi
         {r === null ? <Empty>Loading…</Empty> : null}
         {r && r.status !== "ok" ? (
           <p role="alert" className="text-sm text-destructive">
-            Initiatives cannot be listed: the Projects context routes are {r.status === "unavailable" ? "unavailable" : "unreadable"} ({r.error}). Nothing can be watched as an Initiative until they are.
+            Initiatives cannot be listed: the Initiatives context routes are {r.status === "unavailable" ? "unavailable" : "unreadable"} ({r.error}). Nothing can be watched as an Initiative until they are.
           </p>
         ) : null}
         <ul className="max-h-80 divide-y divide-border overflow-y-auto">

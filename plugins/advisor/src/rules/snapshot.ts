@@ -16,7 +16,7 @@ export const failed = (why = "read-failed"): Read<never> => ({ ok: false, why })
 
 type Comp<T> = { status: "ok"; value: T } | { status: "missing"; why: string };
 
-/** Projects workers-view row (workerWork keeps only active assignment states). */
+/** Initiatives workers-view row (workerWork keeps only active assignment states). */
 export interface WorkerRow {
   ref: string;
   role: string;
@@ -36,7 +36,7 @@ export interface Membership {
   initiative?: { id: string; name: string; kind: string; role: string; worker: string | null; state: string };
 }
 
-/** A Projects readRefs result (lib/read.ts). */
+/** A Initiatives readRefs result (lib/read.ts). */
 export interface RefsResult<T> {
   items: T[];
   missingRefs: string[];

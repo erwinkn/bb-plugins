@@ -12,7 +12,7 @@ export const PROJECT_ORDER_MAX = 256;
 const projectId = z.string().min(1).max(80);
 
 /**
- * The persisted sidebar order for Projects mode. `order` may name durable
+ * The persisted sidebar order for Initiatives mode. `order` may name durable
  * project ids that are absent from the current tree — an archived or briefly
  * unreachable project keeps its slot and reclaims it when it returns. The
  * frontend filters it down to present projects and appends any the doc has

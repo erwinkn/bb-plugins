@@ -31,7 +31,7 @@ export interface AdvisorDeps {
   sleep: (ms: number, signal: AbortSignal) => Promise<void>;
   log: { info(m: string): void; warn(m: string): void };
   publish: (channel: string, payload: unknown) => void;
-  /** Per-read deadline for native and Projects reads (test seam; production 10 s). */
+  /** Per-read deadline for native and Initiatives reads (test seam; production 10 s). */
   readDeadlineMs?: number;
 }
 
@@ -393,7 +393,7 @@ export class Advisor {
   /**
    * Turn on a watch of a whole Initiative: its coordinator and every current
    * member, and members that join later. An unknown Initiative is resolved
-   * through the Projects context routes; when they cannot be read nothing is
+   * through the Initiatives context routes; when they cannot be read nothing is
    * watched and the error says why.
    */
   async watchInitiative(ref: string, via: string, signal: AbortSignal = new AbortController().signal): Promise<InitiativeWatchRow> {
@@ -403,7 +403,7 @@ export class Advisor {
     else {
       const list = await this.d.initiatives.initiatives(readSignal(signal, this.deadline));
       if (list.status !== "ok") {
-        throw new Error(`cannot watch Initiative ${ref}: the Projects context routes are ${list.status === "unavailable" ? "unavailable" : "unreadable"} (${list.error}); nothing is watched`);
+        throw new Error(`cannot watch Initiative ${ref}: the Initiatives context routes are ${list.status === "unavailable" ? "unavailable" : "unreadable"} (${list.error}); nothing is watched`);
       }
       target = pickInitiative(list.value, ref);
     }
@@ -510,7 +510,7 @@ export class Advisor {
       if (r.status !== "ok") {
         const error = (
           r.status === "unavailable"
-            ? `Projects context routes unavailable (${r.error}): new members are not added and retired ones are not stopped until they can be read`
+            ? `Initiatives context routes unavailable (${r.error}): new members are not added and retired ones are not stopped until they can be read`
             : `member listing failed (${r.error}); retried next pass`
         ).slice(0, 500);
         if (error !== fresh.error) {
@@ -767,7 +767,7 @@ export class Advisor {
     rq.fork = ctx.fork;
     rq.setContext({ parent: ctx.parent, coordinator: ctx.coordinator, member: ctx.member, briefs: briefsOf(ctx.snapshot) });
     const pause = pauseOf(w);
-    // Projects' record of a user Stop: set and cleared only by a successful read (a failed read changes nothing).
+    // The Initiatives record of a user Stop: set and cleared only by a successful read (a failed read changes nothing).
     const m = ctx.snapshot.membership;
     if (m.status === "ok") {
       pause.projectsRead(m.value?.userStopped ?? false);

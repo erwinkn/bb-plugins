@@ -490,6 +490,11 @@ async function workspacesHost(options: {
   threads?: Map<string, { thread: unknown; environment?: unknown }>;
   metadata?: Map<string, { worker?: number | null; role?: string | null; projectId?: string | null }>;
   projects?: { enabled: boolean; status: string } | null;
+  /** Full plugin rows; wins over `projects`. */
+  plugins?: { id: string; enabled: boolean; status: string }[];
+  /** Metadata per namespace; wins over `metadata`. */
+  namespaces?: Record<string, Map<string, Record<string, unknown>>>;
+  rpcCalls?: string[];
   tree?: unknown;
   treeError?: Error;
 }) {
@@ -507,7 +512,8 @@ async function workspacesHost(options: {
         },
         list: async (args?: { parentThreadId?: string; archived?: boolean }) =>
           args?.archived ? [...(options.archived ?? []), ...options.children] : options.children,
-        getPluginMetadata: async (args: { threadId: string }) => options.metadata?.get(args.threadId) ?? {},
+        getPluginMetadata: async (args: { threadId: string; pluginId?: string }) =>
+          options.namespaces ? (options.namespaces[args.pluginId ?? "editor"]?.get(args.threadId) ?? {}) : (options.metadata?.get(args.threadId) ?? {}),
       },
       environments: {
         get: async (args: { environmentId: string }) => {
@@ -518,9 +524,10 @@ async function workspacesHost(options: {
       },
       plugins: {
         list: async () => ({
-          plugins: options.projects === null ? [] : [options.projects ?? { id: "projects", enabled: true, status: "running" }],
+          plugins: options.plugins ?? (options.projects === null ? [] : [options.projects ?? { id: "projects", enabled: true, status: "running" }]),
         }),
-        callRpc: async () => {
+        callRpc: async (args: { pluginId: string }) => {
+          options.rpcCalls?.push(args.pluginId);
           if (options.treeError) throw options.treeError;
           return options.tree;
         },
@@ -530,6 +537,25 @@ async function workspacesHost(options: {
   await plugin(bb);
   return harness;
 }
+
+test("T100 workspaces asks whichever Initiatives plugin runs and reads either metadata namespace", async (t) => {
+  const rpcCalls: string[] = [];
+  const host = await workspacesHost({
+    self: threadRow({ id: "thr_w1" }),
+    children: [threadRow({ id: "thr_w1", title: "Worker" })],
+    threads: new Map([["thr_coord", { thread: makeThreadResponse({ id: "thr_coord" }) }]]),
+    plugins: [{ id: "projects", enabled: false, status: "disabled" }, { id: "initiatives", enabled: true, status: "running" }],
+    // This thread's tag was not copied yet: only the former namespace has it.
+    namespaces: { projects: new Map([["thr_w1", { worker: 3, role: "worker", projectId: "prj_a" }]]), initiatives: new Map() },
+    treeError: new Error("Initiatives is paused"),
+    rpcCalls,
+  });
+  t.after(() => host.lifecycle.dispose());
+  const result = rpcContract.workspaces.output.parse(await host.behavior.callRpc("workspaces", { threadId: "thr_w1" }));
+  assert.deepEqual(rpcCalls, ["initiatives"]);
+  assert.match(result.degraded ?? "", /Initiatives tree could not be read/);
+  assert.equal(result.entries.find((entry) => entry.threadId === "thr_w1")?.workerRef, "W3");
+});
 
 test("workspaces consumes the Projects tree for exact Initiative membership", async (t) => {
   const tree = {

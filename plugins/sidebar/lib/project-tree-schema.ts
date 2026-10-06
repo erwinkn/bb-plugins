@@ -1,4 +1,4 @@
-// Version 1 of Projects public RPC tree. Keep both schemas checked against the shared fixture.
+// Version 1 of Initiatives public RPC tree. Keep both schemas checked against the shared fixture.
 import { z } from "zod";
 
 // Versioned public data contract used by the optional Threads integration.

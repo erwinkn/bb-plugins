@@ -263,7 +263,7 @@ function useStableArray<T>(value: readonly T[]): readonly T[] {
 
 function ThreadsList(props: PluginThreadListProps) {
   const { mode } = useClientState();
-  return mode === "projects" ? (
+  return mode === "initiatives" ? (
     <ProjectMode {...props} />
   ) : (
     <ThreadListContent {...props} />

@@ -60,6 +60,7 @@ describe("project order", () => {
       const first = await readMode(h);
       expect(first).toEqual({
         available: true,
+        pluginId: "projects",
         tree: expect.anything(),
         order: { revision: 1, order: ["a", "b"] },
         orderError: null,

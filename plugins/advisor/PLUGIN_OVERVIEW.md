@@ -22,6 +22,6 @@ A finding is advisory and never closes itself: passing tests do not resolve a we
 
 ## Requirements
 
-Reviews with a real model need the matching route enabled in Settings, the daily caps, and either the Account Pooler's advisor route switched on or an API key. Initiative context and Initiative watches come from the Projects read-only context routes when they are installed; without them every thread is reviewed as a standalone thread, and an Initiative watch says it cannot list members instead of watching nothing. When that context cannot be read, or the thread is a former Initiative member, no review is sent and the reason is shown.
+Reviews with a real model need the matching route enabled in Settings, the daily caps, and either the Account Pooler's advisor route switched on or an API key. Initiative context and Initiative watches come from the Initiatives plugin's read-only context routes when they are installed; without them every thread is reviewed as a standalone thread, and an Initiative watch says it cannot list members instead of watching nothing. When that context cannot be read, or the thread is a former Initiative member, no review is sent and the reason is shown.
 
 This plugin is a prototype. Judgment quality and cost per review are unmeasured.

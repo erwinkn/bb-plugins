@@ -12,7 +12,7 @@ export interface ThreadNode {
   status: Status;
   children: ThreadNode[];
   /**
-   * The Projects ledger identity for managed worker threads (e.g. "W1" plus
+   * The Initiatives ledger identity for managed worker threads (e.g. "W1" plus
    * its logical label); the row shows it as the stable title and keeps the
    * native title as secondary metadata.
    */

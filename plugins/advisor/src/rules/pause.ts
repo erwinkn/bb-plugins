@@ -2,7 +2,7 @@
 // pending cards and an empty set. Each reason clears only its own way.
 //
 //   interrupted   Stop / interrupted turn     a later accepted request; or Resume
-//   user-stopped  Projects userStopped        a later read showing false
+//   user-stopped  Initiatives userStopped        a later read showing false
 //   failure       two consecutive failures    Resume only
 //   manual        Pause in panel/CLI          Resume only
 //   disabled      watch disabled              enable (new epoch)

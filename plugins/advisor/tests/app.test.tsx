@@ -210,7 +210,7 @@ describe("Advisor page", () => {
     const page = app.navPanels.find((p) => p.id === "advisor")!;
     const slot = renderSlot(page, { subPath: "" }, { rpc: rpcFor(r) as any });
     fireEvent.click(await slot.findByLabelText("Watch an Initiative"));
-    await within(document.body).findByText(/Initiatives cannot be listed: the Projects context routes are unavailable/u);
+    await within(document.body).findByText(/Initiatives cannot be listed: the Initiatives context routes are unavailable/u);
   });
 
   it("preview runs the fake reviewer without spending", async () => {

@@ -2,7 +2,7 @@
 // fetch serving exactly the documented shapes. No live Projects reads.
 
 import { describe, expect, it } from "vitest";
-import { projectsInitiatives } from "../src/runtime/projects.js";
+import { initiativesPluginId, projectsInitiatives } from "../src/runtime/projects.js";
 import { readContext } from "../src/runtime/context.js";
 import { classifyCompletion } from "../src/rules/snapshot.js";
 import { Requests } from "../src/rules/requests.js";
@@ -70,7 +70,7 @@ describe("Projects context contract v1", () => {
     expect(ctx.snapshot.assignments!.A222).toMatchObject({ read: "ok", state: "running", workerNum: 140, briefText: "Brief A222 exact text.", tasks: ["T96"] });
     expect(ctx.snapshot.tasks!.T96).toMatchObject({ read: "ok" });
     expect(ctx.gaps).toEqual([]);
-    expect(calls[0]).toBe("http://127.0.0.1:1/api/v1/plugins/projects/http/context/v1/thread?threadId=thr_w");
+    expect(calls[0]).toBe("http://127.0.0.1:1/api/v1/plugins/initiatives/http/context/v1/thread?threadId=thr_w");
     expect(src.available).toBe(true);
   });
 
@@ -150,5 +150,47 @@ describe("Projects context contract v1", () => {
       expect(ctx.snapshot.membership.status).toBe("missing");
       expect(src.available).toBe(true);
     }
+  });
+});
+
+describe("T100 the Initiatives plugin's move from the projects ID", () => {
+  it("reads whichever plugin runs, else the installed one, else none; a paused plugin is a failed read, never standalone", async () => {
+    let plugins: { id: string; enabled: boolean; status: string }[] = [{ id: "projects", enabled: true, status: "running" }];
+    let now = 0;
+    const resolve = initiativesPluginId(async () => ({ plugins }), () => now);
+    expect(await resolve()).toBe("projects");
+    plugins = [{ id: "projects", enabled: false, status: "disabled" }, { id: "initiatives", enabled: true, status: "running" }];
+    expect(await resolve()).toBe("projects"); // cached
+    now = 6000;
+    expect(await resolve()).toBe("initiatives");
+    plugins = [{ id: "projects", enabled: false, status: "disabled" }, { id: "initiatives", enabled: false, status: "disabled" }];
+    now = 12000;
+    expect(await resolve()).toBe("initiatives");
+    plugins = [];
+    now = 18000;
+    expect(await resolve()).toBeNull();
+
+    const calls: string[] = [];
+    const tokens: string[] = [];
+    const paused = projectsInitiatives({
+      fetch: async (u) => {
+        calls.push(u);
+        return new Response(JSON.stringify({ error: "initiatives-paused", message: "Initiatives is paused for its migration" }), { status: 503 });
+      },
+      loopbackBaseUrl: () => "http://127.0.0.1:1",
+      token: async (pluginId) => (tokens.push(pluginId), "tok"),
+      pluginId: async () => "initiatives",
+    });
+    const read = await paused.membership("thr_w", signal());
+    expect(calls[0]).toBe("http://127.0.0.1:1/api/v1/plugins/initiatives/http/context/v1/thread?threadId=thr_w");
+    expect(tokens).toEqual(["initiatives"]);
+    expect(read).toMatchObject({ ok: false });
+    expect(JSON.stringify(read)).toContain("paused for its migration");
+    expect(paused.available).toBe(true);
+
+    const none = projectsInitiatives({ fetch: async () => { throw new Error("no fetch"); }, loopbackBaseUrl: () => "x", token: async () => "tok", pluginId: async () => null });
+    const standalone = await readContext({ getThread: async () => ({ ...thread, originPluginId: "initiatives" }) } as never, none, "thr_w", { epoch: 1, settingsRev: 1 }, [], signal());
+    expect(none.available).toBe(false);
+    expect(standalone.gaps).toEqual(["initiative-context-unavailable"]);
   });
 });

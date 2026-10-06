@@ -1,6 +1,13 @@
-// Version 1 of the Projects public RPC tree, vendored like the sidebar's
+// Version 1 of the Initiatives public RPC tree, vendored like the sidebar's
 // copy: both are checked against the shared fixture.
 import { z } from "zod";
+
+/**
+ * The Initiatives plugin's ID, then the one it had until its one-time move.
+ * Readers ask whichever runs and read either metadata namespace, so the
+ * switch order does not matter. Drop `projects` once it is retired.
+ */
+export const INITIATIVE_PLUGIN_IDS = ["initiatives", "projects"] as const;
 
 const id = z.string().min(1).max(80);
 export const treeNodeSchema = z.object({

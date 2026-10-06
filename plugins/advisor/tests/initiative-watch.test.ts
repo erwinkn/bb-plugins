@@ -290,10 +290,10 @@ describe("Initiative watch", () => {
     expect(r.store.listInitiativeWatches()).toEqual([]);
   });
 
-  it("says plainly when the Projects routes are unavailable and never watches nothing silently", async () => {
+  it("says plainly when the Initiatives routes are unavailable and never watches nothing silently", async () => {
     const { r, clock, init } = await setup();
     init.down = "unavailable";
-    await expect(r.advisor.watchInitiative("bb-plugins", "test")).rejects.toThrow(/Projects context routes are unavailable .*nothing is watched/u);
+    await expect(r.advisor.watchInitiative("bb-plugins", "test")).rejects.toThrow(/Initiatives context routes are unavailable .*nothing is watched/u);
     expect(r.store.listInitiativeWatches()).toEqual([]);
     init.down = null;
     await r.advisor.watchInitiative("bb-plugins", "test");
@@ -301,10 +301,10 @@ describe("Initiative watch", () => {
     clock.advance(11_000);
     await r.tick();
     const o = overview(r.store, r.advisor, unavailableInitiatives, clock.now());
-    expect(o.initiativeWatches[0]).toMatchObject({ enabled: true, error: expect.stringMatching(/^Projects context routes unavailable .*new members are not added/u) });
+    expect(o.initiativeWatches[0]).toMatchObject({ enabled: true, error: expect.stringMatching(/^Initiatives context routes unavailable .*new members are not added/u) });
     expect(watched(r)).toMatchObject({ thr_w1: { enabled: true } }); // existing member watches go on
     const cli = await runCli(["status"], { store: r.store, advisor: r.advisor, initiatives: unavailableInitiatives, now: clock.now });
-    expect(cli.stdout).toMatch(/initiative watches \(1\):\n {2}bb-plugins \(prj_1\) on · 2 live members, 2 observed, 1 ended · Projects context routes unavailable/u);
+    expect(cli.stdout).toMatch(/initiative watches \(1\):\n {2}bb-plugins \(prj_1\) on · 2 live members, 2 observed, 1 ended · Initiatives context routes unavailable/u);
   });
 
   it("CLI: watch and unwatch --initiative, and findings name the Initiative and role", async () => {

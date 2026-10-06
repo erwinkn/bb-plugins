@@ -26,7 +26,7 @@ export const AUTHORITATIVE = CURRENT;
 export const PENDING_HORIZON_MIN = 30;
 export const UNKNOWN = Symbol("unknown");
 
-/** Projects ASSIGNMENT_STATES that are progress (a note at completion, never stale). */
+/** Initiatives ASSIGNMENT_STATES that are progress (a note at completion, never stale). */
 export const PROGRESS_STATES = new Set(["dispatching", "queued", "running", "idle_no_report", "reported", "accepted"]);
 
 export type RequirementClass =

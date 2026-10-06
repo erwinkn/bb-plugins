@@ -14,7 +14,7 @@ import { WatchRegistry, WATCH_TTL_MS } from "./lib/watch-registry.js";
 import { hostOfflineMessage, isHostOfflineMessage } from "./lib/host-offline.js";
 import { findPanelTab, solePanelTabParams } from "./lib/panel-target.js";
 import { orderWorkspaceEntries, shapeWorkspaceEntry, type WorkspaceThreadMetadata, type WorkspaceThreadRow } from "./lib/workspace-entries.js";
-import { treeSchema, type ProjectTree, type TreeNode } from "./lib/projects-tree.js";
+import { INITIATIVE_PLUGIN_IDS, treeSchema, type ProjectTree, type TreeNode } from "./lib/projects-tree.js";
 
 type EditorEnvironment = Awaited<ReturnType<BbPluginApi["sdk"]["environments"]["get"]>>;
 type CheckoutDefaultBranch = { name: string; ref: string };
@@ -141,7 +141,7 @@ export const rpcContract = defineRpcContract({
   },
   /**
    * The workspaces a thread panel may inspect: the thread's coordinator and
-   * the threads under it, named the way Projects manages them (W#, label,
+   * the threads under it, named the way Initiatives manages them (W#, label,
    * role) when its metadata answers, plus each thread's native branch and
    * worktree metadata. Unavailable and archived rows stay listed, marked,
    * so a tab pointing at one never silently retargets.
@@ -150,9 +150,9 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: z.string().regex(BB_ID) }).strict(),
     output: z.object({
       coordinatorThreadId: z.string(),
-      /** Whether Projects naming applied (tree or per-thread tags). */
+      /** Whether Initiatives naming applied (tree or per-thread tags). */
       named: z.boolean(),
-      /** Set when Projects runs but its tree could not be read. */
+      /** Set when Initiatives runs but its tree could not be read. */
       degraded: z.string().nullable(),
       entries: z.array(
         z.object({
@@ -1115,22 +1115,35 @@ export default async function plugin(bb: BbPluginApi) {
     },
 
     async workspaces({ threadId }) {
+      // A thread's Initiative tag: the current namespace, or the former one
+      // until the one-time import has copied it.
+      const initiativeMetadata = async (id: string) => {
+        for (const pluginId of INITIATIVE_PLUGIN_IDS) {
+          const data = await bb.sdk.threads.getPluginMetadata({ threadId: id, pluginId }).catch(() => null);
+          if (data !== null && Object.keys(data).length) return data as WorkspaceThreadMetadata;
+        }
+        return null;
+      };
       const self = await bb.sdk.threads.get({ threadId });
       const coordinatorId = self.parentThreadId ?? self.id;
-      // The Projects tree v1 is authoritative for Initiative membership —
+      // The Initiatives tree v1 is authoritative for Initiative membership —
       // its nodes name every managed thread across all member BB projects
       // with stable labels, worker refs and work/review/adhoc roles. A
       // transient failure is not absence: the plugin still running means the
       // error is reported as degraded naming, not dropped rows.
       let tree: ProjectTree | null = null;
       let degraded: string | null = null;
-      const projectsPlugin = (await bb.sdk.plugins.list()).plugins.find((plugin) => plugin.id === "projects");
-      const projectsRunning = Boolean(projectsPlugin?.enabled && projectsPlugin.status === "running");
-      if (projectsRunning) {
+      // The plugin moved from `projects` to `initiatives`; whichever runs
+      // serves the tree, so the order of the switch does not matter.
+      const plugins = (await bb.sdk.plugins.list()).plugins;
+      const provider = INITIATIVE_PLUGIN_IDS.find((id) =>
+        plugins.some((plugin) => plugin.id === id && plugin.enabled && plugin.status === "running"),
+      );
+      if (provider) {
         try {
-          tree = await bb.sdk.plugins.callRpc({ pluginId: "projects", method: "tree", input: null, outputSchema: treeSchema });
+          tree = await bb.sdk.plugins.callRpc({ pluginId: provider, method: "tree", input: null, outputSchema: treeSchema });
         } catch (error) {
-          degraded = `The Projects tree could not be read; names are native fallbacks. ${error instanceof Error ? error.message : String(error)}`;
+          degraded = `The Initiatives tree could not be read; names are native fallbacks. ${error instanceof Error ? error.message : String(error)}`;
         }
       }
       const treeProject = tree?.projects.find((project) => project.coordinatorThreadId === coordinatorId) ?? null;
@@ -1197,13 +1210,7 @@ export default async function plugin(bb: BbPluginApi) {
         await Promise.all(
           picked.map(async (row) => {
             const node = members.get(row.id) ?? null;
-            const metadata =
-              node === null
-                ? await bb.sdk.threads
-                    .getPluginMetadata({ threadId: row.id, pluginId: "projects" })
-                    .then((data) => data as WorkspaceThreadMetadata)
-                    .catch(() => null)
-                : null;
+            const metadata = node === null ? await initiativeMetadata(row.id) : null;
             if (metadata !== null) named = true;
             return shapeWorkspaceEntry(row, metadata, { coordinator: row.id === coordinatorId, node });
           }),

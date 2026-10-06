@@ -82,7 +82,7 @@ export const rpcContract = defineRpcContract({
   threadStatus: { input: z.object({ threadId: id }).strict(), output: out<{ watch: WatchSummary | null }>() },
   watchAdd: { input: z.object({ threadId: id }).strict(), output: out<{ watch: WatchSummary }>() },
   watchRemove: { input: z.object({ watchId: id }).strict(), output: out<{ ok: true; excludedFrom: string[] }>() },
-  /** Open Initiatives from the Projects context routes; `status` says when they cannot be read. */
+  /** Open Initiatives from the Initiatives context routes; `status` says when they cannot be read. */
   initiativeOptions: { input: z.null(), output: out<{ status: "ok" | "unavailable" | "failed"; error: string | null; initiatives: InitiativeOption[] }>() },
   initiativeWatchSet: { input: z.object({ initiativeId: id, enabled: z.boolean() }).strict(), output: out<{ initiative: InitiativeWatchView }>() },
   initiativeWatchRemove: { input: z.object({ initiativeId: id }).strict(), output: out<{ deleted: number }>() },
@@ -116,7 +116,7 @@ export const rpcContract = defineRpcContract({
   discussDraft: { input: z.object({ occurrenceId: id }).strict(), output: out<{ prompt: string; projectId: string | null; threadId: string | null; title: string }>() },
   /** Called only by the composer's submit: opens (or reuses) the separate discussion thread. */
   discussCreate: { input: z.object({ occurrenceId: id, request: composeRequest }).strict(), output: out<{ threadId: string; reused: boolean }>() },
-  /** Advisor-owned finding records by id: the read-only intake surface a later Projects stage (S5) or T80 can pull. */
+  /** Advisor-owned finding records by id: the read-only intake surface a later Initiatives stage (S5) or T80 can pull. */
   recordsGet: { input: z.object({ occurrenceIds: z.array(id).min(1).max(50) }).strict(), output: out<{ records: FindingView[]; missing: string[] }>() },
 });
 

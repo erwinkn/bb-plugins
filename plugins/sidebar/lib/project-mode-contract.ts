@@ -5,7 +5,7 @@ import { PROJECT_COLORS, PROJECT_ICONS, treeSchema } from "./project-tree-schema
 
 const projectId = z.string().min(1).max(80);
 
-// Mirrors the Projects `command`/`thread-create` reply; also validates the
+// Mirrors the Initiatives `command`/`thread-create` reply; also validates the
 // remote response when the sidebar server forwards the call.
 export const threadCreateResultSchema = z.object({
   threadId: z.string().nullable(),
@@ -22,6 +22,8 @@ export const projectModeContract = defineRpcContract({
     input: z.object({ known: z.string().max(80).nullable() }).nullable(),
     output: z.object({
       available: z.boolean(),
+      /** The running Initiatives plugin's ID, which its links go through. */
+      pluginId: z.enum(["initiatives", "projects"]).optional(),
       tree: treeSchema.nullable(),
       /** Identifies this tree; only answered to a conditional read. */
       revision: z.string().nullable().optional(),
@@ -49,7 +51,7 @@ export const projectModeContract = defineRpcContract({
     }),
     output: projectOrderDocSchema,
   },
-  // Renames are delegated to the Projects plugin's own `command` RPC so the
+  // Renames are delegated to the Initiatives plugin's own `command` RPC so the
   // sidebar never owns project data. The name differs from the management
   // contract's `renameProject`: rpc method names share one registry.
   renameTreeProject: {
@@ -60,7 +62,7 @@ export const projectModeContract = defineRpcContract({
     output: z.unknown(),
   },
   // Icon and color go through the same user-scoped `command` RPC
-  // ("appearance"), so Projects owns the data and validates the palette.
+  // ("appearance"), so Initiatives owns the data and validates the palette.
   // Omitted keeps a field; null resets it to the default look.
   setTreeProjectAppearance: {
     input: z.object({
@@ -70,7 +72,7 @@ export const projectModeContract = defineRpcContract({
     }),
     output: z.unknown(),
   },
-  // Thread creation runs through the Projects plugin's user-scoped `command`
+  // Thread creation runs through the Initiatives plugin's user-scoped `command`
   // RPC ("thread-create"); the sidebar chooses the member BB project and a
   // required first message — BB rejects an idle spawn. `uncertain` means
   // spawn did not confirm — the plugin reconciles it, so a null threadId
@@ -84,10 +86,15 @@ export const projectModeContract = defineRpcContract({
     output: threadCreateResultSchema,
   },
   /**
-   * Cross-plugin bump the Projects plugin calls on every ledger mutation.
+   * Cross-plugin bump the Initiatives plugin calls on every ledger mutation.
    * Republished on the sidebar's own realtime channel, which its app can
    * subscribe to; `useRealtime` only delivers the owning plugin's signals.
    */
+  initiativesChanged: {
+    input: z.object({ projectId: projectId.optional() }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  /** The same bump under the name the plugin used before its move to `initiatives`. */
   projectsChanged: {
     input: z.object({ projectId: projectId.optional() }),
     output: z.object({ ok: z.literal(true) }),

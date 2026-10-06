@@ -1,10 +1,10 @@
 // Optional Initiative context (A152 §1 snapshot reads). The Advisor reads
-// Projects only through a public, token-authenticated read surface; it never
-// opens Projects' database or imports its code. That surface (T96) does not
-// exist yet, so production uses `unavailableInitiatives`: watched threads are
-// treated as standalone, and a thread Projects created is marked with partial
-// requirement coverage instead of a guessed membership. Tests use typed fakes
-// built from the installed Projects shapes.
+// the Initiatives plugin only through a public, token-authenticated read
+// surface; it never opens its database or imports its code. Without that
+// surface `unavailableInitiatives` applies: watched threads are treated as
+// standalone, and a thread the Initiatives plugin created is marked with
+// partial requirement coverage instead of a guessed membership. Tests use
+// typed fakes built from the installed Initiatives shapes.
 
 import type { AssignmentRecord, Membership, Read, RefsResult, TaskBriefRecord } from "../rules/snapshot.js";
 import { ok } from "../rules/snapshot.js";
@@ -39,7 +39,7 @@ export interface InitiativeMembers {
 }
 
 /**
- * A listing read. "unavailable" means the route is not there (Projects not
+ * A listing read. "unavailable" means the route is not there (Initiatives not
  * installed, or a build without it); "failed" is any other unknown answer.
  * Neither is ever read as "no members".
  */
@@ -57,12 +57,12 @@ export interface InitiativeSource {
 
 export const unavailableInitiatives: InitiativeSource = {
   available: false,
-  label: "Initiative context unavailable: the authenticated Projects read API is not available yet (T96).",
+  label: "Initiative context unavailable: the Initiatives plugin's authenticated read API is not available.",
   async initiatives() {
-    return { status: "unavailable", error: "the Projects context routes are not available" } as const;
+    return { status: "unavailable", error: "the Initiatives context routes are not available" } as const;
   },
   async members() {
-    return { status: "unavailable", error: "the Projects context routes are not available" } as const;
+    return { status: "unavailable", error: "the Initiatives context routes are not available" } as const;
   },
   async membership() {
     return ok(null);
@@ -80,7 +80,7 @@ export const DEFERRED_STAGES = [
   {
     id: "initiative-intake",
     label: "Initiative finding intake",
-    status: "Unavailable (deferred, stage S5): Projects does not pull Advisor findings yet.",
+    status: "Unavailable (deferred, stage S5): Initiatives does not pull Advisor findings yet.",
   },
   {
     id: "coordinator-wake",

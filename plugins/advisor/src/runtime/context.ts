@@ -7,6 +7,7 @@ import type { ForkOrigin } from "../rules/requests.js";
 import type { AdvisorHost, ThreadDto } from "./host.js";
 import { readSignal } from "./host.js";
 import type { InitiativeSource } from "./initiatives.js";
+import { INITIATIVE_PLUGIN_IDS } from "./projects.js";
 
 export interface WatchContext {
   thread: ThreadDto | null;
@@ -67,7 +68,8 @@ export async function readContext(
   }
   if (!initiatives.available) {
     notes.push(initiatives.label);
-    if (thread?.originPluginId === "projects") gaps.push("initiative-context-unavailable");
+    // A thread the Initiatives plugin created, under its current or former ID.
+    if (INITIATIVE_PLUGIN_IDS.some((id) => id === thread?.originPluginId)) gaps.push("initiative-context-unavailable");
   }
   const snap = snapshot(threadRead, settings, membership, assignments, tasks, dispatchRefs);
   // Labels may use cached fork facts after a failed read; the failed read still gates dispatch (dispatchGate).
@@ -119,7 +121,7 @@ export function dispatchGate(ctx: WatchContext): string | null {
   if (m.status === "ok" && m.value?.former) {
     return "former Initiative member (a replaced coordinator or a superseded worker generation): a review could never be current, so none is sent; evidence is still recorded";
   }
-  if (m.status === "ok" && m.value?.userStopped) return "the user stopped this worker (Projects): no review is sent";
+  if (m.status === "ok" && m.value?.userStopped) return "the user stopped this worker (Initiatives): no review is sent";
   const gaps = snapshotGaps(ctx.snapshot);
   return gaps.length > 0 ? `context read failed or incomplete (${gaps.join(", ")}): no request until a later pass reads it` : null;
 }

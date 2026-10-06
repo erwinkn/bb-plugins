@@ -26,6 +26,7 @@ import {
   type PluginThreadListProps,
 } from "@get-bb/plugin-sdk/app";
 import type { projectModeContract } from "../lib/project-mode-contract";
+import { INITIATIVES_CHANGED, initiativesPanel } from "../lib/project-mode-names";
 import type { ProjectTree } from "../lib/project-tree-schema";
 import { updateState, useClientState } from "../lib/client-state";
 import {
@@ -67,20 +68,20 @@ export function ModeToggle() {
       type="button"
       className="inline-flex h-7 shrink-0 items-center justify-center rounded px-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
       aria-label={
-        state.mode === "projects"
+        state.mode === "initiatives"
           ? "Switch to Threads view"
           : "Switch to Initiatives view"
       }
-      title={state.mode === "projects" ? "Threads view" : "Initiatives view"}
+      title={state.mode === "initiatives" ? "Threads view" : "Initiatives view"}
       onClick={() =>
         updateState((s) => ({
           ...s,
-          mode: s.mode === "projects" ? "threads" : "projects",
+          mode: s.mode === "initiatives" ? "threads" : "initiatives",
         }))
       }
     >
       <HostIcon
-        name={state.mode === "projects" ? "MessageSquare" : "Target"}
+        name={state.mode === "initiatives" ? "MessageSquare" : "Target"}
         fallback="Layers"
         className="size-4"
       />
@@ -97,6 +98,7 @@ export function ProjectMode(props: PluginThreadListProps) {
   const connection = useRealtimeConnectionState();
   const [tree, setTree] = useState<ProjectTree | null>(null);
   const [available, setAvailable] = useState<boolean | null>(null);
+  const [panel, setPanel] = useState(initiativesPanel());
   const [error, setError] = useState<string | null>(null);
   const report = (cause: unknown) =>
     setError(cause instanceof Error ? cause.message : String(cause));
@@ -116,6 +118,7 @@ export function ProjectMode(props: PluginThreadListProps) {
     const read = apiRef.current.call("projectMode", { known: revision.current }).then(result => {
       if (mounted.current) {
         setAvailable(result.available);
+        if (result.pluginId) setPanel(initiativesPanel(result.pluginId));
         if (!result.unchanged) { setTree(result.tree); revision.current = result.revision ?? null; }
         applyRef.current(result.order, result.orderError); setError(null);
       }
@@ -136,7 +139,7 @@ export function ProjectMode(props: PluginThreadListProps) {
     const parsed = projectOrderDocSchema.safeParse(payload);
     if (parsed.success) applySnapshot(parsed.data);
   });
-  useRealtime("projects-changed", schedule);
+  useRealtime(INITIATIVES_CHANGED, schedule);
   const threadSignal = native.threads.map(t => `${t.id}:${t.indicator}:${t.isArchived}:${t.parentThreadId}`).join("|");
   const previousThreads = useRef(native.threads);
   const previousSignal = useRef(threadSignal);
@@ -254,7 +257,7 @@ export function ProjectMode(props: PluginThreadListProps) {
         <a
           className="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent"
           onClick={props.onNavigate}
-          href="/plugins/projects/projects"
+          href={panel}
         >
           Overview
         </a>
@@ -280,7 +283,7 @@ export function ProjectMode(props: PluginThreadListProps) {
         )}
         {available === false && (
           <p className="p-2 text-xs text-muted-foreground">
-            Install or enable the Projects plugin to use this view. Threads
+            Install or enable the Initiatives plugin to use this view. Threads
             remain available from the view switch.
           </p>
         )}
@@ -293,7 +296,7 @@ export function ProjectMode(props: PluginThreadListProps) {
             <a
               className="underline"
               onClick={props.onNavigate}
-              href="/plugins/projects/projects/new"
+              href={`${panel}/new`}
             >
               Start an initiative
             </a>
@@ -331,7 +334,7 @@ export function ProjectMode(props: PluginThreadListProps) {
                   href={
                     p.coordinatorThreadId && coordinator
                       ? `/projects/${coordinator.bbProjectId}/threads/${p.coordinatorThreadId}`
-                      : `/plugins/projects/projects/${p.id}`
+                      : `${panel}/${p.id}`
                   }
                   canReorder={displayed.length > 1}
                   active={active}
@@ -358,6 +361,7 @@ export function ProjectMode(props: PluginThreadListProps) {
                     props.onNavigate();
                   }}
                   onOverview={props.onNavigate}
+                  panel={panel}
                   onRename={(name) => renameProject(p.id, name)}
                   onAppearance={(patch) => restyleProject(p.id, patch)}
                   onNewThread={props.onNavigate}
@@ -399,7 +403,7 @@ export function ProjectMode(props: PluginThreadListProps) {
  * few pixels, touch after a short hold with movement — a flick still scrolls,
  * a stationary long press opens the context menu instead). Right-click, the
  * ContextMenu/Shift+F10 keys, or the long press offer New thread, Rename and
- * Project overview; keyboard reordering is the Space-lift drag.
+ * Initiative overview; keyboard reordering is the Space-lift drag.
  */
 function ProjectRow({
   project,
@@ -416,6 +420,7 @@ function ProjectRow({
   onNewThread,
   onMenuOpen,
   isCompactViewport,
+  panel,
 }: {
   project: TreeProject;
   href: string;
@@ -431,11 +436,12 @@ function ProjectRow({
   onNewThread: () => void;
   onMenuOpen: () => void;
   isCompactViewport: boolean;
+  panel: string;
 }) {
   const scope = usePortalScopeProps();
   // toPluginPanel is scoped to Sidebar. A cross-plugin link opens the frozen
-  // Projects composer route; BB/Projects own selection, creation and parenting.
-  const composeHref = `/plugins/projects/projects/${encodeURIComponent(project.id)}/compose`;
+  // Initiatives composer route; BB/Initiatives own selection, creation and parenting.
+  const composeHref = `${panel}/${encodeURIComponent(project.id)}/compose`;
   const [menuOpen, setMenuOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [styling, setStyling] = useState(false);
@@ -707,7 +713,7 @@ function ProjectRow({
                 </ContextMenu.Item>
                 <ContextMenu.Item className={menuItemClass} asChild>
                   <a
-                    href={`/plugins/projects/projects/${project.id}`}
+                    href={`${panel}/${project.id}`}
                     onClick={onOverview}
                   >
                     Initiative overview

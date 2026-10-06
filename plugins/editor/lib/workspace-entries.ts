@@ -1,13 +1,13 @@
 /**
- * Workspace picker entries, shaped from native thread data plus the Projects
+ * Workspace picker entries, shaped from native thread data plus the Initiatives
  * plugin's tree. Everything here is pure so the naming and availability
  * rules are testable without a BB host.
  *
- * The Projects tree v1 is authoritative for Initiative membership: its nodes
- * name the coordinator, work, review and adhoc threads of a managed project
+ * The Initiatives tree v1 is authoritative for Initiative membership: its nodes
+ * name the coordinator, work, review and adhoc threads of an Initiative
  * with stable labels and worker refs, across every member BB project. When
- * Projects is absent the per-thread metadata tag
- * (`pluginMetadata` under the "projects" plugin id:
+ * Initiatives is absent the per-thread metadata tag
+ * (`pluginMetadata` under the "initiatives" plugin id, or "projects" before the move:
  * `{role: "coordinator"|"worker"|"adhoc", projectId, worker?, v}`) still
  * applies; an unmanaged thread falls back to the native title and role
  * "thread" — nothing is invented.
@@ -32,14 +32,14 @@ export interface WorkspaceThreadRow {
   environmentWorkspaceDisplayKind: string | null;
 }
 
-/** Projects' per-thread tag, as much of it as the picker reads. */
+/** Initiatives' per-thread tag, as much of it as the picker reads. */
 export interface WorkspaceThreadMetadata {
   role?: unknown;
   projectId?: unknown;
   worker?: unknown;
 }
 
-/** The fields of a Projects tree v1 node the picker reads. */
+/** The fields of a Initiatives tree v1 node the picker reads. */
 export interface WorkspaceTreeNode {
   label: string;
   role: "coordinator" | "work" | "review" | "adhoc";
@@ -53,13 +53,13 @@ export type WorkspaceRole = "coordinator" | "worker" | "review" | "adhoc" | "thr
 export interface WorkspaceEntry {
   threadId: string;
   role: WorkspaceRole;
-  /** The Projects worker ref ("W8"); null for unmanaged threads. */
+  /** The Initiatives worker ref ("W8"); null for unmanaged threads. */
   workerRef: string | null;
-  /** Logical label: the Projects label when the title carries one. */
+  /** Logical label: the Initiatives label when the title carries one. */
   label: string;
   /** The full native thread title, for tooltips and unmanaged rows. */
   title: string | null;
-  /** The BB project the thread belongs to, per the Projects tree. */
+  /** The BB project the thread belongs to, per the Initiatives tree. */
   bbProjectId: string | null;
   status: string;
   archived: boolean;
@@ -109,7 +109,7 @@ function metadataWorkerRef(metadata: WorkspaceThreadMetadata | null): string | n
 
 /**
  * One pickable workspace. `row` comes from `threads.list`/`threads.get`;
- * `node` is the thread's Projects tree membership (null when the tree did
+ * `node` is the thread's Initiatives tree membership (null when the tree did
  * not name it), `metadata` the older per-thread tag fallback, and
  * `coordinator` marks the panel's owning coordinator.
  */
@@ -128,7 +128,7 @@ export function shapeWorkspaceEntry(
   const workerRef = node?.worker ?? metadataWorkerRef(metadata);
   const title = row.title ?? row.titleFallback;
   // The tree node's label is the stable logical name; the mutable native
-  // title only fills in when no Projects naming applies.
+  // title only fills in when no Initiatives naming applies.
   const label = role === "coordinator" ? "Coordinator" : (node?.label ?? labelFromTitle(title) ?? row.id);
   const archived = row.archivedAt !== null;
   const deleted = row.deletedAt !== null;

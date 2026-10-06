@@ -7,7 +7,7 @@ import {
 } from "./status";
 
 export interface ClientState {
-  mode: "threads" | "projects";
+  mode: "threads" | "initiatives";
   groupBy: "status" | "project";
   sortBy: SortBy;
   sortDirection: SortDirection;
@@ -52,7 +52,8 @@ export function parseState(raw: string | null): ClientState {
     const value = JSON.parse(raw ?? "null");
     if (!value || typeof value !== "object") return DEFAULT;
     return {
-      mode: value.mode === "projects" ? "projects" : "threads",
+      // "projects" is what clients saved before the Initiatives rename.
+      mode: value.mode === "initiatives" || value.mode === "projects" ? "initiatives" : "threads",
       groupBy: value.groupBy === "project" ? "project" : "status",
       sortBy: value.sortBy === "created" ? "created" : "updated",
       sortDirection:
