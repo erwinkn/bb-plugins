@@ -982,9 +982,10 @@ function ThreadListContent(props: PluginThreadListProps) {
                   : "Loading threads…"}
               </p>
             ) : status === "error" ? (
+              // BB 0.45 no longer passes `Original` to thread lists, so the
+              // error branch stands alone on every version.
               <div role="alert" className="p-2 text-sm">
                 Cannot load threads.
-                <props.Original />
               </div>
             ) : (
               <>

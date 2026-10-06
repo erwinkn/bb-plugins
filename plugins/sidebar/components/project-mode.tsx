@@ -92,6 +92,20 @@ export function ModeToggle() {
 
 type TreeProject = ProjectTree["projects"][number];
 
+/**
+ * A tree read that has not answered by then counts as failed, so an RPC that
+ * never settles cannot hold every later refresh until a reload; the next
+ * signal or poll reads again and a late answer is ignored.
+ */
+export const TREE_READ_TIMEOUT_MS = 30_000;
+const withTimeout = <T,>(read: Promise<T>, ms: number) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Initiatives did not answer in time. Retrying.")), ms);
+  });
+  return Promise.race([read, late]).finally(() => clearTimeout(timer));
+};
+
 export function ProjectMode(props: PluginThreadListProps) {
   const navigate = useBbNavigate();
   const api = useRpc<typeof projectModeContract>();
@@ -120,7 +134,7 @@ export function ProjectMode(props: PluginThreadListProps) {
   const again = useRef(false);
   const refresh = useCallback(function read(): Promise<void> {
     if (pending.current) return pending.current;
-    const call = apiRef.current.call("projectMode", { known: revision.current }).then(result => {
+    const call = withTimeout(apiRef.current.call("projectMode", { known: revision.current }), TREE_READ_TIMEOUT_MS).then(result => {
       if (mounted.current) {
         setAvailable(result.available);
         if (!result.unchanged) { setTree(result.tree); revision.current = result.revision ?? null; }

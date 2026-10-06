@@ -11,6 +11,7 @@ import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { thread } from "./fixtures";
 import { projectHueStep } from "../lib/project-hue";
 const app = await loadPluginApp(() => import("../app"));
+const { TREE_READ_TIMEOUT_MS } = await import("../components/project-mode");
 const Component = app.threadLists[0].component;
 const slots: ReturnType<typeof renderSlot>[] = [];
 beforeEach(() => {
@@ -255,6 +256,26 @@ describe("Projects sidebar mode", () => {
     await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
     await act(async () => { answers[1]!({ available: true, tree, order: null, orderError: null }); });
     expect(await slot.findByText("W1 Search reviewer")).toBeTruthy();
+  });
+
+  it("T129 a tree read that never answers times out instead of freezing the tree until reload", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const before = { ...tree, projects: [{ ...tree.projects[0], nodes: tree.projects[0].nodes.filter(n => n.role === "coordinator") }] };
+      const read = vi.fn((_input: unknown) => read.mock.calls.length === 1
+        ? { available: true, tree: before, order: null, orderError: null }
+        : read.mock.calls.length === 2 ? new Promise(() => {}) : { available: true, tree, order: null, orderError: null });
+      const slot = mount(true, { rpc: { projectMode: read } });
+      await slot.findByRole("link", { name: "Open Useful search" });
+      await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(read).toHaveBeenCalledTimes(2);
+      // The change lands while that read hangs: it waits for it, but not forever.
+      await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
+      await act(async () => { await vi.advanceTimersByTimeAsync(TREE_READ_TIMEOUT_MS); });
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+      expect(await slot.findByText("W1 Search reviewer")).toBeTruthy();
+    } finally { vi.useRealTimers(); }
   });
 
   it("T112 keeps the current tree when a refresh answers unchanged", async () => {

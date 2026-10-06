@@ -2497,16 +2497,22 @@ describe("activity sidebar", () => {
     });
     expect(slot.queryByRole("region", { name: "Done" })).toBeNull();
   });
-  it("shows loading and falls back to BB on errors", () => {
+  it("shows loading, and an error without BB's Original list on every BB version", () => {
     const slot = renderSlot(app.threadLists[0], props, {
       sidebarThreads: { status: "loading" },
     });
     expect(visibleStatus(slot)?.textContent).toBe("Loading threads…");
     slot.unmount();
-    const failed = renderSlot(app.threadLists[0], props, {
-      sidebarThreads: { status: "error" },
-    });
-    expect(failed.getByText("BB fallback")).toBeTruthy();
+    // 0.43.1 passes Original; 0.45.0 does not, and rendering it there crashed the slot.
+    const { Original: _original, ...withoutOriginal } = props;
+    for (const shape of [props, withoutOriginal]) {
+      const failed = renderSlot(app.threadLists[0], shape as typeof props, {
+        sidebarThreads: { status: "error" },
+      });
+      expect(failed.getByRole("alert").textContent).toBe("Cannot load threads.");
+      expect(failed.queryByText("BB fallback")).toBeNull();
+      failed.unmount();
+    }
   });
 });
 
