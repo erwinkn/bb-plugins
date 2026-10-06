@@ -1,4 +1,4 @@
-import type { DismissalItem } from "./overview";
+import type { BlockerAnswerItem, DismissalItem } from "./overview";
 import type { DecisionBody } from "./store";
 
 /**
@@ -66,6 +66,12 @@ export const undismissed = <T extends { num: number }>(
 export const dismissalItem = (blocker: NonNullable<DecisionBody["blocker"]>, d: NonNullable<DecisionBody["dismissal"]>): DismissalItem => ({
   assignment: `A${blocker.assignment}`, question: blocker.question, context: blocker.context,
   note: d.note, notify: d.notify, at: d.at, undoneAt: d.undoneAt ?? null,
+});
+
+/** T132: a blocker answer as the dashboard's decision row carries it. */
+export const blockerAnswerItem = (blocker: NonNullable<DecisionBody["blocker"]>, a: NonNullable<DecisionBody["answer"]>, worker: string | null): BlockerAnswerItem => ({
+  assignment: `A${blocker.assignment}`, worker, question: blocker.question, context: blocker.context,
+  note: a.note, to: a.to ?? "coordinator", delivery: a.delivery ?? null,
 });
 
 /** What the Needs you pill shows: open questions plus undismissed blockers the user has not answered yet. */

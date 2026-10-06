@@ -605,9 +605,12 @@ export interface DecisionRecord {
   updatedAt: number;
 }
 
+/** T132: one native delivery to a thread other than the coordinator (a worker), with its receipt. */
+export type Delivery = { op: string; state: "pending" | "sent" | "queued" | "uncertain" | "failed"; threadId: string; queuedId?: string; detail?: string };
+
 export type DecisionBody = (Decision | { description: string }) & {
   /** recordedBy: the agent that recorded the user's explicit chat answer. to: a blocker answer sent straight to the worker (T130). */
-  answer?: { choice: string | null; note: string; at: number; recordedBy?: Provenance; to?: "worker" };
+  answer?: { choice: string | null; note: string; at: number; recordedBy?: Provenance; to?: "worker"; delivery?: Delivery };
   /** D386: the user's answer to this assignment's blocked report, keyed by its blocker question. */
   blocker?: { assignment: number; question: string; context: string };
   /** T128: the user dismissed that blocker instead of answering; notify sent a note to the coordinator. undoneAt: the user took it back. */
@@ -835,7 +838,11 @@ const legacyDecisionBodySchema = decisionFieldsSchema.extend({
 const blockerAnswerBodySchema = z.object({
   description: z.string(), cleanupHistory: cleanupHistorySchema,
   blocker: z.object({ assignment: z.number().int(), question: z.string(), context: z.string() }).strict(),
-  answer: z.object({ choice: z.null(), note: z.string(), at: z.number(), to: z.literal("worker").optional() }).strict(),
+  answer: z.object({
+    choice: z.null(), note: z.string(), at: z.number(), to: z.literal("worker").optional(),
+    /** T132: the worker's own receipt; the decision's notification is then the coordinator FYI. */
+    delivery: z.object({ op: z.string(), state: z.enum(["pending", "sent", "queued", "uncertain", "failed"]), threadId: z.string(), queuedId: z.string().optional(), detail: z.string().optional() }).strict().optional(),
+  }).strict(),
 }).strict();
 /** T128: the user's Inbox dismissal of a blocked report, keyed like an answer. */
 const blockerDismissalBodySchema = z.object({

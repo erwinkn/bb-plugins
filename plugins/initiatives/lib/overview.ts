@@ -1,6 +1,6 @@
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { BUSY_STATUSES } from "./bb";
-import { blockerKey, dismissalItem, openBlockers, undismissed } from "./blockers";
+import { blockerAnswerItem, blockerKey, dismissalItem, openBlockers, undismissed } from "./blockers";
 import { describeProfile } from "./policy";
 import { buildUsage, unloadedUsage, type InitiativeUsage } from "./usage";
 import type {
@@ -13,6 +13,7 @@ import type {
 import type {
   AssignmentRecord,
   DecisionRecord,
+  Delivery,
   Provenance,
   Store,
   TaskRecord,
@@ -94,8 +95,24 @@ export interface BlockerItem {
   question: string;
   context: string;
   reportedAt: number | null;
-  /** The user's answer, kept until the coordinator acts on the report. to: who received it (T130); the notification is that delivery. */
-  answer: { ref: string; note: string; at: number; to: "coordinator" | "worker"; notification: DecisionRecord["notification"] } | null;
+  /**
+   * The user's answer, kept until the coordinator acts on the report. to: who
+   * received it (T130). delivery: the worker's receipt; notification: the
+   * coordinator's notice, or for a worker answer its FYI (T132).
+   */
+  answer: { ref: string; note: string; at: number; to: "coordinator" | "worker"; delivery: Delivery | null; notification: DecisionRecord["notification"] } | null;
+}
+
+/** T132: the user's blocker answer as its decision row carries it, so an undelivered one can retry after its card is gone. */
+export interface BlockerAnswerItem {
+  assignment: string;
+  /** The answered worker's W#, when the summary still lists it. */
+  worker: string | null;
+  question: string;
+  context: string;
+  note: string;
+  to: "coordinator" | "worker";
+  delivery: Delivery | null;
 }
 
 /** T128: a blocker the user dismissed, as its decision row carries it; the assignment and blocker let a failed notice retry. */
@@ -272,7 +289,7 @@ export interface Overview {
     live: { status: string; archived: boolean; title: string | null } | null;
     createdAt: number;
   }[];
-  decisions: { acceptEligible?: boolean; ref: string; description: string; madeBy: "user" | "agent"; review: "pending" | "okay" | "not-okay" | null; reviewMessage: string | null; notification: DecisionRecord["notification"]; recordedBy: DecisionRecord["provenance"]; updatedAt: number; dismissal?: DismissalItem }[];
+  decisions: { acceptEligible?: boolean; ref: string; description: string; madeBy: "user" | "agent"; review: "pending" | "okay" | "not-okay" | null; reviewMessage: string | null; notification: DecisionRecord["notification"]; recordedBy: DecisionRecord["provenance"]; updatedAt: number; dismissal?: DismissalItem; blockerAnswer?: BlockerAnswerItem }[];
   usage: InitiativeUsage;
   /** Recorded members with native parent facts; separate from tree v1. */
   memberThreads: (InitiativeUsage["threads"][number] & {
@@ -468,7 +485,7 @@ export function buildOverview(
       question: blocker?.question ?? assignment.report?.summary ?? "",
       context: blocker?.context ?? "",
       reportedAt: assignment.reportedAt,
-      answer: answer ? { ref: answer.ref, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, to: answer.body.answer?.to ?? "coordinator", notification: answer.notification } : null,
+      answer: answer ? { ref: answer.ref, note: answer.body.answer?.note ?? "", at: answer.body.answer?.at ?? answer.createdAt, to: answer.body.answer?.to ?? "coordinator", delivery: answer.body.answer?.delivery ?? null, notification: answer.notification } : null,
     };
   });
 
@@ -798,9 +815,10 @@ export function buildOverview(
     // The summary keeps what the Inbox acts on: unchecked agent decisions and
     // undelivered answer notifications.
     decisions: decisions.filter(item => item.madeBy !== null && item.status !== "removed" &&
-      (history || item.madeBy === "agent" && item.review === "pending" || unresolvedNotification(item))).map(item => ({
+      (history || item.madeBy === "agent" && item.review === "pending" || unresolvedNotification(item) || unresolvedDelivery(item))).map(item => ({
       acceptEligible: isAcceptableAgentDecision(item), ref: item.ref, description: item.description, madeBy: item.madeBy!, review: item.review, reviewMessage: item.reviewMessage, notification: item.notification, recordedBy: item.provenance, updatedAt: item.updatedAt,
       ...(item.body.dismissal && item.body.blocker ? { dismissal: dismissalItem(item.body.blocker, item.body.dismissal) } : {}),
+      ...(item.body.answer && item.body.blocker ? { blockerAnswer: blockerAnswerItem(item.body.blocker, item.body.answer, workerByNum.get(assignments.find((a) => a.num === item.body.blocker!.assignment)?.workerNum ?? -1)?.ref ?? null) } : {}),
     })),
     usage,
     memberThreads: usage.threads.map((thread) => {
@@ -832,6 +850,8 @@ export function buildOverview(
 
 const unresolvedNotification = (item: DecisionRecord) =>
   !!item.notification && ["failed", "pending", "uncertain"].includes(item.notification.state);
+const unresolvedDelivery = (item: DecisionRecord) =>
+  ["failed", "pending", "uncertain"].includes(item.body.answer?.delivery?.state ?? "");
 
 /** Threads whose live status the dashboard shows. */
 export function threadsToWatch(store: Store, projectId: string): string[] {

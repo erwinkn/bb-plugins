@@ -59,6 +59,7 @@ import {
   type AssignmentRecord,
   type HandoverRecord,
   type DecisionRecord,
+  type Delivery,
   type Membership,
   type ProjectRecord,
   type Provenance,
@@ -3221,21 +3222,26 @@ export class ProjectsService {
    * newer notice for the same decision owns the record; this send never
    * overwrites it.
    */
-  private async sendDecisionNotice(projectId: string, num: number, op: string, coordinatorThreadId: string | null, saved: string, text: string, senderThreadId?: string | null) {
+  /** One native delivery and its receipt: a definite rejection fails, anything else unconfirmed is uncertain. */
+  private async deliver(threadId: string, op: string, text: string, { mode = "steer-if-active", senderThreadId }: { mode?: "steer-if-active" | "queue-if-active"; senderThreadId?: string | null } = {}) {
+    try {
+      const sent = await this.sdk.threads.send({
+        threadId, mode,
+        ...(senderThreadId ? { senderThreadId } : {}),
+        input: textInput(`${text}\n\n${opMarker(op)}`),
+      });
+      return sent.delivery === "queued" ? { state: "queued" as const, queuedId: sent.queuedMessage.id } : { state: "sent" as const };
+    } catch (error) {
+      return { state: isDefiniteRejection(error) ? "failed" as const : "uncertain" as const, detail: errorMessage(error) };
+    }
+  }
+
+  private async sendDecisionNotice(projectId: string, num: number, op: string, coordinatorThreadId: string | null, saved: string, text: string, options: { mode?: "steer-if-active" | "queue-if-active"; senderThreadId?: string | null } = {}) {
     const settle = (notification: NonNullable<DecisionRecord["notification"]>) => {
       if (this.store.decisionItem(projectId, num)?.notification?.op === op) this.store.updateDecision(projectId, num, { notification });
     };
     if (!coordinatorThreadId) return settle({ op, state: "failed", coordinatorThreadId, detail: `No current coordinator. ${saved}` });
-    try {
-      const sent = await this.sdk.threads.send({
-        threadId: coordinatorThreadId, mode: "steer-if-active",
-        ...(senderThreadId ? { senderThreadId } : {}),
-        input: textInput(`${text}\n\n${opMarker(op)}`),
-      });
-      settle({ op, state: sent.delivery === "queued" ? "queued" : "sent", coordinatorThreadId, ...(sent.delivery === "queued" ? { queuedId: sent.queuedMessage.id } : {}) });
-    } catch (error) {
-      settle({ op, state: isDefiniteRejection(error) ? "failed" : "uncertain", coordinatorThreadId, detail: errorMessage(error) });
-    }
+    settle({ op, coordinatorThreadId, ...(await this.deliver(coordinatorThreadId, op, text, options)) });
   }
 
   requireDecision(project: ProjectRecord, ref: string): DecisionRecord {
@@ -3295,7 +3301,7 @@ export class ProjectsService {
     if (notify)
       await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, "Your answer is saved.",
         `Initiative · ${project.name} · Your answer to ${item.ref}\n\n${body.question ?? item.title}\nChoice: ${input.choice ?? "Written answer"}${note ? `\nNote: ${note}` : ""}${recordedBy ? `\nRecorded from chat by ${recordedBy.threadId}.` : ""}`,
-        recordedBy?.threadId);
+        { senderThreadId: recordedBy?.threadId });
     return this.store.decisionItem(project.id, item.num)!;
   }
 
@@ -3303,71 +3309,83 @@ export class ProjectsService {
    * D386: the user answers a worker's blocked report from the Inbox. The answer
    * is recorded as the user's decision and sent to the coordinator, who
    * continues, rejects or accepts the report; the Inbox item stays until then.
-   * T130: `to: "worker"` sends it straight to the worker, which continues the
-   * same assignment and reports again; the coordinator gets a short FYI.
-   * Repeating the same answer to the same target retries only a failed
-   * delivery; a different answer or target supersedes the previous one and is
-   * sent again. `seen` is the blocker the user answered; an answer to an older
-   * question or context is refused.
+   * T130: `to: "worker"` delivers it straight to the thread that reported the
+   * blocker, which continues the same assignment and reports again. T132: its
+   * receipt is `answer.delivery`; once it is delivered, the coordinator gets an
+   * FYI through the shared notice, so `notification` always means the
+   * coordinator's. Repeating the same answer to the same target retries only
+   * what failed: the worker delivery while the blocker is open, then the FYI or
+   * coordinator notice. An unconfirmed receipt never authorizes another send. A
+   * different answer or target supersedes the previous one and is sent again.
+   * `seen` is the blocker the user answered; an answer to an older question or
+   * context is refused.
    */
   async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string, to: "coordinator" | "worker" = "coordinator") {
     const project = this.requireProject(projectId);
-    const { assignment, blocker } = this.seenBlocker(project, ref, seen, "answer");
     const text = note.trim();
     if (!text) throw new ProjectError("Write an answer.");
+    const key = blockerKey(this.requireAssignment(project, ref).num, seen);
+    const previous = this.store.decisions(project.id).find((item) => item.body.blocker && item.body.answer && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
+    const same = previous?.body.answer?.note === text && (previous.body.answer.to ?? "coordinator") === to ? previous : null;
+    const failed = (state?: string) => state === "failed";
+    const redeliver = to === "worker" && failed(same?.body.answer?.delivery?.state);
+    // A failed FYI is retried even after the worker reported again; it only informs the coordinator.
+    const renotify = failed(same?.notification?.state) && !redeliver;
+    // Anything else answers the open blocker as the user saw it, or is refused.
+    const { assignment, blocker } = same && to === "worker" && renotify
+      ? { assignment: this.requireAssignment(project, ref), blocker: same.body.blocker! }
+      : this.seenBlocker(project, ref, seen, "answer");
+    if (same && !redeliver && !renotify) return same;
     const worker = this.store.worker(project.id, assignment.workerNum)!;
     // The thread that reported the blocker, which the Inbox card links to.
-    if (to === "worker" && !assignment.threadId) throw new ProjectError(`${worker.ref} has no thread to send to. Send your answer to the coordinator instead.`);
-    const key = blockerKey(assignment.num, blocker);
-    const previous = this.store.decisions(project.id).find((item) => item.body.blocker && item.body.answer && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
-    const same = previous?.body.answer?.note === text && (previous.body.answer.to ?? "coordinator") === to;
-    if (same && previous!.notification?.state !== "failed") return previous!;
+    const workerThreadId = assignment.threadId;
+    if (to === "worker" && !workerThreadId) throw new ProjectError(`${worker.ref} has no thread to send to. Send your answer to the coordinator instead.`);
     const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
-    const op = newOpId();
     const coordinatorThreadId = project.coordinatorThreadId;
-    const target = to === "worker" ? assignment.threadId : coordinatorThreadId;
-    const item = this.store.tx(() => {
-      if (same) {
-        this.store.updateDecision(project.id, previous!.num, { notification: { op, state: "pending", coordinatorThreadId: target } });
-        return previous!;
-      }
+    const deliveryOp = newOpId();
+    const item = same ?? this.store.tx(() => {
       const description = `Answer to ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref})${to === "worker" ? `, sent to ${worker.ref}` : ""}: ${text}`;
       const added = this.store.addDecision({
         projectId: project.id, title: description.slice(0, 100),
         topic: previous?.topic ?? `blocker-${assignment.ref.toLowerCase()}`, scope: "project", status: "active",
-        body: { description, blocker: { assignment: assignment.num, question: blocker.question, context: blocker.context }, answer: { choice: null, note: text, at: this.now(), ...(to === "worker" ? { to } : {}) } },
+        body: { description, blocker: { assignment: assignment.num, question: blocker.question, context: blocker.context },
+          answer: { choice: null, note: text, at: this.now(), ...(to === "worker" ? { to, delivery: { op: deliveryOp, state: "pending" as const, threadId: workerThreadId! } } : {}) } },
         madeBy: "user", humanAttention: "none", blocks: [], deadline: null,
         provenance: { author: "user", threadId: null, assignment: null }, supersedes: previous?.num ?? null,
       });
-      this.store.updateDecision(project.id, added.num, { notification: { op, state: "pending", coordinatorThreadId: target } });
       this.store.log(project.id, "decision", `${added.ref} You answered ${worker.ref}'s blocker (${assignment.ref})${to === "worker" ? ` and sent it to ${worker.ref}` : ""}: ${text}`);
       return added;
     });
     const about = `${assignment.ref}${subject ? `, ${subject}` : ""}, ${item.ref}`;
+    const notify = async (saved: string, message: string, mode?: "queue-if-active") => {
+      const op = newOpId();
+      this.store.updateDecision(project.id, item.num, { notification: { op, state: "pending", coordinatorThreadId } });
+      await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, saved, message, { mode });
+    };
     if (to === "coordinator") {
-      await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, "Your answer is saved.",
+      await notify("Your answer is saved.",
         `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${about})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\nAnswer: ${text}\n\nContinue ${worker.ref} with this answer, or reject or accept ${assignment.ref}. The Inbox item clears when you do.`);
       return this.store.decisionItem(project.id, item.num)!;
     }
-    await this.sendDecisionNotice(project.id, item.num, op, target, "Your answer is saved.",
-      `Initiative · ${project.name} · The user answered your blocker directly (${about})\n\nBlocker: ${blocker.question}\nAnswer: ${text}\n\nContinue ${assignment.ref} with this answer and report again with initiative_report when done. The coordinator has been told.`);
-    const delivered = this.store.decisionItem(project.id, item.num)!;
-    // The coordinator's records stay consistent: one FYI once the worker has the answer, best effort and logged.
-    if (delivered.notification?.state === "sent" || delivered.notification?.state === "queued") {
-      let outcome = "told the coordinator";
-      if (!coordinatorThreadId) outcome = "no current coordinator to tell";
-      else
-        try {
-          await this.sdk.threads.send({
-            threadId: coordinatorThreadId, mode: "queue-if-active",
-            input: textInput(`Initiative · ${project.name} · FYI: the user answered ${worker.ref}'s blocker (${about}) directly to ${worker.ref}\n\nBlocker: ${blocker.question}\nAnswer: ${text}\n\n${worker.ref} continues ${assignment.ref} with it and reports again. Nothing to send; review its next report as usual.`),
-          });
-        } catch (error) {
-          outcome = `could not tell the coordinator: ${errorMessage(error)}`;
-        }
-      this.store.log(project.id, "decision", `${item.ref} reached ${worker.ref}; ${outcome}`);
+    if (!same || redeliver) {
+      // A retry claims the receipt with its own op first; a stale send never settles a newer one.
+      const settle = (receipt: Omit<Delivery, "op" | "threadId">, claim = false) => {
+        const current = this.store.decisionItem(project.id, item.num)!;
+        if (!claim && current.body.answer?.delivery?.op !== deliveryOp) return;
+        this.store.updateDecision(project.id, item.num, { body: { ...current.body, answer: { ...current.body.answer!, delivery: { op: deliveryOp, threadId: workerThreadId!, ...receipt } } } });
+      };
+      if (redeliver) settle({ state: "pending" }, true);
+      settle(await this.deliver(workerThreadId!, deliveryOp,
+        `Initiative · ${project.name} · The user answered your blocker directly (${about})\n\nBlocker: ${blocker.question}\nAnswer: ${text}\n\nContinue ${assignment.ref} with this answer and report again with initiative_report when done. The coordinator has been told.`));
     }
-    return delivered;
+    const current = this.store.decisionItem(project.id, item.num)!;
+    const reached = ["sent", "queued"].includes(current.body.answer?.delivery?.state ?? "");
+    // The coordinator's records stay consistent: one FYI once the worker has the answer, retried like any notice.
+    if (reached && (!current.notification || failed(current.notification.state)))
+      await notify(`Your answer reached ${worker.ref}.`,
+        `Initiative · ${project.name} · FYI: the user answered ${worker.ref}'s blocker (${about}) directly to ${worker.ref}\n\nBlocker: ${blocker.question}\nAnswer: ${text}\n\n${worker.ref} continues ${assignment.ref} with it and reports again. Nothing to send; review its next report as usual.`,
+        "queue-if-active");
+    return this.store.decisionItem(project.id, item.num)!;
   }
 
   /** The open blocker on `ref`, refused unless it is still exactly the one the user saw. */

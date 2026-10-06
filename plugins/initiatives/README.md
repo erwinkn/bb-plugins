@@ -836,7 +836,10 @@ The Inbox's Blocked workers card has two split buttons (T130). **Send to
 coordinator** records the answer as the user's decision and sends it to the
 coordinator, as before; its menu's **Send to W#** delivers it straight to the
 thread that reported the blocker, which continues the same assignment and reports
-again, and then queues the coordinator a short FYI. The coordinator is the
+again, and then queues the coordinator a short FYI (T132: the worker's receipt is
+`answer.delivery`, the FYI is the decision's ordinary coordinator notice; each is
+retried alone after a failure, never after an unconfirmed send, and an undelivered
+one stays under the Inbox's **Not delivered** once the card is gone). The coordinator is the
 default; the worker is the default only when there is no coordinator. **Dismiss**
 sends nothing; its menu's **Dismiss and tell coordinator…** opens the note field.
 The worker label (W#) in the card's header links the worker's thread. Native navigation, queues and authority guards remain BB's.

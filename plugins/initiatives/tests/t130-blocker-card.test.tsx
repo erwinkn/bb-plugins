@@ -33,7 +33,8 @@ describe("T130 answering a blocker straight to the worker", () => {
   it("delivers to the worker's thread, records the user's decision, and gives the coordinator one FYI", async () => {
     const { f, project, threadId } = await blockedWorker();
     const d = await f.service.answerBlocker(project.id, "A1", seen, "Use the staging keys.", "worker");
-    expect(d).toMatchObject({ madeBy: "user", notification: { state: "sent", coordinatorThreadId: threadId }, body: { answer: { note: "Use the staging keys.", to: "worker" } } });
+    // T132: the worker's receipt is answer.delivery; notification is the coordinator FYI.
+    expect(d).toMatchObject({ madeBy: "user", notification: { state: "sent", coordinatorThreadId: "coordinator" }, body: { answer: { note: "Use the staging keys.", to: "worker", delivery: { state: "sent", threadId } } } });
     expect((d.body as { description: string }).description).toBe("Answer to W1's blocker on T1 (A1), sent to W1: Use the staging keys.");
     const toWorker = sentTo(f, threadId);
     expect(toWorker).toHaveLength(1);
@@ -55,11 +56,12 @@ describe("T130 answering a blocker straight to the worker", () => {
     const { f, project, threadId } = await blockedWorker();
     f.send.mockRejectedValueOnce(Object.assign(new Error("refused"), { status: 400 }));
     const failed = await f.service.answerBlocker(project.id, "A1", seen, "Use the staging keys.", "worker");
-    expect(failed.notification).toMatchObject({ state: "failed", coordinatorThreadId: threadId });
+    expect(failed.body.answer?.delivery).toMatchObject({ state: "failed", threadId });
     // No FYI for an answer the worker never got.
+    expect(failed.notification).toBeNull();
     expect(sentTo(f, "coordinator")).toHaveLength(0);
     const retried = await f.service.answerBlocker(project.id, "A1", seen, "Use the staging keys.", "worker");
-    expect(retried).toMatchObject({ ref: failed.ref, notification: { state: "sent" } });
+    expect(retried).toMatchObject({ ref: failed.ref, notification: { state: "sent" }, body: { answer: { delivery: { state: "sent" } } } });
     expect(sentTo(f, "coordinator")).toHaveLength(1);
     // Delivered: the same answer to the same target sends nothing more.
     await f.service.answerBlocker(project.id, "A1", seen, "Use the staging keys.", "worker");
@@ -129,7 +131,7 @@ describe("T130 the Blocked workers card", () => {
     fireEvent.click(toggle);
     fireEvent.click(slot.getByRole("menuitem", { name: "Send to W1" }));
     await waitFor(() => expect(commands).toEqual([{ action: "blocker-answer", assignment: "A1", question, context, note: "Use the staging keys.", to: "worker" }]));
-    expect(await slot.findByText(/Sent to W1, which continues A1 with it; the coordinator got an FYI/)).toBeTruthy();
+    expect(await slot.findByText(/Sent to W1, which continues with it; the coordinator got an FYI\. This stays here until W1 reports again\./)).toBeTruthy();
     expect(slot.getByText(/Your answer · D\d+ · sent to W1/)).toBeTruthy();
   });
 

@@ -31,7 +31,7 @@ export function applyCommitted(o: Overview, command: Command, result: unknown): 
   if (command.action === "blocker-answer") {
     const d = result as DecisionRecord;
     if (!d?.ref || !d.body?.answer) return o;
-    const answer = { ref: d.ref, note: d.body.answer.note, at: d.body.answer.at, to: d.body.answer.to ?? "coordinator" as const, notification: d.notification };
+    const answer = { ref: d.ref, note: d.body.answer.note, at: d.body.answer.at, to: d.body.answer.to ?? "coordinator" as const, delivery: d.body.answer.delivery ?? null, notification: d.notification };
     next.blockers = next.blockers.map(b => b.assignment === command.assignment ? { ...b, answer } : b);
   }
   if (command.action === "blocker-dismiss" || command.action === "blocker-dismiss-undo") {

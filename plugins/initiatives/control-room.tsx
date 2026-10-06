@@ -392,8 +392,13 @@ export function ControlRoom({
   // Open questions and blocked reports wait on the user: shown before anything else.
   const needsYou = needsYouCount(o);
   const unchecked = [...o.decisions].reverse().filter(pendingReview);
-  // A dismissal leaves the Inbox, unless telling the coordinator did not go through.
-  const undelivered = o.decisions.filter(d => d.dismissal?.notify && !d.dismissal.undoneAt && (d.notification?.state === "failed" || d.notification?.state === "uncertain"));
+  // A dismissal leaves the Inbox, unless telling the coordinator did not go
+  // through; so does an answered blocker once its card is gone (T132).
+  const undeliveredState = (r: Receipt) => r?.state === "failed" || r?.state === "uncertain";
+  const carded = new Set(o.blockers.flatMap(b => b.answer ? [b.answer.ref] : []));
+  const undelivered = o.decisions.filter(d =>
+    d.dismissal?.notify && !d.dismissal.undoneAt && undeliveredState(d.notification) ||
+    d.blockerAnswer && !carded.has(d.ref) && (undeliveredState(d.notification) || undeliveredState(d.blockerAnswer.delivery)));
   // A report's own row replaces the remaining row of the task it awaits.
   const reported = new Set(o.awaitingAcceptance.flatMap((a) => a.tasks.map((t) => t.ref)));
   const remaining = o.remaining.filter((t) => !(t.status === "awaiting_acceptance" && reported.has(t.ref)));
@@ -689,8 +694,8 @@ export function ControlRoom({
                   ))}
                 </section>
               ) : null}
-              {undelivered.length ? <section aria-label="Dismissals not delivered">
-                <h2 className="cr-section-heading">Dismissals not delivered</h2>
+              {undelivered.length ? <section aria-label="Not delivered">
+                <h2 className="cr-section-heading">Not delivered</h2>
                 {undelivered.map(d => <DecisionItem key={d.ref} d={d} run={run} />)}
               </section> : null}
               {unchecked.length || acceptDecisions.eligible ? <section aria-label="Agent decisions to check">
@@ -1390,8 +1395,6 @@ function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: R
   const answer = (to: "coordinator" | "worker") => {
     if (note.trim()) void act("answer", { action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note, to });
   };
-  const notice = item.answer?.notification;
-  const target = item.answer?.to === "worker" ? worker : "the coordinator";
   const dismiss = telling ? null : (
     <SplitButton label="Dismiss" align="end" className="cr-split--quiet"
       main={<button type="button" disabled={!!busy} title="Leave the coordinator to settle it; nothing is sent. Undo from Decisions."
@@ -1411,19 +1414,13 @@ function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: R
             <span className="project-meta">Your answer · {item.answer.ref}{item.answer.to === "worker" ? ` · sent to ${worker}` : ""}</span>
             <Markdown content={item.answer.note} />
           </div>
-          {notice ? (
-            <p role={notice.state === "failed" || notice.state === "uncertain" ? "alert" : "status"} className="project-muted">
-              {notice.state === "failed" ? `Sending to ${target} failed: ${notice.detail ?? "Unknown error"}`
-                : notice.state === "pending" || notice.state === "uncertain" ? `Delivery to ${target} unconfirmed; check its thread before sending again.`
-                : item.answer.to === "worker" ? `${notice.state === "queued" ? "Queued for" : "Sent to"} ${worker}, which continues ${item.assignment} with it; the coordinator got an FYI. This stays here until ${worker} reports again.`
-                : `${notice.state === "queued" ? "Queued for" : "Sent to"} the coordinator. This stays here until it continues ${worker} or settles ${item.assignment}.`}
-            </p>
-          ) : null}
+          <AnswerReceipts receipts={answerReceipts(item.answer, worker)}
+            settled={item.answer.to === "worker" ? `This stays here until ${worker} reports again.` : `This stays here until it continues ${worker} or settles ${item.assignment}.`} />
           {error ? <p role="alert" className="project-error">{error}</p> : null}
           <div className="project-actions cr-blocker-actions">
-            {notice?.state === "failed" ? (
+            {answerReceipts(item.answer, worker).retry ? (
               <button type="button" disabled={!!busy} onClick={() => void act("answer", { action: "blocker-answer", assignment: item.assignment, question: item.question, context: item.context, note: item.answer!.note, to: item.answer!.to })}>
-                {busy === "answer" ? "Sending…" : `Retry sending to ${target}`}
+                {busy === "answer" ? "Sending…" : answerReceipts(item.answer, worker).retry}
               </button>
             ) : null}
             <button type="button" onClick={() => { setNote(item.answer!.note); setRevising(true); }}>Change answer</button>
@@ -1457,6 +1454,35 @@ function Blocker({ item, run, coordinatorThreadId }: { item: BlockerItem; run: R
       {telling ? <DismissNotify item={item} run={run} cancel={() => setTelling(false)} /> : null}
     </div>
   );
+}
+
+type Receipt = { state: string; detail?: string } | null;
+/**
+ * T132: what an Inbox blocker answer's receipts say, and the one retry they
+ * allow. A worker answer has two: its delivery to the worker, then the
+ * coordinator FYI; the FYI only goes out once the worker has the answer.
+ */
+function answerReceipts(answer: { to: "coordinator" | "worker"; delivery: Receipt; notification: Receipt }, worker: string) {
+  const unsure = (r: Receipt) => r?.state === "pending" || r?.state === "uncertain";
+  const sent = (r: Receipt, to: string) => `${r?.state === "queued" ? "Queued for" : "Sent to"} ${to}`;
+  if (answer.to === "coordinator") {
+    const n = answer.notification;
+    if (!n) return { text: null, alert: false, retry: null, done: false };
+    if (n.state === "failed") return { text: `Sending to the coordinator failed: ${n.detail ?? "Unknown error"}`, alert: true, retry: "Retry sending to the coordinator", done: false };
+    if (unsure(n)) return { text: "Delivery to the coordinator unconfirmed; check its thread before sending again.", alert: n.state === "uncertain", retry: null, done: false };
+    return { text: `${sent(n, "the coordinator")}.`, alert: false, retry: null, done: true };
+  }
+  const d = answer.delivery, fyi = answer.notification;
+  if (d?.state === "failed") return { text: `Sending to ${worker} failed: ${d.detail ?? "Unknown error"}`, alert: true, retry: `Retry sending to ${worker}`, done: false };
+  if (!d || unsure(d)) return { text: `Delivery to ${worker} unconfirmed; check its thread before sending again.`, alert: d?.state === "uncertain", retry: null, done: false };
+  const reached = `${sent(d, worker)}, which continues with it`;
+  if (fyi?.state === "failed") return { text: `${reached}, but the coordinator FYI failed: ${fyi.detail ?? "Unknown error"}`, alert: true, retry: "Retry coordinator FYI", done: false };
+  if (fyi?.state === "uncertain") return { text: `${reached}. The coordinator FYI is unconfirmed; check its thread before sending again.`, alert: true, retry: null, done: false };
+  return { text: `${reached}; the coordinator ${fyi?.state === "pending" || !fyi ? "is being told" : "got an FYI"}.`, alert: false, retry: null, done: fyi?.state === "sent" || fyi?.state === "queued" };
+}
+function AnswerReceipts({ receipts, settled }: { receipts: ReturnType<typeof answerReceipts>; settled?: string }) {
+  if (!receipts.text) return null;
+  return <p role={receipts.alert ? "alert" : "status"} className="project-muted">{receipts.text}{receipts.done && settled ? ` ${settled}` : ""}</p>;
 }
 
 /** T128: dismiss a blocker with one message to the coordinator and an optional note. */
@@ -1534,6 +1560,7 @@ function DecisionItem({ d, run, answer }: { d: DecisionRow; run: Run; answer?: O
         </div>
       ) : null}
       {d.dismissal ? <Dismissal d={d} dismissal={d.dismissal} run={run} /> : null}
+      {d.blockerAnswer ? <BlockerAnswerStatus d={d} answer={d.blockerAnswer} run={run} /> : null}
       <div className="cr-decision-meta">
         <span className="cr-ref">{d.ref}</span>
         <span className={`cr-owner${d.madeBy === "user" ? " cr-owner--user" : ""}`}>{owner(d)}</span>
@@ -1570,6 +1597,22 @@ function Dismissal({ d, dismissal, run }: { d: DecisionRow; dismissal: NonNullab
       {notice.state === "failed" && !dismissal.undoneAt ? (
         <Action run={run} command={{ action: "blocker-dismiss", assignment: dismissal.assignment, question: dismissal.question, context: dismissal.context, notify: true, note: dismissal.note }}>
           Retry coordinator notification
+        </Action>
+      ) : null}
+    </div>
+  );
+}
+
+/** T132: an Inbox blocker answer whose delivery or coordinator notice did not go through, with its retry. */
+function BlockerAnswerStatus({ d, answer, run }: { d: DecisionRow; answer: NonNullable<DecisionRow["blockerAnswer"]>; run: Run }) {
+  const receipts = answerReceipts({ ...answer, notification: d.notification }, answer.worker ?? "the worker");
+  if (receipts.done || !receipts.text) return null;
+  return (
+    <div>
+      <AnswerReceipts receipts={receipts} />
+      {receipts.retry ? (
+        <Action run={run} command={{ action: "blocker-answer", assignment: answer.assignment, question: answer.question, context: answer.context, note: answer.note, to: answer.to }}>
+          {receipts.retry}
         </Action>
       ) : null}
     </div>
