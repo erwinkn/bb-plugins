@@ -32,8 +32,10 @@ requests for routine work.
 - Spawn children on the Linux checkout environment `env_kdfdhsjp6x` (path
   `/home/erwin/Code/bb-plugins`), never on `env_pepnyn24rr` (its registered
   path is the Mac checkout), always with `--permission-mode full`.
-  Implementation children run on Devin SWE-2 at high reasoning; investigation
-  and feasibility children run on Codex GPT-5.6 Sol at high reasoning. Keep
+  Use one Claude Opus 5.5 work child (high reasoning) per substantial batch,
+  combining related features, plus one independent review child, preferably
+  from another model family such as Codex GPT-6.1 Sol. Small fixes get no
+  separate review, and more work children need the user's explicit yes. Keep
   the orchestrator in `full` before spawning, or spawn without
   `--parent-thread` — a parent in `auto` silently clamps the child. See
   README.md §"The daily loop" for exact spawn flags.

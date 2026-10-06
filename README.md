@@ -63,7 +63,7 @@ token in the repository URL.
 For this development instance, install an active plugin from the main checkout:
 
 ```sh
-bb plugin install path:/home/exedev/Code/bb-plugins/plugins/PLUGIN --yes
+bb plugin install path:/home/erwin/Code/bb-plugins/plugins/PLUGIN --yes
 ```
 
 The collection index is `.bb/plugins.json`; active packages live in `plugins/`.
@@ -154,7 +154,7 @@ times; never check out another branch there, and never run `git rebase` or
    edits still stop for approval, and permission mode can only be raised
    afterwards through a follow-up message, which queues behind that approval.
    Spawn every child on the Linux checkout environment `env_kdfdhsjp6x`
-   (path `/home/exedev/Code/bb-plugins`), not on `env_pepnyn24rr`, whose
+   (path `/home/erwin/Code/bb-plugins`), not on `env_pepnyn24rr`, whose
    registered path is the Mac checkout.
    BB clamps a child's permission mode to its parent's current mode; a later
    message cannot raise a child beyond that ceiling.
@@ -201,8 +201,8 @@ install stays on the main checkout path until merge.
 For a plugin that is not installed yet:
 
 ```sh
-bb plugin install path:/home/exedev/Code/bb-plugins/plugins/PLUGIN --yes
-bb plugin dev /home/exedev/Code/bb-plugins/plugins/PLUGIN
+bb plugin install path:/home/erwin/Code/bb-plugins/plugins/PLUGIN --yes
+bb plugin dev /home/erwin/Code/bb-plugins/plugins/PLUGIN
 ```
 
 Why not `git:`: a `git:` source cannot move in place — switching between
