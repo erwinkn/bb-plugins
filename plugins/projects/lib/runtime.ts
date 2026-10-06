@@ -348,7 +348,7 @@ export class Runtime {
       if (signal?.aborted) return;
       if (project.archivedAt !== null) continue;
       await this.service
-        .convergeFormerCoordinators(project.id, signal)
+        .convergeFormerCoordinators(project.id, signal, { backoff: true })
         .catch((error) =>
           this.log.warn(
             `Former-coordinator convergence for ${project.id} failed: ${errorMessage(error)}`,

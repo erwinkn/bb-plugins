@@ -183,6 +183,8 @@ export interface Overview {
       threadId: string;
       endedAt: number | null;
       reason: string | null;
+      /** Why the last convergence left this predecessor live; null once nothing holds it. */
+      holdReason: string | null;
       live: LiveThread | null;
     }[];
     coordinatorHome: CoordinatorHome | null;
@@ -632,6 +634,7 @@ export function buildOverview(
           threadId: generation.threadId,
           endedAt: generation.endedAt,
           reason: generation.endReason,
+          holdReason: generation.holdReason,
           live: live.get(generation.threadId) ?? null,
         })),
       coordinatorHome: home ?? null,

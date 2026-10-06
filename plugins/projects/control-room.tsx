@@ -590,6 +590,7 @@ export function ControlRoom({
                 <p key={f.threadId}>
                   Predecessor remains {f.live!.status}; transfer/archive is not
                   yet confirmed.{" "}
+                  {f.holdReason ? <>Stays live: {f.holdReason} </> : null}
                   <button onClick={() => openThread(f.threadId)}>
                     Inspect predecessor
                   </button>

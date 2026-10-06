@@ -369,6 +369,9 @@ export const MIGRATIONS = [
   `ALTER TABLE assignments ADD COLUMN handoff_sources TEXT`,
   // T16: the user's optional icon and color for an Initiative ({icon,color} JSON; NULL is the default look).
   `ALTER TABLE projects ADD COLUMN appearance TEXT`,
+  // T110: why a former coordinator generation still stays live, so an
+  // unchanged refusal is logged once and the dashboard can show it.
+  `ALTER TABLE generations ADD COLUMN hold_reason TEXT`,
 ];
 
 export const ACTIVITY_LIMIT = 300;
@@ -1777,7 +1780,19 @@ export class Store {
       startedAt: Number(row.started_at),
       endedAt: (row.ended_at as number | null) ?? null,
       endReason: (row.end_reason as string | null) ?? null,
+      holdReason: (row.hold_reason as string | null) ?? null,
     }));
+  }
+
+  /** Record (or clear, with null) why a former coordinator generation stays live; true when it changed. */
+  holdGeneration(projectId: string, threadId: string, reason: string | null) {
+    return (
+      this.db
+        .prepare(
+          `UPDATE generations SET hold_reason = ? WHERE project_id = ? AND worker_num = 0 AND thread_id = ? AND hold_reason IS NOT ?`,
+        )
+        .run(reason, projectId, threadId, reason).changes > 0
+    );
   }
 
   setProviderThread(threadId: string, providerThreadId: string) {

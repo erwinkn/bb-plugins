@@ -810,6 +810,7 @@ describe("project dashboard", () => {
         threadId: "predecessor",
         endedAt: Date.now(),
         reason: "Replacement",
+        holdReason: "its thread has queued messages that would start more work",
         live: { status: "idle", archived: false, title: "Former coordinator" },
       },
     ];
@@ -828,6 +829,9 @@ describe("project dashboard", () => {
     fireEvent.click(slot.getByText("Coordinator transfer details"));
     expect(
       slot.getByText(/transfer\/archive is not yet confirmed/),
+    ).toBeTruthy();
+    expect(
+      slot.getByText(/Stays live: its thread has queued messages/),
     ).toBeTruthy();
     expect(slot.queryByText(/Archive G/)).toBeNull();
     fireEvent.click(slot.getByRole("button", { name: "Inspect predecessor" }));

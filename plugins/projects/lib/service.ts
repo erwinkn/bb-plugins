@@ -75,6 +75,11 @@ const DESCENDANT_PAGE = 100;
 const DESCENDANT_BUDGET = 500;
 const LIST_PAGE = 200;
 const LIST_SCAN_BUDGET = 1000;
+/** Receipt scans read at most this many list pages per sweep, resuming where the last sweep stopped. */
+const RECEIPT_SCAN_PAGES = LIST_SCAN_BUDGET / LIST_PAGE;
+/** A former coordinator refusing the same way again waits this long before the sweep retries, doubling up to the cap. */
+const FORMER_RETRY_BASE_MS = 60_000;
+const FORMER_RETRY_MAX_MS = 15 * 60_000;
 /** T91 project-filtered evidence reads: at most this many list pages and bytes, then GETs. */
 const HOLD_LIST_BYTES = 2_000_000;
 const HOLD_GET_CAP = 20;
@@ -91,6 +96,15 @@ function notOpenQuestion(item: DecisionRecord) {
     : `it is a recorded user decision. If the user explicitly changed it, record {"action":"decision","madeBy":"user","description":"<the new choice>","supersedes":"${item.ref}"}`;
   return `${item.ref} is not an open question: ${why}.`;
 }
+
+/** An unconfirmed coordinator start as the sweep reads it. */
+type PendingCoordinatorStart = {
+  project_id: string;
+  op_id: string;
+  reason: string | null;
+  thread_id: string | null;
+  created_at: number;
+};
 
 /**
  * A returned coordinator whose only missing fact is the checkout BB has not
@@ -188,6 +202,14 @@ export class ProjectsService {
   private coordinatorSwitches = new Map<string, string | null>();
   /** What discovery reads learned in this instance; never persisted, never authorizes a mutation. */
   discovery = new DiscoveryMemory();
+  /** Sweep backoff for former coordinators that refused to converge, by predecessor thread. */
+  private formerRetries = new Map<string, { attempts: number; nextAt: number }>();
+  /** Former coordinators seen archived, deleted or gone: done, never read again. */
+  private endedFormers = new Set<string>();
+  /** Coordinator-start ops whose retained receipt is archived, deleted or gone. */
+  private endedReceipts = new Set<string>();
+  /** Where each unfinished receipt scan resumes next sweep, by scan key. */
+  private receiptCursors = new Map<string, number>();
   /** Projects whose handover replacement has passed the journal boundary. */
   private handoverSpawnInflight = new Set<string>();
   /**
@@ -1455,18 +1477,72 @@ export class ProjectsService {
    * Converge every ended coordinator generation that is still live natively:
    * this covers the immediate predecessor after a confirmed switch and any
    * former coordinator an earlier transfer left behind. Called after each
-   * confirmed switch and by the sweep.
+   * confirmed switch and by the sweep; the sweep (`backoff`) skips a
+   * predecessor whose last refusal is still inside its retry delay, while
+   * event-driven calls always try.
    */
-  async convergeFormerCoordinators(projectId: string, signal?: AbortSignal) {
+  async convergeFormerCoordinators(
+    projectId: string,
+    signal?: AbortSignal,
+    options?: { backoff?: boolean },
+  ) {
     const project = this.store.project(projectId);
     if (!project || project.archivedAt !== null || !project.coordinatorThreadId)
       return;
     const current = project.coordinatorThreadId;
+    // A thread made coordinator again is no longer an ended former.
+    this.endedFormers.delete(current);
     for (const generation of this.store.generations(projectId, 0))
-      if (generation.threadId !== current && generation.endedAt !== null) {
+      if (
+        generation.threadId !== current &&
+        generation.endedAt !== null &&
+        !this.endedFormers.has(generation.threadId)
+      ) {
         if (signal?.aborted) return;
+        if (
+          options?.backoff &&
+          (this.formerRetries.get(generation.threadId)?.nextAt ?? 0) > this.now()
+        )
+          continue;
         await this.convergeFormerCoordinator(projectId, generation.threadId, signal);
       }
+  }
+
+  /**
+   * A predecessor stays live for `reason`: the reason is recorded on its
+   * generation and logged only when it changes. A new refusal is retried on
+   * the next sweep; only a repeat of the same one backs the sweep off.
+   */
+  private holdFormerCoordinator(
+    projectId: string,
+    predecessorId: string,
+    reason: string,
+  ) {
+    const changed = this.store.holdGeneration(projectId, predecessorId, reason);
+    const previous = this.formerRetries.get(predecessorId);
+    const attempts = changed || !previous ? 1 : previous.attempts + 1;
+    this.formerRetries.set(predecessorId, {
+      attempts,
+      nextAt:
+        attempts === 1
+          ? 0
+          : this.now() +
+            Math.min(FORMER_RETRY_BASE_MS * 2 ** (attempts - 2), FORMER_RETRY_MAX_MS),
+    });
+    if (changed)
+      this.store.log(
+        projectId,
+        "coordinator",
+        `Former coordinator ${predecessorId} stays live: ${reason}`,
+        { threadId: predecessorId },
+      );
+  }
+
+  /** The predecessor is archived, deleted or gone: done, and dropped from every later pass. */
+  private formerCoordinatorEnded(projectId: string, predecessorId: string) {
+    this.formerRetries.delete(predecessorId);
+    this.endedFormers.add(predecessorId);
+    this.store.holdGeneration(projectId, predecessorId, null);
   }
 
   /**
@@ -1497,12 +1573,25 @@ export class ProjectsService {
       try {
         live = await this.sdk.threads.get({ threadId: predecessorId });
       } catch (error) {
-        if ((error as { status?: number }).status === 404) return;
+        if ((error as { status?: number }).status === 404)
+          return this.formerCoordinatorEnded(projectId, predecessorId);
         throw error;
       }
       // A parentless former generation appears in no listing; this read is its observation.
       this.discovery.observe([live], epoch, new Set([predecessorId]));
-      if (live.archivedAt !== null || live.deletedAt !== null) return;
+      // Only a well-formed archive/delete timestamp proves it ended; unreadable
+      // lifecycle fields keep it held, visible and retried.
+      if (
+        !ProjectsService.lifecycleWellFormed(live.archivedAt) ||
+        !ProjectsService.lifecycleWellFormed(live.deletedAt)
+      )
+        return this.holdFormerCoordinator(
+          projectId,
+          predecessorId,
+          "its native thread returned unreadable lifecycle evidence",
+        );
+      if (live.archivedAt !== null || live.deletedAt !== null)
+        return this.formerCoordinatorEnded(projectId, predecessorId);
       // Each round receipts every worker against the CURRENT coordinator,
       // then drains the parent-op registry for this predecessor before the
       // descendant check and archive — a reparent issued while it was still
@@ -1519,10 +1608,10 @@ export class ProjectsService {
         if (signal?.aborted) return;
         const remaining = await this.liveChildren(predecessorId);
         if (remaining.length || unresolved.length) {
-          this.store.log(
+          this.holdFormerCoordinator(
             projectId,
-            "coordinator",
-            `Former coordinator stays live: ${
+            predecessorId,
+            `${
               [
                 remaining.length
                   ? `${remaining.length} native ${remaining.length === 1 ? "child" : "children"} could not be confirmed moved`
@@ -1545,10 +1634,10 @@ export class ProjectsService {
           !snapshot.coordinatorThreadId ||
           snapshot.coordinatorThreadId === predecessorId
         ) {
-          this.store.log(
+          this.holdFormerCoordinator(
             projectId,
-            "coordinator",
-            "Former coordinator stays live: the coordinator changed during the transfer; the next pass settles the leftovers.",
+            predecessorId,
+            "the coordinator changed during the transfer; the next pass settles the leftovers.",
           );
           return;
         }
@@ -1558,6 +1647,7 @@ export class ProjectsService {
         if ((await this.liveChildren(predecessorId)).length) continue;
         if (signal?.aborted) return;
         await this.retireThread(predecessorId);
+        this.formerCoordinatorEnded(projectId, predecessorId);
         this.store.log(
           projectId,
           "coordinator",
@@ -1565,17 +1655,13 @@ export class ProjectsService {
         );
         return;
       }
-      this.store.log(
+      this.holdFormerCoordinator(
         projectId,
-        "coordinator",
-        "Former coordinator stays live: its child set did not stay empty across four convergence rounds; the sweep retries.",
+        predecessorId,
+        "its child set did not stay empty across four convergence rounds; the sweep retries.",
       );
     } catch (error) {
-      this.store.log(
-        projectId,
-        "coordinator",
-        `Former coordinator stays live: ${errorMessage(error)}`,
-      );
+      this.holdFormerCoordinator(projectId, predecessorId, errorMessage(error));
     }
   }
 
@@ -4597,96 +4683,162 @@ export class ProjectsService {
   }
 
   /**
+   * The live native thread a pending start retained, when it still carries
+   * this start's op: "ended" when it is archived, deleted or gone, null when
+   * it cannot be read this sweep, "unknown" when its metadata does not prove
+   * the op and a scan must look further.
+   */
+  private async retainedCoordinatorReceipt(
+    start: PendingCoordinatorStart,
+  ): Promise<ThreadDto | "ended" | "unknown" | null> {
+    try {
+      const thread = await this.sdk.threads.get({ threadId: start.thread_id! });
+      // Only a well-formed archive/delete timestamp proves the receipt ended;
+      // unreadable lifecycle fields prove nothing and are retried next sweep.
+      if (
+        !ProjectsService.lifecycleWellFormed(thread.archivedAt) ||
+        !ProjectsService.lifecycleWellFormed(thread.deletedAt)
+      )
+        return null;
+      if (thread.archivedAt !== null || thread.deletedAt !== null) return "ended";
+      const metadata = await this.sdk.threads.getPluginMetadata({
+        threadId: thread.id,
+        pluginId: this.bb.pluginId,
+      });
+      return metadata.op === start.op_id && metadata.projectId === start.project_id
+        ? thread
+        : "unknown";
+    } catch (error) {
+      if ((error as { status?: number }).status === 404) return "ended";
+      // A failed read proves nothing; the start stays unconfirmed.
+      return null;
+    }
+  }
+
+  /** Confirm one located coordinator receipt once its own facts prove the home; returns the settled line. */
+  private async reconcileCoordinatorReceipt(
+    start: PendingCoordinatorStart,
+    row: ThreadDto | ThreadListRow,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    // The receipt is only confirmed once its own facts prove the
+    // coordinator home; an unprovable landing keeps the start
+    // unconfirmed with the native thread id retained for inspection.
+    const project = this.store.project(start.project_id);
+    const problem = project
+      ? await this.coordinatorReceiptHomeProblem(project, row)
+      : "the project no longer exists";
+    if (problem && project && checkoutNotYetReported(project, row)) return null;
+    if (problem) {
+      const recorded = this.store.db
+        .prepare(
+          "SELECT thread_id, reason FROM coordinator_starts WHERE project_id=? AND op_id=?",
+        )
+        .get(start.project_id, start.op_id) as
+        | { thread_id: string | null; reason: string | null }
+        | undefined;
+      if (
+        recorded?.thread_id !== row.id ||
+        !recorded.reason?.includes("home unproven")
+      ) {
+        this.store.db
+          .prepare(
+            "UPDATE coordinator_starts SET thread_id=?, reason=? WHERE project_id=? AND op_id=? AND state IN ('pending','uncertain')",
+          )
+          .run(
+            row.id,
+            `${start.reason ?? "coordinator start"} — returned home unproven: ${problem}`,
+            start.project_id,
+            start.op_id,
+          );
+        this.store.log(
+          start.project_id,
+          "coordinator",
+          `The unconfirmed coordinator receipt ${row.id} cannot be proven to run on the default checkout: ${problem} The start stays unconfirmed with the receipt retained for inspection.`,
+          { threadId: row.id },
+        );
+      }
+      return null;
+    }
+    // Rebind at the write: the start must still be unconfirmed, the
+    // candidate the same, and the primary the home was proven against
+    // still current — a mid-await change never confirms stale facts.
+    if (!project) return null;
+    const outcome = this.store.confirmCoordinatorReceipt(
+      start.project_id,
+      start.op_id,
+      row.id,
+      project.memberProjectIds[0]!,
+      start.reason ?? "coordinator start confirmed",
+    );
+    if (outcome !== "confirmed") return null;
+    // A receipt confirmed late still owes its predecessor the same
+    // converge the settle path performs; failures leave it live for
+    // the next sweep rather than aborting this reconcile.
+    await this.convergeFormerCoordinators(start.project_id, signal).catch(
+      () => undefined,
+    );
+    return `Coordinator confirmed: ${row.id}`;
+  }
+
+  /**
    * Settle uncertain creates and sends only on evidence: a positive receipt in
    * BB (thread metadata or the op marker in its input, or the marker in prompt
-   * history or the queue). Absence from a bounded listing proves nothing, so an
+   * history or the queue). Absence from a listing proves nothing, so an
    * unconfirmed operation stays uncertain and visible until someone settles it.
    */
   async reconcile(signal?: AbortSignal) {
     const settled: string[] = [];
     const coordinatorStarts = this.store.db
       .prepare(
-        "SELECT project_id, op_id, reason FROM coordinator_starts WHERE state IN ('pending', 'uncertain')",
+        "SELECT project_id, op_id, reason, thread_id, created_at FROM coordinator_starts WHERE state IN ('pending', 'uncertain')",
       )
-      .all() as { project_id: string; op_id: string; reason: string | null }[];
+      .all() as PendingCoordinatorStart[];
+    // A start that retained its native receipt is read directly, so its cost
+    // never grows with the number of Projects threads. Only a receipt that
+    // was never recorded (or no longer carries this op) needs the scan. An
+    // archived or deleted receipt can never confirm: it drops out of the
+    // sweep and the start waits for an explicit settle.
+    const unlocated: PendingCoordinatorStart[] = [];
+    for (const start of coordinatorStarts) {
+      if (signal?.aborted) return settled;
+      if (this.endedReceipts.has(start.op_id)) continue;
+      const receipt = start.thread_id
+        ? await this.retainedCoordinatorReceipt(start)
+        : "unknown";
+      if (signal?.aborted) return settled;
+      if (receipt === "unknown") unlocated.push(start);
+      else if (receipt === "ended") this.endedReceipts.add(start.op_id);
+      else if (receipt) {
+        const confirmed = await this.reconcileCoordinatorReceipt(start, receipt, signal);
+        if (confirmed) settled.push(confirmed);
+      }
+    }
     const pendingThreads = this.store.pendingProjectThreads();
-    if (coordinatorStarts.length || pendingThreads.length) {
-      const rows = await this.sdk.threads.list({
-        originPluginId: this.bb.pluginId,
-        includeHidden: true,
-        limit: 200,
-      });
-      for (const row of rows) {
-        if (signal?.aborted) return settled;
+    if (unlocated.length || pendingThreads.length) {
+      // Archived rows, and rows created before the oldest pending operation,
+      // cannot be a receipt to confirm and skip the metadata read (the slack
+      // absorbs clock skew between op record and spawn).
+      const since =
+        Math.min(
+          ...unlocated.map((start) => start.created_at),
+          ...pendingThreads.map((thread) => thread.createdAt),
+        ) - 60_000;
+      let remaining = unlocated.length + pendingThreads.length;
+      await this.scanLiveReceipts("reconcile", since, signal, async (row) => {
         const metadata = await this.sdk.threads.getPluginMetadata({
           threadId: row.id,
           pluginId: this.bb.pluginId,
         });
-        if (signal?.aborted) return settled;
-        const start = coordinatorStarts.find(
+        if (signal?.aborted) return false;
+        const start = unlocated.find(
           (s) => s.op_id === metadata.op && s.project_id === metadata.projectId,
         );
-        if (start && row.archivedAt === null) {
-          // The receipt is only confirmed once its own facts prove the
-          // coordinator home; an unprovable landing keeps the start
-          // unconfirmed with the native thread id retained for inspection.
-          const project = this.store.project(start.project_id);
-          const problem = project
-            ? await this.coordinatorReceiptHomeProblem(project, row)
-            : "the project no longer exists";
-          if (problem && project && checkoutNotYetReported(project, row)) continue;
-          if (problem) {
-            const recorded = this.store.db
-              .prepare(
-                "SELECT thread_id, reason FROM coordinator_starts WHERE project_id=? AND op_id=?",
-              )
-              .get(start.project_id, start.op_id) as
-              | { thread_id: string | null; reason: string | null }
-              | undefined;
-            if (
-              recorded?.thread_id !== row.id ||
-              !recorded.reason?.includes("home unproven")
-            ) {
-              this.store.db
-                .prepare(
-                  "UPDATE coordinator_starts SET thread_id=?, reason=? WHERE project_id=? AND op_id=? AND state IN ('pending','uncertain')",
-                )
-                .run(
-                  row.id,
-                  `${start.reason ?? "coordinator start"} — returned home unproven: ${problem}`,
-                  start.project_id,
-                  start.op_id,
-                );
-              this.store.log(
-                start.project_id,
-                "coordinator",
-                `The unconfirmed coordinator receipt ${row.id} cannot be proven to run on the default checkout: ${problem} The start stays unconfirmed with the receipt retained for inspection.`,
-                { threadId: row.id },
-              );
-            }
-            continue;
-          }
-          // Rebind at the write: the start must still be unconfirmed, the
-          // candidate the same, and the primary the home was proven against
-          // still current — a mid-await change never confirms stale facts.
-          if (!project) continue;
-          const outcome = this.store.confirmCoordinatorReceipt(
-            start.project_id,
-            start.op_id,
-            row.id,
-            project.memberProjectIds[0]!,
-            start.reason ?? "coordinator start confirmed",
-          );
-          if (outcome === "confirmed") {
-            settled.push(`Coordinator confirmed: ${row.id}`);
-            // A receipt confirmed late still owes its predecessor the same
-            // converge the settle path performs; failures leave it live for
-            // the next sweep rather than aborting this reconcile.
-            await this.convergeFormerCoordinators(start.project_id, signal).catch(
-              () => undefined,
-            );
-          }
-          continue;
+        if (start) {
+          remaining--;
+          const confirmed = await this.reconcileCoordinatorReceipt(start, row, signal);
+          if (confirmed) settled.push(confirmed);
+          return remaining === 0;
         }
         const adhoc =
           metadata.role === "adhoc"
@@ -4694,18 +4846,20 @@ export class ProjectsService {
                 (t) => t.opId === metadata.op && t.projectId === metadata.projectId,
               )
             : undefined;
-        if (adhoc && row.archivedAt === null) {
-          if (this.store.confirmProjectThread(adhoc.opId, row.id)) {
-            this.store.log(
-              adhoc.projectId,
-              "thread",
-              `"${adhoc.label}" was confirmed after an uncertain create`,
-              { threadId: row.id },
-            );
-            settled.push(`Thread confirmed: ${row.id}`);
-          }
+        if (!adhoc) return false;
+        remaining--;
+        if (this.store.confirmProjectThread(adhoc.opId, row.id)) {
+          this.store.log(
+            adhoc.projectId,
+            "thread",
+            `"${adhoc.label}" was confirmed after an uncertain create`,
+            { threadId: row.id },
+          );
+          settled.push(`Thread confirmed: ${row.id}`);
         }
-      }
+        return remaining === 0;
+      });
+      if (signal?.aborted) return settled;
     }
     for (const assignment of this.store.assignmentsWithOpState([
       "pending",
@@ -4813,7 +4967,7 @@ export class ProjectsService {
             // reservation releases only on positive native quiescence.
             await this.settleCancelledIfQuiet(fresh);
         } else {
-          const found = await this.findCreatedThread(assignment);
+          const found = await this.findCreatedThread(assignment, signal);
           if (signal?.aborted) return settled;
           if (found)
             await this.confirmCreated(
@@ -5383,23 +5537,24 @@ export class ProjectsService {
 
   private async findCreatedThread(
     assignment: AssignmentRecord,
+    signal?: AbortSignal,
   ): Promise<ThreadDto | null> {
     const marker = opMarker(assignment.opId);
-    for (let offset = 0; offset < 200; offset += 50) {
-      const rows = await this.sdk.threads.list({
-        originPluginId: this.bb.pluginId,
-        includeHidden: true,
-        limit: 50,
-        offset,
-      });
-      for (const row of rows) {
-        if (row.createdAt < assignment.createdAt - 60_000) continue;
+    let found: string | null = null;
+    await this.scanLiveReceipts(
+      `assignment:${assignment.opId}`,
+      assignment.createdAt - 60_000,
+      signal,
+      async (row) => {
         const metadata = await this.sdk.threads.getPluginMetadata({
           threadId: row.id,
           pluginId: this.bb.pluginId,
         });
-        if ((metadata as { op?: unknown }).op === assignment.opId)
-          return this.sdk.threads.get({ threadId: row.id });
+        if ((metadata as { op?: unknown }).op === assignment.opId) {
+          found = row.id;
+          return true;
+        }
+        if (signal?.aborted) return false;
         // The op marker is part of the thread's own first input, so it survives
         // even if the metadata seed did not.
         const history = promptTexts(
@@ -5408,12 +5563,51 @@ export class ProjectsService {
             limit: "5",
           }),
         );
-        if (history.some((text) => text.includes(marker)))
-          return this.sdk.threads.get({ threadId: row.id });
+        if (!history.some((text) => text.includes(marker))) return false;
+        found = row.id;
+        return true;
+      },
+    );
+    return found ? this.sdk.threads.get({ threadId: found }) : null;
+  }
+
+  /**
+   * Visit live Projects-origin threads created at or after `since`, a
+   * bounded number of list pages per call. BB's listing order is not
+   * creation order, so a receipt can sit anywhere: each call resumes where
+   * the previous one for `key` stopped and wraps at the end, reaching every
+   * row within a few sweeps. `visit` returning true ends the scan; an abort
+   * stops before the next read and keeps the cursor on the unfinished page.
+   */
+  private async scanLiveReceipts(
+    key: string,
+    since: number,
+    signal: AbortSignal | undefined,
+    visit: (row: ThreadListRow) => Promise<boolean>,
+  ) {
+    let offset = this.receiptCursors.get(key) ?? 0;
+    for (let page = 0; page < RECEIPT_SCAN_PAGES; page++) {
+      if (signal?.aborted) break;
+      const rows = await this.sdk.threads.list({
+        originPluginId: this.bb.pluginId,
+        archived: false,
+        includeHidden: true,
+        limit: LIST_PAGE,
+        offset,
+      });
+      for (const row of rows) {
+        if (row.archivedAt !== null || row.createdAt < since) continue;
+        if (signal?.aborted) break;
+        if (await visit(row)) {
+          this.receiptCursors.delete(key);
+          return;
+        }
       }
-      if (rows.length < 50) break;
+      if (signal?.aborted) break;
+      offset = rows.length < LIST_PAGE ? 0 : offset + LIST_PAGE;
+      if (offset === 0) break;
     }
-    return null;
+    this.receiptCursors.set(key, offset);
   }
 
   // Worker lifecycle -------------------------------------------------------------
