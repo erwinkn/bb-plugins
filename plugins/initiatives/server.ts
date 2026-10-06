@@ -685,7 +685,9 @@ export default function plugin(bb: BbPluginApi) {
     const command = messageCommand(parsed(messageToolSchema, raw, "initiative_message"));
     if (command.action === "message") return service.message(threadId, command);
     const p = service.coordinatorOf(threadId);
-    return perform(p.id, command, "coordinator", threadId);
+    // Work for a reviewer is a re-review of its own batch, read-only (W190).
+    const target = command.action === "delegate" && command.worker ? store.worker(p.id, Number(command.worker.replace(/^W/i, ""))) : null;
+    return perform(p.id, target?.role === "review" ? { ...command, role: "review" } as Command : command, "coordinator", threadId);
   };
   const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>;
   registerTool({

@@ -5,6 +5,7 @@ import {
   DEFAULT_COORDINATOR_INSTRUCTIONS,
   DEFAULT_WORKER_INSTRUCTIONS,
   GUIDANCE_RESET_FLAG,
+  PREVIOUS_DEFAULTS,
 } from "./guidance";
 
 // BB truncates dynamic instructions at 4096; reserve 512 for role/start guards.
@@ -71,8 +72,8 @@ export function definePreferences(bb: BbPluginApi, flags?: MigrationFlags) {
   // defaults; the reset below persists that.
   const reset = () => flags !== undefined && !flags.has(GUIDANCE_RESET_FLAG);
   const decode = (raw: Awaited<ReturnType<typeof handle.get>>): Preferences => ({
-    coordinatorInstructions: reset() ? DEFAULT_COORDINATOR_INSTRUCTIONS : instructionSchema.parse(raw.coordinatorInstructions),
-    workerInstructions: reset() ? DEFAULT_WORKER_INSTRUCTIONS : instructionSchema.parse(raw.workerInstructions),
+    coordinatorInstructions: reset() || PREVIOUS_DEFAULTS.coordinator.includes(raw.coordinatorInstructions) ? DEFAULT_COORDINATOR_INSTRUCTIONS : instructionSchema.parse(raw.coordinatorInstructions),
+    workerInstructions: reset() || PREVIOUS_DEFAULTS.worker.includes(raw.workerInstructions) ? DEFAULT_WORKER_INSTRUCTIONS : instructionSchema.parse(raw.workerInstructions),
     profiles: parseProfileDefaults(raw.executionProfiles),
   });
   // configure is synchronous in SDK 0.4.87. Its authoritative snapshot is

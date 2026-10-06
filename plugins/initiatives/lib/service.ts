@@ -22,7 +22,7 @@ import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
 import { queueTargets } from "./not-delivered";
 import { opMarker, renderAssignment, renderCoordinatorSeed } from "./brief";
-import { fallbackBody, finalAgentMessage, handoverPacket, handoverPrompt, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestCompletedTurn, recentMessages, withReason } from "./handover";
+import { briefBoundary, fallbackBody, finalAgentMessage, handoverPacket, handoverPrompt, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, recentMessages, withReason } from "./handover";
 import { isOwnOrigin } from "./identity";
 import {
   chooseWorkProfile,
@@ -1513,6 +1513,9 @@ export class ProjectsService {
         }
       }
     }
+    // The incumbent's settings were read above: a drain or recovery re-checks its request
+    // (revision, pause, incumbent) here, and spawnCoordinator checks again just before the spawn.
+    await options?.revalidate?.();
     const { thread, confirmed } = await this.spawnCoordinator(
       this.store.project(projectId)!,
       input.bbProjectId ?? project.memberProjectIds[0]!,
@@ -2137,7 +2140,7 @@ export class ProjectsService {
       const d = this.store.handoverDraft(projectId);
       return d?.state === "generating" && d.detail === token ? d : null;
     };
-    if (existing?.threadId) await this.archiveWriter(existing.threadId);
+    if (existing?.threadId) await this.archiveWriter(existing.threadId, projectId);
     const transcript = project.coordinatorThreadId
       ? await recentMessages(this.sdk, project.coordinatorThreadId).catch(() => [])
       : [];
@@ -2171,7 +2174,7 @@ export class ProjectsService {
     const claim = ours();
     if (!claim) {
       // Superseded while starting (discarded or restarted): this writer has no draft.
-      await this.archiveWriter(thread.id);
+      await this.archiveWriter(thread.id, projectId);
       return this.store.handoverDraft(projectId) ?? { projectId, state: "requested", note, text: null, source: null, threadId: null, detail: "discarded", thenReplace: null, fallback: null, createdAt: this.now(), updatedAt: this.now() };
     }
     this.store.log(projectId, "coordinator", `GPT-6 Luna High is writing the coordinator handover (${thread.id})`);
@@ -2203,7 +2206,7 @@ export class ProjectsService {
     });
     this.store.log(current.projectId, "coordinator", text ? "The coordinator handover is ready (GPT-6 Luna High)" : `Coordinator handover written without Luna: ${why}`);
     // The writer stays tracked until BB confirms the archive; the sweep retries it.
-    await this.archiveWriter(threadId);
+    await this.archiveWriter(threadId, current.projectId);
     await this.continueAfterDraft(current.projectId);
     return true;
   }
@@ -2290,13 +2293,13 @@ export class ProjectsService {
     // Writers whose archive BB has not confirmed yet, unless still writing a draft.
     const writing = new Set(this.store.generatingDrafts().map(d => d.threadId).filter(Boolean));
     for (const writer of this.store.trackedWriters())
-      if (!writing.has(writer.threadId)) await this.archiveWriter(writer.threadId);
+      if (!writing.has(writer.threadId)) await this.archiveWriter(writer.threadId, writer.projectId);
   }
 
   /** Throw away the draft (and stop its writer); the next replacement writes a fresh one. */
   async discardHandoverDraft(projectId: string) {
     const draft = this.store.handoverDraft(projectId);
-    if (draft?.threadId) await this.archiveWriter(draft.threadId);
+    if (draft?.threadId) await this.archiveWriter(draft.threadId, projectId);
     this.store.clearHandoverDraft(projectId);
     return { discarded: draft !== null };
   }
@@ -2318,8 +2321,12 @@ export class ProjectsService {
     return { state: "ready" as const, note: null };
   }
 
-  /** Archive a writer; it stays tracked (and the sweep retries) until BB confirms it. */
-  private async archiveWriter(threadId: string) {
+  /**
+   * Archive a writer; it stays tracked (and the sweep retries) until BB confirms it. It is
+   * registered first, so a writer started before tracking existed is never lost (W190).
+   */
+  private async archiveWriter(threadId: string, projectId: string) {
+    this.store.trackWriter(threadId, projectId);
     try {
       await this.sdk.threads.archive({ threadId });
       this.store.untrackWriter(threadId);
@@ -2537,19 +2544,46 @@ export class ProjectsService {
       if (state) {
         const again = checkGates();
         if (again) return apply(again);
-        const draft = this.store.handoverDraft(projectId);
-        this.store.tx(() => {
-          if (this.store.clearHandover(projectId, revision))
-            this.store.log(projectId, "coordinator", `The current coordinator is ${state}; the requested replacement starts now.`);
-        });
-        await this.replaceCoordinator(projectId, {
-          reason: request.reason,
-          ...(request.profile ? { profile: request.profile } : {}),
-          ...(request.environment ? { environment: request.environment } : {}),
-          ...(draft?.state === "ready" && draft.text ? { handover: draft.text } : {}),
-          expectedCoordinator: request.threadId,
-        }, { author: "user" }).catch(error =>
-          this.store.log(projectId, "coordinator", `The requested replacement could not start: ${errorMessage(error)}`));
+        // The replacement starts from a written handover; write it first if needed.
+        if (this.store.handoverDraft(projectId)?.state !== "ready") {
+          const draft = this.store.handoverDraft(projectId);
+          if (!draft || draft.state === "requested") await this.startHandoverDraft(projectId, {});
+          const after = checkGates();
+          if (after) return apply(after);
+          if (this.store.handoverDraft(projectId)?.state !== "ready")
+            return apply({ kind: "hold", reason: "GPT-6 Luna High is writing the handover" });
+        }
+        const handover = this.store.handoverDraft(projectId)!.text ?? undefined;
+        this.store.log(projectId, "coordinator", `The current coordinator is ${state}; starting the requested replacement.`);
+        // The request stays until the replacement has started, and is re-checked after every
+        // await up to the spawn: a cancel, a newer request or a changed coordinator stops it.
+        // A failure holds it with its reason and the next sweep tries again (W190).
+        inReplacement = true;
+        try {
+          await this.replaceCoordinator(projectId, {
+            reason: request.reason,
+            ...(request.profile ? { profile: request.profile } : {}),
+            ...(request.environment ? { environment: request.environment } : {}),
+            ...(handover ? { handover } : {}),
+            expectedCoordinator: request.threadId,
+          }, {
+            author: "user",
+            signal,
+            onCommit: () => this.handoverSpawnInflight.add(projectId),
+            revalidate: async () => {
+              const outcome = checkGates();
+              if (outcome) throw new HandoverAbort(outcome as Exclude<HandoverRecheck, { kind: "ok" }>);
+            },
+          });
+        } catch (error) {
+          if (error instanceof HandoverAbort) return apply(error.outcome);
+          return apply({ kind: "hold", reason: `the replacement could not be prepared: ${errorMessage(error)} — it retries automatically` });
+        } finally {
+          inReplacement = false;
+          this.handoverSpawnInflight.delete(projectId);
+        }
+        if (this.store.project(projectId)?.coordinatorThreadId !== request.threadId)
+          this.store.tx(() => { this.store.clearHandover(projectId, revision); });
         return "resolved";
       }
     }
@@ -3655,6 +3689,25 @@ export class ProjectsService {
 
   /** The report a review embeds: the named W#/A#, or (legacy reviewOf) the latest report on those tasks. */
   private reviewSource(project: ProjectRecord, input: DelegateInput): AssignmentRecord {
+    // A re-review by the same reviewer: the reviewed worker's latest report, in its batch.
+    // It stays pinned to the batch it was spawned for: that worker, and those tasks (W190).
+    const reviewer = input.route === "continue" && input.worker ? this.requireWorker(project, input.worker) : null;
+    if (reviewer?.role === "review") {
+      const batch = this.reviewBatch(project, reviewer);
+      if (!batch) throw new ProjectError(`${reviewer.ref} has no recorded review to repeat. Spawn a fresh reviewer with reviews:"W#".`);
+      const fresh = `Spawn a fresh reviewer for other work.`;
+      const named = input.reviews ?? input.reviewTargets?.[0]?.assignment ?? null;
+      if (named && workerRef(latestReport(this.store, project.id, named).workerNum) !== batch.worker)
+        throw new ProjectError(`${reviewer.ref} reviews ${batch.worker}'s batch, not ${named}'s. ${fresh}`);
+      const outside = [...(input.tasks ?? []), ...(input.reviewOf ?? [])].filter(ref => !batch.tasks.includes(this.requireTask(project, ref).num));
+      if (outside.length) throw new ProjectError(`${reviewer.ref} reviews ${batch.worker}'s batch; ${outside.join(", ")} ${outside.length > 1 ? "are" : "is"} not in it. ${fresh}`);
+      // The reviewed worker's latest report on that batch, not on later unrelated work.
+      const num = Number(batch.worker.slice(1));
+      const onBatch = this.store.assignments(project.id).filter(a => a.workerNum === num && a.report &&
+        (!batch.tasks.length || a.taskNums.some(n => batch.tasks.includes(n)))).at(-1);
+      if (!onBatch) throw new ProjectError(`${batch.worker} has no report on ${reviewer.ref}'s batch yet.`);
+      return onBatch;
+    }
     const ref = input.reviews ?? input.reviewTargets?.[0]?.assignment ?? null;
     if (ref) return latestReport(this.store, project.id, ref);
     const nums = (input.reviewOf ?? []).map(r => this.requireTask(project, r).num);
@@ -3663,6 +3716,14 @@ export class ProjectsService {
       : undefined;
     if (!found) throw new ProjectError('A review names the worker it reviews, e.g. reviews:"W12"; its latest report is embedded in the brief.');
     return found;
+  }
+
+  /** The worker and tasks a reviewer was spawned to review (from its first embedded report). */
+  private reviewBatch(project: ProjectRecord, reviewer: WorkerRecord): { worker: string; tasks: number[] } | null {
+    const first = this.store.assignments(project.id).find(a => a.workerNum === reviewer.num && a.role === "review");
+    const source = first?.handoffSources?.[0];
+    if (!first || !source) return null;
+    return { worker: source.worker, tasks: first.reviewOf ?? [] };
   }
 
   /**
@@ -3919,9 +3980,15 @@ export class ProjectsService {
     const reviewed = input.role === "review" ? this.reviewSource(project, input) : null;
     const taskRefs = input.role === "review" ? [] : input.tasks ?? [];
     let tasks = taskRefs.map((ref) => this.requireTask(project, ref));
+    const batch = existing?.role === "review" && input.route === "continue" ? this.reviewBatch(project, existing) : null;
     const reviewOfRefs = reviewed
-      ? (input.tasks?.length ? input.tasks : (input.reviewOf ?? reviewed.taskNums.map(taskRef)))
+      ? (input.tasks?.length ? input.tasks : (input.reviewOf ?? (batch ? batch.tasks.map(taskRef) : reviewed.taskNums.map(taskRef))))
       : [];
+    // A re-review's resolved report and scope must both lie in the reviewer's original batch,
+    // whatever the caller passed (W190).
+    if (batch && reviewed && (workerRef(reviewed.workerNum) !== batch.worker ||
+        reviewOfRefs.some(ref => !batch.tasks.includes(this.requireTask(project, ref).num))))
+      throw new ProjectError(`${existing!.ref} reviews ${batch.worker}'s batch; this re-review resolved to other work. Spawn a fresh reviewer for it.`);
     let reviewOfTasks = reviewOfRefs.map((ref) => this.requireTask(project, ref));
     const handoffRefs = input.handoffs ?? [];
     // The embedded reports are re-resolved after the last await: the brief carries the filing checked then.
@@ -6014,7 +6081,7 @@ export class ProjectsService {
             : "idle_no_report",
           opId,
           opState: "done",
-          briefText: "(adopted existing thread)",
+          briefText: ADOPTED_BRIEF,
           reviewOf: null,
           rationale: "Adopted an existing thread",
         });
@@ -6298,43 +6365,62 @@ export class ProjectsService {
 
   /** Short reports waiting for their turn's final message: key `${projectId}:${num}`, value the filing time. */
   private awaitingFinal = new Map<string, number>();
+  /** Where each open assignment's brief entered its thread (event sequence), once found. */
+  private briefBoundaries = new Map<string, number>();
 
   /**
-   * T136: a worker's final message is its report. When a worker's turn completes normally,
-   * the turn's last agent message becomes the report of the open work whose brief that very
-   * turn received (its op marker is among the turn's inputs). A short report filed during the
-   * turn gets that message attached. An interrupted, failed or message-less turn records and
-   * attaches nothing, and drops any attachment still waiting, so a later reply never lands.
+   * T136: a worker's final message is its report, read when its turn ends (idle or failed).
+   *
+   * - Open work is reported by the first normally completed turn that ends after its brief
+   *   entered the thread (the turn input carrying its op marker) or, for an adopted thread,
+   *   after the adoption. An interrupted turn that a later message resumes still reports it;
+   *   a turn that ended before the brief arrived never does.
+   * - A short report filed during a turn gets that exact turn's final message: the filing
+   *   time lies between the turn's start and end. A failed or interrupted turn drops it.
+   * - While a turn is still running, or BB's events cannot be read, nothing is decided.
    */
   async captureFinalMessage(thread: ThreadDto) {
     const m = this.store.membership(thread.id);
     if (!m?.worker || m.former || m.workerNum <= 0 || m.worker.threadId !== thread.id) return;
     const { project, worker } = m;
-    const waiting = [...this.awaitingFinal.keys()].filter(key => {
-      const [pid, num] = key.split(":");
-      return pid === project.id && this.store.assignment(project.id, Number(num))?.workerNum === worker.num;
-    });
-    const turn = await latestCompletedTurn(this.sdk, thread.id).catch(() => null);
-    const drop = () => waiting.forEach(key => this.awaitingFinal.delete(key));
-    if (!turn?.final) return drop();
-    const finalMessage = clipFinal(turn.final.text);
-    // A short report filed during this turn: its filing time lies inside the turn.
-    for (const key of waiting) {
-      const filedAt = this.awaitingFinal.get(key)!;
-      this.awaitingFinal.delete(key);
-      const num = Number(key.split(":")[1]);
-      const current = this.store.assignment(project.id, num);
-      const inTurn = turn.startedAt !== null && turn.endedAt !== null
-        ? filedAt >= turn.startedAt - 1000 && filedAt <= turn.endedAt + 1000
-        : current !== null && turn.inputs.some(text => text.includes(opMarker(current.opId)));
-      if (current?.report && !current.report.finalMessage && inTurn)
-        this.store.updateAssignment(project.id, num, { report: { ...current.report, finalMessage } });
+    let turn: Awaited<ReturnType<typeof latestTurn>>;
+    try {
+      turn = await latestTurn(this.sdk, thread.id);
+    } catch {
+      return;
     }
+    if (!turn || turn.status === "running") return;
+    const finalMessage = turn.final ? clipFinal(turn.final.text) : null;
+    for (const [key, filedAt] of [...this.awaitingFinal]) {
+      const [pid, num] = key.split(":");
+      const current = pid === project.id ? this.store.assignment(project.id, Number(num)) : null;
+      if (!current || current.workerNum !== worker.num) continue;
+      // Filed in a later turn whose end is not visible yet: keep waiting.
+      if (turn.endedAt !== null && filedAt > turn.endedAt) continue;
+      this.awaitingFinal.delete(key);
+      const inTurn = turn.startedAt !== null ? filedAt >= turn.startedAt : turn.inputs.some(text => text.includes(opMarker(current.opId)));
+      if (inTurn && finalMessage && current.report && !current.report.finalMessage)
+        this.store.updateAssignment(project.id, current.num, { report: { ...current.report, finalMessage } });
+    }
+    if (!turn.final || !finalMessage) return;
     const open = this.store.openAssignment(project.id, worker.num);
     if (!open || !["running", "idle_no_report"].includes(open.state) || open.threadId !== thread.id ||
-        !open.briefDelivered || open.queuedMessageId || open.cancelRequested || open.report) return;
-    // Only the turn that received this work's brief reports it; an older turn never does.
-    if (!turn.inputs.some(text => text.includes(opMarker(open.opId)))) return;
+        open.queuedMessageId || open.cancelRequested || open.report) return;
+    const adopted = open.briefText === ADOPTED_BRIEF;
+    if (!adopted && !open.briefDelivered) return;
+    if (adopted) {
+      if (turn.endedAt === null || turn.endedAt < open.createdAt) return;
+    } else {
+      const key = `${project.id}:${open.num}`;
+      let boundary = this.briefBoundaries.get(key) ?? null;
+      if (boundary === null) {
+        boundary = await briefBoundary(this.sdk, thread.id, opMarker(open.opId)).catch(() => null);
+        if (boundary === null) return;
+        this.briefBoundaries.set(key, boundary);
+      }
+      if (turn.endSeq <= boundary) return;
+      this.briefBoundaries.delete(key);
+    }
     const summary = summaryOf(turn.final.text);
     await this.report(thread.id, {
       assignment: open.ref,
@@ -6345,6 +6431,27 @@ export class ProjectsService {
       pendingBackgroundWork: [],
       finalMessage,
     });
+  }
+
+  /**
+   * The sweep retries captures still waiting on a short report's final message, for example
+   * after a failed event read, once the worker's thread is no longer running a turn.
+   */
+  async retryPendingCaptures() {
+    const threads = new Set<string>();
+    for (const [key, filedAt] of [...this.awaitingFinal]) {
+      const [projectId, num] = key.split(":");
+      const a = this.store.assignment(projectId!, Number(num));
+      // Bounded: a final message that cannot be read within an hour is given up; the short
+      // report itself stays as filed.
+      if (!a || this.now() - filedAt > CAPTURE_RETRY_MS) { this.awaitingFinal.delete(key); continue; }
+      const worker = this.store.worker(a.projectId, a.workerNum);
+      if (worker?.threadId) threads.add(worker.threadId);
+    }
+    for (const threadId of threads) {
+      const thread = await this.sdk.threads.get({ threadId }).catch(() => null);
+      if (thread && !BUSY_STATUSES.has(thread.status)) await this.captureFinalMessage(thread);
+    }
   }
 
   /** The new short report (T136): outcome and summary for the dashboard; the final message follows. */
@@ -6477,6 +6584,12 @@ export function summaryOf(text: string) {
   const first = text.split(/\n\s*\n/).map(p => p.replace(/^#+\s*/gm, "").replace(/\s+/g, " ").trim()).find(Boolean) ?? "Reported.";
   return first.length > 300 ? `${first.slice(0, 297).trimEnd()}…` : first;
 }
+
+/** How long the sweep keeps retrying a short report's final message (W190). */
+const CAPTURE_RETRY_MS = 60 * 60_000;
+
+/** The brief text of an adopted thread's assignment: no brief was sent, so no op marker. */
+const ADOPTED_BRIEF = "(adopted existing thread)";
 
 export function slug(text: string) {
   return (

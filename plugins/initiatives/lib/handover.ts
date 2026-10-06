@@ -111,13 +111,20 @@ export function handoverPrompt(name: string, packet: string): string {
  */
 export function fallbackBody(store: Store, projectId: string, note: string | null, transcript: TranscriptMessage[] = []): string {
   const { head, reportBlock, updateBlock } = sections(store, projectId, transcript, note);
-  const said = transcript.filter(m => m.role === "user").slice(-15).map(m => `- ${clip(m.text, 1500)}`);
-  return clip([
-    head,
-    said.length ? `## The user's recent messages to the old coordinator\n${said.join("\n")}` : "",
-    updateBlock,
-    reportBlock,
-  ].filter(Boolean).join("\n\n"), 24_000);
+  const BUDGET = 24_000;
+  // The user's own words come first and keep their room (up to a third); everything else
+  // fills what is left, in order, so a large Initiative clips its reports and tasks instead.
+  let said = transcript.filter(m => m.role === "user").slice(-15).map(m => `- ${clip(m.text, 1500)}`);
+  while (said.join("\n").length > BUDGET / 3 && said.length > 1) said = said.slice(1);
+  const parts: string[] = [];
+  let left = BUDGET;
+  for (const part of [said.length ? clip(`## The user's recent messages to the old coordinator\n${said.join("\n")}`, BUDGET / 3) : "", head, updateBlock, reportBlock]) {
+    if (!part || left <= 200) continue;
+    const piece = clip(part, left);
+    parts.push(piece);
+    left -= piece.length + 2;
+  }
+  return parts.join("\n\n");
 }
 
 export const withReason = (body: string, why: string) => `(Generated without Luna: ${why}.)\n\n${body}`;
@@ -166,8 +173,11 @@ export async function recentMessages(sdk: Sdk, threadId: string, limit = MESSAGE
   return out.reverse().map(o => o.message);
 }
 
-export interface CompletedTurn {
-  /** The turn's last agent message, or null when it has none. */
+export interface EndedTurn {
+  status: "ended";
+  /** The turn's own outcome: "completed" normally, otherwise interrupted, failed, ... */
+  outcome: string;
+  /** The turn's last agent message, or null when it has none or did not complete normally. */
   final: { text: string; seq: number } | null;
   /** The texts the turn received as input (briefs carry their op marker). */
   inputs: string[];
@@ -176,6 +186,7 @@ export interface CompletedTurn {
   startedAt: number | null;
   endedAt: number | null;
 }
+export type CompletedTurn = EndedTurn;
 
 const timeOf = (row: EventRow | undefined) => {
   const value = row?.createdAt;
@@ -184,27 +195,48 @@ const timeOf = (row: EventRow | undefined) => {
 };
 
 /**
- * The thread's latest turn when it completed normally; null while a turn is running, after
- * an interrupted or failed turn, or when no turn is recorded. Its final message is the last
- * agent message strictly inside that turn, and its inputs are the turn requests it accepted.
+ * The thread's latest turn: running, or ended with its outcome. Null when no turn is recorded.
+ * A failed event read throws, so callers can tell "unknown" from a turn that ended.
  */
-export async function latestCompletedTurn(sdk: Sdk, threadId: string): Promise<CompletedTurn | null> {
+export async function latestTurn(sdk: Sdk, threadId: string): Promise<{ status: "running" } | EndedTurn | null> {
   const bounds = (await list(sdk, { threadId, types: ["turn/started", "turn/completed"], order: "desc", limit: "2" })).sort((a, b) => b.seq - a.seq);
   const end = bounds[0];
-  if (end?.type !== "turn/completed" || end.data?.status !== "completed") return null;
+  if (!end) return null;
+  if (end.type === "turn/started") return { status: "running" };
   const start = bounds.find(row => row.type === "turn/started" && row.seq < end.seq);
   if (!start) return null;
+  const outcome = typeof end.data?.status === "string" ? end.data.status : "unknown";
   const inside = (row: EventRow) => row.seq > start.seq && row.seq < end.seq;
   const accepted = (await list(sdk, { threadId, types: ["turn/input/accepted"], afterSeq: String(start.seq), order: "asc", limit: "20" })).filter(inside);
   const ids = new Set(accepted.map(row => row.data?.clientRequestId).filter((id): id is string => typeof id === "string"));
   const requests = ids.size ? await list(sdk, { threadId, types: ["client/turn/requested"], order: "desc", limit: "50" }) : [];
   const inputs = requests.filter(row => ids.has(row.data?.requestId)).map(row => inputText(row.data?.input));
-  const items = (await list(sdk, { threadId, types: ["item/completed"], afterSeq: String(start.seq), order: "desc", limit: "50" })).filter(inside).sort((a, b) => b.seq - a.seq);
-  const message = items.find(row => row.data?.item?.type === "agentMessage" && !row.data.item.parentToolCallId && typeof row.data.item.text === "string" && row.data.item.text.trim());
-  return {
-    final: message ? { text: String(message.data!.item.text).trim(), seq: message.seq } : null,
-    inputs, startSeq: start.seq, endSeq: end.seq, startedAt: timeOf(start), endedAt: timeOf(end),
-  };
+  let final: EndedTurn["final"] = null;
+  if (outcome === "completed") {
+    const items = (await list(sdk, { threadId, types: ["item/completed"], afterSeq: String(start.seq), order: "desc", limit: "50" })).filter(inside).sort((a, b) => b.seq - a.seq);
+    const message = items.find(row => row.data?.item?.type === "agentMessage" && !row.data.item.parentToolCallId && typeof row.data.item.text === "string" && row.data.item.text.trim());
+    if (message) final = { text: String(message.data!.item.text).trim(), seq: message.seq };
+  }
+  return { status: "ended", outcome, final, inputs, startSeq: start.seq, endSeq: end.seq, startedAt: timeOf(start), endedAt: timeOf(end) };
+}
+
+/** The latest turn when it completed normally; null while running, after any other outcome, or with none. */
+export async function latestCompletedTurn(sdk: Sdk, threadId: string): Promise<EndedTurn | null> {
+  const turn = await latestTurn(sdk, threadId);
+  return turn?.status === "ended" && turn.outcome === "completed" ? turn : null;
+}
+
+/**
+ * Where a brief entered the thread: the sequence number of the turn input that accepted the
+ * request carrying `marker`. Null when the thread has not received it (yet).
+ */
+export async function briefBoundary(sdk: Sdk, threadId: string, marker: string): Promise<number | null> {
+  const requests = await list(sdk, { threadId, types: ["client/turn/requested"], order: "desc", limit: "100" });
+  const ids = new Set(requests.filter(row => inputText(row.data?.input).includes(marker)).map(row => row.data?.requestId).filter((id): id is string => typeof id === "string"));
+  if (!ids.size) return null;
+  const accepted = await list(sdk, { threadId, types: ["turn/input/accepted"], order: "desc", limit: "100" });
+  const seqs = accepted.filter(row => ids.has(row.data?.clientRequestId)).map(row => row.seq);
+  return seqs.length ? Math.min(...seqs) : null;
 }
 
 /**

@@ -160,10 +160,11 @@ describe("delegation eligibility (T136)", () => {
     expect(delegationViolations(facts({ tasks: [task(1, { status: "done" })] }))).toEqual(["T1 is done. Reopen it first if it needs more work."]);
   });
 
-  it("keeps reviewers out of implementation and reviews fresh", () => {
+  it("keeps reviewers out of implementation; a review is a reviewer's, which may re-review its batch", () => {
     const reviewer = worker({ role: "review", ref: "W2", num: 2 });
     expect(delegationViolations(facts({ route: "continue", worker: reviewer, thread: idle })).join(" ")).toMatch(/Reviewers never implement/);
-    expect(delegationViolations(facts({ route: "continue", role: "review", worker: worker(), thread: idle })).join(" ")).toMatch(/always a fresh worker/);
+    expect(delegationViolations(facts({ route: "continue", role: "review", worker: worker(), thread: idle })).join(" ")).toMatch(/A review is done by a reviewer/);
+    expect(delegationViolations(facts({ route: "continue", role: "review", worker: reviewer, thread: idle }))).toEqual([]);
   });
 
   it("asks to steer or wait while a worker is still working", () => {

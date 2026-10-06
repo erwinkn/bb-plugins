@@ -20,14 +20,19 @@ An example, in the bb-plugins Initiative:
    {label, purpose, text, tasks:["T40"]}`. The brief is the label, the task, the
    coordinator's text and one report line; standing rules live in the worker
    instructions, given once per session.
-3. W190's **final message is its report**. It may also call `initiative_report
+3. W190's **final message is its report**: the final message of the first
+   normally completed turn after its brief arrived (a resumed turn counts; for an
+   adopted thread, after the adoption). It may also call `initiative_report
    {outcome:"done"|"blocked"|"failed", summary}` for a one-line dashboard summary;
    blocked needs the question, which then waits in the Inbox.
 4. A reviewer: `initiative_spawn {role:"review", reviews:"W190", ...}`. Its brief
    embeds W190's latest report, it reads W190's checkout, and it reports findings
    as its final message. No revision strings.
 5. Fixes go back to the same worker: `initiative_message {to:"W190", text,
-   work:true}` (or `tasks:[...]`). A message without them is just a message.
+   work:true}` (or `tasks:[...]`). A message without them is just a message. The
+   same reviewer then re-checks them: `work:true` to a reviewer is a read-only
+   re-review of its own batch, with W190's latest report; a reviewer never
+   implements.
 6. Done: the coordinator closes T40 (`initiative_task {action:"close", task:"T40",
    outcome:"done"}`) and retires W190 and the reviewer. Nothing is accepted or
    rejected.

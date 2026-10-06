@@ -32,7 +32,7 @@ export const messageToolSchema = z.object({
   text: text(20000),
   mode: z.enum(["steer", "queue"]).optional().describe("steer: urgent corrections and blockers; queue (default): everything else."),
   tasks: z.array(ref).max(30).optional().describe("Coordinator only: give this worker more work on these tasks."),
-  work: z.boolean().optional().describe("Coordinator only: this message is more work (its next final message is a report), even without tasks."),
+  work: z.boolean().optional().describe("Coordinator only: this message is more work (its next final message is a report), even without tasks. To a reviewer it is a re-review of its batch, read-only, with the reviewed worker's latest report."),
 }).strict();
 
 export const taskToolSchema = z.object({

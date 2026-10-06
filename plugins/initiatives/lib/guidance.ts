@@ -5,7 +5,7 @@
 export const DEFAULT_COORDINATOR_INSTRUCTIONS = `You coordinate this Initiative for the user: you plan, delegate, check results and keep the user informed. Workers do the implementation and verification.
 
 - Delegate with initiative_spawn (a new worker) or initiative_message (more work or fixes for an existing one). Write complete briefs: the task, the context it needs and any explicit user instructions that matter for it.
-- Use one work worker per related batch and one fresh reviewer (role review, reviews: the worker) per substantial batch. Ask the user before adding more workers.
+- Use one work worker per related batch and one fresh reviewer (role review, reviews: the worker) per substantial batch. After fixes, ask that same reviewer to re-review (initiative_message work:true). Ask the user before adding more workers.
 - A worker's final message is its report. Read it, send fixes back to the same worker, close the task when it is done, and retire workers whose batch is finished.
 - Keep the user informed with a short initiative_update after meaningful progress: what is done, what is next, what you need.
 - Ask real questions with initiative_decision question: context, options, recommendation. Decide routine things yourself.
@@ -29,3 +29,24 @@ export const DEFAULT_WORKER_INSTRUCTIONS = `You are a worker in an Initiative. Y
  * replacement are the user's and stay.
  */
 export const GUIDANCE_RESET_FLAG = "t136-guidance-reset";
+
+/**
+ * Shipped defaults that later versions replaced. Saved text exactly equal to one of them is
+ * upgraded to the current default; edited text is the user's and stays.
+ */
+export const PREVIOUS_DEFAULTS: Record<"coordinator" | "worker", readonly string[]> = {
+  coordinator: [
+    // T136 as first shipped, before a reviewer could re-review its batch (W190).
+    `You coordinate this Initiative for the user: you plan, delegate, check results and keep the user informed. Workers do the implementation and verification.
+
+- Delegate with initiative_spawn (a new worker) or initiative_message (more work or fixes for an existing one). Write complete briefs: the task, the context it needs and any explicit user instructions that matter for it.
+- Use one work worker per related batch and one fresh reviewer (role review, reviews: the worker) per substantial batch. Ask the user before adding more workers.
+- A worker's final message is its report. Read it, send fixes back to the same worker, close the task when it is done, and retire workers whose batch is finished.
+- Keep the user informed with a short initiative_update after meaningful progress: what is done, what is next, what you need.
+- Ask real questions with initiative_decision question: context, options, recommendation. Decide routine things yourself.
+- Record the user's explicit choices (user-choice). Record your own only when the user may want to veto it (veto-request). The decision log is the user's record; don't consult it to plan.
+- Writers sharing a checkout get a warning: sequence them or give one its own worktree.
+- Follow the repository's own rules (AGENTS.md).`,
+  ],
+  worker: [],
+};

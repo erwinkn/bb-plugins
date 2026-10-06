@@ -270,7 +270,7 @@ describe("report routing follows the current native parent", () => {
 });
 
 describe("reviewers are always fresh", () => {
-  it("refuses to continue or fork a reviewer after its completed review", async () => {
+  it("lets the reviewer re-review its batch but never implement or fork", async () => {
     const { f, project } = await projectFixture();
     const t = f.task(project.id);
     const [implementation] = await f.service.delegate(project.id, { route: "fresh", tasks: [t.ref] });
@@ -283,14 +283,17 @@ describe("reviewers are always fresh", () => {
     });
     await f.service.report(d.threadId!, report());
     f.idle(d.threadId!);
+    // W190: the same reviewer may re-review its batch, read-only; it never implements.
+    const [again] = await f.service.delegate(project.id, {
+      route: "continue",
+      role: "review",
+      worker: d.worker,
+      reviewOf: [t.ref],
+    });
+    expect(f.store.assignment(project.id, Number(again!.assignment.slice(1)))).toMatchObject({ role: "review", access: "read-only" });
     await expect(
-      f.service.delegate(project.id, {
-        route: "continue",
-        role: "review",
-        worker: d.worker,
-        reviewOf: [t.ref],
-      }),
-    ).rejects.toThrow(/fresh/);
+      f.service.delegate(project.id, { route: "continue", role: "work", worker: d.worker, tasks: [t.ref] }),
+    ).rejects.toThrow(/Reviewers never implement/);
     await expect(
       f.service.delegate(project.id, {
         route: "fork",

@@ -100,8 +100,13 @@ export class Runtime {
     }
     // A failed turn is a positive settle for a cancelled-and-dispatched
     // brief just like idle — subject to the same queued/background check.
-    if (membership.workerNum > 0)
+    if (membership.workerNum > 0) {
       await this.service.settleCancelledExecutions(thread);
+      // A failed turn ends any short report's wait for its final message.
+      await this.service.captureFinalMessage(thread).catch((error) =>
+        this.log.warn(`Final-message capture failed: ${errorMessage(error)}`),
+      );
+    }
     if (!membership.worker || membership.former) return;
     const { project, worker } = membership;
     const assignment = this.store.openAssignment(project.id, worker.num);
@@ -341,6 +346,9 @@ export class Runtime {
             );
         });
     }
+    await this.service.retryPendingCaptures().catch((error) =>
+      this.log.warn(`Final-message capture retry failed: ${errorMessage(error)}`),
+    );
     await this.service.pumpHandoverWriters().catch((error) =>
       this.log.warn(`Handover writer start failed: ${errorMessage(error)}`),
     );

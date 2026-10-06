@@ -12,7 +12,8 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
   writer in the same checkout; overlap is never refused.
 - `initiative_message` sends one message. To a worker with `tasks` or `work:true`, it is
-  more work, and the worker's next final message is its report.
+  more work, and the worker's next final message is its report. To the batch's reviewer,
+  the same is a re-review: read-only, with the reviewed worker's latest report.
 - A worker's report is its final message, plus an optional one-line summary. Nothing is
   accepted or rejected: send fixes back, close the task (`initiative_task` close), and
   retire the worker (`initiative_worker` retire) when its batch is finished.

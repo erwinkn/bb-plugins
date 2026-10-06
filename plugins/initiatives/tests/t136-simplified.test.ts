@@ -59,7 +59,10 @@ describe("T136 giving work: spawn or message, tasks optional", () => {
     const [r] = await tool(f, "initiative_spawn", { role: "review", reviews: "W1", label: "Review", purpose: "review W1", text: "Check it." });
     f.idle(r.threadId);
     await f.service.report(r.threadId, report());
-    await expect(tool(f, "initiative_message", { to: r.worker, text: "Fix it", work: true })).rejects.toThrow(/Reviewers never implement/);
+    // work:true to a reviewer is a read-only re-review (W190); implementation is refused.
+    await expect(f.service.delegate(f.store.projects()[0]!.id, { route: "continue", role: "work", worker: r.worker })).rejects.toThrow(/Reviewers never implement/);
+    const [again] = await tool(f, "initiative_message", { to: r.worker, text: "Re-check it", work: true });
+    expect(f.store.assignment(f.store.projects()[0]!.id, Number(again.assignment.slice(1)))).toMatchObject({ role: "review", access: "read-only" });
   });
 });
 
