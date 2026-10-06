@@ -60,6 +60,7 @@ import { ThreadChildren } from "./thread-children";
 import { ThreadDragOverlay } from "./thread-drag-overlay";
 import { menuItemClass } from "./menus";
 import { AdvisorEntry } from "./advisor-entry";
+import { EntryRowBody, entryRowClass } from "./entry-row";
 
 export function ModeToggle() {
   const state = useClientState();
@@ -248,7 +249,7 @@ export function ProjectMode(props: PluginThreadListProps) {
         </style>
       )}
       <ProjectHueStyle />
-      <AdvisorEntry onNavigate={props.onNavigate} />
+      <AdvisorEntry onNavigate={props.onNavigate} alignWithInitiatives />
       <div className="flex shrink-0 items-center gap-2 px-2 pt-2 pb-2">
         <ModeToggle />
         <span className="flex-1 text-xs font-medium">Initiatives</span>
@@ -618,50 +619,31 @@ function ProjectRow({
                 // A held finger should start the drag, never the link callout
                 // or a text selection.
                 style={{ WebkitTouchCallout: "none" }}
-                className={`relative flex min-w-0 flex-1 select-none items-center gap-3 rounded-lg px-3 py-3 no-underline outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
+                className={entryRowClass(active)}
               >
-                <span
-                  aria-hidden="true"
-                  data-project-hue={hue}
-                  className="absolute bottom-3 left-0 top-3 w-0.5 rounded-full bg-current opacity-70"
-                />
-                <span
-                  aria-hidden="true"
-                  data-project-hue={hue}
-                  data-project-icon={appearanceIcon(project.appearance?.icon)}
-                  className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-current/10"
+                <EntryRowBody
+                  hue={hue}
+                  icon={appearanceIcon(project.appearance?.icon)}
+                  fallback="Folder"
+                  title={project.name}
+                  metadata={metadata}
                 >
-                  <HostIcon
-                    name={appearanceIcon(project.appearance?.icon)}
-                    fallback="Folder"
-                    className="size-4"
-                  />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium leading-5">
-                    {project.name}
-                  </span>
-                  {metadata && (
-                    <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">
-                      {metadata}
+                  {status !== "done" && (
+                    <span
+                      aria-label={
+                        status === "attention"
+                          ? "Needs you"
+                          : status === "unread"
+                          ? "Unread"
+                          : status === "working"
+                            ? "Working"
+                            : "Draft"
+                      }
+                    >
+                      <StatusIcon status={status} size="small" />
                     </span>
                   )}
-                </span>
-                {status !== "done" && (
-                  <span
-                    aria-label={
-                      status === "attention"
-                        ? "Needs you"
-                        : status === "unread"
-                        ? "Unread"
-                        : status === "working"
-                          ? "Working"
-                          : "Draft"
-                    }
-                  >
-                    <StatusIcon status={status} size="small" />
-                  </span>
-                )}
+                </EntryRowBody>
               </a>
             </ContextMenu.Trigger>
             <ContextMenu.Portal>

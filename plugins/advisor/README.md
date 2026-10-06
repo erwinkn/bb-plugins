@@ -136,12 +136,14 @@ BB, not on the plugin:
 ## Feed, badge and Discuss (T105)
 
 - **Entry (T106):** the Sidebar plugin draws the one Advisor row above the
-  Initiatives header (and atop the Threads view). It reads the count once from
-  this plugin's `unseen` RPC; afterwards this plugin pushes every change of the
-  count to the Sidebar's `advisorChanged` RPC (coalesced 250 ms, sent only when
-  the number changed, best effort when the Sidebar is absent), because an app
-  only hears its own plugin's realtime. The count is unseen real findings (not
-  previews) at or above the display threshold, summed over every watch. The
+  Initiatives header (and atop the Threads view). It reads a summary once from
+  this plugin's `unseen` RPC (`{ unseen, reviewing, initiatives, threads }`);
+  afterwards this plugin pushes every change of it to the Sidebar's
+  `advisorChanged` RPC (coalesced 250 ms, sent only when the summary changed,
+  best effort when the Sidebar is absent), because an app only hears its own
+  plugin's realtime. `unseen` is unseen real findings (not previews) at or above
+  the display threshold, summed over every watch; `reviewing` is observation and
+  reviews both on; `initiatives` and `threads` count the enabled watches. The
   `navPanel` registration stays because it is what serves the page's URL; hide
   its host row with BB's "Hide from sidebar" (a per-user preference).
 - **Feed:** the page's default route. Newest first across all watches, with a

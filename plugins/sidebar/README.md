@@ -37,11 +37,14 @@ Initiative dashboard. Sidebar has no separate first-message form or repository
 submenu. Rename and Initiative overview remain in the row menu.
 
 **Advisor.** One Advisor row sits above the Initiatives header (and at the top
-of the Threads view) with the Advisor's count of new findings, on desktop and
-phones. It opens the Advisor feed (`/plugins/advisor/advisor`). The count is read
-once from the Advisor's read-only `unseen` RPC and then pushed by the Advisor on
-every change (republished here on `advisor-unseen`), so nothing polls. Without a
-running Advisor the row is not drawn. Hide the Advisor's own top-section row
+of the Threads view), on desktop and phones. It is drawn like an Initiative row
+(shared `components/entry-row.tsx`): a neutral icon tile, the title over one
+status line (`2 initiatives · 7 threads`, `Nothing watched`, or `Reviews off`),
+and the count of new findings as a badge. It opens the Advisor feed
+(`/plugins/advisor/advisor`) and shows as selected while that page is open. The
+summary is read once from the Advisor's read-only `unseen` RPC and then pushed by
+the Advisor on every change (republished here on `advisor-unseen`), so nothing
+polls. Without a running Advisor the row is not drawn. Hide the Advisor's own top-section row
 with BB's **Hide from sidebar** so this is the only entry.
 
 **Icon and color…**, next to Rename, swaps the row for a small picker: an

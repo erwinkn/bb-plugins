@@ -410,6 +410,24 @@ export function unseenTotal(store: Store, threshold: string): number {
   return n;
 }
 
+/** What the Sidebar's Advisor entry shows: the unseen badge, and whether and what the Advisor reviews. */
+export type EntrySummary = {
+  unseen: number;
+  reviewing: boolean;
+  initiatives: number;
+  threads: number;
+};
+
+export function entrySummary(store: Store, advisor: Advisor): EntrySummary {
+  const c = advisor.resolved.config;
+  return {
+    unseen: unseenTotal(store, c.severityThreshold),
+    reviewing: c.observationEnabled && c.reviewEnabled,
+    initiatives: store.listInitiativeWatches().filter((i) => i.enabled && !i.archived).length,
+    threads: store.listWatches().filter((w) => w.enabled).length,
+  };
+}
+
 /** The watch ids a feed filter selects: one watch, every watch of one Initiative, or all (null). */
 export function feedWatchIds(store: Store, filter: { initiativeId?: string | undefined; watchId?: string | undefined }): string[] | null {
   if (filter.watchId) return [filter.watchId];

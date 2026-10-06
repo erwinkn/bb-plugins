@@ -266,7 +266,7 @@ describe("Projects sidebar mode", () => {
   });
 
   it("T106: puts the one Advisor entry right above the Initiatives header", async () => {
-    const slot = mount(true, { rpc: { advisorEntry: () => ({ available: true, unseen: 2 }) } });
+    const slot = mount(true, { rpc: { advisorEntry: () => ({ available: true, summary: { unseen: 2, reviewing: true, initiatives: 1, threads: 3 } }) } });
     const entry = await slot.findByRole("link", { name: "Advisor, 2 new findings" });
     const header = slot.getAllByText("Initiatives").find((el) => el.tagName === "SPAN")!;
     expect(entry.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

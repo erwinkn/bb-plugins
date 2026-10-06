@@ -1,7 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { z } from "zod";
 import { advisorContract } from "./advisor-contract";
-import { ADVISOR_UNSEEN_CHANNEL } from "./advisor-links";
+import { ADVISOR_UNSEEN_CHANNEL, advisorSummary } from "./advisor-schema";
 
 const advisorRunning = async (bb: BbPluginApi) => {
   const installed = (await bb.sdk.plugins.list()).plugins.find((p) => p.id === "advisor");
@@ -10,24 +9,24 @@ const advisorRunning = async (bb: BbPluginApi) => {
 
 export function registerAdvisorEntry(bb: BbPluginApi) {
   bb.rpc.register(advisorContract, {
-    // No Advisor: no row. A running Advisor whose count cannot be read keeps its row without a count.
+    // No Advisor: no row. A running Advisor whose summary cannot be read keeps its row without one.
     advisorEntry: async () => {
-      if (!(await advisorRunning(bb))) return { available: false, unseen: null };
+      if (!(await advisorRunning(bb))) return { available: false, summary: null };
       try {
-        const r = await bb.sdk.plugins.callRpc({
+        const summary = await bb.sdk.plugins.callRpc({
           pluginId: "advisor",
           method: "unseen",
           input: null,
-          outputSchema: z.object({ unseen: z.number().int().nonnegative() }),
+          outputSchema: advisorSummary,
         });
-        return { available: true, unseen: r.unseen };
+        return { available: true, summary };
       } catch (cause: unknown) {
-        bb.log.warn(`Could not read the Advisor's unseen count: ${cause instanceof Error ? cause.message : String(cause)}`);
-        return { available: true, unseen: null };
+        bb.log.warn(`Could not read the Advisor's summary: ${cause instanceof Error ? cause.message : String(cause)}`);
+        return { available: true, summary: null };
       }
     },
-    advisorChanged: ({ unseen }) => {
-      bb.realtime.publish(ADVISOR_UNSEEN_CHANNEL, { unseen });
+    advisorChanged: (summary) => {
+      bb.realtime.publish(ADVISOR_UNSEEN_CHANNEL, summary);
       return { ok: true as const };
     },
   });

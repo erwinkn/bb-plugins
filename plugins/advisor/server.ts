@@ -15,7 +15,7 @@ import { INITIATIVES_PLUGIN_ID, projectsInitiatives } from "./src/runtime/projec
 import { openStore } from "./src/store/store.js";
 import type { FetchLike } from "./src/transport/types.js";
 import type { TransportDeps } from "./src/transport/transports.js";
-import { cardView, feedView, feedWatchIds, findingView, initiativeWatchView, memberView, overview, routesTable, unseenTotal, watchDetail, watchSummary } from "./src/views.js";
+import { cardView, entrySummary, feedView, feedWatchIds, findingView, initiativeWatchView, memberView, overview, routesTable, watchDetail, watchSummary } from "./src/views.js";
 import { discussionPrompt } from "./src/discuss.js";
 import { runCli } from "./src/cli.js";
 
@@ -56,27 +56,28 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
     const settings = bb.settings.define(settingsDescriptors);
     const store = openStore(bb);
     // T106: the Sidebar plugin renders the one Advisor entry and cannot hear this plugin's
-    // realtime channel, so each change of the unseen count is pushed to it (coalesced, best
-    // effort: without the Sidebar nothing happens).
-    let pushedUnseen: number | null = null;
+    // realtime channel, so each change of its summary (unseen count, review state, watch
+    // counts) is pushed to it (coalesced, best effort: without the Sidebar nothing happens).
+    let pushedEntry: string | null = null;
     let pushTimer: ReturnType<typeof setTimeout> | null = null;
-    const pushUnseen = () => {
+    const pushEntry = () => {
       if (pushTimer) return;
       pushTimer = setTimeout(() => {
         pushTimer = null;
-        const unseen = unseenTotal(store, advisor.resolved.config.severityThreshold);
-        if (unseen === pushedUnseen) return;
+        const entry = entrySummary(store, advisor);
+        const key = JSON.stringify(entry);
+        if (key === pushedEntry) return;
         bb.sdk.plugins
-          .callRpc({ pluginId: SIDEBAR_PLUGIN_ID, method: "advisorChanged", input: { unseen }, outputSchema: z.unknown() })
+          .callRpc({ pluginId: SIDEBAR_PLUGIN_ID, method: "advisorChanged", input: entry, outputSchema: z.unknown() })
           .then(
-            () => (pushedUnseen = unseen),
+            () => (pushedEntry = key),
             () => {},
           );
       }, opts.unseenPushDelayMs ?? 250);
     };
     const publish = (channel: string, payload: unknown) => {
       bb.realtime.publish(channel, payload);
-      if (channel === "advisor.changed") pushUnseen();
+      if (channel === "advisor.changed") pushEntry();
     };
     const host = opts.host ?? sdkHost(bb, POOLER_PLUGIN_ID);
     const now = opts.now ?? Date.now;
@@ -255,7 +256,7 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
       },
       ledger: () => ({ rows: store.listLedger(100) }),
       feed: ({ initiativeId, watchId, before, limit }) => feedView(store, advisor, { initiativeId, watchId, before, limit }),
-      unseen: () => ({ unseen: unseenTotal(store, advisor.resolved.config.severityThreshold) }),
+      unseen: () => entrySummary(store, advisor),
       feedMarkSeen: ({ initiativeId, watchId }) => {
         const marked = store.acknowledgeAll(feedWatchIds(store, { initiativeId, watchId }), now());
         store.logAction(watchId ?? null, "acknowledge-all", `${marked} findings${initiativeId ? ` of Initiative ${initiativeId}` : ""}`, via, now());
@@ -326,7 +327,7 @@ export function createAdvisorPlugin(opts: AdvisorPluginOptions = {}) {
       if (pushTimer) clearTimeout(pushTimer);
       return advisor.dispose();
     });
-    pushUnseen(); // a Sidebar that loaded first, or a reload, gets the current count
+    pushEntry(); // a Sidebar that loaded first, or a reload, gets the current summary
     opts.onReady?.({ advisor, store });
   };
 }

@@ -50,15 +50,15 @@ describe("T105 feed", () => {
 
   it("counts unseen real findings for the badge; mark seen clears it, per finding, per filter or all", async () => {
     const { r, call, a } = await twoFindings();
-    expect(await call("unseen")).toEqual({ unseen: 2 });
+    expect(await call("unseen")).toEqual({ unseen: 2, reviewing: true, initiatives: 1, threads: 2 });
     const [fa] = r.store.listOccurrences(a.id);
     await call("findingAcknowledge", { occurrenceId: fa!.id });
-    expect(await call("unseen")).toEqual({ unseen: 1 });
+    expect(await call("unseen")).toMatchObject({ unseen: 1 });
     expect(await call("feedMarkSeen", { initiativeId: "prj_1" })).toEqual({ marked: 1 });
-    expect(await call("unseen")).toEqual({ unseen: 0 });
+    expect(await call("unseen")).toMatchObject({ unseen: 0 });
     // The count survives a reload: it is stored, not in memory.
     await r.reload();
-    expect(await r.harness.behavior.callRpc("unseen", null)).toEqual({ unseen: 0 });
+    expect(await r.harness.behavior.callRpc("unseen", null)).toMatchObject({ unseen: 0 });
   });
 
   it("preview findings are labelled and never counted as new", async () => {
@@ -75,7 +75,7 @@ describe("T105 feed", () => {
     const feed = (await r.harness.behavior.callRpc("feed", {})) as any;
     expect(feed.items[0]).toMatchObject({ preview: true });
     expect(feed.items[0].badges).toContain("preview (fake reviewer): not a judgment");
-    expect(await r.harness.behavior.callRpc("unseen", null)).toEqual({ unseen: 0 });
+    expect(await r.harness.behavior.callRpc("unseen", null)).toMatchObject({ unseen: 0 });
   });
 });
 
@@ -154,26 +154,34 @@ describe("A252 follow-ups", () => {
   });
 });
 
-describe("T106 unseen count pushed to the Sidebar", () => {
-  it("pushes the count when it changes, coalesced, and only then; a missing Sidebar is harmless", async () => {
+describe("T106 entry summary pushed to the Sidebar", () => {
+  it("pushes the summary when it changes, coalesced, and only then; a missing Sidebar is harmless", async () => {
     const r = await rig({ reviewEnabled: true, severityThreshold: "note" }, { unseenPushDelayMs: 1 });
-    const pushes = () => r.world.sidebarCalls.filter((c) => c.method === "advisorChanged").map((c) => (c.input as { unseen: number }).unseen);
-    await vi.waitFor(() => expect(pushes()).toEqual([0])); // on load
+    const pushes = () => r.world.sidebarCalls.filter((c) => c.method === "advisorChanged").map((c) => c.input as { unseen: number; reviewing: boolean; threads: number });
+    const last = () => pushes().at(-1);
+    await vi.waitFor(() => expect(pushes()).toEqual([{ unseen: 0, reviewing: true, initiatives: 0, threads: 0 }])); // on load
     r.world.addThread("thr_a", { title: "A" });
     await r.advisor.watch("thr_a", "test");
+    await vi.waitFor(() => expect(last()).toMatchObject({ unseen: 0, threads: 1 }));
     await r.tick();
     await weaken(r, "thr_a");
-    await vi.waitFor(() => expect(pushes()).toEqual([0, 1]));
+    await vi.waitFor(() => expect(last()).toMatchObject({ unseen: 1, threads: 1 }));
+    const count = pushes().length;
     await r.tick(); // observation-only changes push nothing new
     await new Promise((res) => setTimeout(res, 20));
-    expect(pushes()).toEqual([0, 1]);
+    expect(pushes()).toHaveLength(count);
+    // Turning reviews off is pushed too.
+    r.advisor.applySettings({ reviewEnabled: false, severityThreshold: "note" });
+    await vi.waitFor(() => expect(last()).toMatchObject({ unseen: 1, reviewing: false }));
     const [o] = r.store.listOccurrences(r.store.getWatchByThread("thr_a")!.id);
     r.world.sidebarMissing = true;
     await r.harness.behavior.callRpc("findingAcknowledge", { occurrenceId: o!.id });
-    await vi.waitFor(() => expect(pushes()).toEqual([0, 1, 0]));
+    await vi.waitFor(() => expect(last()).toMatchObject({ unseen: 0 }));
     // The failed push is retried on the next change.
+    const failed = pushes().length;
     r.world.sidebarMissing = false;
     await r.harness.behavior.callRpc("feedMarkSeen", {});
-    await vi.waitFor(() => expect(pushes()).toEqual([0, 1, 0, 0]));
+    await vi.waitFor(() => expect(pushes()).toHaveLength(failed + 1));
+    expect(last()).toMatchObject({ unseen: 0, reviewing: false });
   });
 });

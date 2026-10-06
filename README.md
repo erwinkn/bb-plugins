@@ -1165,6 +1165,17 @@ tooltip cannot carry current values. A supported `badge`, or a small
 deliberate. No issue filed. Suggested title: `Plugin sidebar footer items:
 live badge or icon component with a dynamic label`.
 
+### Plugin thread lists: the current route (2026-10-06)
+
+`experimental_threadList` components receive `activeThreadId` and
+`activeProjectId`, which are null on every other page. The Sidebar's Advisor
+entry needs to know when the Advisor's plugin page is open to show itself as
+selected, so it reads `window.location.pathname` and listens to the Navigation
+API's `currententrychange` (falling back to `popstate`) in
+`plugins/sidebar/lib/use-pathname.ts`. A `pathname` (or active nav panel) prop
+would make this supported. No issue filed. Suggested title: `Plugin thread
+lists: pass the current route path`.
+
 ### Enumerable host icon names
 
 `experimental_Icon` renders host icons by name with a fallback, but the SDK

@@ -4,7 +4,7 @@
 
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import type { CardView, FeedView, FindingView, InitiativeWatchView, Overview, WatchDetail, WatchSummary } from "./views.js";
+import type { CardView, EntrySummary, FeedView, FindingView, InitiativeWatchView, Overview, WatchDetail, WatchSummary } from "./views.js";
 import type { PoolerAdvisorStatus } from "./config/routes.js";
 import type { LedgerRow } from "./store/store.js";
 
@@ -109,8 +109,8 @@ export const rpcContract = defineRpcContract({
     input: z.object({ initiativeId: id.optional(), watchId: id.optional(), before: cursor.optional(), limit: z.number().int().min(1).max(100).optional() }).strict(),
     output: out<FeedView>(),
   },
-  /** The sidebar badge: unseen real findings at or above the display threshold. */
-  unseen: { input: z.null(), output: out<{ unseen: number }>() },
+  /** The Sidebar's Advisor entry: unseen real findings at or above the display threshold, review state and watch counts. */
+  unseen: { input: z.null(), output: out<EntrySummary>() },
   feedMarkSeen: { input: z.object({ initiativeId: id.optional(), watchId: id.optional() }).strict(), output: out<{ marked: number }>() },
   /** What Discuss seeds the composer with, and the discussion thread already opened for it, if any. */
   discussDraft: { input: z.object({ occurrenceId: id }).strict(), output: out<{ prompt: string; projectId: string | null; threadId: string | null; title: string }>() },
