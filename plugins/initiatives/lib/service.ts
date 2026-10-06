@@ -3309,20 +3309,11 @@ export class ProjectsService {
    */
   async answerBlocker(projectId: string, ref: string, seen: { question: string; context: string }, note: string) {
     const project = this.requireProject(projectId);
-    const assignment = this.requireAssignment(project, ref);
-    const tasks = this.store.tasks(project.id);
-    const open = openBlockers(
-      this.store.assignments(project.id).map((a) => ({ ...a, outcome: a.report?.outcome ?? null })),
-      (num) => ["done", "cancelled"].includes(tasks.find((task) => task.num === num)?.status ?? "done"),
-    ).some((a) => a.num === assignment.num);
-    if (!open) throw new ProjectError(`${assignment.ref} is no longer waiting on a blocker; the coordinator already acted on it. Your answer was not saved.`);
-    const blocker = assignment.report!.blocker;
-    if (!blocker || blocker.question !== seen.question || blocker.context !== seen.context)
-      throw new ProjectError(`${assignment.ref}'s blocker changed since you opened it. Read the new question and context; your answer was not saved.`);
+    const { assignment, blocker } = this.seenBlocker(project, ref, seen, "answer");
     const text = note.trim();
     if (!text) throw new ProjectError("Write an answer.");
     const key = blockerKey(assignment.num, blocker);
-    const previous = this.store.decisions(project.id).find((item) => item.body.blocker && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
+    const previous = this.store.decisions(project.id).find((item) => item.body.blocker && item.body.answer && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
     if (previous?.body.answer?.note === text && previous.notification?.state !== "failed") return previous;
     const worker = this.store.worker(project.id, assignment.workerNum)!;
     const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
@@ -3348,6 +3339,77 @@ export class ProjectsService {
     await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, "Your answer is saved.",
       `Initiative · ${project.name} · Your answer to ${worker.ref}'s blocker (${assignment.ref}${subject ? `, ${subject}` : ""}, ${item.ref})\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}\nAnswer: ${text}\n\nContinue ${worker.ref} with this answer, or reject or accept ${assignment.ref}. The Inbox item clears when you do.`);
     return this.store.decisionItem(project.id, item.num)!;
+  }
+
+  /** The open blocker on `ref`, refused unless it is still exactly the one the user saw. */
+  private seenBlocker(project: ProjectRecord, ref: string, seen: { question: string; context: string }, what: "answer" | "dismissal") {
+    const assignment = this.requireAssignment(project, ref);
+    const tasks = this.store.tasks(project.id);
+    const open = openBlockers(
+      this.store.assignments(project.id).map((a) => ({ ...a, outcome: a.report?.outcome ?? null })),
+      (num) => ["done", "cancelled"].includes(tasks.find((task) => task.num === num)?.status ?? "done"),
+    ).some((a) => a.num === assignment.num);
+    if (!open) throw new ProjectError(`${assignment.ref} is no longer waiting on a blocker; the coordinator already acted on it. Your ${what} was not saved.`);
+    const blocker = assignment.report!.blocker;
+    if (!blocker || blocker.question !== seen.question || blocker.context !== seen.context)
+      throw new ProjectError(`${assignment.ref}'s blocker changed since you opened it. Read the new question and context; your ${what} was not saved.`);
+    return { assignment, blocker };
+  }
+
+  /**
+   * T128: the user dismisses a worker's blocker without answering it. It
+   * leaves the Inbox and Needs you for as long as the worker re-files the same
+   * question and context. Silent sends nothing; notify sends the coordinator
+   * one message with the note. Dismissing again only retries a failed notice.
+   */
+  async dismissBlocker(projectId: string, ref: string, seen: { question: string; context: string }, input: { notify: boolean; note: string }) {
+    const project = this.requireProject(projectId);
+    const { assignment, blocker } = this.seenBlocker(project, ref, seen, "dismissal");
+    const key = blockerKey(assignment.num, blocker);
+    const previous = this.store.decisions(project.id).find((item) =>
+      item.status === "active" && item.body.blocker && item.body.dismissal && blockerKey(item.body.blocker.assignment, item.body.blocker) === key);
+    if (previous && !(previous.body.dismissal!.notify && previous.notification?.state === "failed")) return previous;
+    const worker = this.store.worker(project.id, assignment.workerNum)!;
+    const subject = (assignment.role === "review" ? (assignment.reviewOf ?? []) : assignment.taskNums).map(taskRef).join(", ");
+    const op = newOpId();
+    const coordinatorThreadId = project.coordinatorThreadId;
+    const item = this.store.tx(() => {
+      if (previous) {
+        this.store.updateDecision(project.id, previous.num, { notification: { op, state: "pending", coordinatorThreadId } });
+        return previous;
+      }
+      const note = input.note.trim();
+      const description = `Dismissed ${worker.ref}'s blocker on ${subject || assignment.ref} (${assignment.ref}) without answering${input.notify ? "; told the coordinator" : ""}${note ? `: ${note}` : "."}`;
+      const added = this.store.addDecision({
+        projectId: project.id, title: description.slice(0, 100),
+        topic: `blocker-dismissal-${assignment.ref.toLowerCase()}`, scope: "project", status: "active",
+        body: { description, blocker: { assignment: assignment.num, question: blocker.question, context: blocker.context }, dismissal: { note, notify: input.notify, at: this.now() } },
+        madeBy: "user", humanAttention: "none", blocks: [], deadline: null,
+        provenance: { author: "user", threadId: null, assignment: null }, supersedes: null,
+      });
+      if (input.notify) this.store.updateDecision(project.id, added.num, { notification: { op, state: "pending", coordinatorThreadId } });
+      this.store.log(project.id, "decision", `${added.ref} You dismissed ${worker.ref}'s blocker (${assignment.ref})${input.notify ? " and told the coordinator" : ""}${note ? `: ${note}` : ""}`);
+      return added;
+    });
+    const dismissal = item.body.dismissal!;
+    if (dismissal.notify)
+      await this.sendDecisionNotice(project.id, item.num, op, coordinatorThreadId, "Your dismissal is saved.",
+        `Initiative · ${project.name} · The user dismissed ${worker.ref}'s blocker (${assignment.ref}${subject ? `, ${subject}` : ""}, ${item.ref}) without answering it\n\nBlocker: ${blocker.question}\nContext: ${blocker.context}${dismissal.note ? `\nNote: ${dismissal.note}` : ""}\n\nDecide how to settle ${assignment.ref} without an answer: continue ${worker.ref} another way, reject or accept the report.`);
+    return this.store.decisionItem(project.id, item.num)!;
+  }
+
+  /** T128: the user takes a dismissal back; the record stays in history, closed, and the blocker counts again while it is open. */
+  undoBlockerDismissal(projectId: string, ref: string) {
+    const project = this.requireProject(projectId);
+    const item = this.requireDecision(project, ref);
+    const dismissal = item.body.dismissal;
+    if (!dismissal) throw new ProjectError(`${item.ref} is not a blocker dismissal.`);
+    if (dismissal.undoneAt) return item;
+    return this.store.tx(() => {
+      const result = this.store.updateDecision(project.id, item.num, { status: "closed", body: { ...item.body, dismissal: { ...dismissal, undoneAt: this.now() } } });
+      this.store.log(project.id, "decision", `You undid ${item.ref}; ${assignmentRef(item.body.blocker!.assignment)}'s blocker is back in the Inbox if it is still open`);
+      return result;
+    });
   }
 
   closeQuestion(projectId: string, ref: string, note: string) {

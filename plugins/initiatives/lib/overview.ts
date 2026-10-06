@@ -1,6 +1,6 @@
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { BUSY_STATUSES } from "./bb";
-import { blockerKey, openBlockers } from "./blockers";
+import { blockerKey, dismissalItem, openBlockers, undismissed } from "./blockers";
 import { describeProfile } from "./policy";
 import { buildUsage, unloadedUsage, type InitiativeUsage } from "./usage";
 import type {
@@ -96,6 +96,17 @@ export interface BlockerItem {
   reportedAt: number | null;
   /** The user's answer, kept until the coordinator acts on the report. */
   answer: { ref: string; note: string; at: number; notification: DecisionRecord["notification"] } | null;
+}
+
+/** T128: a blocker the user dismissed, as its decision row carries it; the assignment and blocker let a failed notice retry. */
+export interface DismissalItem {
+  assignment: string;
+  question: string;
+  context: string;
+  note: string;
+  notify: boolean;
+  at: number;
+  undoneAt: number | null;
 }
 
 export interface RemainingItem {
@@ -261,7 +272,7 @@ export interface Overview {
     live: { status: string; archived: boolean; title: string | null } | null;
     createdAt: number;
   }[];
-  decisions: { acceptEligible?: boolean; ref: string; description: string; madeBy: "user" | "agent"; review: "pending" | "okay" | "not-okay" | null; reviewMessage: string | null; notification: DecisionRecord["notification"]; recordedBy: DecisionRecord["provenance"]; updatedAt: number }[];
+  decisions: { acceptEligible?: boolean; ref: string; description: string; madeBy: "user" | "agent"; review: "pending" | "okay" | "not-okay" | null; reviewMessage: string | null; notification: DecisionRecord["notification"]; recordedBy: DecisionRecord["provenance"]; updatedAt: number; dismissal?: DismissalItem }[];
   usage: InitiativeUsage;
   /** Recorded members with native parent facts; separate from tree v1. */
   memberThreads: (InitiativeUsage["threads"][number] & {
@@ -436,11 +447,15 @@ export function buildOverview(
     .sort((a, b) => (a.reportedAt ?? 0) - (b.reportedAt ?? 0));
 
   const blockerAnswers = new Map(
-    decisions.flatMap((item) => (item.body.blocker ? [[blockerKey(item.body.blocker.assignment, item.body.blocker), item] as const] : [])),
+    decisions.flatMap((item) => (item.body.blocker && item.body.answer ? [[blockerKey(item.body.blocker.assignment, item.body.blocker), item] as const] : [])),
   );
-  const blockers: BlockerItem[] = openBlockers(
-    assignments.map((a) => ({ ...a, outcome: a.report?.outcome ?? null })),
-    closedTask,
+  const dismissedBlockers = new Set(
+    decisions.flatMap((item) => (item.status === "active" && item.body.blocker && item.body.dismissal ? [blockerKey(item.body.blocker.assignment, item.body.blocker)] : [])),
+  );
+  const blockers: BlockerItem[] = undismissed(
+    openBlockers(assignments.map((a) => ({ ...a, outcome: a.report?.outcome ?? null })), closedTask),
+    (a) => a.report?.blocker,
+    dismissedBlockers,
   ).map((assignment) => {
     const worker = workerByNum.get(assignment.workerNum)!;
     const blocker = assignment.report?.blocker;
@@ -711,7 +726,7 @@ export function buildOverview(
       done: tasks.filter((task) => task.status === "done").length,
       answered: answered.length,
     },
-    closedQuestions: decisions.filter(item => item.status === "closed" || item.status === "withdrawn").reverse().slice(0, 10).map(item => ({
+    closedQuestions: decisions.filter(item => item.madeBy === null && (item.status === "closed" || item.status === "withdrawn")).reverse().slice(0, 10).map(item => ({
       ref: item.ref, question: (item.body as Decision).question ?? item.title,
       note: item.body.resolution?.note ?? "", closedAt: item.body.resolution?.at ?? item.updatedAt,
       withdrawn: item.status === "withdrawn",
@@ -785,6 +800,7 @@ export function buildOverview(
     decisions: decisions.filter(item => item.madeBy !== null && item.status !== "removed" &&
       (history || item.madeBy === "agent" && item.review === "pending" || unresolvedNotification(item))).map(item => ({
       acceptEligible: isAcceptableAgentDecision(item), ref: item.ref, description: item.description, madeBy: item.madeBy!, review: item.review, reviewMessage: item.reviewMessage, notification: item.notification, recordedBy: item.provenance, updatedAt: item.updatedAt,
+      ...(item.body.dismissal && item.body.blocker ? { dismissal: dismissalItem(item.body.blocker, item.body.dismissal) } : {}),
     })),
     usage,
     memberThreads: usage.threads.map((thread) => {
@@ -842,12 +858,14 @@ export function threadsToWatch(store: Store, projectId: string): string[] {
 function summaryBlockers(store: Store, projectId: string, tasks: { num: number; status: string }[]) {
   const rows = store.db.prepare("SELECT num, worker_num, role, task_nums, review_of, state, CASE WHEN json_valid(report) THEN json_extract(report, '$.outcome') END AS outcome, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.question') END AS question, CASE WHEN json_valid(report) THEN json_extract(report, '$.blocker.context') END AS context FROM assignments WHERE project_id=? ORDER BY num").all(projectId) as { num: number; worker_num: number; role: "work" | "review"; task_nums: string; review_of: string | null; state: string; outcome: string | null; question: string | null; context: string | null }[];
   if (!rows.some((row) => row.state === "reported" && row.outcome === "blocked")) return 0;
-  const answered = new Set((store.db.prepare("SELECT json_extract(body, '$.blocker.assignment') AS assignment, json_extract(body, '$.blocker.question') AS question, json_extract(body, '$.blocker.context') AS context FROM knowledge WHERE project_id=? AND kind='decision' AND status NOT IN ('superseded','removed') AND json_valid(body) AND json_extract(body, '$.blocker') IS NOT NULL").all(projectId) as { assignment: number; question: string; context: string }[]).map((row) => blockerKey(row.assignment, row)));
+  const settled = store.db.prepare("SELECT json_extract(body, '$.blocker.assignment') AS assignment, json_extract(body, '$.blocker.question') AS question, json_extract(body, '$.blocker.context') AS context, json_extract(body, '$.dismissal') IS NOT NULL AS dismissal FROM knowledge WHERE project_id=? AND kind='decision' AND status NOT IN ('superseded','removed') AND json_valid(body) AND json_extract(body, '$.blocker') IS NOT NULL AND (json_extract(body, '$.dismissal') IS NULL OR status='active')").all(projectId) as { assignment: number; question: string; context: string; dismissal: number }[];
+  const keys = (dismissal: boolean) => new Set(settled.filter((row) => !!row.dismissal === dismissal).map((row) => blockerKey(row.assignment, row)));
+  const answered = keys(false);
   const closed = new Set(tasks.filter((t) => ["done", "cancelled"].includes(t.status)).map((t) => t.num));
-  return openBlockers(
+  return undismissed(openBlockers(
     rows.map((row) => ({ num: row.num, workerNum: row.worker_num, role: row.role, taskNums: JSON.parse(row.task_nums) as number[], reviewOf: row.review_of ? (JSON.parse(row.review_of) as number[]) : null, state: row.state, outcome: row.outcome, blocker: row.question === null ? null : { question: row.question, context: row.context ?? "" } })),
     (num) => closed.has(num),
-  ).filter((row) => !row.blocker || !answered.has(blockerKey(row.num, row.blocker))).length;
+  ), (row) => row.blocker, keys(true)).filter((row) => !row.blocker || !answered.has(blockerKey(row.num, row.blocker))).length;
 }
 
 /** Compact list/tree projection, without parsing report bodies or telemetry histories. */

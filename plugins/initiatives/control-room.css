@@ -98,6 +98,8 @@
 .cr-detail .project-opinion h3 { display: none; }
 .cr-blocker-answer { margin: 4px 0 8px; padding-left: 10px; border-left: 2px solid color-mix(in srgb, var(--cr-amber) 45%, transparent); }
 .cr-blocker-answer p { margin: 2px 0 0; }
+.cr-blocker-dismiss { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.cr-blocker-dismiss button:not(.project-primary) { color: var(--muted-foreground); }
 .cr-inbox .cr-fold { border: 0; margin-bottom: 6px; }
 .cr-inbox .cr-fold > summary { display: grid; grid-template-columns: minmax(0, 1fr) 14px; gap: 2px 0; padding: 8px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--cr-surface); }
 .cr-inbox .cr-fold > summary:hover { background: var(--muted); }

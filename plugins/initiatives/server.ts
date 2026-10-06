@@ -94,7 +94,7 @@ export default function plugin(bb: BbPluginApi) {
       }
     };
     if (
-      ["answer", "blocker-answer", "pause", "assignment-stop", "stop-work"].includes(
+      ["answer", "blocker-answer", "blocker-dismiss", "pause", "assignment-stop", "stop-work"].includes(
         command.action,
       )
     )

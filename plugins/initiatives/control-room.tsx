@@ -392,6 +392,8 @@ export function ControlRoom({
   // Open questions and blocked reports wait on the user: shown before anything else.
   const needsYou = needsYouCount(o);
   const unchecked = [...o.decisions].reverse().filter(pendingReview);
+  // A dismissal leaves the Inbox, unless telling the coordinator did not go through.
+  const undelivered = o.decisions.filter(d => d.dismissal?.notify && !d.dismissal.undoneAt && (d.notification?.state === "failed" || d.notification?.state === "uncertain"));
   // A report's own row replaces the remaining row of the task it awaits.
   const reported = new Set(o.awaitingAcceptance.flatMap((a) => a.tasks.map((t) => t.ref)));
   const remaining = o.remaining.filter((t) => !(t.status === "awaiting_acceptance" && reported.has(t.ref)));
@@ -682,6 +684,10 @@ export function ControlRoom({
                   ))}
                 </section>
               ) : null}
+              {undelivered.length ? <section aria-label="Dismissals not delivered">
+                <h2 className="cr-section-heading">Dismissals not delivered</h2>
+                {undelivered.map(d => <DecisionItem key={d.ref} d={d} run={run} />)}
+              </section> : null}
               {unchecked.length || acceptDecisions.eligible ? <section aria-label="Agent decisions to check">
                 <div className="cr-inbox-decision-head">
                   <h2 className="cr-section-heading">Agent decisions to check</h2>
@@ -689,7 +695,7 @@ export function ControlRoom({
                 </div>
                 {unchecked.map(d => <DecisionItem key={d.ref} d={d} run={run} />)}
               </section> : null}
-              {!o.opinionNeeded.length && !o.blockers.length && !unchecked.length ? (
+              {!o.opinionNeeded.length && !o.blockers.length && !unchecked.length && !undelivered.length ? (
                 <p className="cr-empty">You’re up to date.</p>
               ) : null}
             </div>
@@ -1295,6 +1301,7 @@ function Threads({
  */
 function Blocker({ item, run, openThread, coordinatorThreadId }: { item: BlockerItem; run: Run; openThread: (id: string) => void; coordinatorThreadId: string | null }) {
   const [revising, setRevising] = useState(false);
+  const [telling, setTelling] = useState(false);
   const [note, setNote] = useState(item.answer?.note ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1364,7 +1371,48 @@ function Blocker({ item, run, openThread, coordinatorThreadId }: { item: Blocker
           </div>
         </form>
       )}
+      {telling ? (
+        <DismissNotify item={item} run={run} cancel={() => setTelling(false)} />
+      ) : (
+        <div className="project-actions cr-blocker-dismiss">
+          <Action run={run} command={{ action: "blocker-dismiss", assignment: item.assignment, question: item.question, context: item.context, notify: false, note: "" }}
+            title="Leave the coordinator to settle it; nothing is sent. Undo from Decisions.">Dismiss</Action>
+          <button type="button" onClick={() => setTelling(true)}>Dismiss and tell coordinator…</button>
+        </div>
+      )}
     </div>
+  );
+}
+
+/** T128: dismiss a blocker with one message to the coordinator and an optional note. */
+function DismissNotify({ item, run, cancel }: { item: BlockerItem; run: Run; cancel: () => void }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await run({ action: "blocker-dismiss", assignment: item.assignment, question: item.question, context: item.context, notify: true, note });
+    } catch (e) {
+      setError(message(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="cr-blocker-dismiss" onSubmit={submit}>
+      <label className="project-field">
+        Note for the coordinator (optional)
+        <AutoTextarea rows={2} value={note} maxLength={4000} placeholder={`Why you are not answering, or how ${item.owner.worker} should proceed.`} onChange={(e) => setNote(e.target.value)} />
+      </label>
+      {error ? <p role="alert" className="project-error">{error}</p> : null}
+      <div className="project-actions">
+        <button className="project-primary" disabled={busy}>{busy ? "Sending…" : "Dismiss and send"}</button>
+        <button type="button" onClick={cancel}>Cancel</button>
+      </div>
+    </form>
   );
 }
 
@@ -1410,10 +1458,14 @@ function DecisionItem({ d, run, answer }: { d: DecisionRow; run: Run; answer?: O
           {d.notification.state === "failed" ? <Action run={run} command={{ action: "answer", decision: d.ref, choice: answer.choice, note: answer.note }}>Retry coordinator notification</Action> : null}
         </div>
       ) : null}
+      {d.dismissal ? <Dismissal d={d} dismissal={d.dismissal} run={run} /> : null}
       <div className="cr-decision-meta">
         <span className="cr-ref">{d.ref}</span>
         <span className={`cr-owner${d.madeBy === "user" ? " cr-owner--user" : ""}`}>{owner(d)}</span>
         <Age at={d.updatedAt} />
+        {d.dismissal?.undoneAt ? <span className="cr-verdict">Undone</span> : null}
+        {d.dismissal && !d.dismissal.undoneAt ? <Action run={run} command={{ action: "blocker-dismiss-undo", decision: d.ref }}
+          title={`Bring ${d.dismissal.assignment}'s blocker back to the Inbox if it is still open. Nothing is sent.`}>Undo</Action> : null}
         {!reviewable && (d.review === "okay" || d.review === "not-okay") ? (
           <span className={`cr-verdict cr-verdict--${d.review}`}>{d.review === "okay" ? "Okay" : "Not okay"}</span>
         ) : null}
@@ -1426,6 +1478,26 @@ function DecisionItem({ d, run, answer }: { d: DecisionRow; run: Run; answer?: O
       </div>
       {!reviewable && d.reviewMessage && full ? <p className="cr-review-message">{d.reviewMessage}</p> : null}
     </article>
+  );
+}
+
+/** T128: how a dismissal reached the coordinator, with a retry when the notice failed. */
+function Dismissal({ d, dismissal, run }: { d: DecisionRow; dismissal: NonNullable<DecisionRow["dismissal"]>; run: Run }) {
+  const notice = d.notification;
+  if (!dismissal.notify || !notice) return null;
+  return (
+    <div>
+      <p role={notice.state === "failed" || notice.state === "uncertain" ? "alert" : "status"} className="project-muted">
+        {notice.state === "failed" ? `Dismissal saved. Coordinator notification failed: ${notice.detail ?? "Unknown error"}`
+          : notice.state === "pending" || notice.state === "uncertain" ? "Dismissal saved. Coordinator notification unconfirmed; check its thread before sending again."
+          : notice.state === "queued" ? "Dismissal queued for the coordinator." : "Coordinator told of your dismissal."}
+      </p>
+      {notice.state === "failed" && !dismissal.undoneAt ? (
+        <Action run={run} command={{ action: "blocker-dismiss", assignment: dismissal.assignment, question: dismissal.question, context: dismissal.context, notify: true, note: dismissal.note }}>
+          Retry coordinator notification
+        </Action>
+      ) : null}
+    </div>
   );
 }
 

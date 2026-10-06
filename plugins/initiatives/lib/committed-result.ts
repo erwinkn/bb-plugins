@@ -1,4 +1,5 @@
 import type { Overview } from "./overview";
+import { dismissalItem } from "./blockers";
 import type { Command } from "./commands";
 import type { DecisionRecord } from "./store";
 
@@ -32,6 +33,14 @@ export function applyCommitted(o: Overview, command: Command, result: unknown): 
     if (!d?.ref || !d.body?.answer) return o;
     const answer = { ref: d.ref, note: d.body.answer.note, at: d.body.answer.at, notification: d.notification };
     next.blockers = next.blockers.map(b => b.assignment === command.assignment ? { ...b, answer } : b);
+  }
+  if (command.action === "blocker-dismiss" || command.action === "blocker-dismiss-undo") {
+    const d = result as DecisionRecord;
+    if (!d?.ref || !d.body?.dismissal || !d.body.blocker) return o;
+    const row = { ref: d.ref, description: d.description, madeBy: "user" as const, acceptEligible: false, review: null, reviewMessage: null, notification: d.notification, recordedBy: d.provenance, updatedAt: d.updatedAt, dismissal: dismissalItem(d.body.blocker, d.body.dismissal) };
+    next.decisions = [...next.decisions.filter(r => r.ref !== d.ref), row];
+    // An undone dismissal brings its blocker back on the next read, if it is still open.
+    if (command.action === "blocker-dismiss") next.blockers = next.blockers.filter(b => b.assignment !== command.assignment);
   }
   next.counts.opinionNeeded = next.opinionNeeded.length;
   next.counts.revisit = next.revisit.length;

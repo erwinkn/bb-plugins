@@ -1,3 +1,6 @@
+import type { DismissalItem } from "./overview";
+import type { DecisionBody } from "./store";
+
 /**
  * D386: a blocked worker report waits on the user until the coordinator acts
  * on it. One rule, shared by the sidebar tree and the dashboard, so their
@@ -44,6 +47,27 @@ export function openBlockers<T extends BlockerFacts>(assignments: T[], closedTas
 export const blockerKey = (assignment: number, blocker: { question: string; context: string }) =>
   JSON.stringify([assignment, blocker.question, blocker.context]);
 
-/** What the Needs you pill shows: open questions plus blockers the user has not answered yet. */
+/**
+ * T128: the open blockers the user has not dismissed. A dismissal is keyed
+ * like an answer, so an identical re-file stays dismissed and a changed
+ * question or context shows again. Everything that lists or counts blockers
+ * for the user (Inbox, dashboard pill, tree, catalog) goes through here.
+ */
+export const undismissed = <T extends { num: number }>(
+  open: T[],
+  blockerOf: (a: T) => { question: string; context: string } | null | undefined,
+  dismissed: ReadonlySet<string>,
+) => open.filter((a) => {
+  const blocker = blockerOf(a);
+  return !blocker || !dismissed.has(blockerKey(a.num, blocker));
+});
+
+/** T128: a dismissal record as the dashboard shows it. */
+export const dismissalItem = (blocker: NonNullable<DecisionBody["blocker"]>, d: NonNullable<DecisionBody["dismissal"]>): DismissalItem => ({
+  assignment: `A${blocker.assignment}`, question: blocker.question, context: blocker.context,
+  note: d.note, notify: d.notify, at: d.at, undoneAt: d.undoneAt ?? null,
+});
+
+/** What the Needs you pill shows: open questions plus undismissed blockers the user has not answered yet. */
 export const needsYouCount = (o: { opinionNeeded: readonly unknown[]; blockers: readonly { answer: unknown }[] }) =>
   o.opinionNeeded.length + o.blockers.filter((b) => !b.answer).length;

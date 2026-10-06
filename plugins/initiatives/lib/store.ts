@@ -610,6 +610,8 @@ export type DecisionBody = (Decision | { description: string }) & {
   answer?: { choice: string | null; note: string; at: number; recordedBy?: Provenance };
   /** D386: the user's answer to this assignment's blocked report, keyed by its blocker question. */
   blocker?: { assignment: number; question: string; context: string };
+  /** T128: the user dismissed that blocker instead of answering; notify sent a note to the coordinator. undoneAt: the user took it back. */
+  dismissal?: { note: string; notify: boolean; at: number; undoneAt?: number };
   /** User closure, or with withdrawnBy the coordinator's own withdrawal (D340); note is the reason. Never an answer. */
   resolution?: { note: string; at: number; withdrawnBy?: Provenance };
   cleanupHistory?: { operation: "accept" | "veto" | "remove"; reason: string; recordedBy: string; at: number }[];
@@ -835,7 +837,13 @@ const blockerAnswerBodySchema = z.object({
   blocker: z.object({ assignment: z.number().int(), question: z.string(), context: z.string() }).strict(),
   answer: z.object({ choice: z.null(), note: z.string(), at: z.number() }).strict(),
 }).strict();
-const decisionBodySchema = z.union([z.object({ description: z.string(), cleanupHistory: cleanupHistorySchema }).strict(), blockerAnswerBodySchema, legacyDecisionBodySchema]);
+/** T128: the user's Inbox dismissal of a blocked report, keyed like an answer. */
+const blockerDismissalBodySchema = z.object({
+  description: z.string(), cleanupHistory: cleanupHistorySchema,
+  blocker: z.object({ assignment: z.number().int(), question: z.string(), context: z.string() }).strict(),
+  dismissal: z.object({ note: z.string(), notify: z.boolean(), at: z.number(), undoneAt: z.number().optional() }).strict(),
+}).strict();
+const decisionBodySchema = z.union([z.object({ description: z.string(), cleanupHistory: cleanupHistorySchema }).strict(), blockerAnswerBodySchema, blockerDismissalBodySchema, legacyDecisionBodySchema]);
 const objectSchema = z.record(z.string(), z.unknown());
 
 const json = (value: unknown) =>
