@@ -222,7 +222,7 @@ export function recordText(store: Store, query: URLSearchParams): ContextRespons
         text: part === "handoff" ? renderStandardHandoff(store, a, false) : a.briefText,
       };
     }
-    // Hash of the full rendered text, before paging: a handoff also renders decisions, task
+    // Hash of the full rendered text, before paging: a handoff also renders task
     // status/acceptance and the worker label, which updatedAt/reportVersion do not cover.
     const textVersion = createHash("sha256").update(record.text).digest("hex").slice(0, 16);
     const totalChars = record.text.length;

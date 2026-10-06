@@ -20,6 +20,10 @@ Initiative tools independently of editable guidance. Follow explicit user/task
 instructions and recorded Initiative policy before selecting execution profiles.
 
 
+Your brief and any embedded handoffs carry what matters for the work. Record
+significant choices with initiative_decision for the user; never consult the
+decision log for your own work.
+
 Use `initiative_read {view:"workers",limit:8}` for current peer identity/task refs.
 `initiative_message {target:"W4",text:"Interface fact",mode:"queue"}` sends one native
 message with your trusted sender. Steer urgent blockers/corrections; queue future

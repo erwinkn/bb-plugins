@@ -304,6 +304,17 @@ initiative_task, initiative_manage and initiative_worker (and their `project_*`
 aliases) list each action with its required fields and every field's real nested
 type, while the strict per-action command schema still validates each call.
 
+The decision log is the user's steering record, not an input for agents (D402).
+Past decisions in an agent's context make it overfit to what was already done,
+many entries were approved quickly or later superseded, and a permanent
+Initiative would grow the log without bound. So agents write decisions and never
+read them back: briefs, continuations, forks and standard handoffs carry no
+decision list, guidance tells agents not to consult the log, and the coordinator
+writes any user instruction a task needs into that task's brief. The compact
+overview still counts open questions and unchecked agent decisions (with refs,
+no bodies) so the coordinator can relay them; `initiative_read` view
+`decisions` stays available for the dashboard and explicit lookups.
+
 Decisions have automatic D numbers and one or two sentences. The dedicated
 initiative_decision API requires `madeBy` user or agent and records the originating
 thread/assignment separately as provenance. Current coordinators and workers can
@@ -654,7 +665,7 @@ A worker's canonical report is its handoff. Nothing is stored twice: the
 standard handoff is rendered on demand from the assignment's report (outcome,
 result, revisions, files, checks, artifacts, open questions or blocker, next
 steps, uncommitted files, pending commands and listed background work with its
-release state), plus the decisions that assignment recorded. Read it with
+release state). It leaves out decisions, which are the user's record. Read it with
 `initiative_read {refs:["A7"],detailed:true,fields:["standardHandoff"]}`; the
 dashboard's thread details offer **Copy handoff** and **Copy delegate field**
 for a worker's latest report, next to **Retire worker**.

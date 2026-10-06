@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, SCALING_GUIDANCE_UPGRADES, upgradeDecisionGuidance } from "../lib/guidance";
+import { DECISION_LOG_GUIDANCE_UPGRADES, DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, SCALING_GUIDANCE_UPGRADES, upgradeDecisionGuidance } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 import { projectFixture } from "./fake-native";
 
@@ -10,10 +10,10 @@ import { projectFixture } from "./fake-native";
 // through exact clauses; custom text stays.
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const current = { coordinator: DEFAULT_COORDINATOR_INSTRUCTIONS, worker: DEFAULT_WORKER_INSTRUCTIONS };
-/** The A240 defaults, rebuilt by undoing the T101 rewrites and pinned by hash. */
+/** The A240 defaults, rebuilt by undoing the T101 and later T135 rewrites and pinned by hash. */
 const previous = {
-  coordinator: [...SCALING_GUIDANCE_UPGRADES.coordinator].reverse().reduce<string>((t, [old, next]) => t.replace(next, old), DEFAULT_COORDINATOR_INSTRUCTIONS),
-  worker: [...SCALING_GUIDANCE_UPGRADES.worker].reverse().reduce<string>((t, [old, next]) => t.replace(next, old), DEFAULT_WORKER_INSTRUCTIONS),
+  coordinator: [...SCALING_GUIDANCE_UPGRADES.coordinator, ...DECISION_LOG_GUIDANCE_UPGRADES.coordinator].reverse().reduce<string>((t, [old, next]) => t.replace(next, old), DEFAULT_COORDINATOR_INSTRUCTIONS),
+  worker: [...SCALING_GUIDANCE_UPGRADES.worker, ...DECISION_LOG_GUIDANCE_UPGRADES.worker].reverse().reduce<string>((t, [old, next]) => t.replace(next, old), DEFAULT_WORKER_INSTRUCTIONS),
 };
 const sends = (f: Awaited<ReturnType<typeof projectFixture>>["f"]) => [f.spawn, f.send, f.fork, f.stop, f.archive, f.update].map(m => m.mock.calls.length);
 

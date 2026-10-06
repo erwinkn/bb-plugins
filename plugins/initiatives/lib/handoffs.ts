@@ -5,9 +5,10 @@ import { assignmentRef, parseRef, taskRef, workerRef, type AssignmentRecord, typ
 /**
  * T96: the standard handoff is a view of an assignment's canonical stored report, never a
  * second copy of it. Reports already carry outcome, evidence (checks, artifacts), revisions,
- * files, open questions, next steps, dirty files, pending commands and background work;
- * decisions come from their own provenance. A fresh delegation may embed selected handoffs,
- * and its assignment keeps only this provenance: which filing it received, at which state.
+ * files, open questions, next steps, dirty files, pending commands and background work.
+ * Decisions stay out (D402): the log is the user's steering record, not agent input. A fresh
+ * delegation may embed selected handoffs, and its assignment keeps only this provenance:
+ * which filing it received, at which state.
  */
 export const MAX_HANDOFF_SOURCES = 3;
 
@@ -49,9 +50,6 @@ export function renderStandardHandoff(store: Store, a: AssignmentRecord, bounded
     ...h.recoveryArtifacts.map(r => `${r} (recovery)`),
   ];
   const observations = report.evidence.filter(e => e.kind === "observation").map(e => `${e.label}${e.detail ? `: ${e.detail}` : ""}`);
-  const decisions = store.decisions(a.projectId, { includeHistory: true })
-    .filter(d => d.provenance.assignment === a.num && d.status !== "removed")
-    .map(d => `${d.ref} (${d.madeBy ?? "question"}, ${d.status}): ${clip("decision text", d.description, 200)}`);
   const acceptance = scope.map(t => `${t.ref} ${t.status}${t.acceptedAssignment === a.num ? `, accepted from ${a.ref}` : t.acceptedAssignment ? `, accepted from ${assignmentRef(t.acceptedAssignment)}` : ""}`);
   const background = report.pendingBackgroundWork;
   const release = a.scopeRelease
@@ -68,7 +66,6 @@ export function renderStandardHandoff(store: Store, a: AssignmentRecord, bounded
     items("Files", h.files, 12),
     items("Checks", checks, 8),
     items("Artifacts", artifacts, 8),
-    items("Decisions recorded by this assignment", decisions, 5),
     report.blocker ? `Blocker: ${text("blocker", `${report.blocker.question} — ${report.blocker.context}`, 800)}` : null,
     items("Open questions", h.openQuestions, 5),
     items("Next steps", h.nextSteps, 5),

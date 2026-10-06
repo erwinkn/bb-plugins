@@ -1,7 +1,6 @@
 import type { AssignmentAccess, Brief, Profile } from "./schema";
 import { describeProfile } from "./policy";
-import type { DecisionRecord, ProjectRecord, TaskRecord } from "./store";
-import { decisionRef } from "./store";
+import type { ProjectRecord, TaskRecord } from "./store";
 import { PLUGIN_ID } from "./identity";
 
 // Per-assignment text sent as an ordinary message. Standing instructions live
@@ -42,7 +41,6 @@ export function renderAssignment(input: {
   guidance?: string | null;
   tasks: TaskRecord[];
   reviewOf: TaskRecord[];
-  decisions: DecisionRecord[];
   reviewTargets?: import("./store").ReviewTargetRecord[];
   /** Rendered standard handoffs of explicitly selected prior assignments (T96). */
   handoffs?: string[];
@@ -79,12 +77,9 @@ export function renderAssignment(input: {
     ...body,
     input.reviewTargets?.length ? `Implemented scope:\n${list(input.reviewTargets.map(t => `${t.task} ← ${t.assignment} (${t.worker}), checked revision ${t.revision}; implementer ${describeProfile(t.profile)}`))}` : null,
     ...(input.handoffs ?? []),
-    input.decisions.length
-      ? `Relevant decisions (read more with initiative_read):\n${list(input.decisions.map((item) => `${decisionRef(item.num)} ${item.title}`))}`
-      : null,
     input.note ? `Coordinator note: ${input.note}` : null,
-    `Keep implementation choices, alternatives and rationale in a small handoff artifact. Use initiative_decision madeBy agent only for independently chosen, non-obvious significant design forks, never normal steps, checks, restatements, mandated implementation, routine reporting, audit/review setup or requested clean SHA/execution settings. Require explicit madeBy. Record explicit user choices as madeBy user regardless of recorder, excluding any agent-added defaults. An explicit user chat answer to an open question uses action answer; worker answers notify the coordinator by default, notify false is quiet. Never infer an answer or run Git to record choices. Only the current coordinator may use decision-cleanup accept/veto/remove on an explicit user cleanup request; workers cannot review/remove choices, and nobody may do so merely to silence Inbox.`,
-    `Read exact mixed refs with initiative_read {refs:["A#","T#","D#"],detailed:true}; select fields for large reports. For an unresolved human choice, give the coordinator question/context, options with consequences, recommendation and affected task refs for a durable question. Do not infer questions from transcript prose. Discover current peers with initiative_read {view:"workers",limit:8}. initiative_message {target:"W#"|"coordinator",text,mode:"steer"|"queue"} sends one native message, grants no work and never resumes stopped/finished contexts. Direct interface facts go to work peers; dependency/ownership/scope changes and human questions go to coordinator. Reviewers communicate through coordinator. Routine progress never wakes agents; steer urgent corrections/blockers, queue future facts and inspect uncertain receipts. Retained sessions can use bb initiative message. Trust current membership over inherited fork identity.`,
+    `Keep implementation choices, alternatives and rationale in a small handoff artifact. Decisions record significant choices for the user to follow and redirect; never consult the decision log for your own work. Use initiative_decision madeBy agent only for independently chosen, non-obvious significant design forks, never normal steps, checks, restatements, mandated implementation, routine reporting, audit/review setup or requested clean SHA/execution settings. Require explicit madeBy. Record explicit user choices as madeBy user regardless of recorder, excluding any agent-added defaults. An explicit user chat answer to an open question uses action answer; worker answers notify the coordinator by default, notify false is quiet. Never infer an answer or run Git to record choices. Only the current coordinator may use decision-cleanup accept/veto/remove on an explicit user cleanup request; workers cannot review/remove choices, and nobody may do so merely to silence Inbox.`,
+    `Read exact mixed refs with initiative_read {refs:["A#","T#"],detailed:true}; select fields for large reports. For an unresolved human choice, give the coordinator question/context, options with consequences, recommendation and affected task refs for a durable question. Do not infer questions from transcript prose. Discover current peers with initiative_read {view:"workers",limit:8}. initiative_message {target:"W#"|"coordinator",text,mode:"steer"|"queue"} sends one native message, grants no work and never resumes stopped/finished contexts. Direct interface facts go to work peers; dependency/ownership/scope changes and human questions go to coordinator. Reviewers communicate through coordinator. Routine progress never wakes agents; steer urgent corrections/blockers, queue future facts and inspect uncertain receipts. Retained sessions can use bb initiative message. Trust current membership over inherited fork identity.`,
     `When you finish or get blocked, call initiative_report with ${input.assignmentRef} once, include evidence and a bounded handoff. Follow the configured worker guidance for completion; going idle is not a report. Ending your turn is not silent: for an ordinary native child, BB sends the parent thread a completion notice each time a turn ends; forks and the report fallback keep their existing delivery. Wait for your own tests and tools within the turn where the tool supports it, or on your tool's single completion notification, rather than watchers that wake you per test or log line. Monitors that surface actionable events, blockers or questions remain appropriate.`,
     opMarker(input.opId),
   ]

@@ -18,3 +18,8 @@ Do not restart or wake agents merely to apply a Settings edit.
 Role, ownership, permission and Stop checks are enforced by native BB and
 Initiative tools independently of editable guidance. Follow explicit user/task
 instructions and recorded Initiative policy before selecting execution profiles.
+
+The decision log records significant choices for the user to follow and redirect
+work; it is not input for agents. Do not consult it to plan, brief or review
+work: write the user instructions a task needs into its brief. The overview
+lists open questions to relay and counts unchecked agent decisions by ref only.

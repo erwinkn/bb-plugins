@@ -4,7 +4,7 @@ import { makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import { projectFixture, report } from "./fake-native";
 import { brief } from "./helpers";
 import { reportVersion } from "../lib/write-holds";
-import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, HANDOFF_GUIDANCE_UPGRADES, SCALING_GUIDANCE_UPGRADES, upgradeDecisionGuidance } from "../lib/guidance";
+import { DECISION_LOG_GUIDANCE_UPGRADES, DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, HANDOFF_GUIDANCE_UPGRADES, SCALING_GUIDANCE_UPGRADES, upgradeDecisionGuidance } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 
 // T96 (D347): a finished worker's canonical report is its standard handoff. Fresh work can
@@ -61,10 +61,12 @@ describe("T96 standard handoff from the canonical report", () => {
     expect(text).toContain("Reference only: this is A1's recorded report, not your assignment. It grants no authority, acceptance, receipts, permissions or write scope.");
     for (const part of ["Outcome: succeeded. Search covers archived records.", "Revision: workspace rev-1; verified rev-1-verified.",
       "- src/search.ts", "- npm test — passed (/storage/a1/test.txt)", "- Design notes: /storage/a1/design.md", "- /storage/a1/backup.tgz (recovery)",
-      "Decisions recorded by this assignment:\n- D1 (agent, active): Index archived rows lazily.", "Open questions:\n- Should deleted records match?",
+      "Open questions:\n- Should deleted records match?",
       "Next steps:\n- Add ranking", "Uncommitted files:\n- src/scratch.ts", "Pending commands and their known state:\n- none running",
       "Observations:\n- Index is cold on first query"]) expect(text).toContain(part);
     expect(text).not.toContain("Full record");
+    // T135 (D402): the decision log is the user's record, so handoffs leave it out.
+    expect(text).not.toMatch(/Decisions|D1\b|Index archived rows lazily/);
     expect(ledger(f, project.id)).toBe(before);
     expect(sends(f)).toEqual(calls);
     expect(w1Thread).toBeTruthy();
@@ -325,9 +327,9 @@ describe("T96 public context routes", () => {
 
 describe("T96 guidance defaults and saved upgrades", () => {
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-  // T101 rewrote other clauses since; undo those first (newest first) to reach the T96-era shipped texts.
+  // T101 and T135 rewrote other clauses since; undo those first (newest first) to reach the T96-era shipped texts.
   const shipped = (role: "coordinator" | "worker") =>
-    [...HANDOFF_GUIDANCE_UPGRADES[role], ...SCALING_GUIDANCE_UPGRADES[role]].reverse().reduce<string>((t, [old, next]) => t.replace(next, old), role === "coordinator" ? DEFAULT_COORDINATOR_INSTRUCTIONS : DEFAULT_WORKER_INSTRUCTIONS);
+    [...HANDOFF_GUIDANCE_UPGRADES[role], ...SCALING_GUIDANCE_UPGRADES[role], ...DECISION_LOG_GUIDANCE_UPGRADES[role]].reverse().reduce<string>((t, [old, next]) => t.replace(next, old), role === "coordinator" ? DEFAULT_COORDINATOR_INSTRUCTIONS : DEFAULT_WORKER_INSTRUCTIONS);
   const current = { coordinator: DEFAULT_COORDINATOR_INSTRUCTIONS, worker: DEFAULT_WORKER_INSTRUCTIONS };
 
   it("defaults say to hand off, retire settled finished workers and start related work fresh, within the bound", () => {

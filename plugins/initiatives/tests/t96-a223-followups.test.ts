@@ -25,21 +25,20 @@ async function reported(decision?: string) {
 }
 
 describe("F1: every record page carries a token of the full rendered text", () => {
-  it("P1: a decision cleanup changes the handoff token while updatedAt and reportVersion stay equal", async () => {
+  it("P1: the handoff token covers the full text, and a decision cleanup no longer touches it (T135)", async () => {
     const { f, project } = await reported("Index archived rows lazily ".repeat(5));
     const url = (offset: number) => `/context/v1/record?initiativeId=${project.id}&ref=A1&part=handoff&offset=${offset}&limit=100`;
     const first = await page(f, url(0));
     const second = await page(f, url(100));
     expect(first.textVersion).toMatch(/^[0-9a-f]{16}$/);
     expect(second.textVersion).toBe(first.textVersion);
+    // The decision log is the user's record (D402); handoffs leave it out, so removing one changes nothing.
     await tool(f, "initiative_decision", { action: "cleanup", ref: "D1", operation: "remove", reason: "Erwin requested removing it." });
     const after = await page(f, url(100));
     expect(after.updatedAt).toBe(first.updatedAt);
     expect(after.reportVersion).toBe(first.reportVersion);
-    expect(after.totalChars).not.toBe(first.totalChars);
-    expect(after.textVersion).not.toBe(first.textVersion);
-    // An unchanged text keeps its token on later reads.
-    expect((await page(f, url(0))).textVersion).toBe(after.textVersion);
+    expect(after.totalChars).toBe(first.totalChars);
+    expect(after.textVersion).toBe(first.textVersion);
   });
 
   it("task status and worker label changes also change the handoff token; every part carries one", async () => {

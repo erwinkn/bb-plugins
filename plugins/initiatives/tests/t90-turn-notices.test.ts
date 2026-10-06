@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, HANDOFF_GUIDANCE_UPGRADES, SCALING_GUIDANCE_UPGRADES, upgradeDecisionGuidance } from "../lib/guidance";
+import { DECISION_LOG_GUIDANCE_UPGRADES, DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, HANDOFF_GUIDANCE_UPGRADES, SCALING_GUIDANCE_UPGRADES, upgradeDecisionGuidance } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 import { projectFixture } from "./fake-native";
 
@@ -15,9 +15,9 @@ const oldWorkerClause = "End the turn instead of polling for more work.";
 const newWorkerClause = "Ending a turn notifies a native parent, so wait for checks in-turn where supported or on your tool's single completion notification, not per-test/log watchers; when done, end the turn without polling for more work.";
 const oldCoordinatorClause = "One native spawn starts real work; no Ready-only bootstrap or raw-spawn/adopt/rebrief ritual.";
 const newCoordinatorClause = "One native spawn starts real work; raw starts can bypass worker identity, assignment and guidance. No Ready-only bootstrap or adopt/rebrief ritual.";
-/** T96 and T101 rewrote other clauses since; undo those first (newest first) to reach the T90 texts. */
+/** T96, T101 and T135 rewrote other clauses since; undo those first (newest first) to reach the T90 texts. */
 const beforeT96 = (text: string, role: "worker" | "coordinator") =>
-  [...HANDOFF_GUIDANCE_UPGRADES[role], ...SCALING_GUIDANCE_UPGRADES[role]].reverse().reduce((t, [old, next]) => t.replace(next, old), text);
+  [...HANDOFF_GUIDANCE_UPGRADES[role], ...SCALING_GUIDANCE_UPGRADES[role], ...DECISION_LOG_GUIDANCE_UPGRADES[role]].reverse().reduce((t, [old, next]) => t.replace(next, old), text);
 /** The defaults shipped before T90, pinned by hash so the derivation cannot drift. */
 const previous = {
   worker: beforeT96(DEFAULT_WORKER_INSTRUCTIONS, "worker").replace(newWorkerClause, oldWorkerClause),

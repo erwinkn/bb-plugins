@@ -13,7 +13,7 @@ Bind work/reviews to task/assignment/revision. task-checkpoint records external 
 
 Use one work worker per related batch, not per plugin or small task. More work workers need the user's explicit request or a yes to your question; asking alone, silence, time, profiles, busy workers or parallel plans are not approval; raw/shell spawns and work subagents count; other shell commands are fine. One fresh independent review per substantial batch; a different model family is recommended, not required. Reviewers report findings; they never implement or reuse implementer context. Return fixes to the worker; small fixes get no automatic re-review. Require meaningful checks; missing ones are assignments. Accept via task-accept/review-accept; reject incomplete reports first.
 
-Reports are handoffs: after a worker's tasks, retire it once settled and quiet unless ready same-scope work or review fixes remain; later related work starts fresh with handoffs:["A#"]. Respect Stop/receipts on resume; pause holds new work. Update context/tasks; user threads have no duties. initiative_decision: explicit user choices madeBy user; exclude agent-added defaults. Agent records require independent non-obvious significant forks. Exclude normal steps, checks, restatements, mandated work, routine reporting, audit/review setup and requested clean SHA/execution settings. Audit: handoffs; never infer answers; use action answer. Chat answers: coordinator quiet; workers notify unless notify false. Okay is private; Not okay needs a message. Explicit user-requested decision-cleanup only: accept/veto/remove agent choices.
+Reports are handoffs: after a worker's tasks, retire it once settled and quiet unless ready same-scope work or review fixes remain; later related work starts fresh with handoffs:["A#"]. Respect Stop/receipts on resume; pause holds new work. Update context/tasks; user threads have no duties. initiative_decision is the user's steering log, not agent input: never consult it; put needed user instructions in briefs. Explicit user choices madeBy user; exclude agent-added defaults. Agent records require independent non-obvious significant forks. Exclude normal steps, checks, restatements, mandated work, routine reporting, audit/review setup and requested clean SHA/execution settings. Audit: handoffs; never infer answers; use quiet action answer. Explicit user-requested decision-cleanup only: accept/veto/remove agent choices.
 
 For replacement, coordinator-handover takes a bounded checkpoint, optionally profile/environment; then end the turn. Never poll, add transport/inbox/keepalive machinery or restart agents for Settings edits.`;
 
@@ -21,7 +21,7 @@ export const DEFAULT_WORKER_INSTRUCTIONS = `Work from your complete scoped assig
 
 Use initiative_message for peer facts: steer urgent corrections; queue future work. Read peers with initiative_read {view:"workers",limit:8}. Reviewers use the coordinator. Escalate scope/dependencies; messages grant no work. Send question/context, options/consequences, recommendation and task refs for human choices; never infer. Keep progress quiet. Preserve errors, Stop and ownership. Inspect uncertain receipts.
 
-Read the brief/handoff and explicit user decisions first. initiative_read refs-only supports mixed T/W/A/D/U. For exact reports/briefs use detailed:true and optional fields; paginate histories with offset/limit. Default overview is compact; threads/usage require explicit views. Read only missing evidence, never whole coordinator transcripts. Reuse verified results with checked revision/scope. Keep continuations bounded; useful design exploration and changed-behavior checks remain appropriate.
+Read the brief/handoff first. Decisions record significant choices for the user; never consult the decision log for your own work. initiative_read refs-only supports mixed T/W/A/D/U. For exact reports/briefs use detailed:true and optional fields; paginate histories with offset/limit. Default overview is compact; threads/usage require explicit views. Read only missing evidence, never whole coordinator transcripts. Reuse verified results with checked revision/scope. Keep continuations bounded; useful design exploration and changed-behavior checks remain appropriate.
 
 Your work/review role is immutable; start no extra work workers or work subagents unless your brief says so. Work follows assignment access: read-only forbids source/install writes even with full native permissions; omitted work may write. This is coordination, not a sandbox. Readers may share live edits: identify actual source state checked. Reviewers stay read-only and never delegate fixes. Follow repository and explicit user/task/Initiative execution choices. Never silently change an unavailable native setting. Native tools remain available.
 
@@ -213,7 +213,27 @@ export const SCALING_GUIDANCE_UPGRADES = {
     ]
   ]
 } as const;
-const GUIDANCE_UPGRADES = (role: "coordinator" | "worker") => [...DECISION_GUIDANCE_UPGRADES[role], ...WORKFLOW_GUIDANCE_UPGRADES[role], ...(role === "coordinator" ? [CLEANUP_GUIDANCE_UPGRADE, REVIEW_FAMILY_GUIDANCE_UPGRADE] : []), ...COMMUNICATION_GUIDANCE_UPGRADES[role], ...READABLE_GUIDANCE_UPGRADES[role], ...TURN_NOTICE_GUIDANCE_UPGRADES[role], ...HANDOFF_GUIDANCE_UPGRADES[role], ...SCALING_GUIDANCE_UPGRADES[role]];
+// T135 (D402): the decision log is the user's steering record, not agent input. The
+// shrinking coordinator rewrite comes first and makes room for the growing one.
+export const DECISION_LOG_GUIDANCE_UPGRADES = {
+  "coordinator": [
+    [
+      "use action answer. Chat answers: coordinator quiet; workers notify unless notify false. Okay is private; Not okay needs a message.",
+      "use quiet action answer."
+    ],
+    [
+      "initiative_decision: explicit user choices madeBy user; exclude agent-added defaults.",
+      "initiative_decision is the user's steering log, not agent input: never consult it; put needed user instructions in briefs. Explicit user choices madeBy user; exclude agent-added defaults."
+    ]
+  ],
+  "worker": [
+    [
+      "Read the brief/handoff and explicit user decisions first.",
+      "Read the brief/handoff first. Decisions record significant choices for the user; never consult the decision log for your own work."
+    ]
+  ]
+} as const;
+const GUIDANCE_UPGRADES = (role: "coordinator" | "worker") => [...DECISION_GUIDANCE_UPGRADES[role], ...WORKFLOW_GUIDANCE_UPGRADES[role], ...(role === "coordinator" ? [CLEANUP_GUIDANCE_UPGRADE, REVIEW_FAMILY_GUIDANCE_UPGRADE] : []), ...COMMUNICATION_GUIDANCE_UPGRADES[role], ...READABLE_GUIDANCE_UPGRADES[role], ...TURN_NOTICE_GUIDANCE_UPGRADES[role], ...HANDOFF_GUIDANCE_UPGRADES[role], ...SCALING_GUIDANCE_UPGRADES[role], ...DECISION_LOG_GUIDANCE_UPGRADES[role]];
 /**
  * Each exact rewrite applies only while the result still fits, so one longer clause
  * cannot hold back the others; a skipped rewrite leaves that clause's shipped wording.

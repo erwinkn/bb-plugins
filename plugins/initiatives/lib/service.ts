@@ -4332,14 +4332,6 @@ export class ProjectsService {
     if (JSON.stringify(handoffSources) !== JSON.stringify(initialHandoffs))
       throw new ProjectError(`A selected handoff's report or state changed during dispatch (${handoffSources.map(h => `${h.assignment} ${h.state}`).join(", ")}); read it again before delegating.`);
     const opId = newOpId();
-    const decisions = this.store
-      .decisions(project.id)
-      .filter(
-        (item) =>
-          item.status === "active" &&
-          (item.scope === "project" || item.scope === bbProjectId),
-      )
-      .slice(-8);
     const rationale =
       [review?.rationale, input.reviewTargets?.map(t => `${t.task} from ${t.assignment} at ${t.revision}`).join("; "), input.rationale].filter(Boolean).join(" ") || null;
 
@@ -4454,7 +4446,6 @@ export class ProjectsService {
       tasks,
       reviewOf: reviewOfTasks,
       reviewTargets: checkedReviewTargets,
-      decisions,
       handoffs: handoffs.map((source) => renderStandardHandoff(this.store, source, true)),
       note:
         [

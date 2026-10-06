@@ -68,7 +68,7 @@ describe("T57 saved guidance upgrades", () => {
     expect(config.instructions).toContain("My custom audit workflow.");
     const fresh = f.spawn.mock.calls.at(-1)![0].prompt;
     // Both new and retained-context assignments use this same renderer.
-    const retained = renderAssignment({ project: { name: "Test" }, workerLabel: "Audit", workerPurpose: "Check", workerRef: "W1", assignmentRef: "A2", role: "review", tasks: [], reviewOf: [], decisions: [], note: null, opId: "op_test", guidance: "Custom review", access: "read-only" });
+    const retained = renderAssignment({ project: { name: "Test" }, workerLabel: "Audit", workerPurpose: "Check", workerRef: "W1", assignmentRef: "A2", role: "review", tasks: [], reviewOf: [], note: null, opId: "op_test", guidance: "Custom review", access: "read-only" });
     for (const prompt of [fresh, retained]) {
       expect(prompt).toContain("Require explicit madeBy");
       expect(prompt).toContain("audit/review setup or requested clean SHA/execution settings");
