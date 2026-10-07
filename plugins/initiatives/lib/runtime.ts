@@ -1,3 +1,4 @@
+import { addAbortListener } from "node:events";
 import {
   BUSY_STATUSES,
   errorMessage,
@@ -325,11 +326,29 @@ export class Runtime {
    * Reconcile unconfirmed operations against native receipts and drain any
    * recorded handover whose predecessor went quiet without an idle event
    * reaching this runtime. Nothing here delivers, retries or retires work.
-   * After `signal` aborts no new unit of work starts; a native call already
+   * After `service` aborts no new unit of work starts; a native call already
    * issued still settles with its receipt, and the ledger keeps every
    * unconfirmed op for the next sweep.
+   *
+   * Each pass runs on its own short-lived signal (W193): the BB SDK wraps every
+   * signal it receives in AbortSignal.any with a 75 s timeout, and composites
+   * built on the long-lived service signal stay recorded on it, so hundreds of
+   * list calls per pass made every GC walk them. The pass signal is linked to the
+   * service signal by one listener, removed and aborted when the pass ends.
    */
-  async sweep(signal?: AbortSignal) {
+  async sweep(service?: AbortSignal) {
+    const pass = new AbortController();
+    const link = service ? addAbortListener(service, () => pass.abort(service.reason)) : null;
+    if (service?.aborted) pass.abort(service.reason);
+    try {
+      await this.sweepPass(pass.signal);
+    } finally {
+      link?.[Symbol.dispose]();
+      pass.abort();
+    }
+  }
+
+  private async sweepPass(signal: AbortSignal) {
     await this.service.reconcile(signal);
     // Discover coordinator children the thread events did not reach: spawns
     // that happened while the plugin was down, and threads an adopted
