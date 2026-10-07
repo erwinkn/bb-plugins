@@ -32,13 +32,8 @@ import { CACHE_TTL_MS, type CacheTtl } from "./cache-usage.js";
 export const waitStates = ["tool", "background", "question", "idle"] as const;
 export type WaitState = (typeof waitStates)[number];
 
-export const warmingRoles = [
-  "coordinator",
-  "worker",
-  "reviewer",
-  "standalone",
-] as const;
-export type WarmingRole = (typeof warmingRoles)[number];
+export { warmingRoles, type WarmingRole } from "./warming-roles.js";
+import type { WarmingRole } from "./warming-roles.js";
 
 const REFRESH_COST = 0.1;
 const WRITE_COST: Record<CacheTtl, number> = { "5m": 1.25, "1h": 2 };

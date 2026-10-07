@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { warmingRoles, type WarmingRole } from "./warming-economics.js";
+import { warmingRoles, type WarmingRole } from "./warming-roles.js";
 import { describeIssues, parseOrThrow } from "./validation.js";
 
 // Cache-warming settings live under their own kv key, like advisor-config: the native "config"

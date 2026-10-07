@@ -35,7 +35,7 @@ import {
   type WarmingFamily,
   type WarmingMode,
 } from "./src/warming-config.js";
-import type { WarmingRole } from "./src/warming-economics.js";
+import type { WarmingRole } from "./src/warming-roles.js";
 
 const STATUS_POLL_MS = 10_000;
 const RECENT_EVENTS = 20;
