@@ -3,7 +3,6 @@ import * as Menu from "@radix-ui/react-context-menu";
 import * as Popover from "@radix-ui/react-popover";
 import {
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -36,12 +35,7 @@ import {
 import { menuItemClass } from "./menus";
 import { usePortalScopeProps } from "../lib/portal-scope";
 import { relativeAge } from "../lib/time";
-import {
-  mergePullRequests,
-  pullRequestRepo,
-  PullRequestsChip,
-} from "./pull-request";
-import type { LinkedPullRequest } from "../lib/pull-requests-schema";
+import { PullRequestChip, PullRequestChipSpace } from "./pull-request";
 import { StatusIcon } from "./status-icon";
 import { ArchiveIcon } from "./archive-icon";
 import { ThreadInfo } from "./thread-info";
@@ -102,7 +96,6 @@ export function ThreadRow({
   singleLine = false,
   libraryAction,
   nesting,
-  linkedPullRequests,
   branchPullRequestEligible = true,
   snooze,
   onNavigate,
@@ -143,12 +136,10 @@ export function ThreadRow({
    */
   libraryAction: "save" | "remove" | null;
   nesting?: ThreadRowNesting;
-  /** The thread's github-prs links, merged with the branch PR for the chip. */
-  linkedPullRequests?: readonly LinkedPullRequest[];
   /**
    * False hides BB's environment branch PR: on a shared project checkout or
-   * the default branch that PR is not the thread's own. Persisted github-prs
-   * links still show. Unevaluated threads default to showing it.
+   * the default branch that PR is not the thread's own. Unevaluated threads
+   * default to showing it.
    */
   branchPullRequestEligible?: boolean;
   /** Snooze state and presets; omitted rows (archives) offer no snooze. */
@@ -222,17 +213,9 @@ export function ThreadRow({
   // The environment's branch PR only counts as the thread's own when the
   // environment is a thread-dedicated worktree on a non-default branch; a
   // shared project checkout's PR must not be attributed to every thread on
-  // it. Persisted github-prs links merge regardless.
-  const branchPullRequest = branchPullRequestEligible
+  // it.
+  const pullRequest = branchPullRequestEligible
     ? environmentPullRequest
-    : null;
-  // The chip covers the union of the branch PR and the github-prs links.
-  const pullRequests = useMemo(
-    () => mergePullRequests(branchPullRequest, linkedPullRequests),
-    [branchPullRequest, linkedPullRequests],
-  );
-  const threadRepo = branchPullRequest
-    ? pullRequestRepo(branchPullRequest.url)
     : null;
   const nativeTitle = threadTitle(thread);
   const title = titleOverride ?? nativeTitle;
@@ -260,16 +243,8 @@ export function ThreadRow({
       .catch(onError);
   };
   const openPullRequest = (url: string) => {
-    // The github-prs plugin, when loaded, takes the request and shows the PR
-    // in its thread panel; it calls preventDefault to say so.
-    const request = new CustomEvent("bb-plugins:open-pull-request", {
-      cancelable: true,
-      detail: { url, threadId: thread.id },
-    });
-    window.dispatchEvent(request);
-    if (request.defaultPrevented) return;
-    // Otherwise BB's browser preference (in-app browser or external); a host
-    // without the URL opener gets a plain new tab.
+    // BB's browser preference: a tab of its in-app browser on desktop, else
+    // the external browser. A host without the URL opener gets a new tab.
     if (!navigate.openUrl(url))
       window.open(url, "_blank", "noopener,noreferrer");
   };
@@ -396,7 +371,7 @@ export function ThreadRow({
             project={project}
             provider={provider}
             parent={parent}
-            pullRequest={pullRequests[0] ?? null}
+            pullRequest={pullRequest}
             disabled={menuOpen}
           >
             <Menu.Trigger asChild>
@@ -564,16 +539,12 @@ export function ThreadRow({
                           ↳
                         </span>
                       )}
-                      {pullRequests.length > 0 && (
-                        <PullRequestsChip
-                          pullRequests={pullRequests}
-                          threadRepo={threadRepo}
-                          onOpen={openPullRequest}
-                        />
+                      {pullRequest && (
+                        <PullRequestChipSpace pullRequest={pullRequest} />
                       )}
                       {showProject && (
                         <>
-                          {pullRequests.length > 0 && (
+                          {pullRequest && (
                             <span aria-hidden="true">·</span>
                           )}
                           <span className="shrink-0">{project}</span>
@@ -581,7 +552,7 @@ export function ThreadRow({
                       )}
                       {titleOverride && nativeTitle !== titleOverride && (
                         <>
-                          {(pullRequests.length > 0 || showProject) && (
+                          {(pullRequest || showProject) && (
                             <span aria-hidden="true">·</span>
                           )}
                           <span
@@ -595,7 +566,7 @@ export function ThreadRow({
                       )}
                       {branch && (
                         <>
-                          {(pullRequests.length > 0 || showProject) && (
+                          {(pullRequest || showProject) && (
                             <span aria-hidden="true">·</span>
                           )}
                           <span
@@ -622,6 +593,27 @@ export function ThreadRow({
               </a>
             </Menu.Trigger>
           </ThreadInfo>
+          {pullRequest && !singleLine && (
+            // The chip's own link sits beside the row link, over the space the
+            // row keeps for it: the same left padding, the second line's
+            // height above the row's bottom padding, and an invisible copy of
+            // any parent arrow before it. Only the chip takes pointer events.
+            <span
+              data-thread-pull-request-layer=""
+              className={`pointer-events-none absolute bottom-2 flex h-4 items-center gap-1 text-xs leading-4 text-[var(--subtle-foreground)]`}
+              style={{ left: `${nested ? 1.75 + (depth - 1) * 1.5 : 0.5}rem` }}
+            >
+              {thread.parentThreadId && !nested && (
+                <span aria-hidden="true" className="invisible">
+                  ↳
+                </span>
+              )}
+              <PullRequestChip
+                pullRequest={pullRequest}
+                onOpen={openPullRequest}
+              />
+            </span>
+          )}
           <Menu.Portal>
             <Menu.Content
               {...scope}

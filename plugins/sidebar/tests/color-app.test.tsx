@@ -329,58 +329,39 @@ describe("pull request link", () => {
   });
   it("opens the pull request through BB's URL opener without selecting the row", () => {
     const openUrl = vi.fn(() => true);
-    const seen = vi.fn();
-    window.addEventListener("bb-plugins:open-pull-request", seen);
     const slot = mount({ sidebarPullRequests: { done: pullRequest("open") }, openUrl });
-    const link = within(row(slot, "done")).getByRole("link", { name: "Open pull request #7: Tint the sidebar" });
+    const link = within(wrapper(slot, "done")).getByRole("link", { name: "Open pull request #7: Tint the sidebar" });
+    // A real link: modifier clicks, middle clicks and Copy Link are the browser's.
+    expect(link.tagName).toBe("A");
+    expect(link.getAttribute("href")).toBe("https://github.com/example/bb/pull/7");
+    expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("data-thread-pull-request")).toBe("");
-    expect(link.getAttribute("data-pull-request-state")).toBeNull();
     expect(link.querySelector("[data-pull-request-state='open']")).not.toBeNull();
     expect(link.className).toContain("hover:underline");
-    // Still no nested anchor inside the row link.
+    // A link never nests another: the chip sits beside the row link, over the
+    // invisible space the row keeps for it.
     expect(row(slot, "done").querySelector("a")).toBeNull();
-    fireEvent.click(link);
-    // The event went out unhandled (nobody called preventDefault), so the
-    // URL opener runs as before.
-    expect(seen).toHaveBeenCalledTimes(1);
-    window.removeEventListener("bb-plugins:open-pull-request", seen);
+    expect(row(slot, "done").contains(link)).toBe(false);
+    expect(row(slot, "done").querySelector("[data-thread-pull-request-space]")!.getAttribute("aria-hidden")).toBe("true");
+    // A plain left click (or Enter, which clicks a link) takes BB's browser preference.
+    expect(fireEvent.click(link)).toBe(false);
     expect(openUrl).toHaveBeenCalledWith("https://github.com/example/bb/pull/7");
     expect(slot.inspection.navigateCalls).toEqual([{ method: "openUrl", url: "https://github.com/example/bb/pull/7" }]);
+    // Modifier and middle clicks keep the anchor's default and never reach the row.
+    expect(fireEvent.click(link, { metaKey: true })).toBe(true);
+    expect(fireEvent.click(link, { button: 1 })).toBe(true);
+    expect(openUrl).toHaveBeenCalledTimes(1);
     expect(slot.inspection.sidebarActionCalls).toEqual([]);
     expect(props.onNavigate).not.toHaveBeenCalled();
-    fireEvent.keyDown(link, { key: "Enter" });
-    expect(openUrl).toHaveBeenCalledTimes(2);
-  });
-  it("hands the pull request to the github-prs plugin when it takes the event", () => {
-    const openUrl = vi.fn(() => true);
-    const details: unknown[] = [];
-    const take = (event: Event) => {
-      details.push((event as CustomEvent).detail);
-      event.preventDefault();
-    };
-    window.addEventListener("bb-plugins:open-pull-request", take);
-    try {
-      const slot = mount({ sidebarPullRequests: { done: pullRequest("open") }, openUrl });
-      const link = within(row(slot, "done")).getByRole("link", { name: "Open pull request #7: Tint the sidebar" });
-      fireEvent.click(link);
-      fireEvent.keyDown(link, { key: "Enter" });
-      expect(details).toEqual([
-        { url: "https://github.com/example/bb/pull/7", threadId: "done" },
-        { url: "https://github.com/example/bb/pull/7", threadId: "done" },
-      ]);
-      expect(openUrl).not.toHaveBeenCalled();
-      expect(slot.inspection.navigateCalls).toEqual([]);
-      expect(slot.inspection.sidebarActionCalls).toEqual([]);
-      expect(props.onNavigate).not.toHaveBeenCalled();
-    } finally {
-      window.removeEventListener("bb-plugins:open-pull-request", take);
-    }
+    // The context menu is the browser's own (Copy Link), not the row's.
+    expect(fireEvent.contextMenu(link)).toBe(true);
+    expect(slot.queryByRole("menu")).toBeNull();
   });
   it("falls back to a new tab when the host declines the URL", () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     try {
       const slot = mount({ sidebarPullRequests: { done: pullRequest("merged", "merged") }, openUrl: () => false });
-      fireEvent.click(within(row(slot, "done")).getByRole("link"));
+      fireEvent.click(within(wrapper(slot, "done")).getByRole("link", { name: /pull request/ }));
       expect(open).toHaveBeenCalledWith("https://github.com/example/bb/pull/7", "_blank", "noopener,noreferrer");
       expect(slot.inspection.sidebarActionCalls).toEqual([]);
     } finally {

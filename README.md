@@ -52,14 +52,6 @@ integrations, `executor_resume` continues paused runs, and artifact tools
 manage saved UIs. Auth is a plugin-secret OAuth token pair with automatic
 refresh, or a CF Access service token. See [Executor](plugins/executor/README.md).
 
-`github` (plugin id `github-prs`) forks BB's official GitHub plugin and adds
-several linked pull requests per thread, a GitHub PR side panel that lists
-them and shows a read-only PR overview, agent tools and a `bb github link`
-CLI, and a content script that opens GitHub PR links in that panel instead of
-the browser. See [GitHub](plugins/github/README.md) for the link policy, the
-interception hack, and the `bb-plugins:open-pull-request` event other plugins
-can dispatch.
-
 ## Install
 
 Use BB 0.43.1 or later. The bb server needs Git, npm, and GitHub access to this
@@ -86,6 +78,12 @@ and export; [Devin provider](plugins/devin/README.md) documents its stable
 preserve installation state: back up plugin data, settings, secrets and schedules
 before the orchestrator removes a registration. Keep saved notes and browser
 drafts, native conversations and external Devin credentials.
+
+The `github` fork (plugin id `github-prs`) is retired and its source deleted;
+it is in Git history before the commit that removed `plugins/github`. BB's
+bundled `github` plugin replaces it. Its thread-to-PR links, PR side panel and
+PR-link interception are gone; the Initiative dashboard's merge queue lists
+Erwin's open PRs instead.
 
 The untracked Assistant experiment is also retired. Its recoverable source
 archive and file manifest are in W66's thread storage at

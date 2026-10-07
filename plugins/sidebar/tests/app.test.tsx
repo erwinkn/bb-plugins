@@ -2111,20 +2111,23 @@ describe("activity sidebar", () => {
     // PR · project · branch on the left, age last.
     expect(meta.firstElementChild?.textContent).toBe("#2683·One·feat/prod-step");
     expect(meta.lastElementChild?.tagName).toBe("TIME");
+    // The row keeps the chip's space; the chip itself sits beside the row link.
+    const box = (id: string) => row(id).closest("[data-thread-status]") as HTMLElement;
+    expect(meta.querySelector("[data-thread-pull-request-space]")?.getAttribute("aria-hidden")).toBe("true");
     expect(
-      within(meta).getByRole("img", {
+      within(box("open")).getByRole("img", {
         name: "Open pull request #2683, checks failed",
       }),
     ).toBeTruthy();
     expect(row("open").textContent).not.toContain("Reduce prod step overhead");
     expect(
-      within(lines("merged")[1] as HTMLElement).getByRole("img", {
+      within(box("merged")).getByRole("img", {
         name: "Merged pull request #12",
       }),
     ).toBeTruthy();
     expect(lines("none")[1]!.firstElementChild?.textContent).toBe("One");
     expect(lines("none")[1]!.querySelector("time")).not.toBeNull();
-    expect(row("none").querySelector("[data-thread-pull-request]")).toBeNull();
+    expect(box("none").querySelector("[data-thread-pull-request]")).toBeNull();
     // A link cannot nest another link; the info card carries the title.
     expect(row("open").querySelector("a")).toBeNull();
     vi.useFakeTimers();

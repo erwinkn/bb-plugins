@@ -33,7 +33,7 @@ import { isSleeping, isWoke, type SnoozeEntry } from "./lib/snooze-schema";
 import { SnoozeSettings } from "./components/snooze-settings";
 import { useSpaces } from "./lib/use-spaces";
 import { useUiPreferences } from "./lib/use-ui-preferences";
-import { useLinkedPullRequests } from "./lib/use-linked-pull-requests";
+import { useBranchPullRequestEligibility } from "./lib/use-branch-pull-request-eligibility";
 import { savedThreadIds } from "./lib/library";
 import { inScope, LIBRARY_SCOPE_ID, resolveScope } from "./lib/spaces";
 import { DisplayMenu } from "./components/menus";
@@ -357,15 +357,14 @@ function ThreadListContent(props: PluginThreadListProps) {
         : [],
     [state.showArchives, archives.threads, scope],
   );
-  // github-prs links for every listed thread in one bulk call; archived
+  // Branch-PR eligibility for every listed thread in one bulk call; archived
   // rows get the same chip when the archive list is open.
-  const { links: linkedPullRequests, branchPrEligible } =
-    useLinkedPullRequests(
-      useMemo(
-        () => [...threads, ...archives.threads].map((thread) => thread.id),
-        [threads, archives.threads],
-      ),
-    );
+  const branchPrEligible = useBranchPullRequestEligibility(
+    useMemo(
+      () => [...threads, ...archives.threads].map((thread) => thread.id),
+      [threads, archives.threads],
+    ),
+  );
   const { providers } = experimental_useProviders();
   const actions = experimental_useSidebarThreadActions();
   const connection = useRealtimeConnectionState();
@@ -802,7 +801,6 @@ function ThreadListContent(props: PluginThreadListProps) {
           onSetParent: (parentThreadId) =>
             reparent(thread.id, parentThreadId),
         }}
-        linkedPullRequests={linkedPullRequests.get(thread.id)}
         branchPullRequestEligible={branchPrEligible.get(thread.id)}
         snooze={{
           until: sleeping.get(thread.id)?.until ?? null,

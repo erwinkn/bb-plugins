@@ -180,10 +180,7 @@ function mount(
         return save(input as { expectedRevision: number; order: string[] });
       },
       renameTreeProject: async () => ({}),
-      linkedPullRequests: async () => ({
-        pullRequests: {},
-        branchPrEligible: {},
-      }),
+      branchPullRequestEligibility: async () => ({ eligible: {} }),
       ...overrides.rpc,
     },
     openUrl: () => true,

@@ -8,7 +8,6 @@ import {
 import type { ComponentType } from "react";
 import { buildThreadTree } from "../lib/thread-tree";
 import { parseState, updateState } from "../lib/client-state";
-import type { LinkedPullRequest } from "../lib/pull-requests-schema";
 import { thread } from "./fixtures";
 
 vi.mock("../lib/thread-tree", async (importOriginal) => {
@@ -18,8 +17,8 @@ vi.mock("../lib/thread-tree", async (importOriginal) => {
 
 const app = await loadPluginApp(() => import("../app"));
 const { useArchives } = await import("../lib/use-archives");
-const { useLinkedPullRequests } = await import(
-  "../lib/use-linked-pull-requests"
+const { useBranchPullRequestEligibility } = await import(
+  "../lib/use-branch-pull-request-eligibility"
 );
 
 const mounted: ReturnType<typeof renderSlot>[] = [];
@@ -57,23 +56,14 @@ const archiveRow = (id: string) => ({
   environmentWorkspaceDisplayKind: "other",
 });
 
-const link = (overrides: Partial<LinkedPullRequest>): LinkedPullRequest => ({
-  repo: "acme/widgets",
-  number: 1,
-  url: "https://github.com/acme/widgets/pull/1",
-  title: "Linked PR",
-  state: "open",
-  ...overrides,
-});
-
 function ArchivesProbe({ enabled }: { enabled: boolean }) {
   const { threads } = useArchives(enabled);
   return <>{threads.map((entry) => entry.id).join(",")}</>;
 }
 
-function LinksProbe({ ids }: { ids: string[] }) {
-  const { links } = useLinkedPullRequests(ids);
-  return <>{[...links.keys()].sort().join(",")}</>;
+function EligibilityProbe({ ids }: { ids: string[] }) {
+  const eligible = useBranchPullRequestEligibility(ids);
+  return <>{[...eligible.keys()].sort().join(",")}</>;
 }
 
 beforeEach(() => {
@@ -115,80 +105,42 @@ describe("archive loading", () => {
   });
 });
 
-describe("linked pull request reconcile", () => {
+describe("branch pull request eligibility reconcile", () => {
   it("coalesces a burst of id-set changes into one bulk call", async () => {
-    const linkedPullRequests = vi.fn(async (input: unknown) => ({
-      pullRequests: {
-        c: [link({ number: 3, url: "https://github.com/acme/widgets/pull/3" })],
-      },
-      branchPrEligible: {},
+    const branchPullRequestEligibility = vi.fn(async (input: unknown) => ({
+      eligible: Object.fromEntries(
+        (input as { threadIds: string[] }).threadIds
+          .filter((id) => id === "c")
+          .map((id) => [id, true]),
+      ),
     }));
-    const slot = mount(LinksProbe, { ids: ["a"] }, { linkedPullRequests });
-    await waitFor(() => expect(linkedPullRequests).toHaveBeenCalledTimes(1));
-    expect(linkedPullRequests).toHaveBeenLastCalledWith({
+    const slot = mount(
+      EligibilityProbe,
+      { ids: ["a"] },
+      { branchPullRequestEligibility },
+    );
+    await waitFor(() =>
+      expect(branchPullRequestEligibility).toHaveBeenCalledTimes(1),
+    );
+    expect(branchPullRequestEligibility).toHaveBeenLastCalledWith({
       threadIds: ["a"],
     });
     // A burst of list updates settles into one call with the latest ids.
-    slot.rerender(<LinksProbe ids={["a", "b"]} />);
-    slot.rerender(<LinksProbe ids={["a", "b", "c"]} />);
-    slot.rerender(<LinksProbe ids={["b", "c"]} />);
-    expect(linkedPullRequests).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(linkedPullRequests).toHaveBeenCalledTimes(2));
-    expect(linkedPullRequests).toHaveBeenLastCalledWith({
+    slot.rerender(<EligibilityProbe ids={["a", "b"]} />);
+    slot.rerender(<EligibilityProbe ids={["a", "b", "c"]} />);
+    slot.rerender(<EligibilityProbe ids={["b", "c"]} />);
+    expect(branchPullRequestEligibility).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(branchPullRequestEligibility).toHaveBeenCalledTimes(2),
+    );
+    expect(branchPullRequestEligibility).toHaveBeenLastCalledWith({
       threadIds: ["b", "c"],
     });
     await waitFor(() => expect(slot.container.textContent).toBe("c"));
     // A reordered identical set does not refetch.
-    slot.rerender(<LinksProbe ids={["c", "b"]} />);
+    slot.rerender(<EligibilityProbe ids={["c", "b"]} />);
     await settle();
-    expect(linkedPullRequests).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps a newer per-thread answer over an in-flight bulk answer", async () => {
-    const store: Record<string, LinkedPullRequest[]> = {};
-    const pending: { ids: string[]; resolve: () => void }[] = [];
-    // Each call snapshots the store at request time and resolves only when
-    // the test says so, like a slow network answer.
-    const linkedPullRequests = vi.fn((input: unknown) => {
-      const { threadIds } = input as { threadIds: string[] };
-      const answer = {
-        pullRequests: Object.fromEntries(
-          threadIds
-            .filter((id) => store[id]?.length)
-            .map((id) => [id, store[id]!]),
-        ),
-        branchPrEligible: {} as Record<string, boolean>,
-      };
-      return new Promise<typeof answer>((resolve) =>
-        pending.push({ ids: threadIds, resolve: () => resolve(answer) }),
-      );
-    });
-    const slot = mount(LinksProbe, { ids: ["x"] }, { linkedPullRequests });
-    await waitFor(() => expect(pending).toHaveLength(1));
-    await act(async () => pending.shift()!.resolve());
-    expect(slot.container.textContent).toBe("");
-
-    // An id change issues the debounced bulk call while the store still
-    // lacks x's new link.
-    slot.rerender(<LinksProbe ids={["x", "y"]} />);
-    await waitFor(() => expect(pending).toHaveLength(1));
-    expect(pending[0]!.ids).toEqual(["x", "y"]);
-
-    // A signal refreshes x alone and lands first.
-    store["x"] = [
-      link({ number: 7, url: "https://github.com/acme/widgets/pull/7" }),
-    ];
-    await slot.behavior.emitRealtime("linked-pull-requests-changed", {
-      threadId: "x",
-    });
-    expect(pending).toHaveLength(2);
-    expect(pending[1]!.ids).toEqual(["x"]);
-    await act(async () => pending[1]!.resolve());
-    expect(slot.container.textContent).toBe("x");
-
-    // The stale bulk answer must not roll x's newer link back.
-    await act(async () => pending[0]!.resolve());
-    expect(slot.container.textContent).toBe("x");
+    expect(branchPullRequestEligibility).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -208,11 +160,7 @@ describe("thread tree memoization", () => {
     getLibrary: async () => ({ revision: 0, ids: [] }),
     getSnoozes: async () => ({ revision: 0, entries: [] }),
     getSnoozePresets: async () => ({ revision: 0, presets: [] }),
-    linkedPullRequests: async () => ({
-      pullRequests: {},
-      branchPrEligible: {},
-    }),
-    pullRequestsChanged: async () => ({ ok: true }),
+    branchPullRequestEligibility: async () => ({ eligible: {} }),
   };
   const projects = [
     { id: "project-1", name: "One", isPersonal: false },

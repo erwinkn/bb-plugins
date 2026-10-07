@@ -50,7 +50,7 @@ import { projectLabel } from "../lib/project-schema";
 import { threadTitle } from "../lib/status";
 import type { ThreadNode } from "../lib/thread-tree";
 import { MOBILE_SIDEBAR_SCROLL_CSS } from "../lib/mobile-sidebar-scroll";
-import { useLinkedPullRequests } from "../lib/use-linked-pull-requests";
+import { useBranchPullRequestEligibility } from "../lib/use-branch-pull-request-eligibility";
 import { StatusIcon } from "./status-icon";
 import { ProjectHueStyle, appearanceHueStep, appearanceIcon } from "../lib/project-hue";
 import { ProjectAppearanceEditor, type AppearancePatch } from "./project-appearance";
@@ -806,7 +806,7 @@ function ProjectThreads({
     collect(nodes);
     return ids;
   }, [nodes]);
-  const { links, branchPrEligible } = useLinkedPullRequests(listedIds);
+  const branchPrEligible = useBranchPullRequestEligibility(listedIds);
   const providerNames = new Map(
     providers.map((provider) => [provider.id, provider.displayName]),
   );
@@ -852,7 +852,6 @@ function ProjectThreads({
       }
       active={activeThreadId === node.thread.id}
       libraryAction={null}
-      linkedPullRequests={links.get(node.thread.id)}
       branchPullRequestEligible={branchPrEligible.get(node.thread.id)}
       onNavigate={onNavigate}
       onError={onError}
