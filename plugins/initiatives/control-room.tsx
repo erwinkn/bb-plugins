@@ -19,7 +19,7 @@ import type { projectsContract } from "./lib/contract";
 import { UsagePage } from "./usage-view";
 import "./control-room.css";
 
-type Tab = "inbox" | "decisions" | "threads" | "tasks" | "context" | "usage" | "log";
+type Tab = "inbox" | "decisions" | "threads" | "tasks" | "prs" | "context" | "usage" | "log";
 type Inventory = typeof projectsContract.inventory.output._output;
 type Run = (command: Command) => Promise<unknown>;
 const message = (error: unknown) =>
@@ -81,6 +81,7 @@ const glyphs = {
   context: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M9 13h6M9 17h4",
   log: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2",
   usage: "M5 20V11M12 20V4M19 20v-6",
+  pr: "M6 3.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM6 15.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM6 8.5v7M18 15.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 1 0 0-5zM18 15.5V9a3 3 0 0 0-3-3h-3M14.5 3.5 12 6l2.5 2.5",
 };
 function Glyph({ name }: { name: keyof typeof glyphs }) {
   return (
@@ -235,6 +236,7 @@ const tabSpecs = [
   ["decisions", "Decisions", null],
   ["threads", "Threads", null],
   ["tasks", "Tasks", null],
+  ["prs", "PRs", "pr"],
   ["context", "Context", "context"],
   ["log", "Log", "log"],
   ["usage", "Usage", "usage"],
@@ -246,7 +248,9 @@ function Tabs({
   counts,
   urgent,
   prefix,
+  specs,
 }: {
+  specs: readonly (typeof tabSpecs)[number][];
   tab: Tab;
   change: (tab: Tab) => void;
   counts: Partial<Record<Tab, number>>;
@@ -296,7 +300,7 @@ function Tabs({
       aria-label="Initiative views"
       data-fit={fit}
     >
-      {tabSpecs.map(([id, label, icon], index) => (
+      {specs.map(([id, label, icon], index) => (
         <button
           key={id}
           role="tab"
@@ -314,12 +318,12 @@ function Tabs({
                   : e.key === "Home"
                     ? 0
                     : e.key === "End"
-                      ? tabSpecs.length - 1
+                      ? specs.length - 1
                       : null;
             if (next === null) return;
             e.preventDefault();
-            const target = (next + tabSpecs.length) % tabSpecs.length;
-            change(tabSpecs[target]![0]);
+            const target = (next + specs.length) % specs.length;
+            change(specs[target]![0]);
             (ref.current!.children[target] as HTMLButtonElement).focus();
           }}
         >
@@ -357,7 +361,10 @@ export function ControlRoom({
   onTab,
   detailNotice,
   readHandoff,
+  mergeQueue,
 }: {
+  /** The merge queue tab: its open PR count and its view. */
+  mergeQueue?: { count: number; view: ReactNode };
   /** The standard handoff text of a reported assignment, rendered from its stored report. */
   readHandoff?: (ref: string) => Promise<string | null>;
   onTab?: (tab: Tab) => void;
@@ -556,10 +563,11 @@ export function ControlRoom({
         ) : null}
         <div hidden={replace}>
           <Tabs
+            specs={mergeQueue ? tabSpecs : tabSpecs.filter(([id]) => id !== "prs")}
             tab={tab}
             change={chooseTab}
             prefix={prefix}
-            counts={{ inbox: o.opinionNeeded.length + o.blockers.length + unchecked.length }}
+            counts={{ inbox: o.opinionNeeded.length + o.blockers.length + unchecked.length, prs: mergeQueue?.count }}
             urgent={needsYou > 0}
           />
         </div>
@@ -931,6 +939,7 @@ export function ControlRoom({
               ) : null}
             </>
           </KeepTab>
+          {mergeQueue ? <KeepTab current={tab} id="prs">{mergeQueue.view}</KeepTab> : null}
           <KeepTab current={tab} id="context">
             <>
               <div className="cr-toolbar">

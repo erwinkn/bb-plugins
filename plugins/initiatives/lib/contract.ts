@@ -2,6 +2,7 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { commandSchema } from "./commands";
 import { legacyThreadCreateSchema } from "./legacy";
+import type { MergeQueue } from "./merge-queue";
 import type { Overview } from "./overview";
 import { projectSummarySchema, treeSchema } from "./tree-schema";
 import { readOptionsSchema, READ_VIEWS } from "./read";
@@ -70,6 +71,16 @@ export const projectsContract = defineRpcContract({
   command: {
     input: z.object({ projectId: id.optional(), command: z.union([commandSchema, legacyThreadCreateSchema]) }),
     output: z.unknown(),
+  },
+  /**
+   * Open PRs by the `gh` user in the member projects' GitHub repositories,
+   * in merge-queue order. Served from a server cache refreshed every two
+   * minutes; `refresh` asks for a fresh read now. Fetch failures come back
+   * per repository beside the last good data, never as a thrown error.
+   */
+  mergeQueue: {
+    input: z.object({ projectId: id, refresh: z.boolean().optional() }),
+    output: z.custom<MergeQueue>(),
   },
   /**
    * A client's read timed out; logged as one warn line. `read` names the view

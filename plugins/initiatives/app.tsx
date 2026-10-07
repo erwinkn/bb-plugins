@@ -36,6 +36,8 @@ import {
 import "./app.css";
 import { ProjectsSettings } from "./settings-view";
 import { AutoTextarea, ControlRoom } from "./control-room";
+import { MergeQueueView } from "./merge-queue-view";
+import type { MergeQueue } from "./lib/merge-queue";
 
 export const PROJECT_PANEL = "initiative-overview";
 const describeError = (e: unknown) =>
@@ -780,6 +782,20 @@ export function Dashboard({
   true, seeded && appReads.entry(`overview:${projectId}`).loaded);
   const history = useData(`history:${projectId}`, () => api.call("overview", { projectId, detail: "history" }), historyNeeded && !detailsNeeded);
   const details = useData(`details:${projectId}`, () => api.call("overview", { projectId, detail: "full" }), detailsNeeded);
+  // The server caches the queue and re-reads GitHub every two minutes; these
+  // reads follow the dashboard's polling and only fetch on a stale cache.
+  const queue = useData<MergeQueue>(`merge-queue:${projectId}`, () => api.call("mergeQueue", { projectId }));
+  const [queueRefresh, setQueueRefresh] = useState<{ projectId: string; error: string | null; running: boolean } | null>(null);
+  const refreshQueue = async () => {
+    setQueueRefresh({ projectId, error: null, running: true });
+    try {
+      appReads.seed(`merge-queue:${projectId}`, await api.call("mergeQueue", { projectId, refresh: true }));
+      setQueueRefresh({ projectId, error: null, running: false });
+    } catch (error) {
+      setQueueRefresh({ projectId, error: describeError(error), running: false });
+    }
+  };
+  const ownQueueRefresh = queueRefresh?.projectId === projectId ? queueRefresh : null;
   const [inventory, setInventory] = useState<
     {
       id: string;
@@ -872,6 +888,17 @@ export function Dashboard({
             return result.items[0]?.standardHandoff ?? null;
           }}
           refresh={refresh}
+          mergeQueue={{
+            count: queue.data?.pullRequests.length ?? 0,
+            view: (
+              <MergeQueueView
+                queue={queue.data}
+                error={ownQueueRefresh?.error ?? queue.error}
+                refreshing={!!ownQueueRefresh?.running}
+                onRefresh={() => void refreshQueue()}
+              />
+            ),
+          }}
           openThread={(id) => navigate.toThread(id)}
           newThread={() => navigate.toPluginPanel("initiatives", { subPath: `${projectId}/compose` })}
           notice={

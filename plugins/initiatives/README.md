@@ -288,12 +288,80 @@ Log displays explicit updates, recorded activity, coordinator generations and
 completed tasks. It does not infer coordinator turn progress.
 Opened tabs keep drafts mounted when another tab or replacement is inspected.
 Tabs show labels only. Their density follows measured width: tighter spacing,
-then named glyphs for Context/Log/Usage, then a scrolling strip. Keyboard
+then named glyphs for PRs/Context/Log/Usage, then a scrolling strip. Keyboard
 navigation uses arrow/Home/End.
 Usage reuses the real bounded observations described below; no prototype fixture
 or mock action is imported. The external prototype and feedback data are separate.
 
+### Merge queue (PRs tab)
+
+The PRs tab lists the open pull requests authored by the `gh` account (`gh api
+user`, resolved once) in the GitHub repositories of the Initiative's member BB
+projects. A project's repository comes from the `gitRemoteUrl` BB records for
+it (its `origin`); projects without a GitHub remote are named in the footer.
+For bb-plugins that is `erwinkn/bb-plugins` and, through bb-fork,
+`erwinkn/bb`.
+
+Each row shows the title, `repo #number` (the owner is dropped for the user's
+own repositories), `head → base`, when it was opened and last updated, the
+checks rollup with counts, the review decision (omitted when the base branch
+requires none), mergeability, and the W# whose thread pushed it. That last one
+costs nothing: BB worktree branches end in `-thr_<id>`, matched against the
+workers' recorded threads.
+
+Rows are grouped by workflow stage, oldest first within a stage: **Ready for
+you** (`ready-for-erwin`), **In review**, **Ready for review**, **Being worked
+on** (`working`) and **Experiments**. The coordinator records a PR's stage with
+`initiative_pr` (below). Without one, the stage is guessed from GitHub: a draft
+is being worked on; approved, with green or no checks and mergeable, is ready
+for you; anything else is ready for review. A guessed stage carries a faint
+italic "guessed" tag; a recorded one carries no tag and shows the
+coordinator's note under the row, with when it was set on hover. The row's
+glyph color still shows GitHub health (green ready, amber waiting on checks,
+review or mergeability, red failing checks, conflicts or changes requested,
+grey draft), and its tooltip says why.
+
+A click opens the PR through `useBbNavigate().openUrl`: a tab of BB's built-in
+browser on desktop while "open links in the app browser" is on (BB's default),
+the external browser otherwise, and a new tab if the host declines. The row is
+a real anchor, so modifier clicks, middle clicks and copying the link work as
+usual.
+
+The server keeps one cache per repository, shared by every Initiative and
+client (`lib/merge-queue-server.ts`). The `mergeQueue` RPC re-reads a
+repository when its last attempt is two minutes old, and Refresh forces a read
+(at most once per 10 s). Each read is one asynchronous `gh pr list --repo R
+--author LOGIN --state open --json …` per repository, at most one in flight per
+repository and capped at 50 PRs, with a 20 s timeout. No token is stored. The
+dashboard reads the queue when it opens, so the tab shows the open PR count, and
+then follows its usual polling; those reads hit the cache. A failed fetch keeps
+the last good list with "Couldn't refresh" and the error; a repository that
+never loaded shows the error with Retry.
+
 ## Backend and tools
+
+**PR stages.** `initiative_pr {prs:[{url, stage, note?}]}` (coordinator only) sets
+or clears the workflow stage of several PRs in one transaction: `working`,
+`ready-for-review`, `in-review`, `ready-for-erwin`, `experiment`, or `clear`. A
+URL may carry any suffix (`/files`, `?diff=split`) or be `owner/repo#12`; it is
+stored canonical and lower case, one stage per PR per Initiative, with the time
+and an optional note of at most 200 characters (table `pr_stages`, an appended
+migration). One invalid entry rejects the whole call. A stage on a PR that
+closes or merges simply stops showing, since the queue lists open PRs only; its
+row stays. `bb initiative pr '<json>' [initiative-id]` is the CLI form: from the
+coordinator thread, or from a terminal with the Initiative id.
+
+**Batches.** `initiative_batch {actions:[{tool, ...args}]}` (coordinator only,
+1 to 20 actions) runs `spawn`, `message`, `task`, `worker`, `decision`,
+`update`, `pr` or `read` actions in order. Each action goes through the same
+"parse, then handle" function as its standalone tool, so its schema, errors and
+rules are the tool's own; a parse failure is that action's error. A failing
+action never stops the rest. The result is `{succeeded, failed,
+results:[{tool, ok, result|error}]}`, and the dashboard hears one change for the
+whole batch. The whole response stays within one read's 64 KiB: past it, an
+action still runs but its entry is `{tool, ok, omitted:true, reason}`, with a
+`note` to read those results separately. `manage` (pause,
+handover, archive) stays a call of its own.
 
 SQLite in BB's plugin storage owns Initiatives, tasks, workers, generations,
 assignments, decisions, updates, operation receipts and usage. Legacy inbox,

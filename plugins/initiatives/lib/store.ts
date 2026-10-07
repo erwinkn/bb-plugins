@@ -34,6 +34,7 @@ import {
 
 import { isLegacyReport, storedReportSchema } from "./legacy";
 import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-schema";
+import { PR_STAGE_IDS, type PrStage, type PrStageRecord } from "./pr-stages";
 
 
 // The plugin server is the only writer. Every multi-row change runs in one
@@ -396,6 +397,15 @@ export const MIGRATIONS = [
   `ALTER TABLE handover_drafts ADD COLUMN fingerprint TEXT`,
   `ALTER TABLE handover_drafts ADD COLUMN captured_at INTEGER`,
   `ALTER TABLE handover_drafts ADD COLUMN purpose TEXT`,
+  // W198: the coordinator's workflow stage per pull request (canonical URL).
+  `CREATE TABLE pr_stages (
+    project_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    note TEXT,
+    set_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, url)
+  )`,
 ];
 
 export const ACTIVITY_LIMIT = 300;
@@ -2819,6 +2829,29 @@ export class Store {
         .run(threadId, projectId, unseen.at(-1)!.seq,
           cursor?.firstObservedAt ?? unseen[0]!.createdAt, unseen.at(-1)!.createdAt);
     })();
+  }
+
+  /** W198: one stage per PR; `null` removes it. `url` is canonical (see canonicalPrUrl). */
+  setPrStage(projectId: string, url: string, stage: PrStage | null, note: string | null, at: number): void {
+    if (stage === null) {
+      this.db.prepare("DELETE FROM pr_stages WHERE project_id = ? AND url = ?").run(projectId, url);
+      return;
+    }
+    this.db.prepare(`INSERT INTO pr_stages (project_id, url, stage, note, set_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(project_id, url) DO UPDATE SET stage = excluded.stage, note = excluded.note, set_at = excluded.set_at`)
+      .run(projectId, url, stage, note, at);
+  }
+
+  /** Recorded PR stages by canonical URL; a stage this version doesn't know is skipped. */
+  prStages(projectId: string): Map<string, PrStageRecord> {
+    const known = new Set<string>(PR_STAGE_IDS);
+    const rows = this.db.prepare("SELECT url, stage, note, set_at FROM pr_stages WHERE project_id = ?").all(projectId) as Row[];
+    return new Map(rows.filter((row) => known.has(row.stage as string)).map((row) => [row.url as string, {
+      url: row.url as string,
+      stage: row.stage as PrStage,
+      note: (row.note as string | null) ?? null,
+      setAt: row.set_at as number,
+    }]));
   }
 
   usageTurns(threadId: string): UsageTurn[] {

@@ -20,6 +20,13 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
 - `initiative_update` keeps the user informed. `initiative_decision` records the user's
   explicit choices (user-choice), your choices the user may want to veto (veto-request),
   and real questions. The decision log is the user's record; don't consult it to plan.
+- `initiative_pr` sets each PR's workflow stage for the dashboard's merge queue:
+  `{prs:[{url, stage, note?}]}` with working, ready-for-review, in-review,
+  ready-for-erwin, experiment or clear. Set it when you delegate, review or hand a PR to
+  the user, several PRs per call. `bb initiative pr '<json>'` is the CLI form.
+- `initiative_batch` runs several actions in one call, in order, and reports each:
+  `{actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"worker",action:"retire",worker:"W9"}]}`.
+  Use it instead of chaining calls; one failure doesn't stop the rest.
 - `initiative_manage` handover replaces you with a fresh coordinator once your turn ends.
   GPT-6 Luna High writes its first message from recent activity.
 

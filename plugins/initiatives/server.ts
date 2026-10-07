@@ -48,11 +48,15 @@ import {
   type OverviewDetail,
 } from "./lib/overview";
 import { LiveThreads, Recent } from "./lib/live-threads";
+import { MergeQueueCache } from "./lib/merge-queue-server";
+import { canonicalPrUrl, prToolSchema } from "./lib/pr-stages";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
 
-const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "reconcile", "recreate-coordinators"];
-const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
+const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "reconcile", "recreate-coordinators"];
+/** Tools initiative_batch can run, by their name without the initiative_ prefix. */
+const BATCH_TOOLS = ["spawn", "message", "task", "worker", "decision", "update", "pr", "read"] as const;
+const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { objectRootSchema } from "./lib/tool-schema";
 import { ProjectError, errorMessage } from "./lib/bb";
@@ -64,6 +68,7 @@ import {
   readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, validateSelection, withImpliedDetail,
   readOptionsSchema,
   READ_VIEWS,
+  MAX_READ_BYTES,
   type ReadOptions,
   type ReadView,
 } from "./lib/read";
@@ -369,7 +374,18 @@ export default function plugin(bb: BbPluginApi) {
         }
       : null;
   };
+  const mergeQueue = new MergeQueueCache({
+    memberProjectIds: (projectId) => service.requireProject(projectId).memberProjectIds,
+    project: async (bbProjectId) => {
+      const p = await bb.sdk.projects.get({ projectId: bbProjectId });
+      return { name: p.name, gitRemoteUrl: p.gitRemoteUrl ?? null };
+    },
+    workers: (projectId) =>
+      new Map(store.workers(projectId).flatMap((w) => (w.threadId ? [[w.threadId, w.ref] as const] : []))),
+    prStages: (projectId) => store.prStages(projectId),
+  });
   bb.rpc.register(projectsContract, {
+    mergeQueue: ({ projectId, refresh }) => mergeQueue.read(projectId, { refresh }),
     resetSetting: async ({ field }) => {
       await preferences.handle.experimental_set({ [field]: null });
       return { ok: true as const };
@@ -521,6 +537,8 @@ export default function plugin(bb: BbPluginApi) {
     "initiative_decision",
     "initiative_update",
     "initiative_manage",
+    "initiative_pr",
+    "initiative_batch",
   ];
   bb.agents.configure((ctx) => {
     const guidance = () => preferences.configuration();
@@ -614,10 +632,19 @@ export default function plugin(bb: BbPluginApi) {
   });
   // New configurations advertise canonical names only. Retained native sessions
   // may still call their already-constructed old allowlist; no runtime restart.
+  // One "parse, then handle" per tool, shared by the tool itself and initiative_batch,
+  // so a batched action gets exactly the tool's validation. Zod parameters are parsed
+  // here (BB parses them too for a direct call; parsing is idempotent); tools that
+  // publish plain JSON Schema parse inside their own execute.
+  type ToolExecute = Parameters<typeof bb.agents.registerTool>[0]["execute"];
+  const handlers = new Map<string, ToolExecute>();
   const registerTool: typeof bb.agents.registerTool = (tool: Parameters<typeof bb.agents.registerTool>[0]) => {
+    const schema = typeof (tool.parameters as { safeParse?: unknown }).safeParse === "function" ? tool.parameters as unknown as z.ZodType : null;
+    const run: ToolExecute = (input, context) => tool.execute(schema ? parsed(schema, input, tool.name) : input, context);
+    handlers.set(tool.name, run);
     const definition: typeof tool = {
       ...tool,
-      execute: (input, context) => announcing(() => tool.execute(input, context), () => projectOf(context.threadId)),
+      execute: (input, context) => announcing(() => run(input, context), () => projectOf(context.threadId)),
     };
     bb.agents.registerTool(definition);
     const suffix = definition.name.replace(/^initiative_/, "");
@@ -811,6 +838,27 @@ export default function plugin(bb: BbPluginApi) {
       return JSON.stringify({ ref: result.ref, description: result.description, madeBy: result.madeBy, status: result.status, review: result.review, recordedBy: result.provenance });
     },
   });
+  /** initiative_pr and `bb initiative pr`: record or clear PR workflow stages, in one transaction. */
+  const setPrStages = (projectId: string, raw: unknown, tool: string) => {
+    const input = parsed(prToolSchema, raw, tool);
+    service.requireProject(projectId);
+    const at = Date.now();
+    const prs = store.db.transaction(() => input.prs.map(({ url, stage, note }) => {
+      const key = canonicalPrUrl(url)!;
+      store.setPrStage(projectId, key, stage === "clear" ? null : stage, stage === "clear" ? null : note || null, at);
+      return { url: key, stage, ...(note && stage !== "clear" ? { note } : {}) };
+    }))();
+    return { prs };
+  };
+  registerTool({
+    name: "initiative_pr",
+    parameters: jsonSchema(prToolSchema),
+    description: 'Set the workflow stage of pull requests in the merge queue; batch them in one call. {prs:[{url:"https://github.com/o/r/pull/12",stage:"in-review",note?:"W14 reviewing"}]}. Stages: working, ready-for-review, in-review, ready-for-erwin, experiment; clear removes yours, and the dashboard guesses from GitHub again. Coordinator only.',
+    async execute(raw, { threadId }) {
+      const p = await coordinatorProject(threadId);
+      return JSON.stringify(setPrStages(p.id, raw, "initiative_pr"));
+    },
+  });
   registerTool({
     name: "initiative_update",
     description: "Tell the user how things stand in a short update: what is done, what is next, what you need. Write for someone who has not read the threads.",
@@ -861,6 +909,50 @@ export default function plugin(bb: BbPluginApi) {
       return JSON.stringify(read(m.project.id, view, options));
     },
   });
+  const batchSchema = z.object({
+    actions: z.array(z.object({ tool: z.enum(BATCH_TOOLS) }).passthrough()).min(1).max(20),
+  }).strict();
+  registerTool({
+    name: "initiative_batch",
+    parameters: jsonSchema(batchSchema),
+    description: `Several Initiative actions in one call, run in order through their own tools; one failing never stops the rest. {actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"worker",action:"retire",worker:"W9"},{tool:"message",to:"W12",text:"…"}]}. Each action is {tool, ...that tool's usual arguments}; tool is one of ${BATCH_TOOLS.join(", ")}. Returns one result per action. Coordinator only.`,
+    async execute(raw, context) {
+      await coordinatorProject(context.threadId);
+      const { actions } = parsed(batchSchema, raw, "initiative_batch");
+      type Result = { tool: string; ok: boolean; result?: unknown; error?: string; omitted?: true; reason?: string };
+      // Every action runs first; the response is built afterwards.
+      const full: Result[] = [];
+      for (const { tool, ...args } of actions) {
+        try {
+          const out = await handlers.get(`initiative_${tool}`)!(args, context);
+          let result: unknown = out;
+          if (typeof out === "string") try { result = JSON.parse(out); } catch { /* plain text result */ }
+          full.push({ tool, ok: true, result });
+        } catch (error) {
+          full.push({ tool, ok: false, error: errorMessage(error) });
+        }
+      }
+      // One budget for the complete serialized response, the size of a single read:
+      // start from a receipt per action and admit each full entry, in order, only
+      // when the whole response (envelope, note, separators) still fits.
+      const receipt = (entry: Result): Result => ({ tool: entry.tool, ok: entry.ok, omitted: true, reason: `${entry.ok ? "result" : "error"} left out: the batch response is capped at ${MAX_READ_BYTES / 1024} KiB` });
+      const shown = full.map(receipt);
+      const render = () => {
+        const omitted = shown.filter(r => r.omitted).length;
+        return JSON.stringify({
+          succeeded: full.filter(r => r.ok).length,
+          failed: full.filter(r => !r.ok).length,
+          ...(omitted ? { note: `${omitted} result${omitted === 1 ? "" : "s"} left out to stay under ${MAX_READ_BYTES / 1024} KiB; the actions ran. Read what you need separately, e.g. initiative_read with refs.` } : {}),
+          results: shown,
+        });
+      };
+      for (const [index, entry] of full.entries()) {
+        shown[index] = entry;
+        if (Buffer.byteLength(render()) > MAX_READ_BYTES) shown[index] = receipt(entry);
+      }
+      return render();
+    },
+  });
   registerTool({
     name: "initiative_report",
     description: 'Optional: one line for the dashboard. {outcome:"done"|"blocked"|"failed",summary}; blocked needs question. Your final message is the report itself, so still end your turn with it.',
@@ -907,6 +999,11 @@ export default function plugin(bb: BbPluginApi) {
         name: "command",
         summary: "Run typed Initiative JSON (see bb initiative describe). Decisions: user-choice for the user's explicit choices, veto-request for your own choices the user may want to veto.",
         usage: "bb initiative command '<json>' [initiative-id]",
+      },
+      {
+        name: "pr",
+        summary: "Set or clear the workflow stage of pull requests (coordinator, or a terminal with an initiative id)",
+        usage: "bb initiative pr '{\"prs\":[{\"url\":\"https://github.com/o/r/pull/12\",\"stage\":\"in-review\"}]}' [initiative-id]",
       },
       {
         name: "report",
@@ -978,6 +1075,15 @@ export default function plugin(bb: BbPluginApi) {
             }
             result = await perform(id, command, ctx.threadId ? "coordinator" : "user", ctx.threadId ?? null);
           }
+        } else if (action === "pr" && value && args.length <= 3) {
+          if (ctx.threadId) {
+            if (!member || member.former || member.workerNum !== 0)
+              throw new ProjectError("Only the current initiative coordinator sets PR stages from an agent CLI.");
+            if (id !== member.project.id)
+              throw new ProjectError("A coordinator cannot set another initiative's PR stages.");
+          }
+          if (!id) throw new ProjectError("Pass the initiative id: bb initiative pr '<json>' <initiative-id>.");
+          result = setPrStages(id, JSON.parse(value), "bb initiative pr");
         } else if (
           action === "report" &&
           value &&

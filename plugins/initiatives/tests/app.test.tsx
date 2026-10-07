@@ -338,7 +338,7 @@ describe("project dashboard", () => {
     const o = overview();
     const slot = mount({ list: () => [], overview: () => o });
     await slot.findByRole("tab", { name: /Inbox/ });
-    expect(slot.getAllByRole("tab")).toHaveLength(7);
+    expect(slot.getAllByRole("tab")).toHaveLength(8);
     expect(slot.queryByRole("heading", { name: "Useful search" })).toBeNull();
     expect(slot.getByRole("region", { name: "Needs your input" })).toBeTruthy();
     expect(
@@ -1158,7 +1158,7 @@ describe("project dashboard", () => {
     const slot = mount({ list: () => [], overview: () => o });
     await slot.findByRole("tab", { name: /Inbox/ });
     const tabs = slot.getAllByRole("tab");
-    expect(tabs.map(t => t.textContent)).toEqual(["Inbox1", "Decisions", "Threads", "Tasks", "Context", "Log", "Usage"]);
+    expect(tabs.map(t => t.textContent)).toEqual(["Inbox1", "Decisions", "Threads", "Tasks", "PRs", "Context", "Log", "Usage"]);
     for (const id of ["inbox", "decisions", "threads", "tasks", "context", "log", "usage"])
       expect(tabs.some(t => t.textContent!.includes(id))).toBe(false);
     // Secondary views carry a real glyph for the narrowest strip, never text.

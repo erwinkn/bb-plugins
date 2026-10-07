@@ -236,3 +236,54 @@
 .cr-accept-decisions button { max-width: 100%; text-align: left; white-space: normal; }
 .bb-projects .cr .cr-final-message { margin: 6px 0; padding: 8px 10px; border-left: 2px solid var(--border); background: color-mix(in srgb, var(--muted) 40%, transparent); border-radius: 4px; }
 .bb-projects .cr .cr-final-message-text { margin: 0; white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; }
+
+/* Amber as text: badge amber is too faint on the light canvas. */
+.cr { --cr-amber-ink: var(--cr-amber); }
+.bb-projects[data-appearance="light"] .cr { --cr-amber-ink: color-mix(in oklch, var(--cr-amber) 62%, #000); }
+/* Merge queue: open PRs by group. Each row is one link, three short lines that
+   wrap rather than overflow in the narrow side panel. */
+.cr-mq-head { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
+.cr .cr-mq-head .cr-section-heading { margin: 0 auto 0 0; }
+.cr-mq-status { font-size: 11px; color: var(--muted-foreground); white-space: nowrap; }
+.cr-mq-status[data-tone="wait"] { color: var(--cr-amber-ink); }
+.cr-mq[aria-busy="true"] .cr-mq-refresh svg { animation: cr-mq-spin .9s linear infinite; }
+@keyframes cr-mq-spin { to { transform: rotate(360deg); } }
+.cr-mq-note { margin: 2px 0 6px !important; padding: 6px 9px; border-radius: 7px; font-size: 11.5px; color: var(--cr-ink-secondary); background: color-mix(in srgb, var(--cr-amber) 9%, transparent); }
+.cr-mq-group { margin-top: 14px; }
+.cr-mq-group h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 4px; font-size: 11.5px; font-weight: 650; color: var(--cr-ink-secondary); }
+.cr-mq-group ul { margin: 0; padding: 0; list-style: none; }
+.cr-mq-pr { display: flex; align-items: flex-start; gap: 9px; padding: 7px 6px; margin: 0 -6px; border-radius: 7px; color: inherit; text-decoration: none; }
+.cr-mq-pr:hover { background: var(--accent); }
+.cr-mq-pr:hover .cr-mq-title { text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 2px; }
+.cr-mq-glyph { width: 15px; height: 15px; flex: none; margin-top: 1.5px; }
+.cr-mq-pr[data-group="ready"] .cr-mq-glyph { color: var(--cr-green); }
+.cr-mq-pr[data-group="waiting"] .cr-mq-glyph { color: var(--cr-amber); }
+.cr-mq-pr[data-group="fix"] .cr-mq-glyph { color: var(--destructive); }
+.cr-mq-pr[data-group="draft"] .cr-mq-glyph { color: var(--cr-faint); }
+.cr-mq-main { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.cr-mq-line { display: flex; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.cr-mq-title { flex: 1; min-width: 0; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cr-mq-pr[data-group="draft"] .cr-mq-title { color: var(--cr-ink-secondary); }
+.cr-mq-updated { flex: none; font: 11px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted-foreground); }
+.cr-mq-meta, .cr-mq-signals { flex-wrap: wrap; font-size: 11px; color: var(--muted-foreground); }
+.cr-mq-repo { flex: none; color: var(--cr-ink-secondary); font-variant-numeric: tabular-nums; }
+.cr-mq-branch { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; }
+.cr-mq-branch code { font-size: 10.5px; }
+.cr-mq-headref { display: inline-block; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.cr-mq-opened { flex: none; }
+.cr-mq-opened time { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.cr-mq-signal { flex: none; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.cr-mq-signal svg { width: 11px; height: 11px; flex: none; }
+.cr-mq-signal[data-tone="good"] { color: var(--cr-green); }
+.cr-mq-signal[data-tone="bad"] { color: var(--destructive); }
+.cr-mq-signal[data-tone="wait"] { color: var(--cr-amber-ink); }
+.cr-mq-signal[data-tone="faint"] { color: var(--cr-faint); }
+.cr-mq-worker { flex: none; padding: 0 5px; border-radius: 4px; border: 1px solid var(--border); background: var(--muted); color: var(--cr-ink-secondary); font: 600 10px/15px ui-monospace, "SF Mono", Menlo, monospace; }
+.cr-mq-foot { margin-top: 16px !important; font-size: 11px; color: var(--cr-faint); }
+.cr-mq-foot strong { font-weight: 600; color: var(--muted-foreground); }
+@container (min-width: 520px) { .cr-mq-headref { max-width: 40ch; } }
+@container (max-width: 350px) { .cr-mq-pr { gap: 7px; } .cr-mq-headref { max-width: 18ch; } }
+.cr-mq-signals { align-items: center; }
+/* A stage guessed from GitHub reads quieter than one the coordinator set. */
+.cr-mq-guess { flex: none; color: var(--cr-faint); font-style: italic; }
+.cr-mq-stage-note { font-size: 11px; color: var(--cr-ink-secondary); padding-left: 7px; border-left: 2px solid var(--border); }
