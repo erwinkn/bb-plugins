@@ -213,7 +213,8 @@ describe("T136 coordinator handover written by GPT-6 Luna High", () => {
 describe("T136 instructions", () => {
   it("defaults are short, within the bound, and say what the brief now leaves out", () => {
     // W198 added PR stages and batching (one line).
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(1600);
+    // Erwin (2026-10-07) added the per-role model line.
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(1800);
     // Erwin (2026-10-07) added the no-narration rule to the worker text.
     expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1200);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
