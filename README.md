@@ -381,7 +381,8 @@ Suggested issue title: `Attribute event-loop stalls to queries, GC and code`.
 
 ### Run the server on Node 24.16 or later (2026-10-07)
 
-Candidate from W193; not filed. On Node 22, `AbortSignal.any` records each
+Fork task (Erwin, 2026-10-07: fix in our fork first). Candidate from W193; not
+filed. On Node 22, `AbortSignal.any` records each
 composite on every source signal. Each time a composite is garbage-collected,
 a finalizer walks every composite still recorded on that source
 (`internal/abort_controller` lines 89–94, where the fork's stall sampler put
@@ -408,7 +409,8 @@ AbortSignal.any finalization is quadratic on Node 22`.
 
 ### SDK request timeouts pin a composite signal for 75 s (2026-10-07)
 
-Candidate from W193; not filed. `createRequestTimeoutFetch`
+Fork task (Erwin, 2026-10-07: fix in our fork first). Candidate from W193; not
+filed. `createRequestTimeoutFetch`
 (`packages/sdk/src/response.ts:104`) turns every `bb.sdk` call that passes a
 signal into `AbortSignal.any([callerSignal, 75 s timeout])`. The timeout keeps
 that composite recorded on the caller's signal for 75 s even when the call
@@ -422,7 +424,8 @@ alive for 75 s after each call`.
 
 ### Desktop app leaves no crash evidence (2026-10-07)
 
-Fork task first, then an upstream candidate; not filed. The macOS desktop app
+Fork task (Erwin, 2026-10-07: fix in our fork first), then an upstream
+candidate; not filed. The macOS desktop app
 showed a crash diagnostic around 02:27, then relaunched itself. It left no
 Crashpad dump, no `.ips` report and no log file: `~/Library/Application
 Support/bb` has neither `Crashpad` nor `logs`, so a renderer error screen
