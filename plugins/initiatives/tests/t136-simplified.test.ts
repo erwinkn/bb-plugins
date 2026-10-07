@@ -137,18 +137,24 @@ describe("T136 coordinator handover written by GPT-6 Luna High", () => {
     expect(f.spawn.mock.calls.length).toBe(spawns + 1);
     expect(writer).toMatchObject({ providerId: "codex", model: "gpt-6-luna", reasoningLevel: "high", title: "Handover · Search", pluginMetadata: { role: "handover-writer", projectId: project.id } });
     expect(writer).not.toHaveProperty("parentThreadId");
-    expect(writer.prompt).toContain('Write the handover for the new coordinator of the Initiative "Search".');
+    expect(writer.prompt).toContain('Write a short handover for the new coordinator of the Initiative "Search" from this dated snapshot.');
+    expect(writer.prompt).toMatch(/Snapshot captured at \d{4}-\d\d-\d\d \d\d:\d\d UTC/);
     expect(writer.prompt).toContain("Objective: Make historical search useful");
     // The writer gets no Initiative tools.
     const writerThread = [...f.threads.keys()].at(-1)!;
     const { makePluginAgentConfigurationContext } = await import("@get-bb/plugin-sdk/testing");
     expect((await f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(writerThread)!, pluginMetadata: f.metadata.get(writerThread) as never }))).tools).toEqual([]);
     expect(f.store.project(project.id)!.coordinatorThreadId).toBe("coordinator");
+    const before = f.history.length;
     finishTurn(f, "Objective: historical search. In flight: nothing. Next: index archived rows.");
+    // The writer's turn is in the writer's thread (W188: coordinator activity would make it stale).
+    for (const row of f.history.slice(before)) row.threadId = writerThread;
     await f.runtime.onThreadIdle(f.idle(writerThread));
     const seed = f.spawn.mock.calls.at(-1)![0];
     expect(seed.title).toBe("Search · coordinator");
-    expect(seed.prompt).toContain("Handover from the previous coordinator:\n\nObjective: historical search. In flight: nothing. Next: index archived rows.");
+    // W188 (F1): the handover is dated by its capture, and the replacement says it is complete.
+    expect(seed.prompt).toMatch(/Handover from the previous coordinator:\n\nWritten from a snapshot captured at \d{4}-\d\d-\d\d \d\d:\d\d UTC; anything later is not in it\. Read the overview first \(initiative_read\): things may have moved since the capture time\.\n\nObjective: historical search\. In flight: nothing\. Next: index archived rows\./);
+    expect(seed.prompt).toContain("this replacement is complete");
     expect(f.store.project(project.id)!.coordinatorThreadId).not.toBe("coordinator");
     expect(f.archive).toHaveBeenCalledWith(expect.objectContaining({ threadId: writerThread }));
     expect(f.store.handoverDraft(project.id)).toBeNull();
@@ -162,7 +168,7 @@ describe("T136 coordinator handover written by GPT-6 Luna High", () => {
     f.idle("coordinator");
     await f.service.replaceCoordinator(project.id, { reason: "Fresh context" });
     const seed = f.spawn.mock.calls.at(-1)![0].prompt as string;
-    expect(seed).toContain("Handover from the previous coordinator:\n\n(Generated without Luna: GPT-6 Luna is not available");
+    expect(seed).toMatch(/Handover from the previous coordinator:\n\nWritten from a snapshot captured at [^\n]+\n\n\(Generated without Luna: GPT-6 Luna is not available/);
     expect(seed).toContain('# Initiative "Search"');
     expect(f.store.project(project.id)!.coordinatorThreadId).not.toBe("coordinator");
   });

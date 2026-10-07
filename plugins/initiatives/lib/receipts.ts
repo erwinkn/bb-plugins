@@ -73,25 +73,13 @@ export function noDeliverableWorkReason(workerRef: string, latest: AssignmentRec
 }
 
 /**
- * The supported retry for a reported (not yet accepted) assignment. Work: task-accept for
- * a succeeded report, otherwise assignment-reject, which keeps the report in the ledger and
- * frees its tasks for a new assignment. Review: review-accept or assignment-reject, then a
- * fresh independent reviewer; a reviewer is never continued. A report that still lists
- * background work waits for the worker's updated report, unless its context has ended
- * (assignment-reject then checks native end evidence itself).
+ * What to do instead with a reported assignment (T136): nothing is accepted or rejected.
+ * Send fixes to the same worker as more work, or close the task when it is done.
  */
 export function reportedRetryHint(a: AssignmentRecord, taskRef: string): string {
   const worker = `W${a.workerNum}`;
-  const review = a.role === "review";
-  if (a.report?.pendingBackgroundWork.length)
-    return `${a.ref}'s report still lists background work, so it cannot be ${a.report.outcome === "succeeded" ? "accepted or rejected" : "rejected"} until ${worker} reports again: wait for an updated final report from ${worker} once that work finishes. If ${worker} is retired or its thread is archived or deleted, assignment-reject proceeds once BB confirms that thread has ended and records the listed work as unverified; those jobs may still be running and keep ${a.ref}'s write scope until an explicit assignment-scope-release; a rejected assignment takes no later report.`;
-  const reject = `reject ${a.ref}'s report with initiative_task {"action":"assignment-reject","assignment":"${a.ref}","reason":"…"} (its report${a.report?.blocker ? ", blocker" : ""} and handoff stay in the ledger)`;
-  if (review) {
-    if (a.report?.outcome === "succeeded")
-      return `Accept the review with initiative_task {"action":"review-accept","assignment":"${a.ref}"}, or ${reject}.`;
-    return `${reject[0]!.toUpperCase()}${reject.slice(1)}, then delegate a fresh independent reviewer: role review, route fresh, access read-only, reviewOf ${JSON.stringify((a.reviewOf ?? []).map((n) => `T${n}`))} and reviewTargets ${JSON.stringify((a.reviewTargets ?? []).map(({ task, assignment, revision }) => ({ task, assignment, revision })))}.`;
-  }
-  if (a.report?.outcome === "succeeded")
-    return `Accept it with task-accept, or ${reject}, before delegating ${taskRef} again.`;
-  return `To retry ${taskRef}, ${reject}, then delegate ${taskRef} again, usually route continue to ${worker} ${a.report?.blocker ? "with the answer to its blocker" : "with what the retry needs"}.`;
+  const task = taskRef.split(",")[0]?.trim() || null;
+  if (a.role === "review")
+    return `Read the review's final message, send the fixes to the reviewed worker with initiative_message {"to":"${a.reviewTargets?.[0]?.worker ?? "W#"}","text":"<the fixes>","work":true}, and ask ${worker} to re-review with initiative_message {"to":"${worker}","text":"<what changed>","work":true}.`;
+  return `To retry, send ${worker} the fixes as more work: initiative_message {"to":"${worker}","text":"<the fixes>","work":true}${task ? `. If it is done, close the task: initiative_task {"action":"close","task":"${task}","outcome":"done"}` : ""}.`;
 }

@@ -49,7 +49,10 @@ import {
 } from "./lib/overview";
 import { LiveThreads, Recent } from "./lib/live-threads";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
-import { COMMAND_EXAMPLES, READ_EXAMPLES } from "./lib/examples";
+import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
+
+const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "reconcile", "recreate-coordinators"];
+const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { objectRootSchema } from "./lib/tool-schema";
 import { ProjectError, errorMessage } from "./lib/bb";
@@ -58,7 +61,7 @@ import { scopedNativeEvent } from "./lib/native-events";
 import { initiativesContext, membersContext, recordText, threadContext } from "./lib/context";
 import { messageSchema, currentIdentity, workerWork } from "./lib/messaging";
 import {
-  readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, validateSelection,
+  readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, validateSelection, withImpliedDetail,
   readOptionsSchema,
   READ_VIEWS,
   type ReadOptions,
@@ -346,6 +349,7 @@ export default function plugin(bb: BbPluginApi) {
     return readCollection(store, projectId, view, options);
   };
   const readThreads = async (projectId: string, options: ReadOptions) => {
+    options = withImpliedDetail(options);
     validateSelection("threads", options);
     return readRows((await overview(projectId)).memberThreads.map(row => ({ view: "threads", row })), options);
   };
@@ -702,7 +706,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_message",
     parameters: jsonSchema(messageToolSchema),
-    description: 'Send one message to a worker (W#) or the coordinator. {to:"W4",text:"…"}. The coordinator gives an existing worker more work with tasks:["T41"] or work:true; its next final message is a report. mode steer for urgent corrections, queue (default) otherwise. Messages never resume a stopped or retired worker.',
+    description: 'Send one message to a worker (W#) or the coordinator. {to:"W4",text:"…"}. The coordinator gives an existing worker more work with tasks:["T41"] or work:true; its next final message is a report. To correct work already in progress, send a plain message (no work:true). mode steer for urgent corrections, queue (default) otherwise. Messages never resume a stopped or retired worker.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
       return JSON.stringify(await sendMessage(raw, threadId));
@@ -722,7 +726,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_worker",
     parameters: jsonSchema(workerToolSchema),
-    description: 'Retire a finished worker ({action:"retire",worker:"W4"}; its thread must be idle and its reports stay readable), stop its running work ({action:"stop",worker:"W4",reason}), or adopt an existing thread ({action:"adopt",threadId,role,label,purpose}).',
+    description: 'Retire a finished worker ({action:"retire",worker:"W4"}; once its turn has ended, since a report can arrive first; its reports stay readable), stop its running work ({action:"stop",worker:"W4",reason}), or adopt an existing thread ({action:"adopt",threadId,role,label,purpose}).',
     async execute(raw, { threadId }) {
       const legacy = await legacyCommand(raw, threadId!, ["worker-retire"]);
       if (legacy) return legacy;
@@ -827,13 +831,17 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_read",
-    description: 'Read the Initiative. {} is the overview. {refs:["W12","T40","A301"]} reads exact records (a W# includes its latest report). {view:"workers"|"tasks"|"reports"|"context"|"activity"} lists them; limit 1..30, offset to page. detailed:true for full records. Reading never wakes agents.',
+    description: 'Read the Initiative. {} is the overview. {refs:["W12","T40","A301"]} reads exact records (a W# includes its latest report). {view:"workers"|"tasks"|"reports"|"context"|"activity"} lists them; limit 1..30, offset to page. detailed:true for full records; fields picks some, e.g. {refs:["W12"],fields:["report"]} for a worker\'s full latest report. Reading never wakes agents.',
     parameters: agentReadSchema,
     async execute(input, { threadId }) {
       if (!threadId) throw new ProjectError("Use initiative_read from an Initiative thread.");
       await ensureMember(threadId);
       const m = store.membership(threadId);
-      if (!m) throw new ProjectError("This thread does not belong to an Initiative.");
+      if (!m) {
+        const pending = service.pendingCoordinatorIdentity(threadId, await bb.sdk.threads.getPluginMetadata({ threadId, pluginId: bb.pluginId }).catch(() => ({})) as Record<string, unknown>);
+        if (pending) return JSON.stringify(pending);
+        throw new ProjectError("This thread does not belong to an Initiative.");
+      }
       const { view, ...rawOptions } = input;
       const options = readOptionsSchema.parse(rawOptions);
       if (view === "overview" && Object.keys(rawOptions).length)
@@ -876,7 +884,7 @@ export default function plugin(bb: BbPluginApi) {
     summary: "Durable initiatives, worker lifecycles, decisions and overview",
     commands: [
       { name: "message", summary: "One message to a worker or the coordinator; the coordinator adds tasks or work:true to give a worker more work", usage: "bb initiative message '{\"to\":\"W4\",\"text\":\"Interface fact\"}'" },
-      { name: "describe", summary: "Show short valid JSON examples for commands and reads", usage: "bb initiative describe [read|spawn|review|work-message|fresh-with-handoff|message|task-close|question|answer|quiet-answer|user-choice|veto-request|supersede|withdraw|handover]" },
+      { name: "describe", summary: "Show short valid JSON examples for commands and reads", usage: "bb initiative describe [read|decision|spawn|review|work-message|fresh-with-handoff|message|task-close|question|answer|quiet-answer|user-choice|veto-request|supersede|withdraw|handover|<initiative_tool>]" },
       { name: "list", summary: "List initiatives", usage: "bb initiative list" },
       {
         name: "overview",
@@ -920,9 +928,10 @@ export default function plugin(bb: BbPluginApi) {
         let result: unknown;
         if (action === "describe" && args.length <= 2) {
           if (!value) result = { commands: Object.keys(COMMAND_EXAMPLES), reads: READ_EXAMPLES, note: "bb initiative describe <name>; replace the example refs with real ones." };
-          else if (value === "read") result = READ_EXAMPLES;
+          else if (value === "read" || value === "initiative_read") result = READ_EXAMPLES;
           else if (value in COMMAND_EXAMPLES) result = COMMAND_EXAMPLES[value as keyof typeof COMMAND_EXAMPLES];
-          else throw new ProjectError(`Unknown example ${value}. Use bb initiative describe for available names.`);
+          else if (value in DESCRIBE_GROUPS) result = Object.fromEntries(DESCRIBE_GROUPS[value]!.map(name => [name, COMMAND_EXAMPLES[name]]));
+          else throw new ProjectError(`Unknown example ${value}. Available: read, ${[...Object.keys(DESCRIBE_GROUPS), ...Object.keys(COMMAND_EXAMPLES)].join(", ")}.`);
         } else if (action === "list" && args.length === 1)
           result = store.projects().map((p) => summary(p.id));
         else if (action === "overview" && args.length <= 2)
@@ -989,7 +998,7 @@ export default function plugin(bb: BbPluginApi) {
           result = await service.recreateCoordinators(all ? store.projects().filter(p => p.archivedAt === null).map(p => p.id) : ids, { dryRun: flags.includes("--dry-run"), waitMs });
         } else
           throw new ProjectError(
-            "Usage: bb initiative list | overview [id] | read <view> [id] | message '<json>' | command '<json>' [id] | report '<json>' | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]",
+            `${action && !CLI_COMMANDS.includes(action) ? `Unknown subcommand ${action}. ` : action ? `Unexpected arguments for ${action}. ` : ""}${CLI_USAGE}`,
           );
         const stdout = JSON.stringify(result, null, 2);
         if (Buffer.byteLength(stdout) > 900_000)

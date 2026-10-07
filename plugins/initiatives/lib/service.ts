@@ -22,7 +22,7 @@ import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
 import { queueTargets } from "./not-delivered";
 import { opMarker, renderAssignment, renderCoordinatorSeed } from "./brief";
-import { briefBoundary, fallbackBody, finalAgentMessage, handoverPacket, handoverPrompt, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, recentMessages, withReason } from "./handover";
+import { briefBoundary, captureHandoverSnapshot, emptySnapshot, fallbackBody, finalAgentMessage, fingerprintHolds, handoverFingerprint, handoverPacket, handoverPrompt, HANDOVER_MAX_AGE_MS, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, readHandoverState, readUserMark, withReason, type Destination, type HandoverState } from "./handover";
 import { isOwnOrigin } from "./identity";
 import {
   chooseWorkProfile,
@@ -93,10 +93,10 @@ const CHECKOUT_PENDING_NOTE =
 function notOpenQuestion(item: DecisionRecord) {
   const why = item.status === "answered" ? "it is already answered; the recorded answer stands"
     : item.status === "closed" ? "the user closed it"
-    : item.status === "withdrawn" ? `the coordinator withdrew it: ${item.body.resolution?.note ?? ""}. Withdrawal records no answer. If the user has since made this choice explicitly, record {"action":"decision","madeBy":"user","description":"<the user's choice>"}`
+    : item.status === "withdrawn" ? `the coordinator withdrew it: ${(item.body.resolution?.note ?? "").replace(/\.+$/, "")}. Withdrawal records no answer. If the user has since made this choice explicitly, record it: initiative_decision {"action":"user-choice","description":"<the user's choice>"}`
     : item.status !== "active" ? `it is ${item.status}`
-    : item.madeBy === "agent" ? `it is an agent decision. Only the current coordinator, on the user's explicit cleanup request, may accept, veto or remove it: {"action":"cleanup","ref":"${item.ref}","operation":"accept","reason":"<the user's request>"}`
-    : `it is a recorded user decision. If the user explicitly changed it, record {"action":"decision","madeBy":"user","description":"<the new choice>","supersedes":"${item.ref}"}`;
+    : item.madeBy === "agent" ? `it is an agent decision; the user checks it in the Inbox. If the user explicitly chose otherwise, record their choice in its place: initiative_decision {"action":"user-choice","description":"<the user's choice>","supersedes":"${item.ref}"}`
+    : `it is a recorded user decision. If the user explicitly changed it, record initiative_decision {"action":"user-choice","description":"<the new choice>","supersedes":"${item.ref}"}`;
   return `${item.ref} is not an open question: ${why}.`;
 }
 
@@ -204,6 +204,24 @@ export interface DelegateResult {
  * BB owns thread execution, queues, Stop semantics and parent-to-coordinator
  * completion notices; nothing here retries, wakes or schedules threads.
  */
+/** The chosen draft cannot start a coordinator yet (W194): stale, unreadable, or the incumbent is busy. */
+class HandoverNotReady extends Error {
+  constructor(readonly kind: "stale" | "unknown" | "busy") {
+    super(`handover not ready: ${kind}`);
+  }
+}
+
+/** A draft written again for a replacement: a preview becomes a replacement draft, a replacement draft a final one. */
+const nextPurpose = (draft: HandoverDraft | null | undefined): "replacement" | "final" =>
+  draft?.purpose === "replacement" || draft?.purpose === "final" ? "final" : "replacement";
+
+/** A draft as the new coordinator's handover, dated by its capture time (F1). */
+function seedHandover(draft: HandoverDraft): string {
+  if (draft.source === "user" || !draft.capturedAt) return draft.text!;
+  const at = new Date(draft.capturedAt).toISOString().slice(0, 16).replace("T", " ");
+  return `Written from a snapshot captured at ${at} UTC; anything later is not in it. Read the overview first (initiative_read): things may have moved since the capture time.\n\n${draft.text}`;
+}
+
 export class ProjectsService {
   private coordinatorSwitches = new Map<string, string | null>();
   /** What discovery reads learned in this instance; never persisted, never authorizes a mutation. */
@@ -497,10 +515,17 @@ export class ProjectsService {
       handover?: string | null;
       /** Runs after the last awaited lookup and before the start is journaled; throws to abort. */
       revalidate?: () => Promise<void>;
+      /**
+       * W194: the caller's synchronous checks (request, cancel, incumbent). Run after every await
+       * here, the last time as the statement right before the start is journaled, so nothing can
+       * land between a passed check and the start record.
+       */
+      gate?: () => void;
       /** Marks the point of no return, invoked right before the spawn call. */
       onCommit?: () => void;
     },
   ) {
+    const gate = () => options?.gate?.();
     const primaryMember = project.memberProjectIds[0];
     if (!primaryMember || bbProjectId !== primaryMember)
       throw new ProjectError(
@@ -570,12 +595,14 @@ export class ProjectsService {
       };
     }
     const check = await checkCatalog(this.sdk, profile, env.routing);
+    gate();
     if (!check.ok) throw new ProjectError(check.reason!);
     // Catalog and host lookups can outlast a native coordinator turn. The
     // incumbent must still be idle and unchanged before recording a
     // replacement intent.
     if (reason !== null) {
       await this.assertCoordinatorIdle(project.coordinatorThreadId);
+      gate();
       if (
         this.requireProject(project.id).coordinatorThreadId !==
         project.coordinatorThreadId
@@ -585,6 +612,8 @@ export class ProjectsService {
         );
     }
     await options?.revalidate?.();
+    // Nothing is awaited from here to the start record.
+    gate();
     const op = newOpId();
     if (requestedProfile) {
       const current = this.requireProject(project.id);
@@ -1283,6 +1312,8 @@ export class ProjectsService {
     options?: {
       execution?: HandoverExecution;
       revalidate?: () => Promise<void>;
+      /** Synchronous checks spawnCoordinator runs right before the start is recorded. */
+      gate?: () => void;
       onCommit?: () => void;
       signal?: AbortSignal;
       /** The caller's voice; the handover drain marks its own re-entry. */
@@ -1319,18 +1350,57 @@ export class ProjectsService {
       );
     // T136: a new coordinator starts from a written handover. Without reviewed text, the
     // replacement waits for Luna to write one and then starts on its own.
+    let chosen: HandoverDraft;
     if (!options?.revalidate && !input.adoptThreadId && !input.handover) {
+      // W188 (F1): a preview is used only while nothing it was written from has changed.
+      const thenReplace = { reason: input.reason, expectedCoordinator: project.coordinatorThreadId, ...(input.profile ? { profile: input.profile } : {}), ...(input.environment ? { environment: input.environment } : {}) };
+      const writing = { state: "writing-handover" as const, note: "GPT-6 Luna High is writing the handover from recent activity; the new coordinator starts as soon as it is ready." };
+      const queue = () => this.requestHandover(projectId, { reason: input.reason, note: input.checkpoint, profile: input.profile, environment: input.environment }, "user");
       const ready = this.store.handoverDraft(projectId);
-      if (ready?.state === "ready" && ready.text) input = { ...input, handover: ready.text };
+      const check = ready ? await this.draftCheck(projectId, ready) : "stale";
+      // The coordinator's latest input could not be read: the durable request waits until it can.
+      if (check === "unknown") return queue();
+      if (check === "holds") chosen = ready!;
       else {
-        const thenReplace = { reason: input.reason, expectedCoordinator: project.coordinatorThreadId, ...(input.profile ? { profile: input.profile } : {}), ...(input.environment ? { environment: input.environment } : {}) };
-        const draft = await this.startHandoverDraft(projectId, { note: input.checkpoint ?? null, thenReplace });
-        if (draft.state !== "ready")
-          return { state: "writing-handover" as const, note: "GPT-6 Luna High is writing the handover from recent activity; the new coordinator starts as soon as it is ready." };
+        const draft = await this.startHandoverDraft(projectId, { note: input.checkpoint ?? null, thenReplace, restart: ready?.state === "ready", purpose: nextPurpose(ready) });
+        if (draft.state !== "ready") return writing;
         // Written at once (the plain listing): start now, so a refusal reaches this caller.
-        this.store.saveHandoverDraft({ ...draft, thenReplace: null });
-        input = { ...input, handover: draft.text! };
+        chosen = this.store.saveHandoverDraft({ ...draft, thenReplace: null });
       }
+      input = { ...input, handover: seedHandover(chosen) };
+      // W194: the last check before the start is recorded (see beforeCoordinatorStart).
+      const draft = chosen;
+      const outer = options;
+      options = {
+        ...outer,
+        revalidate: async () => {
+          await outer?.revalidate?.();
+          await this.beforeCoordinatorStart(projectId, draft);
+        },
+        gate: () => {
+          outer?.gate?.();
+          const now = this.store.project(projectId);
+          if (!now || now.archivedAt !== null || now.coordinatorThreadId !== project.coordinatorThreadId)
+            throw new ProjectError("The coordinator changed while preparing its replacement. Read the current Initiative.");
+        },
+      };
+      this.coordinatorSwitches.set(projectId, project.coordinatorThreadId);
+      let notReady: HandoverNotReady | null = null;
+      try {
+        return await this.performCoordinatorReplacement(projectId, input, options);
+      } catch (error) {
+        if (!(error instanceof HandoverNotReady)) throw error;
+        notReady = error;
+      } finally {
+        this.coordinatorSwitches.delete(projectId);
+      }
+      if (notReady.kind === "stale") {
+        this.store.log(projectId, "coordinator", "The coordinator's conversation changed while its replacement was being prepared; writing the handover again.");
+        await this.startHandoverDraft(projectId, { note: draft.note, thenReplace, restart: true, purpose: nextPurpose(draft) });
+        return writing;
+      }
+      // Busy again, or its input unreadable: the durable request starts it once it is quiet.
+      return queue();
     }
     this.coordinatorSwitches.set(projectId, project.coordinatorThreadId);
     try {
@@ -1513,9 +1583,8 @@ export class ProjectsService {
         }
       }
     }
-    // The incumbent's settings were read above: a drain or recovery re-checks its request
-    // (revision, pause, incumbent) here, and spawnCoordinator checks again just before the spawn.
-    await options?.revalidate?.();
+    // The request (revision, pause, incumbent) and the handover are checked once, by
+    // spawnCoordinator just before it records the start (W194: one final check, after the last await).
     const { thread, confirmed } = await this.spawnCoordinator(
       this.store.project(projectId)!,
       input.bbProjectId ?? project.memberProjectIds[0]!,
@@ -2048,7 +2117,8 @@ export class ProjectsService {
       const draft = this.store.handoverDraft(projectId);
       if (input.handover)
         this.store.saveHandoverDraft({ projectId, state: "ready", note, text: input.handover, source: "user", threadId: null, detail: null, thenReplace: null });
-      else if (draft?.source !== "user" && draft?.state !== "generating")
+      // A ready preview stays; the drain uses it only if nothing changed since (F1).
+      else if (draft?.source !== "user" && draft?.state !== "generating" && !(draft?.state === "ready" && (note === null || note === draft.note)))
         this.store.saveHandoverDraft({ projectId, state: "requested", note, text: null, source: null, threadId: null, detail: null, thenReplace: null });
       this.store.upsertHandover({
         projectId,
@@ -2124,7 +2194,7 @@ export class ProjectsService {
    */
   async startHandoverDraft(
     projectId: string,
-    input: { note?: string | null; thenReplace?: HandoverDraft["thenReplace"]; restart?: boolean } = {},
+    input: { note?: string | null; thenReplace?: HandoverDraft["thenReplace"]; restart?: boolean; purpose?: "replacement" | "final" } = {},
   ): Promise<HandoverDraft> {
     const project = this.requireProject(projectId);
     const existing = this.store.handoverDraft(projectId);
@@ -2135,21 +2205,28 @@ export class ProjectsService {
     // A296: claim the draft before any await, so a concurrent dashboard command, sweep or drain
     // sees "generating" and never starts a second writer. The token marks this claim.
     const token = `starting ${newOpId()}`;
-    this.store.saveHandoverDraft({ projectId, state: "generating", note, text: null, source: null, threadId: null, detail: token, thenReplace, fallback: null });
+    this.store.saveHandoverDraft({ projectId, state: "generating", note, text: null, source: null, threadId: null, detail: token, thenReplace, fallback: null, fingerprint: null, capturedAt: null, purpose: null });
     const ours = () => {
       const d = this.store.handoverDraft(projectId);
       return d?.state === "generating" && d.detail === token ? d : null;
     };
     if (existing?.threadId) await this.archiveWriter(existing.threadId, projectId);
-    const transcript = project.coordinatorThreadId
-      ? await recentMessages(this.sdk, project.coordinatorThreadId).catch(() => [])
-      : [];
-    const body = fallbackBody(this.store, projectId, note, transcript);
+    // W188 (F1–F3): the fingerprint first, then the snapshot, so any change during the capture
+    // shows up as a stale fingerprint, never as a fresh one. A draft for a replacement whose
+    // incumbent is already quiet is written from its final state; anything else is a preview.
+    const coordinator = project.coordinatorThreadId;
+    const purpose: HandoverDraft["purpose"] = input.purpose ?? (thenReplace !== null && (!coordinator || !(await this.incumbentBusy(projectId, coordinator))) ? "replacement" : "preview");
+    const destination = this.handoverDestination(projectId, thenReplace?.environment);
+    const fingerprint = await handoverFingerprint(this.sdk, this.store, projectId, { destination });
+    const capturedAt = this.now();
+    const snapshot = await captureHandoverSnapshot(this.sdk, this.store, projectId, { now: capturedAt, destination })
+      .catch(error => emptySnapshot(capturedAt, coordinator, errorMessage(error)));
+    const body = fallbackBody(this.store, projectId, snapshot, note);
     const fallback = (why: string) => {
       const claim = ours();
       if (!claim) return this.store.handoverDraft(projectId)!;
       this.store.log(projectId, "coordinator", `Coordinator handover written without Luna: ${why}`);
-      return this.store.saveHandoverDraft({ ...claim, state: "ready", text: withReason(body, why), source: "fallback", detail: why, fallback: body });
+      return this.store.saveHandoverDraft({ ...claim, state: "ready", text: withReason(body, why), source: "fallback", detail: why, fallback: body, fingerprint, capturedAt, purpose });
     };
     const bbProjectId = project.memberProjectIds[0]!;
     let thread: ThreadDto;
@@ -2164,7 +2241,7 @@ export class ProjectsService {
         model: HANDOVER_PROFILE.model,
         reasoningLevel: HANDOVER_PROFILE.reasoningLevel,
         title: `Handover · ${project.name}`,
-        prompt: handoverPrompt(project.name, handoverPacket(this.store, projectId, transcript, note)),
+        prompt: handoverPrompt(project.name, handoverPacket(this.store, projectId, snapshot, note)),
         pluginMetadata: { role: "handover-writer", projectId, v: METADATA_VERSION },
       });
     } catch (error) {
@@ -2178,7 +2255,7 @@ export class ProjectsService {
       return this.store.handoverDraft(projectId) ?? { projectId, state: "requested", note, text: null, source: null, threadId: null, detail: "discarded", thenReplace: null, fallback: null, createdAt: this.now(), updatedAt: this.now() };
     }
     this.store.log(projectId, "coordinator", `GPT-6 Luna High is writing the coordinator handover (${thread.id})`);
-    return this.store.saveHandoverDraft({ ...claim, threadId: thread.id, detail: null, fallback: body });
+    return this.store.saveHandoverDraft({ ...claim, threadId: thread.id, detail: null, fallback: body, fingerprint, capturedAt, purpose });
   }
 
   /**
@@ -2201,7 +2278,7 @@ export class ProjectsService {
     if (!current) return true;
     this.store.saveHandoverDraft({
       ...current, state: "ready", threadId: null,
-      text: text ?? withReason(current.fallback ?? fallbackBody(this.store, current.projectId, current.note), why!),
+      text: text ?? withReason(current.fallback ?? this.ledgerOnlyBody(current), why!),
       source: text ? "luna" : "fallback", detail: text ? null : why,
     });
     this.store.log(current.projectId, "coordinator", text ? "The coordinator handover is ready (GPT-6 Luna High)" : `Coordinator handover written without Luna: ${why}`);
@@ -2235,12 +2312,14 @@ export class ProjectsService {
   async recreateCoordinators(projectIds: string[], options: { dryRun: boolean; waitMs: number; reason?: string }) {
     const reason = options.reason ?? "Coordinator recreated after the BB restart";
     const projects = projectIds.map(id => this.requireProject(id)).filter(p => p.archivedAt === null);
-    const fresh = (d: HandoverDraft | null) => d?.state === "ready" && d.source !== "fallback" && this.now() - d.updatedAt < 60 * 60_000;
+    // A dry run's recent Luna preview is reused; the replacement still checks that nothing it was
+    // written from changed since, and writes it again otherwise (F1).
+    const fresh = (d: HandoverDraft | null) => d?.state === "ready" && d.source !== "fallback" && !!d.capturedAt && this.now() - d.capturedAt < HANDOVER_MAX_AGE_MS;
     const started = new Map<string, unknown>();
     for (const p of projects) {
       const draft = this.store.handoverDraft(p.id);
       if (fresh(draft)) {
-        if (!options.dryRun) started.set(p.id, await this.replaceCoordinator(p.id, { reason, handover: draft!.text! }, { author: "user" }).catch(error => ({ state: "failed", note: errorMessage(error) })));
+        if (!options.dryRun) started.set(p.id, await this.replaceCoordinator(p.id, { reason }, { author: "user" }).catch(error => ({ state: "failed", note: errorMessage(error) })));
         continue;
       }
       if (draft?.state === "generating") {
@@ -2276,7 +2355,7 @@ export class ProjectsService {
         // A writer start that never finished (a crash mid-start): use the plain listing.
         if (this.now() - draft.updatedAt > HANDOVER_TIMEOUT_MS) {
           const why = "the writer did not start";
-          this.store.saveHandoverDraft({ ...draft, state: "ready", text: withReason(draft.fallback ?? fallbackBody(this.store, draft.projectId, draft.note), why), source: "fallback", detail: why });
+          this.store.saveHandoverDraft({ ...draft, state: "ready", text: withReason(draft.fallback ?? this.ledgerOnlyBody(draft), why), source: "fallback", detail: why });
           await this.continueAfterDraft(draft.projectId);
         }
         continue;
@@ -2296,6 +2375,89 @@ export class ProjectsService {
       if (!writing.has(writer.threadId)) await this.archiveWriter(writer.threadId, writer.projectId);
   }
 
+  /**
+   * W188 (F1): whether a ready draft may start the replacement now. The user's own text always
+   * may. Otherwise it must be younger than HANDOVER_MAX_AGE_MS by capture time, come from the
+   * same incumbent, and either be written for this replacement or match the current fingerprint.
+   */
+  private async draftCheck(projectId: string, draft: HandoverDraft): Promise<"holds" | "stale" | "unknown"> {
+    if (draft.state !== "ready" || !draft.text) return "stale";
+    if (draft.source === "user") return "holds";
+    if (!draft.capturedAt || !draft.fingerprint || this.now() - draft.capturedAt > HANDOVER_MAX_AGE_MS) return "stale";
+    const destination = this.handoverDestination(projectId, draft.thenReplace?.environment ?? this.store.pendingHandover(projectId)?.environment);
+    const current = await readHandoverState(this.sdk, this.store, projectId, { destination });
+    return fingerprintHolds(draft.fingerprint, current, draft.purpose ?? "preview");
+  }
+
+  /**
+   * W194 #5: the checkout the replacement will actually run in: an explicit reuse, else the
+   * primary member's default source checkout (an incumbent is only reused when it is that one).
+   */
+  private handoverDestination(projectId: string, environment?: EnvironmentChoice | null): Destination {
+    return async () => {
+      if (environment?.type === "reuse") return environment.environmentId;
+      const primary = this.requireProject(projectId).memberProjectIds[0]!;
+      const source = await this.coordinatorDefaultSource(primary);
+      if (!source?.path) throw new Error(`${primary} has no default source checkout`);
+      const envs = (await this.sdk.environments.list({ projectId: primary, path: source.path, ...(source.hostId ? { hostId: source.hostId } : {}) })) as { id: string; path?: string | null; hostId?: string | null; isWorktree?: boolean | null }[];
+      const env = envs.find(e => !e.isWorktree && e.path === source.path && (!source.hostId || e.hostId === source.hostId));
+      if (!env) throw new Error(`the default checkout ${source.path}${source.hostId ? ` on ${source.hostId}` : ""} has no BB environment yet`);
+      return env.id;
+    };
+  }
+
+  /**
+   * W194: the awaited half of the last check before a replacement coordinator's start, shared by
+   * the direct and the queued path. The expensive reads come first (the whole fingerprint); then
+   * the last reads: is the incumbent quiet, and has the user written since the capture. The
+   * synchronous half (request, cancel, incumbent) is the caller's gate, which spawnCoordinator
+   * runs after this returns, as the statement right before it journals the start.
+   */
+  private async beforeCoordinatorStart(projectId: string, draft: HandoverDraft): Promise<void> {
+    const check = await this.draftCheck(projectId, draft);
+    if (check !== "holds") throw new HandoverNotReady(check);
+    const incumbent = this.store.project(projectId)?.coordinatorThreadId ?? null;
+    if (incumbent) {
+      let saved: string | null = null;
+      if (draft.source !== "user" && draft.fingerprint)
+        try { saved = (JSON.parse(draft.fingerprint) as HandoverState).coordinator.user; } catch { throw new HandoverNotReady("stale"); }
+      const [busy, user] = await Promise.all([this.incumbentBusy(projectId, incumbent), saved === null ? null : readUserMark(this.sdk, incumbent)]);
+      if (busy) throw new HandoverNotReady("busy");
+      if (user === "unavailable") throw new HandoverNotReady("unknown");
+      if (saved !== null && user !== saved) throw new HandoverNotReady("stale");
+    }
+  }
+
+  /** The queued path's view of beforeCoordinatorStart: a draft that no longer holds becomes a hold. */
+  private async queuedStartCheck(projectId: string, draft: HandoverDraft) {
+    try {
+      await this.beforeCoordinatorStart(projectId, draft);
+    } catch (error) {
+      if (!(error instanceof HandoverNotReady)) throw error;
+      if (error.kind === "stale") {
+        await this.startHandoverDraft(projectId, { restart: true, purpose: nextPurpose(draft) });
+        throw new HandoverAbort({ kind: "hold", reason: "GPT-6 Luna High is writing the handover again: the coordinator's conversation changed" });
+      }
+      throw new HandoverAbort({ kind: "hold", reason: error.kind === "busy" ? "the current coordinator is working again" : "the coordinator's latest messages could not be read; it retries automatically" });
+    }
+  }
+
+  /** Whether a usable draft is ready for a replacement that can run now; otherwise starts writing one. */
+  private async ensureReplacementDraft(projectId: string): Promise<"ready" | "writing" | "unknown"> {
+    const draft = this.store.handoverDraft(projectId);
+    if (draft?.state === "generating") return "writing";
+    const check = draft ? await this.draftCheck(projectId, draft) : "stale";
+    if (check === "holds") return "ready";
+    if (check === "unknown") return "unknown";
+    const started = await this.startHandoverDraft(projectId, { restart: draft?.state === "ready", purpose: nextPurpose(draft) });
+    return started.state === "ready" ? "ready" : "writing";
+  }
+
+  /** The plain listing from the ledger alone, for a draft whose own listing was never built. */
+  private ledgerOnlyBody(draft: HandoverDraft) {
+    return fallbackBody(this.store, draft.projectId, emptySnapshot(this.now(), this.store.project(draft.projectId)?.coordinatorThreadId ?? null, "not captured"), draft.note);
+  }
+
   /** Throw away the draft (and stop its writer); the next replacement writes a fresh one. */
   async discardHandoverDraft(projectId: string) {
     const draft = this.store.handoverDraft(projectId);
@@ -2311,7 +2473,8 @@ export class ProjectsService {
       const thenReplace = draft.thenReplace;
       this.store.saveHandoverDraft({ ...draft, thenReplace: null });
       try {
-        return await this.replaceCoordinator(projectId, { ...thenReplace, handover: draft.text! }, { author: "user" });
+        // W188 (F1): the replacement takes the draft itself, after checking it is still current.
+        return await this.replaceCoordinator(projectId, { ...thenReplace }, { author: "user" });
       } catch (error) {
         this.store.log(projectId, "coordinator", `The replacement coordinator could not start: ${errorMessage(error)}`);
         return { state: "failed" as const, note: errorMessage(error) };
@@ -2338,6 +2501,26 @@ export class ProjectsService {
       }
       return false;
     }
+  }
+
+  /**
+   * W188 (F5): a freshly spawned coordinator whose start BB has not confirmed yet is not a
+   * member, but it is not a stranger either. Its metadata names the start it came from.
+   */
+  pendingCoordinatorIdentity(threadId: string, meta: Record<string, unknown>) {
+    if (meta.role !== "coordinator" || typeof meta.projectId !== "string" || typeof meta.op !== "string") return null;
+    const project = this.store.project(meta.projectId);
+    const start = project ? this.coordinatorStart(project.id) : undefined;
+    if (!project || start?.op_id !== meta.op || !["pending", "uncertain"].includes(start.state)) return null;
+    return {
+      identity: "pending" as const,
+      initiative: { id: project.id, name: project.name },
+      thread: threadId,
+      start: start.state,
+      note: start.state === "pending"
+        ? `This thread is starting as the coordinator of "${project.name}". BB has not confirmed the start yet; it is confirmed automatically once its checkout is proven. Until then, don't give out work or change Initiative state; read again shortly. Nothing needs retrying.`
+        : `This thread was started as the coordinator of "${project.name}", but the start is unconfirmed. The user or operator settles it; don't give out work, change Initiative state or retry the start.`,
+    };
   }
 
   private coordinatorStart(projectId: string) {
@@ -2544,16 +2727,13 @@ export class ProjectsService {
       if (state) {
         const again = checkGates();
         if (again) return apply(again);
-        // The replacement starts from a written handover; write it first if needed.
-        if (this.store.handoverDraft(projectId)?.state !== "ready") {
-          const draft = this.store.handoverDraft(projectId);
-          if (!draft || draft.state === "requested") await this.startHandoverDraft(projectId, {});
-          const after = checkGates();
-          if (after) return apply(after);
-          if (this.store.handoverDraft(projectId)?.state !== "ready")
-            return apply({ kind: "hold", reason: "GPT-6 Luna High is writing the handover" });
-        }
-        const handover = this.store.handoverDraft(projectId)!.text ?? undefined;
+        // The replacement starts from a current written handover; write it first if needed.
+        const written = await this.ensureReplacementDraft(projectId);
+        const after = checkGates();
+        if (after) return apply(after);
+        if (written !== "ready") return apply({ kind: "hold", reason: written === "unknown" ? "the coordinator's latest messages could not be read; it retries automatically" : "GPT-6 Luna High is writing the handover" });
+        const chosen = this.store.handoverDraft(projectId)!;
+        const handover = seedHandover(chosen);
         this.store.log(projectId, "coordinator", `The current coordinator is ${state}; starting the requested replacement.`);
         // The request stays until the replacement has started, and is re-checked after every
         // await up to the spawn: a cancel, a newer request or a changed coordinator stops it.
@@ -2573,6 +2753,11 @@ export class ProjectsService {
             revalidate: async () => {
               const outcome = checkGates();
               if (outcome) throw new HandoverAbort(outcome as Exclude<HandoverRecheck, { kind: "ok" }>);
+              await this.queuedStartCheck(projectId, chosen);
+            },
+            gate: () => {
+              const outcome = checkGates();
+              if (outcome) throw new HandoverAbort(outcome as Exclude<HandoverRecheck, { kind: "ok" }>);
             },
           });
         } catch (error) {
@@ -2590,14 +2775,13 @@ export class ProjectsService {
 
     const first = await recheck();
     if (first.kind !== "ok") return apply(first);
-    // T136: the replacement's first message is a handover written once the incumbent is idle.
-    if (this.store.handoverDraft(projectId)?.state !== "ready") {
-      const draft = this.store.handoverDraft(projectId);
-      if (!draft || draft.state === "requested") await this.startHandoverDraft(projectId, {});
-      if (this.store.handoverDraft(projectId)?.state !== "ready")
-        return apply({ kind: "hold", reason: "GPT-6 Luna High is writing the handover" });
-    }
-    const handoverText = this.store.handoverDraft(projectId)!.text ?? undefined;
+    // T136: the replacement's first message is a handover written once the incumbent is idle;
+    // a preview written earlier is used only if nothing changed since (W188, F1).
+    const written = await this.ensureReplacementDraft(projectId);
+    if (written !== "ready")
+      return apply({ kind: "hold", reason: written === "unknown" ? "the coordinator's latest messages could not be read; it retries automatically" : "GPT-6 Luna High is writing the handover" });
+    const chosenDraft = this.store.handoverDraft(projectId)!;
+    const handoverText = seedHandover(chosenDraft);
 
     // Execution settings to preserve: the model/effort/provider only for a
     // context-only request; permission mode and service tier ride along
@@ -2716,6 +2900,11 @@ export class ProjectsService {
           revalidate: async () => {
             const outcome = await recheck();
             if (outcome.kind !== "ok") throw new HandoverAbort(outcome);
+            await this.queuedStartCheck(projectId, chosenDraft);
+          },
+          gate: () => {
+            const outcome = checkGates();
+            if (outcome) throw new HandoverAbort(outcome as Exclude<HandoverRecheck, { kind: "ok" }>);
           },
         },
       );
@@ -3200,7 +3389,7 @@ export class ProjectsService {
     const project = this.requireProject(projectId);
     const previous = input.supersedes ? this.requireDecision(project, input.supersedes) : null;
     if (previous && previous.status !== "active") throw new ProjectError(`${previous.ref} is ${previous.status}; only active decisions can be superseded.`);
-    if (previous?.madeBy === null) throw new ProjectError(`${previous.ref} is an open question for the user, not a decision to supersede. Only the user's explicit answer closes it: {"action":"answer","ref":"${previous.ref}","choice":"<the user's option>"}. Otherwise record your decision without supersedes; ${previous.ref} stays open for the user.`);
+    if (previous?.madeBy === null) throw new ProjectError(`${previous.ref} is an open question for the user, not a decision to supersede. Only the user's explicit answer closes it: initiative_decision {"action":"answer","ref":"${previous.ref}","choice":"<the user's option>"}. Otherwise record your decision without supersedes; ${previous.ref} stays open for the user.`);
     const madeBy = input.decision.madeBy;
     if (previous?.madeBy === "user" && madeBy !== "user")
       throw new ProjectError("An agent decision cannot replace an explicit user choice.");
@@ -6456,18 +6645,26 @@ export class ProjectsService {
 
   /** The new short report (T136): outcome and summary for the dashboard; the final message follows. */
   async shortReport(threadId: string, input: { outcome: "done" | "blocked" | "failed"; summary: string; question?: string }) {
+    // A long summary is not refused (agents kept hitting the old 300 limit): the dashboard line
+    // is clipped and the full text kept as the report's handoff summary.
+    const SUMMARY_LINE = 300;
+    const clipped = input.summary.length > SUMMARY_LINE;
+    const line = clipped ? `${input.summary.slice(0, SUMMARY_LINE - 1).trimEnd()}…` : input.summary;
     const result = await this.report(threadId, {
       outcome: input.outcome === "done" ? "succeeded" : input.outcome,
-      summary: input.summary,
+      summary: line,
       evidence: [],
-      ...(input.outcome === "blocked" ? { blocker: { question: input.question ?? input.summary, context: input.summary } } : {}),
+      ...(input.outcome === "blocked" ? { blocker: { question: (input.question ?? input.summary).slice(0, 1000), context: input.summary.slice(0, 2000) } } : {}),
       handoff: { summary: input.summary, workspaceRevision: "not recorded", files: [], openQuestions: [], nextSteps: [], dirtyFiles: [], recoveryArtifacts: [], pendingCommands: [] },
       pendingBackgroundWork: [],
     });
     const { project } = this.workerOf(threadId);
     const a = this.requireAssignment(project, result.assignment);
     this.awaitingFinal.set(`${project.id}:${a.num}`, this.now());
-    return { ...result, note: "Recorded. End your turn with your report as the final message; it is attached to this summary." };
+    return {
+      ...result,
+      note: `Recorded.${clipped ? ` The summary is ${input.summary.length} characters: the dashboard shows its first ${SUMMARY_LINE}, and the full text is kept with the report.` : ""} End your turn with your report as the final message; it is attached to this summary.`,
+    };
   }
 
   /** One explicit notice attempt; a repeat can retry only a definite failed receipt. */

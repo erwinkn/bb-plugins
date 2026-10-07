@@ -80,6 +80,8 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
   const history: {
     type: string;
     seq: number;
+    /** A row without threadId belongs to every thread (most tests share one history). */
+    threadId?: string;
     createdAt: number;
     data?: Record<string, unknown>;
   }[] = [
@@ -425,12 +427,18 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
         promptHistory: async () => [],
         events: {
           list: async (args: {
+            threadId?: string;
             types?: readonly string[];
             order?: string;
             limit?: string;
+            afterSeq?: string;
+            beforeSeq?: string;
           }) =>
             history
               .filter((row) => !args.types || args.types.includes(row.type))
+              .filter((row) => !row.threadId || !args.threadId || row.threadId === args.threadId)
+              .filter((row) => args.afterSeq === undefined || row.seq > Number(args.afterSeq))
+              .filter((row) => args.beforeSeq === undefined || row.seq < Number(args.beforeSeq))
               .sort((a, b) =>
                 args.order === "desc" ? b.seq - a.seq : a.seq - b.seq,
               )

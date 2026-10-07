@@ -91,6 +91,9 @@ export function renderCoordinatorSeed(input: {
       : `This thread is starting as coordinator of a new Initiative, "${input.project.name}".`,
     "Start with initiative_read to check that this thread is the confirmed current coordinator. Until it is, do not give out work or change Initiative state. If Initiative membership is unavailable, leave confirmation and settlement to the operator and do not retry the start.",
     `Objective: ${input.project.objective}`,
+    input.replacing
+      ? "Once confirmed, this replacement is complete: continue the work below. Don't request another handover or recreate the coordinator to finish it."
+      : null,
     input.handover
       ? `Handover from the previous coordinator:\n\n${input.handover}`
       : input.replacing

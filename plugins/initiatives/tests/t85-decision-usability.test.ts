@@ -265,16 +265,22 @@ describe("T85 answers and cleanup", () => {
     expect((f.store.decisionItem(project.id, q.num)!.body as { answer: { choice: string } }).answer.choice).toBe("(c) retryable");
   });
 
-  it("Solera 12139: answering an agent choice points to coordinator cleanup instead", async () => {
+  it("Solera 12139 / W188: answering an agent choice suggests a user-choice that supersedes it, and that call works", async () => {
     const { f, project } = await projectFixture();
     const d = await tool(f, { action: "decision", madeBy: "agent", description: "Overnight team is four threads." });
     const message = await refused(f, { action: "answer", ref: d.ref, choice: "okay" });
     expect(message).toMatch(/agent decision/);
-    expect(message).toContain('"action":"cleanup"');
+    expect(message).not.toMatch(/cleanup/);
     const viaCli = await cli(f, { action: "answer", decision: d.ref, choice: "okay" }, "coordinator", project.id);
     expect(viaCli.exitCode).toBe(1);
-    expect(viaCli.stderr).toContain('"action":"cleanup"');
+    expect(viaCli.stderr).toContain(`"supersedes":"${d.ref}"`);
     expect(f.store.decisionItem(project.id, Number(d.ref.slice(1)))).toMatchObject({ review: "pending", status: "active" });
+    // The suggested call, with its placeholder filled in, records the user's choice in place of D#.
+    const example = JSON.parse(/initiative_decision (\{.*?\})\./.exec(message)![1]!);
+    expect(example).toEqual({ action: "user-choice", description: "<the user's choice>", supersedes: d.ref });
+    const recorded = await tool(f, { ...example, description: "Erwin confirmed four threads." });
+    expect(recorded).toMatchObject({ madeBy: "user", status: "active" });
+    expect(f.store.decisionItem(project.id, Number(d.ref.slice(1)))).toMatchObject({ status: "superseded" });
   });
 
   it("user-choice and veto-request carry their owner; cleanup is refused with what replaces it (T136)", async () => {

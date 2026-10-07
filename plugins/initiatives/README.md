@@ -58,22 +58,83 @@ Details:
 - **Coordinator handover**: Replace coordinator (dashboard), `initiative_manage
   {action:"handover"}` or the restart command below start a short-lived thread on
   Codex / `gpt-6-luna` / high, titled "Handover · <Initiative>", with no Initiative
-  tools. Its prompt is a bounded packet (about 60k characters) built from the
-  plugin's records and the old coordinator's last 30 messages: objective, open
-  tasks, live workers, the last 10 reports, what waits on the user, the last 5
-  updates. The decision log is not included. Its final message becomes the new
-  coordinator's first message and is kept nowhere else; the writer thread is
-  archived. If Luna is unavailable, fails or takes more than 10 minutes, a plain
-  listing of the same packet is used, so a replacement never blocks. The dashboard
-  shows the handover in an editable box before **Start replacement**. Old
-  checkpoints stay in the database and are never injected.
+  tools. Its prompt is a dated snapshot packet (at most 60k characters, W188):
+  - the old coordinator's conversation counted in messages, not events: its
+    latest 40 messages plus inputs back to the user's tenth-latest message, each
+    with time and sender. Long replies keep their start and end; the replies to
+    the user's last five messages keep up to 8,000 characters each. A user
+    message older than that window carries the final answer it got;
+  - the commands the old coordinator ran that changed things outside the
+    Initiative (automations, merges, pushes, publishes), newest 20, labelled
+    "ran, exit 0, not verified" or with their failure: evidence, not proof (a pipe
+    can hide a failure). Commands that set a secret are never listed;
+  - each live worker's native status, current work, latest report (wherever it
+    falls) and its own latest messages (paged past tool calls); native threads
+    under the coordinator without a W#; the destination checkout the replacement
+    will actually use (a reuse override, else the default source checkout), next
+    to the outgoing one (branch, ahead/behind, working tree);
+  - open tasks, with the coordinator's latest word on each when newer than the
+    task note; what waits on the user (agent decisions are optional Inbox checks);
+    updates only when newer than the conversation;
+  - the current status of every D#/K# and closed T# the packet mentions.
+  A read that fails says "unavailable", never empty. Credentials are redacted from
+  every input before the packet is budgeted (`lib/redact.ts`), by specific shapes
+  only: known key prefixes (`sk-`, `ghp_`, `xox…`, `AKIA…`, JWTs), `Bearer …`,
+  secret-named URL parameters, `KEY=value` and JSON `"key": "value"` with a
+  secret-like key name, and whole lines setting a secret (`bb secret`,
+  `gh secret set`, …), and a quoted token named in prose a few words after a
+  credential word ("the console token `Y969NG9…`": 16+ characters mixing upper
+  case, lower case and digits, at most two separators). A secret-named key whose
+  value is on the next line, and a secret command's heredoc, are covered too.
+  Ids, hashes, paths, file references (`lib/secret.ts:123`) and names like
+  `DOPPLER_TOKEN` stay readable.
+
+  **Redaction is best effort.** Known residuals: a mixed-case hex string or a
+  Windows path assigned to a secret-named key is redacted although harmless;
+  `X=$X` loses its `$X`; and anything no pattern recognizes goes through, such as
+  a bare secret in prose with no credential word near it. The packet goes to the
+  writer thread and the fallback to the new coordinator; both can already read
+  the Initiative's threads it comes from. The decision log is
+  not included (D402). Its final message becomes the new coordinator's first message,
+  dated by the capture, and is kept nowhere else; the writer thread is archived.
+  If Luna is unavailable, fails or takes more than 10 minutes, a plain listing of
+  a smaller packet is used, so a replacement never blocks. Old checkpoints stay
+  in the database and are never injected.
+- **Fresh handovers**: each draft records when it was captured and a fingerprint
+  with one value per packet source: the incumbent and its status, latest user
+  input, latest activity and checkout; each live worker's status, latest event
+  and pull request; the threads under the coordinator; the destination checkout;
+  the latest ledger change. A failed read is "absent" (404) or "unavailable",
+  never a timestamp. Only "absent" is a stable answer: when the coordinator's
+  input can't be read, the replacement holds (as a queued request) and retries. Drafts older
+  than 30 minutes by capture are written again. Otherwise:
+  - a preview (written before the replacement could run) is used only if the
+    whole fingerprint still matches;
+  - a replacement draft (written once it could) only needs the incumbent and its
+    conversation unchanged: workers and the ledger keep moving while Luna writes,
+    and rewriting for them would never converge on a busy Initiative;
+  - a draft written again for a replacement is final: only new input from the
+    user sends it back, so worker notices waking the coordinator cannot hold the
+    replacement off for ever.
+
+  One check, shared by the direct and the queued path, runs right before the
+  start is recorded: first the whole fingerprint, then the last awaited reads
+  (is the incumbent quiet, has the user written since the capture), then the
+  request and cancel gates synchronously; the start is recorded with no await
+  after it. A replacement queued behind a busy coordinator is therefore written
+  from its final state. By design, a worker blocker or a coordinator conclusion
+  that arrives while Luna writes may be missing: the first message tells the new
+  coordinator to read the overview first, since things may have moved since the
+  capture time. The dashboard shows the preview in an editable box: the box
+  follows the latest draft until the user edits it; only an edit is sent, as the
+  user's own text.
 - **Restart**: `bb initiative recreate-coordinators (--all | <id>...) [--dry-run]
   [--wait=<seconds>]` writes a fresh handover for each open Initiative (at most
   three writers at a time) and starts a fresh coordinator with it; a busy
   coordinator is replaced when its turn ends, so the coordinator running the
   command is replaced last. `--dry-run` prints the handovers without starting
-  anything; a real run within the hour reuses them. Workers keep their threads
-  and move to the new coordinator.
+  anything; a real run reuses them only under the fresh-handover rule above.
+  Workers keep their threads and move to the new coordinator.
 - **Older sessions** keep working: `initiative_delegate`, the full structured
   `initiative_report`, `initiative_progress` (now a no-op) and the old
   `initiative_task`/`initiative_manage`/`initiative_worker` actions still run.
@@ -83,8 +144,9 @@ Details:
 - **Existing data** stays readable and nothing is dropped: old structured reports,
   accepted/rejected assignments, D# history and checkpoints render as before.
   Tasks left "awaiting acceptance" show as reported and open until closed. The
-  only additions are the `handover_drafts` and `plugin_flags` tables and an
-  optional `finalMessage` in the report JSON.
+  only additions are the `handover_drafts` (with its fingerprint, capture time
+  and purpose) and `plugin_flags` tables and an optional `finalMessage` in the
+  report JSON.
 
 Coordinator tools: `initiative_read`, `initiative_spawn`, `initiative_message`,
 `initiative_task`, `initiative_worker`, `initiative_decision`, `initiative_update`,
@@ -494,11 +556,14 @@ telemetry and payloads, and label shortened text/ref lists with `truncatedFields
 Use `fields:["payload"]` for inbox/activity, `fields:["body"]` for updates. Defaults
 are 20 rows, maximum 30; pagination stops between complete records at a 64 KiB budget.
 A single oversized detailed record fails with field-selection guidance. No JSON
-is mechanically clipped. Selective details use `detailed:true` and `fields`, e.g.
-`report` for assignments. View `reports` lists reports newest first with a
-600-character excerpt of each final message; view `context` returns the shared
-vision, objectives and ideas. A W# read includes its latest report. Explicit
-`threads` and `usage` views are independently paginated.
+is mechanically clipped. Selective details use `fields` (which implies
+`detailed:true`), e.g. `report` for assignments, or for a W# its latest report in
+full. An unsupported selection names every bad field and one complete call that
+works. View `reports` lists reports newest first with a 600-character excerpt of
+each final message; view `context` returns the shared vision, objectives and
+ideas. A W# read includes its latest report. Explicit `threads` and `usage` views
+are independently paginated. A freshly spawned coordinator whose start is not
+confirmed yet reads `{identity:"pending"}` with what to do, not "does not belong".
 
 Use action `question` for an unresolved human choice: question/context, options
 with consequences, recommendation and affected `blocksTaskIds`. Ask intentionally;
@@ -695,6 +760,12 @@ npm run typecheck
 npm test
 bb plugin build .
 ```
+
+The nine coordinator handovers of Oct 7 are replay fixtures
+(`tests/fixtures/handover/*.json.gz`, credential-redacted, checked by a test):
+`tests/w188-handover-replay.test.ts` rebuilds each packet from them and asserts
+the facts the real handovers missed. Every recovery call an error suggests is
+parsed through the real tool schemas (`tests/w188-contracts.test.ts`).
 
 Tests cover storage corruption, policy, receipt races, queued-brief settle and
 archive ordering, guarded retirement, handover drains, role lineage, review

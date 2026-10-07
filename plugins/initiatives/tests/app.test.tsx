@@ -294,6 +294,46 @@ describe("project dashboard", () => {
       },
     });
   });
+  it("W188: an untouched preview is not sent, so the service checks it is still current", async () => {
+    const command = vi.fn().mockResolvedValue({});
+    const slot = mount({ list: () => [], overview: () => overview(), command });
+    await slot.findByRole("button", { name: "Replace coordinator" });
+    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    expect((slot.getByLabelText(/^Handover/) as HTMLTextAreaElement).value).toBe("Written handover");
+    fireEvent.click(slot.getByRole("button", { name: "Start replacement" }));
+    await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
+    expect(command.mock.calls[0][0].command).toEqual({ action: "replace-coordinator", reason: "Switch coordinator model" });
+  });
+  it("W194 #4: an untouched box follows a refreshed draft and is not sent; an edit is sent and kept", async () => {
+    let o = overview();
+    const command = vi.fn().mockResolvedValue({});
+    const read = vi.fn(() => o);
+    const slot = mount({ list: () => [], overview: read, command });
+    await slot.findByRole("button", { name: "Replace coordinator" });
+    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    const box = () => slot.getByLabelText(/^Handover/) as HTMLTextAreaElement;
+    expect(box().value).toBe("Written handover");
+    const refresh = async (text: string) => {
+      o = { ...o, project: { ...o.project, handoverDraft: { ...o.project.handoverDraft!, text, updatedAt: Date.now() + 1 } } };
+      const calls = read.mock.calls.length;
+      await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
+      await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(calls));
+    };
+    await refresh("Fresh shared draft");
+    await waitFor(() => expect(box().value).toBe("Fresh shared draft"));
+    fireEvent.click(slot.getByRole("button", { name: "Start replacement" }));
+    await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
+    expect(command.mock.calls[0][0].command).not.toHaveProperty("handover");
+    // Once the user edits, their text stays and is sent, whatever the shared draft does.
+    fireEvent.click(slot.getByRole("button", { name: "Replace coordinator" }));
+    fireEvent.change(box(), { target: { value: "Erwin's own words." } });
+    await refresh("Another shared draft");
+    expect(box().value).toBe("Erwin's own words.");
+    fireEvent.click(slot.getByRole("button", { name: "Start replacement" }));
+    await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
+    expect(command.mock.calls[1][0].command.handover).toBe("Erwin's own words.");
+  });
+
   it("uses the compact Control Room tabs for actual questions, tasks and updates", async () => {
     const o = overview();
     const slot = mount({ list: () => [], overview: () => o });

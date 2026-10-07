@@ -287,6 +287,8 @@ function CoordinatorSwitch({
   // opens; it becomes the new coordinator's first message, editable here first.
   const draft = project.handoverDraft;
   const [handover, setHandover] = useState<string | null>(draft?.state === "ready" ? draft.text : null);
+  // W194 #4: only the user's own edit is sent; an untouched box follows the latest draft.
+  const [edited, setEdited] = useState(false);
   const requested = useRef(false);
   useEffect(() => {
     if (requested.current || draft) return;
@@ -294,8 +296,8 @@ function CoordinatorSwitch({
     void command({ action: "handover-draft" }).catch((e) => setError(describeError(e)));
   }, [draft, command]);
   useEffect(() => {
-    if (draft?.state === "ready" && handover === null) setHandover(draft.text);
-  }, [draft?.state, draft?.text, handover]);
+    if (draft?.state === "ready" && (handover === null || !edited)) setHandover(draft.text);
+  }, [draft?.state, draft?.text, handover, edited]);
   const [reason, setReason] = useState("Switch coordinator model");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -324,7 +326,9 @@ function CoordinatorSwitch({
             action: "replace-coordinator",
             ...(profileOverride ? { profile: profileOverride } : {}),
             reason,
-            ...(handover?.trim() ? { handover } : {}),
+            // An untouched preview is not sent: the service uses the draft only while
+            // nothing it was written from has changed (W188, F1). An edit is the user's own.
+            ...(edited && handover?.trim() ? { handover } : {}),
           })) as { state?: string } | null;
           // "checkout-pending" started the replacement; the strip shows
           // its confirmation, so the form closes as on success.
@@ -399,7 +403,10 @@ function CoordinatorSwitch({
             value={handover}
             rows={10}
             maxLength={20000}
-            onChange={(e) => setHandover(e.target.value)}
+            onChange={(e) => {
+              setEdited(true);
+              setHandover(e.target.value);
+            }}
           />
         </label>
       ) : (
@@ -416,6 +423,7 @@ function CoordinatorSwitch({
           disabled={busy}
           onClick={() => {
             setHandover(null);
+            setEdited(false);
             void command({ action: "handover-draft", restart: true }).catch((e) => setError(describeError(e)));
           }}
         >

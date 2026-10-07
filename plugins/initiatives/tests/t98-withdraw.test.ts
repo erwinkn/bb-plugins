@@ -224,7 +224,7 @@ describe("T98 task blocking and answer races", () => {
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
     const chat = await refused(f, { action: "answer", ref: q.ref, choice: "Radix" }, worker.threadId!);
     expect(chat).toContain(reason);
-    expect(chat).toContain('"madeBy":"user"');
+    expect(chat).toContain('initiative_decision {"action":"user-choice","description":"<the user\'s choice>"}');
     expect(await refused(f, { action: "decision", madeBy: "user", description: "x", supersedes: q.ref })).toMatch(/withdrawn/);
     await expect(f.harness.callRpc("command", { projectId: project.id, command: { action: "question-close", decision: q.ref, note: "" } })).rejects.toThrow(/not an open question/);
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "withdrawn", madeBy: null });
@@ -251,9 +251,12 @@ describe("T98 A238 follow-ups", () => {
     // Agent and CLI recorders keep the actionable madeBy:user path.
     const recorded = await refused(f, { action: "answer", ref: q.ref, choice: "Radix" });
     expect(recorded).toContain(reason);
-    expect(recorded).toContain('{"action":"decision","madeBy":"user"');
+    expect(recorded).toContain('{"action":"user-choice"');
     const agentCli = await cli(f, { action: "answer", ref: q.ref, choice: "Radix" }, "coordinator", project.id);
-    expect(agentCli.stderr).toContain('"madeBy":"user"');
+    expect(agentCli.stderr).toContain('"action":"user-choice"');
+    // W188 (F5): the suggested call works as written once its placeholder is filled in.
+    const example = JSON.parse(/initiative_decision (\{.*?\})\./.exec(recorded)![1]!);
+    expect(await tool(f, { ...example, description: "Erwin chose Radix." })).toMatchObject({ madeBy: "user", status: "active" });
     expect(f.store.decisionItem(project.id, q.num)).toMatchObject({ status: "withdrawn", madeBy: null, notification: null });
     expect(f.store.decisionItem(project.id, q.num)!.body).not.toHaveProperty("answer");
     expect(f.send).not.toHaveBeenCalled();

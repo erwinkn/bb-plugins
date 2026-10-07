@@ -75,7 +75,7 @@ export const updateToolSchema = z.object({
 
 export const reportToolSchema = z.object({
   outcome: z.enum(["done", "blocked", "failed"]),
-  summary: text(300).describe("One line for the dashboard."),
+  summary: text(4000).describe("One line for the dashboard. Longer text is kept in full; the dashboard line is clipped to 300 characters."),
   question: text(1000).optional().describe("blocked: what you need answered."),
 }).strict();
 

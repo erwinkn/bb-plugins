@@ -82,10 +82,17 @@ export function validateSelection(view: ReadView, options: ReadOptions) {
     if ((["tasks", "workers", "assignments", "decisions", "updates"].includes(view) || /^[TWADKU]\d+$/.test(ref)) && viewForRef(ref) !== view)
       throw new ProjectError(`${ref} belongs to ${viewForRef(ref)}, not ${view}. Omit view to read mixed durable refs.`);
   }
-  if (options.fields && !options.detailed) throw new ProjectError("fields selects full fields: pass detailed:true with fields.");
-  const invalid = options.fields?.find(f => !fieldsByView[view]?.includes(f));
-  if (invalid) throw new ProjectError(`${invalid} is not selectable in ${view}. Valid fields: ${(fieldsByView[view] ?? []).join(", ") || "none; omit fields"}.`);
+  // W188 (F5): every unsupported field at once, with one complete call that works.
+  const invalid = options.fields?.filter(f => !fieldsByView[view]?.includes(f)) ?? [];
+  if (invalid.length) {
+    const valid = fieldsByView[view] ?? [];
+    const ref = options.refs?.find(r => /^[TWADKU]\d+$/.test(r) && viewForRef(r) === view);
+    const example = valid.length ? JSON.stringify({ ...(ref ? { refs: [ref] } : { view }), fields: [valid[0]] }) : JSON.stringify(ref ? { refs: [ref], detailed: true } : { view, detailed: true });
+    throw new ProjectError(`${invalid.join(", ")} ${invalid.length > 1 ? "are" : "is"} not selectable in ${view}. ${valid.length ? `Valid fields: ${valid.join(", ")}` : "It has no selectable fields; omit fields"}. For example: initiative_read ${example}.`);
+  }
 }
+/** W188 (F5): selecting fields reads full records; detailed is implied. */
+export const withImpliedDetail = (options: ReadOptions): ReadOptions => (options.fields ? { ...options, detailed: true } : options);
 function projectRow(view: ReadView, row: Record<string, any>, options: ReadOptions) {
   if (!options.detailed) return summary(view, row);
   const full = fullRow(view, row);
@@ -138,6 +145,7 @@ export function readContext(store: Store, projectId: string) {
 }
 
 export function readCollection(store: Store, projectId: string, view: ReadView, options: ReadOptions) {
+  options = withImpliedDetail(options);
   validateSelection(view, options);
   const rows = rowsFor(store, projectId, view);
   const byRef = new Map(rows.map(row => [rowRef(view, row), row]));
@@ -146,8 +154,10 @@ export function readCollection(store: Store, projectId: string, view: ReadView, 
 }
 export function readRefs(store: Store, projectId: string, options: ReadOptions) {
   if (!options.refs) throw new ProjectError("view records requires refs, for example refs:[\"A7\",\"T3\",\"D12\"].");
+  const refs = options.refs;
+  options = withImpliedDetail(options);
   const caches = new Map<ReadView, Map<string, Record<string, any>>>();
-  const rows = [...new Set(options.refs.map(canonical))].flatMap(ref => {
+  const rows = [...new Set(refs.map(canonical))].flatMap(ref => {
     const view = viewForRef(ref);
     validateSelection(view, { ...options, refs: [ref] });
     if (!caches.has(view)) caches.set(view, new Map(rowsFor(store, projectId, view).map(r => [String(r.ref), r])));

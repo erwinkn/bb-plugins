@@ -94,14 +94,26 @@ describe("A296 P1: briefs, handovers and recreation", () => {
     f.threads.set("coordinator", { ...f.threads.get("coordinator")!, status: "active" });
     await f.service.recreateCoordinators([project.id], { dryRun: false, waitMs: 0 });
     const writer = f.store.handoverDraft(project.id)!.threadId!;
+    const before = f.history.length;
     finish(f, "handover ready");
+    // The writer's turn happens in the writer's thread, not the coordinator's.
+    for (const row of f.history.slice(before)) row.threadId = writer;
     await f.runtime.onThreadIdle(f.idle(writer));
     expect(f.store.pendingHandover(project.id)).not.toBeNull();
     f.threads.set("coordinator", { ...f.threads.get("coordinator")!, status: "error" });
     await f.runtime.onThreadFailed(f.threads.get("coordinator")!, "restart failure");
     await f.runtime.sweep();
+    // W194: the preview said the coordinator was working; it has failed since, so the handover
+    // is written again from the state at recovery before the replacement starts.
+    const rewriter = f.store.handoverDraft(project.id)!.threadId!;
+    expect(rewriter).not.toBe(writer);
+    const again = f.history.length;
+    finish(f, "handover ready after the failure");
+    for (const row of f.history.slice(again)) row.threadId = rewriter;
+    await f.runtime.onThreadIdle(f.idle(rewriter));
+    await f.runtime.sweep();
     expect(f.store.project(project.id)!.coordinatorThreadId).not.toBe("coordinator");
-    expect(f.spawn.mock.calls.at(-1)![0].prompt).toContain("handover ready");
+    expect(f.spawn.mock.calls.at(-1)![0].prompt).toContain("handover ready after the failure");
   });
 
   it("9: CLI recreation and a dashboard replacement racing each other start one coordinator", async () => {

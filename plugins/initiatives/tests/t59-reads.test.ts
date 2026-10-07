@@ -37,7 +37,19 @@ describe("T59 selective agent reads", () => {
     expect(alias.missingRefs).toEqual(["K999"]);
     await expect(f.harness.callAgentTool("initiative_read", { view: "overview", limit: 20 }, { threadId: "coordinator" })).rejects.toThrow(/overview/);
     await expect(f.harness.callAgentTool("initiative_read", { view: "workers", fields: ["body"], detailed: true }, { threadId: "coordinator" })).rejects.toThrow(/not selectable/);
-    await expect(f.harness.callAgentTool("initiative_read", { view: "assignments", fields: ["report"] }, { threadId: "coordinator" })).rejects.toThrow(/detailed:true/);
+    // W188 (F5): fields implies detailed.
+    expect(JSON.parse(await f.harness.callAgentTool("initiative_read", { view: "assignments", fields: ["report"] }, { threadId: "coordinator" }) as string).detail).toMatch(/^Full selected/);
+  });
+
+  it("W188: an unsupported selection names every bad field and one complete call that works (Equisafe)", async () => {
+    const { f, project } = await projectFixture();
+    const task = f.task(project.id);
+    const read = (input: unknown) => f.harness.callAgentTool("initiative_read", input, { threadId: "coordinator" });
+    const message = await read({ refs: [task.ref], detailed: true, fields: ["resolution", "checkpoint"] }).then(() => "", (e: Error) => e.message);
+    expect(message).toContain("resolution, checkpoint are not selectable in tasks. Valid fields: brief.");
+    const example = JSON.parse(/initiative_read (\{.*\})\.$/.exec(message)![1]!);
+    expect(example).toEqual({ refs: [task.ref], fields: ["brief"] });
+    expect(JSON.parse(await read(example) as string).items).toEqual([{ ref: task.ref, view: "tasks", brief: expect.anything() }]);
   });
 
   it("pages complete large records, exposes field selection, and never clips valid JSON", async () => {

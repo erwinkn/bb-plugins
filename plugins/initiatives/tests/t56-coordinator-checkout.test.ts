@@ -179,7 +179,8 @@ describe("T56 proven coordinator default checkout", () => {
     const { f, project } = await projectFixture();
     f.idle("coordinator");
     f.harness.sdk.stub("environments.get", async ({ environmentId }: { environmentId: string }) => {
-      f.store.updateProject(project.id, { memberProjectIds: ["proj_b", "proj_a"] });
+      // Only the returned-home proof after the spawn; the handover snapshot reads it earlier.
+      if (f.spawn.mock.calls.length) f.store.updateProject(project.id, { memberProjectIds: ["proj_b", "proj_a"] });
       return f.envs.get(environmentId);
     });
     await expect(f.service.replaceCoordinator(project.id, { reason: "Fresh context" })).rejects.toThrow(/primary member changed/);
@@ -220,7 +221,9 @@ describe("T56 proven coordinator default checkout", () => {
     }));
     expect(config.instructions).not.toContain("Read initiative state freely");
     expect(config.instructions).toContain("once this thread is confirmed");
-    await expect(f.harness.callAgentTool("initiative_read", {}, { threadId: successor.id })).rejects.toThrow(/does not belong/);
+    // W188 (F5): an unconfirmed coordinator is told it is pending, not that it does not belong.
+    expect(JSON.parse(await f.harness.callAgentTool("initiative_read", {}, { threadId: successor.id }) as string)).toMatchObject({ identity: "pending", initiative: { id: project.id }, start: "pending" });
+    await expect(f.harness.callAgentTool("initiative_read", {}, { threadId: "stranger" })).rejects.toThrow(/does not belong/);
     await expect(f.harness.callAgentTool("initiative_task", { action: "task-create", title: "Premature task", summary: "Must wait for confirmation" }, { threadId: successor.id })).rejects.toThrow(/coordinator/);
     expect(f.store.project(project.id)!.coordinatorThreadId).toBe("coordinator");
     expect(startRow(f, project.id)).toMatchObject({ state: "pending", thread_id: successor.id });

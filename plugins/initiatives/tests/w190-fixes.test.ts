@@ -27,10 +27,20 @@ it("a queued recovery keeps its request until a replacement can be prepared",asy
  f.threads.set("coordinator",{...f.threads.get("coordinator")!,status:"active"});
  await f.service.recreateCoordinators([project.id],{dryRun:false,waitMs:0});
  const writer=f.store.handoverDraft(project.id)!.threadId!;
+ const before=f.history.length;
  start(f,"Write handover"); end(f,"Ready handover");
+ for(const row of f.history.slice(before)) row.threadId=writer;
  await f.runtime.onThreadIdle(f.idle(writer));
  expect(f.store.pendingHandover(project.id)).not.toBeNull();
  f.threads.set("coordinator",{...f.threads.get("coordinator")!,status:"error"});
+ // W194: the coordinator failed after the preview, so recovery writes the handover again first.
+ await f.service.drainHandover(project.id);
+ const rewriter=f.store.handoverDraft(project.id)!.threadId!;
+ expect(rewriter).not.toBe(writer);
+ const again=f.history.length;
+ start(f,"Write handover"); end(f,"Ready handover after the failure");
+ for(const row of f.history.slice(again)) row.threadId=rewriter;
+ await f.service.finishHandoverDraft(rewriter);
  let faulted=false;
  f.intercept((path,args,call)=>{
    if(path==="threads.defaultExecutionOptions" && args.threadId==="coordinator" && !faulted) {
@@ -164,7 +174,7 @@ it("a writer already generating before the tracking-table migration still gets a
  // Apply exactly the additive migration to that state.
  f.store.db.exec("DROP TABLE handover_writers");
  const { MIGRATIONS }=await import("../lib/store");
- f.store.db.exec(MIGRATIONS.at(-1)!);
+ f.store.db.exec(MIGRATIONS.find(m => m.startsWith("CREATE TABLE handover_writers"))!);
  expect(f.store.trackedWriters()).toEqual([]);
  f.archive.mockRejectedValueOnce(new Error("archive temporarily unavailable"));
  await f.service.finishHandoverDraft(writer,"timeout");

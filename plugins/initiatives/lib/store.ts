@@ -392,6 +392,10 @@ export const MIGRATIONS = [
   `ALTER TABLE handover_drafts ADD COLUMN fallback TEXT`,
   // A296: every handover writer thread until BB confirms it archived.
   `CREATE TABLE handover_writers (thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+  // W188 (F1): what a draft was written from, so a replacement can tell a stale preview.
+  `ALTER TABLE handover_drafts ADD COLUMN fingerprint TEXT`,
+  `ALTER TABLE handover_drafts ADD COLUMN captured_at INTEGER`,
+  `ALTER TABLE handover_drafts ADD COLUMN purpose TEXT`,
 ];
 
 export const ACTIVITY_LIMIT = 300;
@@ -582,6 +586,15 @@ export interface HandoverDraft {
   detail: string | null;
   /** The plain listing to use when the writer fails, built when the writer started. */
   fallback?: string | null;
+  /** What the text was written from (incumbent, message high-water marks, ledger activity); a change means it is stale. */
+  fingerprint?: string | null;
+  /** When its snapshot was captured. */
+  capturedAt?: number | null;
+  /**
+   * preview: captured before a replacement could run; replacement: captured once it could;
+   * final: a replacement draft written again (lib/handover-snapshot.ts fingerprintHolds).
+   */
+  purpose?: "preview" | "replacement" | "final" | null;
   /** A replacement to start as soon as the text is ready. */
   thenReplace: { reason: string; profile?: Profile; environment?: EnvironmentChoice; expectedCoordinator?: string | null } | null;
   createdAt: number;
@@ -599,6 +612,9 @@ function toDraft(row: Row): HandoverDraft {
     detail: (row.detail as string | null) ?? null,
     thenReplace: row.then_replace ? JSON.parse(String(row.then_replace)) : null,
     fallback: (row.fallback as string | null | undefined) ?? null,
+    fingerprint: (row.fingerprint as string | null | undefined) ?? null,
+    capturedAt: (row.captured_at as number | null | undefined) ?? null,
+    purpose: (row.purpose as HandoverDraft["purpose"] | undefined) ?? null,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
@@ -661,6 +677,8 @@ export interface DecisionRecord {
   createdAt: number;
   updatedAt: number;
 }
+
+export interface RefStatus { num: number; kind: string; status: string; question: boolean; madeBy: "user" | "agent" | null; review: string | null; supersededBy: number | null }
 
 /** T132: one native delivery to a thread other than the coordinator (a worker), with its receipt. */
 export type Delivery = { op: string; state: "pending" | "sent" | "queued" | "uncertain" | "failed"; threadId: string; queuedId?: string; detail?: string };
@@ -1698,12 +1716,13 @@ export class Store {
   saveHandoverDraft(draft: Omit<HandoverDraft, "createdAt" | "updatedAt"> & { createdAt?: number }): HandoverDraft {
     const now = Date.now();
     this.db.prepare(
-      `INSERT INTO handover_drafts(project_id, state, note, text, source, thread_id, detail, then_replace, fallback, created_at, updated_at)
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO handover_drafts(project_id, state, note, text, source, thread_id, detail, then_replace, fallback, fingerprint, captured_at, purpose, created_at, updated_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(project_id) DO UPDATE SET state=excluded.state, note=excluded.note, text=excluded.text, source=excluded.source,
-         thread_id=excluded.thread_id, detail=excluded.detail, then_replace=excluded.then_replace, fallback=excluded.fallback, updated_at=excluded.updated_at`,
+         thread_id=excluded.thread_id, detail=excluded.detail, then_replace=excluded.then_replace, fallback=excluded.fallback,
+         fingerprint=excluded.fingerprint, captured_at=excluded.captured_at, purpose=excluded.purpose, updated_at=excluded.updated_at`,
     ).run(draft.projectId, draft.state, draft.note, draft.text, draft.source, draft.threadId, draft.detail,
-      draft.thenReplace ? JSON.stringify(draft.thenReplace) : null, draft.fallback ?? null, draft.createdAt ?? now, now);
+      draft.thenReplace ? JSON.stringify(draft.thenReplace) : null, draft.fallback ?? null, draft.fingerprint ?? null, draft.capturedAt ?? null, draft.purpose ?? null, draft.createdAt ?? now, now);
     return this.handoverDraft(draft.projectId)!;
   }
 
@@ -2537,6 +2556,34 @@ export class Store {
       .prepare(`SELECT * FROM knowledge WHERE project_id = ? AND num = ? AND kind='decision' AND status IN ('active','answered','superseded','closed','withdrawn','removed') AND (decision_owner IS NOT NULL OR (human_attention='needs-opinion' AND status IN ('active','closed','withdrawn')))`)
       .get(projectId, num) as Row | undefined;
     return row ? toDecision(row) : null;
+  }
+
+  /** Handover (F1): the latest change to this Initiative's tasks, workers, work, questions or updates. */
+  ledgerStamp(projectId: string): number {
+    const row = this.db.prepare(`SELECT MAX(at) AS at FROM (
+      SELECT MAX(updated_at) AS at FROM tasks WHERE project_id = ?
+      UNION ALL SELECT MAX(updated_at) FROM workers WHERE project_id = ?
+      UNION ALL SELECT MAX(updated_at) FROM assignments WHERE project_id = ?
+      UNION ALL SELECT MAX(updated_at) FROM knowledge WHERE project_id = ?
+      UNION ALL SELECT MAX(created_at) FROM updates WHERE project_id = ?)`).get(projectId, projectId, projectId, projectId, projectId) as { at: number | null };
+    return row.at ?? 0;
+  }
+
+  /** Handover (F4): the bare status of any question or decision number, including legacy rows outside decisions(). */
+  refStatuses(projectId: string, nums: number[]): RefStatus[] {
+    if (!nums.length) return [];
+    const rows = this.db
+      .prepare(`SELECT k.num, k.kind, k.status, k.human_attention, k.decision_owner, k.decision_review, (SELECT MIN(s.num) FROM knowledge s WHERE s.project_id = k.project_id AND s.supersedes = k.num) AS superseded_by FROM knowledge k WHERE k.project_id = ? AND k.num IN (${nums.map(() => "?").join(",")}) ORDER BY k.num`)
+      .all(projectId, ...nums) as Row[];
+    return rows.map(row => ({
+      num: Number(row.num),
+      kind: String(row.kind),
+      status: String(row.status),
+      question: row.human_attention === "needs-opinion",
+      madeBy: (row.decision_owner as RefStatus["madeBy"]) ?? null,
+      review: (row.decision_review as string | null) ?? null,
+      supersededBy: (row.superseded_by as number | null) ?? null,
+    }));
   }
 
   decisions(

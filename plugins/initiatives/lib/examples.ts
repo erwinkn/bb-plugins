@@ -15,6 +15,15 @@ export const COMMAND_EXAMPLES = {
   withdraw: { action: "withdraw", ref: "D12", reason: "Settled by D15: Erwin chose Base UI in chat." },
   handover: { action: "coordinator-handover", reason: "Context is getting long", note: "W4 is mid-way through T11; the review of T9 is due." },
 } as const;
+/** W188 (F5): names agents reach for, routed to the examples they mean. */
+export const DESCRIBE_GROUPS: Record<string, readonly (keyof typeof COMMAND_EXAMPLES)[]> = {
+  decision: ["user-choice", "veto-request", "supersede", "question", "answer", "quiet-answer", "withdraw"],
+  initiative_decision: ["user-choice", "veto-request", "supersede", "question", "answer", "quiet-answer", "withdraw"],
+  initiative_spawn: ["spawn", "review", "fresh-with-handoff"],
+  initiative_message: ["message", "work-message"],
+  initiative_task: ["task-close"],
+  initiative_manage: ["handover"],
+};
 export const READ_EXAMPLES = {
   overview: {},
   exact: { refs: ["W4", "T11"] },
