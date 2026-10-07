@@ -1,6 +1,7 @@
 // The Advisor runtime: watches, observation passes, review scheduling,
 // cancellation and retention. One instance per plugin load.
 
+import { addAbortListener } from "node:events";
 import { ROUTES } from "../config/routes.js";
 import { RETENTION_KEYS, REVIEW_KEYS, SECRET_KEYS, resolveConfig, type ResolvedConfig } from "../config/settings.js";
 import { eligible } from "../rules/cards.js";
@@ -174,16 +175,16 @@ export class Advisor {
       } catch (err) {
         this.d.log.warn(`advisor tick failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+      if (signal.aborted) break;
       await new Promise<void>((resolve) => {
-        const t = setTimeout(resolve, this.resolved.config.pollSeconds * 1000);
-        this.wakeResolve = () => {
+        const done = () => {
           clearTimeout(t);
+          signal.removeEventListener("abort", done);
           resolve();
         };
-        signal.addEventListener("abort", () => {
-          clearTimeout(t);
-          resolve();
-        }, { once: true });
+        const t = setTimeout(done, this.resolved.config.pollSeconds * 1000);
+        this.wakeResolve = done;
+        signal.addEventListener("abort", done, { once: true });
       });
       this.wakeResolve = null;
       // Wakes come at most once a second per busy thread; keep ticks at least 2 s apart.
@@ -319,11 +320,34 @@ export class Advisor {
 
   async tick(signal: AbortSignal): Promise<void> {
     const cfg = this.resolved.config;
+    // The pass's reads compose their deadlines with AbortSignal.any (readSignal), so they get a
+    // signal that lives for this pass only, never the service's own: see readSignal.
+    const ctl = new AbortController();
+    // addAbortListener, like AbortSignal.any, ignores stopImmediatePropagation from other listeners.
+    const link = addAbortListener(signal, () => ctl.abort(signal.reason));
+    if (signal.aborted) ctl.abort(signal.reason);
+    try {
+      if (!(await this.pass(cfg, ctl.signal))) return;
+    } finally {
+      link[Symbol.dispose]();
+    }
+    // Reviews outlive the pass, so they follow the service signal itself.
+    this.dispatchDue(signal);
+    // Pruning deletes: while a retention value is invalid it waits rather than run on a default.
+    const retentionValid = !RETENTION_KEYS.some((k) => this.resolved.invalidKeys.includes(k));
+    if (retentionValid && this.d.now() - this.lastPrune > PRUNE_EVERY_MS) {
+      this.lastPrune = this.d.now();
+      this.d.store.prune(this.d.now(), cfg.retention);
+    }
+  }
+
+  /** Observation and held-review revalidation; false when the signal cut the watch loop short. */
+  private async pass(cfg: ResolvedConfig["config"], signal: AbortSignal): Promise<boolean> {
     if (cfg.observationEnabled && this.resolved.observationErrors.length === 0) {
       await this.syncProjectScope(signal);
       await this.syncInitiatives(signal);
       for (const w of this.d.store.listWatches()) {
-        if (signal.aborted) return;
+        if (signal.aborted) return false;
         if (!w.enabled) continue;
         try {
           await this.observe(w, signal);
@@ -337,13 +361,7 @@ export class Advisor {
       }
     }
     await this.revalidateHeld(signal);
-    this.dispatchDue(signal);
-    // Pruning deletes: while a retention value is invalid it waits rather than run on a default.
-    const retentionValid = !RETENTION_KEYS.some((k) => this.resolved.invalidKeys.includes(k));
-    if (retentionValid && this.d.now() - this.lastPrune > PRUNE_EVERY_MS) {
-      this.lastPrune = this.d.now();
-      this.d.store.prune(this.d.now(), cfg.retention);
-    }
+    return true;
   }
 
   private async syncProjectScope(signal: AbortSignal): Promise<void> {
@@ -929,7 +947,8 @@ export class Advisor {
   /** Start a review (or a preview) in the background, owned by its own AbortController. */
   start(w: WatchRow, preview: boolean, parent?: AbortSignal): Promise<ReviewEnd> {
     const controller = new AbortController();
-    if (parent) parent.addEventListener("abort", () => controller.abort("plugin-unloading"), { once: true });
+    const unloading = () => controller.abort("plugin-unloading");
+    parent?.addEventListener("abort", unloading, { once: true });
     const promise = (async (): Promise<ReviewEnd> => {
       const cfg = this.resolved.config;
       const now = this.d.now();
@@ -983,6 +1002,7 @@ export class Advisor {
         return { state: "failed", reviewId: null, why: err instanceof Error ? err.message : String(err) };
       })
       .finally(() => {
+        parent?.removeEventListener("abort", unloading);
         if (this.inflight.get(w.id)?.controller === controller) this.inflight.delete(w.id);
         this.changed();
       });

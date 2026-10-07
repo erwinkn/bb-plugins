@@ -1,7 +1,8 @@
 // Advisor transport regressions, ported from the accepted T76 probes (A154/A168 isolation, A161
 // credential-repair boundary and header hygiene, A166 joining races). The real hub runs over fake
 // stores; nothing reaches a network.
-import { describe, expect, it } from "vitest";
+import { getEventListeners } from "node:events";
+import { describe, expect, it, vi } from "vitest";
 import type { Account, AccountQuota, AccountSecret } from "./contracts.js";
 import type { AdvisorConfigState } from "./advisor-config.js";
 import { advisorRequestHeaders, createHub, type LedgerHooks } from "./hub.js";
@@ -12,6 +13,7 @@ import type {
   PoolAffinityStore,
   QuotaStore,
 } from "./store.js";
+import { dependantsOf } from "./testing/signals.js";
 
 const START = Date.UTC(2026, 9, 4, 12);
 const EMPTY_FAMILY = { fable: null, sonnet: null, opus: null, haiku: null, other: null };
@@ -857,5 +859,97 @@ describe("usage ledger records (T102)", () => {
     expect((await native(env)).status).toBe(200);
     expect((await advise(env)).status).toBe(500);
     expect((await advise(env)).status).toBe(200);
+  });
+});
+
+// Node 22's AbortSignal.any records each composite on every source and, whenever one is collected,
+// walks all composites still recorded there. Per-request composites of the hub's lifetime signal
+// made those walks quadratic and froze the BB server for seconds; requests now link to it with
+// listeners they remove.
+describe("hub lifetime signal", () => {
+  const keepAliveRequest = (confirm: string | null = null) => ({
+    sessionId: "s",
+    accountId: "A",
+    family: "sonnet" as const,
+    url: "https://u.invalid/a/v1/messages",
+    body: new TextEncoder().encode(claudeBody),
+    headers: new Headers({ "anthropic-version": "2023-06-01" }),
+    reserve: 0,
+    timeoutMs: 60_000,
+    confirm: async () => confirm,
+  });
+
+  it("is left with no dependants or listeners after thousands of requests", async () => {
+    const env = makeHub({
+      script: [
+        ...Array<Reply>(1_500).fill(200),
+        ...Array<Reply>(300).fill(503),
+        ...Array<Reply>(100).fill("hang"),
+      ],
+    });
+    env.quotas.set("A", { ...emptyQuota("A"), observedAt: START });
+    const lifetime = (env.hub as unknown as { stopped: AbortController })
+      .stopped.signal;
+    const any = vi.spyOn(AbortSignal, "any");
+    try {
+      const statuses = new Map<number | string, number>();
+      const count = (key: number | string) =>
+        statuses.set(key, (statuses.get(key) ?? 0) + 1);
+      for (let i = 0; i < 500; i++) count((await native(env)).status);
+      for (let i = 0; i < 500; i++) count((await advise(env)).status);
+      for (let i = 0; i < 500; i++)
+        count((await env.hub.keepAlive(keepAliveRequest(), new AbortController().signal)).kind);
+      for (let i = 0; i < 300; i++) count((await advise(env)).status);
+      for (let i = 0; i < 100; i++) {
+        const client = new AbortController();
+        const pending = env.hub.handleAdvisor(advisorRequest("claude", {}, client.signal), "claude");
+        await Promise.resolve();
+        client.abort();
+        count((await pending).status);
+      }
+      for (let i = 0; i < 100; i++)
+        count((await env.hub.keepAlive(keepAliveRequest("refused"), new AbortController().signal)).kind);
+      expect(Object.fromEntries(statuses)).toEqual({ 200: 1_000, response: 500, 503: 300, 499: 100, skipped: 100 });
+      expect(any.mock.calls.filter(([signals]) => [...signals].includes(lifetime)).length).toBe(0);
+      expect(getEventListeners(lifetime, "abort")).toEqual([]);
+      expect(dependantsOf(lifetime)).toBe(0);
+    } finally {
+      any.mockRestore();
+    }
+  });
+
+  // W195: a client listener that stops immediate propagation must not hide the abort from the hub.
+  it("returns 499 for a client abort during a credential wait, despite stopImmediatePropagation", async () => {
+    const env = makeHub({});
+    const held = gate();
+    env.readGates.push(held);
+    const client = new AbortController();
+    const request = new Request(nativeRequest(), { signal: client.signal });
+    request.signal.addEventListener("abort", (event) => event.stopImmediatePropagation());
+    const pending = env.hub.handle(request, "claude");
+    await tick();
+    client.abort();
+    const response = await Promise.race([
+      pending,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 200)),
+    ]);
+    expect(response?.status).toBe(499);
+    held.open();
+  });
+
+  it("stop() still cancels a request waiting on its credential, and leaves no listener", async () => {
+    const env = makeHub({});
+    const lifetime = (env.hub as unknown as { stopped: AbortController })
+      .stopped.signal;
+    const held = gate();
+    env.readGates.push(held);
+    const pending = native(env);
+    await tick();
+    await env.hub.stop();
+    const response = await pending;
+    expect(response.status).toBe(503);
+    expect(response.log).toEqual(["read:held"]);
+    expect(getEventListeners(lifetime, "abort")).toEqual([]);
+    held.open();
   });
 });

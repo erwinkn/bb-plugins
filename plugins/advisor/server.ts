@@ -42,11 +42,13 @@ export interface AdvisorPluginOptions {
 
 function sleepFor(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener("abort", () => {
+    const done = () => {
       clearTimeout(t);
+      signal.removeEventListener("abort", done);
       resolve();
-    }, { once: true });
+    };
+    const t = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
   });
 }
 

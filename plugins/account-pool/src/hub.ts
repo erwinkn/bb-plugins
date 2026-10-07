@@ -19,6 +19,7 @@ import {
 } from "./cache-usage.js";
 import { createClaudeAdapter } from "./claude-adapter.js";
 import { StringCheck } from "./json-scan.js";
+import { linkSignals } from "./signals.js";
 import {
   createCodexAdapter,
   DEFAULT_CODEX_REFRESH_URL,
@@ -316,7 +317,8 @@ export class AccountPoolHub {
     dispatch: { sent: boolean },
     reserve: number,
   ): Promise<Response> {
-    const signal = AbortSignal.any([request.signal, this.stopped.signal]);
+    const link = linkSignals([request.signal, this.stopped.signal]);
+    const signal = link.signal;
     try {
       const parsed = adapter.parseRequest(body, request.headers);
       const selected = await this.pickIsolatedAccount(
@@ -406,6 +408,8 @@ export class AccountPoolHub {
           ? "Account Pooler request was canceled."
           : "Account Pooler stopped accepting requests.",
       );
+    } finally {
+      link.dispose();
     }
   }
 
@@ -565,7 +569,6 @@ export class AccountPoolHub {
     adapter: ProviderAdapter,
     hostId: string,
   ): Promise<Response> {
-    const signal = AbortSignal.any([request.signal, this.stopped.signal]);
     const attempted = new Set<string>();
     const waited = new Set<string>();
     const routing: RoutingAttempt = {
@@ -592,6 +595,8 @@ export class AccountPoolHub {
     const observation = this.observeNative(request, adapter, parsed);
     const ledgerKind = ledgerKindOf(request);
     let respondedToClient = false;
+    const link = linkSignals([request.signal, this.stopped.signal]);
+    const signal = link.signal;
     try {
       while (attempted.size < candidateIds.size) {
         signal.throwIfAborted();
@@ -878,6 +883,7 @@ export class AccountPoolHub {
           : "Account Pooler stopped accepting requests.",
       );
     } finally {
+      link.dispose();
       if (!respondedToClient) observation?.abandon();
     }
   }
@@ -930,111 +936,112 @@ export class AccountPoolHub {
       };
     if (this.options.quotas.get(account.id).observedAt === null)
       return { kind: "skipped", reason: "the account's quota is unknown" };
-    const aborted = AbortSignal.any([
-      signal,
-      this.stopped.signal,
-      AbortSignal.timeout(request.timeoutMs),
-    ]);
-    let secret: AccountSecret;
+    const link = linkSignals([signal, this.stopped.signal], request.timeoutMs);
+    const aborted = link.signal;
     try {
-      secret = await abortable(
-        this.freshSecret(account, adapter, { kind: "isolated" }),
-        aborted,
+      let secret: AccountSecret;
+      try {
+        secret = await abortable(
+          this.freshSecret(account, adapter, { kind: "isolated" }),
+          aborted,
+        );
+      } catch {
+        return {
+          kind: "skipped",
+          reason: aborted.aborted
+            ? "canceled before sending"
+            : "no credential is ready without native repair",
+        };
+      }
+      let refused: string | null;
+      try {
+        refused = await abortable(request.confirm(aborted), aborted);
+      } catch {
+        return {
+          kind: "skipped",
+          reason: aborted.aborted
+            ? "canceled before sending"
+            : "the send-time check failed",
+        };
+      }
+      if (refused !== null) return { kind: "skipped", reason: refused };
+      const headers = new Headers(request.headers);
+      if (secret.kind === "oauth") {
+        headers.set("authorization", `Bearer ${secret.accessToken}`);
+        const betas = (headers.get("anthropic-beta") ?? "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter((value) => value !== "");
+        if (!betas.includes(OAUTH_BETA)) betas.push(OAUTH_BETA);
+        headers.set("anthropic-beta", betas.join(","));
+      } else headers.set("x-api-key", secret.apiKey);
+      headers.set("user-agent", WARMING_CLIENT);
+      const startedAt = this.options.now();
+      let response: Response;
+      const ledgerStart: LedgerStart = {
+        kind: "refresh",
+        provider: "claude",
+        sessionKey: `session:${request.sessionId}`,
+        accountId: account.id,
+        family: request.family,
+        body: request.body,
+      };
+      try {
+        response = await this.options.fetch(request.url, {
+          method: "POST",
+          headers,
+          body: fetchBody(request.body),
+          signal: aborted,
+        });
+      } catch {
+        // Whether anything reached Anthropic is unknown: the row has no status.
+        this.recordRequest(ledgerStart, startedAt, null, false, null);
+        return {
+          kind: "failed",
+          reason: aborted.aborted
+            ? "canceled or timed out"
+            : "could not reach Anthropic",
+          startedAt,
+        };
+      }
+      this.options.quotas.put(
+        adapter.quotaFromHeaders(
+          account.id,
+          response.headers,
+          this.options.quotas.get(account.id),
+          request.family,
+          this.options.now(),
+        ),
       );
-    } catch {
+      const text = await readBounded(response, MAX_KEEP_ALIVE_RESPONSE_BYTES);
+      let payload: unknown = null;
+      try {
+        payload = text === null ? null : JSON.parse(text);
+      } catch {}
+      const object =
+        typeof payload === "object" && payload !== null
+          ? (payload as Record<string, unknown>)
+          : null;
+      const usage = cacheUsageFrom(object?.usage);
+      this.recordRequest(
+        ledgerStart,
+        startedAt,
+        response.status,
+        text !== null,
+        usage,
+      );
       return {
-        kind: "skipped",
-        reason: aborted.aborted
-          ? "canceled before sending"
-          : "no credential is ready without native repair",
-      };
-    }
-    let refused: string | null;
-    try {
-      refused = await abortable(request.confirm(aborted), aborted);
-    } catch {
-      return {
-        kind: "skipped",
-        reason: aborted.aborted
-          ? "canceled before sending"
-          : "the send-time check failed",
-      };
-    }
-    if (refused !== null) return { kind: "skipped", reason: refused };
-    const headers = new Headers(request.headers);
-    if (secret.kind === "oauth") {
-      headers.set("authorization", `Bearer ${secret.accessToken}`);
-      const betas = (headers.get("anthropic-beta") ?? "")
-        .split(",")
-        .map((value) => value.trim())
-        .filter((value) => value !== "");
-      if (!betas.includes(OAUTH_BETA)) betas.push(OAUTH_BETA);
-      headers.set("anthropic-beta", betas.join(","));
-    } else headers.set("x-api-key", secret.apiKey);
-    headers.set("user-agent", WARMING_CLIENT);
-    const startedAt = this.options.now();
-    let response: Response;
-    const ledgerStart: LedgerStart = {
-      kind: "refresh",
-      provider: "claude",
-      sessionKey: `session:${request.sessionId}`,
-      accountId: account.id,
-      family: request.family,
-      body: request.body,
-    };
-    try {
-      response = await this.options.fetch(request.url, {
-        method: "POST",
-        headers,
-        body: fetchBody(request.body),
-        signal: aborted,
-      });
-    } catch {
-      // Whether anything reached Anthropic is unknown: the row has no status.
-      this.recordRequest(ledgerStart, startedAt, null, false, null);
-      return {
-        kind: "failed",
-        reason: aborted.aborted
-          ? "canceled or timed out"
-          : "could not reach Anthropic",
+        kind: "response",
+        status: response.status,
+        usage,
+        outputEmpty: Array.isArray(object?.content)
+          ? object.content.length === 0
+          : null,
         startedAt,
       };
+    } finally {
+      link.dispose();
     }
-    this.options.quotas.put(
-      adapter.quotaFromHeaders(
-        account.id,
-        response.headers,
-        this.options.quotas.get(account.id),
-        request.family,
-        this.options.now(),
-      ),
-    );
-    const text = await readBounded(response, MAX_KEEP_ALIVE_RESPONSE_BYTES);
-    let payload: unknown = null;
-    try {
-      payload = text === null ? null : JSON.parse(text);
-    } catch {}
-    const object =
-      typeof payload === "object" && payload !== null
-        ? (payload as Record<string, unknown>)
-        : null;
-    const usage = cacheUsageFrom(object?.usage);
-    this.recordRequest(
-      ledgerStart,
-      startedAt,
-      response.status,
-      text !== null,
-      usage,
-    );
-    return {
-      kind: "response",
-      status: response.status,
-      usage,
-      outputEmpty: Array.isArray(object?.content)
-        ? object.content.length === 0
-        : null,
-      startedAt,
-    };
   }
 
   // One upstream attempt in the usage ledger, recorded exactly once: from its response stream's

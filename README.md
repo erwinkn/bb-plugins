@@ -379,6 +379,33 @@ over 1 s). The fork adds, per stall:
 
 Suggested issue title: `Attribute event-loop stalls to queries, GC and code`.
 
+### Run the server on Node 24.16 or later (2026-10-07)
+
+Candidate from W193; not filed. On Node 22, `AbortSignal.any` records each
+composite on every source signal. Each time a composite is garbage-collected,
+a finalizer walks every composite still recorded on that source
+(`internal/abort_controller` lines 89–94, where the fork's stall sampler put
+almost all of the hetzner server's 390 stalls). Code that builds one
+composite per operation from a long-lived signal therefore pays
+collected × live per GC. Benchmark
+(`plugins/account-pool/scripts/bench-abort-signal-any.mjs`) on Node 22.23.2,
+one long-lived source, 20,000 composites collected by one full GC; longest
+stall including the GC itself, median of three runs:
+
+| Still live | 100 | 1,000 | 5,000 | 10,000 |
+| --- | --- | --- | --- | --- |
+| `AbortSignal.any` | 59 ms | 586 ms | 3.1 s | 7.9 s |
+| per-request controller + listeners | 9 ms | 8 ms | 14 ms | 14 ms |
+
+Node 24.16.0 deletes one entry per finalization instead
+([nodejs/node#62367](https://github.com/nodejs/node/pull/62367), fixing
+[#62363](https://github.com/nodejs/node/issues/62363)), and Node 24.21.0
+shows no stall on the same benchmark. No v22 backport is known. The Pooler
+and Advisor no longer compose their lifetime signals (W193), but BB only
+requires `node >=22.19.0`, so core code and other plugins can still hit
+this. Suggested issue title: `Require Node 24.16+ for the server:
+AbortSignal.any finalization is quadratic on Node 22`.
+
 ### Reconnect revives threads without a turn (2026-10-07)
 
 Candidate from T134; not filed. Patched in fork `329ac507a`. In 0.43.1 a

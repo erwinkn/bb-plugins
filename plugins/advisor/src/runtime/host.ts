@@ -51,7 +51,12 @@ export function sdkHost(bb: Pick<BbPluginApi, "sdk">, poolerPluginId: string): A
 
 export const READ_DEADLINE_MS = 10_000;
 
-/** A 10-second deadline for one native read, also cut by the caller's signal. */
+/**
+ * A 10-second deadline for one native read, also cut by the caller's signal. The parent must not
+ * be long-lived: Node 22's AbortSignal.any records each composite on its sources and walks them all
+ * whenever one is collected, so composites of the service signal stall the event loop (a tick
+ * passes its own signal down instead).
+ */
 export function readSignal(parent?: AbortSignal, ms = READ_DEADLINE_MS): AbortSignal {
   const t = AbortSignal.timeout(ms);
   return parent ? AbortSignal.any([parent, t]) : t;
