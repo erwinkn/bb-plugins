@@ -26,6 +26,7 @@ import { briefBoundary, captureHandoverSnapshot, emptySnapshot, fallbackBody, fi
 import { isOwnOrigin } from "./identity";
 import {
   chooseWorkProfile,
+  workerKindProfile,
   delegationViolations,
   describeProfile,
   profileFor,
@@ -50,6 +51,9 @@ import {
   type Report,
   type Role,
   type WorkKind,
+  type WorkerKind,
+  DEFAULT_WORKER_KIND,
+  WORKER_KIND_PROFILE,
 } from "./schema";
 import {
   assignmentRef,
@@ -170,7 +174,8 @@ export interface DelegateInput {
   reviewOf?: string[];
   reviewTargets?: { task: string; assignment: string; revision: string }[];
   worker?: string;
-  kind?: WorkKind;
+  /** Fresh work only: the role to spawn (worker by default), which picks the default profile. */
+  kind?: WorkerKind;
   profile?: Profile;
   bbProjectId?: string;
   environment?: EnvironmentChoice;
@@ -4186,14 +4191,16 @@ export class ProjectsService {
 
     // Profile: a review defaults to the reviewer configured for the reviewed worker's model
     // family; work follows the explicit choice, then a user-chosen task profile, then the
-    // default work profile. A continuation keeps the worker's native model (read below).
+    // profile of its kind (worker by default). A continuation keeps the worker's native model
+    // (read below).
+    const kind: WorkerKind = input.kind ?? DEFAULT_WORKER_KIND;
     let profile: Profile;
     if (reviewed)
       profile = input.profile ?? profileFor(policy, seriesOf(reviewed.actualProfile ?? reviewed.profile) === "claude" ? "reviewOfClaude" : "reviewOfGpt");
     else {
-      profile = input.profile ?? profileFor(policy, "implementation");
+      profile = input.profile ?? workerKindProfile(policy, kind);
       for (const task of tasks) {
-        const choice = chooseWorkProfile({ policy, kind: "implementation", task, explicit: input.profile ?? (task.profileSource === "user" ? null : profile) });
+        const choice = chooseWorkProfile({ policy, kind: WORKER_KIND_PROFILE[kind], task, explicit: input.profile ?? (task.profileSource === "user" ? null : profile) });
         if (!choice.ok) throw new ProjectError(choice.reason);
         profile = choice.profile;
       }
@@ -4352,6 +4359,7 @@ export class ProjectsService {
           ? this.store.createWorker({
               projectId: project.id,
               role: input.role,
+              kind: input.role === "work" ? kind : null,
               label:
                 input.label ??
                 (reviewed ? `Review of ${workerRef(reviewed.workerNum)}` : (tasks[0]?.title ?? "Worker")),

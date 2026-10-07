@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { environmentSchema, profileSchema } from "./schema";
+import { environmentSchema, profileSchema, WORKER_KINDS } from "./schema";
 import type { Command } from "./commands";
 import { ProjectError } from "./bb";
 
@@ -20,7 +20,8 @@ export const spawnToolSchema = z.object({
   tasks: z.array(ref).max(30).optional().describe("Optional T# tasks this work is for."),
   reviews: ref.optional().describe("Review only: the W# (its latest report) or A# to review; that report is embedded."),
   handoffs: z.array(ref).max(3).optional().describe("Up to 3 prior reports to embed, as W# (latest report) or A#."),
-  profile: profileSchema.optional().describe("Explicit execution profile; omitted uses the Settings default for work or review."),
+  kind: z.enum(WORKER_KINDS).optional().describe("Work only: worker (default), fast (simple, well-specified work) or investigator (summarizing or investigating large text). Settings map each kind to a model."),
+  profile: profileSchema.optional().describe("Explicit execution profile; wins over kind. Omitted uses the Settings default for the kind or review."),
   project: ref.optional().describe("Member BB project id, when not the primary one."),
   environment: environmentSchema.optional().describe("{type:\"worktree\"} for an isolated checkout; default is the project checkout (a review defaults to the reviewed worker's)."),
   permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(),
@@ -94,6 +95,7 @@ export const spawnCommand = (i: z.infer<typeof spawnToolSchema>): Command => ({
   ...(i.tasks ? { tasks: i.tasks } : {}),
   ...(i.reviews ? { reviews: i.reviews } : {}),
   ...(i.handoffs ? { handoffs: i.handoffs } : {}),
+  ...(i.kind ? { kind: i.kind } : {}),
   ...(i.profile ? { profile: i.profile } : {}),
   ...(i.project ? { bbProjectId: i.project } : {}),
   ...(i.environment ? { environment: i.environment } : {}),

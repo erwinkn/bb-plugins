@@ -10,6 +10,7 @@ import type {
   ProjectContext,
   Role,
   TaskStatus,
+  WorkerKind,
 } from "./schema";
 import type {
   AssignmentRecord,
@@ -182,6 +183,8 @@ export interface WorkerItem {
   ref: string;
   label: string;
   role: Role;
+  /** What the coordinator asked for on spawn; null for reviewers and older workers. */
+  kind: WorkerKind | null;
   area: string;
   bbProjectId: string;
   threadId: string | null;
@@ -637,6 +640,7 @@ export function buildOverview(
       ref: worker.ref,
       label: worker.label,
       role: worker.role,
+      kind: worker.kind,
       area: worker.area,
       bbProjectId: worker.bbProjectId,
       threadId: worker.threadId,

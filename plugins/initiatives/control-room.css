@@ -90,6 +90,7 @@
 .cr-fold-meta { flex: none; color: var(--muted-foreground); }
 .cr-age { color: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; font-weight: 400; }
 .cr-ref, .cr-gen { font-size: 10.5px; flex: none; color: var(--muted-foreground); white-space: nowrap; }
+.cr-kind { font-size: 9.5px; opacity: 0.7; letter-spacing: 0.02em; }
 .cr-gen { display: inline-grid; place-items: center; height: 18px; padding: 0 5px; border-radius: 4px; background: var(--muted); border: 1px solid var(--border); color: var(--cr-ink-secondary); }
 .cr-kind { display: inline-grid; place-items: center; width: 20px; height: 20px; flex: none; border-radius: 6px; font: 700 12px ui-monospace, monospace; background: color-mix(in srgb, var(--cr-amber) 10%, transparent); color: var(--cr-amber); }
 .cr-detail { padding: 4px 0 12px; }

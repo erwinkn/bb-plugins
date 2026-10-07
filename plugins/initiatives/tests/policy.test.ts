@@ -38,6 +38,7 @@ const worker = (patch: Partial<WorkerRecord> = {}): WorkerRecord => ({
   num: 1,
   ref: "W1",
   role: "work",
+  kind: null,
   label: "API",
   area: "api",
   threadId: "thr_w1",

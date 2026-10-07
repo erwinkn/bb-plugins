@@ -65,12 +65,13 @@ describe("W198 PR stages", () => {
     expect(f.store.prStages(project.id).get(PR)?.stage).toBe("experiment");
   });
 
-  it("is stored by an additive migration, appended last", () => {
-    expect(MIGRATIONS.at(-1)).toMatch(/^CREATE TABLE pr_stages/);
+  it("is stored by an additive migration, appended after the earlier ones", () => {
+    const index = MIGRATIONS.findIndex(migration => /^CREATE TABLE pr_stages/.test(migration));
+    expect(index).toBeGreaterThan(0);
     // An existing database gains the table without touching earlier ones.
     const db = new Database(":memory:");
-    for (const migration of MIGRATIONS.slice(0, -1)) db.exec(migration);
-    db.exec(MIGRATIONS.at(-1)!);
+    for (const migration of MIGRATIONS.slice(0, index)) db.exec(migration);
+    db.exec(MIGRATIONS[index]!);
     const store = new Store(db);
     store.setPrStage("p1", PR, "in-review", null, 1);
     expect(store.prStages("p1").get(PR)).toEqual({ url: PR, stage: "in-review", note: null, setAt: 1 });

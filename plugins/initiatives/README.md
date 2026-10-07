@@ -379,12 +379,19 @@ overlong or invalid edits are rejected before saving. BB applies instructions
 when it constructs a session; saving never restarts or wakes an agent, and
 briefs never repeat them.
 
-Profiles: `coordinator`, `implementation` (the default work profile),
-`reviewOfClaude` and `reviewOfGpt` (the default reviewer for work done by that
-model family, so a different family reviews by default). Other stored keys are
-kept but unused. An explicit `profile` on spawn wins; a user-chosen task profile
-still wins over the coordinator's; a work message keeps the worker's native
-model. Settings never rewrite stored Initiative policies.
+Profiles are stored under their original JSON keys but named by role in
+Settings: `coordinator` (coordinator), `implementation` (worker),
+`straightforward` (fast worker), `investigation` (investigator/summarizer),
+`reviewOfClaude` and `reviewOfGpt` (the reviewer for work done by that model
+family, so a different family reviews by default). `experiment` is kept but
+unused. A coordinator picks a role on spawn with `kind`: `worker` (default,
+`implementation`), `fast` (`straightforward`) or `investigator`
+(`investigation`); swapping a model is a settings change only. The kind is
+recorded on the worker and shown beside its W# in the dashboard. An explicit
+`profile` on spawn wins over `kind`; a user-chosen task profile still wins over
+the coordinator's; a work message keeps the worker's native model; a review
+follows the reviewed worker's model family. Per-Initiative `policy.profiles`
+override the same keys. Settings never rewrite stored Initiative policies.
 
 ## Execution choices and native details
 

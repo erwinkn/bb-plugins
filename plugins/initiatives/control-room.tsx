@@ -1202,7 +1202,7 @@ function Threads({
               title={t.runtime}
             />
             {t.ownership === "worker" ? (
-              <span className="cr-ref">W{t.workerNum}</span>
+              <span className="cr-ref">W{t.workerNum}{worker?.kind ? <small className="cr-kind"> {worker.kind}</small> : null}</span>
             ) : null}
             <span className="cr-thread-name">
               <b>{label}</b>

@@ -17,6 +17,7 @@ import type {
   Route,
   TaskStatus,
   WorkKind,
+  WorkerKind,
   WorkerState,
 } from "./schema";
 import {
@@ -406,6 +407,8 @@ export const MIGRATIONS = [
     set_at INTEGER NOT NULL,
     PRIMARY KEY (project_id, url)
   )`,
+  // W206: the role a coordinator asked for on spawn (worker, fast, investigator); null for reviewers and older workers.
+  `ALTER TABLE workers ADD COLUMN kind TEXT`,
 ];
 
 export const ACTIVITY_LIMIT = 300;
@@ -458,6 +461,8 @@ export interface WorkerRecord {
   num: number;
   ref: string;
   role: Role;
+  /** What the coordinator asked for on spawn; null for reviewers and workers from before kinds. */
+  kind: WorkerKind | null;
   label: string;
   area: string;
   threadId: string | null;
@@ -1029,6 +1034,7 @@ function toWorker(row: Row): WorkerRecord {
     num,
     ref: workerRef(num),
     role: row.role as Role,
+    kind: (row.kind as WorkerKind | null) ?? null,
     label: String(row.label),
     area: String(row.area),
     threadId: (row.thread_id as string | null) ?? null,
@@ -2081,6 +2087,7 @@ export class Store {
   createWorker(input: {
     projectId: string;
     role: Role;
+    kind?: WorkerKind | null;
     label: string;
     area: string;
     bbProjectId: string;
@@ -2091,13 +2098,14 @@ export class Store {
     const now = this.now();
     this.db
       .prepare(
-        `INSERT INTO workers (project_id, num, role, label, area, generation, bb_project_id, state, forked_from, native_parent, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 0, ?, 'idle', ?, ?, ?, ?)`,
+        `INSERT INTO workers (project_id, num, role, kind, label, area, generation, bb_project_id, state, forked_from, native_parent, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'idle', ?, ?, ?, ?)`,
       )
       .run(
         input.projectId,
         num,
         input.role,
+        input.kind ?? null,
         input.label,
         input.area,
         input.bbProjectId,

@@ -12,6 +12,7 @@ import {
   ROLES,
   ASSIGNMENT_ACCESS,
   WORK_KINDS,
+  WORKER_KINDS,
 } from "./schema";
 import type { ProjectsService } from "./service";
 import { ProjectError } from "./bb";
@@ -63,7 +64,7 @@ export const delegateSchema = z
     reviewOf: refs.optional(),
     reviewTargets: z.array(z.object({ task: ref, assignment: ref, revision: text(200) }).strict()).min(1).max(20).optional(),
     worker: ref.optional(),
-    kind: z.enum(WORK_KINDS).optional(),
+    kind: z.enum(WORKER_KINDS).optional(),
     profile: profileSchema.optional(),
     bbProjectId: ref.optional(),
     environment: environmentSchema.optional(),
@@ -78,6 +79,8 @@ export const delegateSchema = z
   .strict()
   .superRefine((value, ctx) => {
     if (value.delivery && value.route !== "continue") ctx.addIssue({ code: "custom", path: ["delivery"], message: "delivery applies only to a message to an existing worker." });
+    if (value.kind && (value.route !== "fresh" || value.role === "review"))
+      ctx.addIssue({ code: "custom", path: ["kind"], message: "kind applies to a new work worker; a message keeps the worker's model, and a review follows the reviewed worker's model family." });
     if (value.route !== "fresh") return;
     if (!value.label?.trim())
       ctx.addIssue({ code: "custom", path: ["label"], message: "A new worker needs a label, shown in its W# title." });

@@ -4,6 +4,7 @@ import { projectsContract } from "./lib/contract";
 import {
   DEFAULT_PROFILES,
   PROFILE_KEYS,
+  PROFILE_ROLE_LABELS,
   policySchema,
   type Policy,
 } from "./lib/schema";
@@ -42,7 +43,7 @@ export function ProjectsSettings() {
           <tbody>
             {PROFILE_KEYS.map((key) => (
               <tr key={key}>
-                <th scope="row">{key}</th>
+                <th scope="row">{PROFILE_ROLE_LABELS[key]} <code>{key}</code></th>
                 <td>{describeProfile(profiles[key] ?? DEFAULT_PROFILES[key])}</td>
               </tr>
             ))}

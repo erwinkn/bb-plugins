@@ -6,6 +6,8 @@ import {
   type Role,
   type AssignmentAccess,
   type WorkKind,
+  type WorkerKind,
+  WORKER_KIND_PROFILE,
 } from "./schema";
 import type {
   AssignmentRecord,
@@ -22,6 +24,10 @@ import { taskRef, workerRef } from "./store";
 
 export const profileFor = (policy: Policy, key: ProfileKey): Profile =>
   policy.profiles[key] ?? DEFAULT_PROFILES[key];
+
+/** The default work profile for a worker kind; a missing kind is a plain worker. */
+export const workerKindProfile = (policy: Policy, kind: WorkerKind = "worker"): Profile =>
+  profileFor(policy, WORKER_KIND_PROFILE[kind]);
 
 export const sameProfile = (a: Profile, b: Profile) =>
   a.providerId === b.providerId &&
