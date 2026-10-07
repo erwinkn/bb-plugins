@@ -44,17 +44,6 @@ describe("A296 P1: report capture is bound to a completed turn of that work", ()
     expect(f.store.assignment(project.id, 2)!.report!.finalMessage).toBe("Second batch complete");
   });
 
-  it("2: an interrupted short-report turn never attaches a later chat reply", async () => {
-    const { f, project } = await projectFixture();
-    const [w] = await tool(f, "initiative_spawn", { label: "Work", purpose: "work", text: "Do work" });
-    await tool(f, "initiative_report", { outcome: "blocked", summary: "Need a key", question: "Which key?" }, w.threadId);
-    finish(f, "Blocked details", "interrupted");
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    await tool(f, "initiative_message", { to: w.worker, text: "Explain the issue more" });
-    finish(f, "Here is a later unrelated explanation.", "completed", "Explain the issue more");
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    expect(f.store.assignment(project.id, 1)!.report!.finalMessage).toBeUndefined();
-  });
 });
 
 describe("A296 P1: briefs, handovers and recreation", () => {

@@ -19,7 +19,7 @@ describe("A94 editable native Settings consumers", () => {
     expect(descriptors.coordinatorInstructions).toMatchObject({ type: "string", experimental_multiline: true, default: DEFAULT_COORDINATOR_INSTRUCTIONS });
     expect(descriptors.workerInstructions).toMatchObject({ type: "string", experimental_multiline: true, default: DEFAULT_WORKER_INSTRUCTIONS });
     expect(descriptors.executionProfiles).toHaveProperty("experimental_schema");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Your final message is your report");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Delegate with initiative_spawn");
   });
 

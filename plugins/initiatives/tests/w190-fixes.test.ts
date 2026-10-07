@@ -55,56 +55,6 @@ it("a queued recovery keeps its request until a replacement can be prepared",asy
  expect(f.store.project(project.id)!.coordinatorThreadId).not.toBe("coordinator");
 });
 
-it("a stale idle callback during a short-report turn must not discard the pending final attachment",async()=>{
- const {f,project}=await projectFixture();
- const [w]=await tool(f,"initiative_spawn",{label:"Work",purpose:"work",text:"First work"});
- start(f);end(f,"First report");
- const staleIdle=f.idle(w.threadId);
- await f.runtime.onThreadIdle(staleIdle);
- await tool(f,"initiative_message",{to:w.worker,work:true,text:"Second work"});
- start(f);
- await tool(f,"initiative_report",{outcome:"done",summary:"Done; detailed report follows."},w.threadId);
- // A delayed callback from the first turn reads the newer, still-running turn.
- await f.runtime.onThreadIdle(staleIdle);
- end(f,"Detailed final report.");
- await f.runtime.onThreadIdle(f.idle(w.threadId));
- expect(f.store.assignment(project.id,2)!.report!.finalMessage).toBe("Detailed final report.");
-});
-
-it("a transient event read failure must not discard a short report's final attachment",async()=>{
- const {f,project}=await projectFixture();
- const [w]=await tool(f,"initiative_spawn",{label:"Work",purpose:"work",text:"Do work"});
- start(f);
- await tool(f,"initiative_report",{outcome:"done",summary:"Done; detailed report follows."},w.threadId);
- end(f,"Detailed final report.");
- let fail=true;
- f.intercept((path,args,call)=>{
-   if(path==="threads.events.list" && fail){fail=false;throw new Error("temporary event read failure");}
-   return call();
- });
- await f.service.captureFinalMessage(f.idle(w.threadId));
- f.intercept();
- await f.service.captureFinalMessage(f.idle(w.threadId));
- expect(f.store.assignment(project.id,1)!.report!.finalMessage).toBe("Detailed final report.");
-});
-
-it("a completed turn after a native failure must not attach an unrelated reply to the failed turn's short report",async()=>{
- const {f,project}=await projectFixture();
- const [w]=await tool(f,"initiative_spawn",{label:"Work",purpose:"work",text:"Do work"});
- const at=Date.now();
- vi.spyOn(f.service,"now").mockReturnValue(at);
- start(f,brief(f),at);
- await tool(f,"initiative_report",{outcome:"blocked",summary:"Need a key",question:"Which key?"},w.threadId);
- end(f,"Blocked details","failed",at);
- const failed={...f.threads.get(w.threadId)!,status:"error"} as any;
- f.threads.set(w.threadId,failed);
- await f.runtime.onThreadFailed(failed,"provider failure");
- start(f,"Explain the issue more",at+100);
- end(f,"Unrelated later explanation","completed",at+200);
- await f.runtime.onThreadIdle(f.idle(w.threadId));
- expect(f.store.assignment(project.id,1)!.report!.finalMessage).toBeUndefined();
-});
-
 it("a marker received on an interrupted turn continues to identify that work after native resume",async()=>{
  const {f,project}=await projectFixture();
  const [w]=await tool(f,"initiative_spawn",{label:"Work",purpose:"work",text:"Do work"});

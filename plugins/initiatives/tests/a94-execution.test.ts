@@ -75,12 +75,12 @@ describe("A94 native execution and complete startup", () => {
     expect(f.store.assignment(project.id, 1)!.profile).toEqual(fast);
   });
 
-  it("native-parent report stays canonical without another coordinator result send", async () => {
+  it("native-parent report stays canonical; its notice is the one coordinator send", async () => {
     const { f, project } = await projectFixture();
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, fresh(task.ref));
     await f.service.report(d.threadId!, report());
-    expect(f.send).not.toHaveBeenCalled();
+    expect(f.send).toHaveBeenCalledTimes(1);
     const a = f.store.assignment(project.id, 1)!;
     expect(a.report?.summary).toBe(report().summary);
     expect(a.actualProfile).toEqual(fast);

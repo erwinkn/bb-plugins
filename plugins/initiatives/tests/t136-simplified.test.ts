@@ -16,7 +16,8 @@ const latestBrief = (f: Fx) => (f.store.db.prepare("SELECT brief_text FROM assig
 function finishTurn(f: Fx, text: string, status = "completed", input = latestBrief(f)) {
   const request = `creq_${++seq}`;
   f.history.push({ type: "client/turn/requested", seq: ++seq, createdAt: Date.now(), data: { requestId: request, initiator: "agent", input: [{ type: "text", text: input }] } });
-  f.history.push({ type: "turn/started", seq: ++seq, createdAt: Date.now() - 1 });
+  // The turn began before anything the test filed in it.
+  f.history.push({ type: "turn/started", seq: ++seq, createdAt: Date.now() - 60_000 });
   f.history.push({ type: "turn/input/accepted", seq: ++seq, createdAt: Date.now(), data: { clientRequestId: request } });
   f.history.push({ type: "item/completed", seq: ++seq, createdAt: Date.now(), data: { item: { type: "agentMessage", id: `m${seq}`, text } } });
   f.history.push({ type: "turn/completed", seq: ++seq, createdAt: Date.now() + 1, data: { status } });
@@ -33,7 +34,7 @@ describe("T136 giving work: spawn or message, tasks optional", () => {
     const [r] = await tool(f, "initiative_spawn", { label: "Search index", purpose: "search ranking", text: "Index archived records. Verify with npm test." });
     expect(r).toMatchObject({ worker: "W1", assignment: "A1", state: "running" });
     const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
-    expect(brief).toMatch(/^W1 "Search index" \(search ranking\) · work\n\nIndex archived records\. Verify with npm test\.\n\nExecution: .*\n\nFinish with your report as your final message\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
+    expect(brief).toMatch(/^W1 "Search index" \(search ranking\) · work\n\nIndex archived records\. Verify with npm test\.\n\nExecution: .*\n\nFinish by calling initiative_report with your full report\.\n\n\[initiatives:op_[a-z0-9]+\]$/);
     expect(brief.length).toBeLessThan(400);
     expect(f.store.assignment(project.id, 1)).toMatchObject({ taskNums: [], role: "work" });
   });
@@ -77,30 +78,13 @@ describe("T136 the final message is the report", () => {
     expect(a).toMatchObject({ state: "reported", report: { outcome: "succeeded", summary: "Done" } });
     expect(a.report!.finalMessage).toContain("Ran npm test: 14 passed.");
     expect(f.store.task(project.id, task.num)).toMatchObject({ status: "in_progress", progress: "W1 reported: Done" });
-    // Native completion already told the parent coordinator: no plugin copy.
+    // D417: a captured final message only fills the dashboard record; it is never sent.
     expect(f.send).not.toHaveBeenCalled();
     const closed = await tool(f, "initiative_task", { action: "close", task: task.ref, outcome: "done", note: "Shipped." });
     expect(closed).toMatchObject({ status: "done", result: "Shipped.", acceptedAssignment: 1 });
     expect(f.store.assignment(project.id, 1)!.state).toBe("reported");
     const read = await tool(f, "initiative_read", { refs: ["W1"] });
     expect(read.items[0].latestReport).toMatchObject({ ref: "A1", outcome: "done", summary: "Done" });
-  });
-
-  it("a short initiative_report keeps its outcome and gets the final message attached", async () => {
-    const { f, project } = await projectFixture();
-    const task = f.task(project.id, "Archived search");
-    const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it.", tasks: [task.ref] });
-    await tool(f, "initiative_report", { outcome: "blocked", summary: "Need the staging key", question: "Which staging key should I use?" }, w.threadId);
-    finishTurn(f, "I'm blocked: the staging key is missing. Everything else is done.");
-    await f.runtime.onThreadIdle(f.idle(w.threadId));
-    expect(f.store.assignment(project.id, 1)!.report).toMatchObject({
-      outcome: "blocked", summary: "Need the staging key", blocker: { question: "Which staging key should I use?" },
-      finalMessage: "I'm blocked: the staging key is missing. Everything else is done.",
-    });
-    expect(f.store.task(project.id, task.num)!.status).toBe("blocked");
-    const overview = await f.overview(project.id, "summary");
-    expect(overview.blockers.map(b => b.question)).toEqual(["Which staging key should I use?"]);
-    await expect(tool(f, "initiative_report", { outcome: "blocked", summary: "x" }, w.threadId)).rejects.toThrow(/question/);
   });
 
   it("an interrupted turn or a turn without a message records nothing", async () => {
@@ -214,12 +198,14 @@ describe("T136 instructions", () => {
   it("defaults are short, within the bound, and say what the brief now leaves out", () => {
     // W198 added PR stages and batching (one line).
     // Erwin (2026-10-07) added the per-role model line.
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(1800);
+    // W210 (D417) added the stuck-worker line.
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(1900);
     // Erwin (2026-10-07) added the no-narration rule to the worker text.
-    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1200);
+    // W210 (D417): reports go through initiative_report; stop background work first.
+    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1300);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("one work worker per related batch and one fresh reviewer");
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Your final message is your report");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report");
   });
 
   it("replaces saved instructions with the new defaults once, outright; later edits stay", async () => {

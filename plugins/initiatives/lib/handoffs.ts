@@ -12,7 +12,7 @@ import { assignmentRef, parseRef, taskRef, workerRef, type AssignmentRecord, typ
  */
 export const MAX_HANDOFF_SOURCES = 3;
 
-const fullRecord = (ref: string) => `initiative_read {refs:["${ref}"],detailed:true,fields:["report"]}`;
+export const fullRecord = (ref: string) => `initiative_read {refs:["${ref}"],detailed:true,fields:["report"]}`;
 const iso = (ms: number | null) => (ms === null ? "unknown time" : new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z"));
 
 /**

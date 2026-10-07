@@ -91,7 +91,7 @@ describe("T96 standard handoff from the canonical report", () => {
     expect(prompt).toMatch(/^W2 "Ranking" \(ranking\) · work · T2\n\nT2 Ranking\nRank archived matches\.\n\nRank archived matches below live ones\./);
     expect(prompt).toMatch(/Prior report from W1 "Search" \(A1 · T1, done, \d{4}-\d\d-\d\d \d\d:\d\d UTC\):\nSearch covers archived records\.\n\nImplemented archived search behind the existing query API\./);
     expect(prompt.match(/Prior report from W1/g)).toHaveLength(1);
-    expect(prompt).toContain("Finish with your report as your final message.");
+    expect(prompt).toContain("Finish by calling initiative_report with your full report.");
     // The source assignment, worker and task stay exactly as they were.
     expect(f.store.assignment(project.id, 1)).toEqual(a1);
     expect(f.store.worker(project.id, 1)).toEqual(w1);
@@ -129,7 +129,7 @@ describe("T96 standard handoff from the canonical report", () => {
     expect(a).toMatchObject({ role: "review", access: "read-only", reviewOf: [t1.num], taskNums: [] });
     expect(a.handoffSources![0]).toMatchObject({ assignment: "A1", worker: "W1" });
     expect(a.briefText).toMatch(/^W2 "Review search" \(review W1\) · review · T1\n\nCheck ranking\.\n\nReview W1 "Search" \(A1 · T1, done, [^)]*\)\. Its report:\nSearch covers archived records\./);
-    expect(a.briefText).toContain("This review is read-only: read the code, then give your findings as your final message. Don't fix them.");
+    expect(a.briefText).toContain("This review is read-only: read the code, then report your findings with initiative_report. Don't fix them.");
     expect(f.spawn.mock.calls.at(-1)![0].environment).toEqual({ type: "reuse", environmentId: f.store.worker(project.id, 1)!.environmentId });
   });
 

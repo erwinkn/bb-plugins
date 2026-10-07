@@ -5,18 +5,6 @@ import { readCollection, readRefs, readOptionsSchema } from "../lib/read";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 
 describe("A115 notification and native pending boundaries", () => {
-  it.each(["accepted", "rejected"] as const)("a %s report settles its unissued notice during native parent inspection", async state => {
-    const { f, project } = await projectFixture();
-    const [w] = await f.service.delegate(project.id, { route: "fresh", access: "read-only", tasks: [f.task(project.id).ref] });
-    f.harness.sdk.stub("threads.get", async ({ threadId }) => {
-      f.store.updateAssignment(project.id, 1, { state });
-      return { ...f.threads.get(threadId)!, originKind: "fork" };
-    });
-    const result = await f.service.report(w.threadId!, report());
-    expect(result).toMatchObject({ state, notification: null });
-    expect(f.store.assignment(project.id, 1)).toMatchObject({ state, report: report(), reportNotice: null });
-    expect(f.send).not.toHaveBeenCalled();
-  });
   it("confirmed pending recipients queue with actual sender/receipt; steer and Stop cannot bypass guards", async () => {
     const { f, project } = await projectFixture();
     const [w] = await f.service.delegate(project.id, { route: "fresh", access: "read-only", tasks: [f.task(project.id).ref] });

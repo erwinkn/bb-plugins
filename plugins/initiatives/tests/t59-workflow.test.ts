@@ -18,6 +18,7 @@ describe("T59 native actionable delivery", () => {
     const question = () => f.service.recordQuestion(project.id, { title: "Scope", question: "Include archives?", context: "Need explicit scope", humanAttention: "needs-opinion", blocksTaskIds: ["T6"] }, { author: "coordinator", threadId: "coordinator", assignment: null });
     const first = question(), second = question();
     await f.service.report(worker.threadId!, checkedReport());
+    f.send.mockClear();
     expect(f.store.task(project.id, 6)).toMatchObject({ status: "blocked", progress: `Waiting for your opinion on ${first.ref}`, acceptedAssignment: null });
     f.service.closeQuestion(project.id, first.ref, "Already settled.");
     expect(f.store.task(project.id, 6)).toMatchObject({ status: "blocked", progress: `Waiting for your opinion on ${second.ref}` });
@@ -49,19 +50,4 @@ describe("T59 native actionable delivery", () => {
     expect(f.send.mock.calls.at(-1)![0]).toMatchObject({ mode: delivery === "steer" ? "steer-if-active" : "queue-if-active", senderThreadId: "coordinator" });
   });
 
-  it.each(["sent", "queued", "uncertain", "failed"] as const)("fallback reports retain %s native delivery truth and worker sender", async state => {
-    const { f, project, worker } = await externalWork();
-    f.threads.set(worker.threadId!, { ...f.threads.get(worker.threadId!)!, parentThreadId: null });
-    if (state === "queued") f.queueSend("notice-queue");
-    if (state === "uncertain") f.send.mockRejectedValueOnce(new Error("lost response"));
-    if (state === "failed") f.send.mockRejectedValueOnce(Object.assign(new Error("refused"), { status: 400 }));
-    const blocked = { ...checkedReport(), outcome: "blocked" as const, blocker: { question: "Which platform?", context: "Need sign-off." } };
-    const result = await f.service.report(worker.threadId!, blocked);
-    expect(f.send.mock.calls.at(-1)![0]).toMatchObject({ mode: "steer-if-active", senderThreadId: worker.threadId });
-    expect(result.notification).toMatchObject({ state, coordinatorThreadId: "coordinator" });
-    expect(f.store.assignment(project.id, 1)?.reportNotice).toMatchObject({ state });
-    await f.service.report(worker.threadId!, blocked);
-    expect(f.send).toHaveBeenCalledTimes(state === "failed" ? 2 : 1);
-    expect(f.store.assignment(project.id, 1)?.report?.outcome).toBe("blocked");
-  });
 });

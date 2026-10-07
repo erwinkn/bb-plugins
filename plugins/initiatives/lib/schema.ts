@@ -225,8 +225,10 @@ export const reportSchema = z
       .optional(),
     handoff: handoffSchema,
     pendingBackgroundWork: z.array(line(300)).max(10).default([]),
-    /** T136: the worker's final message, captured when its turn ends; the report itself. */
+    /** The report text (T136, D417): the worker's initiative_report text, else its final message captured when its turn ends. */
     finalMessage: z.string().max(FINAL_MESSAGE_MAX).optional(),
+    /** D417: recorded from the final message of a worker that never filed it; never sent. */
+    captured: z.literal(true).optional(),
   })
   .strict()
   .refine((report) => report.outcome !== "blocked" || report.blocker, {

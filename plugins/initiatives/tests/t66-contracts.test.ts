@@ -11,34 +11,17 @@ async function work() {
 }
 
 describe("T66 native origin/report contract", () => {
-  it("a positively ordinary current-coordinator child uses native completion without fallback", async () => {
+  it("an ordinary current-coordinator child with turn notices is still sent its report (D417)", async () => {
     const { f, w } = await work();
+    f.parentNotices(w.threadId!, "turns");
     const r = await f.service.report(w.threadId!, report());
-    expect(r.note).toContain("native completion"); expect(f.send).not.toHaveBeenCalled();
+    expect(r.note).toBe("Report recorded and sent to the coordinator."); expect(f.send).toHaveBeenCalledTimes(1);
   });
-  it.each(["queued", "uncertain"])("fork fallback %s never authorizes a second send", async state => {
-    const { f, project, w } = await work(); f.threads.set(w.threadId!, { ...f.threads.get(w.threadId!)!, originKind: "fork" });
-    if (state === "queued") f.queueSend("fork-q"); else f.send.mockRejectedValueOnce(new Error("Lost response"));
-    await f.service.report(w.threadId!, report()); await f.service.report(w.threadId!, report());
-    expect(f.store.assignment(project.id, 1)?.reportNotice?.state).toBe(state); expect(f.send).toHaveBeenCalledTimes(1);
-  });
-  it("unknown native eligibility falls back with honest uncertainty; different parent stays explicit", async () => {
-    const { f, w } = await work(); f.harness.sdk.stub("threads.get", async () => { throw new Error("Offline"); });
-    const result = await f.service.report(w.threadId!, report()); expect(result.note).toContain("eligibility could not be confirmed"); expect(f.send).toHaveBeenCalledTimes(1);
-    const b = await work(); b.f.threads.set(b.w.threadId!, { ...b.f.threads.get(b.w.threadId!)!, parentThreadId: "other-parent" });
-    const r = await b.f.service.report(b.w.threadId!, report()); expect(r.note).toContain("other-parent"); expect(b.f.send).toHaveBeenCalledTimes(1);
-  });
-  it("coordinator replacement during parent inspection resolves the latest fallback target", async () => {
-    const { f, project, w } = await work(); f.harness.sdk.stub("threads.get", async ({ threadId }) => {
-      f.store.db.prepare("UPDATE projects SET coordinator_thread_id='replacement' WHERE id=?").run(project.id); return f.threads.get(threadId);
-    });
-    await f.service.report(w.threadId!, report()); expect(f.send.mock.calls[0][0].threadId).toBe("replacement");
-  });
-  it("acceptance during parent inspection cannot send a stale fork notice or rewrite report evidence", async () => {
-    const { f, project, w } = await work(); f.harness.sdk.stub("threads.get", async ({ threadId }) => {
-      f.store.updateAssignment(project.id, 1, { state: "accepted" }); return { ...f.threads.get(threadId)!, originKind: "fork" };
-    });
-    const r = await f.service.report(w.threadId!, report()); expect(r.state).toBe("accepted"); expect(f.send).not.toHaveBeenCalled(); expect(f.store.assignment(project.id, 1)).toMatchObject({ state: "accepted", report: report() });
+  it("a report whose send fails is kept, says so, and an identical re-file doesn't send again", async () => {
+    const { f, project, w } = await work(); f.send.mockRejectedValueOnce(new Error("Lost response"));
+    const r = await f.service.report(w.threadId!, report()); await f.service.report(w.threadId!, report());
+    expect(r.note).toMatch(/sending it to the coordinator failed \(Lost response\); tell the coordinator with initiative_message/);
+    expect(f.store.assignment(project.id, 1)?.report).toMatchObject({ outcome: "succeeded" }); expect(f.send).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -77,7 +60,7 @@ describe("T66 native ordinary fresh creation", () => {
   it("an agent-requested fresh reviewer binds actual implementation and preserves native/plugin/permission/profile provenance", async () => {
     const { f, project } = await projectFixture(); const task = f.task(project.id);
     const [implementer] = await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
-    await f.service.report(implementer.threadId!, report()); f.spawn.mockClear();
+    await f.service.report(implementer.threadId!, report()); f.spawn.mockClear(); f.send.mockClear();
     const result = await f.harness.runCli(["command", JSON.stringify({
       action: "delegate", route: "fresh", role: "review", label: "Independent review", area: "Review",
       reviewTargets: [{ task: task.ref, assignment: "A1", revision: report().handoff.workspaceRevision }],

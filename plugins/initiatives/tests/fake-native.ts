@@ -150,16 +150,20 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
         invalid("startedOnBehalfOf requires an originKind");
     }
     const id = `native-${threads.size}`;
-    const t = makeThreadResponse({
-      id,
-      createdAt: Date.now(),
-      projectId: args.projectId,
-      environmentId: args.environment?.environmentId ?? "env_a",
-      providerId: args.providerId,
-      parentThreadId: args.parentThreadId ?? null,
-      status: "active",
-      originPluginId: "initiatives",
-    });
+    const t = {
+      ...makeThreadResponse({
+        id,
+        createdAt: Date.now(),
+        projectId: args.projectId,
+        environmentId: args.environment?.environmentId ?? "env_a",
+        providerId: args.providerId,
+        parentThreadId: args.parentThreadId ?? null,
+        status: "active",
+        originPluginId: "initiatives",
+      }),
+      // Our BB fork (W203); an older server drops the field (tests intercept for that).
+      parentNotices: args.parentNotices ?? "turns",
+    };
     threads.set(id, t);
     metadata.set(id, args.pluginMetadata ?? {});
     execution.set(id, {
@@ -493,6 +497,11 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     threads.set(id, t);
     return t;
   };
+  /** A worker in the given parent-notices mode; "turns" is how BB ran every child before D417. */
+  const parentNotices = (id: string, mode: "turns" | "explicit") => {
+    const t = { ...threads.get(id)!, parentNotices: mode };
+    threads.set(id, t);
+  };
   /** Queue a native send result for the next continue dispatch. */
   const queueSend = (id = "qm1") =>
     send.mockImplementationOnce(async () => ({
@@ -520,6 +529,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     create,
     task,
     idle,
+    parentNotices,
     queueSend,
     /** Observe or hold every later stubbed SDK call; undefined restores. */
     intercept: (next?: Intercept) => {

@@ -20,14 +20,18 @@ An example, in the bb-plugins Initiative:
    {label, purpose, text, tasks:["T40"]}`. The brief is the label, the task, the
    coordinator's text and one report line; standing rules live in the worker
    instructions, given once per session.
-3. W190's **final message is its report**: the final message of the first
-   normally completed turn after its brief arrived (a resumed turn counts; for an
-   adopted thread, after the adoption). It may also call `initiative_report
-   {outcome:"done"|"blocked"|"failed", summary}` for a one-line dashboard summary;
-   blocked needs the question, which then waits in the Inbox.
+3. W190 **reports with `initiative_report {outcome:"done"|"blocked"|"failed",
+   summary, report}`** (D417): `summary` is the dashboard line, `report` the full
+   text. The plugin records it and sends the coordinator one message, e.g.
+   "W190 reported (done) on A301: Search covers archives" followed by the report
+   (clipped past 8000 characters, with the `initiative_read` call for the rest).
+   Blocked needs the question, which also waits in the Inbox. A worker that never
+   calls the tool has the final message of the first normally completed turn
+   after its brief arrived recorded as its report (a resumed turn counts; for an
+   adopted thread, after the adoption), for the dashboard only: it is not sent.
 4. A reviewer: `initiative_spawn {role:"review", reviews:"W190", ...}`. Its brief
    embeds W190's latest report, it reads W190's checkout, and it reports findings
-   as its final message. No revision strings.
+   the same way. No revision strings.
 5. Fixes go back to the same worker: `initiative_message {to:"W190", text,
    work:true}` (or `tasks:[...]`). A message without them is just a message. The
    same reviewer then re-checks them: `work:true` to a reviewer is a read-only
@@ -555,12 +559,22 @@ ends by throwing is not aborted, so idle events keep draining handovers during
 that backoff, and a reload during it leaves the stop window unguarded.
 
 Ordinary workers are native children of the coordinator (`parentThreadId` on
-spawn), so BB delivers their completion notices directly. Genuine forks keep
-native parenting but use explicit report fallback, as do adopted parentless or
-reparented workers. The durable report record never depends on that send. BB
-sends an ordinary native child's parent a completion notice each time a turn
-ends, not only the last one: a worker whose watcher reports each matching test
-or log line can wake the coordinator per matching line. Since T136 a turn end
+spawn) with **final-reports-only** parent notices (`parentNotices:"explicit"`,
+our BB fork, D417): their turn ends never wake the coordinator. A filed report
+reaches it as one ordinary BB message from the worker's thread; BB's queue
+delivers it, and a failed send is reported back to the worker. Every 3 minutes
+the sweep looks for workers that stopped without reporting: a worker with open
+or reported work whose thread is idle or failed, with nothing queued or running
+in the background (unknown background counts skip it), and no message to the
+coordinator since its latest input. The coordinator gets one message per worker
+input, "W12 stopped (idle) without reporting since its last input. Its last
+message: …", recorded as a `stuck:<initiative>:<worker>:<input seq>` flag. On a
+server without the fork the field is dropped or refused; the plugin logs it once
+and the worker gets ordinary turn notices, so BB may also wake the coordinator
+at its turn ends. Coordinators and threads the user opens keep ordinary notices.
+The durable report record never depends on the send. With
+turn notices, BB notifies the parent at every turn end (our fork: once the child
+settles), so a watcher that ends turns per log line wakes it per line. Since T136 a turn end
 with open work also records its final message as the report, so the default
 worker instructions ask workers to end their turn only when the work is done and
 to wait for their own checks inside the turn. There is

@@ -1,13 +1,13 @@
 import { z } from "zod";
-import { environmentSchema, profileSchema, workerKindSchema } from "./schema";
+import { environmentSchema, FINAL_MESSAGE_MAX, profileSchema, workerKindSchema } from "./schema";
 import type { Command } from "./commands";
 import { ProjectError } from "./bb";
 
 /**
  * T136: the agent tool surface. Each tool is one flat object (Claude's bridge blanks union
  * roots) translated onto the shared commands, so the dashboard, CLI and tools run the same
- * rules. Giving work is a spawn or a message; tasks are optional; a report is the final
- * message plus an optional summary.
+ * rules. Giving work is a spawn or a message; tasks are optional; a report is
+ * initiative_report with the report text, sent to the coordinator.
  */
 const text = (max = 2000) => z.string().trim().min(1).max(max);
 const ref = text(80);
@@ -33,7 +33,7 @@ export const messageToolSchema = z.object({
   text: text(20000),
   mode: z.enum(["steer", "queue"]).optional().describe("steer: urgent corrections and blockers; queue (default): everything else."),
   tasks: z.array(ref).max(30).optional().describe("Coordinator only: give this worker more work on these tasks."),
-  work: z.boolean().optional().describe("Coordinator only: this message is more work (its next final message is a report), even without tasks. To a reviewer it is a re-review of its batch, read-only, with the reviewed worker's latest report."),
+  work: z.boolean().optional().describe("Coordinator only: this message is more work (the worker reports on it again), even without tasks. To a reviewer it is a re-review of its batch, read-only, with the reviewed worker's latest report."),
 }).strict();
 
 export const taskToolSchema = z.object({
@@ -78,6 +78,7 @@ export const reportToolSchema = z.object({
   outcome: z.enum(["done", "blocked", "failed"]),
   summary: text(4000).describe("One line for the dashboard. Longer text is kept in full; the dashboard line is clipped to 300 characters."),
   question: text(1000).optional().describe("blocked: what you need answered."),
+  report: text(FINAL_MESSAGE_MAX).describe("Your full report, as you would write it to the coordinator: what you did, what you verified, what is left. It is recorded and sent to the coordinator."),
 }).strict();
 
 const need = <T>(value: T | undefined, what: string): T => {

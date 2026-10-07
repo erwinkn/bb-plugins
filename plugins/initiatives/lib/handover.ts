@@ -91,6 +91,40 @@ export async function briefBoundary(sdk: Sdk, threadId: string, marker: string):
   return seqs.length ? Math.min(...seqs) : null;
 }
 
+/** The thread's latest input (a turn request), or null when it has none. */
+export async function latestInput(sdk: Sdk, threadId: string): Promise<{ seq: number; at: number } | null> {
+  const [row] = await list(sdk, { threadId, types: ["client/turn/requested"], order: "desc", limit: "1" });
+  const at = timeOf(row);
+  return row && at !== null ? { seq: row.seq, at } : null;
+}
+
+/**
+ * When each sender last messaged `threadId`: its turn inputs, paged back until one predates
+ * `since`, and messages still queued (as now). `reached` is how far back the read got; a sender
+ * missing from `latest` is proven silent only since then.
+ */
+export async function messagesSince(sdk: Sdk, threadId: string, since: number, now: number) {
+  const latest = new Map<string, number>();
+  let reached = now;
+  let beforeSeq: number | undefined;
+  for (let page = 0; page < MESSAGE_PAGES; page++) {
+    const rows = await list(sdk, { threadId, types: ["client/turn/requested"], order: "desc", limit: String(MESSAGE_PAGE), ...(beforeSeq === undefined ? {} : { beforeSeq: String(beforeSeq) }) });
+    for (const row of rows) {
+      const sender = row.data?.senderThreadId, at = timeOf(row) ?? 0;
+      if (typeof sender === "string" && !latest.has(sender)) latest.set(sender, at);
+      reached = Math.min(reached, at);
+    }
+    if (rows.length < MESSAGE_PAGE) reached = -Infinity;
+    if (rows.length < MESSAGE_PAGE || reached < since) break;
+    beforeSeq = rows.at(-1)!.seq;
+  }
+  const queued = await sdk.threads.queuedMessages.list({ threadId }) as { senderThreadId?: string | null }[];
+  for (const row of queued) if (row.senderThreadId) latest.set(row.senderThreadId, now);
+  return { latest, reached };
+}
+const MESSAGE_PAGE = 100;
+const MESSAGE_PAGES = 10;
+
 /**
  * The last agent message of the thread's latest turn, only when that turn completed normally.
  * The writer thread has one turn, so its final message is the handover.

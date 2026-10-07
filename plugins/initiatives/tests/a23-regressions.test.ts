@@ -221,31 +221,17 @@ describe("report routing follows the current native parent", () => {
     expect(f.send.mock.calls[0][0].threadId).toBe("coordinator");
   });
 
-  it("relies on BB's completion notice while the thread stays parented", async () => {
+  it("still sends the report while the thread stays parented with turn notices (D417)", async () => {
     const { f, project } = await projectFixture();
     const t = f.task(project.id);
     const [d] = await f.service.delegate(project.id, {
       route: "fresh",
       tasks: [t.ref],
     });
+    f.parentNotices(d.threadId!, "turns");
     await f.service.report(d.threadId!, report());
-    expect(f.send).not.toHaveBeenCalled();
-  });
-
-  it("sends once and discloses uncertainty when the parent lookup fails", async () => {
-    const { f, project } = await projectFixture();
-    const t = f.task(project.id);
-    const [d] = await f.service.delegate(project.id, {
-      route: "fresh",
-      tasks: [t.ref],
-    });
-    f.harness.sdk.stub("threads.get", async () => {
-      throw new Error("lookup failed");
-    });
-    const r = await f.service.report(d.threadId!, report());
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.send.mock.calls[0][0].threadId).toBe("coordinator");
-    expect(r.note).toMatch(/Native completion eligibility could not be confirmed/);
   });
 
   it("tells the current coordinator directly when the live parent is foreign", async () => {
@@ -262,10 +248,9 @@ describe("report routing follows the current native parent", () => {
       ...f.threads.get(d.threadId!)!,
       parentThreadId: "someone-else",
     });
-    const r = await f.service.report(d.threadId!, report());
+    await f.service.report(d.threadId!, report());
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.send.mock.calls[0][0].threadId).toBe("coordinator");
-    expect(r.note).toMatch(/Native completion goes to parent someone-else/);
   });
 });
 

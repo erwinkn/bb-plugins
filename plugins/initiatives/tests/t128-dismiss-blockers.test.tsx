@@ -82,7 +82,9 @@ describe("T128 dismissing a blocker", () => {
     // A dismissal of the older blocker is refused and saves nothing.
     await expect(f.service.dismissBlocker(project.id, "A1", seen, { notify: true, note: "x" })).rejects.toThrow(/blocker changed since you opened it.*dismissal was not saved/);
     expect(f.store.decisions(project.id).filter((x) => x.body.dismissal)).toHaveLength(1);
-    expect(f.send).not.toHaveBeenCalled();
+    // Only the changed blocker reached the coordinator; the identical re-file and the dismissals sent nothing.
+    expect(f.send).toHaveBeenCalledTimes(1);
+    expect(f.send.mock.calls[0][0].input[0].text).toContain("is blocked on A1");
   });
 
   it("undo brings the blocker back, keeps the record as undone, and a new dismissal works again", async () => {

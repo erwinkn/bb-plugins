@@ -739,7 +739,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_message",
     parameters: jsonSchema(messageToolSchema),
-    description: 'Send one message to a worker (W#) or the coordinator. {to:"W4",text:"…"}. The coordinator gives an existing worker more work with tasks:["T41"] or work:true; its next final message is a report. To correct work already in progress, send a plain message (no work:true). mode steer for urgent corrections, queue (default) otherwise. Messages never resume a stopped or retired worker.',
+    description: 'Send one message to a worker (W#) or the coordinator. {to:"W4",text:"…"}. The coordinator gives an existing worker more work with tasks:["T41"] or work:true; it reports on it again. To correct work already in progress, send a plain message (no work:true). mode steer for urgent corrections, queue (default) otherwise. Messages never resume a stopped or retired worker.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
       return JSON.stringify(await sendMessage(raw, threadId));
@@ -955,7 +955,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_report",
-    description: 'Optional: one line for the dashboard. {outcome:"done"|"blocked"|"failed",summary}; blocked needs question. Your final message is the report itself, so still end your turn with it.',
+    description: 'Finish with this: {outcome:"done"|"blocked"|"failed",summary,report}. summary is one line for the dashboard; report is your full report, recorded and sent to the coordinator. blocked needs question.',
     parameters: jsonSchema(reportToolSchema),
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Report from the worker thread.");
@@ -970,10 +970,10 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_progress",
-    description: "Older sessions only; progress is no longer recorded. Your final message is your report.",
+    description: "Older sessions only; progress is no longer recorded. Finish with initiative_report and your full report.",
     parameters: jsonSchema(z.object({ note: z.string().optional(), nextCheckpoint: z.string().optional() }).passthrough()),
     async execute() {
-      return JSON.stringify({ note: "Progress is no longer recorded. Keep working; your final message is your report." });
+      return JSON.stringify({ note: "Progress is no longer recorded. Keep working, then finish with initiative_report and your full report." });
     },
   });
 

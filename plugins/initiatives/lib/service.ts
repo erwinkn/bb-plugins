@@ -9,6 +9,7 @@ import {
   isDefiniteRejection,
   newOpId,
   newProjectId,
+  parentNoticesOf,
   projectHostId,
   promptTexts,
   textInput,
@@ -22,7 +23,7 @@ import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
 import { queueTargets } from "./not-delivered";
 import { opMarker, renderAssignment, renderCoordinatorSeed } from "./brief";
-import { briefBoundary, captureHandoverSnapshot, emptySnapshot, fallbackBody, finalAgentMessage, fingerprintHolds, handoverFingerprint, handoverPacket, handoverPrompt, HANDOVER_MAX_AGE_MS, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, readHandoverState, readUserMark, withReason, type Destination, type HandoverState } from "./handover";
+import { briefBoundary, captureHandoverSnapshot, latestInput, messagesSince, emptySnapshot, fallbackBody, finalAgentMessage, fingerprintHolds, handoverFingerprint, handoverPacket, handoverPrompt, HANDOVER_MAX_AGE_MS, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, readHandoverState, readUserMark, withReason, type Destination, type HandoverState } from "./handover";
 import { isOwnOrigin } from "./identity";
 import {
   chooseWorkProfile,
@@ -34,7 +35,7 @@ import {
   seriesOf,
 } from "./policy";
 import { reportVersion } from "./write-holds";
-import { handoffSource, latestReport, renderPriorReport, resolveHandoffs } from "./handoffs";
+import { fullRecord, handoffSource, latestReport, renderPriorReport, resolveHandoffs } from "./handoffs";
 import {
   briefSchema,
   FINAL_MESSAGE_MAX,
@@ -4523,8 +4524,9 @@ export class ProjectsService {
       } else {
         const created =
           await (async () => {
-                // Native parenting: BB delivers this worker's completion
-                // notices straight to the coordinator thread. The target is
+                // Native parenting: BB delivers this worker's needs-input
+                // notices straight to the coordinator thread (its reports
+                // come through initiative_report). The target is
                 // re-read at issue time and the issued spawn registers under
                 // it, so a switch racing the spawn can't strand the new
                 // thread beneath an archiving predecessor without the ledger
@@ -4533,7 +4535,7 @@ export class ProjectsService {
                   this.store.project(project.id)?.coordinatorThreadId ?? null;
                 this.parentOpBegin(project.id, parentId);
                 try {
-                  return await this.sdk.threads.spawn({
+                  return await this.spawnWorker(project.id, {
                     projectId: bbProjectId,
                     environment: env.request as never,
                     providerId: profile.providerId,
@@ -5701,21 +5703,28 @@ export class ProjectsService {
 
 
   /** List rows of one BB project, matched by id; stops when all ids are found or the page/byte budget is spent. */
-  private async projectListRows(bbProjectId: string, ids: Set<string>) {
+  private async projectListRows(bbProjectId: string, ids: Set<string>, rotate = false) {
     const rows = new Map<string, ThreadListRow>();
     let bytes = 0;
+    // `rotate`: start where the last rotating scan of this project stopped, so threads beyond
+    // one scan's budget are reached by later ones.
+    let offset = rotate ? (this.listCursors.get(bbProjectId) ?? 0) : 0;
     try {
-      for (let offset = 0; offset < LIST_SCAN_BUDGET && rows.size < ids.size && bytes < HOLD_LIST_BYTES; offset += LIST_PAGE) {
+      for (let read = 0; read < LIST_SCAN_BUDGET && rows.size < ids.size && bytes < HOLD_LIST_BYTES; read += LIST_PAGE) {
         const page = await this.sdk.threads.list({ projectId: bbProjectId, includeHidden: true, limit: LIST_PAGE, offset });
         bytes += JSON.stringify(page).length;
         for (const row of page) if (ids.has(row.id)) rows.set(row.id, row);
-        if (page.length < LIST_PAGE) break;
+        offset = page.length < LIST_PAGE ? 0 : offset + LIST_PAGE;
+        if (offset === 0) break;
       }
     } catch {
       // A failed page proves nothing; unmatched threads stay unknown.
     }
+    if (rotate) this.listCursors.set(bbProjectId, rows.size < ids.size ? offset : 0);
     return rows;
   }
+  /** Where each project's rotating list scan resumes. */
+  private listCursors = new Map<string, number>();
 
   /**
    * Release a cancelled assignment's reservation only on positive evidence
@@ -6312,12 +6321,13 @@ export class ProjectsService {
   // Worker reports ----------------------------------------------------------
 
   /**
-   * Record a worker's outcome. The report is the canonical record; the
-   * coordinator hears about it through the worker's native parent notice
-   * when one exists, else through one best-effort direct message — never
-   * through a plugin inbox. A failed or lost notify never loses the report.
+   * Record a worker's outcome. The report is the canonical record; a new
+   * filed report is sent to the coordinator once, as an ordinary BB message
+   * from the worker (D417). A failed send never loses the report. `captured`:
+   * the worker's final message, recorded for the dashboard and never sent; it
+   * never replaces a report filed meanwhile.
    */
-  async report(threadId: string, input: Report & { assignment?: string }) {
+  async report(threadId: string, input: Report & { assignment?: string }, { captured = false } = {}) {
     const membership = this.workerOf(threadId);
     const { project, worker } = membership;
     const unsettled = this.store
@@ -6386,19 +6396,17 @@ export class ProjectsService {
     const { assignment: _ref, ...reportInput } = input;
     // Parse once into canonical schema/key order before equality checks.
     // Transport JSON key order must not turn a retry into a second notice.
-    const report = reportSchema.parse(reportInput);
+    // A captured report is marked, so the worker's own filing of the same text is new and sent.
+    const report = { ...reportSchema.parse(reportInput), captured: captured || undefined };
     let sameReport = assignment.report !== null && JSON.stringify(report) === JSON.stringify(assignment.report);
     // An identical re-file is still a new filing (A207 R2): it takes a fresh report version,
     // so a scope release given for the earlier filing never covers it. State, notice, stop
     // reason and first filing time stay as they were, and the coordinator is not notified again.
     const refile = (a: AssignmentRecord) => this.store.updateAssignment(project.id, a.num, { report });
     if (sameReport && !assignment.checkpoint) {
-      refile(assignment);
-      const note = assignment.reportNotice?.state === "failed"
-        ? await this.notifyReport(threadId, assignment, report, true)
-        : `This report is already recorded on ${assignment.ref} (${assignment.state}).`;
-      const saved = this.store.assignment(project.id, assignment.num)!;
-      return { assignment: saved.ref, state: saved.state, notification: saved.reportNotice, note };
+      const saved = refile(assignment);
+      return { assignment: saved.ref, state: saved.state, notification: saved.reportNotice,
+        note: `This report is already recorded on ${saved.ref} (${saved.state}).` };
     }
     let notifyNote: string | null = null;
     // A report proves the worker ran. A still-queued brief for this
@@ -6433,6 +6441,9 @@ export class ProjectsService {
       throw new ProjectError(`${assignment.ref} is already accepted.`);
     if (assignment.state === "rejected")
       throw this.closedReportError(project.id, assignment, threadId, report.pendingBackgroundWork);
+    if (captured && assignment.report)
+      return { assignment: assignment.ref, state: assignment.state, notification: assignment.reportNotice,
+        note: `A report filed meanwhile stands on ${assignment.ref}; the final message was not recorded over it.` };
     // A concurrent first report can commit during queued-brief deletion.
     // Canonical identity and its receipt belong to this fresh row.
     sameReport = assignment.report !== null && JSON.stringify(report) === JSON.stringify(assignment.report);
@@ -6497,10 +6508,7 @@ export class ProjectsService {
         assignment: assignment.num,
       });
     });
-    const priorNotice = assignment.reportNotice;
-    if (!sameReport || !priorNotice || priorNotice.state === "failed") {
-      notifyNote = await this.notifyReport(threadId, this.store.assignment(project.id, assignment.num)!, report, sameReport && priorNotice?.state === "failed");
-    }
+    if (!captured) notifyNote = await this.sendReport(threadId, this.store.assignment(project.id, assignment.num)!);
     // A cancelled assignment reported on stays reserved while its thread can
     // still execute — the report is evidence, not quiescence. If the native
     // side is already quiet this settles now; an idle/failed/archive event or
@@ -6555,25 +6563,23 @@ export class ProjectsService {
           : worker.forkedFrom !== null
             ? (listed.length ? ` Stop the background work it lists (${jobs}) before ending your turn; it is not recorded either.` : "") +
               ` Your final reply stays only in this thread: as a fork, ${worker.ref}'s turn endings are not delivered to the coordinator by ordinary native completion.`
-            : " Put anything the coordinator should know in your final reply: it stays in this thread, and if this thread is an ordinary native child, BB sends its native parent a completion notice when the turn ends." +
+            : " Put anything the coordinator should know in your final reply: it stays in this thread, and if this thread is an ordinary native child, BB shows it to its native parent when your turn ends." +
               (listed.length ? ` The background work it lists (${jobs}) is not recorded either: stop it before ending your turn and name it in your final reply.` : "")),
     );
   }
 
-  /** Short reports waiting for their turn's final message: key `${projectId}:${num}`, value the filing time. */
-  private awaitingFinal = new Map<string, number>();
   /** Where each open assignment's brief entered its thread (event sequence), once found. */
   private briefBoundaries = new Map<string, number>();
 
   /**
-   * T136: a worker's final message is its report, read when its turn ends (idle or failed).
+   * T136: a worker that never calls initiative_report has its final message recorded as the
+   * report, read when its turn ends (idle or failed). It fills the dashboard and is never sent
+   * (D417); the stuck-worker check tells the coordinator.
    *
    * - Open work is reported by the first normally completed turn that ends after its brief
    *   entered the thread (the turn input carrying its op marker) or, for an adopted thread,
    *   after the adoption. An interrupted turn that a later message resumes still reports it;
    *   a turn that ended before the brief arrived never does.
-   * - A short report filed during a turn gets that exact turn's final message: the filing
-   *   time lies between the turn's start and end. A failed or interrupted turn drops it.
    * - While a turn is still running, or BB's events cannot be read, nothing is decided.
    */
   async captureFinalMessage(thread: ThreadDto) {
@@ -6587,19 +6593,7 @@ export class ProjectsService {
       return;
     }
     if (!turn || turn.status === "running") return;
-    const finalMessage = turn.final ? clipFinal(turn.final.text) : null;
-    for (const [key, filedAt] of [...this.awaitingFinal]) {
-      const [pid, num] = key.split(":");
-      const current = pid === project.id ? this.store.assignment(project.id, Number(num)) : null;
-      if (!current || current.workerNum !== worker.num) continue;
-      // Filed in a later turn whose end is not visible yet: keep waiting.
-      if (turn.endedAt !== null && filedAt > turn.endedAt) continue;
-      this.awaitingFinal.delete(key);
-      const inTurn = turn.startedAt !== null ? filedAt >= turn.startedAt : turn.inputs.some(text => text.includes(opMarker(current.opId)));
-      if (inTurn && finalMessage && current.report && !current.report.finalMessage)
-        this.store.updateAssignment(project.id, current.num, { report: { ...current.report, finalMessage } });
-    }
-    if (!turn.final || !finalMessage) return;
+    if (!turn.final) return;
     const open = this.store.openAssignment(project.id, worker.num);
     if (!open || !["running", "idle_no_report"].includes(open.state) || open.threadId !== thread.id ||
         open.queuedMessageId || open.cancelRequested || open.report) return;
@@ -6626,33 +6620,15 @@ export class ProjectsService {
       evidence: [],
       handoff: { summary, workspaceRevision: "not recorded", files: [], openQuestions: [], nextSteps: [], dirtyFiles: [], recoveryArtifacts: [], pendingCommands: [] },
       pendingBackgroundWork: [],
-      finalMessage,
-    });
+      finalMessage: clipFinal(turn.final.text),
+    }, { captured: true });
   }
 
   /**
-   * The sweep retries captures still waiting on a short report's final message, for example
-   * after a failed event read, once the worker's thread is no longer running a turn.
+   * The short report (T136, D417): outcome and summary for the dashboard, and the report text,
+   * which the coordinator receives.
    */
-  async retryPendingCaptures() {
-    const threads = new Set<string>();
-    for (const [key, filedAt] of [...this.awaitingFinal]) {
-      const [projectId, num] = key.split(":");
-      const a = this.store.assignment(projectId!, Number(num));
-      // Bounded: a final message that cannot be read within an hour is given up; the short
-      // report itself stays as filed.
-      if (!a || this.now() - filedAt > CAPTURE_RETRY_MS) { this.awaitingFinal.delete(key); continue; }
-      const worker = this.store.worker(a.projectId, a.workerNum);
-      if (worker?.threadId) threads.add(worker.threadId);
-    }
-    for (const threadId of threads) {
-      const thread = await this.sdk.threads.get({ threadId }).catch(() => null);
-      if (thread && !BUSY_STATUSES.has(thread.status)) await this.captureFinalMessage(thread);
-    }
-  }
-
-  /** The new short report (T136): outcome and summary for the dashboard; the final message follows. */
-  async shortReport(threadId: string, input: { outcome: "done" | "blocked" | "failed"; summary: string; question?: string }) {
+  async shortReport(threadId: string, input: { outcome: "done" | "blocked" | "failed"; summary: string; question?: string; report: string }) {
     // A long summary is not refused (agents kept hitting the old 300 limit): the dashboard line
     // is clipped and the full text kept as the report's handoff summary.
     const SUMMARY_LINE = 300;
@@ -6665,72 +6641,91 @@ export class ProjectsService {
       ...(input.outcome === "blocked" ? { blocker: { question: (input.question ?? input.summary).slice(0, 1000), context: input.summary.slice(0, 2000) } } : {}),
       handoff: { summary: input.summary, workspaceRevision: "not recorded", files: [], openQuestions: [], nextSteps: [], dirtyFiles: [], recoveryArtifacts: [], pendingCommands: [] },
       pendingBackgroundWork: [],
+      finalMessage: input.report,
     });
-    const { project } = this.workerOf(threadId);
-    const a = this.requireAssignment(project, result.assignment);
-    this.awaitingFinal.set(`${project.id}:${a.num}`, this.now());
-    return {
-      ...result,
-      note: `Recorded.${clipped ? ` The summary is ${input.summary.length} characters: the dashboard shows its first ${SUMMARY_LINE}, and the full text is kept with the report.` : ""} End your turn with your report as the final message; it is attached to this summary.`,
-    };
+    if (!clipped) return result;
+    return { ...result, note: `${result.note ?? "Recorded."} The summary is ${input.summary.length} characters: the dashboard shows its first ${SUMMARY_LINE}, and the full text is kept with the report.` };
   }
 
-  /** One explicit notice attempt; a repeat can retry only a definite failed receipt. */
-  private async notifyReport(threadId: string, assignment: AssignmentRecord, report: Report, retry = false): Promise<string> {
+  /** When the stuck-worker check last ran; the sweep runs it every STUCK_CHECK_MS. */
+  private stuckCheckedAt = 0;
+
+  /**
+   * D417: workers report explicitly, so one that stops without reporting would go unseen. The
+   * coordinator is told once per worker input when all three hold: the worker's thread is idle
+   * or failed with nothing queued or running in the background (unknown counts skip it), and it
+   * has neither messaged the coordinator nor filed a report since its latest input. Everything is
+   * checked again right before each send; the coordinator's inputs are read once per Initiative.
+   */
+  async flagStuckWorkers() {
+    if (this.now() - this.stuckCheckedAt < STUCK_CHECK_MS) return;
+    this.stuckCheckedAt = this.now();
+    for (const project of this.store.projects()) {
+      const coordinator = project.coordinatorThreadId;
+      if (!coordinator) continue;
+      const byProject = new Map<string, WorkerRecord[]>();
+      for (const w of this.store.workers(project.id))
+        if (this.mayBeStuck(project.id, w, -Infinity)) byProject.set(w.bbProjectId, [...(byProject.get(w.bbProjectId) ?? []), w]);
+      const candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string }[] = [];
+      for (const [bbProjectId, group] of byProject) {
+        const rows = await this.projectListRows(bbProjectId, new Set(group.map(w => w.threadId!)), true);
+        for (const worker of group) {
+          const row = rows.get(worker.threadId!);
+          if (!row || row.archivedAt !== null || ProjectsService.rowQuiescence(row) !== "ended") continue;
+          const input = await latestInput(this.sdk, worker.threadId!).catch(() => null);
+          if (input && !this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) candidates.push({ worker, input, status: row.status });
+        }
+      }
+      if (!candidates.length) continue;
+      const heard = await messagesSince(this.sdk, coordinator, Math.min(...candidates.map(c => c.input.at)), this.now()).catch(() => null);
+      if (!heard) continue;
+      for (const { worker, input, status } of candidates) {
+        const threadId = worker.threadId!;
+        // Silence is proven only as far back as the read reached.
+        if (input.at < heard.reached || (heard.latest.get(threadId) ?? -Infinity) >= input.at) continue;
+        try {
+          const turn = await latestTurn(this.sdk, threadId);
+          const now = await latestInput(this.sdk, threadId);
+          // Re-validated with no await before the send: still stopped on the same input, still
+          // eligible, still unflagged, and the coordinator unchanged.
+          const current = this.store.worker(project.id, worker.num);
+          if (!turn || turn.status === "running" || now?.seq !== input.seq || !current || current.threadId !== threadId ||
+              !this.mayBeStuck(project.id, current, input.at) || this.store.project(project.id)?.coordinatorThreadId !== coordinator ||
+              this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
+          const text = turn.final?.text ?? "(none)";
+          const excerpt = text.length > STUCK_EXCERPT ? `${text.slice(0, STUCK_EXCERPT).trimEnd()}…` : text;
+          await this.sdk.threads.send({ threadId: coordinator, mode: "queue-if-active", input: textInput(
+            `Initiative · ${project.name} · ${worker.ref}\n\n${worker.ref} stopped (${status === "error" ? "error" : "idle"}) without reporting since its last input. Its last message:\n\n${excerpt}\n\nRead its thread (${threadId}).`) });
+          this.store.setFlag(stuckKey(project.id, worker.num, input.seq));
+        } catch (error) {
+          this.store.log(project.id, "report", `Could not check whether ${worker.ref} is stuck: ${errorMessage(error)}`);
+        }
+      }
+    }
+  }
+
+  /** A live worker with delivered work that has filed no report of its own since `since`. */
+  private mayBeStuck(projectId: string, w: WorkerRecord, since: number) {
+    if (!w.threadId || w.state === "retired" || w.userStopped) return false;
+    const latest = this.store.latestAssignment(projectId, w.num);
+    if (!latest?.briefDelivered || !["running", "idle_no_report", "reported"].includes(latest.state)) return false;
+    return !latest.report || latest.report.captured === true || (latest.reportedAt ?? -Infinity) < since;
+  }
+
+  /** D417: a filed report goes to the coordinator once, as an ordinary message from the worker. */
+  private async sendReport(threadId: string, assignment: AssignmentRecord): Promise<string> {
     const { project, worker } = this.workerOf(threadId);
-    const current = this.store.assignment(project.id, assignment.num)!;
-    if (current.generation !== worker.generation || current.threadId !== threadId || JSON.stringify(current.report) !== JSON.stringify(report))
-      return "Report/context changed while checking notification; read the current assignment.";
-    if (retry && current.reportNotice?.state !== "failed") return `Notification stays ${current.reportNotice?.state ?? "unrecorded"}; no duplicate send.`;
-    const coordinatorId = this.store.project(project.id)?.coordinatorThreadId ?? null;
-    if (!coordinatorId) return "Report recorded; no current coordinator for a fallback notification.";
-    // Claim before the parent read/send await. Concurrent identical calls see
-    // pending, and unknown/sent/queued receipts never authorize a retry.
-    this.store.updateAssignment(project.id, assignment.num, { reportNotice: { state: "pending", coordinatorThreadId: coordinatorId } });
-    let parent: string | null | undefined;
-    let origin: ThreadDto["originKind"] | undefined;
-    let ordinary = false;
-    try { const native = await this.sdk.threads.get({ threadId }); parent = native.parentThreadId; origin = native.originKind; ordinary = origin === null; }
-    catch { parent = undefined; }
-    const fresh = this.store.assignment(project.id, assignment.num)!;
-    if (JSON.stringify(fresh.report) !== JSON.stringify(report)) return "A newer report owns its notification; no stale send.";
-    if (fresh.state !== current.state && ["accepted", "rejected"].includes(fresh.state)) {
-      this.store.updateAssignment(project.id, assignment.num, { reportNotice: null });
-      return "Assignment settled before notification; no stale send.";
-    }
-    const latestWorker = this.store.worker(project.id, worker.num)!;
-    if (latestWorker.threadId !== threadId || latestWorker.generation !== fresh.generation) {
-      this.store.updateAssignment(project.id, assignment.num, { reportNotice: { state: "failed", coordinatorThreadId: coordinatorId, detail: "Worker context changed before send; no notification sent." } });
-      return "Worker context changed before notification; report is retained.";
-    }
-    const target = this.store.project(project.id)?.coordinatorThreadId ?? null;
-    if (!target) {
-      this.store.updateAssignment(project.id, assignment.num, { reportNotice: { state: "failed", coordinatorThreadId: coordinatorId, detail: "No current coordinator; no notification sent." } });
-      return "Report recorded; no current coordinator for a fallback notification.";
-    }
-    if (parent === target && ordinary) {
-      this.store.updateAssignment(project.id, assignment.num, { reportNotice: null });
-      return "Report recorded; native completion goes to the current coordinator.";
-    }
-    this.store.updateAssignment(project.id, assignment.num, { reportNotice: { state: "pending", coordinatorThreadId: target } });
-    const summary = report.outcome === "blocked" ? `${assignment.ref} is blocked: ${report.blocker?.question ?? report.summary}` : `${assignment.ref} reported ${report.outcome}: ${report.summary}`;
+    if (!project.coordinatorThreadId) return "Report recorded; there is no current coordinator to send it to.";
+    const report = assignment.report!;
     try {
-      const receipt = await this.sdk.threads.send({ threadId: target, senderThreadId: threadId,
+      await this.sdk.threads.send({ threadId: project.coordinatorThreadId, senderThreadId: threadId,
         mode: report.outcome === "blocked" ? "steer-if-active" : "queue-if-active",
-        input: textInput(`Initiative · ${project.name} · ${worker.ref}\n\n${summary}\n\nDetails: initiative_read view "assignments", ${assignment.ref}.`),
+        input: textInput(`Initiative · ${project.name} · ${worker.ref}\n\n${reportNotice(worker.ref, assignment.ref, report)}`),
       });
-      // A later distinct report may now own this row; don't attach an old
-      // delivery result to its new evidence. BB still owns the actual receipt.
-      if (JSON.stringify(this.store.assignment(project.id, assignment.num)!.report) === JSON.stringify(report))
-        this.store.updateAssignment(project.id, assignment.num, { reportNotice: { state: receipt.delivery, coordinatorThreadId: target, ...(receipt.delivery === "queued" ? { queuedId: receipt.queuedMessage.id } : {}) } });
-      this.store.log(project.id, "report", `${assignment.ref} coordinator notification ${receipt.delivery}`, { senderThreadId: threadId, coordinatorThreadId: target });
-      return `Report recorded; coordinator notification ${receipt.delivery}${receipt.delivery === "queued" ? ` (${receipt.queuedMessage.id})` : ""}.${parent === undefined || origin === undefined ? " Native completion eligibility could not be confirmed; BB may also deliver a completion notice." : origin === "fork" ? " Genuine forks do not emit ordinary native completion notices." : parent ? ` Native completion goes to parent ${parent}.` : ""}`;
+      return "Report recorded and sent to the coordinator.";
     } catch (error) {
-      const state = isDefiniteRejection(error) ? "failed" : "uncertain";
-      if (JSON.stringify(this.store.assignment(project.id, assignment.num)!.report) === JSON.stringify(report))
-        this.store.updateAssignment(project.id, assignment.num, { reportNotice: { state, coordinatorThreadId: target, detail: errorMessage(error) } });
-      this.store.log(project.id, "report", `${assignment.ref} coordinator notification ${state}: ${errorMessage(error)}`);
-      return `Report recorded; coordinator notification ${state}: ${errorMessage(error)}. Inspect native receipts before another send.`;
+      this.store.log(project.id, "report", `${assignment.ref}'s report could not be sent to the coordinator: ${errorMessage(error)}`);
+      return `Report recorded, but sending it to the coordinator failed (${errorMessage(error)}); tell the coordinator with initiative_message.`;
     }
   }
 
@@ -6756,6 +6751,36 @@ export class ProjectsService {
 
   // Helpers -----------------------------------------------------------------
 
+  /** Whether this process already logged that BB refused "explicit" parent notices. */
+  private parentNoticesWarned = false;
+
+  /**
+   * D417: a worker reports with initiative_report, so its turn ends never wake the coordinator
+   * (parent notices "explicit"). A server without our fork drops or refuses the field: the worker
+   * then runs with ordinary turn notices, as before.
+   */
+  private async spawnWorker(projectId: string, args: Parameters<Sdk["threads"]["spawn"]>[0]): Promise<ThreadDto> {
+    // A spread, so the SDK types before the fork (0.4.87) accept the extra field.
+    const explicit = { parentNotices: "explicit" as const };
+    let thread: ThreadDto;
+    try {
+      thread = await this.sdk.threads.spawn({ ...args, ...explicit });
+    } catch (error) {
+      // A definite rejection created nothing, so spawning again is safe.
+      if (!isDefiniteRejection(error) || !/parentNotices/.test(errorMessage(error))) throw error;
+      thread = await this.sdk.threads.spawn(args);
+    }
+    if (parentNoticesOf(thread) === "explicit") return thread;
+    try {
+      await this.sdk.threads.update({ threadId: thread.id, ...explicit });
+    } catch (error) {
+      if (!this.parentNoticesWarned)
+        this.store.log(projectId, "delegate", `BB did not accept final-reports-only notices (${errorMessage(error)}); workers get ordinary turn notices.`);
+      this.parentNoticesWarned = true;
+    }
+    return thread;
+  }
+
   private async tagThread(
     threadId: string,
     metadata: Record<string, string | number | null>,
@@ -6777,6 +6802,24 @@ export class ProjectsService {
   }
 }
 
+/** How much of a report's text its coordinator notice carries; the rest is read on demand. */
+const REPORT_NOTICE_MAX = 8000;
+
+/**
+ * The coordinator's notice of a report: the dashboard line, then the report text (clipped,
+ * with where to read the rest), e.g. "W12 reported (done) on A301: Search covers archived
+ * records.\n\n<report>".
+ */
+function reportNotice(workerRef: string, assignmentRef: string, report: Report) {
+  const head = report.outcome === "blocked"
+    ? `${workerRef} is blocked on ${assignmentRef}: ${report.blocker?.question ?? report.summary}`
+    : `${workerRef} reported (${report.outcome === "succeeded" ? "done" : report.outcome}) on ${assignmentRef}: ${report.summary}`;
+  const body = report.finalMessage;
+  if (!body) return `${head}\n\nDetails: ${fullRecord(assignmentRef)}`;
+  if (body.length <= REPORT_NOTICE_MAX) return `${head}\n\n${body}`;
+  return `${head}\n\n${body.slice(0, REPORT_NOTICE_MAX).trimEnd()}\n\n[… ${body.length - REPORT_NOTICE_MAX} more characters. The full report: ${fullRecord(assignmentRef)}]`;
+}
+
 /** A final message stored as the report: its head and tail when longer than the cap. */
 function clipFinal(text: string) {
   if (text.length <= FINAL_MESSAGE_MAX) return text;
@@ -6790,8 +6833,12 @@ export function summaryOf(text: string) {
   return first.length > 300 ? `${first.slice(0, 297).trimEnd()}…` : first;
 }
 
-/** How long the sweep keeps retrying a short report's final message (W190). */
-const CAPTURE_RETRY_MS = 60 * 60_000;
+/** How often the sweep checks for workers that stopped without reporting (D417). */
+const STUCK_CHECK_MS = 3 * 60_000;
+/** How much of a stuck worker's last message the coordinator's notice quotes. */
+const STUCK_EXCERPT = 1500;
+/** The flag recording that the coordinator was told this worker stopped on this input. */
+const stuckKey = (projectId: string, workerNum: number, inputSeq: number) => `stuck:${projectId}:${workerNum}:${inputSeq}`;
 
 /** The brief text of an adopted thread's assignment: no brief was sent, so no op marker. */
 const ADOPTED_BRIEF = "(adopted existing thread)";

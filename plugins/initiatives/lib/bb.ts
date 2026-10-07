@@ -46,6 +46,17 @@ export const textInput = (text: string) => [
 
 export const BUSY_STATUSES = new Set(["active", "starting", "stopping"]);
 
+/**
+ * How a child's turn ends reach its parent, in our BB fork (W203). "explicit" (final reports
+ * only): never; the parent hears the child's own messages, needs-input and one notice when the
+ * child stops without having messaged it. A server without the fork omits the field: null.
+ */
+export type ParentNotices = "turns" | "explicit";
+export const parentNoticesOf = (thread: ThreadDto): ParentNotices | null =>
+  "parentNotices" in thread && (thread.parentNotices === "turns" || thread.parentNotices === "explicit")
+    ? thread.parentNotices
+    : null;
+
 /** The machine whose catalog decides availability: the project's default source. */
 export async function projectHostId(
   sdk: Sdk,

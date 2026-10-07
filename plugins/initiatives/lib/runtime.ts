@@ -365,8 +365,8 @@ export class Runtime {
             );
         });
     }
-    await this.service.retryPendingCaptures().catch((error) =>
-      this.log.warn(`Final-message capture retry failed: ${errorMessage(error)}`),
+    await this.service.flagStuckWorkers().catch((error) =>
+      this.log.warn(`Stuck-worker check failed: ${errorMessage(error)}`),
     );
     await this.service.pumpHandoverWriters().catch((error) =>
       this.log.warn(`Handover writer start failed: ${errorMessage(error)}`),

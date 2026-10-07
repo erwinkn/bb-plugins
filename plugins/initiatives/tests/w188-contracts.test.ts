@@ -183,7 +183,7 @@ describe("W188: a long initiative_report summary", () => {
     const [w] = JSON.parse(await f.harness.callAgentTool("initiative_spawn", { label: "Search", purpose: "search", text: "Do it." }, { threadId: "coordinator" }) as string);
     const summary = `Indexed archived records and ranked them below live ones. ${"Verified with the full suite and a manual check. ".repeat(14)}`.trim();
     expect(summary.length).toBeGreaterThan(600);
-    const result = JSON.parse(await f.harness.callAgentTool("initiative_report", { outcome: "done", summary }, { threadId: w.threadId }) as string);
+    const result = JSON.parse(await f.harness.callAgentTool("initiative_report", { outcome: "done", summary, report: "Done." }, { threadId: w.threadId }) as string);
     expect(result.note).toContain(`The summary is ${summary.length} characters: the dashboard shows its first 300, and the full text is kept with the report.`);
     const report = f.store.assignment(project.id, 1)!.report!;
     expect(report.summary).toHaveLength(300);

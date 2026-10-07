@@ -67,8 +67,8 @@ export function renderAssignment(input: {
       ? `Execution: ${describeProfile(input.profile)}; permissions: ${input.permissionMode ?? "environment default"}.`
       : null,
     input.role === "review"
-      ? "This review is read-only: read the code, then give your findings as your final message. Don't fix them."
-      : "Finish with your report as your final message.",
+      ? "This review is read-only: read the code, then report your findings with initiative_report. Don't fix them."
+      : "Finish by calling initiative_report with your full report.",
     opMarker(input.opId),
   ]
     .filter(Boolean)

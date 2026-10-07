@@ -207,7 +207,7 @@ describe("uncertain operations", () => {
 });
 
 describe("reports and acceptance", () => {
-  it("records a report, keeps the task open, and skips a notify for native children", async () => {
+  it("records a report, keeps the task open, and sends it once to the native-parent coordinator", async () => {
     const { f, project } = await projectFixture();
     const t1 = f.task(project.id);
     const [d] = await f.service.delegate(project.id, {
@@ -219,8 +219,9 @@ describe("reports and acceptance", () => {
     expect(a.state).toBe("reported");
     // T136: a report never closes a task; the coordinator does.
     expect(f.store.task(project.id, t1.num)!.status).toBe("in_progress");
-    // Native parenting already delivers the notice; no plugin copy is sent.
-    expect(f.send).not.toHaveBeenCalled();
+    // D417: the worker's turn ends don't reach the coordinator ("explicit"), so the plugin sends the report.
+    expect(f.send).toHaveBeenCalledTimes(1);
+    expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: "coordinator", senderThreadId: d.threadId });
   });
 
   it("sends one direct coordinator note for an unparented worker", async () => {

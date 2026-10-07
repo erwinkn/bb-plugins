@@ -70,22 +70,6 @@ it("cancelling queued recovery during preparation prevents the new coordinator s
  expect(f.store.pendingHandover(project.id)).toBeNull();
 });
 
-it("a final capture read failure is retried by the ordinary runtime sweep",async()=>{
- const {f,project}=await projectFixture();
- const [w]=await tool(f,"initiative_spawn",{label:"Work",purpose:"work",text:"Do work"});
- start(f);
- await tool(f,"initiative_report",{outcome:"done",summary:"Done; final follows"},w.threadId);
- end(f,"Detailed final report");
- let fail=true;
- f.intercept((path,args,call)=>{
-  if(path==="threads.events.list"&&args.types?.includes("turn/started")&&args.limit==="2"&&fail){fail=false;throw new Error("temporary history outage");}
-  return call();
- });
- await f.runtime.onThreadIdle(f.idle(w.threadId));
- f.intercept();await f.runtime.sweep();
- expect(f.store.assignment(project.id,1)!.report!.finalMessage).toBe("Detailed final report");
-});
-
 async function gatedRecovery(){
  const {f,project}=await projectFixture();
  f.threads.set("coordinator",{...f.threads.get("coordinator")!,status:"active"});
@@ -127,19 +111,3 @@ it("the request's revision cannot change under a recovery in preparation; it sta
  expect(f.store.pendingHandover(project.id)).toBeNull();
 });
 
-it("the sweep's retry of a pending final message is bounded",async()=>{
- const {f,project}=await projectFixture();
- const [w]=await tool(f,"initiative_spawn",{label:"Work",purpose:"work",text:"Do work"});
- start(f);
- await tool(f,"initiative_report",{outcome:"done",summary:"Done; final follows"},w.threadId);
- // The turn never ends visibly; after an hour the sweep stops waiting.
- const later=Date.now()+61*60_000;
- const { vi } = await import("vitest");
- vi.spyOn(f.service,"now").mockReturnValue(later);
- const capture=vi.spyOn(f.service,"captureFinalMessage");
- await f.runtime.sweep();
- expect(capture).not.toHaveBeenCalled();
- end(f,"Final report much later");
- await f.runtime.onThreadIdle(f.idle(w.threadId));
- expect(f.store.assignment(project.id,1)!.report!.finalMessage).toBeUndefined();
-});
