@@ -8,8 +8,9 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
 
 - `initiative_spawn` starts a worker: label, purpose and a complete brief (the task, the
   context it needs, explicit user instructions that matter, how to verify). Tasks are
-  optional. Pick `kind`: `worker` (default), `fast` (simple, well-specified work) or
-  `investigator` (summarizing or investigating large text); Settings map each kind to a
+  optional. Pick `kind`: `worker` (default; implement a known change), `experimenter` (try things,
+  prototype, report options), `fast` (small, well-specified) or `analyst` (read lots and
+  report; no building or running; `investigator` still works as an alias); Settings map each kind to a
   model, and an explicit `profile` overrides it. A review is `role:"review", reviews:"W12"`; W12's latest report is embedded.
   `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
   writer in the same checkout; overlap is never refused.

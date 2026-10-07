@@ -40,8 +40,16 @@ export type WorkKind = (typeof WORK_KINDS)[number];
  * What a coordinator asks for when it spawns work: a role, not a model. Settings map
  * each kind to a profile key, so swapping models is a settings change only.
  */
-export const WORKER_KINDS = ["worker", "fast", "investigator"] as const;
+export const WORKER_KINDS = ["worker", "experimenter", "fast", "analyst"] as const;
 export type WorkerKind = (typeof WORKER_KINDS)[number];
+/** The kind a coordinator may still pass: analyst was called investigator until W209. */
+export const DEPRECATED_WORKER_KINDS = { investigator: "analyst" } as const satisfies Record<string, WorkerKind>;
+/** Maps an alias to its kind; a stored "investigator" (no migration) reads back as analyst. */
+export const canonicalWorkerKind = (kind: string): WorkerKind =>
+  (DEPRECATED_WORKER_KINDS as Record<string, WorkerKind>)[kind] ?? (kind as WorkerKind);
+export const workerKindSchema = z
+  .enum([...WORKER_KINDS, ...(Object.keys(DEPRECATED_WORKER_KINDS) as (keyof typeof DEPRECATED_WORKER_KINDS)[])])
+  .transform(canonicalWorkerKind);
 export const DEFAULT_WORKER_KIND: WorkerKind = "worker";
 
 /** Immutable for the life of a worker, across reuse, forks, and generations. */
@@ -63,8 +71,9 @@ export type ProfileKey = (typeof PROFILE_KEYS)[number];
 /** The stored profile key behind each worker kind (the JSON keys predate the roles). */
 export const WORKER_KIND_PROFILE: Record<WorkerKind, WorkKind> = {
   worker: "implementation",
+  experimenter: "experiment",
   fast: "straightforward",
-  investigator: "investigation",
+  analyst: "investigation",
 };
 
 /** How Settings names each stored key; the JSON keys predate the roles and stay as they are. */
@@ -72,10 +81,10 @@ export const PROFILE_ROLE_LABELS: Record<ProfileKey, string> = {
   coordinator: "Coordinator",
   implementation: "Worker",
   straightforward: "Fast worker",
-  investigation: "Investigator / summarizer",
+  investigation: "Analyst (reads and reports)",
   reviewOfClaude: "Reviewer (of Claude work)",
   reviewOfGpt: "Reviewer (of GPT work)",
-  experiment: "Experiment (unused)",
+  experiment: "Experimenter (prototypes and spikes)",
 };
 
 export const DEFAULT_PROFILES: Record<ProfileKey, Profile> = {

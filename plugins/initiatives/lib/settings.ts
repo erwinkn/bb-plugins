@@ -48,7 +48,7 @@ export const settingsDescriptors = {
     type: "string" as const,
     label: "Default execution profiles by role",
     experimental_multiline: true,
-    description: "JSON profiles by role. coordinator: the coordinator. implementation: worker, the default for spawn. straightforward: fast worker, kind fast (simple, well-specified work). investigation: investigator/summarizer, kind investigator (large text). reviewOfClaude: reviewer of Claude work. reviewOfGpt: reviewer of GPT work. experiment is kept but unused. An explicit profile on spawn wins; a message to an existing worker keeps its model. Per-Initiative policy profiles override these keys.",
+    description: "JSON profiles by role. coordinator: the coordinator. implementation: worker, the default for spawn. straightforward: fast worker, kind fast (small, well-specified changes). experiment: experimenter, kind experimenter (prototypes and spikes). investigation: analyst, kind analyst (reads and reports). reviewOfClaude: reviewer of Claude work. reviewOfGpt: reviewer of GPT work. An explicit profile on spawn wins; a message to an existing worker keeps its model. Per-Initiative policy profiles override these keys.",
     default: JSON.stringify(DEFAULT_PROFILES, null, 2),
     experimental_schema: profilesTextSchema,
   },

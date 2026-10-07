@@ -12,7 +12,7 @@ import {
   ROLES,
   ASSIGNMENT_ACCESS,
   WORK_KINDS,
-  WORKER_KINDS,
+  workerKindSchema,
 } from "./schema";
 import type { ProjectsService } from "./service";
 import { ProjectError } from "./bb";
@@ -64,7 +64,7 @@ export const delegateSchema = z
     reviewOf: refs.optional(),
     reviewTargets: z.array(z.object({ task: ref, assignment: ref, revision: text(200) }).strict()).min(1).max(20).optional(),
     worker: ref.optional(),
-    kind: z.enum(WORKER_KINDS).optional(),
+    kind: workerKindSchema.optional(),
     profile: profileSchema.optional(),
     bbProjectId: ref.optional(),
     environment: environmentSchema.optional(),

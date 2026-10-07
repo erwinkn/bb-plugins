@@ -7,19 +7,20 @@ import { buildOverview } from "../lib/overview";
 import { clearCatalogCache } from "../lib/bb";
 import { fixture, projectFixture, report } from "./fake-native";
 
-// W206: a coordinator spawns a role (worker, fast, investigator); Settings map it to a model.
+// W206/W209: a coordinator spawns a role (worker, experimenter, fast, analyst); Settings map it to a model.
 const opus: Profile = { providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "high" };
 const sonnet: Profile = { providerId: "claude-code", model: "claude-sonnet-5-5", reasoningLevel: "high" };
+const exp: Profile = { providerId: "claude-code", model: "claude-opus-5-5", reasoningLevel: "xhigh" };
 const luna: Profile = { providerId: "codex", model: "gpt-6-luna", reasoningLevel: "xhigh" };
 const sol: Profile = { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "xhigh" };
-const settings = { executionProfiles: JSON.stringify({ implementation: opus, straightforward: sonnet, investigation: luna, reviewOfClaude: sol, reviewOfGpt: sol }) };
+const settings = { executionProfiles: JSON.stringify({ implementation: opus, straightforward: sonnet, experiment: exp, investigation: luna, reviewOfClaude: sol, reviewOfGpt: sol }) };
 
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 const tool = async (f: Fx, name: string, input: unknown) => JSON.parse(await f.harness.callAgentTool(name, input, { threadId: "coordinator" }) as string);
 const spawnInput = (label: string, extra: Record<string, unknown> = {}) => ({ label, purpose: label, text: `Do ${label}.`, permissionMode: "full", ...extra });
 /** Lets every profile's model appear in the native catalog. */
 const available = (f: Fx) => {
-  for (const profile of [sonnet, luna, sol]) f.execution.set(`probe-${profile.model}`, { model: profile.model, reasoningLevel: profile.reasoningLevel });
+  for (const profile of [sonnet, luna, sol, exp]) f.execution.set(`probe-${profile.model}`, { model: profile.model, reasoningLevel: profile.reasoningLevel });
   clearCatalogCache();
 };
 const spawned = (f: Fx) => f.spawn.mock.calls.at(-1)![0];
@@ -28,11 +29,11 @@ describe("W206 spawn by role", () => {
   it("maps each kind to its settings profile and records it on the worker", async () => {
     const { f, project } = await projectFixture(settings);
     available(f);
-    for (const [kind, expected] of [["worker", opus], ["fast", sonnet], ["investigator", luna]] as const) {
+    for (const [kind, expected] of [["worker", opus], ["experimenter", exp], ["fast", sonnet], ["analyst", luna]] as const) {
       await tool(f, "initiative_spawn", spawnInput(kind, { kind }));
       expect(spawned(f)).toMatchObject(expected);
     }
-    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["worker", "fast", "investigator"]);
+    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["worker", "experimenter", "fast", "analyst"]);
   });
 
   it("defaults to a plain worker when kind is missing", async () => {
@@ -57,8 +58,21 @@ describe("W206 spawn by role", () => {
     f.store.updateProject(project.id, { policy: { profiles: { straightforward: sol } } });
     await tool(f, "initiative_spawn", spawnInput("override", { kind: "fast" }));
     expect(spawned(f)).toMatchObject(sol);
-    await tool(f, "initiative_spawn", spawnInput("other", { kind: "investigator" }));
+    await tool(f, "initiative_spawn", spawnInput("other", { kind: "analyst" }));
     expect(spawned(f)).toMatchObject(luna);
+  });
+
+  it("investigator is a deprecated alias for analyst, and a stored investigator reads as analyst", async () => {
+    const { f, project } = await projectFixture(settings);
+    available(f);
+    await tool(f, "initiative_spawn", spawnInput("old", { kind: "investigator" }));
+    expect(spawned(f)).toMatchObject(luna);
+    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["analyst"]);
+    f.store.db.prepare("UPDATE workers SET kind = 'investigator'").run();
+    expect(f.store.workers(project.id).map(w => w.kind)).toEqual(["analyst"]);
+    expect(buildOverview(f.store, project.id, new Map(), Date.now()).workers.current[0]!.kind).toBe("analyst");
+    const run = (kind: string) => f.harness.runCli(["command", JSON.stringify({ action: "delegate", route: "fresh", label: "L", area: "A", note: "N", kind, permissionMode: "full" }), project.id]);
+    expect((await run("investigator")).exitCode).toBe(0);
   });
 
   it("a batch spawn takes kind", async () => {
@@ -66,17 +80,17 @@ describe("W206 spawn by role", () => {
     available(f);
     const result = await tool(f, "initiative_batch", { actions: [
       { tool: "spawn", ...spawnInput("quick", { kind: "fast" }) },
-      { tool: "spawn", ...spawnInput("digest", { kind: "investigator" }) },
+      { tool: "spawn", ...spawnInput("digest", { kind: "analyst" }) },
     ] });
     expect(result).toMatchObject({ succeeded: 2, failed: 0 });
-    expect(f.store.workers(project.id).map(w => [w.kind, w.model])).toEqual([["fast", "claude-sonnet-5-5"], ["investigator", "gpt-6-luna"]]);
+    expect(f.store.workers(project.id).map(w => [w.kind, w.model])).toEqual([["fast", "claude-sonnet-5-5"], ["analyst", "gpt-6-luna"]]);
   });
 
   it("the CLI command accepts kind and rejects an unknown one", async () => {
     const { f, project } = await projectFixture(settings);
     available(f);
     const run = (kind: string) => f.harness.runCli(["command", JSON.stringify({ action: "delegate", route: "fresh", label: "L", area: "A", note: "N", kind, permissionMode: "full" }), project.id]);
-    expect((await run("investigator")).exitCode).toBe(0);
+    expect((await run("analyst")).exitCode).toBe(0);
     expect(spawned(f)).toMatchObject(luna);
     expect((await run("implementation")).exitCode).not.toBe(0);
   });
@@ -108,18 +122,21 @@ describe("W206 spawn by role", () => {
   });
 
   it("every kind has a stored profile key", () => {
-    expect(WORKER_KINDS.map(kind => WORKER_KIND_PROFILE[kind])).toEqual(["implementation", "straightforward", "investigation"]);
+    expect(WORKER_KINDS.map(kind => WORKER_KIND_PROFILE[kind])).toEqual(["implementation", "experiment", "straightforward", "investigation"]);
   });
 });
 
 describe("W206 coordinator guidance", () => {
   it("names the kinds instead of raw profiles", () => {
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Pick kind on spawn: worker (default), fast (simple, well-specified work) or investigator (summarizing or investigating large text).");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Pick kind on spawn: worker (default; implement a known change), experimenter (try things, prototype, report options), fast (small, well-specified) or analyst (read lots and report; no building or running).");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).not.toContain("Pass profile");
   });
 
-  it("a saved copy of the previous default upgrades; edited text stays", async () => {
-    const previous = PREVIOUS_DEFAULTS.coordinator.find(text => text.includes("Pass profile {providerId"))!;
+  it.each([
+    ["the raw-profile line", "Pass profile {providerId"],
+    ["the worker/fast/investigator kinds line", "or investigator (summarizing"],
+  ])("a saved copy of the default with %s upgrades; edited text stays", async (_, needle) => {
+    const previous = PREVIOUS_DEFAULTS.coordinator.find(text => text.includes(needle))!;
     expect(previous).toBeDefined();
     const f = fixture({ coordinatorInstructions: previous });
     f.store.setFlag(GUIDANCE_RESET_FLAG);

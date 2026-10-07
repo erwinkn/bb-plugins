@@ -22,6 +22,7 @@ import type {
 } from "./schema";
 import {
   DEFAULT_POLICY,
+  canonicalWorkerKind,
   briefSchema,
   decisionFieldsSchema,
   environmentSchema,
@@ -407,7 +408,7 @@ export const MIGRATIONS = [
     set_at INTEGER NOT NULL,
     PRIMARY KEY (project_id, url)
   )`,
-  // W206: the role a coordinator asked for on spawn (worker, fast, investigator); null for reviewers and older workers.
+  // W206: the role a coordinator asked for on spawn (worker, experimenter, fast, analyst); null for reviewers and older workers.
   `ALTER TABLE workers ADD COLUMN kind TEXT`,
 ];
 
@@ -1034,7 +1035,7 @@ function toWorker(row: Row): WorkerRecord {
     num,
     ref: workerRef(num),
     role: row.role as Role,
-    kind: (row.kind as WorkerKind | null) ?? null,
+    kind: row.kind ? canonicalWorkerKind(row.kind as string) : null,
     label: String(row.label),
     area: String(row.area),
     threadId: (row.thread_id as string | null) ?? null,
