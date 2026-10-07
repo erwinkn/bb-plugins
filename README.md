@@ -406,6 +406,31 @@ requires `node >=22.19.0`, so core code and other plugins can still hit
 this. Suggested issue title: `Require Node 24.16+ for the server:
 AbortSignal.any finalization is quadratic on Node 22`.
 
+### SDK request timeouts pin a composite signal for 75 s (2026-10-07)
+
+Candidate from W193; not filed. `createRequestTimeoutFetch`
+(`packages/sdk/src/response.ts:104`) turns every `bb.sdk` call that passes a
+signal into `AbortSignal.any([callerSignal, 75 s timeout])`. The timeout keeps
+that composite recorded on the caller's signal for 75 s even when the call
+takes 5 ms. A plugin passing its service lifetime signal to a frequent call
+(the Initiatives sweep, `concurrency-limit`'s `hosts.list`) therefore keeps
+hundreds of composites on one long-lived signal, which the Node 22 issue
+above makes expensive. Fix in the fork, then upstream: link the caller's
+signal with a listener and clear the timer when the response finishes.
+Suggested issue title: `SDK request timeout keeps AbortSignal.any composites
+alive for 75 s after each call`.
+
+### Desktop app leaves no crash evidence (2026-10-07)
+
+Fork task first, then an upstream candidate; not filed. The macOS desktop app
+showed a crash diagnostic around 02:27, then relaunched itself. It left no
+Crashpad dump, no `.ips` report and no log file: `~/Library/Application
+Support/bb` has neither `Crashpad` nor `logs`, so a renderer error screen
+cannot be diagnosed after the fact. Enable Electron's `crashReporter` (local
+dumps only) and a rotating main-process log, and log renderer errors that
+reach the error screen. Suggested issue title: `Desktop: keep crash dumps and
+a main/renderer log for post-mortem diagnosis`.
+
 ### Reconnect revives threads without a turn (2026-10-07)
 
 Candidate from T134; not filed. Patched in fork `329ac507a`. In 0.43.1 a
