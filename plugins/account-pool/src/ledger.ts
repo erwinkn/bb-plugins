@@ -7,6 +7,14 @@ import {
   type CacheUsage,
 } from "./cache-usage.js";
 import { topLevelFields } from "./json-scan.js";
+import type { WarmingOutcome } from "./warming.js";
+import {
+  waitStates,
+  warmingRoles,
+  type ResumeSample,
+  type WaitState,
+  type WarmingRole,
+} from "./warming-economics.js";
 
 // A durable record of what the Pooler forwarded and what each account's quota did, kept so a
 // later report can tell whether cache warming saves more quota than it costs. Rows hold counts,
@@ -118,6 +126,22 @@ export interface LedgerSettings {
   warming: Record<string, unknown>;
 }
 
+export interface UsageWarmingRow {
+  at: number;
+  session_key: string;
+  thread_id: string | null;
+  model: string | null;
+  role: WarmingRole | null;
+  state: WaitState | null;
+  wait_started_at: number;
+  first_decision_at: number | null;
+  prefix_tokens: number;
+  ttl: CacheTtl | null;
+  refreshes: number;
+  kind: "end" | "skip";
+  reason: string;
+}
+
 export interface UsageSettingsRow {
   at: number;
   settings: LedgerSettings;
@@ -163,6 +187,7 @@ export class UsageLedger {
   private rows: UsageRequestRow[] = [];
   private quotas: QueuedQuota[] = [];
   private settingsRows: Array<{ at: number; settings_json: string }> = [];
+  private warmingRows: UsageWarmingRow[] = [];
   private scheduled = false;
   private closed = false;
   private pruneDueAt = 0;
@@ -177,6 +202,7 @@ export class UsageLedger {
   private readonly insertRequest: Database.Statement;
   private readonly insertQuota: Database.Statement;
   private readonly insertSettings: Database.Statement;
+  private readonly insertWarming: Database.Statement;
 
   constructor(private readonly deps: LedgerDeps) {
     this.health = {
@@ -209,6 +235,15 @@ export class UsageLedger {
     );
     this.insertSettings = deps.db.prepare(
       "INSERT INTO usage_settings (at, settings_json) VALUES (@at, @settings_json)",
+    );
+    this.insertWarming = deps.db.prepare(
+      `INSERT INTO usage_warming (
+        at, session_key, thread_id, model, role, state, wait_started_at, first_decision_at,
+        prefix_tokens, ttl, refreshes, kind, reason
+      ) VALUES (
+        @at, @session_key, @thread_id, @model, @role, @state, @wait_started_at,
+        @first_decision_at, @prefix_tokens, @ttl, @refreshes, @kind, @reason
+      )`,
     );
     // The dedupe baselines are read once, at startup, so quota() never touches SQLite.
     this.guard(() => {
@@ -274,6 +309,32 @@ export class UsageLedger {
     });
   }
 
+  // A lease that ended, or a wait left unwarmed. In memory only.
+  warming(outcome: WarmingOutcome): void {
+    this.guard(() => {
+      this.warmingRows.push({
+        at: outcome.at,
+        session_key: `session:${outcome.sessionId}`,
+        thread_id: outcome.threadId,
+        model: outcome.model,
+        role: outcome.role,
+        state: outcome.state,
+        wait_started_at: outcome.waitStartedAt,
+        first_decision_at: outcome.firstDecisionAt,
+        prefix_tokens: outcome.prefixTokens,
+        ttl: outcome.ttl,
+        refreshes: outcome.refreshes,
+        kind: outcome.kind,
+        reason: outcome.reason,
+      });
+      if (this.warmingRows.length > MAX_QUEUED_REQUESTS) {
+        this.warmingRows.shift();
+        this.health.dropped += 1;
+      }
+      this.schedule(0);
+    });
+  }
+
   // Asks the next flush to prune, e.g. after the retention changed.
   pruneSoon(): void {
     this.pruneDueAt = 0;
@@ -327,12 +388,18 @@ export class UsageLedger {
         },
       ) ||
       this.write(this.rows, (row) => this.insertRequest.run(row), () => {}) ||
+      this.write(this.warmingRows, (row) => this.insertWarming.run(row), () => {}) ||
       this.pruneChunk();
     if (busy) {
       this.health.busyRetries += 1;
       this.schedule(BUSY_RETRY_MS);
     } else if (
-      this.records.length + this.rows.length + this.quotas.length + this.settingsRows.length > 0 ||
+      this.records.length +
+        this.rows.length +
+        this.quotas.length +
+        this.settingsRows.length +
+        this.warmingRows.length >
+        0 ||
       this.pruneDueAt <= this.deps.now()
     )
       this.schedule(0);
@@ -387,7 +454,7 @@ export class UsageLedger {
     let deleted = 0;
     try {
       db.transaction(() => {
-        for (const table of ["usage_requests", "usage_quota"])
+        for (const table of ["usage_requests", "usage_quota", "usage_warming"])
           deleted += db
             .prepare(
               `DELETE FROM ${table} WHERE rowid IN (
@@ -594,9 +661,9 @@ export function readRequestRows(
     .iterate(since) as IterableIterator<UsageRequestRow>;
 }
 
-// A refresh is sent at most an hour (the longest warming window) after the native request it
+// A refresh is sent at most 4 hours (the largest maxWaitMinutes) after the native request it
 // keeps warm, and keeps an entry alive for at most another hour.
-const SEED_REFRESH_MS = 3 * 60 * 60_000;
+const SEED_REFRESH_MS = 6 * 60 * 60_000;
 
 // The cache history a report starting at since needs, in time order: each session and model's
 // last successful native request before since, and the refreshes shortly before since.
@@ -659,4 +726,47 @@ export function readSettingsRows(
       at: row.at,
       settings: JSON.parse(row.settings_json) as LedgerSettings,
     }));
+}
+
+// A wait with no native request after it for this long counts as one that never resumed; a younger
+// one is still open and says nothing yet.
+const NO_RESUME_MS = 3 * 60 * 60_000;
+
+// The waits warming reached a refresh decision on since `since`, newest first and at most `limit`
+// of them, each with how long it lasted: until the next native request of its session on the same
+// model. Synchronous: callers bound it and cache the result.
+export function readResumeSamples(
+  db: Database.Database,
+  since: number,
+  now: number,
+  limit: number,
+): ResumeSample[] {
+  const rows = db
+    .prepare(
+      `SELECT w.role, w.state, w.wait_started_at, (
+         SELECT MIN(r.at) FROM usage_requests r
+         WHERE r.session_key = w.session_key AND r.model IS w.model AND r.kind = 'native'
+           AND r.at > w.wait_started_at
+       ) AS resumed_at
+       FROM usage_warming w
+       WHERE w.wait_started_at >= ? AND w.state IS NOT NULL AND w.role IS NOT NULL
+       ORDER BY w.wait_started_at DESC LIMIT ?`,
+    )
+    .all(since, limit) as Array<{
+    role: string;
+    state: string;
+    wait_started_at: number;
+    resumed_at: number | null;
+  }>;
+  const samples: ResumeSample[] = [];
+  for (const row of rows) {
+    const role = warmingRoles.find((value) => value === row.role);
+    const state = waitStates.find((value) => value === row.state);
+    if (role === undefined || state === undefined) continue;
+    if (row.resumed_at !== null)
+      samples.push({ role, state, waitMs: row.resumed_at - row.wait_started_at });
+    else if (now - row.wait_started_at >= NO_RESUME_MS)
+      samples.push({ role, state, waitMs: null });
+  }
+  return samples;
 }

@@ -110,48 +110,33 @@ async function input(slot: ReturnType<typeof render>, label: string) {
 }
 
 describe("Cache warming settings", () => {
-  it("shows the off default and the requested windows", async () => {
+  it("shows the off default, every role enabled and the pause switch", async () => {
     const slot = render();
     const mode = (await slot.findByLabelText("Cache warming mode")) as HTMLButtonElement;
     await waitFor(() => expect(mode.textContent).toContain("Off"));
-    const values = await Promise.all(
-      [
-        "Coordinator window (minutes)",
-        "Worker mid-assignment window (minutes)",
-        "Worker reported window (minutes)",
-        "Worker accepted window (minutes)",
-        "Ended window (minutes)",
-        "Reviewer window (minutes)",
-        "Reviewer accepted window (minutes)",
-        "Standalone thread window (minutes)",
-      ].map(async (label) => (await input(slot, label)).value),
-    );
-    await waitFor(async () =>
-      expect((await input(slot, "Coordinator window (minutes)")).value).toBe("20"),
-    );
-    expect(values.slice(1)).toEqual(["15", "10", "0", "0", "0", "0", "0"]);
+    for (const role of ["coordinators", "workers", "reviewers", "other threads"])
+      await waitFor(() =>
+        expect(slot.getByRole("switch", { name: `Warm ${role}` }).getAttribute("aria-checked")).toBe("true"),
+      );
     expect(slot.getByRole("switch", { name: "Pause stops warming" }).getAttribute("aria-checked")).toBe("true");
     expect(slot.getByRole("switch", { name: "Warm opus" }).getAttribute("aria-checked")).toBe("true");
     expect(slot.getByRole("switch", { name: "Warm sonnet" }).getAttribute("aria-checked")).toBe("false");
     expect(slot.queryByText(/matched to threads/u)).toBeNull();
-    // Initiatives cannot tell a standalone thread from an unknown one, so the setting is inactive.
-    expect((await input(slot, "Standalone thread window (minutes)")).disabled).toBe(true);
-    expect(slot.getByText(/Inactive: Initiatives reports standalone/u)).toBeTruthy();
+    expect(slot.queryByText(/window \(minutes\)/u)).toBeNull();
   });
 
-  it("saves the reviewer window and the pause switch", async () => {
+  it("toggles roles as a full list and saves the pause switch", async () => {
     const slot = render({
       "warming.set": (update: Partial<WarmingConfig>) => warmingView(update),
     });
-    const reviewer = await input(slot, "Reviewer window (minutes)");
-    await waitFor(() => expect(reviewer.disabled).toBe(false));
-    fireEvent.change(reviewer, { target: { value: "61" } });
-    fireEvent.blur(reviewer);
-    expect(await slot.findByText("Must be at most 60.")).toBeTruthy();
-    fireEvent.change(reviewer, { target: { value: "5" } });
-    fireEvent.blur(reviewer);
+    const reviewers = await slot.findByRole("switch", { name: "Warm reviewers" });
+    await waitFor(() => expect((reviewers as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(reviewers);
     await waitFor(() =>
-      expect(slot.rpcCalls).toContainEqual({ method: "warming.set", input: { reviewerMinutes: 5 } }),
+      expect(slot.rpcCalls).toContainEqual({
+        method: "warming.set",
+        input: { roles: ["coordinator", "worker", "standalone"] },
+      }),
     );
     fireEvent.click(slot.getByRole("switch", { name: "Pause stops warming" }));
     await waitFor(() =>
@@ -159,41 +144,26 @@ describe("Cache warming settings", () => {
     );
   });
 
-  it("saves the accepted reviewer window on its own, apart from the worker one", async () => {
+  it("validates the longest wait with the shared schema before saving it", async () => {
     const slot = render({
-      "warming.set": (update: Partial<WarmingConfig>) => warmingView(update),
+      "warming.set": () => warmingView({ maxWaitMinutes: 25 }),
     });
-    const accepted = await input(slot, "Reviewer accepted window (minutes)");
-    await waitFor(() => expect(accepted.disabled).toBe(false));
-    expect(slot.getByText(/Workers whose assignment was accepted/u)).toBeTruthy();
-    expect(slot.queryByText(/Workers or reviewers/u)).toBeNull();
-    fireEvent.change(accepted, { target: { value: "3" } });
-    fireEvent.blur(accepted);
-    await waitFor(() =>
-      expect(slot.rpcCalls).toContainEqual({ method: "warming.set", input: { reviewerAcceptedMinutes: 3 } }),
-    );
-    expect(slot.rpcCalls.some((call) => call.method === "warming.set" && "workerAcceptedMinutes" in (call.input as object))).toBe(false);
-  });
-
-  it("validates a window with the shared schema before saving it", async () => {
-    const slot = render({
-      "warming.set": () => warmingView({ coordinatorMinutes: 25 }),
-    });
-    const coordinator = await input(slot, "Coordinator window (minutes)");
-    await waitFor(() => expect(coordinator.value).toBe("20"));
-    fireEvent.change(coordinator, { target: { value: "61" } });
-    fireEvent.blur(coordinator);
-    expect(await slot.findByText("Must be at most 60.")).toBeTruthy();
-    fireEvent.change(coordinator, { target: { value: "2.5" } });
-    fireEvent.blur(coordinator);
-    expect(await slot.findByText("Use whole minutes.")).toBeTruthy();
+    fireEvent.click(await slot.findByRole("button", { name: "Limits" }));
+    const wait = await input(slot, "Longest wait (minutes)");
+    await waitFor(() => expect(wait.value).toBe("60"));
+    fireEvent.change(wait, { target: { value: "241" } });
+    fireEvent.blur(wait);
+    expect(await slot.findByText("Must be at most 240.")).toBeTruthy();
+    fireEvent.change(wait, { target: { value: "2.5" } });
+    fireEvent.blur(wait);
+    expect(await slot.findByText("Use a whole number.")).toBeTruthy();
     expect(slot.rpcCalls.some((call) => call.method === "warming.set")).toBe(false);
-    fireEvent.change(coordinator, { target: { value: "25" } });
-    fireEvent.blur(coordinator);
+    fireEvent.change(wait, { target: { value: "25" } });
+    fireEvent.blur(wait);
     await waitFor(() =>
-      expect(slot.rpcCalls).toContainEqual({ method: "warming.set", input: { coordinatorMinutes: 25 } }),
+      expect(slot.rpcCalls).toContainEqual({ method: "warming.set", input: { maxWaitMinutes: 25 } }),
     );
-    await waitFor(() => expect(coordinator.value).toBe("25"));
+    await waitFor(() => expect(wait.value).toBe("25"));
   });
 
   it("switches mode, explains session matching without env changes and shows activity without dollar figures", async () => {
@@ -220,8 +190,11 @@ describe("Cache warming settings", () => {
               nativeStartedAt: 0,
               nativeCompletedAt: 1,
               coveredUntil: 2,
-              deadline: 3,
-              windowLabel: "coordinator",
+              role: "coordinator",
+              label: "coordinator",
+              waitingOn: "background",
+              resumeChance: 0.82,
+              expectedSaving: 48_000,
               refreshes: 2,
               nextRefreshAt: 4,
               state: "waiting",
@@ -247,6 +220,7 @@ describe("Cache warming settings", () => {
     // Once in the lease list, once in the recent decisions.
     expect(await slot.findAllByText("thr_coord")).toHaveLength(2);
     expect(slot.getByText("covered until", { exact: false })).toBeTruthy();
+    expect(slot.getByText(/waiting on a background task, resume odds\s+82%/u)).toBeTruthy();
     expect(slot.getByText(/no dollar estimate is made/u)).toBeTruthy();
     expect(slot.getByText(/lease on 100000 cached tokens/u)).toBeTruthy();
     expect(slot.getByText(/waiting for a thread link or\s+role check/u)).toBeTruthy();
@@ -269,15 +243,15 @@ describe("Cache warming settings", () => {
       "warming.set": (update: Partial<WarmingConfig>) => warmingView(update),
     });
     fireEvent.click(await slot.findByRole("button", { name: "Limits" }));
-    const cap = await input(slot, "Refreshes per idle period");
-    await waitFor(() => expect(cap.value).toBe("4"));
-    fireEvent.change(cap, { target: { value: "31" } });
+    const cap = await input(slot, "Refreshes per hour");
+    await waitFor(() => expect(cap.value).toBe("100"));
+    fireEvent.change(cap, { target: { value: "1001" } });
     fireEvent.blur(cap);
-    expect(await slot.findByText("Must be at most 30.")).toBeTruthy();
-    fireEvent.change(cap, { target: { value: "2" } });
+    expect(await slot.findByText("Must be at most 1000.")).toBeTruthy();
+    fireEvent.change(cap, { target: { value: "120" } });
     fireEvent.blur(cap);
     await waitFor(() =>
-      expect(slot.rpcCalls).toContainEqual({ method: "warming.set", input: { maxRefreshesPerLease: 2 } }),
+      expect(slot.rpcCalls).toContainEqual({ method: "warming.set", input: { maxRefreshesPerHour: 120 } }),
     );
     const reserve = await input(slot, "Warming quota reserve");
     expect(reserve.value).toBe("0.9");

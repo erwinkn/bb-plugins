@@ -151,13 +151,15 @@ async function main() {
         token: async () => ({ token: "projects-token" }),
       },
       threads: {
-        context: async ({ threadId }: { threadId: string }) => ({
-          usage: {
-            snapshot: {
-              providerSessionId: sessionOf(Number(threadId.slice(4))),
+        events: {
+          list: async ({ threadId }: { threadId: string }) => [
+            {
+              type: "thread/identity",
+              data: { providerThreadId: sessionOf(Number(threadId.slice(4))) },
             },
-          },
-        }),
+          ],
+        },
+        listRunning: async () => [],
       },
     } as never,
   });
@@ -167,7 +169,6 @@ async function main() {
   });
   await host.bb.storage.kv.set("warming-config", {
     mode: "warm",
-    coordinatorMinutes: 20,
     maxLeaseBodyKiB: 16_384,
   });
   await createAccountPoolPlugin({

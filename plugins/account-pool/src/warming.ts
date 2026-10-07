@@ -9,34 +9,46 @@ import {
   type CacheUsage,
 } from "./cache-usage.js";
 import type { ThreadContext } from "./thread-context.js";
-import { warmingWindow } from "./thread-context.js";
+import { warmingRole } from "./thread-context.js";
 import {
   effectiveWarmingQuotaReserve,
-  longestWindowMinutes,
   warmingModeSchema,
+  warmingRoleSchema,
   type WarmingConfig,
   type WarmingFamily,
 } from "./warming-config.js";
+import {
+  decideRefresh,
+  waitStates,
+  type ResumeHistory,
+  type WaitState,
+  type WarmingRole,
+} from "./warming-economics.js";
 
 // Cache warming keeps an idle thread's prompt cache entry alive by re-sending the thread's last
 // native request with max_tokens 0, on the same account, shortly before the entry expires.
 //
 // Timing, all from observed requests (never from BB turn ends):
+//   wait start   = completion of the session's last native request
 //   coveredUntil = start of the last request that wrote or read the entry + its TTL
-//   deadline     = completion of the thread's last native request + the thread's window
 // A refresh is due at coveredUntil - safetyMargin. A refresh that reads the whole prefix moves
-// coveredUntil to its own start + TTL; nothing but a native request moves the deadline. The lease
-// ends once coveredUntil reaches the deadline, or on the first condition it cannot verify.
+// coveredUntil to its own start + TTL; only a native request ends the wait. At every due time the
+// warmer reads what the thread waits on (a tool mid-turn, a background task, a question, nothing)
+// and refreshes only while that is expected to pay (warming-economics.ts), and never once the wait
+// is maxWaitMinutes old. The lease ends on the first refresh that would not pay, or on the first
+// condition it cannot verify. Every lease end and every skip that leaves a wait unwarmed is also
+// written to the usage ledger with its reason (recordOutcome).
 //
 // Attribution adds nothing to a thread's environment. Leases are keyed by the Claude Code session
-// id in each request's metadata.user_id. The server links a BB thread to its session from BB's own
-// record of the thread's provider session (threads.context), read on thread lifecycle events and
-// again immediately before every keep-alive.
+// id in each request's metadata.user_id, which is the providerThreadId of the thread's latest
+// thread/identity event in BB. The server links a thread to its session from that event on thread
+// lifecycle events, as soon as a request arrives on a session no thread is linked to
+// (resolveSession), and again immediately before every keep-alive.
 //
 // Admission: a completed request takes a lease slot, and keeps its body, only once its session is
-// linked to a thread and that thread's context gives it a window. Until then it waits as an
-// admission, bounded in count (maxLeases) and time (LINK_WAIT_MS), and any newer request in the
-// session, a turn start or a settings change drops it.
+// linked to a thread and that thread's Initiative context gives it a role that may be warmed.
+// Until then it waits as an admission, bounded in count (maxLeases) and time (LINK_WAIT_MS), and
+// any newer request in the session, a turn start or a settings change drops it.
 //
 // Subagents and helpers: Claude Code 2.1.287 sets metadata.user_id.parent_session_id from its
 // agent-team context (getParentSessionId), so it marks a teammate session, not an ordinary Task
@@ -54,6 +66,8 @@ const MAX_SESSION_LINKS = 1_024;
 // How long a completed request waits for BB to link its session to a thread. thread.idle reads the
 // link as soon as the turn ends.
 const LINK_WAIT_MS = 60_000;
+// How long the warmer waits for BB to say what a thread waits on before it gives up on the refresh.
+const WAIT_STATE_TIMEOUT_MS = 10_000;
 const AMBIGUOUS = Symbol("ambiguous");
 
 export interface WarmingTimers {
@@ -140,6 +154,15 @@ export interface WarmerDeps {
   ): Promise<ThreadContext>;
   // BB's current record of the thread's provider session, read fresh.
   threadSession(threadId: string, signal: AbortSignal): Promise<string | null>;
+  // Asks BB, in the background, which thread runs a session no thread is linked to yet; the answer
+  // arrives as linkSession. Called once per request on such a session; the server rate-limits it.
+  resolveSession(sessionId: string): void;
+  // What the thread waits on now, read fresh; null when BB cannot tell.
+  waitState(threadId: string, signal: AbortSignal): Promise<WaitState | null>;
+  // How long waits of each state and role have lasted.
+  resumeHistory(): ResumeHistory;
+  // A lease that ended, or a wait left unwarmed, with the reason.
+  recordOutcome(outcome: WarmingOutcome): void;
   keepAlive(
     request: KeepAliveRequest,
     signal: AbortSignal,
@@ -153,6 +176,24 @@ interface HeldCompletion {
   sequence: number;
   lease: Lease;
   timer: unknown;
+}
+
+// Why a wait ended up warmed for as long as it was, for the usage ledger.
+export interface WarmingOutcome {
+  at: number;
+  sessionId: string;
+  threadId: string | null;
+  model: string | null;
+  role: WarmingRole | null;
+  // What the thread waited on at the first refresh decision, null when none was reached.
+  state: WaitState | null;
+  waitStartedAt: number;
+  firstDecisionAt: number | null;
+  prefixTokens: number;
+  ttl: CacheTtl | null;
+  refreshes: number;
+  kind: "end" | "skip";
+  reason: string;
 }
 
 interface Lease {
@@ -169,10 +210,19 @@ interface Lease {
   bodyBytes: number;
   prefixTokens: number;
   nativeStartedAt: number;
+  // When the wait started.
   nativeCompletedAt: number;
   coveredUntil: number;
-  deadline: number | null;
-  windowLabel: string | null;
+  role: WarmingRole | null;
+  // How Initiatives describes the thread, for status.
+  label: string | null;
+  // What the thread waited on at the latest and at the first refresh decision.
+  waitingOn: WaitState | null;
+  firstWaitingOn: WaitState | null;
+  firstDecisionAt: number | null;
+  resumeChance: number | null;
+  // The latest decision's expected saving, in input-equivalent tokens.
+  expectedSaving: number | null;
   refreshes: number;
   nextRefreshAt: number | null;
   state: "waiting" | "checking" | "refreshing";
@@ -224,8 +274,11 @@ export const warmingStatusSchema = z
           nativeStartedAt: z.number().int(),
           nativeCompletedAt: z.number().int(),
           coveredUntil: z.number().int(),
-          deadline: z.number().int().nullable(),
-          windowLabel: z.string().nullable(),
+          role: warmingRoleSchema.nullable(),
+          label: z.string().nullable(),
+          waitingOn: z.enum(waitStates).nullable(),
+          resumeChance: z.number().nullable(),
+          expectedSaving: z.number().nullable(),
           refreshes: z.number().int(),
           nextRefreshAt: z.number().int().nullable(),
           state: z.enum(["waiting", "checking", "refreshing"]),
@@ -327,6 +380,7 @@ export class CacheWarmer {
     const session = start.sessionId;
     let sequence = 0;
     if (session !== null) {
+      if (!this.sessionThreads.has(session)) this.deps.resolveSession(session);
       this.preempt(
         [session, start.parentSessionId],
         "a native request on the thread took over",
@@ -531,8 +585,11 @@ export class CacheWarmer {
         nativeStartedAt: lease.nativeStartedAt,
         nativeCompletedAt: lease.nativeCompletedAt,
         coveredUntil: lease.coveredUntil,
-        deadline: lease.deadline,
-        windowLabel: lease.windowLabel,
+        role: lease.role,
+        label: lease.label,
+        waitingOn: lease.waitingOn,
+        resumeChance: lease.resumeChance,
+        expectedSaving: lease.expectedSaving,
         refreshes: lease.refreshes,
         nextRefreshAt: lease.nextRefreshAt,
         state: lease.state,
@@ -643,12 +700,32 @@ export class CacheWarmer {
     if (config.mode === "off") return;
     if (start.sessionId === null)
       return skip("no Claude Code session id in the request metadata");
+    // The wait after this request goes unwarmed (a busy skip does not: a later completion leases).
+    const sessionId = start.sessionId;
+    const unwarmed = (message: string) => {
+      skip(message);
+      this.deps.recordOutcome({
+        at: this.deps.now(),
+        sessionId,
+        threadId: base.threadId,
+        model: shape.model,
+        role: null,
+        state: null,
+        waitStartedAt: this.deps.now(),
+        firstDecisionAt: null,
+        prefixTokens: usage === null ? 0 : usage.cacheReadTokens + usage.cacheWriteTokens,
+        ttl: shape.tailTtl,
+        refreshes: 0,
+        kind: "skip",
+        reason: message,
+      });
+    };
     if (start.parentSessionId !== null)
-      return skip(
+      return unwarmed(
         "the request carries a parent_session_id (an agent-team session); only sessions without a parent start leases",
       );
     if (!config.families.includes(start.family as WarmingFamily))
-      return skip(`model family ${start.family} is not enabled for warming`);
+      return unwarmed(`model family ${start.family} is not enabled for warming`);
     if (busy !== null) {
       if (holdAs !== null) {
         const lease = this.leaseFrom(start.sessionId, start.family, response, usage, shape, config);
@@ -657,7 +734,7 @@ export class CacheWarmer {
       return skip(busy);
     }
     const lease = this.leaseFrom(start.sessionId, start.family, response, usage, shape, config);
-    if (typeof lease === "string") return skip(lease);
+    if (typeof lease === "string") return unwarmed(lease);
     this.admit(lease, config);
   }
 
@@ -680,11 +757,8 @@ export class CacheWarmer {
     const ttlMs = CACHE_TTL_MS[shape.tailTtl];
     const coveredUntil = response.startedAt + ttlMs;
     const completedAt = this.deps.now();
-    if (
-      coveredUntil >=
-      completedAt + longestWindowMinutes(config) * 60_000
-    )
-      return `the ${shape.tailTtl} cache entry already outlasts every warming window`;
+    if (coveredUntil >= completedAt + config.maxWaitMinutes * 60_000)
+      return `the ${shape.tailTtl} cache entry already outlasts maxWaitMinutes (${config.maxWaitMinutes})`;
     const dryRun = config.mode === "observe";
     if (!dryRun && response.body.byteLength > config.maxLeaseBodyKiB * 1024)
       return `request body is larger than maxLeaseBodyKiB (${config.maxLeaseBodyKiB} KiB)`;
@@ -703,8 +777,13 @@ export class CacheWarmer {
         nativeStartedAt: response.startedAt,
         nativeCompletedAt: completedAt,
         coveredUntil,
-        deadline: null,
-        windowLabel: null,
+        role: null,
+        label: null,
+        waitingOn: null,
+        firstWaitingOn: null,
+        firstDecisionAt: null,
+        resumeChance: null,
+        expectedSaving: null,
         refreshes: 0,
         nextRefreshAt: null,
         state: "waiting",
@@ -790,8 +869,7 @@ export class CacheWarmer {
   }
 
   // Waits for the session's link, then classifies the thread (a cached context read is fine here;
-  // every send is confirmed fresh). Only an eligible thread with a window that outlasts the entry
-  // takes a lease slot.
+  // every send is confirmed fresh). Only a thread whose role may be warmed takes a lease slot.
   private async classify(admission: Admission): Promise<void> {
     const lease = admission.lease;
     const thread = this.sessionThreads.get(lease.sessionId);
@@ -842,7 +920,7 @@ export class CacheWarmer {
         admission,
         "the session's thread link changed during classification",
       );
-    const refused = this.applyWindow(lease, context, config);
+    const refused = this.applyRole(lease, context, config);
     if (refused !== null) return this.dropAdmission(admission, refused.message);
     if (this.leases.size >= config.maxLeases)
       return this.dropAdmission(
@@ -869,22 +947,23 @@ export class CacheWarmer {
     admission.controller.abort(new Error(message ?? "admission dropped"));
     lease.ended = true;
     lease.body = null;
-    if (message !== null) this.recordLease(lease, "skip", message);
+    if (message === null) return;
+    this.recordLease(lease, "skip", message);
+    this.recordOutcome(lease, "skip", message);
   }
 
   private schedule(lease: Lease, config: WarmingConfig): void {
-    if (lease.deadline !== null && lease.coveredUntil >= lease.deadline)
-      return this.endLease(lease, "the cache entry now lasts until the deadline");
-    if (lease.refreshes >= config.maxRefreshesPerLease)
+    const due = lease.coveredUntil - config.safetyMarginSeconds * 1_000;
+    if (due - lease.nativeCompletedAt >= config.maxWaitMinutes * 60_000)
       return this.endLease(
         lease,
-        `refresh cap reached (maxRefreshesPerLease ${config.maxRefreshesPerLease})`,
+        `the wait reached maxWaitMinutes (${config.maxWaitMinutes})`,
       );
-    const due = lease.coveredUntil - config.safetyMarginSeconds * 1_000;
     this.arm(lease, due);
   }
 
   private arm(lease: Lease, at: number): void {
+    if (lease.timer !== null) this.deps.timers.clearTimeout(lease.timer);
     lease.state = "waiting";
     lease.nextRefreshAt = at;
     lease.timer = this.deps.timers.setTimeout(
@@ -918,19 +997,30 @@ export class CacheWarmer {
     lease.state = "checking";
     const controller = new AbortController();
     lease.controller = controller;
+    // Whatever the checks below wait on, the lease ends when its entry expires.
+    lease.timer = this.deps.timers.setTimeout(
+      () => this.endLease(lease, "the entry expired while its refresh was being checked"),
+      Math.max(0, lease.coveredUntil - this.deps.now()),
+    );
     // Classification may use a cached context read; the send itself is confirmed fresh below.
     const classified = await this.qualify(lease, thread, controller.signal, false);
     if (lease.ended) return;
     if (classified !== null) return this.endLease(lease, classified.message, classified.kind);
+    const state = await this.within(
+      this.deps.waitState(thread, controller.signal),
+      WAIT_STATE_TIMEOUT_MS,
+    );
+    if (lease.ended) return;
+    if (state === null)
+      return this.endLease(lease, "skipped: BB could not tell what the thread waits on", "skip");
+    if (lease.waitingOn === "background" && state === "idle")
+      return this.endLease(lease, "stopped: the background task ended without the thread resuming");
     config = this.deps.config();
     const changed = this.gate(lease, config);
     if (changed !== null) return this.endLease(lease, changed);
-    if (lease.refreshes >= config.maxRefreshesPerLease)
-      return this.endLease(
-        lease,
-        `refresh cap reached (maxRefreshesPerLease ${config.maxRefreshesPerLease})`,
-      );
     const now = this.deps.now();
+    const decision = this.decide(lease, state, now, config);
+    if (!decision.refresh) return this.endLease(lease, `stopped (${state}): ${decision.why}`);
     if (now >= lease.coveredUntil)
       return this.endLease(lease, "the entry expired before a refresh could start");
     this.refreshTimes = this.refreshTimes.filter((at) => now - at < HOUR_MS);
@@ -971,12 +1061,15 @@ export class CacheWarmer {
       this.recordLease(
         lease,
         "refresh",
-        `dry run: would refresh now (${lease.refreshes}/${config.maxRefreshesPerLease}) for ${lease.windowLabel}, deadline ${new Date(lease.deadline ?? 0).toISOString()}`,
+        `dry run: would refresh now (#${lease.refreshes}, ${state}, ${lease.label}): ${decision.why}`,
       );
       return this.schedule(lease, config);
     }
     if (lease.body === null)
       return this.endLease(lease, "no request body was kept for this lease");
+    // The keep-alive, its send-time checks included, is bounded by refreshTimeoutSeconds.
+    if (lease.timer !== null) this.deps.timers.clearTimeout(lease.timer);
+    lease.timer = null;
     lease.state = "refreshing";
     this.refreshing += 1;
     let result: KeepAliveResult;
@@ -1020,7 +1113,7 @@ export class CacheWarmer {
   }
 
   // Whether the lease's thread still qualifies, from BB's session link and Initiatives context. Sets
-  // the lease's window and deadline; returns null or why the lease must end.
+  // the lease's role; returns null or why the lease must end.
   private async qualify(
     lease: Lease,
     thread: string,
@@ -1049,27 +1142,60 @@ export class CacheWarmer {
     } catch {
       context = { kind: "unknown", reason: "thread context read failed" };
     }
-    return this.applyWindow(lease, context, this.deps.config());
+    return this.applyRole(lease, context, this.deps.config());
   }
 
-  // Sets the lease's window and deadline from the thread's context; null, or why it gets none.
-  private applyWindow(
+  // Sets the lease's role from the thread's context; null, or why it is not warmed.
+  private applyRole(
     lease: Lease,
     context: ThreadContext,
     config: WarmingConfig,
   ): { message: string; kind: "end" | "skip" } | null {
-    const window = warmingWindow(context, config);
-    if (!window.ok) return { message: `skipped: ${window.reason}`, kind: "skip" };
-    lease.windowLabel = window.label;
-    if (window.minutes === 0)
-      return { message: `no warming window for ${window.label}`, kind: "end" };
-    lease.deadline = lease.nativeCompletedAt + window.minutes * 60_000;
-    if (lease.coveredUntil >= lease.deadline)
-      return {
-        message: "the cache entry already lasts until the deadline",
-        kind: "end",
-      };
+    const classified = warmingRole(context, config);
+    if (!classified.ok) return { message: classified.reason, kind: classified.kind };
+    lease.role = classified.role;
+    lease.label = classified.label;
     return null;
+  }
+
+  // The promise's value, or null once it fails or takes longer than ms.
+  private within<T>(promise: Promise<T | null>, ms: number): Promise<T | null> {
+    return new Promise((resolve) => {
+      const timer = this.deps.timers.setTimeout(() => resolve(null), ms);
+      const settle = (value: T | null) => {
+        this.deps.timers.clearTimeout(timer);
+        resolve(value);
+      };
+      promise.then(settle, () => settle(null));
+    });
+  }
+
+  // Whether the next refresh is expected to pay, from what the thread waits on now.
+  private decide(
+    lease: Lease,
+    state: WaitState,
+    now: number,
+    config: WarmingConfig,
+  ): ReturnType<typeof decideRefresh> {
+    lease.waitingOn = state;
+    if (lease.firstWaitingOn === null) {
+      lease.firstWaitingOn = state;
+      lease.firstDecisionAt = now;
+    }
+    const decision = decideRefresh(this.deps.resumeHistory(), {
+      state,
+      // Set by qualify, which always runs first.
+      role: lease.role ?? "standalone",
+      ageMs: now - lease.nativeCompletedAt,
+      coveredMs: lease.coveredUntil - lease.nativeCompletedAt,
+      stepMs: CACHE_TTL_MS[lease.ttl] - config.safetyMarginSeconds * 1_000,
+      ttl: lease.ttl,
+      maxAgeMs: config.maxWaitMinutes * 60_000,
+      maxBackgroundAgeMs: config.maxBackgroundWaitMinutes * 60_000,
+    });
+    lease.resumeChance = decision.resumeChance;
+    lease.expectedSaving = Math.round(decision.net * lease.prefixTokens);
+    return decision;
   }
 
   private applyKeepAlive(
@@ -1106,7 +1232,7 @@ export class CacheWarmer {
     this.recordLease(
       lease,
       "refresh",
-      `refresh ${lease.refreshes}/${config.maxRefreshesPerLease} read ${usage.cacheReadTokens} cached tokens; covered until ${new Date(lease.coveredUntil).toISOString()}`,
+      `refresh #${lease.refreshes} (${lease.waitingOn}, ${lease.label}) read ${usage.cacheReadTokens} cached tokens; covered until ${new Date(lease.coveredUntil).toISOString()}`,
     );
     this.schedule(lease, config);
   }
@@ -1126,6 +1252,25 @@ export class CacheWarmer {
     if (this.leases.get(lease.sessionId) === lease)
       this.leases.delete(lease.sessionId);
     this.recordLease(lease, kind, message);
+    this.recordOutcome(lease, kind, message);
+  }
+
+  private recordOutcome(lease: Lease, kind: "end" | "skip", reason: string): void {
+    this.deps.recordOutcome({
+      at: this.deps.now(),
+      sessionId: lease.sessionId,
+      threadId: this.linkedThread(lease.sessionId),
+      model: lease.model,
+      role: lease.role,
+      state: lease.firstWaitingOn,
+      waitStartedAt: lease.nativeCompletedAt,
+      firstDecisionAt: lease.firstDecisionAt,
+      prefixTokens: lease.prefixTokens,
+      ttl: lease.ttl,
+      refreshes: lease.refreshes,
+      kind,
+      reason,
+    });
   }
 
   private recordLease(

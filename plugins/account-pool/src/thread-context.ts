@@ -1,12 +1,13 @@
 import { z } from "zod";
 import type { WarmingConfig } from "./warming-config.js";
+import type { WarmingRole } from "./warming-economics.js";
 
 // What the warmer knows about a thread's Initiative role. It comes only from the Initiatives
 // plugin's public token-auth read: context contract v1.1, thread route (plugins/initiatives/README.md,
 // "Read-only context for other plugins"); anything else is "unknown" and warms nothing. "none"
 // means Initiatives has no record of the thread: a standalone thread, a foreign or unknown id, or a
-// worker whose spawn is not linked yet. It is the absence of evidence, never proof that a thread
-// is standalone.
+// worker whose spawn is not linked yet. The warmer reads it only for a thread BB already linked to
+// a Claude session, so it treats it as standalone, and re-reads it at every refresh.
 export type ThreadContext =
   | { kind: "none" }
   | {
@@ -78,7 +79,7 @@ export interface ThreadContextReader {
     signal: AbortSignal,
     options?: { fresh?: boolean },
   ): Promise<ThreadContext>;
-  // The last membership read for the thread, however old, without a request. Labels only.
+  // The last membership or no-record read for the thread, however old, without a request. Labels only.
   peek(threadId: string): ThreadContext | null;
 }
 
@@ -90,6 +91,8 @@ export function createInitiativesContextReader(deps: {
   timeoutMs?: number;
 }): ThreadContextReader {
   const cache = new Map<string, { at: number; context: ThreadContext }>();
+  // The last answer that said something about the thread (a membership or no record), for labels.
+  const labels = new Map<string, ThreadContext>();
   return {
     async read(threadId, signal, options = {}) {
       const cached = cache.get(threadId);
@@ -101,6 +104,14 @@ export function createInitiativesContextReader(deps: {
         return cached.context;
       const context = await readOnce(deps, threadId, signal);
       cache.delete(threadId);
+      if (context.kind !== "unknown" && !signal.aborted) {
+        labels.delete(threadId);
+        labels.set(threadId, context);
+        while (labels.size > MAX_CACHED_CONTEXTS) {
+          const oldest = labels.keys().next();
+          if (!oldest.done) labels.delete(oldest.value);
+        }
+      }
       // Only a membership is cached. "none" may be a worker whose spawn is not linked yet, and an
       // unknown or canceled read says nothing about the thread.
       if (context.kind !== "member" || signal.aborted) return context;
@@ -111,7 +122,7 @@ export function createInitiativesContextReader(deps: {
       }
       return context;
     },
-    peek: (threadId) => cache.get(threadId)?.context ?? null,
+    peek: (threadId) => labels.get(threadId) ?? null,
   };
 }
 
@@ -214,83 +225,61 @@ async function readText(response: Response, limit: number): Promise<string> {
   }
 }
 
-export type WarmingWindow =
-  | { ok: true; minutes: number; label: string }
-  | { ok: false; reason: string };
+export type WarmingClass =
+  | { ok: true; role: WarmingRole; label: string }
+  | { ok: false; reason: string; kind: "skip" | "end" };
 
-// The idle window for a thread, from Initiatives context only. Supported windows: an active
-// coordinator, a worker whose last delivered assignment is active, reported or accepted, a
-// reviewer whose assignment is active or reported (reviewerMinutes), and a member that ended.
-// Everything else is a visible zero or skip:
-// - no Initiatives record: not evidence of a standalone thread, so no warming at all;
-// - an archived Initiative, or an adhoc Initiative thread: no warming;
-// - a paused Initiative, unless pauseStopsWarming is off;
-// - an undelivered next assignment, or a delivered one still pending: its turn will start from a
-//   different prompt, so the current prefix is not known to stay in use.
-export function warmingWindow(
+// The thread's warming role, from Initiatives context. The assignment's phase does not matter: a
+// worker's next brief arrives as a message in the same conversation, so a pending or undelivered
+// assignment keeps the prefix in use, and whether a wait is worth warming is decided from what the
+// thread waits on (warming-economics). The thread is linked to BB already, so a thread Initiatives
+// has no record of is a standalone BB thread. Ends warming:
+// - unknown context (a failed or unexpected read): it cannot be verified;
+// - an archived Initiative, or a paused one while pauseStopsWarming is on;
+// - a stopped, retired or former member: its conversation is done;
+// - a role that is not enabled in the settings.
+export function warmingRole(
   context: ThreadContext,
   config: WarmingConfig,
-): WarmingWindow {
-  if (context.kind === "unknown") return { ok: false, reason: context.reason };
-  if (context.kind === "none")
+): WarmingClass {
+  if (context.kind === "unknown")
+    return { ok: false, reason: `skipped: ${context.reason}`, kind: "skip" };
+  const classified = classify(context, config);
+  if (!classified.ok) return classified;
+  if (!config.roles.includes(classified.role))
     return {
       ok: false,
-      reason:
-        "Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one",
+      reason: `role ${classified.role} is not enabled for warming (${classified.label})`,
+      kind: "end",
     };
+  return classified;
+}
+
+function classify(
+  context: Exclude<ThreadContext, { kind: "unknown" }>,
+  config: WarmingConfig,
+): WarmingClass {
+  if (context.kind === "none")
+    return { ok: true, role: "standalone", label: "no Initiative" };
   if (context.archived)
-    return { ok: true, minutes: 0, label: "archived Initiative" };
-  if (context.memberKind === "adhoc" || context.role === "adhoc")
-    return { ok: true, minutes: 0, label: "adhoc Initiative thread" };
+    return { ok: false, reason: "archived Initiative", kind: "end" };
   if (context.paused && config.pauseStopsWarming)
-    return { ok: true, minutes: 0, label: "paused Initiative" };
-  const who = context.memberKind === "coordinator" ? "coordinator" : context.role;
+    return { ok: false, reason: "paused Initiative", kind: "end" };
+  if (context.memberKind === "adhoc" || context.role === "adhoc")
+    return { ok: true, role: "standalone", label: "adhoc Initiative thread" };
+  const role: WarmingRole =
+    context.memberKind === "coordinator"
+      ? "coordinator"
+      : context.role === "review"
+        ? "reviewer"
+        : "worker";
   if (context.state !== "active")
-    return {
-      ok: true,
-      minutes: config.workerEndedMinutes,
-      label: `${who} ${context.state}`,
-    };
-  if (context.memberKind === "coordinator")
-    return { ok: true, minutes: config.coordinatorMinutes, label: "coordinator" };
-  if (context.next !== null)
-    return {
-      ok: true,
-      minutes: 0,
-      label: `next assignment ${context.next.ref} not delivered yet`,
-    };
-  const assignment = context.assignment;
-  if (assignment === null)
-    return {
-      ok: true,
-      minutes: config.workerEndedMinutes,
-      label: "worker without assignment",
-    };
-  const review = context.role === "review";
-  switch (assignment.phase) {
-    case "pending":
-      return {
-        ok: true,
-        minutes: 0,
-        label: `assignment ${assignment.ref} pending delivery`,
-      };
-    case "active":
-      return review
-        ? { ok: true, minutes: config.reviewerMinutes, label: "reviewer mid-assignment" }
-        : { ok: true, minutes: config.workerActiveMinutes, label: "worker mid-assignment" };
-    case "reported":
-      return review
-        ? { ok: true, minutes: config.reviewerMinutes, label: "reviewer reported" }
-        : { ok: true, minutes: config.workerReportedMinutes, label: "worker reported" };
-    case "accepted":
-      return review
-        ? { ok: true, minutes: config.reviewerAcceptedMinutes, label: "reviewer accepted" }
-        : { ok: true, minutes: config.workerAcceptedMinutes, label: "worker accepted" };
-    default:
-      return {
-        ok: true,
-        minutes: config.workerEndedMinutes,
-        label: `assignment ${assignment.phase}`,
-      };
-  }
+    return { ok: false, reason: `${role} ${context.state}`, kind: "end" };
+  if (role === "coordinator") return { ok: true, role, label: "coordinator" };
+  const assignment = context.next ?? context.assignment;
+  return {
+    ok: true,
+    role,
+    label: assignment === null ? `${role} between assignments` : `${role}, ${assignment.ref} ${assignment.phase}`,
+  };
 }

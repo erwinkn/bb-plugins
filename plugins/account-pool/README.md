@@ -122,7 +122,7 @@ Errors use the vendor's error shape (Anthropic
 
 ## Cache warming
 
-Off by default. When on, the Pooler keeps an idle Claude thread's prompt cache
+Off by default. When on, the Pooler keeps a waiting Claude thread's prompt cache
 entry alive by re-sending the thread's last native request with `max_tokens: 0`
 and `stream` removed, on the same account, shortly before the entry expires.
 Anthropic documents this as a keep-alive: it refreshes the entry and bills a cache
@@ -131,86 +131,138 @@ read, with no output tokens. It is not a thread message, turn or agent run.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `mode` | `off` | `off`: nothing observed, no extra env. `observe`: record and plan only. `warm`: send keep-alives |
-| `coordinatorMinutes` | 20 | Window for active coordinators |
-| `workerActiveMinutes` | 15 | Workers with an active assignment |
-| `workerReportedMinutes` | 10 | Workers awaiting review |
-| `workerAcceptedMinutes` | 0 | Workers whose assignment was accepted, not yet retired |
-| `workerEndedMinutes` | 0 | Retired, stopped, replaced, finished, or between assignments |
-| `reviewerMinutes` | 0 | Reviewers with an active or reported assignment; worker windows never apply to them |
-| `reviewerAcceptedMinutes` | 0 | Reviewers whose review was accepted, not yet retired. Separate from `workerAcceptedMinutes`, so a worker grace never warms reviewers (an agent default, D362) |
-| `standaloneMinutes` | 0 | Inactive and ignored: Initiatives cannot tell a standalone thread from an unknown or unlinked one |
-| `pauseStopsWarming` | `true` | No refreshes while the thread's Initiative is paused (an agent default, D357); `false` keeps the role windows |
+| `roles` | all four | Which threads may be warmed: `coordinator`, `worker`, `reviewer`, `standalone` (BB threads outside any Initiative, and adhoc Initiative threads) |
+| `maxWaitMinutes` | 60 | No refresh once a wait is this old, whatever the odds (5–240) |
+| `maxBackgroundWaitMinutes` | 20 | No refresh once a thread waiting on a background task has waited this long (5–240); `maxWaitMinutes` still applies if lower |
+| `pauseStopsWarming` | `true` | No refreshes while the thread's Initiative is paused (an agent default, D357) |
 | `families` | `opus` | Model families whose requests can start a lease; a request in any family ends one |
 | `safetyMarginSeconds` | 60 | Refresh this long before expiry |
-| `maxRefreshesPerLease` | 4 | Refreshes per idle period (the round-cap meaning is pending a user answer) |
-| `maxRefreshesPerHour`, `maxConcurrentRefreshes`, `maxLeases`, `maxLeaseBodyKiB`, `refreshTimeoutSeconds` | 60, 2, 8, 4096, 60 | Global bounds |
+| `maxRefreshesPerHour`, `maxConcurrentRefreshes`, `maxLeases`, `maxLeaseBodyKiB`, `refreshTimeoutSeconds` | 100, 2, 8, 4096, 60 | Global bounds |
 | `quotaReserve` | 0.9 | Stop warming an account at this fraction, never above `switchThreshold` |
 | `historyLimit`, `historyMinutes` | 200, 60 | Decisions kept for status |
 
 Change them in Settings or with `bb pool-local warming set <key> <value>`;
 `bb pool-local warming status` shows leases, refreshes and recent decisions. The
 record is `warming-config`, separate from native `config`; an invalid record turns
-warming off visibly.
+warming off visibly. A record from the fixed-window model (T141 replaced
+`coordinatorMinutes`, the other `*Minutes` windows and `maxRefreshesPerLease`)
+is migrated at startup and saved: those keys are dropped, and a
+`maxRefreshesPerHour` at the old default of 60 becomes 100, since warming every
+linked thread needs more (the Oct 5–7 back-test peaked at 96 an hour). A record saved
+since keeps whatever budget it sets, 60 included.
 
 Timing comes from observed requests, never from BB turn ends:
 
+- The wait starts when the session's last native request completes.
 - `coveredUntil` = start of the last request that wrote or read the entry + its TTL.
   The TTL is the last `cache_control` breakpoint actually sent, not
   `claudeMainCacheTtl`.
-- `deadline` = completion of the thread's last native request + the thread's window.
 - A refresh is due at `coveredUntil - safetyMargin`. A refresh that reads the whole
   native prefix moves `coveredUntil` to its own start + TTL. Only a native request
-  moves the deadline. The lease ends once `coveredUntil` reaches the deadline.
+  ends the wait.
 
-Example: a coordinator request starts at 12:00:00, writes a 5m entry and completes
-at 12:00:30. The deadline is 12:20:30. Refreshes run at 12:04, 12:08, 12:12 and
-12:16; the last one covers until 12:21, so the lease ends. A 1h entry already
-outlasts every window, so it is never leased.
+**Whether a refresh pays** (`src/warming-economics.ts`). At every due time the
+Pooler reads what the thread waits on from BB's thread list: a pending question,
+a tool mid-turn (the thread is active), a background command or agent after the
+turn, or nothing. In units of the cached prefix C, a refresh costs 0.1 (a cache
+read) and a resume after expiry costs 1.15 more than a warm one (a 1.25 write
+instead of a 0.1 read; 1.9 for a 1h entry). The entry already lasts until wait
+age c; n refreshes from age a keep it until a + (n−1)·step + TTL. With S(t) the
+chance that a wait lasts longer than t, those n refreshes are worth
+
+    net(n) = 1.15 × (S(c) − S(a + (n−1)·step + TTL)) − 0.1 × Σ_{j<n} S(a + j·step)
+
+so only resumes after the current expiry count as savings. The Pooler refreshes
+while some n gives a positive net. It decides again at every refresh, so
+refreshes already spent never count, and a wait that usually ends a few steps
+later is warmed through the steps in between. C cancels out.
+
+- Mid-turn, the turn resumes when its tool returns; with a background command or
+  agent running, the thread resumes when it reports back. Both are warmed
+  whatever the odds: mid-turn until `maxWaitMinutes`, on a background task until
+  `maxBackgroundWaitMinutes` (in the Oct 5–7 ledger, most background tasks that
+  ran longer than 20 minutes never led to a resume). A lease whose background
+  task ended without a resume stops at its next due time.
+- For a pending question or an ended turn, S comes from observed waits of the
+  same state and role: a built-in history from the ledger of 2026-10-05 to 10-07,
+  plus the Pooler's own `usage_warming` rows of the last 7 days (at most the
+  newest 20,000, through an index), read again at most every 10 minutes. A role
+  with few waits is shrunk toward its state's (5 pseudo-waits); past every
+  observed wait the thread is assumed not to resume.
+- A waiting-state read that takes over 10 seconds counts as unknown and ends the
+  lease, and whatever a refresh's checks wait on, the lease ends when its entry
+  expires.
+
+Example: a worker runs a 9-minute test suite. Its last request completes at
+12:00:30 and the thread stays active, so refreshes go out at 12:04 and 12:08 and
+the 12:09:30 request reads the cache. Had it run the suite in the background
+and ended its turn, the same refreshes go out while the suite runs; if the suite
+ends and the thread does not resume, the next due time ends the lease.
+
+Pi (`@earendil-works/pi-coding-agent` 1.0.4, `core/cache-warmer.js`) makes the
+same comparison one refresh at a time: refresh while P(resume before expiry) ×
+miss cost − warm cost ≥ $0.05, with P = 1 while the agent runs and a measured
+0.15 when idle, and 60/30-minute caps. The Pooler adds the lookahead and odds per
+waiting state and role, calibrated from its own history.
 
 **Attribution.** Nothing is added to a thread's environment, in any mode. Each
-request's `metadata.user_id` carries Claude Code's session id. Claude Code 2.1.287
-sets it from `getSessionId()`, which is the session BB records as the thread's
-`providerSessionId`. On every `thread.active` and `thread.idle` event for a
-claude-code thread, the plugin reads the public `bb.sdk.threads.context` and links
-the thread to that session. Leases are keyed by session. A session no thread
-reported, or one that two threads reported, never warms.
+request's `metadata.user_id` carries Claude Code's session id, which BB records as
+the `providerThreadId` of the thread's `thread/identity` event when the session
+starts, before its first request. The Pooler links a thread to its session from
+the latest such event:
 
-**Windows.** They come from the Initiatives plugin's token-auth read,
+- when a request arrives on a session no thread is linked to, it asks BB in the
+  background which running thread (`threads.listRunning`) reports that session.
+  A lookup never delays the request. It is bounded: one pending per session, at
+  most two at once, a 5-second deadline with its own signal, at most one per
+  session every 30 s, and all are aborted on unload. It links only when every
+  identity read succeeded and exactly one thread reports the session. This links
+  a thread mid-turn, on its first turn, and after a reload;
+- on every `thread.active` and `thread.idle` event for a claude-code thread;
+- immediately before every keep-alive, to confirm the link.
+
+`threads.context` is not used: it names the session only in the snapshot BB takes
+when a turn ends, so it could not link a thread before its first turn ended, and
+it carried no session at all mid-turn, which refused every mid-turn refresh.
+Leases are keyed by session. A session no thread reported, or one that two
+threads reported, never warms.
+
+**Roles.** They come from the Initiatives plugin's token-auth read,
 `GET /api/v1/plugins/initiatives/http/context/v1/thread?threadId=<thread>`: Initiatives
-context contract v1.1, thread route (v1.1 changed only the record route). Initiatives
-documents it in [its README](../initiatives/README.md#read-only-context-for-other-plugins).
-A plugin that is installed but disabled answers 503 without a v1 body, which is unknown context
-and warms nothing.
+context contract v1.1, thread route. Initiatives documents it in
+[its README](../initiatives/README.md#read-only-context-for-other-plugins). A plugin
+that is installed but disabled answers 503 without a v1 body, which is unknown
+context and warms nothing.
 
-| Initiatives context | Window |
+| Initiatives context | Warming |
 | --- | --- |
-| Active coordinator | `coordinatorMinutes` |
-| Worker whose last delivered assignment is active / reported / accepted | `workerActiveMinutes` / `workerReportedMinutes` / `workerAcceptedMinutes` |
-| Reviewer whose last delivered assignment is active or reported / accepted | `reviewerMinutes` / `reviewerAcceptedMinutes` |
-| Stopped, retired or former member; rejected, cancelled or failed assignment; no assignment | `workerEndedMinutes` |
-| Delivered assignment still `pending`, or an undelivered `next` assignment | 0: the next turn starts from a different prompt |
-| Adhoc thread, archived Initiative | 0 |
-| Paused Initiative, while `pauseStopsWarming` is on | 0 |
-| `membership: null` | none: not proof of a standalone thread, so `standaloneMinutes` is inactive |
+| Active coordinator | `coordinator` |
+| Active worker or reviewer, whatever its assignment's phase | `worker` / `reviewer` |
+| Adhoc Initiative thread, or `membership: null` (a linked BB thread outside any Initiative) | `standalone` |
+| Stopped, retired or former member | none |
+| Archived Initiative; paused Initiative while `pauseStopsWarming` is on | none |
 | Error, timeout, oversize, other version or thread, unknown value | none, with the reason |
 
+The assignment's phase does not matter: a worker's next brief arrives as a
+message in the same conversation, so a pending or undelivered assignment keeps
+the prefix in use (the fixed-window model gave those 0 minutes), and an accepted
+or reported worker that has ended its turn is judged by how often idle workers
+resume.
+
 **Admission.** A finished request takes a lease slot, and keeps its body, only
-after BB links its session to a thread and the thread's context gives it a
-window. Until then it waits without a slot: at most `maxLeases` requests wait
-(a newer one replaces the oldest), each for at most 60 s or until its first due
-refresh. So a thread with no Initiatives record, an adhoc or archived thread, or a
-reviewer at 0 never holds a slot that a coordinator needs. A 1h entry that already
-outlasts the longest active window (`standaloneMinutes` does not count) is skipped
-before any read.
+after its session is linked to a thread and the thread's role may be warmed.
+Until then it waits without a slot: at most `maxLeases` requests wait (a newer
+one replaces the oldest), each for at most 60 s or until its first due refresh. A
+1h entry that already outlasts `maxWaitMinutes` is skipped before any read.
 
 **Send-time checks.** Classification may use a 30 s cached read of the
 membership; `null` and unknown results are never cached. Immediately before every
 keep-alive, after credential preparation, the hub re-checks two things with
 fresh, uncached reads: BB still links the thread to the lease's session, and
-Initiatives still qualifies the thread. The current mode and model families are
-checked before and after those reads. A settings change, retirement, Stop,
-replacement, acceptance, pause, new assignment or new session since
-classification refuses the send. This also applies to the dry runs in `observe`.
+Initiatives still gives the thread a role that may be warmed. The current mode
+and model families are checked before and after those reads. A settings change,
+retirement, Stop, replacement, pause or new session since classification refuses
+the send. This also applies to the dry runs in `observe`.
 
 **Cancellation.**
 - Any native request in the same session, in any model family, ends its lease and
@@ -232,14 +284,20 @@ classification refuses the send. This also applies to the dry runs in `observe`.
   due. Skips name the case: a newer request in flight, one that finished
   first, or (on the resumed lease) a newer or older one that failed. A lease
   already ended by a newer start is not reopened (D372).
-- `thread.active` ends every lease and admission of the thread before BB's
-  snapshot is read again, because that snapshot can still name the previous
-  session while the new turn runs on another one.
+- `thread.active` ends every lease and admission of the thread before its
+  session is read again, because a new session may not have reported its
+  identity yet.
 - A settings change ends at once the leases its new mode or families no longer
   allow, including an in-flight refresh. Thread archival or deletion and reload
   cancel leases at once.
 - Initiatives records no coordinator Stop, and BB's public thread record has no Stop
-  flag. A stopped coordinator therefore keeps its lease until its window ends.
+  flag. A stopped coordinator mid-wait is judged by its waiting state like any
+  other thread.
+
+Every lease end, and every finished request whose wait goes unwarmed (no
+parent-less session, a family not enabled, no cache breakpoint, a body too
+large, …), is written to the ledger's `usage_warming` table with its reason, so a
+cold rewrite can be traced to the decision behind it.
 
 Keep-alives go only to the lease's account and never mark, hold or repair it. A
 body that `max_tokens: 0` rejects (`thinking.type: enabled`, a forced
@@ -291,6 +349,11 @@ whether cache warming saves more quota than it costs:
   weekly or Codex window utilization or reset time changes.
 - `usage_settings`: `claudeMainCacheTtl` and the warming settings, recorded at
   startup and after every change, so a report can split periods by setting.
+- `usage_warming`: one row per warming lease that ended and per finished request
+  whose wait went unwarmed: session, thread, model, role, what the thread waited
+  on at the first refresh decision, when the wait started, prefix tokens, TTL,
+  refreshes sent, and the reason. Economic warming calibrates from these rows;
+  a review attributes cold rewrites with them.
 
 Rows hold counts, ids and times, never a request or response body. Every
 dispatched attempt gets a row, including one that failed to connect or was
@@ -323,7 +386,9 @@ estimate weighs tokens at API price ratios to uncached input (cache read 0.1×,
 5m write 1.25×, 1h write 2×, output 5×), the closest public proxy for
 subscription quota. Subagents share their main session id, so a subagent on the
 main model can hide a cold start but never invents one. The thread and role
-columns are filled only while warming links sessions (any mode but `off`).
+columns are filled only while warming links sessions (any mode but `off`); since
+T141 a session is linked from its first request, and a linked thread outside any
+Initiative is labelled `standalone`.
 
 ## Request-path cost
 
@@ -615,7 +680,10 @@ environment. A dry-resume/inspect action is also needed if activation must verif
 resolved env before any inference. Those are host responsibilities; this fork documents the gap and
 uses a distinct identity instead. SDK import auditing would benefit from a
 TypeScript parser rather than a regex. Cache warming links threads to Claude
-sessions through `threads.context` on lifecycle events. A thread-to-session field
-on the thread DTO or event payload, and a native Stop signal on the public thread
-record, would make that link immediate and let a coordinator Stop end warming.
+sessions from each thread's latest `thread/identity` event, looked up across
+running threads when an unknown session sends a request. A `providerThreadId`
+field on the thread DTO, or a thread-to-session lookup, would make that one read;
+a waiting-state field (background commands, pending question) on `threads.get`
+would spare the list read per refresh; and a native Stop signal on the public
+thread record would let a coordinator Stop end warming.
 No external issue or comment was filed.

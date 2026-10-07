@@ -19,7 +19,7 @@ import {
 } from "./cache-usage.js";
 import { createClaudeAdapter } from "./claude-adapter.js";
 import { StringCheck } from "./json-scan.js";
-import { linkSignals } from "./signals.js";
+import { abortable, linkSignals } from "./signals.js";
 import {
   createCodexAdapter,
   DEFAULT_CODEX_REFRESH_URL,
@@ -1808,24 +1808,6 @@ function waitForDelay(
       resolve();
     };
     signal.addEventListener("abort", abort, { once: true });
-  });
-}
-
-function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const abort = () => reject(signal.reason);
-    signal.addEventListener("abort", abort, { once: true });
-    operation.then(
-      (result) => {
-        signal.removeEventListener("abort", abort);
-        resolve(result);
-      },
-      (error) => {
-        signal.removeEventListener("abort", abort);
-        reject(error);
-      },
-    );
   });
 }
 

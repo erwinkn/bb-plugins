@@ -11,12 +11,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccountQuota } from "./contracts.js";
 import {
   openLedgerDatabase,
+  readResumeSamples,
   UsageLedger,
   type LedgerDeps,
   type RequestRecord,
   type UsageRequestRow,
 } from "./ledger.js";
 import { QUOTA_MIGRATIONS } from "./store.js";
+import type { WarmingOutcome } from "./warming.js";
 import {
   buildUsageReport,
   formatUsageReport,
@@ -599,5 +601,85 @@ describe("usage ledger: A247 corrections", () => {
     r.ledger.request(record());
     r.flushes.shift()?.();
     expect(requestRows(r.db)).toHaveLength(1);
+  });
+});
+
+describe("usage ledger warming outcomes (T141)", () => {
+  function outcome(overrides: Partial<WarmingOutcome> = {}): WarmingOutcome {
+    return {
+      at: T0 + 20 * MINUTE,
+      sessionId: "s1",
+      threadId: "thr_1",
+      model: "claude-opus-5-5",
+      role: "worker",
+      state: "background",
+      waitStartedAt: T0 + 2_000,
+      firstDecisionAt: T0 + 4 * MINUTE,
+      prefixTokens: 100_000,
+      ttl: "5m",
+      refreshes: 3,
+      kind: "end",
+      reason: "a native request on the thread took over",
+      ...overrides,
+    };
+  }
+
+  it("writes one row per lease end or unwarmed wait, with its reason, and prunes it with the rest", () => {
+    const r = rig();
+    r.ledger.warming(outcome());
+    r.ledger.warming(
+      outcome({ role: null, state: null, firstDecisionAt: null, refreshes: 0, kind: "skip", reason: "skipped: no BB thread is linked to this Claude session" }),
+    );
+    r.flushes[0]?.();
+    expect(r.db.prepare("SELECT * FROM usage_warming ORDER BY rowid").all()).toEqual([
+      {
+        at: T0 + 20 * MINUTE, session_key: "session:s1", thread_id: "thr_1", model: "claude-opus-5-5",
+        role: "worker", state: "background", wait_started_at: T0 + 2_000, first_decision_at: T0 + 4 * MINUTE,
+        prefix_tokens: 100_000, ttl: "5m", refreshes: 3, kind: "end", reason: "a native request on the thread took over",
+      },
+      {
+        at: T0 + 20 * MINUTE, session_key: "session:s1", thread_id: "thr_1", model: "claude-opus-5-5",
+        role: null, state: null, wait_started_at: T0 + 2_000, first_decision_at: null,
+        prefix_tokens: 100_000, ttl: "5m", refreshes: 0, kind: "skip", reason: "skipped: no BB thread is linked to this Claude session",
+      },
+    ]);
+    r.set(T0 + 31 * DAY);
+    r.ledger.pruneSoon();
+    r.flushes.at(-1)?.();
+    expect(r.db.prepare("SELECT COUNT(*) AS n FROM usage_warming").get()).toEqual({ n: 0 });
+  });
+
+  it("reads each decided wait's length from the next native request of its session and model", () => {
+    const r = rig();
+    const wait = (overrides: Partial<WarmingOutcome>) => r.ledger.warming(outcome(overrides));
+    // s1 resumes 9 minutes in; a Haiku helper in between does not count as a resume.
+    wait({});
+    r.ledger.request(record({ body: new TextEncoder().encode(JSON.stringify({ model: "claude-haiku-4-5" })), family: "haiku", startedAt: T0 + 3 * MINUTE }));
+    r.ledger.request(record({ startedAt: T0 + 2_000 + 9 * MINUTE }));
+    // s2 never resumed; s3 is still open; s4 never reached a decision; s5 has a value this build
+    // does not know.
+    wait({ sessionId: "s2", state: "idle", role: "standalone", waitStartedAt: T0 - 4 * 60 * MINUTE });
+    wait({ sessionId: "s3", state: "idle", waitStartedAt: T0 - 60 * MINUTE });
+    wait({ sessionId: "s4", state: null, firstDecisionAt: null });
+    wait({ sessionId: "s5", state: "sleeping" as never });
+    r.flushes[0]?.();
+    expect(readResumeSamples(r.db, T0 - DAY, T0 + 30 * MINUTE, 100)).toEqual([
+      { role: "worker", state: "background", waitMs: 9 * MINUTE },
+      { role: "standalone", state: "idle", waitMs: null },
+    ]);
+  });
+
+  it("W211 7: reads at most the newest `limit` waits through the wait_started_at index", () => {
+    const r = rig();
+    for (let index = 0; index < 5; index += 1)
+      r.ledger.warming(outcome({ sessionId: `s${index}`, state: "idle", waitStartedAt: T0 - 5 * 60 * MINUTE + index * MINUTE }));
+    r.flushes[0]?.();
+    expect(readResumeSamples(r.db, T0 - DAY, T0, 2)).toHaveLength(2);
+    const plan = r.db
+      .prepare(
+        "EXPLAIN QUERY PLAN SELECT * FROM usage_warming w WHERE w.wait_started_at >= ? AND w.state IS NOT NULL ORDER BY w.wait_started_at DESC LIMIT 2",
+      )
+      .all(0) as Array<{ detail: string }>;
+    expect(plan.map((step) => step.detail).join(" ")).toContain("usage_warming_wait");
   });
 });

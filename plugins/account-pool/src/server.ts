@@ -28,6 +28,7 @@ import {
   USAGE_LEDGER_KEY,
   UsageLedger,
   openLedgerDatabase,
+  readResumeSamples,
   usageLedgerConfigSchema,
   type LedgerSettings,
 } from "./ledger.js";
@@ -51,11 +52,17 @@ import {
   createInitiativesContextReader,
   INITIATIVES_PLUGIN_ID,
 } from "./thread-context.js";
+import { SessionResolver } from "./session-resolver.js";
 import {
   CacheWarmer,
   realWarmingTimers,
   type WarmingTimers,
 } from "./warming.js";
+import {
+  PRIOR_SAMPLES,
+  ResumeHistory,
+  waitStateOf,
+} from "./warming-economics.js";
 import {
   effectiveWarmingConfig,
   loadWarmingConfig,
@@ -89,6 +96,14 @@ export interface AccountPoolPluginOptions {
 }
 
 const DISPOSE_INSPECTION_TIMEOUT_MS = 2_000;
+// Background BB and Initiatives reads made while linking a thread give up after this long.
+const LINK_READ_TIMEOUT_MS = 5_000;
+const MAX_THREAD_SCOPES = 256;
+// Waits economic warming calibrates from, and how often that history is read again. The read is
+// synchronous, so it is bounded in age and rows.
+const RESUME_HISTORY_DAYS = 7;
+const RESUME_HISTORY_ROWS = 20_000;
+const RESUME_HISTORY_REFRESH_MS = 10 * 60_000;
 const DISPOSE_INSPECTION_TIMEOUT = Symbol("dispose-inspection-timeout");
 
 export function helloResponse(): Response {
@@ -143,6 +158,12 @@ export function createAccountPoolPlugin(
       await bb.storage.kv.get(WARMING_CONFIG_KEY),
     );
     if (!warmingState.ok) bb.log.warn(warmingState.error);
+    else if (warmingState.migrated) {
+      await bb.storage.kv.set(WARMING_CONFIG_KEY, warmingState.config);
+      bb.log.info(
+        `Account Pooler migrated ${WARMING_CONFIG_KEY} to economic warming (maxRefreshesPerHour ${warmingState.config.maxRefreshesPerHour}).`,
+      );
+    }
     const secretDir = path.join(
       bb.server.experimental_dataDir,
       "plugins",
@@ -198,16 +219,108 @@ export function createAccountPoolPlugin(
         (await bb.sdk.plugins.token({ pluginId: INITIATIVES_PLUGIN_ID })).token,
       now,
     });
+    // A Claude thread's session is the providerThreadId of its latest thread/identity event, which
+    // BB records when the Claude Code session starts, before its first request. (threads.context
+    // names the session only in the snapshot BB takes at the end of a turn, so it cannot link a
+    // thread mid-turn, nor a new thread before its first turn ends.)
+    const threadIdentity = async (
+      threadId: string,
+      signal?: AbortSignal,
+    ): Promise<string | null> => {
+      const [event] = await bb.sdk.threads.events.list({
+        threadId,
+        types: ["thread/identity"],
+        order: "desc",
+        limit: "1",
+        signal,
+      });
+      return event?.type === "thread/identity"
+        ? event.data.providerThreadId
+        : null;
+    };
+    // A request on a session no thread is linked to (a thread's first turn, or any turn after a
+    // reload) asks, in the background, which running thread reports that session. Linking also reads
+    // the thread's Initiative context, so the ledger labels its requests from the start.
+    const warmingTimers = options.warmingTimers ?? realWarmingTimers;
+    const resolver = new SessionResolver({
+      now,
+      timers: warmingTimers,
+      listRunning: (signal) => bb.sdk.threads.listRunning({ signal }),
+      identity: threadIdentity,
+      link: (threadId, session) => linkSession(threadId, session),
+      log: (message) => bb.log.debug(message),
+    });
+    bb.onDispose(() => resolver.dispose());
+    const linkSession = (threadId: string, session: string) => {
+      warmer.linkSession(threadId, session);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), LINK_READ_TIMEOUT_MS);
+      timer.unref();
+      void projectsContext
+        .read(threadId, controller.signal)
+        .catch(() => undefined)
+        .finally(() => clearTimeout(timer));
+    };
+    // What a thread waits on comes from BB's thread list, the one read that carries background
+    // activity and pending questions; the list is narrowed to the thread's environment.
+    const threadScopes = new Map<string, { environmentId: string | null; projectId: string }>();
+    const waitState = async (threadId: string, signal: AbortSignal) => {
+      let scope = threadScopes.get(threadId);
+      if (scope === undefined) {
+        const thread = await bb.sdk.threads.get({ threadId, signal });
+        scope = { environmentId: thread.environmentId, projectId: thread.projectId };
+        threadScopes.set(threadId, scope);
+        while (threadScopes.size > MAX_THREAD_SCOPES) {
+          const oldest = threadScopes.keys().next();
+          if (!oldest.done) threadScopes.delete(oldest.value);
+        }
+      }
+      const rows = await bb.sdk.threads.list({
+        ...(scope.environmentId === null
+          ? { projectId: scope.projectId }
+          : { environmentId: scope.environmentId }),
+        includeHidden: true,
+        signal,
+      });
+      const row = rows.find((thread) => thread.id === threadId);
+      return row === undefined ? null : waitStateOf(row);
+    };
+    let resumeHistory: { at: number; history: ResumeHistory } | null = null;
+    const currentResumeHistory = () => {
+      const at = now();
+      if (resumeHistory === null || at - resumeHistory.at >= RESUME_HISTORY_REFRESH_MS) {
+        let samples = PRIOR_SAMPLES;
+        try {
+          samples = [
+            ...PRIOR_SAMPLES,
+            ...readResumeSamples(
+              ledgerDb,
+              at - RESUME_HISTORY_DAYS * 24 * 60 * 60_000,
+              at,
+              RESUME_HISTORY_ROWS,
+            ),
+          ];
+        } catch (error) {
+          bb.log.warn(
+            `Account Pooler could not read its warming history; using the built-in one: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        resumeHistory = { at, history: new ResumeHistory(samples) };
+      }
+      return resumeHistory.history;
+    };
     const warmer = new CacheWarmer({
       now,
-      timers: options.warmingTimers ?? realWarmingTimers,
+      timers: warmingTimers,
       config: () => effectiveWarmingConfig(warmingState),
       switchThreshold: () => currentSettings.switchThreshold,
       readContext: (threadId, signal, readOptions) =>
         projectsContext.read(threadId, signal, readOptions),
-      threadSession: async (threadId, signal) =>
-        (await bb.sdk.threads.context({ threadId, signal })).usage?.snapshot
-          ?.providerSessionId ?? null,
+      threadSession: (threadId, signal) => threadIdentity(threadId, signal),
+      resolveSession: (session) => resolver.resolve(session),
+      waitState,
+      resumeHistory: currentResumeHistory,
+      recordOutcome: (outcome) => ledger.warming(outcome),
       keepAlive: (request, signal) =>
         hubRef === null
           ? Promise.resolve({ kind: "skipped", reason: "hub not ready" })
@@ -223,11 +336,13 @@ export function createAccountPoolPlugin(
       return {
         threadId,
         role:
-          context?.kind !== "member"
+          context === null || context.kind === "unknown"
             ? null
-            : context.memberKind === "coordinator"
-              ? "coordinator"
-              : context.role,
+            : context.kind === "none"
+              ? "standalone"
+              : context.memberKind === "coordinator"
+                ? "coordinator"
+                : context.role,
       };
     };
     // The settings a usage report splits periods by: recorded now, and after every change.
@@ -270,17 +385,19 @@ export function createAccountPoolPlugin(
     }
     // Links a Claude thread to the Claude Code session its requests carry, from BB's own record of
     // the thread's provider session. Nothing is added to the thread's environment. A turn start
-    // ends the thread's leases first, synchronously: the snapshot read after it may still name the
-    // previous session.
+    // ends the thread's leases first, synchronously: a new session may not have reported its
+    // identity yet, and its first request then links it (resolveSession).
     for (const event of ["thread.active", "thread.idle"] as const) {
       bb.events.on(event, async ({ thread }) => {
         if (thread.providerId !== "claude-code") return;
         if (event === "thread.active") warmer.threadStarted(thread.id);
         if (!warmer.active()) return;
         try {
-          const context = await bb.sdk.threads.context({ threadId: thread.id });
-          const session = context.usage?.snapshot?.providerSessionId;
-          if (session) warmer.linkSession(thread.id, session);
+          const session = await threadIdentity(
+            thread.id,
+            AbortSignal.timeout(LINK_READ_TIMEOUT_MS),
+          );
+          if (session) linkSession(thread.id, session);
         } catch (error) {
           bb.log.debug(
             `Account Pooler could not read the session of ${thread.id}: ${error instanceof Error ? error.message : String(error)}`,

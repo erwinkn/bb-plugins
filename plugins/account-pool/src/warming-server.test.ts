@@ -1,9 +1,9 @@
 // Cache warming through the real plugin factory on the SDK fake host: session attribution through
 // thread events, native request observation, the keep-alive request itself, send-time refusals,
 // account-health isolation, lifecycle cancellation, invalid settings and reload. The vendor is a
-// fake fetch; BB's threads.context and the Projects context route (binding contract v1, root's
-// frozen copy sha256 664c3dbe) are stubbed with their exact shapes. Nothing reaches a network or a
-// model.
+// fake fetch; BB's thread events, thread list and the Initiatives context route (binding contract
+// v1, root's frozen copy sha256 664c3dbe) are stubbed with their exact shapes. Nothing reaches a
+// network or a model.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
@@ -17,7 +17,7 @@ import {
 } from "./server.js";
 import { fakeClock } from "./testing/fake-clock.js";
 import { warmingStatusSchema } from "./warming.js";
-import { warmingConfigViewSchema } from "./warming-config.js";
+import { warmingConfigSchema, warmingConfigViewSchema } from "./warming-config.js";
 
 type Host = ReturnType<typeof createFakePluginHost>;
 
@@ -192,6 +192,13 @@ const WORKER = (phase: string, overrides: Record<string, unknown> = {}) =>
     assignment: assignment(phase), ...overrides,
   });
 
+// A BB thread list row: what the warmer reads a thread's waiting state from.
+interface ThreadRow {
+  status: string;
+  hasPendingInteraction: boolean;
+  activity: { activeBackgroundCommandCount: number; activeBackgroundAgentCount: number };
+}
+
 interface Fixture {
   host: Host;
   clock: ReturnType<typeof fakeClock>;
@@ -200,16 +207,24 @@ interface Fixture {
   options: AccountPoolPluginOptions;
   stop: () => Promise<void>;
   sessions: Map<string, string>;
+  // Per thread, how BB's thread list shows it; a running thread mid-turn when unset.
+  rows: Map<string, Partial<ThreadRow>>;
+  // Threads BB reports running (threads.listRunning); every thread with a session when unset.
+  running: Set<string> | null;
+  calls: { listRunning: number };
 }
 
 async function fixture(args: {
   seed?: Record<string, unknown>;
   contexts?: Record<string, Membership | Membership[]>;
   accounts?: number;
-  // BB's provider session per thread, as threads.context reports it.
+  // BB's provider session per thread, as its latest thread/identity event reports it.
   sessions?: Record<string, string>;
 } = {}): Promise<Fixture> {
   const sessions = new Map(Object.entries(args.sessions ?? { thr_coord: SESSION }));
+  const rows = new Map<string, Partial<ThreadRow>>();
+  const state: { running: Set<string> | null } = { running: null };
+  const calls = { listRunning: 0 };
   const start = Date.now();
   const clock = fakeClock(start);
   const upstream = vendor();
@@ -231,30 +246,40 @@ async function fixture(args: {
         token: async ({ pluginId }: { pluginId: string }) => ({ token: `${pluginId}-token` }),
       },
       threads: {
-        context: async ({ threadId }: { threadId: string }) => {
-          const session = sessions.get(threadId);
-          return {
-            usage:
-              session === undefined
-                ? null
-                : {
-                    estimated: false,
-                    modelContextWindow: 1_000_000,
-                    usedTokens: 100_000,
-                    snapshot: {
-                      autoCompactAtTokens: null,
-                      capturedAt: "2026-10-05T12:00:00.000Z",
-                      categories: [],
-                      contextWindowTokens: 1_000_000,
-                      estimated: false,
-                      model: "claude-opus-5-5",
-                      providerSessionId: session,
-                      providerTurnId: null,
-                      usedTokens: 100_000,
-                    },
-                  },
-          };
+        events: {
+          list: async ({ threadId, types }: { threadId: string; types?: string[] }) => {
+            const session = sessions.get(threadId);
+            if (session === undefined || !types?.includes("thread/identity")) return [];
+            return [
+              {
+                id: "evt_1",
+                seq: 17,
+                type: "thread/identity",
+                createdAt: start,
+                threadId,
+                scope: { kind: "thread" },
+                data: { threadId, providerThreadId: session },
+              },
+            ];
+          },
         },
+        listRunning: async () => {
+          calls.listRunning += 1;
+          return [...(state.running ?? sessions.keys())].map((id) => ({ id, hostId: "host-one" }));
+        },
+        get: async ({ threadId }: { threadId: string }) => ({
+          id: threadId,
+          projectId: "project-one",
+          environmentId: "env-one",
+        }),
+        list: async () =>
+          [...new Set([...sessions.keys(), ...rows.keys()])].map((id) => ({
+            id,
+            status: "active",
+            hasPendingInteraction: false,
+            activity: { activeBackgroundCommandCount: 0, activeBackgroundAgentCount: 0 },
+            ...rows.get(id),
+          })),
       },
     } as never,
   });
@@ -303,7 +328,23 @@ async function fixture(args: {
     await host.harness.lifecycle.dispose();
     await fs.rm(dataDir, { recursive: true, force: true });
   });
-  return { host, clock, upstream, projectReads: projectContext.reads, options, stop, sessions };
+  return {
+    host,
+    clock,
+    upstream,
+    projectReads: projectContext.reads,
+    options,
+    stop,
+    sessions,
+    rows,
+    calls,
+    get running() {
+      return state.running;
+    },
+    set running(value) {
+      state.running = value;
+    },
+  };
 }
 
 // What BB does when a Claude thread starts a turn.
@@ -357,6 +398,11 @@ async function nativeRequest(
   return response.status;
 }
 
+type Row = Record<string, unknown>;
+function rows(f: Fixture, table: string): Row[] {
+  return f.host.bb.storage.database().prepare(`SELECT * FROM ${table} ORDER BY at, rowid`).all() as Row[];
+}
+
 async function warmingStatus(host: Host) {
   return warmingStatusSchema.parse(await host.harness.behavior.callRpc("warming.status", null));
 }
@@ -394,7 +440,7 @@ describe("cache warming defaults and native environment", () => {
   it("is off on install: no observation, native traffic unchanged", async () => {
     const f = await fixture();
     expect(warmingConfigViewSchema.parse(await f.host.harness.behavior.callRpc("warming.get", null))).toMatchObject({
-      config: { mode: "off", coordinatorMinutes: 20, workerActiveMinutes: 15, workerReportedMinutes: 10, workerAcceptedMinutes: 0, workerEndedMinutes: 0, standaloneMinutes: 0 },
+      config: { mode: "off", roles: ["coordinator", "worker", "reviewer", "standalone"], maxWaitMinutes: 60 },
       error: null,
     });
     expect(await nativeRequest(f.host)).toBe(200);
@@ -423,23 +469,21 @@ describe("cache warming defaults and native environment", () => {
 });
 
 describe("cache warming through the hub", () => {
-  it("links the thread from BB's session record and sends one keep-alive per due time", async () => {
+  it("links a thread mid-turn from its session's identity event and sends one keep-alive per due time", async () => {
     const f = await fixture();
     await setMode(f.host, "warm");
     expect(await nativeRequest(f.host)).toBe(200);
-    // Until BB links the session, the request waits without a lease slot.
-    await vi.waitFor(async () =>
-      expect((await warmingStatus(f.host)).admissions).toMatchObject([{ sessionId: SESSION, threadId: null, state: "linking" }]),
-    );
-    expect((await warmingStatus(f.host)).leases).toEqual([]);
-    await idle(f.host);
+    // No turn has ended: the unknown session is looked up among BB's running threads at once.
     await leased(f.host);
     expect((await warmingStatus(f.host)).leases[0]).toMatchObject({
       sessionId: SESSION, threadId: "thr_coord", ttl: "5m", prefixTokens: 100_000, dryRun: false,
+      role: "coordinator", label: "coordinator",
     });
 
     await f.clock.advanceTo(4 * MINUTE);
     await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
+    // Mid-turn: the thread list says it is active, so the refresh is certain to pay.
+    expect((await warmingStatus(f.host)).leases[0]).toMatchObject({ waitingOn: "tool", resumeChance: 1 });
     const call = f.upstream.keepAlive[0];
     const { stream: _stream, max_tokens: _max, ...prefix } = JSON.parse(nativeBody()) as Record<string, unknown>;
     expect(call?.url).toBe(f.upstream.native[0]?.url);
@@ -467,6 +511,37 @@ describe("cache warming through the hub", () => {
     expect(account?.lastUsedHostId).toBe("host-one");
   });
 
+  it("a session no running thread reports waits for the thread's next lifecycle event", async () => {
+    const f = await fixture();
+    f.running = new Set();
+    await setMode(f.host, "warm");
+    expect(await nativeRequest(f.host)).toBe(200);
+    await vi.waitFor(async () =>
+      expect((await warmingStatus(f.host)).admissions).toMatchObject([{ sessionId: SESSION, threadId: null, state: "linking" }]),
+    );
+    expect((await warmingStatus(f.host)).leases).toEqual([]);
+    await idle(f.host);
+    await leased(f.host);
+    expect((await warmingStatus(f.host)).leases[0]?.threadId).toBe("thr_coord");
+  });
+
+  it("looks an unknown session up at most every 30 seconds", async () => {
+    const f = await fixture();
+    f.running = new Set();
+    await setMode(f.host, "warm");
+    await nativeRequest(f.host);
+    await nativeRequest(f.host, { turn: "second" });
+    await vi.waitFor(() => expect(f.calls.listRunning).toBe(1));
+    await f.clock.advanceTo(31 * 1_000);
+    f.running = null;
+    await nativeRequest(f.host, { turn: "third" });
+    await vi.waitFor(() => expect(f.calls.listRunning).toBe(2));
+    await leased(f.host);
+    // Linked now: later requests ask nothing.
+    await nativeRequest(f.host, { turn: "fourth" });
+    expect(f.calls.listRunning).toBe(2);
+  });
+
   it("does not observe count_tokens, and a 1h native entry never leases", async () => {
     const f = await fixture();
     await setMode(f.host, "warm");
@@ -475,7 +550,7 @@ describe("cache warming through the hub", () => {
     expect(await nativeRequest(f.host, { ttl: "1h" })).toBe(200);
     await vi.waitFor(async () =>
       expect((await warmingStatus(f.host)).events.map((event) => event.message)).toContain(
-        "the 1h cache entry already outlasts every warming window",
+        "the 1h cache entry already outlasts maxWaitMinutes (60)",
       ),
     );
     await f.clock.advanceTo(60 * MINUTE);
@@ -522,16 +597,12 @@ describe("cache warming through the hub", () => {
   });
 
   it.each([
-    ["no Projects record (standalone or unlinked)", null, "skipped: Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one"],
-    ["an adhoc thread", membership({ kind: "adhoc", role: "adhoc", generation: null, currentGeneration: null }), "no warming window for adhoc Initiative thread"],
-    ["an archived Initiative", membership({ archived: true }), "no warming window for archived Initiative"],
-    ["a delivered assignment pending", WORKER("pending"), "no warming window for assignment A1 pending delivery"],
-    ["an undelivered next assignment", WORKER("reported", { next: assignment("pending", "A2") }), "no warming window for next assignment A2 not delivered yet"],
-    ["a former coordinator", membership({ state: "former", former: true }), "no warming window for coordinator former"],
-  ])("sends nothing for %s", async (_name, context, message) => {
-    const f = await fixture({ contexts: { thr_coord: context }, seed: { "warming-config": { mode: "warm", standaloneMinutes: 30 } } });
+    ["an archived Initiative", membership({ archived: true }), {}, "archived Initiative"],
+    ["a former coordinator", membership({ state: "former", former: true }), {}, "coordinator former"],
+    ["a thread outside any Initiative, with other threads left out", null, { roles: ["coordinator", "worker", "reviewer"] }, "role standalone is not enabled for warming (no Initiative)"],
+  ])("sends nothing for %s", async (_name, context, settings, message) => {
+    const f = await fixture({ contexts: { thr_coord: context }, seed: { "warming-config": { mode: "warm", ...settings } } });
     await nativeRequest(f.host);
-    await idle(f.host);
     // Classified at admission: no lease slot, no retained body.
     await vi.waitFor(async () =>
       expect((await warmingStatus(f.host)).events.at(-1)?.message).toBe(message),
@@ -539,6 +610,21 @@ describe("cache warming through the hub", () => {
     expect(await warmingStatus(f.host)).toMatchObject({ leases: [], admissions: [], retainedBodyBytes: 0 });
     await f.clock.advanceTo(30 * MINUTE);
     expect(f.upstream.keepAlive).toHaveLength(0);
+  });
+
+  it.each([
+    ["a thread outside any Initiative", null, "standalone"],
+    ["an adhoc thread", membership({ kind: "adhoc", role: "adhoc", generation: null, currentGeneration: null }), "standalone"],
+    ["a worker whose brief is pending", WORKER("pending"), "worker"],
+    ["a worker with its next assignment queued", WORKER("reported", { next: assignment("pending", "A2") }), "worker"],
+  ])("warms %s mid-turn", async (_name, context, role) => {
+    const f = await fixture({ contexts: { thr_coord: context } });
+    await setMode(f.host, "warm");
+    await nativeRequest(f.host);
+    await leased(f.host);
+    expect((await warmingStatus(f.host)).leases[0]?.role).toBe(role);
+    await f.clock.advanceTo(4 * MINUTE);
+    await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
   });
 
   it("refuses at send time when the cached classification said reported but the fresh read says retired", async () => {
@@ -553,26 +639,45 @@ describe("cache warming through the hub", () => {
     expect(f.upstream.keepAlive).toHaveLength(0);
     await vi.waitFor(async () =>
       expect((await warmingStatus(f.host)).events.at(-1)?.message).toBe(
-        "refresh not sent: no warming window for work retired",
+        "refresh not sent: worker retired",
       ),
     );
     // Admission, timer classification, then the fresh send-time read that refuses.
     expect(f.projectReads).toHaveLength(3);
   });
 
-  it("a thread with no record first, then linked, warms only once Initiatives has the record", async () => {
-    const f = await fixture({ contexts: { thr_coord: [null, COORDINATOR] } });
+  it("re-reads the role at every refresh: a thread that joins an Initiative is judged as its new role", async () => {
+    // Read when the session is linked, at admission, then at the first due refresh.
+    const f = await fixture({ contexts: { thr_coord: [null, null, COORDINATOR] } });
+    await setMode(f.host, "warm");
+    await nativeRequest(f.host);
+    await leased(f.host);
+    expect((await warmingStatus(f.host)).leases[0]?.role).toBe("standalone");
+    await f.clock.advanceTo(4 * MINUTE);
+    await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
+    expect((await warmingStatus(f.host)).leases[0]?.role).toBe("coordinator");
+  });
+
+  it("stops after the turn ends once the odds no longer pay, and the ledger keeps why", async () => {
+    const f = await fixture({ contexts: { thr_coord: WORKER("reported") } });
+    f.rows.set("thr_coord", { status: "idle" });
     await setMode(f.host, "warm");
     await nativeRequest(f.host);
     await idle(f.host);
-    await f.clock.advanceTo(10 * MINUTE);
-    expect(f.upstream.keepAlive).toHaveLength(0);
-    await nativeRequest(f.host, { turn: "second turn" });
-    await idle(f.host);
     await leased(f.host);
-    await f.clock.advanceTo(15 * MINUTE);
-    await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
-    expect(JSON.stringify(f.upstream.keepAlive[0]?.body)).toContain("second turn");
+    // The built-in history: an idle worker is warmed only through its first few refreshes.
+    for (let minute = 4; minute <= 60; minute += 4) {
+      await f.clock.advanceTo(minute * MINUTE);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
+    expect(f.upstream.keepAlive.length).toBeLessThan(5);
+    expect(await lastMessage(f.host)).toMatch(/^stopped \(idle\): expected savings no longer cover refreshes/);
+    await vi.waitFor(() =>
+      expect(rows(f, "usage_warming")).toMatchObject([
+        { role: "worker", state: "idle", refreshes: f.upstream.keepAlive.length, kind: "end" },
+      ]),
+    );
   });
 
   it("refuses at send time when BB reports a newer session for the thread", async () => {
@@ -598,7 +703,7 @@ describe("cache warming through the hub", () => {
     await idle(f.host);
     await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases[0]?.dryRun).toBe(true));
     await f.clock.advanceTo(60 * MINUTE);
-    await vi.waitFor(async () => expect((await warmingStatus(f.host)).totals.refreshesPlanned).toBe(4));
+    await vi.waitFor(async () => expect((await warmingStatus(f.host)).totals.refreshesPlanned).toBe(14));
     expect(f.upstream.keepAlive).toHaveLength(0);
     expect((await warmingStatus(f.host)).retainedBodyBytes).toBe(0);
   });
@@ -644,31 +749,37 @@ describe("cache warming lifecycle", () => {
 
 describe("cache warming settings", () => {
   it("an invalid stored record turns warming off visibly and native keeps running", async () => {
-    const f = await fixture({ seed: { "warming-config": { mode: "warm", coordinatorMinutes: 90 } } });
+    const f = await fixture({ seed: { "warming-config": { mode: "warm", maxWaitMinutes: 500 } } });
     const view = warmingConfigViewSchema.parse(await f.host.harness.behavior.callRpc("warming.get", null));
     expect(view.config.mode).toBe("off");
     expect(view.error).toBe(
-      "Stored warming-config is invalid, so cache warming is off: coordinatorMinutes: Must be at most 60.",
+      "Stored warming-config is invalid, so cache warming is off: maxWaitMinutes: Must be at most 240.",
     );
     expect(f.host.harness.inspection.logEntries).toContainEqual({ level: "warn", message: view.error });
     expect((await f.host.harness.behavior.runCli(["status"])).stdout).toContain(`Cache warming: off (${view.error})`);
     expect(await nativeRequest(f.host)).toBe(200);
-    expect(await f.host.bb.storage.kv.get("warming-config")).toEqual({ mode: "warm", coordinatorMinutes: 90 });
+    expect(await f.host.bb.storage.kv.get("warming-config")).toEqual({ mode: "warm", maxWaitMinutes: 500 });
     // A set over the invalid record starts from the defaults, so warming stays off.
-    const repaired = await f.host.harness.behavior.runCli(["warming", "set", "coordinatorMinutes", "25"]);
+    const repaired = await f.host.harness.behavior.runCli(["warming", "set", "maxWaitMinutes", "25"]);
     expect(repaired.exitCode).toBe(0);
     expect(warmingConfigViewSchema.parse(await f.host.harness.behavior.callRpc("warming.get", null))).toMatchObject({
-      config: { mode: "off", coordinatorMinutes: 25 },
+      config: { mode: "off", maxWaitMinutes: 25 },
       error: null,
     });
   });
 
   it("CLI and RPC apply the same validation, and native config keeps its five keys", async () => {
     const f = await fixture();
-    const cli = await f.host.harness.behavior.runCli(["warming", "set", "coordinatorMinutes", "61"]);
+    const cli = await f.host.harness.behavior.runCli(["warming", "set", "maxWaitMinutes", "241"]);
     expect(cli.exitCode).toBe(1);
-    expect(cli.stderr).toContain("Must be at most 60.");
-    await expect(f.host.harness.behavior.callRpc("warming.set", { coordinatorMinutes: 61 })).rejects.toThrow();
+    expect(cli.stderr).toContain("Must be at most 240.");
+    await expect(f.host.harness.behavior.callRpc("warming.set", { maxWaitMinutes: 241 })).rejects.toThrow();
+    // Settings of the fixed-window model are gone from the CLI and RPC.
+    expect((await f.host.harness.behavior.runCli(["warming", "set", "coordinatorMinutes", "20"])).exitCode).toBe(1);
+    await expect(f.host.harness.behavior.callRpc("warming.set", { coordinatorMinutes: 20 })).rejects.toThrow();
+    const roles = await f.host.harness.behavior.runCli(["warming", "set", "roles", "coordinator,worker"]);
+    expect(roles.stdout).toContain("roles: coordinator,worker");
+    expect((await f.host.harness.behavior.runCli(["warming", "set", "roles", "coordinator,boss"])).exitCode).toBe(1);
     const families = await f.host.harness.behavior.runCli(["warming", "set", "families", "opus,sonnet"]);
     expect(families.stdout).toContain("families: opus,sonnet");
     const bad = await f.host.harness.behavior.runCli(["warming", "set", "families", "opus,gpt"]);
@@ -708,30 +819,23 @@ describe("A227 corrections through the hub", () => {
     expect(f.upstream.keepAlive).toHaveLength(0);
   });
 
-  it("2: a reviewer gets reviewerMinutes (default 0), not the worker windows", async () => {
+  it("2: a reviewer mid-turn is warmed, and leaving reviewers out of the roles stops it", async () => {
     const f = await fixture({ contexts: { thr_coord: REVIEWER("active") } });
     await setMode(f.host, "warm");
     await nativeRequest(f.host);
-    await idle(f.host);
-    await vi.waitFor(async () => expect(await lastMessage(f.host)).toBe("no warming window for reviewer mid-assignment"));
-    await f.clock.advanceTo(30 * MINUTE);
-    expect(f.upstream.keepAlive).toHaveLength(0);
-    expect((await f.host.harness.behavior.runCli(["warming", "set", "reviewerMinutes", "10"])).exitCode).toBe(0);
-    await nativeRequest(f.host, { turn: "second" });
-    await idle(f.host);
     await leased(f.host);
-    // A 10-minute window from the 30-minute request: refreshes at 34 and 38 minutes.
-    await f.clock.advanceTo(34 * MINUTE);
-    await vi.waitFor(async () => expect((await warmingStatus(f.host)).totals.refreshesConfirmed).toBe(1));
-    await f.clock.advanceTo(60 * MINUTE);
-    await vi.waitFor(async () => expect((await warmingStatus(f.host)).totals.refreshesConfirmed).toBe(2));
-    await f.clock.advanceTo(90 * MINUTE);
-    expect(f.upstream.keepAlive).toHaveLength(2);
+    await f.clock.advanceTo(4 * MINUTE);
+    await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
+    expect((await f.host.harness.behavior.runCli(["warming", "set", "roles", "coordinator,worker"])).exitCode).toBe(0);
+    await f.clock.advanceTo(30 * MINUTE);
+    await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
+    expect(f.upstream.keepAlive).toHaveLength(1);
+    expect(await lastMessage(f.host)).toBe("role reviewer is not enabled for warming (reviewer, A1 active)");
   });
 
   it("4: a thread that can never warm does not take the only lease slot from the coordinator", async () => {
     const f = await fixture({
-      seed: { "warming-config": { mode: "warm", maxLeases: 1, standaloneMinutes: 30 } },
+      seed: { "warming-config": { mode: "warm", maxLeases: 1, roles: ["coordinator", "worker", "reviewer"] } },
       contexts: { thr_solo: null, thr_coord: COORDINATOR },
       sessions: { thr_solo: OTHER_SESSION, thr_coord: SESSION },
     });
@@ -779,54 +883,30 @@ describe("A227 corrections through the hub", () => {
     await setMode(f.host, "warm");
     await nativeRequest(f.host);
     await idle(f.host);
-    await vi.waitFor(async () => expect(await lastMessage(f.host)).toBe("no warming window for paused Initiative"));
+    await vi.waitFor(async () => expect(await lastMessage(f.host)).toBe("paused Initiative"));
     await f.clock.advanceTo(30 * MINUTE);
     expect(f.upstream.keepAlive).toHaveLength(0);
   });
 
-  it("settings: an older record gains the new defaults; CLI and RPC validate the new keys", async () => {
-    const f = await fixture({ seed: { "warming-config": { mode: "observe", coordinatorMinutes: 20 } } });
+  it("settings: a record of the fixed-window model keeps its other settings and gains the new ones", async () => {
+    const f = await fixture({
+      seed: { "warming-config": { mode: "observe", coordinatorMinutes: 20, reviewerAcceptedMinutes: 0, maxRefreshesPerLease: 4, maxRefreshesPerHour: 60, safetyMarginSeconds: 15 } },
+    });
     expect(warmingConfigViewSchema.parse(await f.host.harness.behavior.callRpc("warming.get", null))).toMatchObject({
-      config: { mode: "observe", reviewerMinutes: 0, pauseStopsWarming: true },
+      config: { mode: "observe", safetyMarginSeconds: 15, maxWaitMinutes: 60, maxBackgroundWaitMinutes: 20, maxRefreshesPerHour: 100, pauseStopsWarming: true },
       error: null,
     });
+    // Saved at startup in the new shape, so a later explicit 60 would stay.
+    expect(await f.host.bb.storage.kv.get("warming-config")).toEqual(
+      warmingConfigSchema.parse({ mode: "observe", safetyMarginSeconds: 15, maxRefreshesPerHour: 100 }),
+    );
     const off = await f.host.harness.behavior.runCli(["warming", "set", "pauseStopsWarming", "off"]);
     expect(off.stdout).toContain("pauseStopsWarming: false");
     expect((await f.host.harness.behavior.runCli(["warming", "set", "pauseStopsWarming", "maybe"])).exitCode).toBe(1);
-    expect((await f.host.harness.behavior.runCli(["warming", "set", "reviewerMinutes", "61"])).exitCode).toBe(1);
-    await expect(f.host.harness.behavior.callRpc("warming.set", { reviewerMinutes: -1 })).rejects.toThrow();
-    await f.host.harness.behavior.callRpc("warming.set", { reviewerMinutes: 5 });
-    expect(await f.host.bb.storage.kv.get("warming-config")).toMatchObject({ reviewerMinutes: 5, pauseStopsWarming: false });
-  });
-});
-
-describe("D362: reviewerAcceptedMinutes through the hub", () => {
-  it("an old record defaults it to 0; worker grace leaves accepted reviewers cold; CLI, RPC and storage set it", async () => {
-    const f = await fixture({
-      seed: { "warming-config": { mode: "warm", workerAcceptedMinutes: 10 } },
-      contexts: { thr_coord: REVIEWER("accepted") },
-    });
-    expect(warmingConfigViewSchema.parse(await f.host.harness.behavior.callRpc("warming.get", null))).toMatchObject({
-      config: { workerAcceptedMinutes: 10, reviewerAcceptedMinutes: 0 },
-      error: null,
-    });
-    await nativeRequest(f.host);
-    await idle(f.host);
-    await vi.waitFor(async () => expect(await lastMessage(f.host)).toBe("no warming window for reviewer accepted"));
-    expect((await f.host.harness.behavior.runCli(["warming", "set", "reviewerAcceptedMinutes", "61"])).exitCode).toBe(1);
-    const set = await f.host.harness.behavior.runCli(["warming", "set", "reviewerAcceptedMinutes", "10"]);
-    expect(set.stdout).toContain("reviewerAcceptedMinutes: 10");
-    expect(await f.host.bb.storage.kv.get("warming-config")).toMatchObject({ workerAcceptedMinutes: 10, reviewerAcceptedMinutes: 10 });
-    await nativeRequest(f.host, { turn: "second" });
-    await idle(f.host);
-    await leased(f.host);
-    await f.clock.advanceTo(4 * MINUTE);
-    await vi.waitFor(async () => expect((await warmingStatus(f.host)).totals.refreshesConfirmed).toBe(1));
-    // A hot change back to 0 refuses the next refresh.
-    await f.host.harness.behavior.callRpc("warming.set", { reviewerAcceptedMinutes: 0 });
-    await f.clock.advanceTo(30 * MINUTE);
-    await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
-    expect(f.upstream.keepAlive).toHaveLength(1);
+    // The next save drops the old keys from storage.
+    const stored = (await f.host.bb.storage.kv.get("warming-config")) as Record<string, unknown>;
+    expect(stored).toMatchObject({ mode: "observe", safetyMarginSeconds: 15, pauseStopsWarming: false });
+    expect(Object.keys(stored)).not.toContain("coordinatorMinutes");
   });
 });
 
@@ -867,10 +947,6 @@ describe("A234 1 through the hub: a finished helper does not suppress the final 
 });
 
 describe("usage ledger through the plugin", () => {
-  type Row = Record<string, unknown>;
-  const rows = (f: Fixture, table: string): Row[] =>
-    f.host.bb.storage.database().prepare(`SELECT * FROM ${table} ORDER BY at, rowid`).all() as Row[];
-
   it("records native and refresh requests, settings and quota history, and reports them", async () => {
     const f = await fixture();
     const start = f.clock.now();
@@ -892,7 +968,8 @@ describe("usage ledger through the plugin", () => {
       ttl: "5m", status: 200, completed: 1,
     };
     expect(rows(f, "usage_requests")).toMatchObject([
-      { ...shared, at: start, kind: "native", idle_gap_ms: null,
+      // Labeled from the first request: its session was linked before its row was written.
+      { ...shared, at: start, kind: "native", thread_id: "thr_coord", role: "coordinator", idle_gap_ms: null,
         input_tokens: 4, output_tokens: 9, cache_read_tokens: 80_000, cache_write_tokens: 20_000,
         cache_write_5m_tokens: 20_000, cache_write_1h_tokens: 0 },
       { ...shared, kind: "refresh", thread_id: "thr_coord", role: "coordinator", idle_gap_ms: null,
@@ -902,6 +979,16 @@ describe("usage ledger through the plugin", () => {
     ]);
     // Every response carried the same quota headers: one history row.
     expect(rows(f, "usage_quota")).toMatchObject([{ five_hour_utilization: 0.1 }]);
+    // Why the wait was warmed as long as it was, and what the thread waited on.
+    await vi.waitFor(() => expect(rows(f, "usage_warming")).toHaveLength(1));
+    expect(rows(f, "usage_warming")).toEqual([
+      {
+        at: start + 7 * MINUTE, session_key: `session:${SESSION}`, thread_id: "thr_coord",
+        model: "claude-opus-5-5", role: "coordinator", state: "tool", wait_started_at: start,
+        first_decision_at: start + 4 * MINUTE, prefix_tokens: 100_000, ttl: "5m", refreshes: 1,
+        kind: "end", reason: "the thread started a new turn",
+      },
+    ]);
     await f.clock.advanceTo(10 * MINUTE);
     expect((await f.host.harness.behavior.runCli(["config", "set", "claudeMainCacheTtl", "5m"])).exitCode).toBe(0);
     await vi.waitFor(() =>
@@ -920,7 +1007,7 @@ describe("usage ledger through the plugin", () => {
     expect(report.periods.map((period: { settings: { warming: { mode: string } } }) => period.settings.warming.mode)).toEqual(["warm"]);
     expect(report.ledger).toMatchObject({ writeErrors: 0, retentionDays: 30 });
     const text = (await f.host.harness.behavior.runCli(["usage", "report", "--since", "1h"])).stdout;
-    expect(text).toContain("ttl 1h · warming warm (opus; coordinator 20m, worker 15/10m)");
+    expect(text).toContain("ttl 1h · warming warm (opus; economic, max wait 60m (background 20m), coordinator,worker,reviewer,standalone)");
     expect(text).toContain("pool@example.com: 3 req");
   });
 
@@ -949,5 +1036,156 @@ describe("usage ledger through the plugin", () => {
     expect(await f.host.bb.storage.kv.get("usage-ledger")).toEqual({ retentionDays: 7 });
     const invalid = await f.host.harness.behavior.runCli(["usage", "retention", "0"]);
     expect(invalid).toMatchObject({ exitCode: 1, stderr: "retentionDays: Must be at least 1.\n" });
+  });
+});
+
+// W211's adverse SDK cases, through the real factory.
+describe("W211 corrections through the hub", () => {
+  it("1: a session lookup is deduped, bounded in time and concurrency, and never delays forwarding", async () => {
+    const f = await fixture();
+    await setMode(f.host, "warm");
+    const signals: AbortSignal[] = [];
+    f.host.harness.sdk.stub("threads.listRunning", (input: { signal: AbortSignal }) => {
+      signals.push(input.signal);
+      return new Promise(() => {});
+    });
+    expect(await nativeRequest(f.host)).toBe(200);
+    expect(await nativeRequest(f.host, { turn: "second" })).toBe(200);
+    expect(signals).toHaveLength(1);
+    // Two more unknown sessions: only one more lookup fits under the limit of two at once.
+    expect(await nativeRequest(f.host, { session: "7f1d3c1e-2222-4222-8222-222222222222" })).toBe(200);
+    expect(await nativeRequest(f.host, { session: "8f1d3c1e-3333-4333-8333-333333333333" })).toBe(200);
+    expect(signals).toHaveLength(2);
+    // Each lookup has its own signal, aborted at its 5-second deadline.
+    await f.clock.advanceTo(5_000);
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+    // A session is looked up again only after 30 seconds.
+    expect(await nativeRequest(f.host, { turn: "third" })).toBe(200);
+    expect(signals).toHaveLength(2);
+    await f.clock.advanceTo(30_000);
+    expect(await nativeRequest(f.host, { turn: "fourth" })).toBe(200);
+    expect(signals).toHaveLength(3);
+    // Disposal aborts what is still pending.
+    await f.stop();
+    await f.host.harness.lifecycle.dispose();
+    expect(signals[2]?.aborted).toBe(true);
+  });
+
+  it("1: a failed identity read keeps its lookup open until its siblings settle or the deadline aborts them", async () => {
+    const f = await fixture({ sessions: { thr_a: SESSION, thr_b: SESSION, thr_c: SESSION } });
+    await setMode(f.host, "warm");
+    const reads: AbortSignal[] = [];
+    f.host.harness.sdk.stub("threads.events.list", ({ threadId, signal }: { threadId: string; signal: AbortSignal }) => {
+      if (threadId === "thr_a") return Promise.reject(new Error("BB read failed"));
+      reads.push(signal);
+      return new Promise(() => {});
+    });
+    const sessions = [SESSION, "7f1d3c1e-2222-4222-8222-222222222222", "8f1d3c1e-3333-4333-8333-333333333333"];
+    for (let second = 0; second <= 90; second += 10) {
+      await f.clock.advanceTo(second * 1_000);
+      for (const session of sessions) expect(await nativeRequest(f.host, { session, turn: `t${second}` })).toBe(200);
+      // At most two lookups at once, each with two reads still running.
+      expect(reads.filter((signal) => !signal.aborted).length).toBeLessThanOrEqual(4);
+    }
+    await f.clock.advanceTo(96_000);
+    expect(reads.length).toBeGreaterThan(4);
+    expect(reads.every((signal) => signal.aborted)).toBe(true);
+    // Nothing is linked from an incomplete answer.
+    expect((await warmingStatus(f.host)).leases).toEqual([]);
+    await f.stop();
+    await f.host.harness.lifecycle.dispose();
+    expect(reads.every((signal) => signal.aborted)).toBe(true);
+  });
+
+  it("2: a wait-state read that never answers ends the lease, releasing its slot and body", async () => {
+    const f = await fixture();
+    await setMode(f.host, "warm");
+    expect(await nativeRequest(f.host)).toBe(200);
+    await leased(f.host);
+    f.host.harness.sdk.stub("threads.list", () => new Promise(() => {}));
+    await f.clock.advanceTo(120 * MINUTE);
+    await vi.waitFor(async () =>
+      expect(await warmingStatus(f.host)).toMatchObject({ leases: [], retainedBodyBytes: 0 }),
+    );
+    expect(f.upstream.keepAlive).toHaveLength(0);
+    await vi.waitFor(() =>
+      expect(rows(f, "usage_warming")).toMatchObject([
+        { kind: "skip", reason: "skipped: BB could not tell what the thread waits on" },
+      ]),
+    );
+  });
+
+  it.each([
+    ["one identity read fails", (threadId: string) => {
+      if (threadId === "thr_other") throw new Error("BB read failed");
+      return SESSION;
+    }],
+    ["two threads report the session", () => SESSION],
+  ])("3: nothing is linked when %s", async (_name, identity) => {
+    const f = await fixture({ sessions: { thr_coord: SESSION, thr_other: SESSION } });
+    await setMode(f.host, "warm");
+    f.host.harness.sdk.stub("threads.events.list", async ({ threadId }: { threadId: string }) => [
+      { type: "thread/identity", data: { threadId, providerThreadId: identity(threadId) } },
+    ]);
+    expect(await nativeRequest(f.host)).toBe(200);
+    await f.clock.advanceTo(10 * MINUTE);
+    await vi.waitFor(async () =>
+      expect((await warmingStatus(f.host)).events.at(-1)?.message).toBe(
+        "skipped: no BB thread is linked to this Claude session",
+      ),
+    );
+    expect((await warmingStatus(f.host)).leases).toEqual([]);
+    expect(f.upstream.keepAlive).toHaveLength(0);
+  });
+
+  it("5: a running background task keeps a worker warm past the odds until maxBackgroundWaitMinutes", async () => {
+    const f = await fixture({
+      contexts: { thr_coord: WORKER("active") },
+      seed: { "warming-config": { mode: "warm", safetyMarginSeconds: 15 } },
+    });
+    f.rows.set("thr_coord", { status: "idle", activity: { activeBackgroundCommandCount: 1, activeBackgroundAgentCount: 0 } });
+    expect(await nativeRequest(f.host)).toBe(200);
+    await leased(f.host);
+    // Due every 4:45 from 4:45; the fifth would be due 23:45 into the wait, past 20 minutes.
+    for (let step = 1; step <= 4; step += 1) {
+      await f.clock.advanceTo(step * 285_000);
+      await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(step));
+    }
+    expect((await warmingStatus(f.host)).leases[0]).toMatchObject({ waitingOn: "background", resumeChance: 1 });
+    await f.clock.advanceTo(60 * MINUTE);
+    await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
+    expect(f.upstream.keepAlive).toHaveLength(4);
+    expect(await lastMessage(f.host)).toBe(
+      "stopped (background): the background wait reached maxBackgroundWaitMinutes (20)",
+    );
+  });
+
+  it("5: a background task that ends without a resume stops the lease", async () => {
+    const f = await fixture({ contexts: { thr_coord: WORKER("active") } });
+    f.rows.set("thr_coord", { status: "idle", activity: { activeBackgroundCommandCount: 1, activeBackgroundAgentCount: 0 } });
+    await setMode(f.host, "warm");
+    expect(await nativeRequest(f.host)).toBe(200);
+    await leased(f.host);
+    await f.clock.advanceTo(4 * MINUTE);
+    await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
+    f.rows.set("thr_coord", { status: "idle" });
+    await f.clock.advanceTo(30 * MINUTE);
+    await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
+    expect(f.upstream.keepAlive).toHaveLength(1);
+    expect(await lastMessage(f.host)).toBe("stopped: the background task ended without the thread resuming");
+  });
+
+  it("6: a warmed standalone thread's native and refresh rows say standalone", async () => {
+    const f = await fixture({ contexts: { thr_coord: null } });
+    await setMode(f.host, "warm");
+    expect(await nativeRequest(f.host)).toBe(200);
+    await leased(f.host);
+    expect((await warmingStatus(f.host)).leases[0]).toMatchObject({ role: "standalone" });
+    await f.clock.advanceTo(4 * MINUTE);
+    await vi.waitFor(() => expect(rows(f, "usage_requests")).toHaveLength(2));
+    expect(rows(f, "usage_requests").map((row) => [row.kind, row.thread_id, row.role])).toEqual([
+      ["native", "thr_coord", "standalone"],
+      ["refresh", "thr_coord", "standalone"],
+    ]);
   });
 });

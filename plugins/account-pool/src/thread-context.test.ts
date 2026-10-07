@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createInitiativesContextReader,
-  warmingWindow,
+  warmingRole,
   type ThreadContext,
 } from "./thread-context.js";
 import { warmingConfigSchema } from "./warming-config.js";
@@ -183,7 +183,7 @@ describe("T120 the Initiatives plugin under one ID", () => {
   });
 });
 
-describe("warming windows (contract v1)", () => {
+describe("warming roles (contract v1)", () => {
   const config = warmingConfigSchema.parse({});
   const ctx = (overrides: Partial<Extract<ThreadContext, { kind: "member" }>> = {}): ThreadContext => ({
     kind: "member",
@@ -198,96 +198,47 @@ describe("warming windows (contract v1)", () => {
   });
 
   it.each([
-    ["active coordinator", ctx({ memberKind: "coordinator", role: "coordinator", assignment: null }), 20, "coordinator"],
-    ["worker mid-assignment", ctx(), 15, "worker mid-assignment"],
-    ["reported worker", ctx({ assignment: { ref: "A1", phase: "reported" } }), 10, "worker reported"],
-    ["reviewer mid-assignment", ctx({ role: "review" }), 0, "reviewer mid-assignment"],
-    ["reported reviewer", ctx({ role: "review", assignment: { ref: "A1", phase: "reported" } }), 0, "reviewer reported"],
-    ["accepted reviewer", ctx({ role: "review", assignment: { ref: "A1", phase: "accepted" } }), 0, "reviewer accepted"],
-    ["retired reviewer", ctx({ role: "review", state: "retired" }), 0, "review retired"],
-    ["paused Initiative coordinator", ctx({ memberKind: "coordinator", role: "coordinator", paused: true }), 0, "paused Initiative"],
-    ["paused Initiative worker", ctx({ paused: true }), 0, "paused Initiative"],
-    ["accepted worker", ctx({ assignment: { ref: "A1", phase: "accepted" } }), 0, "worker accepted"],
-    ["retired worker", ctx({ state: "retired" }), 0, "work retired"],
-    ["stopped worker", ctx({ state: "stopped" }), 0, "work stopped"],
-    ["former (replaced) coordinator", ctx({ memberKind: "coordinator", role: "coordinator", state: "former" }), 0, "coordinator former"],
-    ["rejected assignment", ctx({ assignment: { ref: "A1", phase: "rejected" } }), 0, "assignment rejected"],
-    ["worker between assignments", ctx({ assignment: null }), 0, "worker without assignment"],
-    ["delivered assignment still pending", ctx({ assignment: { ref: "A2", phase: "pending" } }), 0, "assignment A2 pending delivery"],
-    ["reported worker with an undelivered next assignment", ctx({ assignment: { ref: "A1", phase: "reported" }, next: { ref: "A2", phase: "pending" } }), 0, "next assignment A2 not delivered yet"],
-    ["adhoc thread", ctx({ memberKind: "adhoc", role: "adhoc", assignment: null }), 0, "adhoc Initiative thread"],
-    ["archived Initiative coordinator", ctx({ memberKind: "coordinator", role: "coordinator", archived: true }), 0, "archived Initiative"],
-  ])("a %s gets %d minutes", (_name, context, minutes, label) => {
-    expect(warmingWindow(context, config)).toEqual({ ok: true, minutes, label });
+    ["active coordinator", ctx({ memberKind: "coordinator", role: "coordinator", assignment: null }), "coordinator", "coordinator"],
+    ["worker mid-assignment", ctx(), "worker", "worker, A1 active"],
+    ["reported worker", ctx({ assignment: { ref: "A1", phase: "reported" } }), "worker", "worker, A1 reported"],
+    ["accepted worker", ctx({ assignment: { ref: "A1", phase: "accepted" } }), "worker", "worker, A1 accepted"],
+    ["rejected assignment", ctx({ assignment: { ref: "A1", phase: "rejected" } }), "worker", "worker, A1 rejected"],
+    ["worker between assignments", ctx({ assignment: null }), "worker", "worker between assignments"],
+    ["delivered assignment still pending", ctx({ assignment: { ref: "A2", phase: "pending" } }), "worker", "worker, A2 pending"],
+    ["reported worker with an undelivered next assignment", ctx({ assignment: { ref: "A1", phase: "reported" }, next: { ref: "A2", phase: "pending" } }), "worker", "worker, A2 pending"],
+    ["reviewer mid-assignment", ctx({ role: "review" }), "reviewer", "reviewer, A1 active"],
+    ["accepted reviewer", ctx({ role: "review", assignment: { ref: "A1", phase: "accepted" } }), "reviewer", "reviewer, A1 accepted"],
+    ["adhoc thread", ctx({ memberKind: "adhoc", role: "adhoc", assignment: null }), "standalone", "adhoc Initiative thread"],
+    ["thread outside any Initiative", { kind: "none" } as ThreadContext, "standalone", "no Initiative"],
+  ])("a %s is warmed as %s", (_name, context, role, label) => {
+    expect(warmingRole(context, config)).toEqual({ ok: true, role, label });
   });
 
-  it("follows the configured supported windows", () => {
-    const custom = warmingConfigSchema.parse({ coordinatorMinutes: 30, workerAcceptedMinutes: 5, workerEndedMinutes: 2 });
-    expect(warmingWindow(ctx({ memberKind: "coordinator", role: "coordinator" }), custom)).toMatchObject({ minutes: 30 });
-    expect(warmingWindow(ctx({ assignment: { ref: "A1", phase: "accepted" } }), custom)).toMatchObject({ minutes: 5 });
-    expect(warmingWindow(ctx({ state: "retired" }), custom)).toMatchObject({ minutes: 2 });
-    // Adhoc, archived and pending stay zero whatever the settings say.
-    expect(warmingWindow(ctx({ memberKind: "adhoc", role: "adhoc" }), custom)).toMatchObject({ minutes: 0 });
-    expect(warmingWindow(ctx({ archived: true }), custom)).toMatchObject({ minutes: 0 });
+  it.each([
+    ["retired reviewer", ctx({ role: "review", state: "retired" }), "reviewer retired"],
+    ["retired worker", ctx({ state: "retired" }), "worker retired"],
+    ["stopped worker", ctx({ state: "stopped" }), "worker stopped"],
+    ["former (replaced) coordinator", ctx({ memberKind: "coordinator", role: "coordinator", state: "former" }), "coordinator former"],
+    ["paused Initiative coordinator", ctx({ memberKind: "coordinator", role: "coordinator", paused: true }), "paused Initiative"],
+    ["paused Initiative worker", ctx({ paused: true }), "paused Initiative"],
+    ["archived Initiative coordinator", ctx({ memberKind: "coordinator", role: "coordinator", archived: true }), "archived Initiative"],
+  ])("a %s is not warmed", (_name, context, reason) => {
+    expect(warmingRole(context, config)).toEqual({ ok: false, reason, kind: "end" });
   });
 
-  it("gives reviewers reviewerMinutes and leaves the worker windows alone", () => {
-    const custom = warmingConfigSchema.parse({ reviewerMinutes: 7 });
-    expect(warmingWindow(ctx({ role: "review" }), custom)).toEqual({ ok: true, minutes: 7, label: "reviewer mid-assignment" });
-    expect(warmingWindow(ctx({ role: "review", assignment: { ref: "A1", phase: "reported" } }), custom)).toMatchObject({ minutes: 7 });
-    expect(warmingWindow(ctx(), custom)).toMatchObject({ minutes: 15 });
-    expect(warmingWindow(ctx({ assignment: { ref: "A1", phase: "reported" } }), custom)).toMatchObject({ minutes: 10 });
-    // Pending, next and ended stay as they are for reviewers too.
-    expect(warmingWindow(ctx({ role: "review", assignment: { ref: "A1", phase: "pending" } }), custom)).toMatchObject({ minutes: 0 });
-    expect(warmingWindow(ctx({ role: "review", next: { ref: "A2", phase: "pending" } }), custom)).toMatchObject({ minutes: 0 });
-    expect(warmingWindow(ctx({ role: "review", state: "stopped" }), custom)).toMatchObject({ minutes: 0 });
-  });
-
-  it("pauseStopsWarming off keeps the role windows through a pause", () => {
+  it("pauseStopsWarming off keeps warming through a pause, not through an archive", () => {
     const keep = warmingConfigSchema.parse({ pauseStopsWarming: false });
-    expect(warmingWindow(ctx({ memberKind: "coordinator", role: "coordinator", paused: true }), keep)).toMatchObject({ minutes: 20 });
-    expect(warmingWindow(ctx({ paused: true }), keep)).toMatchObject({ minutes: 15 });
-    // Archived and adhoc still win over a pause.
-    expect(warmingWindow(ctx({ paused: true, archived: true }), keep)).toMatchObject({ minutes: 0, label: "archived Initiative" });
+    expect(warmingRole(ctx({ paused: true }), keep)).toMatchObject({ ok: true, role: "worker" });
+    expect(warmingRole(ctx({ paused: true, archived: true }), keep)).toMatchObject({ ok: false, reason: "archived Initiative" });
   });
 
-  it("never warms on no record, even with a positive standalone window", () => {
-    const standalone = warmingConfigSchema.parse({ standaloneMinutes: 30 });
-    expect(warmingWindow({ kind: "none" }, standalone)).toEqual({
+  it("a role left out of the settings is not warmed; unknown context is skipped with its reason", () => {
+    const some = warmingConfigSchema.parse({ roles: ["coordinator"] });
+    expect(warmingRole(ctx(), some)).toEqual({
       ok: false,
-      reason:
-        "Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one",
+      reason: "role worker is not enabled for warming (worker, A1 active)",
+      kind: "end",
     });
-    expect(warmingWindow({ kind: "unknown", reason: "x" }, standalone)).toEqual({ ok: false, reason: "x" });
-  });
-});
-
-describe("D362: accepted reviewers have their own window", () => {
-  const ctx = (overrides: Partial<Extract<ThreadContext, { kind: "member" }>> = {}): ThreadContext => ({
-    kind: "member",
-    memberKind: "worker",
-    role: "review",
-    state: "active",
-    archived: false,
-    paused: false,
-    assignment: { ref: "A1", phase: "accepted" },
-    next: null,
-    ...overrides,
-  });
-
-  it("raising the worker accepted grace leaves accepted reviewers at 0", () => {
-    const grace = warmingConfigSchema.parse({ workerAcceptedMinutes: 10 });
-    expect(warmingWindow(ctx(), grace)).toEqual({ ok: true, minutes: 0, label: "reviewer accepted" });
-    expect(warmingWindow(ctx({ role: "work" }), grace)).toEqual({ ok: true, minutes: 10, label: "worker accepted" });
-  });
-
-  it("reviewerAcceptedMinutes sets only the accepted reviewer window", () => {
-    const custom = warmingConfigSchema.parse({ reviewerAcceptedMinutes: 6 });
-    expect(warmingWindow(ctx(), custom)).toEqual({ ok: true, minutes: 6, label: "reviewer accepted" });
-    expect(warmingWindow(ctx({ role: "work" }), custom)).toMatchObject({ minutes: 0 });
-    expect(warmingWindow(ctx({ assignment: { ref: "A1", phase: "reported" } }), custom)).toMatchObject({ minutes: 0 });
-    expect(warmingWindow(ctx({ state: "retired" }), custom)).toMatchObject({ minutes: 0 });
-    expect(warmingWindow(ctx({ next: { ref: "A2", phase: "pending" } }), custom)).toMatchObject({ minutes: 0 });
-    expect(warmingWindow(ctx({ paused: true }), custom)).toMatchObject({ minutes: 0 });
+    expect(warmingRole({ kind: "unknown", reason: "x" }, config)).toEqual({ ok: false, reason: "skipped: x", kind: "skip" });
   });
 });

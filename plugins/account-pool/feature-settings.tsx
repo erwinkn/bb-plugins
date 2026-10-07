@@ -28,12 +28,14 @@ import type { WarmingStatus } from "./src/warming.js";
 import {
   warmingConfigSetInputSchema,
   warmingFamilySchema,
+  warmingRoleSchema,
   type WarmingConfig,
   type WarmingConfigKey,
   type WarmingConfigView,
   type WarmingFamily,
   type WarmingMode,
 } from "./src/warming-config.js";
+import type { WarmingRole } from "./src/warming-economics.js";
 
 const STATUS_POLL_MS = 10_000;
 const RECENT_EVENTS = 20;
@@ -218,31 +220,17 @@ const MODE_HINTS: Record<WarmingMode, string> = {
   warm: "Re-sends an idle thread's last request with max_tokens 0 on the same account before its cache entry expires.",
 };
 
-const WINDOWS: Array<{
-  key: WarmingConfigKey;
-  label: string;
-  description: string;
-  inactive?: boolean;
-}> = [
-  { key: "coordinatorMinutes", label: "Coordinator", description: "Active Initiative coordinators." },
-  { key: "workerActiveMinutes", label: "Worker mid-assignment", description: "Workers with an active assignment and no report yet." },
-  { key: "workerReportedMinutes", label: "Worker reported", description: "Workers whose report awaits review." },
-  { key: "workerAcceptedMinutes", label: "Worker accepted", description: "Workers whose assignment was accepted but who are not retired. Acceptance alone does not end a worker; a short grace is a tradeoff." },
-  { key: "reviewerMinutes", label: "Reviewer", description: "Reviewers with an active or reported review assignment. Worker windows never apply to reviewers." },
-  { key: "reviewerAcceptedMinutes", label: "Reviewer accepted", description: "Reviewers whose review was accepted but who are not retired. Set apart from the worker grace, so raising that never warms reviewers." },
-  { key: "workerEndedMinutes", label: "Ended", description: "Retired, stopped or former members, rejected, cancelled or failed assignments, and workers between assignments." },
-  {
-    key: "standaloneMinutes",
-    label: "Standalone thread",
-    description:
-      "Inactive: Initiatives reports standalone, unknown and not-yet-linked threads the same way, so none of them is warmed until a verified way to tell them apart exists.",
-    inactive: true,
-  },
-];
+const ROLES: Record<WarmingRole, string> = {
+  coordinator: "Coordinators",
+  worker: "Workers",
+  reviewer: "Reviewers",
+  standalone: "Other threads",
+};
 
 const LIMITS: Array<{ key: WarmingConfigKey; label: string; description: string; nullable?: boolean }> = [
+  { key: "maxWaitMinutes", label: "Longest wait (minutes)", description: "Send no refresh once a thread has waited this long since its last request, whatever the odds." },
+  { key: "maxBackgroundWaitMinutes", label: "Longest background wait (minutes)", description: "Send no refresh once a thread waiting on a background task has waited this long. Most longer tasks never lead to a resume." },
   { key: "safetyMarginSeconds", label: "Safety margin (seconds)", description: "Send a refresh this long before the entry would expire." },
-  { key: "maxRefreshesPerLease", label: "Refreshes per idle period", description: "Most refreshes after one native request." },
   { key: "maxRefreshesPerHour", label: "Refreshes per hour", description: "Across all threads." },
   { key: "maxConcurrentRefreshes", label: "Concurrent refreshes", description: "Refreshes in flight at once." },
   { key: "maxLeases", label: "Threads kept warm", description: "Idle threads with a lease at once." },
@@ -252,6 +240,13 @@ const LIMITS: Array<{ key: WarmingConfigKey; label: string; description: string;
   { key: "historyLimit", label: "Decisions kept", description: "Recent observations and decisions shown below." },
   { key: "historyMinutes", label: "Decision history (minutes)", description: "Drop recent decisions older than this." },
 ];
+
+const WAITING_ON = {
+  tool: "a tool, mid-turn",
+  background: "a background task",
+  question: "a question",
+  idle: "nothing (turn ended)",
+} as const;
 
 function validateField(key: WarmingConfigKey, value: unknown): string | null {
   const result = warmingConfigSetInputSchema.shape[key].safeParse(value);
@@ -302,13 +297,18 @@ function WarmingStatusPanel({ status }: { status: WarmingStatus }) {
               </span>
               <span>{lease.model ?? "unknown model"}</span>
               <span>{lease.ttl} entry</span>
-              <span>{lease.windowLabel ?? "role not read yet"}</span>
+              <span>{lease.label ?? "role not read yet"}</span>
+              {lease.waitingOn === null ? null : (
+                <span>
+                  waiting on {WAITING_ON[lease.waitingOn]}, resume odds{" "}
+                  {Math.round((lease.resumeChance ?? 0) * 100)}%
+                </span>
+              )}
               <span>
                 {lease.dryRun ? "dry run, " : ""}
                 {lease.refreshes} refresh{lease.refreshes === 1 ? "" : "es"}
               </span>
               <span>covered until {clock(lease.coveredUntil)}</span>
-              <span>deadline {clock(lease.deadline)}</span>
               <span>next {clock(lease.nextRefreshAt)}</span>
             </li>
           ))}
@@ -392,6 +392,13 @@ export function CacheWarmingSection() {
     );
     void save({ families }).then((message) => setError(message));
   }
+  function toggleRole(role: WarmingRole, enabled: boolean): void {
+    if (view === null) return;
+    const roles = warmingRoleSchema.options.filter((candidate) =>
+      candidate === role ? enabled : view.config.roles.includes(candidate),
+    );
+    void save({ roles }).then((message) => setError(message));
+  }
   return (
     <SettingsSection
       title="Cache warming"
@@ -428,35 +435,39 @@ export function CacheWarmingSection() {
         {view?.error ? <SectionError message={view.error} /> : null}
         {mode === "off" ? null : (
           <p className="py-2.5 text-xs text-subtle-foreground">
-            Requests are matched to threads through BB&apos;s record of each
-            thread&apos;s Claude session, refreshed when a thread starts or
-            finishes a turn and again right before every refresh. No
-            environment variable is added. A thread starting a turn, or any
-            request in its session (helpers Claude Code sends after a turn
-            included), ends its warming at once. Adhoc threads,
-            archived Initiatives, and threads with an undelivered assignment
+            Requests are matched to threads through the Claude session BB
+            records when each thread&apos;s session starts. No environment
+            variable is added. Before every refresh the Pooler checks what
+            the thread waits on: a tool mid-turn is always worth warming; a
+            background task, a question or an ended turn only while threads
+            in that state and role have usually resumed soon enough to repay
+            the refreshes. Any request in the thread&apos;s session ends its
+            warming at once. Archived or paused Initiatives and ended members
             are never warmed.
           </p>
         )}
-        {WINDOWS.map((window) => (
-          <ConfigFieldRow
-            key={window.key}
-            label={`${window.label} window (minutes)`}
-            description={window.description}
-            error={null}
-          >
-            <NumberField
-              label={`${window.label} window (minutes)`}
-              value={(view?.config[window.key] as number | undefined) ?? null}
-              disabled={disabled || window.inactive === true}
-              validate={(value) => validateField(window.key, value)}
-              onSave={(value) => save({ [window.key]: value })}
-            />
-          </ConfigFieldRow>
-        ))}
+        <ConfigFieldRow
+          label="Roles"
+          description="Threads that may be warmed. Other threads are BB threads outside any Initiative, and adhoc Initiative threads."
+          error={null}
+        >
+          <div className="flex flex-wrap justify-end gap-3">
+            {warmingRoleSchema.options.map((role) => (
+              <label key={role} className="flex items-center gap-1.5 text-xs text-foreground">
+                <Switch
+                  checked={view?.config.roles.includes(role) ?? false}
+                  disabled={disabled}
+                  aria-label={`Warm ${ROLES[role].toLowerCase()}`}
+                  onCheckedChange={(enabled) => toggleRole(role, enabled)}
+                />
+                {ROLES[role]}
+              </label>
+            ))}
+          </div>
+        </ConfigFieldRow>
         <ConfigFieldRow
           label="Paused Initiatives"
-          description="Send no refreshes while a thread's Initiative is paused. Off keeps the role windows through a pause."
+          description="Send no refreshes while a thread's Initiative is paused."
           error={null}
         >
           <Switch

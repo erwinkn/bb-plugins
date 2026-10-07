@@ -63,3 +63,23 @@ export function linkSignals(
   }
   return linked;
 }
+
+// The operation's outcome, or the signal's reason once it aborts first. The operation keeps
+// running; only the wait for it ends.
+export function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(
+      (result) => {
+        signal.removeEventListener("abort", abort);
+        resolve(result);
+      },
+      (error) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}

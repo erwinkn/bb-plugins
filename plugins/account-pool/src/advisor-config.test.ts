@@ -286,7 +286,7 @@ describe("advisor-config isolation", () => {
     });
     await host.harness.behavior.callRpc("warming.set", {
       mode: "observe",
-      coordinatorMinutes: 25,
+      maxWaitMinutes: 25,
     });
     const set = await host.harness.behavior.runCli([
       "config",
@@ -307,7 +307,7 @@ describe("advisor-config isolation", () => {
     });
     expect(await host.bb.storage.kv.get("warming-config")).toMatchObject({
       mode: "observe",
-      coordinatorMinutes: 25,
+      maxWaitMinutes: 25,
     });
 
     // Reload the same build over the same kv: everything survives, and a native edit lowers the
@@ -596,9 +596,9 @@ describe("A234 2: readable validation through the real CLI and RPC", () => {
     const { fetch } = vendor();
     const host = await newHost({});
     await createAccountPoolPlugin(pluginOptions(fetch))(host.bb);
-    const cli = await host.harness.behavior.runCli(["warming", "set", "coordinatorMinutes", "61"]);
-    expect([cli.exitCode, cli.stderr.trim()]).toEqual([1, "coordinatorMinutes: Must be at most 60."]);
-    expect(await rpcError(host, "warming.set", { coordinatorMinutes: 61 })).toBe("coordinatorMinutes: Must be at most 60.");
+    const cli = await host.harness.behavior.runCli(["warming", "set", "maxWaitMinutes", "241"]);
+    expect([cli.exitCode, cli.stderr.trim()]).toEqual([1, "maxWaitMinutes: Must be at most 240."]);
+    expect(await rpcError(host, "warming.set", { maxWaitMinutes: 241 })).toBe("maxWaitMinutes: Must be at most 240.");
     expect(await rpcError(host, "warming.set", { families: ["gpt"] })).toMatch(/^families\.0: /u);
     expect(await rpcError(host, "warming.set", { extra: 1 })).toBe('Unrecognized key: "extra"');
     expect(await host.bb.storage.kv.get("warming-config")).toBeUndefined();

@@ -306,7 +306,7 @@ function formatWarmingStatus(status: WarmingStatus): string {
       : status.leases
           .map(
             (lease) =>
-              `${lease.threadId} ${lease.model ?? "-"} ttl=${lease.ttl} ${lease.dryRun ? "dry-run " : ""}${lease.state} refreshes=${lease.refreshes} covered=${formatTime(lease.coveredUntil)} deadline=${formatTime(lease.deadline)} next=${formatTime(lease.nextRefreshAt)} window=${lease.windowLabel ?? "-"} prefix=${lease.prefixTokens} body=${lease.bodyHash}`,
+              `${lease.threadId} ${lease.model ?? "-"} ttl=${lease.ttl} ${lease.dryRun ? "dry-run " : ""}${lease.state} refreshes=${lease.refreshes} covered=${formatTime(lease.coveredUntil)} next=${formatTime(lease.nextRefreshAt)} role=${lease.role ?? "-"} (${lease.label ?? "-"}) waiting-on=${lease.waitingOn ?? "-"} p-resume=${lease.resumeChance?.toFixed(2) ?? "-"} expected-saving=${lease.expectedSaving ?? "-"} prefix=${lease.prefixTokens} body=${lease.bodyHash}`,
           )
           .join("\n"),
     "",
@@ -471,7 +471,7 @@ export function registerPoolCli(
       {
         name: "warming-set",
         summary:
-          "Set one cache-warming setting (mode, windows, families, limits, reserve)",
+          "Set one cache-warming setting (mode, roles, maxWaitMinutes, families, limits, reserve)",
         usage: "bb pool-local warming set <key> <value>",
       },
       {

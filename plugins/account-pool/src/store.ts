@@ -791,4 +791,25 @@ export const QUOTA_MIGRATIONS = [
     settings_json TEXT NOT NULL
   );
   CREATE INDEX usage_settings_at ON usage_settings (at)`,
+  // Why each wait was warmed for as long as it was, or not at all (warming.ts WarmingOutcome), and
+  // what the thread waited on at its first refresh decision: the history economic warming
+  // calibrates from.
+  `CREATE TABLE usage_warming (
+    at INTEGER NOT NULL,
+    session_key TEXT NOT NULL,
+    thread_id TEXT,
+    model TEXT,
+    role TEXT,
+    state TEXT,
+    wait_started_at INTEGER NOT NULL,
+    first_decision_at INTEGER,
+    prefix_tokens INTEGER NOT NULL,
+    ttl TEXT,
+    refreshes INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    reason TEXT NOT NULL
+  );
+  CREATE INDEX usage_warming_at ON usage_warming (at)`,
+  // Calibration reads recent waits by when they started.
+  `CREATE INDEX usage_warming_wait ON usage_warming (wait_started_at)`,
 ];

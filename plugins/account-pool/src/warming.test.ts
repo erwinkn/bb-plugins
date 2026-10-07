@@ -7,12 +7,18 @@ import {
   type KeepAliveRequest,
   type KeepAliveResult,
   type NativeRequestStart,
+  type WarmingOutcome,
 } from "./warming.js";
 import {
-  longestWindowMinutes,
+  loadWarmingConfig,
   warmingConfigSchema,
   type WarmingConfig,
 } from "./warming-config.js";
+import {
+  PRIOR_SAMPLES,
+  ResumeHistory,
+  type WaitState,
+} from "./warming-economics.js";
 import { fakeClock as baseClock, flush } from "./testing/fake-clock.js";
 
 const T0 = Date.UTC(2026, 9, 5, 12);
@@ -136,8 +142,16 @@ interface Harness {
   // When set, a context read waits on this instead of answering from the maps.
   readHook: ((threadId: string, fresh: boolean) => Promise<ThreadContext>) | null;
   sessionHook: ((threadId: string) => void) | null;
-  // BB's current provider session per thread, as threads.context reports it.
+  // BB's current provider session per thread, as its latest thread/identity event reports it.
   sessions: Map<string, string>;
+  // What each thread waits on at a refresh decision; "tool" (mid-turn) when unset.
+  waits: Map<string, WaitState | null>;
+  // When set, a waiting-state read returns this instead of answering from the map.
+  waitHook: ((threadId: string) => Promise<WaitState | null>) | null;
+  history: ResumeHistory;
+  // Sessions the warmer asked BB to resolve, and the outcomes it recorded.
+  resolved: string[];
+  outcomes: WarmingOutcome[];
   sent: Array<KeepAliveRequest & { at: number; signal: AbortSignal }>;
   replies: Array<
     KeepAliveResult | ((request: KeepAliveRequest, signal: AbortSignal) => Promise<KeepAliveResult>)
@@ -167,6 +181,9 @@ function harness(overrides: Partial<WarmingConfig> = {}): Harness {
   const freshContext = new Map<string, ThreadContext>();
   const contextReads: Harness["contextReads"] = [];
   const sessions = new Map<string, string>();
+  const waits = new Map<string, WaitState | null>();
+  const resolved: string[] = [];
+  const outcomes: WarmingOutcome[] = [];
   const sent: Harness["sent"] = [];
   const replies: Harness["replies"] = [];
   const warmer = new CacheWarmer({
@@ -186,6 +203,11 @@ function harness(overrides: Partial<WarmingConfig> = {}): Harness {
       h.sessionHook?.(threadId);
       return sessions.get(threadId) ?? null;
     },
+    resolveSession: (sessionId) => resolved.push(sessionId),
+    waitState: (threadId) =>
+      h.waitHook?.(threadId) ?? Promise.resolve(waits.has(threadId) ? waits.get(threadId)! : "tool"),
+    resumeHistory: () => h.history,
+    recordOutcome: (outcome) => outcomes.push(outcome),
     // Like the hub: the send-time confirmation runs first, and a refusal sends nothing.
     keepAlive: async (request, signal) => {
       const refused = await request.confirm(signal);
@@ -212,6 +234,11 @@ function harness(overrides: Partial<WarmingConfig> = {}): Harness {
     readHook: null,
     sessionHook: null,
     sessions,
+    waits,
+    waitHook: null,
+    history: new ResumeHistory(PRIOR_SAMPLES),
+    resolved,
+    outcomes,
     sent,
     replies,
     async native(options = {}) {
@@ -250,29 +277,50 @@ function harness(overrides: Partial<WarmingConfig> = {}): Harness {
 }
 
 describe("cache warmer timing", () => {
-  it("refreshes a 5m entry at start + TTL - margin until it outlasts completion + window", async () => {
-    const h = harness();
+  it("refreshes a 5m entry at start + TTL - margin while mid-turn, until maxWaitMinutes", async () => {
+    const h = harness({ maxWaitMinutes: 20 });
     await h.native({ durationMs: 30 * SECOND });
-    // Entry written at T0 lasts until T0+5m; the coordinator window ends at T0+30s+20m.
+    // Entry written at T0 lasts until T0+5m; the wait started at T0+30s.
     expect(h.warmer.status().leases[0]).toMatchObject({
       ttl: "5m",
       coveredUntil: T0 + 5 * MINUTE,
       nextRefreshAt: T0 + 4 * MINUTE,
       prefixTokens: 100_000,
+      role: "coordinator",
     });
     await h.clock.advanceTo(60 * MINUTE);
-    // Each confirmed refresh starts a new 5m lifetime from its own start; the deadline never moves.
-    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480, 720, 960]);
+    // Each confirmed refresh starts a new 5m lifetime from its own start. The fifth would be due at
+    // 1200 s, 19.5 minutes into the wait, so it is sent; the sixth would be at 1440 s, past the
+    // 20-minute limit, so the lease ends as soon as the fifth is confirmed.
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480, 720, 960, 1200]);
     expect(h.warmer.status().leases).toHaveLength(0);
-    expect(h.events().at(-1)).toBe("end: the cache entry now lasts until the deadline");
+    expect(h.events().at(-1)).toBe("end: the wait reached maxWaitMinutes (20)");
     expect(h.warmer.status().totals).toMatchObject({
       leasesStarted: 1,
-      refreshesSent: 4,
-      refreshesConfirmed: 4,
+      refreshesSent: 5,
+      refreshesConfirmed: 5,
       cacheMisses: 0,
-      refreshCacheReadTokens: 400_000,
+      refreshCacheReadTokens: 500_000,
       refreshOutputTokens: 0,
     });
+    // The ledger learns what the thread waited on and why warming stopped.
+    expect(h.outcomes).toEqual([
+      {
+        at: T0 + 1200 * SECOND,
+        sessionId: "s-thr_coord",
+        threadId: "thr_coord",
+        model: "claude-opus-5-5",
+        role: "coordinator",
+        state: "tool",
+        waitStartedAt: T0 + 30 * SECOND,
+        firstDecisionAt: T0 + 240 * SECOND,
+        prefixTokens: 100_000,
+        ttl: "5m",
+        refreshes: 5,
+        kind: "end",
+        reason: "the wait reached maxWaitMinutes (20)",
+      },
+    ]);
   });
 
   it("re-sends the exact native body with only max_tokens 0 and no stream, to the same account", async () => {
@@ -293,11 +341,14 @@ describe("cache warmer timing", () => {
     });
   });
 
-  it("does not lease a 1h entry that already outlasts every window, and never reads context for it", async () => {
-    const h = harness();
+  it("does not lease a 1h entry that already outlasts maxWaitMinutes, and never reads context for it", async () => {
+    const h = harness({ maxWaitMinutes: 30 });
     await h.native({ body: requestBody({ messageTtl: "1h" }) });
     expect(h.warmer.status().leases).toHaveLength(0);
-    expect(h.events()).toContain("skip: the 1h cache entry already outlasts every warming window");
+    expect(h.events()).toContain("skip: the 1h cache entry already outlasts maxWaitMinutes (30)");
+    expect(h.outcomes).toMatchObject([
+      { kind: "skip", ttl: "1h", reason: "the 1h cache entry already outlasts maxWaitMinutes (30)" },
+    ]);
     await h.clock.advanceTo(90 * MINUTE);
     expect(h.sent).toHaveLength(0);
     expect(h.contextReads).toHaveLength(0);
@@ -314,29 +365,81 @@ describe("cache warmer timing", () => {
       body: requestBody({ systemTtl: "1h", messageTtl: null, automatic: "5m" }),
     });
     expect(automatic.warmer.status().leases[0]?.ttl).toBe("5m");
-    const hour = harness();
+    const hour = harness({ maxWaitMinutes: 30 });
     await hour.native({ body: requestBody({ systemTtl: "5m", messageTtl: null, automatic: "1h" }) });
     expect(hour.warmer.status().leases).toHaveLength(0);
   });
 
-  it("never extends the deadline: a 10-minute window gets two refreshes even with a high cap", async () => {
-    const h = harness({ maxRefreshesPerLease: 30 });
+  it("after the turn ends, refreshes only while the thread's resume odds repay them", async () => {
+    // Idle workers: half resume within 8 minutes, half never.
+    const h = harness();
+    h.history = new ResumeHistory(
+      [3, 4, 5, 6, 8, null, null, null, null, null].map((minutes) => ({
+        state: "idle" as const,
+        role: "worker" as const,
+        waitMs: minutes === null ? null : minutes * MINUTE,
+      })),
+    );
     h.context.set("thr_coord", worker("reported"));
+    h.waits.set("thr_coord", "idle");
     await h.native({ durationMs: 30 * SECOND });
     await h.clock.advanceTo(60 * MINUTE);
-    // Deadline T0+30s+10m = 630 s; covered 540 s after the first refresh, 780 s after the second.
-    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480]);
-    expect(h.events()).toContain(
-      "end: the cache entry now lasts until the deadline",
+    // At 3.5 minutes into the wait the entry lasts until 4.5; of the 9 waits still running, 3
+    // resume between 4.5 and the refreshed expiry at 8.5. At 7.5 minutes the one wait left to
+    // resume (at 8) is covered already, and only waits that never resume remain after it.
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240]);
+    expect(h.events().at(-1)).toMatch(
+      /^end: stopped \(idle\): expected savings no longer cover refreshes: P\(resume between expiry and \d+ min from now\) 0\.\d\d from 10 idle\/worker waits$/,
     );
+    expect(h.outcomes.at(-1)).toMatchObject({ role: "worker", state: "idle", refreshes: 1 });
   });
 
-  it("stops at maxRefreshesPerLease before the deadline and says so", async () => {
-    const h = harness({ maxRefreshesPerLease: 2 });
-    await h.native();
+  it("warms while a background task runs, whatever the odds, and stops when it ends without a resume", async () => {
+    const h = harness();
+    // Idle coordinators always resume soon; they still do not carry a finished background wait on.
+    h.history = new ResumeHistory(
+      Array.from({ length: 20 }, () => ({ state: "idle" as const, role: "coordinator" as const, waitMs: 12 * MINUTE })),
+    );
+    h.waits.set("thr_coord", "background");
+    await h.native({ durationMs: 30 * SECOND });
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.sent).toHaveLength(2);
+    expect(h.warmer.status().leases[0]).toMatchObject({ waitingOn: "background", resumeChance: 1 });
+    h.waits.set("thr_coord", "idle");
     await h.clock.advanceTo(60 * MINUTE);
     expect(h.sent).toHaveLength(2);
-    expect(h.events().at(-1)).toBe("end: refresh cap reached (maxRefreshesPerLease 2)");
+    expect(h.events().at(-1)).toBe("end: stopped: the background task ended without the thread resuming");
+    // The ledger keeps the state of the first decision: the one the wait is calibrated by.
+    expect(h.outcomes.at(-1)).toMatchObject({ state: "background", refreshes: 2 });
+  });
+
+  it("W211 2: a check that never answers ends the lease when the entry expires", async () => {
+    const h = harness();
+    await h.native({ durationMs: 30 * SECOND });
+    h.readHook = () => new Promise(() => {});
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.warmer.status()).toMatchObject({ leases: [], retainedBodyBytes: 0 });
+    expect(h.clock.pendingAt()).toEqual([]);
+    expect(h.events().at(-1)).toBe("end: the entry expired while its refresh was being checked");
+    expect(h.outcomes).toMatchObject([{ kind: "end", reason: "the entry expired while its refresh was being checked" }]);
+  });
+
+  it("W211 2: a wait-state read that takes over 10 seconds counts as unknown", async () => {
+    const h = harness();
+    await h.native();
+    h.waitHook = () => new Promise(() => {});
+    await h.clock.advanceTo(4 * MINUTE + 10 * SECOND);
+    expect(h.sent).toHaveLength(0);
+    expect(h.events().at(-1)).toBe("skip: skipped: BB could not tell what the thread waits on");
+  });
+
+  it("ends the lease when BB cannot tell what the thread waits on", async () => {
+    const h = harness();
+    h.waits.set("thr_coord", null);
+    await h.native();
+    await h.clock.advanceTo(60 * MINUTE);
+    expect(h.sent).toHaveLength(0);
+    expect(h.events().at(-1)).toBe("skip: skipped: BB could not tell what the thread waits on");
   });
 
   it("ends the lease when a refresh finds the entry gone (early expiry) and counts the miss", async () => {
@@ -407,6 +510,20 @@ describe("cache warmer timing", () => {
 });
 
 describe("cache warmer native priority and attribution", () => {
+  it("asks BB which thread runs a session no thread is linked to, and admits it once linked", async () => {
+    const h = harness();
+    await h.native({ link: false });
+    expect(h.resolved).toEqual(["s-thr_coord"]);
+    expect(h.warmer.status().admissions).toMatchObject([{ state: "linking" }]);
+    // The answer arrives as a link: the waiting request is classified and leased.
+    h.sessions.set("thr_coord", "s-thr_coord");
+    h.warmer.linkSession("thr_coord", "s-thr_coord");
+    await flush();
+    expect(h.warmer.status().leases).toHaveLength(1);
+    await h.native();
+    expect(h.resolved).toEqual(["s-thr_coord"]);
+  });
+
   it("a native request on the thread clears a pending refresh", async () => {
     const h = harness();
     await h.native();
@@ -555,15 +672,11 @@ describe("cache warmer native priority and attribution", () => {
 
 describe("cache warmer context and lifecycle", () => {
   it.each([
-    ["retired worker", worker("accepted", { state: "retired" }), "skip: no warming window for work retired"],
-    ["stopped worker", worker("active", { state: "stopped" }), "skip: no warming window for work stopped"],
-    ["former (replaced) worker", worker(null, { state: "former" }), "skip: no warming window for work former"],
-    ["finished (accepted) worker", worker("accepted"), "skip: no warming window for worker accepted"],
-    ["adhoc thread", worker(null, { memberKind: "adhoc", role: "adhoc" }), "skip: no warming window for adhoc Initiative thread"],
-    ["archived Initiative", { ...COORDINATOR, archived: true }, "skip: no warming window for archived Initiative"],
-    ["pending delivery", worker("pending"), "skip: no warming window for assignment A1 pending delivery"],
-    ["undelivered next assignment", worker("reported", { next: { ref: "A2", phase: "pending" } }), "skip: no warming window for next assignment A2 not delivered yet"],
-    ["thread without a Projects record", { kind: "none" }, "skip: skipped: Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one"],
+    ["retired worker", worker("accepted", { state: "retired" }), "skip: worker retired"],
+    ["stopped worker", worker("active", { state: "stopped" }), "skip: worker stopped"],
+    ["former (replaced) worker", worker(null, { state: "former" }), "skip: worker former"],
+    ["former reviewer", worker("reported", { role: "review", state: "former" }), "skip: reviewer former"],
+    ["archived Initiative", { ...COORDINATOR, archived: true }, "skip: archived Initiative"],
     ["unknown context", { kind: "unknown", reason: "Projects context read returned HTTP 503" }, "skip: skipped: Projects context read returned HTTP 503"],
   ] as const)("sends no refresh for a %s", async (_name, context, event) => {
     const h = harness();
@@ -590,15 +703,43 @@ describe("cache warmer context and lifecycle", () => {
       { threadId: "thr_coord", fresh: false },
       { threadId: "thr_coord", fresh: true },
     ]);
-    expect(h.events().at(-1)).toBe("skip: refresh not sent: no warming window for work retired");
+    expect(h.events().at(-1)).toBe("skip: refresh not sent: worker retired");
   });
 
   it.each([
-    ["Stop", worker("active", { state: "stopped" }), "no warming window for work stopped"],
-    ["coordinator replacement", { ...COORDINATOR, state: "former" as const }, "no warming window for coordinator former"],
-    ["acceptance", worker("accepted"), "no warming window for worker accepted"],
-    ["a new undelivered assignment", worker("active", { next: { ref: "A2", phase: "pending" } }), "no warming window for next assignment A2 not delivered yet"],
-    ["the record disappearing", { kind: "none" as const }, "skipped: Initiatives has no record of this thread; a standalone thread cannot be told from an unknown or unlinked one"],
+    ["accepted worker", worker("accepted"), "worker", "worker, A1 accepted"],
+    ["worker whose brief is pending delivery", worker("pending"), "worker", "worker, A1 pending"],
+    ["worker with its next assignment queued", worker("reported", { next: { ref: "A2", phase: "pending" } }), "worker", "worker, A2 pending"],
+    ["reviewer", worker("active", { role: "review" }), "reviewer", "reviewer, A1 active"],
+    ["adhoc thread", worker(null, { memberKind: "adhoc", role: "adhoc" }), "standalone", "adhoc Initiative thread"],
+    ["thread outside any Initiative", { kind: "none" }, "standalone", "no Initiative"],
+  ] as const)("warms a %s mid-turn: its next brief or turn reuses the conversation", async (_name, context, role, label) => {
+    const h = harness();
+    h.context.set("thr_coord", context as ThreadContext);
+    await h.native();
+    expect(h.warmer.status().leases[0]).toMatchObject({ role, label });
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.sent).toHaveLength(2);
+  });
+
+  it("a role left out of the settings is not warmed, and removing it refuses the next send", async () => {
+    const h = harness({ roles: ["coordinator", "worker"] });
+    h.context.set("thr_coord", { kind: "none" });
+    await h.native();
+    expect(h.warmer.status().leases).toHaveLength(0);
+    expect(h.events().at(-1)).toBe("skip: role standalone is not enabled for warming (no Initiative)");
+    const later = harness();
+    await later.native();
+    later.config.roles = ["worker"];
+    await later.clock.advanceTo(10 * MINUTE);
+    expect(later.sent).toHaveLength(0);
+    expect(later.events().at(-1)).toBe("end: role coordinator is not enabled for warming (coordinator)");
+  });
+
+  it.each([
+    ["Stop", worker("active", { state: "stopped" }), "worker stopped"],
+    ["coordinator replacement", { ...COORDINATOR, state: "former" as const }, "coordinator former"],
+    ["an archived Initiative", { ...COORDINATOR, archived: true }, "archived Initiative"],
   ])("refuses at send time after %s", async (_name, fresh, reason) => {
     const h = harness();
     h.context.set("thr_coord", fresh.kind === "member" && fresh.memberKind === "coordinator" ? COORDINATOR : worker("active"));
@@ -624,17 +765,19 @@ describe("cache warmer context and lifecycle", () => {
     await h.native();
     await h.clock.advanceTo(60 * MINUTE);
     expect(h.warmer.status().totals.refreshesPlanned).toBe(0);
-    expect(h.events().at(-1)).toBe("skip: refresh not sent: no warming window for coordinator former");
+    expect(h.events().at(-1)).toBe("skip: refresh not sent: coordinator former");
   });
 
-  it("uses the 15-minute window for an Opus worker mid-assignment", async () => {
+  it("warms a worker mid-turn through a 50-minute tool call, past any fixed window", async () => {
     const h = harness();
     h.context.set("thr_coord", worker("active"));
     await h.native({ durationMs: 30 * SECOND });
-    await h.clock.advanceTo(60 * MINUTE);
-    // Deadline 930 s: covered 540, 780, then 1020 s.
-    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480, 720]);
-    expect(h.warmer.status().totals.refreshesConfirmed).toBe(3);
+    await h.clock.advanceTo(50 * MINUTE);
+    expect(h.sent).toHaveLength(12);
+    // The tool returns: the turn's next request ends the lease.
+    await h.native();
+    expect(h.events()).toContain("end: a native request on the thread took over");
+    expect(h.outcomes.at(-1)).toMatchObject({ role: "worker", state: "tool", refreshes: 12 });
   });
 
   it("re-reads context before every refresh, so a retirement mid-lease stops it", async () => {
@@ -648,7 +791,7 @@ describe("cache warmer context and lifecycle", () => {
     // An admission read, then one classification read and one fresh send-time read per due
     // refresh; the second refresh ends at classification.
     expect(h.contextReads.map((read) => read.fresh)).toEqual([false, false, true, false]);
-    expect(h.events().at(-1)).toBe("end: no warming window for coordinator former");
+    expect(h.events().at(-1)).toBe("end: coordinator former");
   });
 
   it("thread archival and disposal end leases, abort refreshes and drop retained bodies", async () => {
@@ -676,8 +819,9 @@ describe("cache warmer context and lifecycle", () => {
     expect(h.warmer.status().leases[0]?.dryRun).toBe(true);
     await h.clock.advanceTo(60 * MINUTE);
     expect(h.sent).toHaveLength(0);
-    expect(h.warmer.status().totals).toMatchObject({ refreshesPlanned: 4, refreshesSent: 0 });
-    expect(h.events().filter((event) => event.startsWith("refresh: dry run"))).toHaveLength(4);
+    // Due every 4 minutes from 240 s while the wait (from 30 s) is under an hour.
+    expect(h.warmer.status().totals).toMatchObject({ refreshesPlanned: 15, refreshesSent: 0 });
+    expect(h.events().filter((event) => event.startsWith("refresh: dry run"))).toHaveLength(15);
   });
 
   it("off mode observes nothing", async () => {
@@ -858,31 +1002,32 @@ describe("A227 1: any same-session native request ends the lease", () => {
   });
 });
 
-describe("A227 2: reviewers have their own window", () => {
-  it("defaults to 0 for a reviewer mid-assignment or reported, never the worker 15/10", async () => {
-    for (const phase of ["active", "reported"] as const) {
-      const h = harness();
-      h.context.set("thr_coord", reviewer(phase));
-      await h.native();
-      await h.clock.advanceTo(60 * MINUTE);
-      expect(h.sent).toHaveLength(0);
-      expect(h.events().at(-1)).toBe(
-        `skip: no warming window for reviewer ${phase === "active" ? "mid-assignment" : "reported"}`,
-      );
-    }
-  });
-
-  it("reviewerMinutes sets the reviewer window, and the worker windows stay as they are", async () => {
-    const h = harness({ reviewerMinutes: 10 });
+describe("A227 2: reviewers are a role of their own", () => {
+  it("a reviewer mid-turn is warmed like any thread waiting on a tool", async () => {
+    const h = harness();
     h.context.set("thr_coord", reviewer("active"));
     await h.native({ durationMs: 30 * SECOND });
-    await h.clock.advanceTo(60 * MINUTE);
+    await h.clock.advanceTo(10 * MINUTE);
     expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480]);
-    const w = harness({ reviewerMinutes: 0 });
-    w.context.set("thr_coord", worker("active"));
-    await w.native({ durationMs: 30 * SECOND });
-    await w.clock.advanceTo(60 * MINUTE);
-    expect(w.sent.map((request) => request.at / SECOND)).toEqual([240, 480, 720]);
+    expect(h.warmer.status().leases[0]).toMatchObject({ role: "reviewer", waitingOn: "tool" });
+  });
+
+  it("an idle reviewer is judged by reviewer waits, not worker ones", async () => {
+    const h = harness();
+    h.history = new ResumeHistory([
+      ...Array.from({ length: 30 }, () => ({ state: "idle" as const, role: "worker" as const, waitMs: 6 * MINUTE })),
+      ...Array.from({ length: 30 }, () => ({ state: "idle" as const, role: "reviewer" as const, waitMs: null })),
+    ]);
+    h.context.set("thr_coord", reviewer("reported"));
+    h.waits.set("thr_coord", "idle");
+    await h.native();
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.sent).toHaveLength(0);
+    h.context.set("thr_other", worker("reported"));
+    h.waits.set("thr_other", "idle");
+    await h.native({ threadId: "thr_other" });
+    await h.clock.advanceTo(20 * MINUTE);
+    expect(h.sent).toHaveLength(1);
   });
 });
 
@@ -906,7 +1051,7 @@ describe("A227 3: shared-session subagents (documented limitation)", () => {
 
 describe("A227 4: classification before a lease slot", () => {
   it("threads that can never warm hold no slot and no body, so the coordinator still gets one", async () => {
-    const h = harness({ maxLeases: 2 });
+    const h = harness({ maxLeases: 2, roles: ["coordinator", "worker"] });
     h.context.set("thr_a", { kind: "none" });
     h.context.set("thr_b", worker(null, { memberKind: "adhoc", role: "adhoc" }));
     h.context.set("thr_c", { ...COORDINATOR, archived: true });
@@ -1031,13 +1176,14 @@ describe("A227 5: narrowing model families", () => {
   });
 });
 
-describe("A227 6: inactive standaloneMinutes", () => {
-  it("does not raise the 1h threshold: a 1h entry still skips without a slot or a context read", async () => {
-    const h = harness({ standaloneMinutes: 60 });
+describe("A227 6: maxWaitMinutes bounds a 1h entry", () => {
+  it("a 1h entry is leased only when maxWaitMinutes outlasts it", async () => {
+    const h = harness({ maxWaitMinutes: 90 });
     await h.native({ body: requestBody({ messageTtl: "1h" }) });
-    expect(h.warmer.status()).toMatchObject({ leases: [], admissions: [], retainedBodyBytes: 0 });
-    expect(h.events()).toContain("skip: the 1h cache entry already outlasts every warming window");
-    expect(h.contextReads).toHaveLength(0);
+    expect(h.warmer.status().leases).toHaveLength(1);
+    // Due 59 minutes after the request started, 58.5 minutes into the wait.
+    await h.clock.advanceTo(60 * MINUTE);
+    expect(h.sent.map((request) => request.at / MINUTE)).toEqual([59]);
   });
 });
 
@@ -1083,21 +1229,21 @@ describe("D357: pauseStopsWarming", () => {
     const h = harness();
     h.context.set("thr_coord", { ...COORDINATOR, paused: true });
     await h.native();
-    expect(h.events().at(-1)).toBe("skip: no warming window for paused Initiative");
+    expect(h.events().at(-1)).toBe("skip: paused Initiative");
     const fresh = harness();
     fresh.freshContext.set("thr_coord", { ...COORDINATOR, paused: true });
     await fresh.native();
     await fresh.clock.advanceTo(60 * MINUTE);
     expect(fresh.sent).toHaveLength(0);
-    expect(fresh.events().at(-1)).toBe("skip: refresh not sent: no warming window for paused Initiative");
+    expect(fresh.events().at(-1)).toBe("skip: refresh not sent: paused Initiative");
   });
 
-  it("off keeps the role windows through a pause", async () => {
+  it("off keeps warming through a pause", async () => {
     const h = harness({ pauseStopsWarming: false });
     h.context.set("thr_coord", { ...COORDINATOR, paused: true });
     await h.native();
-    await h.clock.advanceTo(60 * MINUTE);
-    expect(h.sent).toHaveLength(4);
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.sent).toHaveLength(2);
   });
 });
 
@@ -1150,8 +1296,8 @@ describe("A234 1: a finished helper does not suppress the final eligible complet
     await opus.finish();
     expect(h.warmer.status().leases).toHaveLength(1);
     expect(h.events().join("\n")).not.toContain("newer native request");
-    await h.clock.advanceTo(60 * MINUTE);
-    expect(h.sent).toHaveLength(4);
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.sent).toHaveLength(2);
     expect(new TextDecoder().decode(h.sent[0]?.body)).toContain("final");
   });
 
@@ -1162,8 +1308,8 @@ describe("A234 1: a finished helper does not suppress the final eligible complet
     await haiku.finish();
     await opus.finish();
     expect(h.warmer.status().leases).toHaveLength(1);
-    await h.clock.advanceTo(60 * MINUTE);
-    expect(h.sent).toHaveLength(4);
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.sent).toHaveLength(2);
   });
 
   it("no lease while any same-session request still runs, whatever its family", async () => {
@@ -1284,45 +1430,34 @@ describe("A234 3: post-turn helpers (documented limitation)", () => {
   });
 });
 
-describe("D362: reviewerAcceptedMinutes", () => {
-  it("an old record defaults it to 0 and the longest window counts it", () => {
-    const old = warmingConfigSchema.parse({ mode: "warm", workerAcceptedMinutes: 10 });
-    expect(old.reviewerAcceptedMinutes).toBe(0);
-    expect(longestWindowMinutes(warmingConfigSchema.parse({ reviewerAcceptedMinutes: 45 }))).toBe(45);
-  });
-
-  it("worker grace does not warm accepted reviewers; their own window does", async () => {
-    const grace = harness({ workerAcceptedMinutes: 10 });
-    grace.context.set("thr_coord", reviewer("accepted"));
-    await grace.native();
-    await grace.clock.advanceTo(60 * MINUTE);
-    expect(grace.sent).toHaveLength(0);
-    expect(grace.events().at(-1)).toBe("skip: no warming window for reviewer accepted");
-    const own = harness({ reviewerAcceptedMinutes: 10 });
-    own.context.set("thr_coord", reviewer("accepted"));
-    await own.native({ durationMs: 30 * SECOND });
-    await own.clock.advanceTo(60 * MINUTE);
-    expect(own.sent.map((request) => request.at / SECOND)).toEqual([240, 480]);
-  });
-
-  it("a 1h entry is not pre-skipped when only the accepted reviewer window reaches an hour", async () => {
-    const h = harness({ reviewerAcceptedMinutes: 60 });
-    h.context.set("thr_coord", reviewer("accepted"));
-    await h.native({ body: requestBody({ messageTtl: "1h" }) });
-    expect(h.events().join("\n")).not.toContain("already outlasts every warming window");
-    expect(h.warmer.status().leases).toHaveLength(1);
-  });
-
-  it("lowering it to 0 while a lease waits refuses the next refresh", async () => {
-    const h = harness({ reviewerAcceptedMinutes: 10 });
-    h.context.set("thr_coord", reviewer("accepted"));
-    await h.native();
-    expect(h.warmer.status().leases).toHaveLength(1);
-    h.config.reviewerAcceptedMinutes = 0;
-    h.warmer.reconcile();
-    await h.clock.advanceTo(60 * MINUTE);
-    expect(h.sent).toHaveLength(0);
-    expect(h.events().at(-1)).toBe("end: no warming window for reviewer accepted");
+describe("T141: settings of the fixed-window model", () => {
+  it("a stored record that still has them loads without them, so warming stays on", () => {
+    const state = loadWarmingConfig({
+      mode: "warm",
+      coordinatorMinutes: 20,
+      workerActiveMinutes: 15,
+      reviewerAcceptedMinutes: 0,
+      standaloneMinutes: 0,
+      maxRefreshesPerLease: 4,
+      maxRefreshesPerHour: 60,
+      safetyMarginSeconds: 15,
+    });
+    // The hourly budget at the old default of 60 moves to the new one; the server saves the result.
+    expect(state).toEqual({
+      ok: true,
+      config: warmingConfigSchema.parse({ mode: "warm", safetyMarginSeconds: 15, maxRefreshesPerHour: 100 }),
+      migrated: true,
+    });
+    // A budget set to anything else is kept; a record without legacy keys is not migrated, so an
+    // explicit 60 saved after the migration stays.
+    expect(loadWarmingConfig({ mode: "warm", coordinatorMinutes: 20, maxRefreshesPerHour: 40 })).toMatchObject({
+      config: { maxRefreshesPerHour: 40 },
+      migrated: true,
+    });
+    expect(loadWarmingConfig({ mode: "warm", maxRefreshesPerHour: 60 })).toEqual({
+      ok: true,
+      config: warmingConfigSchema.parse({ mode: "warm", maxRefreshesPerHour: 60 }),
+    });
   });
 });
 

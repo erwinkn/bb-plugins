@@ -505,10 +505,12 @@ export function settingsLabel(settings: LedgerSettings | null): string {
   const families = Array.isArray(warming.families)
     ? warming.families.join(",")
     : "?";
-  const windows =
-    mode === "off"
-      ? ""
-      : ` (${families}; coordinator ${warming.coordinatorMinutes}m, worker ${warming.workerActiveMinutes}/${warming.workerReportedMinutes}m)`;
+  // Periods before T141 used fixed windows; later ones warm while it pays, up to maxWaitMinutes.
+  const policy =
+    warming.maxWaitMinutes === undefined
+      ? `coordinator ${warming.coordinatorMinutes}m, worker ${warming.workerActiveMinutes}/${warming.workerReportedMinutes}m`
+      : `economic, max wait ${warming.maxWaitMinutes}m${warming.maxBackgroundWaitMinutes === undefined ? "" : ` (background ${warming.maxBackgroundWaitMinutes}m)`}, ${Array.isArray(warming.roles) ? warming.roles.join(",") : "?"}`;
+  const windows = mode === "off" ? "" : ` (${families}; ${policy})`;
   return `ttl ${settings.claudeMainCacheTtl} · warming ${mode}${windows}`;
 }
 

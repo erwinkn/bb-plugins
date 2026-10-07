@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { warmingRoles, type WarmingRole } from "./warming-economics.js";
 import { describeIssues, parseOrThrow } from "./validation.js";
 
 // Cache-warming settings live under their own kv key, like advisor-config: the native "config"
@@ -12,13 +13,32 @@ export type WarmingMode = z.infer<typeof warmingModeSchema>;
 export const warmingFamilySchema = z.enum(["fable", "sonnet", "opus", "haiku"]);
 export type WarmingFamily = z.infer<typeof warmingFamilySchema>;
 
-// Minutes after the last native request completes during which an idle thread's cache is kept
-// warm. 0 means no lease.
-const windowMinutesSchema = z
-  .number()
-  .int("Use whole minutes.")
-  .min(0, "Must be at least 0.")
-  .max(60, "Must be at most 60.");
+export const warmingRoleSchema = z.enum(warmingRoles);
+
+// Settings of the fixed-window model that economic warming replaced (T141). A stored record that
+// still has them stays valid: loading migrates it (upgradeLegacyRecord) and the server saves the
+// result.
+const LEGACY_KEYS = [
+  "coordinatorMinutes",
+  "workerActiveMinutes",
+  "workerReportedMinutes",
+  "workerAcceptedMinutes",
+  "workerEndedMinutes",
+  "reviewerMinutes",
+  "reviewerAcceptedMinutes",
+  "standaloneMinutes",
+  "maxRefreshesPerLease",
+];
+
+const OLD_DEFAULT_REFRESHES_PER_HOUR = 60;
+
+const rolesSchema = z
+  .array(warmingRoleSchema)
+  .max(warmingRoles.length)
+  .refine(
+    (roles) => new Set(roles).size === roles.length,
+    "List each role once.",
+  );
 
 const familiesSchema = z
   .array(warmingFamilySchema)
@@ -44,19 +64,13 @@ function integer(min: number, max: number) {
 
 export const DEFAULT_WARMING_CONFIG = {
   mode: "off" as WarmingMode,
-  coordinatorMinutes: 20,
-  workerActiveMinutes: 15,
-  workerReportedMinutes: 10,
-  workerAcceptedMinutes: 0,
-  workerEndedMinutes: 0,
-  reviewerMinutes: 0,
-  reviewerAcceptedMinutes: 0,
-  standaloneMinutes: 0,
+  roles: [...warmingRoles] as WarmingRole[],
+  maxWaitMinutes: 60,
+  maxBackgroundWaitMinutes: 20,
   pauseStopsWarming: true,
   families: ["opus"] as WarmingFamily[],
   safetyMarginSeconds: 60,
-  maxRefreshesPerLease: 4,
-  maxRefreshesPerHour: 60,
+  maxRefreshesPerHour: 100,
   maxConcurrentRefreshes: 2,
   maxLeases: 8,
   maxLeaseBodyKiB: 4_096,
@@ -68,24 +82,20 @@ export const DEFAULT_WARMING_CONFIG = {
 
 const fieldSchemas = {
   mode: warmingModeSchema,
-  coordinatorMinutes: windowMinutesSchema,
-  workerActiveMinutes: windowMinutesSchema,
-  workerReportedMinutes: windowMinutesSchema,
-  workerAcceptedMinutes: windowMinutesSchema,
-  workerEndedMinutes: windowMinutesSchema,
-  // Reviewers with an active or reported assignment.
-  reviewerMinutes: windowMinutesSchema,
-  // Reviewers whose review was accepted but who are not retired. Independent of
-  // workerAcceptedMinutes, so a worker grace never warms reviewers (D362, an agent default).
-  reviewerAcceptedMinutes: windowMinutesSchema,
-  // Inactive: Initiatives reports standalone and unknown threads the same way (membership null).
-  standaloneMinutes: windowMinutesSchema,
-  // A paused Initiative's threads get no window (D357, an agent default).
+  // The thread roles that may be warmed: Initiative coordinators, workers and reviewers, and BB
+  // threads outside any Initiative. Whether a refresh pays is decided per wait (warming-economics).
+  roles: rolesSchema,
+  // No refresh is sent once a wait (from the last native request's completion) is this old.
+  maxWaitMinutes: integer(5, 240),
+  // A thread waiting on a background task gets no refresh once its wait is this old (the T141
+  // coordinator's decision: in the back-test, most background tasks that ran longer never led to a
+  // resume). maxWaitMinutes still applies if it is lower.
+  maxBackgroundWaitMinutes: integer(5, 240),
+  // A paused Initiative's threads are not warmed (D357, an agent default).
   pauseStopsWarming: z.boolean(),
   families: familiesSchema,
   // A refresh is sent this long before the cache entry would expire.
   safetyMarginSeconds: integer(5, 240),
-  maxRefreshesPerLease: integer(0, 30),
   maxRefreshesPerHour: integer(0, 1_000),
   maxConcurrentRefreshes: integer(1, 8),
   maxLeases: integer(1, 64),
@@ -103,29 +113,12 @@ export type WarmingConfigKey = keyof typeof fieldSchemas;
 export const warmingConfigSchema = z
   .object({
     mode: fieldSchemas.mode.default(DEFAULT_WARMING_CONFIG.mode),
-    coordinatorMinutes: fieldSchemas.coordinatorMinutes.default(
-      DEFAULT_WARMING_CONFIG.coordinatorMinutes,
+    roles: fieldSchemas.roles.default(DEFAULT_WARMING_CONFIG.roles),
+    maxWaitMinutes: fieldSchemas.maxWaitMinutes.default(
+      DEFAULT_WARMING_CONFIG.maxWaitMinutes,
     ),
-    workerActiveMinutes: fieldSchemas.workerActiveMinutes.default(
-      DEFAULT_WARMING_CONFIG.workerActiveMinutes,
-    ),
-    workerReportedMinutes: fieldSchemas.workerReportedMinutes.default(
-      DEFAULT_WARMING_CONFIG.workerReportedMinutes,
-    ),
-    workerAcceptedMinutes: fieldSchemas.workerAcceptedMinutes.default(
-      DEFAULT_WARMING_CONFIG.workerAcceptedMinutes,
-    ),
-    workerEndedMinutes: fieldSchemas.workerEndedMinutes.default(
-      DEFAULT_WARMING_CONFIG.workerEndedMinutes,
-    ),
-    reviewerMinutes: fieldSchemas.reviewerMinutes.default(
-      DEFAULT_WARMING_CONFIG.reviewerMinutes,
-    ),
-    reviewerAcceptedMinutes: fieldSchemas.reviewerAcceptedMinutes.default(
-      DEFAULT_WARMING_CONFIG.reviewerAcceptedMinutes,
-    ),
-    standaloneMinutes: fieldSchemas.standaloneMinutes.default(
-      DEFAULT_WARMING_CONFIG.standaloneMinutes,
+    maxBackgroundWaitMinutes: fieldSchemas.maxBackgroundWaitMinutes.default(
+      DEFAULT_WARMING_CONFIG.maxBackgroundWaitMinutes,
     ),
     pauseStopsWarming: fieldSchemas.pauseStopsWarming.default(
       DEFAULT_WARMING_CONFIG.pauseStopsWarming,
@@ -133,9 +126,6 @@ export const warmingConfigSchema = z
     families: fieldSchemas.families.default(DEFAULT_WARMING_CONFIG.families),
     safetyMarginSeconds: fieldSchemas.safetyMarginSeconds.default(
       DEFAULT_WARMING_CONFIG.safetyMarginSeconds,
-    ),
-    maxRefreshesPerLease: fieldSchemas.maxRefreshesPerLease.default(
-      DEFAULT_WARMING_CONFIG.maxRefreshesPerLease,
     ),
     maxRefreshesPerHour: fieldSchemas.maxRefreshesPerHour.default(
       DEFAULT_WARMING_CONFIG.maxRefreshesPerHour,
@@ -178,7 +168,8 @@ export const warmingConfigSetInputSchema = z
 export type WarmingConfigSetInput = z.infer<typeof warmingConfigSetInputSchema>;
 
 export type WarmingConfigState =
-  | { ok: true; config: WarmingConfig }
+  // migrated: the stored record was from the fixed-window model; the server saves config.
+  | { ok: true; config: WarmingConfig; migrated?: true }
   | { ok: false; error: string };
 
 export const warmingConfigViewSchema = z
@@ -198,8 +189,12 @@ export interface WarmingConfigController {
 }
 
 export function loadWarmingConfig(stored: unknown): WarmingConfigState {
-  const parsed = warmingConfigSchema.safeParse(stored ?? {});
-  if (parsed.success) return { ok: true, config: parsed.data };
+  const upgraded = upgradeLegacyRecord(stored ?? {});
+  const parsed = warmingConfigSchema.safeParse(upgraded ?? stored ?? {});
+  if (parsed.success)
+    return upgraded === null
+      ? { ok: true, config: parsed.data }
+      : { ok: true, config: parsed.data, migrated: true };
   return {
     ok: false,
     error: `Stored ${WARMING_CONFIG_KEY} is invalid, so cache warming is off: ${describeIssues(parsed.error.issues, "(record)")}`,
@@ -249,17 +244,21 @@ export function warmingConfigView(
   };
 }
 
-// The longest window any thread can get. standaloneMinutes is inactive, so it never counts.
-export function longestWindowMinutes(config: WarmingConfig): number {
-  return Math.max(
-    config.coordinatorMinutes,
-    config.workerActiveMinutes,
-    config.workerReportedMinutes,
-    config.workerAcceptedMinutes,
-    config.workerEndedMinutes,
-    config.reviewerMinutes,
-    config.reviewerAcceptedMinutes,
+// A record of the fixed-window model, without its window keys, and with the hourly refresh budget
+// at the new default if it was at the old one (60): economic warming refreshes every linked thread,
+// and 60 an hour bound it on 2026-10-05 to 10-07. Null for any other record. Once saved, a record
+// has no legacy key, so a later explicit 60 stays.
+function upgradeLegacyRecord(stored: unknown): Record<string, unknown> | null {
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored))
+    return null;
+  const entries = Object.entries(stored);
+  if (!entries.some(([key]) => LEGACY_KEYS.includes(key))) return null;
+  const record = Object.fromEntries(
+    entries.filter(([key]) => !LEGACY_KEYS.includes(key)),
   );
+  if (record.maxRefreshesPerHour === OLD_DEFAULT_REFRESHES_PER_HOUR)
+    record.maxRefreshesPerHour = DEFAULT_WARMING_CONFIG.maxRefreshesPerHour;
+  return record;
 }
 
 // Turns the CLI's `warming set <key> <value>` into a raw update; mergeWarmingConfig validates it,
@@ -274,11 +273,11 @@ export function parseWarmingUpdate(
     );
   let parsed: unknown;
   if (key === "mode") parsed = value;
-  else if (key === "families")
+  else if (key === "families" || key === "roles")
     parsed =
       value.trim() === "" || value === "none"
         ? []
-        : value.split(",").map((family) => family.trim());
+        : value.split(",").map((item) => item.trim());
   else if (key === "pauseStopsWarming")
     parsed =
       value === "on" || value === "true"
