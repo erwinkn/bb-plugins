@@ -1,16 +1,5 @@
-/**
- * A read that has not answered by then counts as failed, so an RPC that never
- * settles cannot hold its key, and every refresh that would join it, until a
- * reload. The next signal or poll reads again; a late answer is ignored.
- */
-export const READ_TIMEOUT_MS = 30_000;
-const withTimeout = <T,>(read: Promise<T>, ms: number) => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("The Initiative did not answer in time. Retrying.")), ms);
-  });
-  return Promise.race([read, late]).finally(() => clearTimeout(timer));
-};
+import type { ReadTimeoutReport } from "./contract";
+import { REPORT_INTERVAL_MS, ReadTimeoutError, withReadTimeout } from "./read-timeout";
 
 /** Read sharing for the app session. Native RPC/realtime remain the transport. */
 export class SharedReads {
@@ -20,25 +9,43 @@ export class SharedReads {
     timer?: ReturnType<typeof setTimeout>;
     /** A change arrived while a read or save was in flight: read again once it clears. */
     again?: () => Promise<unknown>;
+    /** Failed reads in a row. */
+    misses: number;
   }>();
+  /** Sends a timed-out read's report; the app wires it to its RPC. */
+  reporter: ((report: ReadTimeoutReport & { read: string }) => void) | null = null;
+  private lastReportAt = -Infinity;
   entry(key: string) {
     let entry = this.entries.get(key);
     if (!entry) {
-      entry = { data: null, error: null, loaded: false, epoch: 0, pending: null, listeners: new Set(), holds: 0 };
+      entry = { data: null, error: null, loaded: false, epoch: 0, pending: null, listeners: new Set(), holds: 0, misses: 0 };
       this.entries.set(key, entry);
     }
     return entry;
   }
   private publish(key: string) { for (const listener of this.entry(key).listeners) listener(); }
+  /** At most one report per REPORT_INTERVAL_MS for the app session. */
+  private report(key: string, error: ReadTimeoutError) {
+    const now = Date.now();
+    if (!this.reporter || now - this.lastReportAt < REPORT_INTERVAL_MS) return;
+    this.lastReportAt = now;
+    this.reporter({ read: key.split(":")[0]!.slice(0, 40), ...error.report });
+  }
   refresh(key: string, fetch: () => Promise<unknown>): Promise<void> {
     const entry = this.entry(key);
     if (entry.holds) return Promise.resolve();
     if (entry.pending) return entry.pending;
     const epoch = entry.epoch;
-    const pending = Promise.resolve().then(() => withTimeout(fetch(), READ_TIMEOUT_MS)).then(data => {
-      if (entry.epoch === epoch) { entry.data = data; entry.error = null; entry.loaded = true; this.publish(key); }
+    const pending = Promise.resolve().then(() => withReadTimeout(fetch())).then(data => {
+      if (entry.epoch === epoch) { entry.misses = 0; entry.data = data; entry.error = null; entry.loaded = true; this.publish(key); }
     }, error => {
-      if (entry.epoch === epoch) { entry.error = error instanceof Error ? error.message : String(error); entry.loaded = true; this.publish(key); }
+      if (error instanceof ReadTimeoutError) this.report(key, error);
+      if (entry.epoch !== epoch) return;
+      // One missed read stays quiet and reads again at once: it is usually a
+      // tab or device that slept, or a stale connection. The last value stays
+      // up either way; the error shows from the second miss in a row.
+      if (++entry.misses === 1) { if (entry.listeners.size) entry.again ??= fetch; return; }
+      entry.error = error instanceof Error ? error.message : String(error); entry.loaded = true; this.publish(key);
     }).finally(() => { if (entry.pending === pending) entry.pending = null; this.catchUp(key); });
     entry.pending = pending;
     return pending;
@@ -81,7 +88,7 @@ export class SharedReads {
   seed(key: string, data: unknown) {
     const entry = this.entry(key);
     if (entry.holds) return;
-    entry.epoch++; entry.pending = null;
+    entry.epoch++; entry.pending = null; entry.misses = 0;
     entry.data = data; entry.error = null; entry.loaded = true;
     this.publish(key);
   }

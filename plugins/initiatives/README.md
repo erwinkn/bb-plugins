@@ -793,7 +793,12 @@ tool, CLI, sweep) runs in one announcing scope that compares the ledger's change
 counter around its work: a write announces itself exactly once, also when the work
 throws after saving, and a refused command or a read announces nothing (T129).
 Dashboard and Sidebar tree reads give up after 30 s, so an RPC that never settles
-cannot freeze a view until reload; the next signal or poll reads again.
+cannot freeze a view until reload. A first miss keeps the last data, shows nothing
+and reads again at once; the error shows from the second miss in a row. A tab that
+becomes visible again or a network that returns reads at once (W196). Each client
+reports at most one timeout a minute through `reportReadTimeout`, logged as one warn
+line with the elapsed time, whether the tab was or had been hidden, `navigator.onLine`
+and the time since the tab was last visible (`bb plugin logs initiatives` or `sidebar`).
 
 The Inbox's Blocked workers card has two split buttons (T130). **Send to
 coordinator** records the answer as the user's decision and sends it to the

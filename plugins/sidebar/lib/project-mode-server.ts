@@ -31,14 +31,22 @@ export function registerProjectMode(bb: BbPluginApi) {
   };
   bb.rpc.register(projectModeContract, {
     projectMode: async (input) => {
-      if (!(await initiativesRunning(bb)))
-        return { available: false, tree: null, order: null, orderError: null };
-      const fresh = await bb.sdk.plugins.callRpc({
-        pluginId: INITIATIVES_PLUGIN_ID,
-        method: "tree",
-        input: null,
-        outputSchema: treeSchema,
-      });
+      let fresh;
+      try {
+        fresh = await bb.sdk.plugins.callRpc({
+          pluginId: INITIATIVES_PLUGIN_ID,
+          method: "tree",
+          input: null,
+          outputSchema: treeSchema,
+        });
+      } catch (cause: unknown) {
+        // BB refuses a call to a missing or stopped plugin, so only a failed
+        // read pays for the full plugin list, to tell those apart from a
+        // running Initiatives that failed.
+        if (!(await initiativesRunning(bb)))
+          return { available: false, tree: null, order: null, orderError: null };
+        throw cause;
+      }
       const revision = input ? revisionOf(JSON.stringify(fresh)) : null;
       const unchanged = !!input?.known && input.known === revision;
       const tree = unchanged ? null : fresh;
@@ -109,6 +117,12 @@ export function registerProjectMode(bb: BbPluginApi) {
     },
     initiativesChanged: (payload) => {
       bb.realtime.publish(INITIATIVES_CHANGED, payload);
+      return { ok: true as const };
+    },
+    reportReadTimeout: (r) => {
+      bb.log.warn(
+        `An Initiatives tree read timed out in a client: elapsedMs=${r.elapsedMs} hidden=${r.hidden} online=${r.online} sinceVisibleMs=${r.sinceVisibleMs} hiddenDuringRead=${r.hiddenDuringRead}`,
+      );
       return { ok: true as const };
     },
   });

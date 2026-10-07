@@ -17,6 +17,21 @@ const membershipSchema = z
   })
   .nullable();
 export type PanelMembership = z.infer<typeof membershipSchema>;
+/**
+ * What the tab looked like when a dashboard read gave up: evidence for whether
+ * the device slept, the tab was frozen, or the connection went stale.
+ */
+export const readTimeoutReportSchema = z.object({
+  /** Wall-clock time from the read's start; above the timeout when the tab froze. */
+  elapsedMs: z.number().int().nonnegative(),
+  hidden: z.boolean(),
+  online: z.boolean(),
+  /** 0 while visible. */
+  sinceVisibleMs: z.number().int().nonnegative(),
+  /** The tab was hidden at some point while the read was pending. */
+  hiddenDuringRead: z.boolean(),
+});
+export type ReadTimeoutReport = z.infer<typeof readTimeoutReportSchema>;
 export const projectsContract = defineRpcContract({
   resetSetting: {
     input: z.object({ field: z.enum(["coordinatorInstructions", "workerInstructions", "executionProfiles"]) }).strict(),
@@ -55,6 +70,14 @@ export const projectsContract = defineRpcContract({
   command: {
     input: z.object({ projectId: id.optional(), command: z.union([commandSchema, legacyThreadCreateSchema]) }),
     output: z.unknown(),
+  },
+  /**
+   * A client's read timed out; logged as one warn line. `read` names the view
+   * (panel, overview, details…). Clients send at most one per minute.
+   */
+  reportReadTimeout: {
+    input: readTimeoutReportSchema.extend({ read: z.string().min(1).max(40) }),
+    output: z.object({ ok: z.literal(true) }),
   },
   inventory: {
     input: z.null(),

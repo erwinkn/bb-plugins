@@ -61,6 +61,7 @@ import { ThreadDragOverlay } from "./thread-drag-overlay";
 import { menuItemClass } from "./menus";
 import { AdvisorEntry } from "./advisor-entry";
 import { EntryRowBody, entryRowClass } from "./entry-row";
+import { ReadTimeoutError, claimReport, withReadTimeout } from "../lib/read-timeout";
 
 export function ModeToggle() {
   const state = useClientState();
@@ -92,20 +93,6 @@ export function ModeToggle() {
 
 type TreeProject = ProjectTree["projects"][number];
 
-/**
- * A tree read that has not answered by then counts as failed, so an RPC that
- * never settles cannot hold every later refresh until a reload; the next
- * signal or poll reads again and a late answer is ignored.
- */
-export const TREE_READ_TIMEOUT_MS = 30_000;
-const withTimeout = <T,>(read: Promise<T>, ms: number) => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("Initiatives did not answer in time. Retrying.")), ms);
-  });
-  return Promise.race([read, late]).finally(() => clearTimeout(timer));
-};
-
 export function ProjectMode(props: PluginThreadListProps) {
   const navigate = useBbNavigate();
   const api = useRpc<typeof projectModeContract>();
@@ -132,15 +119,26 @@ export function ProjectMode(props: PluginThreadListProps) {
   // and the Initiatives signal can land during the read that listing started.
   // A scheduled refresh then runs once more after it instead of joining it.
   const again = useRef(false);
+  // One missed read stays quiet and reads again at once: it is usually a tab
+  // or device that slept, or a stale connection. The current tree stays up
+  // either way; the banner shows from the second miss in a row.
+  const misses = useRef(0);
   const refresh = useCallback(function read(): Promise<void> {
     if (pending.current) return pending.current;
-    const call = withTimeout(apiRef.current.call("projectMode", { known: revision.current }), TREE_READ_TIMEOUT_MS).then(result => {
+    const call = withReadTimeout(apiRef.current.call("projectMode", { known: revision.current })).then(result => {
+      misses.current = 0;
       if (mounted.current) {
         setAvailable(result.available);
         if (!result.unchanged) { setTree(result.tree); revision.current = result.revision ?? null; }
         applyRef.current(result.order, result.orderError); setError(null);
       }
-    }, error => { if (mounted.current) setError(error instanceof Error ? error.message : String(error)); })
+    }, error => {
+      if (error instanceof ReadTimeoutError && claimReport())
+        void apiRef.current.call("reportReadTimeout", error.report).catch(() => {});
+      if (!mounted.current) return;
+      if (++misses.current === 1) again.current = true;
+      else setError(error instanceof Error ? error.message : String(error));
+    })
       .finally(() => {
         if (pending.current === call) pending.current = null;
         if (again.current && mounted.current) { again.current = false; void read(); }
@@ -191,7 +189,16 @@ export function ProjectMode(props: PluginThreadListProps) {
   }, [threadSignal, connection, schedule, tree, native.threads]);
   useEffect(() => {
     const interval = setInterval(() => { if (document.visibilityState !== "hidden") schedule(); }, 15000);
-    return () => clearInterval(interval);
+    // A tab coming back or a network returning reads at once instead of on
+    // the next poll, which a hidden tab skipped.
+    const visible = () => { if (document.visibilityState !== "hidden") schedule(); };
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("online", schedule);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("online", schedule);
+    };
   }, [schedule]);
   const projects = tree?.projects ?? [];
   const displayed = useMemo(

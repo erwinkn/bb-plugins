@@ -93,8 +93,21 @@ function useData<T>(key: string, fetchData: () => Promise<T>, enabled = true, pa
   useEffect(() => {
     if (!enabled || passive) return;
     const interval = setInterval(() => { if (document.visibilityState !== "hidden") schedule(); }, 15000);
-    return () => clearInterval(interval);
+    // A tab coming back or a network returning reads at once instead of on
+    // the next poll, which a hidden tab skipped.
+    const visible = () => { if (document.visibilityState !== "hidden") schedule(); };
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("online", schedule);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("online", schedule);
+    };
   }, [cache, key, enabled, passive]);
+  const rpc = useRpc<typeof projectsContract>();
+  useEffect(() => {
+    cache.reporter = report => void rpc.call("reportReadTimeout", report).catch(() => {});
+  }, [cache, rpc]);
   const entry = cache.entry(key);
   return { data: entry.data as T | null, error: entry.error, loaded: entry.loaded, refresh,
     schedule, begin: () => cache.begin(key) };

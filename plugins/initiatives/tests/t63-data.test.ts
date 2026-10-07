@@ -10,6 +10,9 @@ describe("T63 shared keyed reads", () => {
     const a = cache.refresh("p1", fetch), b = cache.refresh("p1", fetch);
     expect(a).toBe(b); held.resolve("valid"); await a;
     expect(fetch).toHaveBeenCalledTimes(1); expect(cache.entry("p1").data).toBe("valid");
+    // W196: one failure stays quiet; the second in a row shows its error.
+    await cache.refresh("p1", () => Promise.reject(new Error("offline")));
+    expect(cache.entry("p1")).toMatchObject({ data: "valid", error: null });
     await cache.refresh("p1", () => Promise.reject(new Error("offline")));
     expect(cache.entry("p1")).toMatchObject({ data: "valid", error: "offline" });
     expect(cache.entry("p2").data).toBeNull();

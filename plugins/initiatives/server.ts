@@ -379,6 +379,12 @@ export default function plugin(bb: BbPluginApi) {
     overview: ({ projectId, detailed, detail }) =>
       overview(projectId, detail ?? (detailed === false ? "summary" : "full"), { fresh: false }),
     membership: ({ threadId }) => membershipOf(threadId),
+    reportReadTimeout: ({ read, ...r }) => {
+      bb.log.warn(
+        `An Initiatives ${read} read timed out in a client: elapsedMs=${r.elapsedMs} hidden=${r.hidden} online=${r.online} sinceVisibleMs=${r.sinceVisibleMs} hiddenDuringRead=${r.hiddenDuringRead}`,
+      );
+      return { ok: true as const };
+    },
     panel: async ({ threadId }) => {
       const membership = membershipOf(threadId);
       return {

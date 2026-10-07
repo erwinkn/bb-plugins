@@ -10,8 +10,8 @@ import { PROJECT_ORDER_CHANNEL } from "../lib/project-order-schema";
 import type { PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import { thread } from "./fixtures";
 import { projectHueStep } from "../lib/project-hue";
+import { READ_TIMEOUT_MS, READ_TIMEOUT_MESSAGE, resetReports } from "../lib/read-timeout";
 const app = await loadPluginApp(() => import("../app"));
-const { TREE_READ_TIMEOUT_MS } = await import("../components/project-mode");
 const Component = app.threadLists[0].component;
 const slots: ReturnType<typeof renderSlot>[] = [];
 beforeEach(() => {
@@ -272,10 +272,65 @@ describe("Projects sidebar mode", () => {
       expect(read).toHaveBeenCalledTimes(2);
       // The change lands while that read hangs: it waits for it, but not forever.
       await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
-      await act(async () => { await vi.advanceTimersByTimeAsync(TREE_READ_TIMEOUT_MS); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS); });
       await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
       expect(await slot.findByText("W1 Search reviewer")).toBeTruthy();
     } finally { vi.useRealTimers(); }
+  });
+
+  it("W196 keeps the tree through one missed read, retries at once, and shows the banner from the second miss", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    resetReports();
+    try {
+      // Polls during a hung read queue the next one, so three reads hang.
+      const read = vi.fn((_input: unknown) => [2, 3, 4].includes(read.mock.calls.length)
+        ? new Promise(() => {})
+        : { available: true, tree, order: null, orderError: null });
+      const reportReadTimeout = vi.fn((_input: unknown) => ({ ok: true }));
+      const slot = mount(true, { rpc: { projectMode: read, reportReadTimeout } });
+      await slot.findByRole("link", { name: "Open Useful search" });
+      await slot.behavior.emitRealtime("initiatives-changed", { projectId: "p1" });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(read).toHaveBeenCalledTimes(2);
+      // The first miss reads again at once and shows nothing.
+      await act(async () => { await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS); });
+      expect(read).toHaveBeenCalledTimes(3);
+      expect(slot.queryByRole("alert")).toBeNull();
+      // The second miss in a row shows the banner over the last good tree.
+      await act(async () => { await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS); });
+      expect((await slot.findByRole("alert")).textContent).toContain(READ_TIMEOUT_MESSAGE);
+      expect(slot.getByRole("link", { name: "Open Useful search" })).toBeTruthy();
+      // One report per minute per client, with the tab's state.
+      expect(reportReadTimeout).toHaveBeenCalledTimes(1);
+      expect(reportReadTimeout.mock.calls[0]![0]).toMatchObject({ hidden: false, online: true, sinceVisibleMs: 0, hiddenDuringRead: false });
+      expect((reportReadTimeout.mock.calls[0]![0] as { elapsedMs: number }).elapsedMs).toBeGreaterThanOrEqual(READ_TIMEOUT_MS);
+      // A later read answers and clears it.
+      await act(async () => { await vi.advanceTimersByTimeAsync(READ_TIMEOUT_MS + 250); });
+      await waitFor(() => expect(slot.queryByRole("alert")).toBeNull());
+      expect(read).toHaveBeenCalledTimes(5);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("W196 reads at once when the tab becomes visible again or the network returns", async () => {
+    let visibility: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+    try {
+      const read = vi.fn((_input: unknown) => ({ available: true, tree, order: null, orderError: null }));
+      const slot = mount(true, { rpc: { projectMode: read } });
+      await slot.findByRole("link", { name: "Open Useful search" });
+      expect(read).toHaveBeenCalledTimes(1);
+      visibility = "hidden";
+      document.dispatchEvent(new Event("visibilitychange"));
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 240)); });
+      expect(read).toHaveBeenCalledTimes(1);
+      visibility = "visible";
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+      window.dispatchEvent(new Event("online"));
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    } finally {
+      delete (document as { visibilityState?: unknown }).visibilityState;
+    }
   });
 
   it("T112 keeps the current tree when a refresh answers unchanged", async () => {

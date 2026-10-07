@@ -1,9 +1,12 @@
 import { expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { registerProjectMode } from "../lib/project-mode-server";
+// BB refuses an RPC to a plugin that is missing or not running.
+const refused = async () => { throw new Error('unknown plugin "initiatives"'); };
+
 it("keeps the sidebar usable when Initiatives is missing or disabled", async () => {
   const h = createFakePluginHost({
-    sdk: { plugins: { list: async () => ({ plugins: [] }) } },
+    sdk: { plugins: { list: async () => ({ plugins: [] }), callRpc: refused } },
   });
   registerProjectMode(h.bb);
   try {
@@ -13,7 +16,48 @@ it("keeps the sidebar usable when Initiatives is missing or disabled", async () 
       order: null,
       orderError: null,
     });
-    expect(h.harness.sdk.callsTo("plugins.callRpc")).toEqual([]);
+  } finally {
+    await h.harness.dispose();
+  }
+});
+
+it("W196 reads the tree without listing every plugin, and lists them only when the read fails", async () => {
+  let failing = false;
+  const h = createFakePluginHost({
+    sdk: {
+      plugins: {
+        list: async () => ({ plugins: [{ id: "initiatives", enabled: true, status: "running" }] }),
+        callRpc: async () => {
+          if (failing) throw new Error("tree exploded");
+          return { version: 1, projects: [] };
+        },
+      },
+    },
+  });
+  registerProjectMode(h.bb);
+  try {
+    expect(await h.harness.callRpc("projectMode", null)).toMatchObject({ available: true });
+    expect(h.harness.sdk.callsTo("plugins.list")).toEqual([]);
+    // A running Initiatives that fails is an error, not "unavailable".
+    failing = true;
+    await expect(h.harness.callRpc("projectMode", null)).rejects.toThrow(/tree exploded/);
+    expect(h.harness.sdk.callsTo("plugins.list")).toHaveLength(1);
+  } finally {
+    await h.harness.dispose();
+  }
+});
+
+it("W196 logs one warn line per reported client timeout", async () => {
+  const h = createFakePluginHost({ sdk: {} });
+  registerProjectMode(h.bb);
+  try {
+    expect(await h.harness.callRpc("reportReadTimeout", {
+      elapsedMs: 41250, hidden: true, online: true, sinceVisibleMs: 38000, hiddenDuringRead: true,
+    })).toEqual({ ok: true });
+    expect(h.harness.inspection.logEntries).toEqual([{
+      level: "warn",
+      message: "An Initiatives tree read timed out in a client: elapsedMs=41250 hidden=true online=true sinceVisibleMs=38000 hiddenDuringRead=true",
+    }]);
   } finally {
     await h.harness.dispose();
   }
@@ -77,7 +121,10 @@ it("T120 serves the tree from the initiatives plugin only, and is unavailable wh
     sdk: {
       plugins: {
         list: async () => ({ plugins }),
-        callRpc: async () => ({ version: 1, projects: [] }),
+        callRpc: async ({ pluginId }: { pluginId: string }) => {
+          if (!plugins.some((p) => p.id === pluginId && p.status === "running")) return refused();
+          return { version: 1, projects: [] };
+        },
       },
     },
   });
@@ -90,7 +137,7 @@ it("T120 serves the tree from the initiatives plugin only, and is unavailable wh
     expect(await mode()).toMatchObject({ available: false });
     plugins = [{ id: "initiatives", enabled: true, status: "running" }];
     expect(await mode()).toMatchObject({ available: true });
-    expect(asked()).toEqual(["initiatives"]);
+    expect(new Set(asked())).toEqual(new Set(["initiatives"]));
     plugins = [{ id: "initiatives", enabled: true, status: "starting" }];
     expect(await mode()).toMatchObject({ available: false });
     await expect(h.harness.callRpc("renameTreeProject", { projectId: "p1", name: "New" })).rejects.toThrow(/not running/);
