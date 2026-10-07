@@ -36,7 +36,7 @@ describe("T59 selective agent reads", () => {
     const alias = JSON.parse(await f.harness.callAgentTool("initiative_read", { refs: ["K999"] }, { threadId: "coordinator" }) as string);
     expect(alias.missingRefs).toEqual(["K999"]);
     await expect(f.harness.callAgentTool("initiative_read", { view: "overview", limit: 20 }, { threadId: "coordinator" })).rejects.toThrow(/overview/);
-    await expect(f.harness.callAgentTool("initiative_read", { view: "workers", fields: ["report"], detailed: true }, { threadId: "coordinator" })).rejects.toThrow(/not selectable/);
+    await expect(f.harness.callAgentTool("initiative_read", { view: "workers", fields: ["body"], detailed: true }, { threadId: "coordinator" })).rejects.toThrow(/not selectable/);
     await expect(f.harness.callAgentTool("initiative_read", { view: "assignments", fields: ["report"] }, { threadId: "coordinator" })).rejects.toThrow(/detailed:true/);
   });
 
@@ -128,4 +128,22 @@ describe("T59 selective agent reads", () => {
     expect(bounded.tasks[0].truncatedFields).toContain("dependsOn");
     expect(f.store.task(project.id, first.num)?.dependsOn).toHaveLength(400);
   }, 20000);
+
+  it("W188: fields:[\"report\"] on a W# returns its latest report with the full final message", async () => {
+    const { f } = await projectFixture();
+    const tool = async (name: string, input: unknown) => JSON.parse(await f.harness.callAgentTool(name, input, { threadId: "coordinator" }) as string);
+    const [w] = await tool("initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
+    const long = `## Done\n\n${"Indexed and ranked. ".repeat(120)}\n\nRan npm test: 14 passed.`;
+    const brief = f.spawn.mock.calls.at(-1)![0].prompt as string;
+    f.history.push({ type: "client/turn/requested", seq: 1, createdAt: Date.now(), data: { requestId: "creq_1", initiator: "agent", input: [{ type: "text", text: brief }] } });
+    f.history.push({ type: "turn/started", seq: 2, createdAt: Date.now() - 1 });
+    f.history.push({ type: "turn/input/accepted", seq: 3, createdAt: Date.now(), data: { clientRequestId: "creq_1" } });
+    f.history.push({ type: "item/completed", seq: 4, createdAt: Date.now(), data: { item: { type: "agentMessage", id: "m4", text: long } } });
+    f.history.push({ type: "turn/completed", seq: 5, createdAt: Date.now() + 1, data: { status: "completed" } });
+    await f.runtime.onThreadIdle(f.idle(w.threadId));
+    const read = await tool("initiative_read", { refs: ["W1"], detailed: true, fields: ["report"] });
+    expect(read.items).toEqual([{ ref: "W1", view: "workers", report: expect.objectContaining({ ref: "A1", outcome: "done", finalMessage: long.trim() }) }]);
+    const both = await tool("initiative_read", { refs: ["W1"], detailed: true, fields: ["report", "handoff"] });
+    expect(Object.keys(both.items[0])).toEqual(["ref", "view", "report", "handoff"]);
+  });
 });

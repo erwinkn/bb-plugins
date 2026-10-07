@@ -20,7 +20,7 @@ export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overvie
 export const MAX_READ_BYTES = 65536;
 const refViews: Record<string, ReadView> = { T: "tasks", W: "workers", A: "assignments", D: "decisions", K: "decisions", U: "updates" };
 export const fieldsByView: Partial<Record<ReadView, readonly string[]>> = {
-  tasks: ["brief"], workers: ["handoff"], assignments: ["briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "checkpoint", "reviewTargets", "reportNotice"],
+  tasks: ["brief"], workers: ["handoff", "report"], assignments: ["briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "checkpoint", "reviewTargets", "reportNotice"],
   reports: ["briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "reportNotice"],
   decisions: ["answer", "resolution", "body"], updates: ["body"], inbox: ["payload"], activity: ["payload"],
 };
@@ -117,6 +117,7 @@ export function readRows(rows: { view: ReadView; row: Record<string, any> }[], o
 // The standard handoff is rendered from the canonical report on request, never stored twice.
 const selectedWorker = (store: Store, projectId: string, options: ReadOptions) => (view: ReadView, row: Record<string, any>) =>
   view === "workers" && !options.fields ? { ...row, ...workerWork(store, projectId, row.num, row.generation), latestReport: latestReportOf(store, projectId, row.num, options.detailed) }
+  : view === "workers" && options.fields?.includes("report") ? { ...row, report: latestReportOf(store, projectId, row.num, true) }
   : (view === "assignments" || view === "reports") && options.fields?.includes("standardHandoff") ? { ...row, standardHandoff: row.report ? renderStandardHandoff(store, row as AssignmentRecord, false) : null }
   : row;
 
