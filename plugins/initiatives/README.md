@@ -682,6 +682,11 @@ be set in `~/.claude/settings.json` or a checkout's `.claude/settings.local.json
 (user/project/local sources are loaded). BB has no per-thread TTL knob and the
 plugin does not patch or wrap providers.
 
+## Known limitations
+
+If BB or the plugin exits partway through starting a coordinator, that start stays pending
+and Withdraw stays refused for it until someone inspects the threads and settles it.
+
 ## Verify
 
 ```sh

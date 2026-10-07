@@ -141,12 +141,15 @@ function Action({
   children,
   className,
   title,
+  refusal,
 }: {
   run: Run;
   command: Command;
   children: ReactNode;
   className?: string;
   title?: string;
+  /** Reads a refusal the service answers without throwing, shown like an error. */
+  refusal?: (result: unknown) => string | null;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -160,7 +163,9 @@ function Action({
           setBusy(true);
           setError(null);
           try {
-            await run(command);
+            const result = await run(command);
+            const refused = refusal?.(result) ?? null;
+            if (refused) setError(refused);
           } catch (e) {
             setError(message(e));
           } finally {
@@ -598,6 +603,11 @@ export function ControlRoom({
               <Action
                 run={run}
                 command={{ action: "coordinator-handover", cancel: true }}
+                refusal={(result) => {
+                  // A withdrawal that could not happen (spawn in flight, start unconfirmed) says why.
+                  const r = result as { state?: string; note?: string } | null;
+                  return r?.state === "pending" && r.note ? r.note : null;
+                }}
               >
                 {p.coordinatorHandover.state === "pending"
                   ? "Withdraw"
