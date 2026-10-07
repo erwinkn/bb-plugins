@@ -16,6 +16,7 @@ import {
   type AccountPoolPluginOptions,
 } from "./server.js";
 import { fakeClock } from "./testing/fake-clock.js";
+import { threadCacheStateSchema } from "./thread-cache.js";
 import { warmingStatusSchema } from "./warming.js";
 import { warmingConfigSchema, warmingConfigViewSchema } from "./warming-config.js";
 
@@ -1009,6 +1010,57 @@ describe("usage ledger through the plugin", () => {
     const text = (await f.host.harness.behavior.runCli(["usage", "report", "--since", "1h"])).stdout;
     expect(text).toContain("ttl 1h · warming warm (opus; economic, max wait 60m (background 20m), coordinator,worker,reviewer,standalone)");
     expect(text).toContain("pool@example.com: 3 req");
+  });
+
+  it("T142: threads.cacheState reports a thread's cached prefix, with warming off or leased", async () => {
+    const f = await fixture();
+    const start = f.clock.now();
+    const cacheState = async () =>
+      threadCacheStateSchema.parse(
+        await f.host.harness.behavior.callRpc("threads.cacheState", { threadIds: ["thr_coord", "thr_other"] }),
+      ).threads;
+    // Warming is off, so nothing links the session; BB's identity record names it.
+    expect(await nativeRequest(f.host)).toBe(200);
+    await vi.waitFor(() => expect(rows(f, "usage_requests")).toHaveLength(1));
+    expect(await cacheState()).toEqual([
+      {
+        threadId: "thr_coord",
+        cache: {
+          sessionId: SESSION, model: "claude-opus-5-5", lastRequestAt: start, prefixTokens: 100_000,
+          ttl: "5m", coveredUntil: start + 5 * MINUTE, leased: false,
+        },
+      },
+      { threadId: "thr_other", cache: null },
+    ]);
+    // A lease keeps the entry covered past the row's TTL.
+    await setMode(f.host, "warm");
+    await f.clock.advanceTo(MINUTE);
+    expect(await nativeRequest(f.host, { turn: "second turn" })).toBe(200);
+    await leased(f.host);
+    await f.clock.advanceTo(5 * MINUTE);
+    await vi.waitFor(async () => expect((await warmingStatus(f.host)).totals.refreshesConfirmed).toBe(1));
+    const lease = (await warmingStatus(f.host)).leases[0]!;
+    expect((await cacheState())[0]?.cache).toMatchObject({
+      lastRequestAt: start + MINUTE, leased: true, coveredUntil: lease.coveredUntil,
+    });
+    expect(lease.coveredUntil).toBeGreaterThan(start + 6 * MINUTE);
+  });
+
+  it("T142: an observe-mode lease sends nothing, so it never counts as coverage", async () => {
+    const f = await fixture();
+    const start = f.clock.now();
+    await setMode(f.host, "observe");
+    expect(await nativeRequest(f.host)).toBe(200);
+    await leased(f.host);
+    await f.clock.advanceTo(10 * MINUTE);
+    const [lease] = (await warmingStatus(f.host)).leases;
+    expect(lease).toMatchObject({ dryRun: true });
+    expect(lease!.coveredUntil).toBeGreaterThan(start + 5 * MINUTE);
+    expect(f.upstream.keepAlive).toHaveLength(0);
+    const state = threadCacheStateSchema.parse(
+      await f.host.harness.behavior.callRpc("threads.cacheState", { threadIds: ["thr_coord"] }),
+    );
+    expect(state.threads[0]?.cache).toMatchObject({ leased: false, coveredUntil: start + 5 * MINUTE });
   });
 
   it("a failing ledger write never fails or changes a request", async () => {

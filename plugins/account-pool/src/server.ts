@@ -34,6 +34,7 @@ import {
 } from "./ledger.js";
 import { PoolOperations } from "./operations.js";
 import { accountPoolRpcContract, createRpcHandlers } from "./rpc.js";
+import { threadCacheState } from "./thread-cache.js";
 import { ClaudeOAuthLogin } from "./oauth-login.js";
 import { CodexDeviceLogin } from "./codex-device-login.js";
 import {
@@ -476,6 +477,16 @@ export function createAccountPoolPlugin(
       createRpcHandlers(operations, login, codexLogin, config, advisor, {
         config: warming,
         status: () => warmer.status(),
+        threadCache: (threadIds) =>
+          threadCacheState(
+            {
+              db: ledgerDb,
+              session: (threadId) =>
+                threadIdentity(threadId, AbortSignal.timeout(LINK_READ_TIMEOUT_MS)),
+              lease: (sessionId) => warmer.leaseOf(sessionId),
+            },
+            threadIds,
+          ),
       }),
     );
     registerPoolCli(

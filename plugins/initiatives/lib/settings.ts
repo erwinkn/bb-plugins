@@ -7,6 +7,7 @@ import {
   GUIDANCE_RESET_FLAG,
   PREVIOUS_DEFAULTS,
 } from "./guidance";
+import { COLD_RESUME_DEFAULT_TOKENS } from "./cold-cache";
 
 // BB truncates dynamic instructions at 4096; reserve 512 for role/start guards.
 export const MAX_GUIDANCE_CHARACTERS = 4096 - 512;
@@ -52,11 +53,19 @@ export const settingsDescriptors = {
     default: JSON.stringify(DEFAULT_PROFILES, null, 2),
     experimental_schema: profilesTextSchema,
   },
+  coldResumeTokens: {
+    type: "number" as const,
+    label: "Cold worker context limit (tokens)",
+    description: "More work for an idle worker whose prompt cache has expired and whose context is larger than this is refused with the rewrite cost; the coordinator spawns a fresh worker with handoffs, or passes resumeCold:true. Cache state comes from the Account Pooler. 0 turns the check off.",
+    default: COLD_RESUME_DEFAULT_TOKENS,
+    experimental_schema: z.number().int().min(0),
+  },
 };
 export type Preferences = {
   coordinatorInstructions: string;
   workerInstructions: string;
   profiles: Policy["profiles"];
+  coldResumeTokens: number;
 };
 export const withProfileDefaults = (
   policy: Policy,
@@ -75,6 +84,7 @@ export function definePreferences(bb: BbPluginApi, flags?: MigrationFlags) {
     coordinatorInstructions: reset() || PREVIOUS_DEFAULTS.coordinator.includes(raw.coordinatorInstructions) ? DEFAULT_COORDINATOR_INSTRUCTIONS : instructionSchema.parse(raw.coordinatorInstructions),
     workerInstructions: reset() || PREVIOUS_DEFAULTS.worker.includes(raw.workerInstructions) ? DEFAULT_WORKER_INSTRUCTIONS : instructionSchema.parse(raw.workerInstructions),
     profiles: parseProfileDefaults(raw.executionProfiles),
+    coldResumeTokens: raw.coldResumeTokens,
   });
   // configure is synchronous in SDK 0.4.87. Its authoritative snapshot is
   // initialized from persisted settings and advanced on every effective edit.

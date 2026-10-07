@@ -242,7 +242,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     },
   );
   // The Threads sidebar's change bump (initiativesChanged) and any other plugin RPC.
-  const pluginRpc = vi.fn(async (_args: { pluginId: string; method: string; input?: unknown }) => ({ ok: true }));
+  const pluginRpc = vi.fn(async (_args: { pluginId: string; method: string; input?: unknown }): Promise<unknown> => ({ ok: true }));
   const send = vi.fn<(...args: any[]) => Promise<any>>(
     async (args: Record<string, any>) => {
       const previous = execution.get(args.threadId);

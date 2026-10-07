@@ -812,4 +812,6 @@ export const QUOTA_MIGRATIONS = [
   CREATE INDEX usage_warming_at ON usage_warming (at)`,
   // Calibration reads recent waits by when they started.
   `CREATE INDEX usage_warming_wait ON usage_warming (wait_started_at)`,
+  // threads.cacheState reads a session's latest requests across models (thread-cache.ts).
+  `CREATE INDEX usage_requests_session_recent ON usage_requests (session_key, at)`,
 ];

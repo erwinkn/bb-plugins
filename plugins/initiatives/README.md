@@ -754,6 +754,34 @@ it embedded (`handoffSources`: A#, W#, generation, tasks, state, report version
 and revision); a report re-filed while the spawn checks BB refuses that spawn
 instead of embedding a stale filing.
 
+### Large cold workers (T142)
+
+More work from the coordinator for an existing worker is refused when the worker
+is idle, its prompt cache has expired and its context is larger than the
+`coldResumeTokens` setting (default 150,000; 0 turns the check off). That covers
+`initiative_message` with `work:true` or `tasks` (also inside `initiative_batch`
+and `bb initiative message`), `bb initiative command` delegate/continue and the
+legacy `initiative_delegate`; `resumeCold:true` overrides it on all of them. The
+user's own sends from the dashboard are never refused. Resuming would rewrite
+the whole context into the cache; a fresh worker with the old one's report
+embedded is usually far cheaper:
+
+> W188's cache is cold (last request 23 min ago) and its context is ~480k
+> tokens: resuming costs ~600k tokens of cache rewrite. Spawn a fresh worker
+> with handoffs:["W188"] (its report is embedded), or pass resumeCold:true to
+> resume anyway.
+
+A reviewer's refusal suggests a fresh reviewer with `reviews` (the reviewed
+worker) and `handoffs` (its findings). The rewrite is priced at 1.25× the
+context for a 5-minute entry and 2× for a 1-hour one. Cache state comes from the
+Account Pooler (`threads.cacheState`): the prefix, the TTL and any warming lease.
+When the Pooler is absent, fails, takes over 2 s (logged once) or has no record
+of the thread, the work goes ahead (D426: missing evidence never blocks). BB's
+context record only corrects the size: a snapshot newer than the Pooler's last
+request gives the current size (smaller after a compaction), and a compaction
+with no snapshot since leaves it unknown, so the work goes ahead. A worker that
+is running, or starts running while the Pooler answers, always passes.
+
 ## The former projects ID
 
 This plugin was installed as `projects` until the rename. A one-time import

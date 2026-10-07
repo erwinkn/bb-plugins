@@ -76,6 +76,7 @@ import {
 } from "./store";
 import { DiscoveryMemory, DISCOVERY_PARENT_CAP } from "./discovery";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
+import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
 
 export const METADATA_VERSION = 1;
 /** Unconfirmed creates and sends older than this are surfaced to the coordinator; they are never assumed failed. */
@@ -189,6 +190,8 @@ export interface DelegateInput {
   handoffs?: string[];
   /** Explicit approval posture for the new thread; omitted uses the environment's configured default. */
   permissionMode?: "accept-edits" | "auto" | "full";
+  /** Continue work even though the worker's large prompt cache has gone cold (T142). */
+  resumeCold?: boolean;
 }
 
 export interface DelegateResult {
@@ -313,11 +316,20 @@ export class ProjectsService {
     }
   }
 
+  private readonly coldCache: ColdCacheGuard;
+
   constructor(
     readonly bb: BbPluginApi,
     readonly store: Store,
     readonly preferences: PreferencesReader,
-  ) {}
+  ) {
+    this.coldCache = createColdCacheGuard({
+      sdk: bb.sdk,
+      store,
+      limit: () => preferences.configuration().coldResumeTokens,
+      log: (message) => bb.log.warn(message),
+    });
+  }
 
   get sdk(): Sdk {
     return this.bb.sdk;
@@ -3880,6 +3892,16 @@ export class ProjectsService {
     if ((input.route as string) === "fork")
       throw new ProjectError("Forking a worker was removed. Spawn a fresh worker with handoffs, or message the existing one.");
     return [await this.dispatch(project, { ...input, role: input.role ?? "work" })];
+  }
+
+  /** T142: refuses more work for an idle worker whose large prompt cache has gone cold, unless resumeCold. */
+  async refuseColdResume(projectId: string, input: DelegateInput): Promise<void> {
+    if (input.route !== "continue" || !input.worker || input.resumeCold) return;
+    const project = this.requireProject(projectId);
+    const worker = this.requireWorker(project, input.worker);
+    const reviewed = worker.role === "review" ? this.reviewBatch(project, worker)?.worker ?? null : null;
+    const refusal = await this.coldCache.check(worker, reviewed);
+    if (refusal) throw new ProjectError(refusal);
   }
 
   /** The report a review embeds: the named W#/A#, or (legacy reviewOf) the latest report on those tasks. */

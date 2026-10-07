@@ -34,6 +34,11 @@ import {
   type WarmingConfigSetInput,
 } from "./warming-config.js";
 import { warmingStatusSchema, type WarmingStatus } from "./warming.js";
+import {
+  threadCacheStateInputSchema,
+  threadCacheStateSchema,
+  type ThreadCacheState,
+} from "./thread-cache.js";
 import type { PoolOperations } from "./operations.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
@@ -113,6 +118,11 @@ export const accountPoolRpcContract = defineRpcContract({
     input: z.null(),
     output: warmingStatusSchema,
   },
+  // Initiatives asks this before it gives more work to an idle worker (T142).
+  "threads.cacheState": {
+    input: threadCacheStateInputSchema,
+    output: threadCacheStateSchema,
+  },
   "login.start": {
     input: z.null(),
     output: loginStartSchema,
@@ -157,7 +167,11 @@ export function createRpcHandlers(
   codexLogin: CodexDeviceLogin,
   config: AccountPoolConfigController,
   advisor: AdvisorConfigController,
-  warming: { config: WarmingConfigController; status: () => WarmingStatus },
+  warming: {
+    config: WarmingConfigController;
+    status: () => WarmingStatus;
+    threadCache: (threadIds: string[]) => Promise<ThreadCacheState>;
+  },
 ): PluginRpcHandlers<typeof accountPoolRpcContract> {
   return {
     "account.add": (input) => operations.add(input),
@@ -192,6 +206,7 @@ export function createRpcHandlers(
     "warming.get": () => warming.config.get(),
     "warming.set": (input) => warming.config.set(input),
     "warming.status": () => warming.status(),
+    "threads.cacheState": ({ threadIds }) => warming.threadCache(threadIds),
     "login.start": () => login.start(),
     "login.complete": (input) => login.complete(input),
     "codexLogin.start": () => codexLogin.start(),

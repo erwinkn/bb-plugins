@@ -75,10 +75,12 @@ export const delegateSchema = z
     rationale: text().optional(),
     handoffs: z.array(ref).max(3).optional(),
     permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(),
+    resumeCold: z.boolean().optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
     if (value.delivery && value.route !== "continue") ctx.addIssue({ code: "custom", path: ["delivery"], message: "delivery applies only to a message to an existing worker." });
+    if (value.resumeCold && value.route !== "continue") ctx.addIssue({ code: "custom", path: ["resumeCold"], message: "resumeCold applies only to more work for an existing worker." });
     if (value.kind && (value.route !== "fresh" || value.role === "review"))
       ctx.addIssue({ code: "custom", path: ["kind"], message: "kind applies to a new work worker; a message keeps the worker's model, and a review follows the reviewed worker's model family." });
     if (value.route !== "fresh") return;
@@ -443,6 +445,8 @@ export async function runCommand(
       return { settlement: settlementReceipt(settled, c.outcome), ...settled };
     }
     case "delegate":
+      // The coordinator's every way of giving more work; the user's own sends are never refused.
+      if (author === "coordinator") await service.refuseColdResume(projectId, c);
       return service.delegate(projectId, c);
     case "adopt":
       return service.adoptWorker(projectId, c);

@@ -1293,6 +1293,15 @@ export class CacheWarmer {
     return this.linkedThread(sessionId);
   }
 
+  // The live lease that keeps a session's entry warm, if any. A dry-run (observe) lease sends
+  // nothing, so its coveredUntil keeps no entry alive.
+  leaseOf(sessionId: string): { model: string | null; coveredUntil: number } | null {
+    const lease = this.leases.get(sessionId);
+    return lease === undefined || lease.dryRun
+      ? null
+      : { model: lease.model, coveredUntil: lease.coveredUntil };
+  }
+
   private linkedThread(sessionId: string): string | null {
     const thread = this.sessionThreads.get(sessionId);
     return typeof thread === "string" ? thread : null;

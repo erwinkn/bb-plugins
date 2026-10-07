@@ -34,6 +34,7 @@ export const messageToolSchema = z.object({
   mode: z.enum(["steer", "queue"]).optional().describe("steer: urgent corrections and blockers; queue (default): everything else."),
   tasks: z.array(ref).max(30).optional().describe("Coordinator only: give this worker more work on these tasks."),
   work: z.boolean().optional().describe("Coordinator only: this message is more work (the worker reports on it again), even without tasks. To a reviewer it is a re-review of its batch, read-only, with the reviewed worker's latest report."),
+  resumeCold: z.boolean().optional().describe("Coordinator only: give the work even though the worker's large prompt cache has gone cold (the refusal says what it costs)."),
 }).strict();
 
 export const taskToolSchema = z.object({
@@ -110,7 +111,7 @@ export function messageCommand(i: z.infer<typeof messageToolSchema>): Command {
   if (i.to && i.target && i.to !== i.target) throw new ProjectError("Give the recipient once, as to.");
   if (i.tasks?.length || i.work) {
     if (to === "coordinator") throw new ProjectError("Work goes to a worker (W#), not the coordinator.");
-    return { action: "delegate", route: "continue", role: "work", worker: to, note: i.text, ...(i.tasks ? { tasks: i.tasks } : {}), delivery: i.mode ?? "queue" };
+    return { action: "delegate", route: "continue", role: "work", worker: to, note: i.text, ...(i.tasks ? { tasks: i.tasks } : {}), delivery: i.mode ?? "queue", ...(i.resumeCold ? { resumeCold: true } : {}) };
   }
   return { action: "message", target: to as never, text: i.text, mode: i.mode ?? "queue" };
 }

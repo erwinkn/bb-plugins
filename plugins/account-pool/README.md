@@ -390,6 +390,22 @@ columns are filled only while warming links sessions (any mode but `off`); since
 T141 a session is linked from its first request, and a linked thread outside any
 Initiative is labelled `standalone`.
 
+## Thread cache state (Initiatives)
+
+Initiatives asks the plugin RPC `threads.cacheState {threadIds}` before it gives
+more work to an idle worker (T142). Per thread it finds the current Claude Code
+session (from BB's `thread/identity` record, so it works with warming off) and
+reads that session's 100 newest successful native requests and refreshes through
+the `(session_key, at)` index, on the ledger's own connection. The main
+conversation is the newest native request with a prefix of at least 50k tokens
+(helpers sent after it are smaller; a session with none reports its newest
+request). It returns that request's start and model, the prefix (cache read +
+write of it or of a later refresh on the same model), its TTL, `coveredUntil`
+(latest native or refresh start + TTL, or a live lease's) and whether a warming
+lease covers it. An observe-mode (dry-run) lease sends nothing, so it never
+counts. `cache` is `null` for a thread with no Claude session or no recorded
+request. Nothing is sent upstream.
+
 ## Request-path cost
 
 The Pooler runs on BB's server event loop, which every BB request and plugin
