@@ -19,19 +19,22 @@ me instead.
 
 This repository is developed from the **main checkout** at `~/Code/bb-plugins`
 by one **orchestrator thread** plus short-lived child threads. There are no
-per-plugin PM threads, no managed worktrees, and no feature branches or pull
-requests for routine work.
+per-plugin PM threads and no feature branches or pull requests for routine
+work. Each child works in its own BB-managed Git worktree (Erwin, D420), so the
+main checkout only ever holds reviewed, committed code: BB compiles path-installed
+plugins from that checkout on every reload or restart.
 
 - The orchestrator is the only agent that runs Git commands: pull, add,
   commit, push, stash, checkout. Child threads never touch Git.
 - The user talks to the orchestrator. For a change to a plugin, the
-  orchestrator spawns a child thread on the main checkout with the full task;
+  orchestrator spawns a child thread (its own worktree) with the full task;
   the child investigates, implements, verifies, and reports back; the
-  orchestrator reloads and commits. When a child has reported and its work is
+  orchestrator applies the child's diff to the main checkout, tests, commits
+  and reloads. When a child has reported and its work is
   committed or reverted, the orchestrator archives it.
-- Spawn children on the Linux checkout environment `env_kdfdhsjp6x` (path
-  `/home/erwin/Code/bb-plugins`), never on `env_pepnyn24rr` (its registered
-  path is the Mac checkout), always with `--permission-mode full`.
+- Spawn children on the Linux host (BB's project default creates the
+  worktree there), never on `env_pepnyn24rr` (its registered path is the Mac
+  checkout), always with `--permission-mode full`.
   Use one Claude Opus 5.5 work child (high reasoning) per substantial batch,
   combining related features, plus one independent review child, preferably
   from another model family such as Codex GPT-6.1 Sol. Small fixes get no
@@ -52,11 +55,12 @@ plugin tracks whatever the checkout contains.
 1. The orchestrator confirms the checkout is clean and on `main`
    (`git status`, `git pull --ff-only`), then spawns a child with the brief:
    plugin directory, expected behavior, verification commands.
-2. The child works directly in `~/Code/bb-plugins/plugins/<name>` and may run
-   `npm run typecheck`, `npm test`, and `npm run build` there. It reports
-   files changed and what it verified. It does not commit.
-3. The orchestrator runs `bb plugin build` and `bb plugin reload` (or keeps
-   `bb plugin dev` running), and the user checks the live behavior. Testing
+2. The child works in `plugins/<name>` inside its own worktree and may run
+   `npm run typecheck` and `npm test` there. It reports files changed and what
+   it verified. It does not commit.
+3. The orchestrator applies the child's diff to the main checkout
+   (`git -C <worktree> diff | git apply`), reruns the tests, runs
+   `bb plugin reload`, and the user checks the live behavior. Testing
    and diff review stay with children; a substantial change gets a review
    child rather than an orchestrator-side check.
 4. If it is good, the orchestrator commits on `main` and pushes to `origin`
