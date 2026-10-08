@@ -1,7 +1,7 @@
 import { bucketEnd, bucketStarts } from "./calendar";
 import type { Directory, Membership, ThreadInfo } from "./directory";
 import type { Label, Metrics, OkPage, Page, PageInput, Row } from "./model";
-import { addMetrics, emptyMetrics, OTHER_ID, type FilterDimension } from "./shared";
+import { addMetrics, amount, emptyMetrics, OTHER_ID, type FilterDimension, type Measure } from "./shared";
 import type { Pooler, PoolerDimension, PoolerStatsInput, PoolerStatsRow } from "./pooler";
 
 // Builds the Usage page from the Account Pooler's sums and BB's names. Every number comes from
@@ -102,7 +102,7 @@ export async function buildPage(input: PageInput, deps: PageDeps): Promise<Page>
   const rows = (dimension: FilterDimension | "thread", list: Array<{ id: string; metrics: Metrics }>): Row[] =>
     list
       .map(({ id, metrics }) => ({ ...names.label(dimension, id), metrics }))
-      .sort((left, right) => right.metrics.inputEquivalent - left.metrics.inputEquivalent);
+      .sort((left, right) => amount(right.metrics, input.measure) - amount(left.metrics, input.measure));
   const ledgerRows = (dimension: LedgerDimension | "thread", list: PoolerStatsRow[] | undefined) =>
     rows(
       dimension,
@@ -119,14 +119,14 @@ export async function buildPage(input: PageInput, deps: PageDeps): Promise<Page>
   const threadBreakdown = ledgerRows("thread", byThread);
   return {
     status: "ok",
-    input: { ...range, bucket: input.bucket },
+    input: { ...range, bucket: input.bucket, measure: input.measure, split: input.split },
     weights: stats.weights,
     retentionDays: stats.retentionDays,
     oldestHour: stats.oldestHour,
     pendingRows: stats.pendingRows,
     totals,
     series: {
-      ...series(starts, bucketRows ?? [], splitDimension, splitRows ?? [], names),
+      ...series(starts, bucketRows ?? [], splitDimension, splitRows ?? [], names, input.measure),
       end: bucketEnd(starts.at(-1)!, input.bucket, input.timeZone),
     },
     breakdowns: {
@@ -157,6 +157,7 @@ function series(
   dimension: Exclude<PageInput["split"], "type"> | null,
   splitRows: PoolerStatsRow[],
   names: Namer,
+  measure: Measure,
 ): Omit<OkPage["series"], "end"> {
   const index = new Map(starts.map((at, position) => [at, position]));
   const buckets = starts.map((at) => ({ at, metrics: emptyMetrics() }));
@@ -164,30 +165,30 @@ function series(
     const position = index.get(row.key.bucket ?? -1);
     if (position !== undefined) buckets[position]!.metrics = row.metrics;
   }
-  if (dimension === null) return { buckets, keys: [], cost: [], requests: [] };
-  // The top values by cost keep their own series; the rest is "Other".
+  if (dimension === null) return { buckets, keys: [], amounts: [], requests: [] };
+  // The top values in the measure keep their own series; the rest is "Other".
   const totals = new Map<string, number>();
   for (const row of splitRows) {
     const id = row.key[dimension] ?? "";
-    totals.set(id, (totals.get(id) ?? 0) + row.metrics.inputEquivalent);
+    totals.set(id, (totals.get(id) ?? 0) + amount(row.metrics, measure));
   }
   const ranked = [...totals.entries()].sort((left, right) => right[1] - left[1]).map(([id]) => id);
   const top = ranked.length <= TOP_SERIES ? ranked : ranked.slice(0, TOP_SERIES - 1);
   const keys = [...top, ...(ranked.length > top.length ? [OTHER_ID] : [])];
-  const cost = keys.map(() => starts.map(() => 0));
+  const amounts = keys.map(() => starts.map(() => 0));
   const requests = keys.map(() => starts.map(() => 0));
   for (const row of splitRows) {
     const position = index.get(row.key.bucket ?? -1);
     if (position === undefined) continue;
     const id = row.key[dimension] ?? "";
     const key = top.includes(id) ? keys.indexOf(id) : keys.length - 1;
-    cost[key]![position]! += row.metrics.inputEquivalent;
+    amounts[key]![position]! += amount(row.metrics, measure);
     requests[key]![position]! += row.metrics.requests;
   }
   return {
     buckets,
     keys: keys.map((id) => (id === OTHER_ID ? { id: OTHER_ID, label: "Other", detail: null } : names.label(dimension, id))),
-    cost,
+    amounts,
     requests,
   };
 }

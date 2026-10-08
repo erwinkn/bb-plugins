@@ -1,12 +1,13 @@
-// The Usage page: one row of filters, the headline numbers, cost over time, breakdowns, cache and
-// warming, reliability, and each account's quota. Every number below the filters comes from one
+// The Usage page: one row of filters, the headline numbers, usage over time, breakdowns, cache and
+// warming, reliability, and each account's quota. A page-wide measure, raw tokens (the default) or
+// price-weighted cost, drives the headline, the chart and the breakdowns' main column. Every number below the filters comes from one
 // `page` call over the same slice, so they always agree.
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
 import type { Label, Metrics, OkPage, Page, PageInput, Row } from "../src/model";
-import { filterDimensions, hitRate, OTHER_ID, type FilterDimension, type Split } from "../src/shared";
+import { amount, filterDimensions, hitRate, measures, OTHER_ID, splits, type FilterDimension, type Measure, type Split } from "../src/shared";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -39,6 +40,7 @@ const DIMENSION_LABELS: Record<FilterDimension, string> = {
   project: "Project",
   initiative: "Initiative",
 };
+const MEASURE_LABELS: Record<Measure, string> = { tokens: "Tokens", cost: "Cost" };
 const SPLIT_LABELS: Record<Split, string> = {
   type: "Token type",
   model: "Model",
@@ -71,12 +73,86 @@ export function rangeOf(state: RangeState, now: number): { from: number; to: num
     const to = Math.ceil(now / 60_000) * 60_000;
     return { from: to - PRESETS[state.preset], to };
   }
-  // The first instants of the first day and of the day after the last, by the calendar: a day can
-  // last 23 or 25 hours, and its midnight can be skipped (it then starts at 01:00).
+  const { from, to } = customSpan(state, now);
+  return Number.isNaN(from) || Number.isNaN(to) || from >= to ? { from: now - DAY_MS, to: now } : { from, to };
+}
+
+// The first instants of the first day and of the day after the last, by the calendar: a day can
+// last 23 or 25 hours, and its midnight can be skipped (it then starts at 01:00). The end stops a
+// day from now.
+function customSpan(state: RangeState, now: number): { from: number; to: number } {
   const from = new Date(`${state.customFrom}T00:00`).getTime();
   const [year, month, day] = state.customTo.split("-").map(Number);
   const to = new Date(year!, month! - 1, day! + 1).getTime();
-  return Number.isNaN(from) || Number.isNaN(to) || from >= to ? { from: now - DAY_MS, to: now } : { from, to: Math.min(to, now + DAY_MS) };
+  return { from, to: Math.min(to, now + DAY_MS) };
+}
+
+// --- Remembered controls ---
+
+const STORAGE_PREFIX = "usage-stats.";
+
+// A control's value, kept in this browser so a later visit restores the view. A stored value that
+// read() rejects (a control that changed shape or lost an option), or a browser without storage,
+// falls back to the default.
+function useRemembered<T>(name: string, initial: () => T, read: (stored: unknown) => T | null) {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const stored = window.localStorage.getItem(STORAGE_PREFIX + name);
+      return (stored === null ? null : read(JSON.parse(stored))) ?? initial();
+    } catch {
+      return initial();
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_PREFIX + name, JSON.stringify(value));
+    } catch {}
+  }, [name, value]);
+  return [value, setValue] as const;
+}
+
+const oneOf =
+  <T extends string>(allowed: readonly T[]) =>
+  (stored: unknown): T | null =>
+    allowed.includes(stored as T) ? (stored as T) : null;
+
+const PRESET_IDS: readonly Preset[] = ["24h", "7d", "30d", "custom"];
+const BUCKETS = ["hour", "day"] as const;
+const DATE = /^\d{4}-\d{2}-\d{2}$/u;
+// pageInputSchema's longest range.
+const MAX_RANGE_MS = 400 * DAY_MS;
+
+// A YYYY-MM-DD date the calendar has: not 2026-02-30.
+function isCalendarDate(value: unknown): value is string {
+  if (typeof value !== "string" || !DATE.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year!, month! - 1, day!));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month! - 1 && date.getUTCDate() === day;
+}
+
+// A relative preset stays relative: it is stored by name and ends now on every visit. A custom
+// range keeps its dates, if the page can still ask for them: in order, not wholly in the future,
+// and at most 400 days long.
+function readRange(stored: unknown): RangeState | null {
+  const range = stored as Partial<RangeState> | null;
+  if (typeof range !== "object" || range === null || oneOf(PRESET_IDS)(range.preset) === null) return null;
+  if (!isCalendarDate(range.customFrom) || !isCalendarDate(range.customTo)) return null;
+  const state: RangeState = { preset: range.preset!, customFrom: range.customFrom, customTo: range.customTo };
+  if (state.preset === "custom") {
+    const { from, to } = customSpan(state, Date.now());
+    if (!(from >= 0 && from < to && to - from <= MAX_RANGE_MS)) return null;
+  }
+  return state;
+}
+
+function readFilter(stored: unknown): PageInput["filter"] | null {
+  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return null;
+  const filter: PageInput["filter"] = {};
+  for (const [dimension, value] of Object.entries(stored)) {
+    if (!filterDimensions.includes(dimension as FilterDimension) || typeof value !== "string" || value.length > 200) return null;
+    filter[dimension as FilterDimension] = value;
+  }
+  return filter;
 }
 
 // --- Data ---
@@ -218,6 +294,7 @@ function Empty({ children }: { children: ReactNode }) {
 function BreakdownTable({
   title,
   rows,
+  measure,
   total,
   onSelect,
   footer,
@@ -225,12 +302,13 @@ function BreakdownTable({
 }: {
   title: string;
   rows: Row[];
+  measure: Measure;
   total: number;
   onSelect?: (row: Row) => void;
   footer?: ReactNode;
   className?: string;
 }) {
-  const max = Math.max(...rows.map((row) => row.metrics.inputEquivalent), 0);
+  const max = Math.max(...rows.map((row) => amount(row.metrics, measure)), 0);
   return (
     <Card title={title} className={className}>
       {rows.length === 0 ? (
@@ -241,7 +319,7 @@ function BreakdownTable({
             <tr className="text-left text-muted-foreground">
               <th className="pb-1.5 font-normal">Name</th>
               <th className="w-16 pb-1.5 text-right font-normal">Requests</th>
-              <th className="w-40 pb-1.5 pl-4 font-normal">Cost</th>
+              <th className="w-40 pb-1.5 pl-4 font-normal">{MEASURE_LABELS[measure]}</th>
               <th className="w-14 pb-1.5 text-right font-normal">Hit rate</th>
               <th className="w-12 pb-1.5 text-right font-normal">Cold</th>
             </tr>
@@ -267,10 +345,10 @@ function BreakdownTable({
                 <td className="py-1.5 pl-4">
                   <div className="flex items-center gap-2">
                     <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-secondary">
-                      <div className="h-full rounded-full bg-foreground/70" style={{ width: `${max === 0 ? 0 : Math.max(1, (row.metrics.inputEquivalent / max) * 100)}%` }} />
+                      <div className="h-full rounded-full bg-foreground/70" style={{ width: `${max === 0 ? 0 : Math.max(1, (amount(row.metrics, measure) / max) * 100)}%` }} />
                     </div>
-                    <span className="w-12 shrink-0 text-right tabular-nums text-foreground">{compact(row.metrics.inputEquivalent)}</span>
-                    <span className="w-10 shrink-0 text-right tabular-nums text-muted-foreground">{share(row.metrics.inputEquivalent, total)}</span>
+                    <span className="w-12 shrink-0 text-right tabular-nums text-foreground">{compact(amount(row.metrics, measure))}</span>
+                    <span className="w-10 shrink-0 text-right tabular-nums text-muted-foreground">{share(amount(row.metrics, measure), total)}</span>
                   </div>
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-muted-foreground">{percent(hitRate(row.metrics))}</td>
@@ -379,10 +457,15 @@ function QuotaCard({ account, from, to }: { account: OkPage["quota"][number]; fr
 
 // --- The page ---
 
-function costSeries(page: OkPage, metric: "cost" | "requests", split: Split, colorOf: (dimension: FilterDimension, id: string) => string): BarSeries[] {
+// What the over-time chart stacks: the page's measure, or requests.
+type ChartMetric = "amount" | "requests";
+const CHART_METRICS: readonly ChartMetric[] = ["amount", "requests"];
+
+function chartSeries(page: OkPage, measure: Measure, metric: ChartMetric, split: Split, colorOf: (dimension: FilterDimension, id: string) => string): BarSeries[] {
   const buckets = page.series.buckets;
   if (split === "type") {
-    const w = page.weights;
+    // Raw tokens weigh 1 each; cost weighs each type at its price ratio.
+    const w = measure === "cost" ? page.weights : { input: 1, output: 1, cacheRead: 1, cacheWrite5m: 1, cacheWrite1h: 1 };
     if (metric === "requests")
       return [
         { id: "native", label: "Requests", color: SERIES[0]!, values: buckets.map((bucket) => bucket.metrics.requests - bucket.metrics.refreshes) },
@@ -397,7 +480,7 @@ function costSeries(page: OkPage, metric: "cost" | "requests", split: Split, col
     ];
     return types.map(([id, label, value], index) => ({ id, label, color: SERIES[index]!, values: buckets.map((bucket) => value(bucket.metrics)) }));
   }
-  const values = metric === "cost" ? page.series.cost : page.series.requests;
+  const values = metric === "amount" ? page.series.amounts : page.series.requests;
   return page.series.keys.map((key, index) => ({
     id: key.id,
     label: key.label,
@@ -408,14 +491,15 @@ function costSeries(page: OkPage, metric: "cost" | "requests", split: Split, col
 
 export function UsagePage() {
   const navigate = useBbNavigate();
-  const [range, setRange] = useState<RangeState>(() => ({ preset: "7d", customFrom: localDate(Date.now() - 6 * DAY_MS), customTo: localDate(Date.now()) }));
-  const [bucket, setBucket] = useState<"hour" | "day">("day");
-  const [split, setSplit] = useState<Split>("type");
-  const [metric, setMetric] = useState<"cost" | "requests">("cost");
-  const [filter, setFilter] = useState<PageInput["filter"]>({});
+  const [range, setRange] = useRemembered<RangeState>("range", () => ({ preset: "7d", customFrom: localDate(Date.now() - 6 * DAY_MS), customTo: localDate(Date.now()) }), readRange);
+  const [bucket, setBucket] = useRemembered<"hour" | "day">("resolution", () => "day", oneOf(BUCKETS));
+  const [measure, setMeasure] = useRemembered<Measure>("measure", () => "tokens", oneOf(measures));
+  const [split, setSplit] = useRemembered<Split>("split", () => "type", oneOf(splits));
+  const [metric, setMetric] = useRemembered<ChartMetric>("chart", () => "amount", oneOf(CHART_METRICS));
+  const [filter, setFilter] = useRemembered<PageInput["filter"]>("filter", () => ({}), readFilter);
   const [now, setNow] = useState(() => Date.now());
   const { from, to } = rangeOf(range, now);
-  const input: PageInput = { from, to, bucket, timeZone: TIME_ZONE, split, filter };
+  const input: PageInput = { from, to, bucket, timeZone: TIME_ZONE, split, measure, filter };
   const { page, error, loading, reload } = usePage(input);
   const ok = page?.status === "ok" ? page : null;
 
@@ -464,6 +548,7 @@ export function UsagePage() {
             </span>
           ) : null}
           <Segmented label="Resolution" value={bucket} onChange={setBucket} items={[{ id: "hour", label: "Hourly" }, { id: "day", label: "Daily" }]} />
+          <Segmented label="Measure" value={measure} onChange={setMeasure} items={measures.map((id) => ({ id, label: MEASURE_LABELS[id] }))} />
           <span className="mx-1 h-5 w-px bg-border" aria-hidden="true" />
           {filterDimensions.map((dimension) => (
             <Picker
@@ -541,8 +626,8 @@ function Body({
   loading: boolean;
   // A filter that quota cannot follow (model, role, project, Initiative) is set.
   accountWideQuota: boolean;
-  metric: "cost" | "requests";
-  setMetric: (metric: "cost" | "requests") => void;
+  metric: ChartMetric;
+  setMetric: (metric: ChartMetric) => void;
   split: Split;
   setSplit: (split: Split) => void;
   colorOf: (dimension: FilterDimension, id: string) => string;
@@ -551,11 +636,16 @@ function Body({
 }) {
   const totals = page.totals;
   const w = page.weights;
-  const bucket = page.input.bucket;
+  // The response's own bucket, measure and split: until a new one arrives, the old one is shown
+  // as it was, not relabeled by controls that changed.
+  const { bucket, measure } = page.input;
   const starts = page.series.buckets.map((item) => item.at);
-  const series = costSeries(page, metric, split, colorOf);
-  const format = metric === "cost" ? compact : integer;
-  const cost = totals.inputEquivalent;
+  const series = chartSeries(page, measure, metric, page.input.split, colorOf);
+  const format = metric === "amount" ? compact : integer;
+  // The page's measure: what the headline, the chart and the breakdowns' main column show.
+  const unit = MEASURE_LABELS[measure];
+  const total = amount(totals, measure);
+  const tokens = amount(totals, "tokens");
   const warmNet = totals.savedInputEquivalent - totals.refreshInputEquivalent;
   // Where a bucket ends and its middle is: a local day can last 23 or 25 hours.
   const end = (index: number) => starts[index + 1] ?? page.series.end;
@@ -571,7 +661,8 @@ function Body({
     }),
   };
   const lowestHit = Math.min(...hitLine.points.map(([, rate]) => rate), 1);
-  const codexWithoutUsage = page.breakdowns.provider.find((row) => row.id === "codex" && row.metrics.withUsage === 0 && row.metrics.requests > 0);
+  const codex = page.breakdowns.provider.find((row) => row.id === "codex");
+  const codexWithoutUsage = codex !== undefined && codex.metrics.withUsage < codex.metrics.requests / 2;
   const unlinked = page.breakdowns.thread.find((row) => row.id === "");
   const initiatives = page.breakdowns.initiative.filter((row) => row.id !== "");
 
@@ -590,19 +681,23 @@ function Body({
         </p>
       )}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label="Cost" value={compact(cost)} detail="input-equivalent tokens" />
+        {measure === "tokens" ? (
+          <Stat label="Tokens processed" value={compact(total)} detail={`${share(totals.cacheRead, tokens)} cache reads`} />
+        ) : (
+          <Stat label="Cost" value={compact(total)} detail="price-weighted tokens" />
+        )}
         <Stat label="Requests" value={compact(totals.requests)} detail={`${integer(totals.refreshes)} warming refreshes`} />
         <Stat label="Cache hit rate" value={percent(hitRate(totals))} detail={`${compact(totals.cacheRead)} read · ${compact(totals.cacheWrite5m + totals.cacheWrite1h)} written`} />
         <Stat label="Cold rewrites" value={integer(totals.coldRewrites)} detail={`${compact(totals.coldRewriteTokens)} tokens rewritten`} />
-        <Stat label="Warming" value={`${warmNet >= 0 ? "+" : "−"}${compact(Math.abs(warmNet))}`} detail={`net saved · ${integer(totals.rewritesAvoided)} rewrites avoided`} />
+        <Stat label="Warming" value={`${warmNet >= 0 ? "+" : "−"}${compact(Math.abs(warmNet))}`} detail={`net cost saved · ${integer(totals.rewritesAvoided)} rewrites avoided`} />
         <Stat label="Errors" value={integer(totals.errors)} detail={`${integer(totals.rateLimited)} × 429 · ${integer(totals.overloaded)} × 529`} />
       </div>
 
       <Card
-        title={metric === "cost" ? "Cost over time" : "Requests over time"}
+        title={`${metric === "amount" ? unit : "Requests"} over time`}
         actions={
           <>
-            <Segmented label="Measure" value={metric} onChange={setMetric} items={[{ id: "cost", label: "Cost" }, { id: "requests", label: "Requests" }]} />
+            <Segmented label="Chart" value={metric} onChange={setMetric} items={[{ id: "amount", label: unit }, { id: "requests", label: "Requests" }]} />
             <Picker label="By" value={split === "type" ? undefined : split} allLabel={SPLIT_LABELS.type} defaultLabel={SPLIT_LABELS.type.toLowerCase()} options={(["model", "account", "role", "provider"] as const).map((id) => ({ id, label: SPLIT_LABELS[id], detail: null }))} onChange={(value) => setSplit((value as Split | undefined) ?? "type")} />
           </>
         }
@@ -613,7 +708,7 @@ function Body({
           format={format}
           labelOf={(at) => bucketLabel(at, bucket)}
           titleOf={(at) => bucketTitle(at, bucket)}
-          label={`${metric === "cost" ? "Cost" : "Requests"} per ${bucket}`}
+          label={`${metric === "amount" ? unit : "Requests"} per ${bucket}`}
         />
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
           {series.map((item) => {
@@ -641,22 +736,23 @@ function Body({
       </Card>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <BreakdownTable title="By model" rows={page.breakdowns.model} total={cost} onSelect={select("model")} />
-        <BreakdownTable title="By account" rows={page.breakdowns.account} total={cost} onSelect={select("account")} />
-        <BreakdownTable title="By role" rows={page.breakdowns.role} total={cost} onSelect={select("role")} />
-        <BreakdownTable title="By project" rows={page.breakdowns.project} total={cost} onSelect={select("project")} />
-        {initiatives.length === 0 ? null : <BreakdownTable title="By Initiative" rows={page.breakdowns.initiative} total={cost} onSelect={select("initiative")} />}
-        {page.breakdowns.provider.length < 2 ? null : <BreakdownTable title="By provider" rows={page.breakdowns.provider} total={cost} onSelect={select("provider")} />}
+        <BreakdownTable title="By model" rows={page.breakdowns.model} measure={measure} total={total} onSelect={select("model")} />
+        <BreakdownTable title="By account" rows={page.breakdowns.account} measure={measure} total={total} onSelect={select("account")} />
+        <BreakdownTable title="By role" rows={page.breakdowns.role} measure={measure} total={total} onSelect={select("role")} />
+        <BreakdownTable title="By project" rows={page.breakdowns.project} measure={measure} total={total} onSelect={select("project")} />
+        {initiatives.length === 0 ? null : <BreakdownTable title="By Initiative" rows={page.breakdowns.initiative} measure={measure} total={total} onSelect={select("initiative")} />}
+        {page.breakdowns.provider.length < 2 ? null : <BreakdownTable title="By provider" rows={page.breakdowns.provider} measure={measure} total={total} onSelect={select("provider")} />}
         <BreakdownTable
           title="Top threads"
           className="lg:col-span-2"
           rows={page.breakdowns.thread}
-          total={cost}
+          measure={measure}
+          total={total}
           onSelect={(row) => (row.id === "" ? undefined : openThread(row.id))}
           footer={
             <p className="mt-2 text-xs text-muted-foreground">
-              {page.breakdowns.threadCount > page.breakdowns.thread.length ? `The ${page.breakdowns.thread.length} costliest of ${page.breakdowns.threadCount} threads. ` : ""}
-              {unlinked === undefined ? "" : `${share(unlinked.metrics.inputEquivalent, cost)} of the cost is not linked to a thread. `}
+              {page.breakdowns.threadCount > page.breakdowns.thread.length ? `The top ${page.breakdowns.thread.length} of ${page.breakdowns.threadCount} threads by ${unit.toLowerCase()}. ` : ""}
+              {unlinked === undefined ? "" : `${share(amount(unlinked.metrics, measure), total)} of the ${measure === "tokens" ? "tokens are" : "cost is"} not linked to a thread. `}
               Open a thread by clicking it.
             </p>
           }
@@ -687,9 +783,9 @@ function Body({
               ["Requests without token counts", `${integer(totals.requests - totals.withUsage)} · ${share(totals.requests - totals.withUsage, totals.requests)}`],
             ]}
           />
-          {codexWithoutUsage === undefined ? null : (
-            <p className="mt-3 text-xs text-muted-foreground">Codex requests carry no token counts in the ledger, so they count as requests but add no cost.</p>
-          )}
+          {codexWithoutUsage ? (
+            <p className="mt-3 text-xs text-muted-foreground">Most Codex requests here carry no token counts: the Account Pooler recorded none before 8 Oct 2026. They count as requests but add no tokens or cost.</p>
+          ) : null}
         </Card>
       </div>
 
@@ -709,10 +805,10 @@ function Body({
 
       <footer className="space-y-1 text-xs text-muted-foreground">
         <p>
-          Cost counts tokens in input-equivalents, at API price ratios to uncached input: input {w.input}×, cache read {w.cacheRead}×, 5-minute cache write {w.cacheWrite5m}×, 1-hour cache write {w.cacheWrite1h}×, output {w.output}×. It is the closest public proxy for subscription quota, not a bill.
+          Tokens processed counts every token once: uncached input, cache reads, cache writes and output. Cost weighs them in input-equivalents, at API price ratios to uncached input: input {w.input}×, cache read {w.cacheRead}×, 5-minute cache write {w.cacheWrite5m}×, 1-hour cache write {w.cacheWrite1h}×, output {w.output}×. Cost is the closest public proxy for subscription quota, not a bill.
         </p>
         <p>
-          From the Account Pooler's request ledger, kept {page.retentionDays} days{page.oldestHour === null ? "" : `; the oldest hour is ${dateTime(page.oldestHour)}`}. Hourly resolution: a range starts at the hour.
+          From the Account Pooler's request ledger{page.oldestHour === null ? "" : `, which starts ${dateTime(page.oldestHour)}: nothing before it is counted${page.oldestHour > page.input.from ? ", so this range has no data before then" : ""}`}. The ledger keeps {page.retentionDays} days. Hourly resolution: a range starts at the hour.
         </p>
       </footer>
     </div>

@@ -1083,7 +1083,7 @@ export class AccountPoolHub {
       const usage =
         start.provider === "claude"
           ? createUsageTap(contentType)
-          : createCodexUsageTap(contentType);
+          : createCodexUsageTap();
       // Nothing here may reach the client's stream: a tap that fails records no usage.
       let failed = false;
       return {

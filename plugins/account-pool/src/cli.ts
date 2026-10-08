@@ -37,6 +37,7 @@ import {
   type UsageReport,
 } from "./usage-report.js";
 import type { PoolOperations } from "./operations.js";
+import { RECENT_MS, type RelinkPlan, type RelinkSession } from "./usage-relink.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
 
@@ -73,6 +74,7 @@ const HELP = [
   "  bb pool-local warming status [--json]",
   "  bb pool-local usage report [--since <90m|24h|7d|iso>] [--json]",
   "  bb pool-local usage retention [<days>]",
+  "  bb pool-local usage relink [--apply] [--json]",
   "  bb pool-local token rotate --machine <id-or-name>",
   "  bb pool-local bypass <thread-id> [--off]",
   "",
@@ -350,6 +352,43 @@ function parseConfigUpdate(
   );
 }
 
+export function formatRelink(plan: RelinkPlan, linkedRows: number | null): string {
+  const n = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+  const count = (sessions: RelinkSession[]) => {
+    const rows = (provider?: string) =>
+      sessions
+        .filter((session) => provider === undefined || session.provider === provider)
+        .reduce((total, session) => total + session.rows, 0);
+    const providers = [...new Set(sessions.map((session) => session.provider))].sort();
+    const split =
+      providers.length > 1
+        ? ` (${providers.map((provider) => `${provider} ${rows(provider)}`).join(", ")})`
+        : "";
+    return `${n(rows(), "row")} in ${n(sessions.length, "session")}${split}`;
+  };
+  const threads = new Set(plan.links.map((link) => link.threadId)).size;
+  const lines = [
+    `Rows with no thread: ${count(plan.unlinked)}`,
+    `  linkable, one thread reports the session: ${count(plan.links)}, ${n(threads, "thread")}`,
+    `  no thread reports the session: ${count(plan.unmapped)}`,
+    ...(plan.recent.length === 0
+      ? []
+      : [`  recent, skipped (active in the last ${RECENT_MS / 60_000} minutes; live linking labels them): ${count(plan.recent)}`]),
+    `  more than one thread claims the session: ${count(plan.ambiguous)}`,
+    ...plan.ambiguous.map(
+      (session) =>
+        `    ${session.sessionKey} (${session.provider}, ${n(session.rows, "row")}): ${session.threadIds.join(", ")}`,
+    ),
+  ];
+  const unlinked = plan.unlinked.reduce((total, session) => total + session.rows, 0);
+  lines.push(
+    linkedRows === null
+      ? "Dry run: nothing changed. Run again with --apply to link them."
+      : `Linked ${n(linkedRows, "row")}; ${n(unlinked - linkedRows, "row")} left with no thread. The usage rollup is rebuilding from the ledger.`,
+  );
+  return lines.join("\n");
+}
+
 function json(value: object): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
@@ -357,6 +396,8 @@ function json(value: object): string {
 export interface UsageController {
   now: () => number;
   report: (since: number) => Promise<UsageReport>;
+  // linkedRows: null on a dry run.
+  relink: (apply: boolean) => Promise<{ plan: RelinkPlan; linkedRows: number | null }>;
   retentionDays: () => number;
   setRetentionDays: (days: number) => Promise<number>;
 }
@@ -490,6 +531,12 @@ export function registerPoolCli(
         name: "usage-retention",
         summary: "Show or set how many days the usage ledger keeps",
         usage: "bb pool-local usage retention [<days>]",
+      },
+      {
+        name: "usage-relink",
+        summary:
+          "Link usage rows that name no thread to the one thread BB records for their session (dry run unless --apply)",
+        usage: "bb pool-local usage relink [--apply] [--json]",
       },
       {
         name: "token-rotate",
@@ -799,6 +846,16 @@ export function registerPoolCli(
             stdout: flags.booleans.has("json")
               ? json(report)
               : `${formatUsageReport(report)}\n`,
+          };
+        }
+        if (argv[0] === "usage" && argv[1] === "relink") {
+          const flags = parseFlags(argv.slice(2), ["apply", "json"], []);
+          const result = await usage.relink(flags.booleans.has("apply"));
+          return {
+            exitCode: 0,
+            stdout: flags.booleans.has("json")
+              ? json(result)
+              : `${formatRelink(result.plan, result.linkedRows)}\n`,
           };
         }
         if (argv[0] === "usage" && argv[1] === "retention") {

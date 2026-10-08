@@ -7,7 +7,7 @@ import { OTHER_ID } from "../src/shared";
 import { DAY, HOUR, T0, fakeDirectory, fakePooler, type Slice } from "./fixtures";
 
 function input(overrides: Partial<PageInput> = {}): PageInput {
-  return { from: T0, to: T0 + DAY, bucket: "hour", timeZone: "UTC", split: "type", filter: {}, ...overrides };
+  return { from: T0, to: T0 + DAY, bucket: "hour", timeZone: "UTC", split: "type", measure: "cost", filter: {}, ...overrides };
 }
 
 const slices: Slice[] = [
@@ -92,8 +92,32 @@ describe("buildPage", () => {
     const page = await ok(buildPage(input({ split: "model" }), { pooler: fakePooler(many), directory: directory(), now: () => T0 + DAY }));
     expect(page.series.keys.map((key) => key.id)).toEqual(["model-7", "model-6", "model-5", "model-4", "model-3", OTHER_ID]);
     // Other holds models 0–2: 100 + 200 + 300.
-    expect(page.series.cost[5]?.reduce((sum, value) => sum + value, 0)).toBe(600);
+    expect(page.series.amounts[5]?.reduce((sum, value) => sum + value, 0)).toBe(600);
     expect(page.series.requests[0]?.[7]).toBe(1);
+  });
+
+  it("ranks breakdowns and series by the measure: raw tokens rank a cache-heavy model above a pricier one", async () => {
+    const usage: Slice[] = [
+      // 1M tokens, mostly cache reads: 194K input-equivalents.
+      { at: T0 + HOUR, model: "claude-sonnet-5-5", metrics: { requests: 1, input: 50_000, cacheRead: 940_000, output: 10_000, inputEquivalent: 194_000 } },
+      // 100K tokens, mostly output: 420K input-equivalents.
+      { at: T0 + HOUR, model: "claude-opus-5-5", metrics: { requests: 1, input: 20_000, cacheWrite5m: 0, output: 80_000, inputEquivalent: 420_000 } },
+    ];
+    const ranked = async (measure: PageInput["measure"]) => {
+      const page = await ok(buildPage(input({ measure, split: "model" }), { pooler: fakePooler(usage), directory: directory(), now: () => T0 + DAY }));
+      return {
+        models: page.breakdowns.model.map((row) => row.label),
+        series: page.series.keys.map((key, index) => [key.label, page.series.amounts[index]?.reduce((sum, value) => sum + value, 0)]),
+      };
+    };
+    expect(await ranked("tokens")).toEqual({
+      models: ["Sonnet 5.5", "Opus 5.5"],
+      series: [["Sonnet 5.5", 1_000_000], ["Opus 5.5", 100_000]],
+    });
+    expect(await ranked("cost")).toEqual({
+      models: ["Opus 5.5", "Sonnet 5.5"],
+      series: [["Opus 5.5", 420_000], ["Sonnet 5.5", 194_000]],
+    });
   });
 
   it("reports quota per account: resets when a window rolled over, ignoring jitter, removed accounts last", async () => {

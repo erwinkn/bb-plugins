@@ -796,7 +796,7 @@ describe("usage ledger records (T102)", () => {
     expect(records.map((record) => [record.accountId, record.status])).toEqual([["A", 529], ["B", 200]]);
   });
 
-  it("reads Codex usage from the streamed response.completed event", async () => {
+  it("reads Codex usage from the streamed response.completed event, whatever the content-type says", async () => {
     const { records, ledger } = recorder();
     const completed = {
       type: "response.completed",
@@ -807,7 +807,8 @@ describe("usage ledger records (T102)", () => {
       ledger,
       accounts: [account("C", "codex")],
       secrets: new Map([["C", oauth()]]),
-      script: [{ status: 200, headers: { "content-type": "text/event-stream" }, body: sse }],
+      // Labelled application/json by the mock; the ChatGPT backend sends no content-type at all.
+      script: [{ status: 200, body: sse }],
     });
     const response = await env.hub.handle(
       new Request(`${ROUTE}/v1/responses`, {

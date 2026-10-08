@@ -36,4 +36,6 @@ accounts or routing, and its status reports requests and tokens, not costs.
 To judge whether warming pays for itself, read `bb pool-local usage report [--since 7d] [--json]`:
 requests, cache hit ratio, cold starts, refresh cost, rewrites avoided and quota burn per account,
 by day and by settings period. It is read-only; `bb pool-local usage retention <days>` changes
-how long the ledger keeps rows.
+how long the ledger keeps rows. `bb pool-local usage relink` links old rows that name no thread to
+the one thread BB records for their session; it is a dry run unless `--apply`, which only the user
+should run, after backing up the ledger.

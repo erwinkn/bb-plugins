@@ -52,6 +52,7 @@ import {
 import {
   createInitiativesContextReader,
   INITIATIVES_PLUGIN_ID,
+  threadRoleLabel,
 } from "./thread-context.js";
 import { SessionResolver } from "./session-resolver.js";
 import {
@@ -73,6 +74,7 @@ import {
   type WarmingConfigController,
 } from "./warming-config.js";
 import { buildUsageReport } from "./usage-report.js";
+import { applyRelink, planRelink } from "./usage-relink.js";
 import { queryUsageQuota, runUsageRollup, UsageRollup } from "./usage-rollup.js";
 import { parseOrThrow } from "./validation.js";
 
@@ -101,6 +103,8 @@ const DISPOSE_INSPECTION_TIMEOUT_MS = 2_000;
 // Background BB and Initiatives reads made while linking a thread give up after this long.
 const LINK_READ_TIMEOUT_MS = 5_000;
 const MAX_THREAD_SCOPES = 256;
+// The most events BB's thread events route returns in a page.
+const IDENTITY_PAGE = 100;
 // Waits economic warming calibrates from, and how often that history is read again. The read is
 // synchronous, so it is bounded in age and rows.
 const RESUME_HISTORY_DAYS = 7;
@@ -339,18 +343,7 @@ export function createAccountPoolPlugin(
         ? warmer.threadOf(sessionKey.slice(8))
         : null;
       if (threadId === null) return null;
-      const context = projectsContext.peek(threadId);
-      return {
-        threadId,
-        role:
-          context === null || context.kind === "unknown"
-            ? null
-            : context.kind === "none"
-              ? "standalone"
-              : context.memberKind === "coordinator"
-                ? "coordinator"
-                : context.role,
-      };
+      return { threadId, role: threadRoleLabel(projectsContext.peek(threadId)) };
     };
     // The settings a usage report splits periods by: recorded now, and after every change.
     const recordLedgerSettings = () => {
@@ -548,6 +541,34 @@ export function createAccountPoolPlugin(
             ledger: { ...ledger.status(), retentionDays },
             accountLabels: labels,
           });
+        },
+        relink: async (apply) => {
+          const store = { db: ledgerDb, ledger, now };
+          const plan = await planRelink(store, {
+            threads: async () =>
+              (await bb.sdk.threads.list({ includeHidden: true })).map((thread) => thread.id),
+            sessions: async (threadId) => {
+              const sessions: string[] = [];
+              for (let afterSeq: number | null = null; ; ) {
+                const page = await bb.sdk.threads.events.list({
+                  threadId,
+                  types: ["thread/identity"],
+                  order: "asc",
+                  limit: String(IDENTITY_PAGE),
+                  ...(afterSeq === null ? {} : { afterSeq: String(afterSeq) }),
+                });
+                for (const event of page)
+                  if (event.type === "thread/identity") sessions.push(event.data.providerThreadId);
+                if (page.length < IDENTITY_PAGE) return sessions;
+                afterSeq = page.at(-1)!.seq;
+              }
+            },
+            role: async (threadId) =>
+              threadRoleLabel(
+                await projectsContext.read(threadId, AbortSignal.timeout(LINK_READ_TIMEOUT_MS)),
+              ),
+          });
+          return apply ? applyRelink(store, rollup, plan) : { plan, linkedRows: null };
         },
         retentionDays: () => retentionDays,
         setRetentionDays: async (days) => {

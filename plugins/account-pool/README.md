@@ -369,6 +369,7 @@ retention (default 30 days) are pruned hourly, 500 rows at a time.
 ```sh
 bb pool-local usage report [--since 7d|24h|90m|2026-10-05] [--json]
 bb pool-local usage retention [<days>]
+bb pool-local usage relink [--apply] [--json]
 ```
 
 The report shows totals, each settings period and each UTC day: requests by
@@ -389,6 +390,24 @@ main model can hide a cold start but never invents one. The thread and role
 columns are filled only while warming links sessions (any mode but `off`); since
 T141 a session is linked from its first request, and a linked thread outside any
 Initiative is labelled `standalone`.
+
+`usage relink` links older rows after the fact: a session's rows that name no
+thread get the one thread whose `thread/identity` events report that session,
+with its current role. A session no thread reports, or one that more than one
+thread claims (or whose other rows name another thread), stays unlinked; the
+output lists each such ambiguous session with the threads that claim it. It is a
+backfill for past sessions: a session with a request in the last 15 minutes, or
+one the ledger has not written yet, is skipped and counted as recent, since live
+linking labels it. It is a dry run unless `--apply`. Applying checks recency and
+owners again in its write transaction, fills only rows with no thread that the
+plan read (so it can run again), and refuses if the ledger dropped a request
+meanwhile. It then rebuilds the usage rollup from the ledger. Back up `data.db`
+first.
+
+Codex usage comes from the response's `response.completed` event. The ChatGPT
+Codex backend streams it without a `content-type` header, so the tap tells SSE
+from JSON by the body's first byte; before 8 Oct 2026 it took the stream for
+JSON and recorded no Codex tokens.
 
 ## Usage statistics (Usage stats plugin)
 

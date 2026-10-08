@@ -395,8 +395,10 @@ function jsonBodyTap(read: (body: JsonObject) => CacheUsage | null): UsageTap {
 }
 
 // Codex (OpenAI Responses) usage in the same shape. input_tokens includes cached_tokens, so the
-// uncached part becomes inputTokens and cached_tokens cacheReadTokens. OpenAI reports no cache
-// writes: cacheWriteTokens is 0 and its TTL split unknown.
+// uncached part becomes inputTokens and cached_tokens cacheReadTokens. The ChatGPT backend also
+// reports input_tokens_details.cache_write_tokens (0 so far), billed as uncached input: it stays in
+// inputTokens, and cacheWriteTokens is 0 with its TTL split unknown. output_tokens includes
+// reasoning tokens.
 export function codexUsageFrom(value: unknown): CacheUsage | null {
   if (!isObject(value)) return null;
   const input = count(value.input_tokens);
@@ -415,16 +417,36 @@ export function codexUsageFrom(value: unknown): CacheUsage | null {
   };
 }
 
-// The usage of a Codex response as it streams: SSE carries it in the final response.completed
-// (or response.incomplete) event, whose line holds the whole response, so only that line is kept,
-// up to 4 MiB. A JSON body is parsed once at the end if it fits in 1 MiB.
-const MAX_CODEX_EVENT_BYTES = 4 * 1024 * 1024;
+// The usage of a Codex response as it streams. The ChatGPT Codex backend streams SSE with no
+// content-type header, so the body's first byte decides: a JSON body starts with `{`, parsed once
+// at the end if it fits in 1 MiB; anything else is SSE.
+export function createCodexUsageTap(): UsageTap {
+  let tap: UsageTap | null = null;
+  return {
+    push(chunk) {
+      if (tap === null) {
+        const first = chunk.find((byte) => !JSON_WHITESPACE.has(byte));
+        if (first === undefined) return;
+        tap =
+          first === 0x7b
+            ? jsonBodyTap((parsed) => codexUsageFrom(parsed.usage))
+            : codexEventTap();
+      }
+      tap.push(chunk);
+    },
+    usage: () => tap?.usage() ?? null,
+  };
+}
 
-export function createCodexUsageTap(contentType: string | null): UsageTap {
-  const eventStream =
-    contentType?.split(";", 1)[0]?.trim().toLowerCase() === "text/event-stream";
-  if (!eventStream)
-    return jsonBodyTap((parsed) => codexUsageFrom(parsed.usage));
+const JSON_WHITESPACE = new Set([0x20, 0x09, 0x0a, 0x0d]);
+
+// SSE carries the usage in the final response.completed (or response.incomplete) event, whose line
+// holds the whole response, so only that line is kept and parsed, up to 4 MiB. Every other line is
+// dropped once its first HEAD characters show its type, and none is built or parsed past the cap.
+const MAX_CODEX_EVENT_BYTES = 4 * 1024 * 1024;
+const HEAD = 48;
+
+function codexEventTap(): UsageTap {
   const decoder = new TextDecoder();
   let usage: CacheUsage | null = null;
   let line = "";
@@ -441,25 +463,24 @@ export function createCodexUsageTap(contentType: string | null): UsageTap {
       const text = decoder.decode(chunk, { stream: true });
       let start = 0;
       for (let index = text.indexOf("\n"); index >= 0; ) {
-        if (keeping !== false) {
-          const full = line + text.slice(start, index);
-          if (isFinalCodexEvent(full)) readLine(full.trimEnd());
-        }
+        keeping ??= isFinalCodexEvent(line + text.slice(start, Math.min(index, start + HEAD)));
+        if (keeping && line.length + index - start <= MAX_CODEX_EVENT_BYTES)
+          readLine((line + text.slice(start, index)).trimEnd());
         line = "";
         keeping = null;
         start = index + 1;
         index = text.indexOf("\n", start);
       }
       if (keeping === false) return;
-      line += text.slice(start);
-      // Decide once the line's event type is visible; drop every other line at once.
-      if (keeping === null && line.length >= 48) {
-        keeping = isFinalCodexEvent(line);
-        if (!keeping) line = "";
-      }
-      if (line.length > MAX_CODEX_EVENT_BYTES) {
+      if (line.length + text.length - start > MAX_CODEX_EVENT_BYTES) {
         line = "";
         keeping = false;
+        return;
+      }
+      line += text.slice(start);
+      if (keeping === null && line.length >= HEAD) {
+        keeping = isFinalCodexEvent(line);
+        if (!keeping) line = "";
       }
     },
     usage: () => usage,

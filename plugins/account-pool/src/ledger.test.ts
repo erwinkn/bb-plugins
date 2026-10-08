@@ -584,6 +584,30 @@ describe("usage ledger: A247 corrections", () => {
     expect(r.ledger.oldestQueued()).toBeNull();
   });
 
+  it("names the sessions of requests queued but not written, parsed into rows or not", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bb-ledger-sessions-"));
+    cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+    const shared = new Database(path.join(dir, "data.db"));
+    shared.pragma("journal_mode = WAL");
+    for (const statement of QUOTA_MIGRATIONS) shared.exec(statement);
+    const own = openLedgerDatabase(shared, () => {});
+    const holder = new Database(path.join(dir, "data.db"));
+    cleanups.push(async () => {
+      for (const db of [holder, own, shared]) if (db.open) db.close();
+    });
+    const r = rig(own);
+    r.ledger.request(record({ sessionKey: "session:s1" }));
+    r.ledger.request(record({ sessionKey: null }));
+    // Parsed into rows but held back by another writer.
+    holder.exec("BEGIN IMMEDIATE");
+    r.flushes.shift()?.();
+    r.ledger.request(record({ sessionKey: "session:s2" }));
+    expect(r.ledger.queuedSessions()).toEqual(new Set(["session:s1", "session:s2"]));
+    holder.exec("COMMIT");
+    r.flushes.shift()?.();
+    expect(r.ledger.queuedSessions()).toEqual(new Set());
+  });
+
   it("1: quota() and request() run no SQL; flushes write bounded batches and prune in chunks", () => {
     const db = database();
     const r = rig(db);

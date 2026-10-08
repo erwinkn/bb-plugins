@@ -1104,6 +1104,43 @@ describe("usage ledger through the plugin", () => {
     const invalid = await f.host.harness.behavior.runCli(["usage", "retention", "0"]);
     expect(invalid).toMatchObject({ exitCode: 1, stderr: "retentionDays: Must be at least 1.\n" });
   });
+
+  it("relinks rows that name no thread through the CLI: a dry run first, then --apply", async () => {
+    const f = await fixture();
+    const db = f.host.bb.storage.database();
+    const insert = db.prepare(
+      `INSERT INTO usage_requests (at, kind, provider, session_key, account_id, family, completed, latency_ms)
+       VALUES (?, 'native', 'claude', ?, 'acct', 'opus', 1, 10)`,
+    );
+    insert.run(Date.now() - 60 * MINUTE, `session:${SESSION}`);
+    insert.run(Date.now() - 59 * MINUTE, `session:${SESSION}`);
+    insert.run(Date.now() - 58 * MINUTE, "session:no-thread-reports-it");
+    const labels = () =>
+      db.prepare("SELECT session_key AS session, thread_id AS thread, role FROM usage_requests ORDER BY at").all();
+    const dryRun = await f.host.harness.behavior.runCli(["usage", "relink"]);
+    expect(dryRun.stdout).toBe(
+      [
+        "Rows with no thread: 3 rows in 2 sessions",
+        "  linkable, one thread reports the session: 2 rows in 1 session, 1 thread",
+        "  no thread reports the session: 1 row in 1 session",
+        "  more than one thread claims the session: 0 rows in 0 sessions",
+        "Dry run: nothing changed. Run again with --apply to link them.",
+        "",
+      ].join("\n"),
+    );
+    expect(labels()).toEqual([
+      { session: `session:${SESSION}`, thread: null, role: null },
+      { session: `session:${SESSION}`, thread: null, role: null },
+      { session: "session:no-thread-reports-it", thread: null, role: null },
+    ]);
+    const applied = await f.host.harness.behavior.runCli(["usage", "relink", "--apply"]);
+    expect(applied.stdout).toContain("Linked 2 rows; 1 row left with no thread.");
+    expect(labels()).toEqual([
+      { session: `session:${SESSION}`, thread: "thr_coord", role: "coordinator" },
+      { session: `session:${SESSION}`, thread: "thr_coord", role: "coordinator" },
+      { session: "session:no-thread-reports-it", thread: null, role: null },
+    ]);
+  });
 });
 
 // W211's adverse SDK cases, through the real factory.

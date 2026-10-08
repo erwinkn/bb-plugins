@@ -347,6 +347,14 @@ export class UsageLedger {
     this.flushWithin(Number.POSITIVE_INFINITY);
   }
 
+  // The session keys of requests queued but not yet written (usage-relink.ts skips them).
+  queuedSessions(): Set<string> {
+    const sessions = new Set<string>();
+    for (const { sessionKey } of this.records) if (sessionKey !== null) sessions.add(sessionKey);
+    for (const { session_key } of this.rows) if (session_key !== null) sessions.add(session_key);
+    return sessions;
+  }
+
   // A flush on its own event-loop turn. Reading a body costs about 1 ms per MB (see
   // describeClaudeRequest), so it reads at most bodyBytes of them (and at least one record); the
   // next turn takes the rest. An explicit flush (close, a report) is not limited.

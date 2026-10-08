@@ -12,19 +12,29 @@ One row of controls scopes everything below it:
   hourly or daily, on the browser's calendar: the browser sends its IANA time
   zone, and the server lays out local hours and days (23 or 25 hours across a
   DST change) and asks the Pooler for exactly those buckets.
+- **Measure:** Tokens (the default) or Cost. It sets the headline figure, the
+  chart and the breakdowns' main column, and what the breakdowns and the
+  chart's top series rank by.
 - **Filters:** provider, model, account, role, project, Initiative. Clicking a
   row in a breakdown table applies it as a filter; clicking a thread opens it.
 
+Every control is remembered in the browser (localStorage), so returning to the
+page restores the view: range, resolution, measure, filters and the chart's
+split and measure-or-requests toggle. A relative range (24 hours, 7 days, 30
+days) stays relative and ends at the time of the visit; a custom range keeps
+its dates. "Clear filters" appears while any filter is set.
+
 Then:
 
-- **Totals:** cost, requests (with warming refreshes), cache hit rate, cold
-  rewrites, warming net savings, errors (429 and 529 counts).
-- **Cost over time:** stacked columns per hour or day, by token type, model,
+- **Totals:** tokens processed or cost (by the measure), requests (with warming
+  refreshes), cache hit rate, cold rewrites, warming net savings, errors (429
+  and 529 counts).
+- **Tokens or cost over time:** stacked columns per hour or day, by token type, model,
   account, role or provider (top five, the rest as Other), switchable to
   requests. A cache hit-rate line sits under it on the same columns.
 - **Breakdowns:** by model, account, role, project, Initiative, provider, and
-  the 30 costliest threads with their project and Initiative member (W#).
-  Each row has requests, cost and share, hit rate and cold rewrites.
+  the top 30 threads with their project and Initiative member (W#). Each row
+  has requests, tokens or cost and share, hit rate and cold rewrites.
 - **Cache and warming:** resumes after a cache entry expired, split into cold
   rewrites, rewrites a refresh avoided and entries warm without one; refresh
   cost, savings and net.
@@ -34,6 +44,10 @@ Then:
   range, one chart per account, with ticks where a window reset. The account
   and provider filters narrow it; quota is account-wide, so the other filters
   cannot, and the page says so when one is set.
+
+**Tokens** (tokens processed) counts every token once: uncached input, cache reads,
+cache writes and output, as a provider's token counter would. Cache reads
+dominate it, so it runs several times larger than cost.
 
 **Cost** is in input-equivalent tokens, the Pooler's weights at API price
 ratios to uncached input: input 1×, cache read 0.1×, 5-minute cache write
@@ -78,8 +92,11 @@ Initiative filter becomes a thread filter, since the ledger has no projects.
 - **Unlinked requests.** Requests the Pooler could not link to a thread (Claude
   Code helpers without a session, and sessions recorded before the Pooler linked
   every session, 7 Oct) show as "Not linked to a thread" and "Unattributed".
-- **Codex tokens.** The Pooler records Codex requests without token counts, so
-  they count as requests and add no cost.
+  `bb pool-local usage relink` links the old sessions BB can attribute.
+- **Codex tokens.** The Pooler recorded Codex requests without token counts
+  before 8 Oct 2026, so those count as requests and add no tokens or cost.
+- **Start of data.** The ledger starts when the Pooler began logging; a range
+  that reaches further back has no data before then, and the footer says so.
 - **Retention.** The ledger keeps 30 days by default
   (`bb pool-local usage retention`).
 

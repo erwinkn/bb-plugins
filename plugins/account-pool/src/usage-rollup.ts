@@ -113,6 +113,7 @@ export class UsageRollup {
   private readonly seedRefresh: Database.Statement;
   private readonly upsert: Database.Statement;
   private readonly prune: Database.Statement;
+  private readonly clear: Database.Statement;
   private live: { key: string; live: RollupRow[]; pendingRows: number } | null = null;
 
   constructor(private readonly deps: UsageRollupDeps) {
@@ -134,6 +135,7 @@ export class UsageRollup {
     this.seedRefresh = db.prepare(SEED_REFRESH_SQL);
     this.upsert = db.prepare(UPSERT_SQL);
     this.prune = db.prepare("DELETE FROM usage_hourly WHERE hour < ?");
+    this.clear = db.prepare("DELETE FROM usage_hourly");
   }
 
   // Rolls up one batch of final rows and drops hours past the retention, in a transaction that
@@ -149,6 +151,15 @@ export class UsageRollup {
       );
       return "done";
     }
+  }
+
+  // Drops every sum and rewinds the cursor, for a caller that changed rows already rolled up
+  // (usage-relink.ts), inside its transaction. The next steps redo a first build from the ledger.
+  rebuild(): void {
+    this.clear.run();
+    this.writeCursor.run({ at: 0, rowid: 0 });
+    // Its key can't tell: with every row still live, the cursor was zero already.
+    this.live = null;
   }
 
   // The sums for usage.stats: the hours rolled up plus the live edge. Reads only; a rollup behind
@@ -377,7 +388,7 @@ export const usageMetricsSchema = z
     errors: count,
     rateLimited: count,
     overloaded: count,
-    // Requests whose token usage was recorded (Codex usage is not).
+    // Requests whose token usage was recorded (Codex rows from before 8 Oct 2026 have none).
     withUsage: count,
     latencyMs: count,
     input: count,

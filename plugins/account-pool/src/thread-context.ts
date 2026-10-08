@@ -65,6 +65,14 @@ const errorResponseSchema = z
   })
   .passthrough();
 
+// The usage ledger's role label for a thread: its Initiative role, "coordinator" for a coordinator
+// in any role, "standalone" with no Initiative record, null when unknown.
+export function threadRoleLabel(context: ThreadContext | null): string | null {
+  if (context === null || context.kind === "unknown") return null;
+  if (context.kind === "none") return "standalone";
+  return context.memberKind === "coordinator" ? "coordinator" : context.role;
+}
+
 export const INITIATIVES_PLUGIN_ID = "initiatives";
 const CONTEXT_PATH = "/api/v1/plugins/initiatives/http/context/v1/thread";
 const CONTEXT_TIMEOUT_MS = 2_000;

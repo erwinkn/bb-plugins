@@ -134,23 +134,75 @@ describe("usage taps", () => {
 });
 
 describe("createCodexUsageTap", () => {
-  const completed = (cached: number) =>
-    `data: ${JSON.stringify({ type: "response.completed", response: { output: [], usage: { input_tokens: 500, input_tokens_details: { cached_tokens: cached }, output_tokens: 7 } } })}\n\n`;
+  // The ChatGPT Codex backend's stream as captured on 8 Oct 2026 (Codex CLI 0.160.1), content
+  // replaced: no content-type header, an `event:` line per event, `type` first in every payload.
+  const response = (status: string, usage: unknown) => ({
+    id: "resp_1", object: "response", created_at: 1791458656, status, model: "gpt-6-astra",
+    output: [], tools: [{ type: "namespace", name: "tools", description: "d".repeat(50_000), tools: [] }],
+    prompt_cache_key: "019a", usage,
+  });
+  const event = (payload: { type: string } & Record<string, unknown>) =>
+    `event: ${payload.type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  const realUsage = {
+    input_tokens: 35_774,
+    input_tokens_details: { cached_tokens: 25_088, cache_write_tokens: 0 },
+    output_tokens: 529,
+    output_tokens_details: { reasoning_tokens: 294 },
+    total_tokens: 36_303,
+    attribution: { items: { at_1: { input_tokens: 5_624, cached_tokens: 5_624, cache_write_tokens: 0, output_tokens: 0 } } },
+  };
+  const stream =
+    event({ type: "response.created", sequence_number: 0, safety_buffering: false, response: response("in_progress", null) }) +
+    event({ type: "response.in_progress", sequence_number: 1, safety_buffering: false, response: response("in_progress", null) }) +
+    event({ type: "keepalive" }) +
+    event({ type: "response.output_text.delta", sequence_number: 4, item_id: "msg_1", output_index: 0, content_index: 0, delta: "y".repeat(200_000), logprobs: [], obfuscation: "x" }) +
+    event({ type: "response.completed", sequence_number: 9, safety_buffering: false, response: response("completed", realUsage) });
 
-  it("reads response.completed across any chunking and skips other events unbuffered", () => {
-    const body = new TextEncoder().encode(
-      `event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: "y".repeat(200_000) })}\n\nevent: response.completed\n${completed(400)}`,
-    );
+  it("reads response.completed from a stream with no content-type, across any chunking", () => {
+    const body = new TextEncoder().encode(stream);
     for (const size of [1, 7, 64, body.byteLength]) {
-      const tap = createCodexUsageTap("text/event-stream; charset=utf-8");
+      const tap = createCodexUsageTap();
       for (let offset = 0; offset < body.byteLength; offset += size) tap.push(body.subarray(offset, offset + size));
-      expect(tap.usage()).toEqual({ inputTokens: 100, outputTokens: 7, cacheReadTokens: 400, cacheWriteTokens: 0, cacheWrite5mTokens: null, cacheWrite1hTokens: null });
+      // Uncached input is input minus cached; output includes the reasoning tokens.
+      expect(tap.usage()).toEqual({ inputTokens: 10_686, outputTokens: 529, cacheReadTokens: 25_088, cacheWriteTokens: 0, cacheWrite5mTokens: null, cacheWrite1hTokens: null });
     }
   });
 
-  it("reads a JSON body's usage", () => {
-    const tap = createCodexUsageTap("application/json");
-    tap.push(new TextEncoder().encode(JSON.stringify({ usage: { input_tokens: 10, output_tokens: 1 } })));
+  it("reads response.incomplete, and nothing from a stream without a final event", () => {
+    const incomplete = createCodexUsageTap();
+    incomplete.push(new TextEncoder().encode(event({ type: "response.incomplete", sequence_number: 3, response: response("incomplete", { input_tokens: 10, output_tokens: 2 }) })));
+    expect(incomplete.usage()).toMatchObject({ inputTokens: 10, outputTokens: 2, cacheReadTokens: 0 });
+    const cut = createCodexUsageTap();
+    cut.push(new TextEncoder().encode(stream.slice(0, stream.indexOf("event: response.completed"))));
+    expect(cut.usage()).toBeNull();
+  });
+
+  it("skips a final event over 4 MiB however it is chunked, and reads the next one", () => {
+    const sized = (size: number, usage: { input_tokens: number; output_tokens: number }) => {
+      const line = event({ type: "response.completed", response: { usage, pad: "" } });
+      return event({ type: "response.completed", response: { usage, pad: "p".repeat(size - line.length) } });
+    };
+    const MiB = 1024 * 1024;
+    const atCap = sized(4 * MiB, { input_tokens: 7, output_tokens: 1 });
+    const overCap = sized(4 * MiB + 64, { input_tokens: 99, output_tokens: 9 });
+    for (const [body, input] of [
+      [atCap, 7],
+      [overCap, null],
+      [overCap + atCap, 7],
+    ] as const) {
+      const bytes = new TextEncoder().encode(body);
+      for (const size of [64 * 1024, bytes.byteLength]) {
+        const tap = createCodexUsageTap();
+        for (let offset = 0; offset < bytes.byteLength; offset += size) tap.push(bytes.subarray(offset, offset + size));
+        expect(tap.usage()?.inputTokens ?? null).toBe(input);
+      }
+    }
+  });
+
+  it("reads a JSON body's usage, leading whitespace and all", () => {
+    const tap = createCodexUsageTap();
+    tap.push(new TextEncoder().encode("\n "));
+    tap.push(new TextEncoder().encode(JSON.stringify(response("completed", { input_tokens: 10, output_tokens: 1 }))));
     expect(tap.usage()).toMatchObject({ inputTokens: 10, cacheReadTokens: 0 });
   });
 });

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { isTimeZone } from "./calendar";
-import { filterDimensions, splits } from "./shared";
+import { filterDimensions, measures, splits } from "./shared";
 
 // The page's contract: what the browser asks for and what the server answers. The browser imports
 // only its types; runtime helpers both sides use are in shared.ts, which stays free of zod.
@@ -15,6 +15,8 @@ export const pageInputSchema = z
     // The browser's IANA time zone: hours and days are its local calendar's.
     timeZone: z.string().max(100).refine(isTimeZone, "Unknown time zone."),
     split: z.enum(splits),
+    // What breakdowns rank by, and the series' unit.
+    measure: z.enum(measures),
     // One value per dimension; "" is the unknown value (no model, no thread, no Initiative).
     filter: z.partialRecord(z.enum(filterDimensions), z.string().max(200)),
   })
@@ -85,7 +87,15 @@ export const pageSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("unavailable"), reason: z.string() }),
   z.object({
     status: z.literal("ok"),
-    input: z.object({ from: z.number(), to: z.number(), bucket: z.enum(["hour", "day"]) }),
+    // What the page was computed for: the browser shows a response by its own measure and split,
+    // not by controls that changed while it was loading.
+    input: z.object({
+      from: z.number(),
+      to: z.number(),
+      bucket: z.enum(["hour", "day"]),
+      measure: z.enum(measures),
+      split: z.enum(splits),
+    }),
     weights: weightsSchema,
     retentionDays: z.number(),
     oldestHour: z.number().nullable(),
@@ -96,10 +106,10 @@ export const pageSchema = z.discriminatedUnion("status", [
       buckets: z.array(z.object({ at: z.number(), metrics: metricsSchema })),
       // Where the last bucket ends: the next local hour or day, 23 or 25 hours on for some days.
       end: z.number(),
-      // For a split other than "type": the top values (the rest folded into "Other"), and their
-      // input-equivalents and requests per bucket.
+      // For a split other than "type": the top values in the measure (the rest folded into
+      // "Other"), and their amounts in the measure and requests per bucket.
       keys: z.array(labelSchema),
-      cost: z.array(z.array(z.number())),
+      amounts: z.array(z.array(z.number())),
       requests: z.array(z.array(z.number())),
     }),
     breakdowns: z.object({
@@ -109,7 +119,7 @@ export const pageSchema = z.discriminatedUnion("status", [
       role: z.array(rowSchema),
       project: z.array(rowSchema),
       initiative: z.array(rowSchema),
-      // The top threads by cost, and how many there are.
+      // The top threads in the measure, and how many there are.
       thread: z.array(rowSchema),
       threadCount: z.number(),
     }),
