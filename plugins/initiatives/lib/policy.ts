@@ -143,15 +143,15 @@ export function delegationViolations(facts: DelegationFacts): string[] {
   const worker = facts.worker;
   if (facts.route === "fresh" && worker)
     reasons.push("A spawn creates a new worker; message the existing one instead.");
-  // A review is done by a reviewer: a fresh one for each batch, which may then be asked to
-  // re-review that batch's fixes. A reviewer never implements.
-  if (facts.role === "review" && facts.route !== "fresh" && worker?.role !== "review")
-    reasons.push("A review is done by a reviewer; spawn one with reviews:\"W#\".");
+  // A review is done by a fresh reviewer, one per review round, and a reviewer gets no more
+  // work (W239); delegate refuses that earlier, naming the reviewer to spawn instead.
+  if (facts.role === "review" && facts.route !== "fresh")
+    reasons.push("A review is done by a fresh reviewer; spawn one with reviews:\"W#\".");
   if (facts.route === "continue") {
     if (!worker) reasons.push("Name the worker to message.");
     else {
-      if (worker.role === "review" && facts.role !== "review")
-        reasons.push(`${worker.ref} is a reviewer. Reviewers never implement; send the fixes to the work worker, then ask ${worker.ref} to re-review.`);
+      if (worker.role === "review")
+        reasons.push(`${worker.ref} is a reviewer, and reviews are not reused. Send the fixes to the work worker, then spawn a fresh reviewer.`);
       if (worker.state === "retired")
         reasons.push(`${worker.ref} is retired and its thread is archived. Spawn a fresh worker with handoffs:["${worker.ref}"].`);
       if (!facts.thread || facts.thread.archived)

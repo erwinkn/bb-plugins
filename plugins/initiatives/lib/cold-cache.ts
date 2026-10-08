@@ -101,11 +101,8 @@ export function createColdCacheGuard(deps: {
     deps.sdk.threads.get({ threadId }).then(thread => thread.status === "idle", () => false);
 
   return {
-    /**
-     * Why more work for this worker should go to a fresh one instead, or null to go ahead.
-     * reviewed: the W# a reviewer reviews, for its fresh-reviewer alternative.
-     */
-    async check(worker: WorkerRecord, reviewed: string | null): Promise<string | null> {
+    /** Why more work for this worker should go to a fresh one instead, or null to go ahead. */
+    async check(worker: WorkerRecord): Promise<string | null> {
       const limit = deps.limit();
       if (limit <= 0 || !worker.threadId || worker.state === "retired") return null;
       const threadId = worker.threadId;
@@ -117,10 +114,7 @@ export function createColdCacheGuard(deps: {
       if (context === null || context <= limit) return null;
       // The worker may have started a turn while the Pooler answered.
       if (!await idle(threadId)) return null;
-      const alternative = worker.role === "review"
-        ? `Spawn a fresh reviewer with reviews:"${reviewed ?? "W#"}" and handoffs:["${worker.ref}"] (its findings are embedded)`
-        : `Spawn a fresh worker with handoffs:["${worker.ref}"] (its report is embedded)`;
-      return `${worker.ref}'s cache is cold (last request ${duration(now - cache.lastRequestAt)} ago) and its context is ~${thousands(context)} tokens: resuming costs ~${thousands(context * cache.writeFactor)} tokens of cache rewrite. ${alternative}, or pass resumeCold:true to resume anyway.`;
+      return `${worker.ref}'s cache is cold (last request ${duration(now - cache.lastRequestAt)} ago) and its context is ~${thousands(context)} tokens: resuming costs ~${thousands(context * cache.writeFactor)} tokens of cache rewrite. Spawn a fresh worker with handoffs:["${worker.ref}"] (its report is embedded), or pass resumeCold:true to resume anyway.`;
     },
   };
 }

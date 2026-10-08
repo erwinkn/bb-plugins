@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 
-// W190 re-review of the A296 fixes (A297): each probe, made a regression test. Item 7 changed
-// policy: the same reviewer may re-review its batch, read-only.
+// W190 re-review of the A296 fixes (A297): each probe, made a regression test. Item 7 (the
+// same reviewer re-reviews its batch) was reversed by W239: reviewers are never reused.
 import { projectFixture } from "./fake-native";
 import { clearCatalogCache } from "../lib/bb";
 
@@ -77,31 +77,6 @@ it("legacy adopt with tasks captures the adopted worker's final report",async()=
  expect(f.store.assignment(project.id,1)!.report?.finalMessage).toBe("The adopted metrics audit is complete.");
 });
 
-it("the coordinator can ask the batch's reviewer to re-review the fixes, read-only, with the latest report; a reviewer never implements",async()=>{
- const {f,project}=await projectFixture();
- const task=f.task(project.id);
- const other=f.task(project.id,"Unrelated");
- const [w]=await tool(f,"initiative_spawn",{label:"Implement",purpose:"work",tasks:[task.ref],text:"Implement"});
- start(f);end(f,"Implemented");await f.runtime.onThreadIdle(f.idle(w.threadId));
- const [reviewer]=await tool(f,"initiative_spawn",{role:"review",label:"Review",purpose:"review",reviews:w.worker,text:"Review implementation"});
- start(f);end(f,"Needs fixes");await f.runtime.onThreadIdle(f.idle(reviewer.threadId));
- await tool(f,"initiative_message",{to:w.worker,work:true,tasks:[task.ref],text:"Fix the findings"});
- start(f);end(f,"Fixed both findings");await f.runtime.onThreadIdle(f.idle(w.threadId));
- const [again]=await tool(f,"initiative_message",{to:reviewer.worker,work:true,text:"Re-review the fixes"});
- const a=f.store.assignment(project.id,Number(again.assignment.slice(1)))!;
- expect(a).toMatchObject({role:"review",access:"read-only",route:"continue",workerNum:Number(reviewer.worker.slice(1)),reviewOf:[task.num],taskNums:[]});
- expect(a.handoffSources![0]).toMatchObject({worker:w.worker,assignment:"A3"});
- const text=f.send.mock.calls.at(-1)![0].input[0].text as string;
- expect(text).toContain("Fixed both findings");
- expect(text).toContain("This review is read-only");
- start(f);end(f,"Both fixes verified.");await f.runtime.onThreadIdle(f.idle(reviewer.threadId));
- expect(f.store.assignment(project.id,a.num)!.report).toMatchObject({outcome:"succeeded",finalMessage:"Both fixes verified."});
- // Only its own batch, and never implementation.
- await expect(tool(f,"initiative_message",{to:reviewer.worker,work:true,tasks:[other.ref],text:"Review this too"})).rejects.toThrow(/not in it/);
- await expect(f.service.delegate(project.id,{route:"continue",role:"work",worker:reviewer.worker,tasks:[task.ref]})).rejects.toThrow("Reviewers never implement");
- await expect(tool(f,"initiative_message",{to:reviewer.worker,text:"A plain question"})).resolves.toBeTruthy();
-});
-
 it("fallback retains user instructions when the allowed task, objective and note fields fill its budget",async()=>{
  const {f,project}=await projectFixture();
  f.store.updateProject(project.id,{objective:"O".repeat(4000)});
@@ -135,7 +110,7 @@ it("a writer already generating before the tracking-table migration still gets a
 it("saved instructions equal to the first T136 default move to the new default; edited ones stay",async()=>{
  const { fixture } = await import("./fake-native");
  const { DEFAULT_COORDINATOR_INSTRUCTIONS, GUIDANCE_RESET_FLAG, PREVIOUS_DEFAULTS } = await import("../lib/guidance");
- expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("ask that same reviewer to re-review");
+ expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Never reuse a reviewer");
  const f=fixture({coordinatorInstructions:PREVIOUS_DEFAULTS.coordinator[0]!});
  f.store.setFlag(GUIDANCE_RESET_FLAG);
  await f.preferences.ready;

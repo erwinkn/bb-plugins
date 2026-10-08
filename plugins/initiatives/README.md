@@ -37,12 +37,14 @@ An example, in the bb-plugins Initiative:
    embeds W190's latest report, it reads W190's checkout, and it reports findings
    the same way. No revision strings.
 5. Fixes go back to the same worker: `initiative_message {to:"W190", text,
-   work:true}` (or `tasks:[...]`). A message without them is just a message. The
-   same reviewer then re-checks them: `work:true` to a reviewer is a read-only
-   re-review of its own batch, with W190's latest report; a reviewer never
-   implements.
+   work:true}` (or `tasks:[...]`). A message without them is just a message.
+   Reviewers are never reused: the coordinator retires the reviewer once it has
+   read its report (unless it needs to ask it a clarifying question first), and
+   each review round gets a fresh one, `initiative_spawn {role:"review",
+   reviews:"W190", handoffs:["<the previous review's A#>"]}`, naming the latest
+   worker on the change. Work for a reviewer is refused.
 6. Done: the coordinator closes T40 (`initiative_task {action:"close", task:"T40",
-   outcome:"done"}`) and retires W190 and the reviewer. Nothing is accepted or
+   outcome:"done"}`) and retires W190. Nothing is accepted or
    rejected.
 
 Details:

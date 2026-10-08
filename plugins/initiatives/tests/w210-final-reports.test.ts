@@ -173,7 +173,7 @@ describe("W210 report delivery", () => {
     const { f, project, w } = await spawned("review");
     await tool(f, "initiative_report", { outcome: "done", summary: "Two findings", report: "1. Ranking ignores archives.\n2. No test for empty queries." }, w.threadId);
     expect(f.store.assignment(project.id, 2)!.report!.finalMessage).toContain("Ranking ignores archives");
-    expect(sentTexts(f)).toEqual(["Initiative · Search · W2\n\nW2 reported (done) on A2: Two findings\n\n1. Ranking ignores archives.\n2. No test for empty queries."]);
+    expect(sentTexts(f)).toEqual(["Initiative · Search · W2\n\nW2 reported (done) on A2: Two findings\n\n1. Ranking ignores archives.\n2. No test for empty queries.\n\nRetire W2 once read; reviews are not reused."]);
   });
 });
 

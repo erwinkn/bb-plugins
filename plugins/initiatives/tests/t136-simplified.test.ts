@@ -60,10 +60,9 @@ describe("T136 giving work: spawn or message, tasks optional", () => {
     const [r] = await tool(f, "initiative_spawn", { role: "review", reviews: "W1", label: "Review", purpose: "review W1", text: "Check it." });
     f.idle(r.threadId);
     await f.service.report(r.threadId, report());
-    // work:true to a reviewer is a read-only re-review (W190); implementation is refused.
-    await expect(f.service.delegate(f.store.projects()[0]!.id, { route: "continue", role: "work", worker: r.worker })).rejects.toThrow(/Reviewers never implement/);
-    const [again] = await tool(f, "initiative_message", { to: r.worker, text: "Re-check it", work: true });
-    expect(f.store.assignment(f.store.projects()[0]!.id, Number(again.assignment.slice(1)))).toMatchObject({ role: "review", access: "read-only" });
+    // Reviewers are never reused (W239): work, a re-review included, is refused.
+    await expect(f.service.delegate(f.store.projects()[0]!.id, { route: "continue", role: "work", worker: r.worker })).rejects.toThrow(/reviews are not reused/);
+    await expect(tool(f, "initiative_message", { to: r.worker, text: "Re-check it", work: true })).rejects.toThrow(/Spawn a fresh reviewer instead/);
   });
 });
 
@@ -208,7 +207,8 @@ describe("T136 instructions", () => {
     // W215: the summary stands on its own (outcome, PR and head, merge order, what is needed).
     expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1400);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("one work worker per related batch and one fresh reviewer");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("one work worker per related batch and a fresh reviewer per review round");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Never reuse a reviewer");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report");
   });
 

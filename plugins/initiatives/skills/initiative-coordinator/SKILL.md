@@ -15,8 +15,11 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   `handoffs:["W9"]` embeds earlier reports. The result lists warnings, such as another
   writer in the same checkout; overlap is never refused.
 - `initiative_message` sends one message. To a worker with `tasks` or `work:true`, it is
-  more work, and the worker reports on it again. To the batch's reviewer,
-  the same is a re-review: read-only, with the reviewed worker's latest report.
+  more work, and the worker reports on it again. Reviewers are never reused: work for a
+  reviewer is refused. Each review round gets a fresh reviewer; after fixes, spawn one with
+  `reviews:"<the latest worker on the change>", handoffs:["<the previous review's A#>"]`.
+  Retire a reviewer once you have read its report, unless you first need to ask it a
+  clarifying question (a plain message still reaches it).
 - A worker's report arrives as one message, "W12 reported (done) on A301: <summary>",
   followed by the report itself when it is short. A longer one stays stored: the message
   ends with `initiative_read {refs:["A301"],detailed:true,fields:["report"]}`; read it only

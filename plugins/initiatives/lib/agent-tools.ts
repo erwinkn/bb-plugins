@@ -33,7 +33,7 @@ export const messageToolSchema = z.object({
   text: text(20000),
   mode: z.enum(["steer", "queue"]).optional().describe("steer: urgent corrections and blockers; queue (default): everything else."),
   tasks: z.array(ref).max(30).optional().describe("Coordinator only: give this worker more work on these tasks."),
-  work: z.boolean().optional().describe("Coordinator only: this message is more work (the worker reports on it again), even without tasks. To a reviewer it is a re-review of its batch, read-only, with the reviewed worker's latest report."),
+  work: z.boolean().optional().describe("Coordinator only: this message is more work (the worker reports on it again), even without tasks. Refused for a reviewer: reviews are not reused, so spawn a fresh reviewer."),
   resumeCold: z.boolean().optional().describe("Coordinator only: give the work even though the worker's large prompt cache has gone cold (the refusal says what it costs)."),
 }).strict();
 

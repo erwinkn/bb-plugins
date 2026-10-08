@@ -3927,13 +3927,24 @@ export class ProjectsService {
    * T136: giving work is a spawn (route fresh) or a message to an existing worker (route
    * continue). Tasks are optional. A review names the worker or A# it reviews and its brief
    * embeds that report; handoffs embed any prior reports. Writers sharing a checkout get a
-   * warning, never a refusal.
+   * warning, never a refusal. A reviewer is never given more work: each review round gets a
+   * fresh one (W239).
    */
   async delegate(projectId: string, input: DelegateInput): Promise<DelegateResult[]> {
     const project = this.requireProject(projectId);
     if ((input.route as string) === "fork")
       throw new ProjectError("Forking a worker was removed. Spawn a fresh worker with handoffs, or message the existing one.");
+    const existing = input.route === "continue" && input.worker ? this.requireWorker(project, input.worker) : null;
+    if (existing?.role === "review") throw new ProjectError(this.reviewerNotReused(project, existing));
     return [await this.dispatch(project, { ...input, role: input.role ?? "work" })];
+  }
+
+  /** W239: why a reviewer gets no more work, and the fresh reviewer to spawn instead. */
+  private reviewerNotReused(project: ProjectRecord, reviewer: WorkerRecord): string {
+    const mine = this.store.assignments(project.id).filter(a => a.workerNum === reviewer.num && a.role === "review");
+    const reviewed = mine[0]?.handoffSources?.[0]?.worker ?? "W#";
+    const findings = mine.filter(a => a.report).at(-1)?.ref ?? reviewer.ref;
+    return `${reviewer.ref} is a reviewer, and reviews are not reused. Spawn a fresh reviewer instead: initiative_spawn {role:"review",reviews:"${reviewed}",handoffs:["${findings}"],label:"Review ${reviewed}",purpose:"review the fixes",text:"<what changed, what to check>"}, with reviews naming the latest worker on the change (e.g. a fix worker). A plain message (no work) still reaches ${reviewer.ref}.`;
   }
 
   /** T142: refuses more work for an idle worker whose large prompt cache has gone cold, unless resumeCold. */
@@ -3941,32 +3952,14 @@ export class ProjectsService {
     if (input.route !== "continue" || !input.worker || input.resumeCold) return;
     const project = this.requireProject(projectId);
     const worker = this.requireWorker(project, input.worker);
-    const reviewed = worker.role === "review" ? this.reviewBatch(project, worker)?.worker ?? null : null;
-    const refusal = await this.coldCache.check(worker, reviewed);
+    // delegate refuses work for a reviewer outright.
+    if (worker.role === "review") return;
+    const refusal = await this.coldCache.check(worker);
     if (refusal) throw new ProjectError(refusal);
   }
 
   /** The report a review embeds: the named W#/A#, or (legacy reviewOf) the latest report on those tasks. */
   private reviewSource(project: ProjectRecord, input: DelegateInput): AssignmentRecord {
-    // A re-review by the same reviewer: the reviewed worker's latest report, in its batch.
-    // It stays pinned to the batch it was spawned for: that worker, and those tasks (W190).
-    const reviewer = input.route === "continue" && input.worker ? this.requireWorker(project, input.worker) : null;
-    if (reviewer?.role === "review") {
-      const batch = this.reviewBatch(project, reviewer);
-      if (!batch) throw new ProjectError(`${reviewer.ref} has no recorded review to repeat. Spawn a fresh reviewer with reviews:"W#".`);
-      const fresh = `Spawn a fresh reviewer for other work.`;
-      const named = input.reviews ?? input.reviewTargets?.[0]?.assignment ?? null;
-      if (named && workerRef(latestReport(this.store, project.id, named).workerNum) !== batch.worker)
-        throw new ProjectError(`${reviewer.ref} reviews ${batch.worker}'s batch, not ${named}'s. ${fresh}`);
-      const outside = [...(input.tasks ?? []), ...(input.reviewOf ?? [])].filter(ref => !batch.tasks.includes(this.requireTask(project, ref).num));
-      if (outside.length) throw new ProjectError(`${reviewer.ref} reviews ${batch.worker}'s batch; ${outside.join(", ")} ${outside.length > 1 ? "are" : "is"} not in it. ${fresh}`);
-      // The reviewed worker's latest report on that batch, not on later unrelated work.
-      const num = Number(batch.worker.slice(1));
-      const onBatch = this.store.assignments(project.id).filter(a => a.workerNum === num && a.report &&
-        (!batch.tasks.length || a.taskNums.some(n => batch.tasks.includes(n)))).at(-1);
-      if (!onBatch) throw new ProjectError(`${batch.worker} has no report on ${reviewer.ref}'s batch yet.`);
-      return onBatch;
-    }
     const ref = input.reviews ?? input.reviewTargets?.[0]?.assignment ?? null;
     if (ref) return latestReport(this.store, project.id, ref);
     const nums = (input.reviewOf ?? []).map(r => this.requireTask(project, r).num);
@@ -3975,14 +3968,6 @@ export class ProjectsService {
       : undefined;
     if (!found) throw new ProjectError('A review names the worker it reviews, e.g. reviews:"W12"; its latest report is embedded in the brief.');
     return found;
-  }
-
-  /** The worker and tasks a reviewer was spawned to review (from its first embedded report). */
-  private reviewBatch(project: ProjectRecord, reviewer: WorkerRecord): { worker: string; tasks: number[] } | null {
-    const first = this.store.assignments(project.id).find(a => a.workerNum === reviewer.num && a.role === "review");
-    const source = first?.handoffSources?.[0];
-    if (!first || !source) return null;
-    return { worker: source.worker, tasks: first.reviewOf ?? [] };
   }
 
   /**
@@ -4247,15 +4232,9 @@ export class ProjectsService {
     const reviewed = input.role === "review" ? this.reviewSource(project, input) : null;
     const taskRefs = input.role === "review" ? [] : input.tasks ?? [];
     let tasks = taskRefs.map((ref) => this.requireTask(project, ref));
-    const batch = existing?.role === "review" && input.route === "continue" ? this.reviewBatch(project, existing) : null;
     const reviewOfRefs = reviewed
-      ? (input.tasks?.length ? input.tasks : (input.reviewOf ?? (batch ? batch.tasks.map(taskRef) : reviewed.taskNums.map(taskRef))))
+      ? (input.tasks?.length ? input.tasks : (input.reviewOf ?? reviewed.taskNums.map(taskRef)))
       : [];
-    // A re-review's resolved report and scope must both lie in the reviewer's original batch,
-    // whatever the caller passed (W190).
-    if (batch && reviewed && (workerRef(reviewed.workerNum) !== batch.worker ||
-        reviewOfRefs.some(ref => !batch.tasks.includes(this.requireTask(project, ref).num))))
-      throw new ProjectError(`${existing!.ref} reviews ${batch.worker}'s batch; this re-review resolved to other work. Spawn a fresh reviewer for it.`);
     let reviewOfTasks = reviewOfRefs.map((ref) => this.requireTask(project, ref));
     const handoffRefs = input.handoffs ?? [];
     // The embedded reports are re-resolved after the last await: the brief carries the filing checked then.
@@ -6797,7 +6776,7 @@ export class ProjectsService {
     try {
       await this.sdk.threads.send({ threadId: project.coordinatorThreadId, senderThreadId: threadId,
         mode: report.outcome === "blocked" ? "steer-if-active" : "queue-if-active",
-        input: textInput(`Initiative · ${project.name} · ${worker.ref}\n\n${reportNotice(worker.ref, assignment.ref, report)}`),
+        input: textInput(`Initiative · ${project.name} · ${worker.ref}\n\n${reportNotice(worker.ref, assignment.ref, report, assignment.role)}`),
       });
       return "Report recorded and sent to the coordinator.";
     } catch (error) {
@@ -6894,9 +6873,14 @@ const PR_NAMED = /https?:\/\/(?:www\.)?github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+(
  * A301: Search covers archived records.\n\n<report>". A longer one comes as the worker's
  * summary, the PR links its body names that the summary doesn't, and how to read the rest,
  * so the coordinator's context grows by about 1.5 KB per report rather than 8 (W215). A
- * blocked notice leads with the question.
+ * blocked notice leads with the question. A review's ends with a nudge to retire its reviewer.
  */
-function reportNotice(workerRef: string, assignmentRef: string, report: Report) {
+function reportNotice(workerRef: string, assignmentRef: string, report: Report, role: Role) {
+  const notice = noticeBody(workerRef, assignmentRef, report);
+  return role === "review" && report.outcome !== "blocked" ? `${notice}\n\nRetire ${workerRef} once read; reviews are not reused.` : notice;
+}
+
+function noticeBody(workerRef: string, assignmentRef: string, report: Report) {
   const blocked = report.outcome === "blocked";
   const status = blocked ? `${workerRef} is blocked on ${assignmentRef}` : `${workerRef} reported (${report.outcome === "succeeded" ? "done" : report.outcome}) on ${assignmentRef}`;
   const line = `${status}: ${blocked ? report.blocker?.question ?? report.summary : report.summary}`;

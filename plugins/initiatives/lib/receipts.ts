@@ -80,7 +80,7 @@ export function reportedRetryHint(a: AssignmentRecord, taskRef: string): string 
   const worker = `W${a.workerNum}`;
   const task = taskRef.split(",")[0]?.trim() || null;
   if (a.role === "review")
-    return `Read the review's final message, send the fixes to the reviewed worker with initiative_message {"to":"${a.reviewTargets?.[0]?.worker ?? "W#"}","text":"<the fixes>","work":true}, and ask ${worker} to re-review with initiative_message {"to":"${worker}","text":"<what changed>","work":true}.`;
+    return `Read the review's final message, retire ${worker}, and send the fixes to the reviewed worker with initiative_message {"to":"${a.handoffSources?.[0]?.worker ?? "W#"}","text":"<the fixes>","work":true}. After the fixes, spawn a fresh reviewer: initiative_spawn {"role":"review","reviews":"<the latest worker on the change>","handoffs":["${a.ref}"],"label":"Review the fixes","purpose":"review the fixes","text":"<what changed, what to check>"}.`;
   return `To retry, send ${worker} the fixes as more work: initiative_message {"to":"${worker}","text":"<the fixes>","work":true}${task ? `. If it is done, close the task: initiative_task {"action":"close","task":"${task}","outcome":"done"}` : ""}.`;
 }
 

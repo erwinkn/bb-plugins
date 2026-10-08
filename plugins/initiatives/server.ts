@@ -754,10 +754,8 @@ export default function plugin(bb: BbPluginApi) {
     await ensureMember(threadId);
     const command = messageCommand(parsed(messageToolSchema, raw, "initiative_message"));
     if (command.action === "message") return service.message(threadId, command);
-    const p = service.coordinatorOf(threadId);
-    // Work for a reviewer is a re-review of its own batch, read-only (W190).
-    const target = command.action === "delegate" && command.worker ? store.worker(p.id, Number(command.worker.replace(/^W/i, ""))) : null;
-    return perform(p.id, target?.role === "review" ? { ...command, role: "review" } as Command : command, "coordinator", threadId);
+    // Work for a reviewer is refused: each review round gets a fresh reviewer (W239).
+    return perform(service.coordinatorOf(threadId).id, command, "coordinator", threadId);
   };
   const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>;
   /** W215: write tools answer with a short receipt; initiative_read has the full records. */
@@ -774,7 +772,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_message",
     parameters: jsonSchema(messageToolSchema),
-    description: 'Send one message to a worker (W#) or the coordinator. {to:"W4",text:"…"}. The coordinator gives an existing worker more work with tasks:["T41"] or work:true; it reports on it again. To correct work already in progress, send a plain message (no work:true). mode steer for urgent corrections, queue (default) otherwise. Messages never resume a stopped or retired worker.',
+    description: 'Send one message to a worker (W#) or the coordinator. {to:"W4",text:"…"}. The coordinator gives an existing worker more work with tasks:["T41"] or work:true; it reports on it again. A reviewer gets no more work: spawn a fresh one per review round. To correct work already in progress, send a plain message (no work:true). mode steer for urgent corrections, queue (default) otherwise. Messages never resume a stopped or retired worker.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
       return receipt(await sendMessage(raw, threadId));

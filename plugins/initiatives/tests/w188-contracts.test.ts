@@ -133,7 +133,8 @@ describe("W188 every suggested call parses through the real API", () => {
 });
 
 describe("W188 F5: the reviewer re-check the bb-plugins coordinator was refused", () => {
-  it("re-reviews read-only through tasks as well as work:true", async () => {
+  // W239 reversed it: reviews are not reused, so either form is refused with the fresh reviewer to spawn.
+  it("refuses work for a reviewer through tasks as well as work:true", async () => {
     const { projectFixture } = await import("./fake-native");
     const { f, project } = await projectFixture();
     const tool = async (name: string, input: unknown) => JSON.parse(await f.harness.callAgentTool(name, input, { threadId: "coordinator" }) as string);
@@ -156,11 +157,8 @@ describe("W188 F5: the reviewer re-check the bb-plugins coordinator was refused"
     await tool("initiative_message", { to: w.worker, work: true, tasks: [task.ref], text: "Fix both findings." });
     await finish(w.threadId, "Fixed both.");
     // The audit's call: tasks, no work:true.
-    const [again] = await tool("initiative_message", { to: r.worker, tasks: [task.ref], text: "Re-review the fixes." });
-    expect(f.store.assignment(project.id, Number(again.assignment.slice(1)))).toMatchObject({ role: "review", access: "read-only", workerNum: Number(r.worker.slice(1)) });
-    await finish(r.threadId, "Both fixes verified.");
-    const [third] = await tool("initiative_message", { to: r.worker, work: true, text: "One more look." });
-    expect(f.store.assignment(project.id, Number(third.assignment.slice(1)))).toMatchObject({ role: "review", access: "read-only" });
+    await expect(tool("initiative_message", { to: r.worker, tasks: [task.ref], text: "Re-review the fixes." })).rejects.toThrow(/W2 is a reviewer, and reviews are not reused/);
+    await expect(tool("initiative_message", { to: r.worker, work: true, text: "One more look." })).rejects.toThrow(/initiative_spawn \{role:"review",reviews:"W1",handoffs:\["A2"\]/);
   });
 });
 

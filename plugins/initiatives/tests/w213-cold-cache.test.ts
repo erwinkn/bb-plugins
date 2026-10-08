@@ -114,14 +114,13 @@ describe("W213 cold-cache guard on work messages", () => {
     }
   });
 
-  it("a cold reviewer is offered a fresh reviewer of the same worker with its findings; a small one re-reviews", async () => {
+  it("a reviewer, cold or warm, is refused before the cache check: reviews are not reused (W239)", async () => {
     const { f } = await idleWorker(undefined, true);
     pooler(f, cold());
-    await expect(tool(f, "initiative_message", { to: "W2", text: "Re-review.", work: true })).rejects.toThrow(
-      'W2\'s cache is cold (last request 23 min ago) and its context is ~480k tokens: resuming costs ~600k tokens of cache rewrite. Spawn a fresh reviewer with reviews:"W1" and handoffs:["W2"] (its findings are embedded), or pass resumeCold:true to resume anyway.',
-    );
+    await expect(tool(f, "initiative_message", { to: "W2", text: "Re-review.", work: true })).rejects.toThrow(/^W2 is a reviewer, and reviews are not reused/);
+    await expect(tool(f, "initiative_message", { to: "W2", text: "Re-review.", work: true, resumeCold: true })).rejects.toThrow(/reviews are not reused/);
     pooler(f, { ...cold(), prefixTokens: 90_000 });
-    await expect(tool(f, "initiative_message", { to: "W2", text: "Re-review.", work: true })).resolves.toBeTruthy();
+    await expect(tool(f, "initiative_message", { to: "W2", text: "Re-review.", work: true })).rejects.toThrow(/reviews are not reused/);
   });
 
   it("in a batch, the refused action fails alone and resumeCold sends it", async () => {

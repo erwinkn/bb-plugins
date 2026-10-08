@@ -3,8 +3,8 @@ import { projectFixture, report } from "./fake-native";
 import { OPEN_REVIEW_QUERY } from "../lib/store";
 
 // W228 (D440): a worker's thread context names the review pending or running of its latest
-// report, so the Account Pooler keeps its prompt cache warm for the fix round. A re-review renews
-// it; the review's report and newer work for the worker end it.
+// report, so the Account Pooler keeps its prompt cache warm for the fix round. The next round's
+// fresh reviewer renews it; the review's report and newer work for the worker end it.
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 const tool = async (f: Fx, name: string, input: unknown, threadId = "coordinator") => JSON.parse(await f.harness.callAgentTool(name, input, { threadId }) as string);
 const get = async (f: Fx, path: string) => (await (await f.harness.fetchHttp("GET", path)).json()) as any;
@@ -22,7 +22,7 @@ async function turn(f: Fx, threadId: string, text: string) {
 }
 
 describe("W228 review in the thread context", () => {
-  it("is set while a review of the worker's latest report runs, renewed by a re-review, and cleared by its report", async () => {
+  it("is set while a review of the worker's latest report runs, renewed by the next round's reviewer, and cleared by its report", async () => {
     const { f, project } = await projectFixture();
     const [w] = await tool(f, "initiative_spawn", { label: "Search", purpose: "search", text: "Do it." });
     await turn(f, w.threadId, "Done.");
@@ -44,9 +44,9 @@ describe("W228 review in the thread context", () => {
     await tool(f, "initiative_message", { to: "W1", text: "Fix the findings.", work: true, resumeCold: true });
     await turn(f, w.threadId, "Fixed both.");
     expect(await review(f, w.threadId)).toBeNull();
-    const [again] = await tool(f, "initiative_message", { to: "W2", text: "Re-review the fixes.", work: true, resumeCold: true });
+    const [again] = await tool(f, "initiative_spawn", { role: "review", label: "Review fixes", purpose: "review the fixes", reviews: "W1", handoffs: ["W2"], text: "Review the fixes." });
     const second = f.store.assignment(project.id, Number(again.assignment.slice(1)))!;
-    expect(await review(f, w.threadId)).toMatchObject({ ref: second.ref, worker: "W2", since: second.createdAt });
+    expect(await review(f, w.threadId)).toMatchObject({ ref: second.ref, worker: "W3", since: second.createdAt });
 
     // Newer work for the worker while the review still runs: the review is of an older report.
     await tool(f, "initiative_message", { to: "W1", text: "Also do this.", work: true, resumeCold: true });
@@ -77,8 +77,8 @@ describe("W228 review in the thread context", () => {
     // A2 embeds the earlier filing of A1, so it is not a review of the latest report.
     expect(await review(f, w.threadId)).toBeNull();
     await turn(f, r.threadId, "Reviewed the first filing.");
-    const [again] = await tool(f, "initiative_message", { to: "W2", text: "Re-review the amended report.", work: true, resumeCold: true });
-    expect(await review(f, w.threadId)).toMatchObject({ ref: again.assignment, worker: "W2" });
+    const [again] = await tool(f, "initiative_spawn", { role: "review", label: "Review again", purpose: "review the amended report", reviews: "W1", handoffs: ["W2"], text: "Review the amended report." });
+    expect(await review(f, w.threadId)).toMatchObject({ ref: again.assignment, worker: "W3" });
   });
 
   it("finds the review through its partial index", async () => {
