@@ -848,6 +848,25 @@ describe("usage ledger records (T102)", () => {
     ]);
   });
 
+  it("reports the oldest open request's start until its row is recorded, however long it runs", async () => {
+    const { records, ledger } = recorder();
+    const headers = gate();
+    const env = makeHub({ ledger, script: [{ gate: headers, status: 200 }] });
+    expect(env.hub.openSince()).toBeNull();
+    const pending = env.hub.handle(nativeRequest(), "claude");
+    await tick();
+    env.advance(41 * 60_000);
+    expect(env.hub.openSince()).toBe(START);
+    headers.open();
+    const response = await pending;
+    // Headers are in; the body still streams.
+    expect(env.hub.openSince()).toBe(START);
+    expect(records).toEqual([]);
+    await response.text();
+    expect(env.hub.openSince()).toBeNull();
+    expect(records.map((record) => record.startedAt)).toEqual([START]);
+  });
+
   it("a ledger that throws never fails a request", async () => {
     const env = makeHub({
       ledger: {

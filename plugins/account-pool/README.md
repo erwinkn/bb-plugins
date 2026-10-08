@@ -390,6 +390,73 @@ columns are filled only while warming links sessions (any mode but `off`); since
 T141 a session is linked from its first request, and a linked thread outside any
 Initiative is labelled `standalone`.
 
+## Usage statistics (Usage stats plugin)
+
+The Usage stats plugin's page reads the ledger through two read-only RPCs; no
+other plugin opens this database.
+
+- `usage.stats {from, to, bucket, filter, groups}` sums the requests in
+  `[from, to)` per group of dimensions (`bucket`, `provider`, `kind`, `model`,
+  `account`, `role`, `thread`; `[]` is the total). `bucket` lists the bucket
+  starts from the caller's calendar (local hours or days, which can last 23 or
+  25 hours); an hour counts in the last bucket starting at or before it, and the
+  hour that holds `from` counts whole, in the first bucket. A filter lists
+  the values to keep per dimension; `null` matches an unknown model, role or
+  thread. Each row carries requests, errors (429 and 529 among them), latency,
+  tokens by type, input-equivalents at the report's weights, the native Claude
+  prompt tokens and cache reads behind the hit rate, warming refreshes and their
+  cost, and the resumes after expiry (cold rewrites, rewrites avoided, savings)
+  classified exactly as the report does (`resumeOutcome` in `usage-report.ts`).
+- `usage.quota {from, to}` returns each account's quota observations in range,
+  with the last one before `from`, as windows by name (`5h`, `7d`,
+  `7d <family>`, Codex windows by length).
+
+`usage.stats` reads `usage_hourly`, a rollup with one row per hour, provider,
+kind, account, model, role and thread, plus the newest requests. The ledger
+writes a request's row when its response ends but stamps it with the request's
+start, so the newest rows arrive out of order and an earlier request can land
+after a later one of the same session. A row is final once it started before
+every request that can still add one: those still open upstream (the hub knows
+each one's start) or queued in the ledger, and anything younger than 30
+minutes, which covers writers the process does not track (keep-alives, bounded
+at 5 minutes, and a previous process draining at a reload). A request streaming
+for an hour therefore holds the rollup back for that hour instead of being
+missed; a stalled stream ends at the transport's 5-minute body timeout. A
+background step folds final rows in, in ledger order (`at`, then rowid), behind
+a cursor (`usage_rollup_cursor`). Pruning only removes rows before the cursor
+and every new row sorts after it, so reused rowids neither skip nor
+double-count a request. Each query reads the rows after the cursor (the live
+edge, about half an hour of requests, longer while a long request is open) and
+classifies them afresh; the result is kept until a row is written or the cursor
+moves. Resetting the cursor and
+emptying the table rebuilds the rollup. Hours past the retention are dropped.
+
+Queries only read: they never roll up or flush the ledger. While the rollup is
+more than 10,000 rows behind (its first build), a query answers from the hours
+rolled up so far and `pendingRows` counts the rest. The background step takes
+the write lock before reading (`BEGIN IMMEDIATE` on the ledger's no-wait
+connection) and rolls up at most 2,000 rows per event-loop turn while behind,
+then runs once a minute. A held lock costs one failed `BEGIN`, and the next try
+waits 1 s, doubling up to a minute.
+
+Measured with `scripts/bench-usage-rollup.ts` on a copy of the live ledger
+(43k rows over 2.7 days, 929 rollup rows, a 2,700-row live edge) and on a 10×
+copy over 26 days (400k rows, 9,105 rollup rows, a 2,200-row live edge). Every
+time is synchronous, so it is also the longest the event loop is blocked:
+
+| | 1× | 10× |
+| --- | --- | --- |
+| First build | 165 ms in 2,000-row steps, worst 12 ms | 1.3 s, worst step 12 ms |
+| Step against a held lock | 0.3 ms | 0.3 ms |
+| Page query, 9 groups, 24 h (first, with the live edge) | 14 ms | 11 ms |
+| Page query, 9 groups, 24 h (live edge kept) | 6 ms | 5 ms |
+| Page query, 9 groups, 30 d (live edge kept) | 4 ms | 33 ms |
+| Page query during the first build | 5 ms | 27 ms |
+| Quota history, 30 d | 7 ms | 6 ms |
+
+The same 30-day breakdowns straight from `usage_requests` take about 0.5 s each
+at 10×.
+
 ## Thread cache state (Initiatives)
 
 Initiatives asks the plugin RPC `threads.cacheState {threadIds}` before it gives

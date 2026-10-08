@@ -17,6 +17,7 @@ import {
 } from "./server.js";
 import { fakeClock } from "./testing/fake-clock.js";
 import { threadCacheStateSchema } from "./thread-cache.js";
+import { usageStatsSchema } from "./usage-rollup.js";
 import { warmingStatusSchema } from "./warming.js";
 import { warmingConfigSchema, warmingConfigViewSchema } from "./warming-config.js";
 
@@ -1010,6 +1011,20 @@ describe("usage ledger through the plugin", () => {
     const text = (await f.host.harness.behavior.runCli(["usage", "report", "--since", "1h"])).stdout;
     expect(text).toContain("ttl 1h · warming warm (opus; economic, max wait 60m (background 20m), coordinator,worker,reviewer,standalone)");
     expect(text).toContain("pool@example.com: 3 req");
+
+    // The usage.stats RPC reads the same ledger through the rollup and agrees with the report.
+    const stats = usageStatsSchema.parse(
+      await f.host.harness.behavior.callRpc("usage.stats", {
+        from: 0, to: f.clock.now() + MINUTE, bucket: null, filter: {}, groups: [[], ["kind"]],
+      }),
+    );
+    expect(stats.pendingRows).toBe(0);
+    expect(stats.results[0]?.[0]?.metrics).toMatchObject({
+      requests: 3, refreshes: 1, afterExpiry: 1, rewritesAvoided: 1, rewriteTokensAvoided: 80_000, coldRewrites: 0,
+    });
+    expect(stats.results[1]?.map((row) => [row.key.kind, row.metrics.requests]).sort()).toEqual([
+      ["native", 2], ["refresh", 1],
+    ]);
   });
 
   it("T142: threads.cacheState reports a thread's cached prefix, with warming off or leased", async () => {

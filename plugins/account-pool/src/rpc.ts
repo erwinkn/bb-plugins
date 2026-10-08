@@ -39,6 +39,16 @@ import {
   threadCacheStateSchema,
   type ThreadCacheState,
 } from "./thread-cache.js";
+import {
+  usageQuotaInputSchema,
+  usageQuotaSchema,
+  usageStatsInputSchema,
+  usageStatsSchema,
+  type UsageQuota,
+  type UsageQuotaInput,
+  type UsageStats,
+  type UsageStatsInput,
+} from "./usage-rollup.js";
 import type { PoolOperations } from "./operations.js";
 import type { ClaudeOAuthLogin } from "./oauth-login.js";
 import type { CodexDeviceLogin } from "./codex-device-login.js";
@@ -123,6 +133,15 @@ export const accountPoolRpcContract = defineRpcContract({
     input: threadCacheStateInputSchema,
     output: threadCacheStateSchema,
   },
+  // Read-only usage statistics from the ledger, for the Usage stats plugin's page.
+  "usage.stats": {
+    input: usageStatsInputSchema,
+    output: usageStatsSchema,
+  },
+  "usage.quota": {
+    input: usageQuotaInputSchema,
+    output: usageQuotaSchema,
+  },
   "login.start": {
     input: z.null(),
     output: loginStartSchema,
@@ -172,6 +191,10 @@ export function createRpcHandlers(
     status: () => WarmingStatus;
     threadCache: (threadIds: string[]) => Promise<ThreadCacheState>;
   },
+  usage: {
+    stats: (input: UsageStatsInput) => UsageStats;
+    quota: (input: UsageQuotaInput) => UsageQuota;
+  },
 ): PluginRpcHandlers<typeof accountPoolRpcContract> {
   return {
     "account.add": (input) => operations.add(input),
@@ -207,6 +230,8 @@ export function createRpcHandlers(
     "warming.set": (input) => warming.config.set(input),
     "warming.status": () => warming.status(),
     "threads.cacheState": ({ threadIds }) => warming.threadCache(threadIds),
+    "usage.stats": (input) => usage.stats(input),
+    "usage.quota": (input) => usage.quota(input),
     "login.start": () => login.start(),
     "login.complete": (input) => login.complete(input),
     "codexLogin.start": () => codexLogin.start(),

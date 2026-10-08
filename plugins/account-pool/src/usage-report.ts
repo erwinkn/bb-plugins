@@ -107,14 +107,14 @@ export interface UsageReport {
   days: Array<{ day: string; stats: BucketStats }>;
 }
 
-interface ChainState {
+export interface ChainState {
   lastNativeAt: number;
   // The TTL of the entry the last native request wrote or read.
   ttl: CacheTtl;
   refreshesSince: number;
 }
 
-interface WindowState {
+export interface WindowState {
   utilization: number;
   resetAt: number | null;
 }
@@ -128,7 +128,7 @@ export class UsageAggregator {
     stats: BucketStats;
   }>;
   private readonly days = new Map<string, BucketStats>();
-  private readonly chains = new Map<string, ChainState>();
+  private readonly chains = new ResumeChains();
   private readonly quotas = new Map<string, Map<string, WindowState>>();
 
   constructor(
@@ -172,46 +172,19 @@ export class UsageAggregator {
   }
 
   private chain(row: UsageRequestRow, buckets: BucketStats[] | null): void {
-    if (
-      row.provider !== "claude" ||
-      row.kind === "advisor" ||
-      row.session_key === null ||
-      !succeeded(row.status) ||
-      row.cache_read_tokens === null ||
-      row.cache_write_tokens === null
-    )
-      return;
-    const key = chainKey(row);
-    const chain = this.chains.get(key);
-    if (row.kind === "refresh") {
-      if (chain !== undefined && row.cache_read_tokens > 0) chain.refreshesSince += 1;
-      return;
-    }
-    if (row.ttl === null) return;
-    this.chains.set(key, { lastNativeAt: row.at, ttl: row.ttl, refreshesSince: 0 });
-    if (
-      buckets === null ||
-      chain === undefined ||
-      row.at - chain.lastNativeAt <= CACHE_TTL_MS[chain.ttl]
-    )
-      return;
-    const read = row.cache_read_tokens;
-    const write = row.cache_write_tokens;
-    const refreshed = chain.refreshesSince > 0;
-    // The rewrite avoided would have been written at this request's TTL.
-    const saved =
-      read * (writeWeight(row.ttl) - INPUT_EQUIVALENT_WEIGHTS.cacheRead);
+    const outcome = this.chains.next(row);
+    if (buckets === null || outcome === null) return;
     for (const bucket of buckets) {
       const idle = bucket.idle;
       idle.afterExpiry += 1;
-      if (write >= read) {
+      if (outcome.kind === "cold") {
         idle.coldRewrites += 1;
-        idle.coldRewriteTokens += write;
-        if (refreshed) idle.coldDespiteRefresh += 1;
-      } else if (refreshed) {
+        idle.coldRewriteTokens += outcome.tokens;
+        if (outcome.refreshed) idle.coldDespiteRefresh += 1;
+      } else if (outcome.kind === "keptWarm") {
         idle.rewritesAvoided += 1;
-        idle.rewriteTokensAvoided += read;
-        bucket.estimate.savedInputEquivalent += saved;
+        idle.rewriteTokensAvoided += outcome.tokens;
+        bucket.estimate.savedInputEquivalent += outcome.savedInputEquivalent;
       } else idle.hitsWithoutRefresh += 1;
     }
   }
@@ -279,6 +252,75 @@ export class UsageAggregator {
   }
 }
 
+// The cache history of each session and model, fed every request row in ledger order (at, then
+// rowid): what each native request found (resumeOutcome). seed gives the history of a chain this
+// instance has not seen, for a reader that starts mid-ledger (the usage rollup); undefined when the
+// chain has no native request yet.
+export class ResumeChains {
+  private readonly chains = new Map<string, ChainState | null>();
+
+  constructor(
+    private readonly seed: (row: UsageRequestRow) => ChainState | undefined = () => undefined,
+  ) {}
+
+  next(row: UsageRequestRow): ResumeOutcome | null {
+    if (
+      row.provider !== "claude" ||
+      row.kind === "advisor" ||
+      row.session_key === null ||
+      !succeeded(row.status) ||
+      row.cache_read_tokens === null ||
+      row.cache_write_tokens === null
+    )
+      return null;
+    const key = chainKey(row);
+    let chain = this.chains.get(key);
+    if (chain === undefined) {
+      chain = this.seed(row) ?? null;
+      this.chains.set(key, chain);
+    }
+    if (row.kind === "refresh") {
+      if (chain !== null && row.cache_read_tokens > 0) chain.refreshesSince += 1;
+      return null;
+    }
+    if (row.ttl === null) return null;
+    this.chains.set(key, { lastNativeAt: row.at, ttl: row.ttl, refreshesSince: 0 });
+    if (chain === null) return null;
+    return resumeOutcome(
+      { at: chain.lastNativeAt, ttl: chain.ttl, refreshed: chain.refreshesSince > 0 },
+      { at: row.at, ttl: row.ttl, read: row.cache_read_tokens, write: row.cache_write_tokens },
+    );
+  }
+}
+
+// What a successful native Claude request found when it came after its entry's TTL had passed
+// since the previous native request on the same session and model (previous: that request's
+// start and TTL, and whether a refresh read the entry in between). null: the entry was still alive.
+// - cold: it wrote at least as much as it read, a rewrite of the prefix (tokens: the write);
+// - keptWarm: it read more than it wrote after a refresh, a rewrite warming avoided (tokens: the
+//   read, saved at the write price of this request's TTL minus the read price);
+// - warm: it read more than it wrote with no refresh: something else kept the entry alive.
+export type ResumeOutcome =
+  | { kind: "cold"; tokens: number; refreshed: boolean }
+  | { kind: "keptWarm"; tokens: number; savedInputEquivalent: number }
+  | { kind: "warm" };
+
+export function resumeOutcome(
+  previous: { at: number; ttl: CacheTtl; refreshed: boolean },
+  row: { at: number; ttl: CacheTtl; read: number; write: number },
+): ResumeOutcome | null {
+  if (row.at - previous.at <= CACHE_TTL_MS[previous.ttl]) return null;
+  const { read, write } = row;
+  if (write >= read) return { kind: "cold", tokens: write, refreshed: previous.refreshed };
+  if (!previous.refreshed) return { kind: "warm" };
+  return {
+    kind: "keptWarm",
+    tokens: read,
+    savedInputEquivalent:
+      read * (writeWeight(row.ttl) - INPUT_EQUIVALENT_WEIGHTS.cacheRead),
+  };
+}
+
 function chainKey(row: UsageRequestRow): string {
   return JSON.stringify([row.session_key, row.model]);
 }
@@ -289,7 +331,7 @@ function writeWeight(ttl: CacheTtl | null): number {
     : INPUT_EQUIVALENT_WEIGHTS.cacheWrite5m;
 }
 
-function rowTokens(row: UsageRequestRow): Omit<TokenTotals, "requests" | "errors"> {
+export function rowTokens(row: UsageRequestRow): Omit<TokenTotals, "requests" | "errors"> {
   const write = row.cache_write_tokens ?? 0;
   const split5m = row.cache_write_5m_tokens;
   const split1h = row.cache_write_1h_tokens;
@@ -352,7 +394,7 @@ function windowName(minutes: number | null, slot: string): string {
 }
 
 // Every window a quota row observed, by name, with a known utilization.
-function quotaWindows(row: UsageQuotaRow): Array<[string, WindowState]> {
+export function quotaWindows(row: UsageQuotaRow): Array<[string, WindowState]> {
   const windows: Array<[string, WindowState]> = [];
   const add = (name: string, utilization: unknown, resetAt: unknown) => {
     if (typeof utilization !== "number") return;

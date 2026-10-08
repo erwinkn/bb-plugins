@@ -35,8 +35,15 @@ BB bundle for every host selector the stylesheet relies on. See
 `voice-mode` adds one live voice model, background workers, task and subscription
 views, session history, and spoken thread updates. See [Voice Mode](plugins/voice-mode/README.md).
 
-`provider-usage-compact` supplies the compact usage popup. See [Provider usage
-compact](plugins/provider-usage-compact/README.md) for installation and rollback.
+`provider-usage-compact` supplies the compact usage popup; for providers the
+Account Pooler routes, it shows every pooled account's quota and which one is
+active. See [Provider usage compact](plugins/provider-usage-compact/README.md)
+for installation and rollback.
+
+`usage-stats` adds a Usage page: token consumption, cost, cache hit rates,
+warming savings and quota history from the Account Pooler's ledger, by hour or
+day, model, account, role, project, Initiative and thread. See
+[Usage stats](plugins/usage-stats/README.md).
 
 `machine-load` puts a live three-bar gauge (CPU, memory, fullest disk) in the
 sidebar footer beside Provider usage. Clicking it opens sparklines, per-core

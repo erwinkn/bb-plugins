@@ -4,6 +4,7 @@ import {
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server.js";
+import { providerUsageTone, type UsageSnapshot } from "./usage-schema.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -102,6 +103,8 @@ describe("provider usage backend", () => {
         maxAgeMs: 30 * 60_000,
       }),
     ).resolves.toEqual({
+      pools: [],
+      detailsHref: null,
       machines: [
         {
           id: "host-m4",
@@ -249,6 +252,8 @@ describe("provider usage backend", () => {
         maxAgeMs: 30 * 60_000,
       }),
     ).resolves.toEqual({
+      pools: [],
+      detailsHref: null,
       machines: [
         {
           id: "host-m4",
@@ -300,3 +305,155 @@ describe("provider usage backend", () => {
     await host.harness.lifecycle.dispose();
   });
 });
+
+describe("pooled usage", () => {
+  const host = {
+    id: "host-m4",
+    name: "M4",
+    type: "persistent" as const,
+    status: "connected" as const,
+    machineProviderId: null,
+    maxPermissionMode: "full" as const,
+    lastSeenAt: 1,
+    lastRejectedProtocolVersion: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const quota = {
+    fiveHourUtilization: null,
+    fiveHourResetAt: null,
+    fiveHourStatus: null,
+    sevenDayUtilization: null,
+    sevenDayResetAt: null,
+    sevenDayStatus: null,
+    familyWeekly: { fable: null, sonnet: null, opus: null, haiku: null, other: null },
+    limitWindows: [],
+    heldUntil: null,
+    error: null,
+  };
+  const account = (overrides: Record<string, unknown>) => ({
+    id: "11111111-1111-4111-8111-111111111111",
+    provider: "claude",
+    kind: "oauth",
+    label: "Erwin",
+    email: "erwin@griffe.dev",
+    subscriptionType: "max",
+    rateLimitTier: "default_claude_max_20x",
+    enabled: true,
+    priority: 100,
+    inFlight: 0,
+    status: "ready",
+    active: false,
+    availableAt: null,
+    ...quota,
+    ...overrides,
+  });
+
+  function usageHost(
+    callRpc: (args: { pluginId: string; method: string }) => Promise<unknown>,
+    plugins: Array<{ id: string; enabled: boolean; status: string }> = [],
+  ) {
+    return createFakePluginHost({
+      pluginId: "provider-usage-compact",
+      sdk: {
+        hosts: { list: async () => [host], experimental_listProviders: async () => [] },
+        providers: { list: async () => [] },
+        system: { usageLimits: async () => ({}) },
+        plugins: { callRpc, list: async () => ({ plugins }) as never },
+      },
+    });
+  }
+
+  it("maps the Account Pooler's routed providers to their accounts, windows and status", async () => {
+    const calls: unknown[] = [];
+    const fake = usageHost(async (args) => {
+      calls.push(args);
+      return {
+        routing: { claude: true, codex: false },
+        accounts: [
+          account({
+            status: "exhausted",
+            availableAt: Date.UTC(2026, 9, 8, 11),
+            fiveHourUtilization: 1,
+            fiveHourResetAt: Date.UTC(2026, 9, 8, 11),
+            sevenDayUtilization: 0.69,
+            sevenDayResetAt: Date.UTC(2026, 9, 10),
+            familyWeekly: { ...quota.familyWeekly, fable: { utilization: 0.15, resetAt: Date.UTC(2026, 9, 10), status: "allowed", observedAt: 1, source: "header" } },
+          }),
+          account({ id: "22222222-2222-4222-8222-222222222222", email: null, label: "Second", active: true, sevenDayUtilization: 0.6 }),
+          account({ id: "33333333-3333-4333-8333-333333333333", provider: "codex", subscriptionType: null, rateLimitTier: null }),
+        ],
+      };
+    });
+    plugin(fake.bb);
+    const result = (await fake.harness.behavior.callRpc("getUsage", { force: false, machineIds: null, maxAgeMs: 0 })) as UsageSnapshot;
+    expect(calls).toEqual([expect.objectContaining({ pluginId: "account-pool-local", method: "status.get", input: null })]);
+    // Codex is not routed through the pool, so it keeps the machine's own usage.
+    expect(result.pools).toEqual([
+      {
+        providerId: "claude-code",
+        planLabel: "Max 20x",
+        accounts: [
+          {
+            id: "11111111-1111-4111-8111-111111111111",
+            name: "erwin@griffe.dev",
+            status: "exhausted",
+            active: false,
+            availableAt: "2026-10-08T11:00:00.000Z",
+            error: null,
+            windows: [
+              { label: "5h", usedPercent: 100, resetsAt: "2026-10-08T11:00:00.000Z", cost: null },
+              { label: "7d", usedPercent: 69, resetsAt: "2026-10-10T00:00:00.000Z", cost: null },
+              { label: "Fable 7d", usedPercent: 15, resetsAt: "2026-10-10T00:00:00.000Z", cost: null },
+            ],
+          },
+          {
+            id: "22222222-2222-4222-8222-222222222222",
+            name: "Second",
+            status: "ready",
+            active: true,
+            availableAt: null,
+            error: null,
+            windows: [{ label: "7d", usedPercent: 60, resetsAt: null, cost: null }],
+          },
+        ],
+      },
+    ]);
+    expect(providerUsageTone({ ...emptyProvider, id: "claude-code" }, result.pools[0]!)).toBeNull();
+  });
+
+  it("links to the Usage stats page only while that plugin runs", async () => {
+    const details = async (plugins: Array<{ id: string; enabled: boolean; status: string }>) => {
+      const fake = usageHost(async () => ({ routing: { claude: false, codex: false }, accounts: [] }), plugins);
+      plugin(fake.bb);
+      const result = (await fake.harness.behavior.callRpc("getUsage", { force: false, machineIds: null, maxAgeMs: 0 })) as UsageSnapshot;
+      await fake.harness.lifecycle.dispose();
+      return result.detailsHref;
+    };
+    expect(await details([{ id: "usage-stats", enabled: true, status: "running" }])).toBe("/plugins/usage-stats/usage");
+    expect(await details([{ id: "usage-stats", enabled: false, status: "disabled" }])).toBeNull();
+    expect(await details([{ id: "usage-stats", enabled: true, status: "failed" }])).toBeNull();
+    expect(await details([])).toBeNull();
+  });
+
+  it("falls back to every machine's own usage without the Account Pooler", async () => {
+    const fake = usageHost(async () => {
+      throw new Error('Plugin "account-pool-local" is not installed.');
+    });
+    plugin(fake.bb);
+    await expect(
+      fake.harness.behavior.callRpc("getUsage", { force: false, machineIds: null, maxAgeMs: 0 }),
+    ).resolves.toMatchObject({ pools: [] });
+  });
+});
+
+const emptyProvider = {
+  id: "codex",
+  displayName: "Codex",
+  logoUrl: null,
+  iconGlyph: null,
+  iconTint: null,
+  signInHint: "Sign in.",
+  expiredHint: "Sign in again.",
+  usage: null,
+};

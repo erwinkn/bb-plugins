@@ -559,6 +559,31 @@ describe("usage ledger: A247 corrections", () => {
     expect(requestRows(shared)).toHaveLength(1);
   });
 
+  it("names the oldest request still queued, so the rollup waits for its row", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "bb-ledger-queued-"));
+    cleanups.push(() => fs.rm(dir, { recursive: true, force: true }));
+    const shared = new Database(path.join(dir, "data.db"));
+    shared.pragma("journal_mode = WAL");
+    for (const statement of QUOTA_MIGRATIONS) shared.exec(statement);
+    const own = openLedgerDatabase(shared, () => {});
+    const holder = new Database(path.join(dir, "data.db"));
+    cleanups.push(async () => {
+      for (const db of [holder, own, shared]) if (db.open) db.close();
+    });
+    const r = rig(own);
+    expect(r.ledger.oldestQueued()).toBeNull();
+    r.ledger.request(record({ startedAt: T0 + MINUTE }));
+    r.ledger.request(record({ startedAt: T0 }));
+    expect(r.ledger.oldestQueued()).toBe(T0);
+    // Parsed into rows but held back by another writer: still queued.
+    holder.exec("BEGIN IMMEDIATE");
+    r.flushes.shift()?.();
+    expect(r.ledger.oldestQueued()).toBe(T0);
+    holder.exec("COMMIT");
+    r.flushes.shift()?.();
+    expect(r.ledger.oldestQueued()).toBeNull();
+  });
+
   it("1: quota() and request() run no SQL; flushes write bounded batches and prune in chunks", () => {
     const db = database();
     const r = rig(db);

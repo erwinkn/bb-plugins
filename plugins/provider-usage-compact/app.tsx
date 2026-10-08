@@ -14,6 +14,7 @@ import {
   experimental_ProviderIcon,
   experimental_useSidebarThreads,
   type ExperimentalSidebarFooterDisclosureProps,
+  UrlLink,
   useBbContext,
 } from "@get-bb/plugin-sdk/app";
 import { Icon } from "./components/host-icon";
@@ -30,6 +31,8 @@ import { LIST_HOVER_TRANSITION } from "./components/ui/motion";
 
 import {
   providerUsageTone,
+  type PooledAccount,
+  type ProviderPool,
   type UsageMachine,
   type UsageProvider,
   type UsageWindow as UsageWindowValue,
@@ -202,6 +205,133 @@ function UsageWindow({ window }: { window: UsageWindowValue }) {
       )}
     </div>
   );
+}
+
+/** "25m", "2h 10m", "Sun 15:00", "Oct 14": a reset in a narrow column. */
+function formatResetShort(resetsAt: string | null): string | null {
+  if (resetsAt === null) return null;
+  const reset = new Date(resetsAt);
+  if (Number.isNaN(reset.getTime())) return null;
+  const diffMs = reset.getTime() - Date.now();
+  // A reset in the past: the window has already rolled over and no new one has started.
+  if (diffMs <= 0) return null;
+  const minutes = Math.round(diffMs / 60_000);
+  if (minutes < 60) return minutes + "m";
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + "h" + (minutes % 60 === 0 ? "" : " " + (minutes % 60) + "m");
+  return diffMs < 7 * 24 * 60 * 60_000
+    ? reset.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })
+    : reset.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+const POOLED_STATUS: Record<PooledAccount["status"], { label: string; dot: string }> = {
+  ready: { label: "Ready", dot: "bg-success" },
+  held: { label: "Held", dot: "bg-warning" },
+  exhausted: { label: "Exhausted", dot: "bg-destructive" },
+  error: { label: "Error", dot: "bg-destructive" },
+  disabled: { label: "Disabled", dot: "border border-muted-foreground" },
+};
+
+function PooledWindowRow({ window }: { window: UsageWindowValue }) {
+  const reset = formatResetShort(window.resetsAt);
+  return (
+    <div
+      className="grid grid-cols-[3.25rem_minmax(0,1fr)_2rem_4.75rem] items-center gap-1.5 text-2xs tabular-nums text-muted-foreground"
+      title={
+        window.label +
+        ": " +
+        Math.round(window.usedPercent) +
+        "% used" +
+        (reset === null ? "" : ", resets " + reset)
+      }
+    >
+      <span className="truncate">{window.label}</span>
+      <div className="h-1 overflow-hidden rounded-full bg-sidebar-border">
+        <div
+          className={"h-full rounded-full " + barColorClass(window.usedPercent)}
+          style={{ width: Math.max(2, Math.min(100, window.usedPercent)) + "%" }}
+        />
+      </div>
+      <span className="text-right text-sidebar-foreground">
+        {Math.round(window.usedPercent)}%
+      </span>
+      <span className="truncate text-right">{reset ?? ""}</span>
+    </div>
+  );
+}
+
+function PooledAccountUsage({ account }: { account: PooledAccount }) {
+  const status = POOLED_STATUS[account.status];
+  const until = formatResetShort(account.availableAt);
+  const label =
+    account.status === "ready" && account.active
+      ? null
+      : status.label + (until === null ? "" : " · " + until);
+  return (
+    <li
+      aria-label={account.name + (account.active ? ", active" : "") + ", " + status.label}
+      className={cn("space-y-1", account.status === "disabled" && "opacity-60")}
+    >
+      <div className="flex min-w-0 items-center gap-1.5 text-xs">
+        <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", status.dot)} />
+        <span
+          title={account.name}
+          className={cn(
+            "min-w-0 flex-1 truncate",
+            account.active ? "font-medium text-sidebar-foreground" : "text-sidebar-foreground/90",
+          )}
+        >
+          {account.name}
+        </span>
+        {account.active ? (
+          <span className="shrink-0 rounded-sm bg-sidebar-border/60 px-1 py-0.5 text-2xs leading-none text-sidebar-foreground">
+            Active
+          </span>
+        ) : null}
+        {label === null ? null : (
+          <span
+            title={account.error ?? undefined}
+            className={cn(
+              "shrink-0 text-2xs tabular-nums",
+              account.status === "exhausted" || account.status === "error"
+                ? "text-destructive"
+                : account.status === "held"
+                  ? "text-warning-text"
+                  : "text-subtle-foreground",
+            )}
+          >
+            {label}
+          </span>
+        )}
+      </div>
+      {account.status === "disabled" || account.windows.length === 0 ? null : (
+        <div className="space-y-0.5 pl-3">
+          {account.windows.map((window) => (
+            <PooledWindowRow key={window.label} window={window} />
+          ))}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function PooledUsageBody({ pool }: { pool: ProviderPool }) {
+  if (pool.accounts.length === 0) {
+    return <p className="text-xs text-muted-foreground">No pooled accounts.</p>;
+  }
+  return (
+    <ul aria-label="Pooled accounts" className="max-h-80 space-y-2.5 overflow-y-auto">
+      {pool.accounts.map((account) => (
+        <PooledAccountUsage key={account.id} account={account} />
+      ))}
+    </ul>
+  );
+}
+
+function poolSummary(pool: ProviderPool): string {
+  const enabled = pool.accounts.filter((account) => account.status !== "disabled");
+  const ready = enabled.filter((account) => account.status === "ready").length;
+  return "Account Pooler · " + ready + " of " + enabled.length + " ready";
 }
 
 function ProviderUsageBody({ provider }: { provider: UsageProvider }) {
@@ -386,6 +516,11 @@ function ProviderUsageStatus({ dismiss }: ExperimentalSidebarFooterDisclosurePro
     providers.find((provider) => provider.id === requestedProviderId) ??
     providers[0] ??
     null;
+  const pools = snapshot.data?.pools ?? [];
+  const poolOf = (provider: UsageProvider) =>
+    pools.find((pool) => pool.providerId === provider.id) ?? null;
+  const activePool = activeProvider === null ? null : poolOf(activeProvider);
+  const detailsHref = snapshot.data?.detailsHref ?? null;
   const panelId = useId();
   const activeMachineId = activeMachine?.id ?? null;
 
@@ -460,7 +595,7 @@ function ProviderUsageStatus({ dismiss }: ExperimentalSidebarFooterDisclosurePro
           >
             {providers.map((provider, index) => {
               const isActive = provider.id === activeProvider?.id;
-              const tone = providerUsageTone(provider);
+              const tone = providerUsageTone(provider, poolOf(provider));
               return (
                 <button
                   key={provider.id}
@@ -555,6 +690,32 @@ function ProviderUsageStatus({ dismiss }: ExperimentalSidebarFooterDisclosurePro
               : (activeMachine.error ??
                 "No providers report usage limits on this machine.")}
           </p>
+        ) : activePool !== null ? (
+          <>
+            <div className="flex min-w-0 items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate text-xs font-medium text-sidebar-foreground">
+                  {activeProvider.displayName}
+                </h2>
+                <p className="truncate text-2xs text-subtle-foreground">
+                  {poolSummary(activePool)}
+                </p>
+              </div>
+              {activePool.planLabel === null ? null : (
+                <span className="ml-auto shrink-0 rounded-sm bg-sidebar-border/60 px-1 py-0.5 text-2xs leading-none text-subtle-foreground">
+                  {activePool.planLabel}
+                </span>
+              )}
+            </div>
+            <div className="mt-2.5">
+              <PooledUsageBody pool={activePool} />
+            </div>
+            {snapshot.error === null ? null : (
+              <p role="status" className="mt-2 text-xs text-warning-text">
+                Showing the last update. {snapshot.error}
+              </p>
+            )}
+          </>
         ) : (
           <>
             <div className="flex min-w-0 items-start gap-2">
@@ -601,6 +762,16 @@ function ProviderUsageStatus({ dismiss }: ExperimentalSidebarFooterDisclosurePro
           </>
         )}
       </div>
+      {detailsHref === null ? null : (
+        <UrlLink
+          href={detailsHref}
+          onClick={dismiss}
+          className="flex items-center justify-between border-t border-sidebar-border px-2.5 py-2 text-xs text-muted-foreground hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sidebar-ring"
+        >
+          Usage details
+          <Icon name="ChevronRight" fallback="ArrowRight" aria-hidden="true" className="size-3.5" />
+        </UrlLink>
+      )}
     </div>
   );
 }

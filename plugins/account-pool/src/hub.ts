@@ -35,11 +35,11 @@ import type {
 } from "./credentials.js";
 import {
   accountStatus,
-  blockingResetAt,
   governingWeeklyResetAt,
   isQuotaExhausted,
   isSharedQuotaExhausted,
   retryAfterMilliseconds,
+  usableAt,
 } from "./quota.js";
 import type {
   AccountBinding,
@@ -180,7 +180,8 @@ export class AccountPoolHub {
   private accepting = false;
   private stopped = new AbortController();
   private readonly inFlightByAccount = new Map<string, number>();
-  private readonly activeControllers = new Set<AbortController>();
+  // Each upstream request still open, with its ledger start: its row is not recorded yet.
+  private readonly activeControllers = new Map<AbortController, number>();
   private readonly refreshes = new Map<string, SecretFlight>();
   private readonly refreshBackoffs = new Map<string, RefreshBackoff>();
   private readonly pacingByAccount = new Map<string, PacingFlight>();
@@ -354,6 +355,7 @@ export class AccountPoolHub {
       let upstream: UpstreamResult;
       dispatch.sent = true;
       const upstreamBody = parsed.forAccount(selected);
+      const startedAt = this.options.now();
       const attempt = this.ledgerAttempt(
         {
           kind: "advisor",
@@ -363,7 +365,7 @@ export class AccountPoolHub {
           family: parsed.family,
           body: upstreamBody,
         },
-        this.options.now(),
+        startedAt,
       );
       try {
         upstream = await this.fetchUpstream(
@@ -372,6 +374,7 @@ export class AccountPoolHub {
           selected,
           secret,
           adapter,
+          startedAt,
           (headers) => advisorRequestHeaders(adapter.provider, headers, secret),
         );
       } catch (error) {
@@ -528,13 +531,22 @@ export class AccountPoolHub {
     ]);
     if (timeout !== null) clearTimeout(timeout);
     if (this.inFlightCount() === 0) return;
-    for (const controller of this.activeControllers) {
+    for (const controller of this.activeControllers.keys()) {
       controller.abort(
         new Error(
           "Account Pooler stopped before the upstream response completed.",
         ),
       );
     }
+  }
+
+  // The start of the oldest upstream request still open, or null: no request that started before
+  // it can still add a ledger row. A stalled stream ends at the transport's body timeout.
+  openSince(): number | null {
+    let oldest: number | null = null;
+    for (const startedAt of this.activeControllers.values())
+      if (oldest === null || startedAt < oldest) oldest = startedAt;
+    return oldest;
   }
 
   async status(): Promise<Omit<PoolStatus, "routing">> {
@@ -552,12 +564,18 @@ export class AccountPoolHub {
       accounts: accounts.map((account) => {
         const quota = this.options.quotas.get(account.id);
         const { accountId: _accountId, ...quotaFields } = quota;
+        const status = accountStatus(account, quota, settings.switchThreshold, now);
         return {
           ...account,
           lastUsedHostName: null,
           ...quotaFields,
           inFlight: this.inFlightByAccount.get(account.id) ?? 0,
-          status: accountStatus(account, quota, settings.switchThreshold, now),
+          status,
+          active: this.activeAccounts.get(account.provider)?.accountId === account.id,
+          availableAt:
+            status === "held" || status === "exhausted"
+              ? futureOrNull(usableAt(quota, null, settings.switchThreshold, now), now)
+              : null,
         };
       }),
     };
@@ -707,6 +725,7 @@ export class AccountPoolHub {
               selected.account,
               secret,
               adapter,
+              attemptStartedAt,
             );
           } catch (error) {
             if (error instanceof UpstreamConnectionError)
@@ -1522,11 +1541,12 @@ export class AccountPoolHub {
     account: Account,
     secret: AccountSecret,
     adapter: ProviderAdapter,
+    startedAt: number,
     isolatedHeaders?: (headers: Headers) => Headers,
   ): Promise<UpstreamResult> {
     const controller = new AbortController();
     const abortFromRequest = () => controller.abort(request.signal.reason);
-    this.activeControllers.add(controller);
+    this.activeControllers.set(controller, startedAt);
     this.increment(account.id);
     if (request.signal.aborted) abortFromRequest();
     else
@@ -1654,14 +1674,8 @@ export class AccountPoolHub {
       .flatMap((account) => {
         const quota = this.options.quotas.get(account.id);
         if (quota.error !== null) return [];
-        const quotaResetAt = blockingResetAt(quota, family, threshold, now);
-        if (
-          quotaResetAt === null &&
-          isQuotaExhausted(quota, family, threshold, now)
-        )
-          return [];
-        const resetAt = Math.max(quota.heldUntil ?? 0, quotaResetAt ?? 0);
-        return resetAt > now ? [resetAt] : [];
+        const resetAt = futureOrNull(usableAt(quota, family, threshold, now), now);
+        return resetAt === null ? [] : [resetAt];
       })
       .sort((left, right) => left - right)[0];
     const retryAfter = Math.max(
@@ -1851,6 +1865,10 @@ export function replayableHeaders(inbound: Headers): Headers {
 }
 
 // Model requests go to the usage ledger; token counting and model lists do not.
+function futureOrNull(at: number | null, now: number): number | null {
+  return at !== null && at > now ? at : null;
+}
+
 function ledgerKindOf(request: Request): RequestKind | null {
   if (request.method !== "POST") return null;
   return new URL(request.url).pathname.endsWith("/count_tokens")

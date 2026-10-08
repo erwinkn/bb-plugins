@@ -191,6 +191,24 @@ export function blockingResetAt(
   return unknown ? null : latest;
 }
 
+// When an account can serve again: its hold has ended and so have its exhausted windows (the
+// shared ones, and the family's when given). null when an exhausted window's reset is unknown; at
+// or before now when nothing blocks it.
+export function usableAt(
+  quota: AccountQuota,
+  family: ModelFamily | null,
+  threshold: number,
+  now: number,
+): number | null {
+  const resetAt = blockingResetAt(quota, family, threshold, now);
+  const exhausted =
+    family === null
+      ? isSharedQuotaExhausted(quota, threshold, now)
+      : isQuotaExhausted(quota, family, threshold, now);
+  if (resetAt === null && exhausted) return null;
+  return Math.max(quota.heldUntil ?? 0, resetAt ?? 0);
+}
+
 export function isSharedQuotaExhausted(
   quota: AccountQuota,
   threshold: number,

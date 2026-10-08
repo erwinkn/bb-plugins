@@ -9,7 +9,7 @@ function deferred<T>() {
 }
 
 function response(name: string) {
-  return new Response(JSON.stringify({ ok: true, result: { machines: [{
+  return new Response(JSON.stringify({ ok: true, result: { pools: [], detailsHref: null, machines: [{
     id: "machine", displayName: name, status: "connected", machineProvider: null, providers: [], error: null,
   }] } }), { status: 200 });
 }

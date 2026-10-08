@@ -198,6 +198,12 @@ export const accountSummarySchema = accountSchema.extend({
   ...quotaFieldsShape,
   inFlight: z.number().int().nonnegative(),
   status: z.enum(["disabled", "ready", "held", "exhausted", "error"]),
+  // The provider's active account: where a new session goes while it stays eligible. Sessions
+  // already bound to another account keep it.
+  active: z.boolean(),
+  // When a held or exhausted account is usable again: the hold's end, or the latest reset of its
+  // exhausted windows. null when it is usable now or the reset is unknown.
+  availableAt: z.number().int().nullable(),
 });
 
 export type AccountSummary = z.infer<typeof accountSummarySchema>;

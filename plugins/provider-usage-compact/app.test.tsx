@@ -73,6 +73,8 @@ describe("provider usage footer disclosure", () => {
           JSON.stringify({
             ok: true,
             result: {
+              pools: [],
+              detailsHref: null,
               machines: [
                 {
                   id: "host-m4",

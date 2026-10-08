@@ -9,6 +9,32 @@ Provider discovery uses `capability: "usage"`. Devin appears when its provider
 reports usage support. The plugin uses BB's existing provider credentials and
 usage APIs. It needs no separate sign-in or API key.
 
+## Pooled accounts
+
+When the Account Pooler (`account-pool-local`) routes a provider's traffic,
+that provider's tab shows the pool instead of the machine's own login, which no
+longer serves requests: every pooled account with its 5h, 7d and per-family
+weekly utilization and reset times, its status (ready, held, exhausted, error,
+disabled), when an exhausted or held account is usable again, and which
+account is active (where new sessions go). The plan label shows once when all
+accounts share it. The tab's warning dot turns critical when no enabled account
+is ready, and otherwise follows the active account.
+
+The backend reads the Pooler's `status.get` RPC on every usage request (it is
+local and answers from memory), with a 2-second timeout. A provider the Pooler
+does not route (routing off, or no accounts), a missing Pooler, or a failed
+read all fall back to the machine's own usage as before. Pooled usage is the
+same on every machine.
+
+## Usage details
+
+While the Usage stats plugin (`usage-stats`) is installed and running, the
+popup ends with a "Usage details" link to its page
+(`/plugins/usage-stats/usage`). The backend checks `plugins.list` on each usage
+request. The SDK's `toPluginPanel` only reaches the calling plugin's own
+panels, so the link is an SDK `UrlLink` to the route, as the Sidebar does for
+Initiatives (README "Cross-plugin navigation").
+
 ## Icons
 
 Generic icons (machine, check, refresh, close, menu chevrons) render through

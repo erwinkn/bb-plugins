@@ -2046,6 +2046,45 @@ describe("Account Pool plugin", () => {
     expect(rotated.status).toBe(200);
     expect(await rotated.text()).toBe('{"rotated":true}');
     expect(keys).toEqual(["sk-one", "sk-two", "sk-three"]);
+    // The account new sessions go to now is the one the rotation landed on.
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    expect(status.accounts.map((account) => account.active)).toEqual([false, false, true]);
+    // Both earlier accounts are past the 0.7 threshold on the 5h window until its reset.
+    expect(status.accounts.map((account) => [account.status, account.availableAt])).toEqual([
+      ["exhausted", 4_102_444_800_000],
+      ["exhausted", 4_102_444_800_000],
+      ["ready", null],
+    ]);
+  });
+
+  it("reports a held account as available when both its hold and its exhausted quota end", async () => {
+    const upstream = await startUpstream((_request, response) => {
+      // A plain 429 holds the account for a minute; its 5h window is spent until 2100.
+      response.writeHead(429, {
+        "content-type": "application/json",
+        "retry-after": "60",
+        "anthropic-ratelimit-unified-5h-utilization": "0.99",
+        "anthropic-ratelimit-unified-5h-reset": "4102444800",
+        "anthropic-ratelimit-unified-5h-status": "allowed",
+      });
+      response.end("{}");
+    });
+    cleanups.push(upstream.close);
+    const fixture = await createFixture({ upstreamUrl: upstream.url, apiKey: "sk-one" });
+    const response = await fixture.host.harness.behavior.fetchHttp("POST", "/v1/messages", {
+      headers: authHeaders(fixture.key),
+      body: "{}",
+    });
+    expect(response.status).toBe(429);
+    await response.text();
+    const status = statusSchema.parse(
+      await fixture.host.harness.behavior.callRpc("status.get", null),
+    );
+    expect(status.accounts.map((account) => [account.status, account.availableAt])).toEqual([
+      ["held", 4_102_444_800_000],
+    ]);
   });
 
   it("routes around a Fable-spent account while retaining it for Opus", async () => {
@@ -3127,6 +3166,49 @@ describe("Account Pool plugin", () => {
     expect(response.status).toBe(200);
     await response.text();
     await fixture.service.done;
+  });
+
+  it("starts the usage rollup only once the hub service is active", async () => {
+    // BB runs the new instance's factory before the previous instance has drained; a rollup that
+    // started there could finalize an hour the old hub still writes into.
+    const dataDir = await mkdtemp(path.join(tmpdir(), "bb-account-pool-rollup-"));
+    const host = createFakePluginHost({
+      pluginId: "account-pool-local",
+      dataDir,
+      sdk: sdkStubs(),
+    });
+    await createAccountPoolPlugin()(host.bb);
+    cleanups.push(async () => {
+      await host.harness.lifecycle.dispose();
+      await fs.rm(dataDir, { recursive: true, force: true });
+    });
+    const at = Date.now() - 3 * 24 * 60 * 60_000;
+    host.bb.storage
+      .database()
+      .prepare(
+        `INSERT INTO usage_requests (at, kind, provider, account_id, model, family, status, completed,
+           latency_ms, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+           cache_write_5m_tokens, cache_write_1h_tokens)
+         VALUES (?, 'native', 'claude', 'acct-a', 'claude-opus-5-5', 'opus', 200, 1, 2000, 10, 1000, 0, 0, 0, 0)`,
+      )
+      .run(at);
+    const rolledUp = () =>
+      (
+        host.bb.storage
+          .database()
+          .prepare("SELECT coalesce(sum(requests), 0) AS n FROM usage_hourly")
+          .get() as { n: number }
+      ).n;
+    // The first step is due immediately; give it time to run if it was started.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(rolledUp()).toBe(0);
+
+    const service = host.harness.behavior.runService("hub");
+    cleanups.push(async () => {
+      service.controller.abort();
+      await service.done;
+    });
+    await vi.waitFor(() => expect(rolledUp()).toBe(1));
   });
 
   it("accepts requests after stopping and restarting the hub service", async () => {

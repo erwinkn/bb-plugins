@@ -73,6 +73,7 @@ import {
   type WarmingConfigController,
 } from "./warming-config.js";
 import { buildUsageReport } from "./usage-report.js";
+import { queryUsageQuota, runUsageRollup, UsageRollup } from "./usage-rollup.js";
 import { parseOrThrow } from "./validation.js";
 
 export interface AccountPoolPluginOptions {
@@ -106,6 +107,11 @@ const RESUME_HISTORY_DAYS = 7;
 const RESUME_HISTORY_ROWS = 20_000;
 const RESUME_HISTORY_REFRESH_MS = 10 * 60_000;
 const DISPOSE_INSPECTION_TIMEOUT = Symbol("dispose-inspection-timeout");
+// The usage rollup runs in the background (runUsageRollup) while the hub service is active: once a
+// minute when caught up, and after a held lock, a second later, backing off to a minute. Stats
+// queries only read.
+const ROLLUP_IDLE_MS = 60_000;
+const ROLLUP_BUSY_MS = 1_000;
 
 export function helloResponse(): Response {
   return new Response(null, { status: 200 });
@@ -358,7 +364,32 @@ export function createAccountPoolPlugin(
     };
     recordLedgerSettings();
     ledger.flush();
+    const rollup = new UsageRollup({
+      db: ledgerDb,
+      now,
+      openSince: () => {
+        const open = hubRef?.openSince() ?? null;
+        const queued = ledger.oldestQueued();
+        return open === null ? queued : queued === null ? open : Math.min(open, queued);
+      },
+      retentionDays: () => retentionDays,
+      log: (message) => bb.log.warn(message),
+    });
+    // Started by the hub service, not here: BB runs this factory before the previous instance has
+    // drained, and a rollup that starts then can finalize an hour the old hub still writes into.
+    let stopRollup: (() => void) | null = null;
+    const startRollup = () =>
+      runUsageRollup(rollup, {
+        idleMs: ROLLUP_IDLE_MS,
+        busyMs: ROLLUP_BUSY_MS,
+        defer: (run, delayMs) => {
+          const timer = setTimeout(run, delayMs);
+          timer.unref();
+          return () => clearTimeout(timer);
+        },
+      });
     bb.onDispose(() => {
+      stopRollup?.();
       ledger.close();
       if (ledgerDb !== db) ledgerDb.close();
     });
@@ -487,6 +518,9 @@ export function createAccountPoolPlugin(
             },
             threadIds,
           ),
+      }, {
+        stats: (input) => rollup.stats(input),
+        quota: (input) => queryUsageQuota(ledgerDb, input),
       }),
     );
     registerPoolCli(
@@ -679,7 +713,15 @@ export function createAccountPoolPlugin(
       auth: "none",
     });
     bb.background.service("hub", {
-      start: (signal) => hub.start(signal),
+      start: async (signal) => {
+        stopRollup = startRollup();
+        try {
+          await hub.start(signal);
+        } finally {
+          stopRollup();
+          stopRollup = null;
+        }
+      },
     });
   };
 }

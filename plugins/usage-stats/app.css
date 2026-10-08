@@ -1,0 +1,24 @@
+/* Series colors for the Usage page's charts: the dataviz reference categorical palette, in its
+   validated order, stepped for BB's light and dark canvases (scripts in the README). Marks wear
+   these; text keeps BB's text tokens. */
+.usage-stats {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-other: color-mix(in oklch, var(--muted-foreground) 55%, var(--background));
+  --chart-grid: color-mix(in oklch, var(--foreground) 9%, var(--background));
+  --chart-axis: color-mix(in oklch, var(--foreground) 22%, var(--background));
+}
+.dark .usage-stats {
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+}

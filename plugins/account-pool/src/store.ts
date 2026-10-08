@@ -814,4 +814,38 @@ export const QUOTA_MIGRATIONS = [
   `CREATE INDEX usage_warming_wait ON usage_warming (wait_started_at)`,
   // threads.cacheState reads a session's latest requests across models (thread-cache.ts).
   `CREATE INDEX usage_requests_session_recent ON usage_requests (session_key, at)`,
+  // Hourly sums of usage_requests for statistics pages, rebuilt from it (usage-rollup.ts).
+  `CREATE TABLE usage_hourly (
+    hour INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    role TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    requests INTEGER NOT NULL,
+    errors INTEGER NOT NULL,
+    rate_limited INTEGER NOT NULL,
+    overloaded INTEGER NOT NULL,
+    with_usage INTEGER NOT NULL,
+    latency_ms INTEGER NOT NULL,
+    input INTEGER NOT NULL,
+    output INTEGER NOT NULL,
+    cache_read INTEGER NOT NULL,
+    cache_write_5m INTEGER NOT NULL,
+    cache_write_1h INTEGER NOT NULL,
+    after_expiry INTEGER NOT NULL,
+    cold_rewrites INTEGER NOT NULL,
+    cold_rewrite_tokens INTEGER NOT NULL,
+    rewrites_avoided INTEGER NOT NULL,
+    rewrite_tokens_avoided INTEGER NOT NULL,
+    saved_input_eq REAL NOT NULL,
+    PRIMARY KEY (hour, provider, kind, account_id, model, role, thread_id)
+  ) WITHOUT ROWID;
+  CREATE TABLE usage_rollup_cursor (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    at INTEGER NOT NULL,
+    request_rowid INTEGER NOT NULL
+  );
+  INSERT INTO usage_rollup_cursor (id, at, request_rowid) VALUES (1, 0, 0)`,
 ];

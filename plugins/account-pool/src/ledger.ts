@@ -411,6 +411,15 @@ export class UsageLedger {
     this.closed = true;
   }
 
+  // The start of the oldest request queued but not yet written, or null.
+  oldestQueued(): number | null {
+    let oldest: number | null = null;
+    for (const { startedAt } of this.records)
+      if (oldest === null || startedAt < oldest) oldest = startedAt;
+    for (const { at } of this.rows) if (oldest === null || at < oldest) oldest = at;
+    return oldest;
+  }
+
   status(): LedgerHealth {
     return { ...this.health };
   }

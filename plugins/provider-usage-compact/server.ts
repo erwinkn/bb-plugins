@@ -1,7 +1,10 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod/mini";
+import { z as zod } from "zod";
 import {
   usageSnapshotSchema,
+  type PooledAccount,
+  type ProviderPool,
   type ProviderUsage,
   type UsageMachine,
   type UsageMachineProvider,
@@ -24,6 +27,56 @@ export const providerUsageRpcContract = defineRpcContract({
 });
 
 const DIRTY_CACHE_MAX_AGE_MS = 2 * 60_000;
+
+// The Account Pooler routes Claude and Codex traffic across several accounts. Its status.get is
+// read on every request (it is local and cheap); without the plugin, or when it is slow or fails,
+// every provider shows its machine's own usage.
+const POOLER_PLUGIN_ID = "account-pool-local";
+const POOLER_TIMEOUT_MS = 2_000;
+const POOLED_PROVIDERS = { claude: "claude-code", codex: "codex" } as const;
+const USAGE_STATS_PLUGIN_ID = "usage-stats";
+const USAGE_STATS_HREF = "/plugins/usage-stats/usage";
+const FAMILY_LABELS: Record<string, string> = {
+  fable: "Fable",
+  sonnet: "Sonnet",
+  opus: "Opus",
+  haiku: "Haiku",
+};
+
+/** The Pooler's status.get output, as far as the popup reads it (callRpc takes a full zod schema). */
+const poolerQuotaSchema = zod.object({
+  utilization: zod.nullable(zod.number()),
+  resetAt: zod.nullable(zod.number()),
+});
+const poolerStatusSchema = zod.object({
+  routing: zod.object({ claude: zod.boolean(), codex: zod.boolean() }),
+  accounts: zod.array(
+    zod.object({
+      id: zod.string(),
+      provider: zod.enum(["claude", "codex"]),
+      label: zod.string(),
+      email: zod.nullable(zod.string()),
+      subscriptionType: zod.nullable(zod.string()),
+      rateLimitTier: zod.nullable(zod.string()),
+      status: zod.enum(["ready", "held", "exhausted", "error", "disabled"]),
+      active: zod.optional(zod.boolean()),
+      availableAt: zod.optional(zod.nullable(zod.number())),
+      error: zod.nullable(zod.string()),
+      fiveHourUtilization: zod.nullable(zod.number()),
+      fiveHourResetAt: zod.nullable(zod.number()),
+      sevenDayUtilization: zod.nullable(zod.number()),
+      sevenDayResetAt: zod.nullable(zod.number()),
+      familyWeekly: zod.record(zod.string(), zod.nullable(poolerQuotaSchema)),
+      limitWindows: zod.array(
+        zod.object({
+          windowMinutes: zod.nullable(zod.number()),
+          ...poolerQuotaSchema.shape,
+        }),
+      ),
+    }),
+  ),
+});
+type PoolerAccount = zod.infer<typeof poolerStatusSchema>["accounts"][number];
 
 interface UsageRequest {
   force: boolean;
@@ -220,6 +273,102 @@ async function loadMachineUsage(
   };
 }
 
+function isoOrNull(at: number | null | undefined): string | null {
+  return at === null || at === undefined ? null : new Date(at).toISOString();
+}
+
+function windowLength(minutes: number): string {
+  if (minutes % 1_440 === 0) return minutes / 1_440 + "d";
+  if (minutes % 60 === 0) return minutes / 60 + "h";
+  return minutes + "m";
+}
+
+/** "Max 20x" from the tier "default_claude_max_20x", else the subscription type. */
+function poolerPlan(account: PoolerAccount): string | null {
+  const multiple = /max_(\d+x)$/u.exec(account.rateLimitTier ?? "")?.[1];
+  if (multiple !== undefined) return "Max " + multiple;
+  const type = account.subscriptionType?.trim();
+  return type ? type.charAt(0).toUpperCase() + type.slice(1) : null;
+}
+
+function poolerWindows(account: PoolerAccount): PooledAccount["windows"] {
+  const windows: PooledAccount["windows"] = [];
+  const add = (label: string, utilization: number | null, resetAt: number | null) => {
+    if (utilization === null) return;
+    windows.push({
+      label,
+      usedPercent: utilization * 100,
+      resetsAt: isoOrNull(resetAt),
+      cost: null,
+    });
+  };
+  add("5h", account.fiveHourUtilization, account.fiveHourResetAt);
+  add("7d", account.sevenDayUtilization, account.sevenDayResetAt);
+  for (const [family, quota] of Object.entries(account.familyWeekly)) {
+    if (quota === null) continue;
+    add((FAMILY_LABELS[family] ?? family) + " 7d", quota.utilization, quota.resetAt);
+  }
+  // Codex windows by length; a window without one carries no limit.
+  for (const window of account.limitWindows) {
+    if (window.windowMinutes === null) continue;
+    add(windowLength(window.windowMinutes), window.utilization, window.resetAt);
+  }
+  return windows;
+}
+
+// The Usage stats page, when that plugin is installed and running; null otherwise.
+async function loadDetailsHref(bb: BbPluginApi): Promise<string | null> {
+  try {
+    const plugin = (await bb.sdk.plugins.list()).plugins.find((entry) => entry.id === USAGE_STATS_PLUGIN_ID);
+    return plugin?.enabled && plugin.status === "running" ? USAGE_STATS_HREF : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadPools(bb: BbPluginApi): Promise<ProviderPool[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const status = await Promise.race([
+      bb.sdk.plugins.callRpc({
+        pluginId: POOLER_PLUGIN_ID,
+        method: "status.get",
+        input: null,
+        outputSchema: poolerStatusSchema,
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("timeout")), POOLER_TIMEOUT_MS);
+      }),
+    ]);
+    const parsed = poolerStatusSchema.parse(status);
+    return (["claude", "codex"] as const).flatMap((provider) => {
+      const accounts = parsed.accounts.filter((account) => account.provider === provider);
+      if (!parsed.routing[provider] || accounts.length === 0) return [];
+      const plans = new Set(accounts.map(poolerPlan));
+      return [
+        {
+          providerId: POOLED_PROVIDERS[provider],
+          planLabel: plans.size === 1 ? [...plans][0]! : null,
+          accounts: accounts.map((account) => ({
+            id: account.id,
+            // Labels are often shared ("Erwin"); the email tells accounts apart.
+            name: nonemptyOrNull(account.email) ?? nonemptyOrNull(account.label) ?? account.id,
+            status: account.status,
+            active: account.active ?? false,
+            availableAt: isoOrNull(account.availableAt),
+            error: nonemptyOrNull(account.error),
+            windows: poolerWindows(account),
+          })),
+        },
+      ];
+    });
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export default function providerUsagePlugin(bb: BbPluginApi): void {
   const cache = new Map<string, MachineCacheEntry>();
   const pendingByMachine = new Map<string, PendingMachineUsage>();
@@ -276,9 +425,11 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
   };
 
   const readUsage = async (request: UsageRequest): Promise<UsageSnapshot> => {
-    const [hosts, machineProviderArtwork] = await Promise.all([
+    const [hosts, machineProviderArtwork, pools, detailsHref] = await Promise.all([
       bb.sdk.hosts.list(),
       loadMachineProviderArtwork(bb),
+      loadPools(bb),
+      loadDetailsHref(bb),
     ]);
     const hostIds = new Set(hosts.map((host) => host.id));
     for (const machineId of cache.keys()) {
@@ -308,7 +459,7 @@ export default function providerUsagePlugin(bb: BbPluginApi): void {
         machineProvider: resolveMachineProvider(host, machineProviderArtwork),
       });
     }
-    return { machines };
+    return { machines, pools, detailsHref };
   };
 
   const markDirty = (machineId: string | null): void => {
