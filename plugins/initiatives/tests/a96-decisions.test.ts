@@ -89,9 +89,12 @@ describe("A96 lightweight decisions and safe history", () => {
     const { f, project } = await projectFixture();
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
     const result = await f.harness.callAgentTool("initiative_decision", { action: "decision", ...choice() }, { threadId: worker.threadId! });
-    expect(JSON.parse(result as string)).toMatchObject({ ref: "D1", madeBy: "agent", recordedBy: { author: "worker", threadId: worker.threadId! } });
+    // W215: the result is a short receipt; who recorded it is on the stored record.
+    expect(JSON.parse(result as string)).toEqual({ ref: "D1", madeBy: "agent", status: "active", review: "pending" });
+    expect(f.store.decisionItem(project.id, 1)!.provenance).toMatchObject({ author: "worker", threadId: worker.threadId! });
     const stated = await f.harness.callAgentTool("initiative_decision", { action: "decision", ...choice("Erwin chose the Linux checkout.", "user") }, { threadId: worker.threadId! });
-    expect(JSON.parse(stated as string)).toMatchObject({ madeBy: "user", review: null, recordedBy: { author: "worker", threadId: worker.threadId! } });
+    expect(JSON.parse(stated as string)).toMatchObject({ madeBy: "user", review: null });
+    expect(f.store.decisionItem(project.id, 2)!.provenance).toMatchObject({ author: "worker", threadId: worker.threadId! });
   });
 
   it("agent revisions cannot silently supersede an explicit user choice or another worker's choice", async () => {

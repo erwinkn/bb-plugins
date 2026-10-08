@@ -7,9 +7,10 @@ Your standing instructions come from the Initiatives plugin's Settings page (def
 lib/guidance.ts) and arrive when your session starts. Each brief carries only the task,
 its context and the report instruction.
 
-- Finish with `initiative_report {outcome, summary, report}`, which sends your report to
-  the coordinator: `summary` is one line for the dashboard, `report` your full report,
-  written for someone who hasn't read the code: what you did, what you verified (commands
+- Finish with `initiative_report {outcome, summary, report}`. The coordinator gets
+  `summary` and reads `report` only when it needs to (a short report is sent whole), so
+  the summary stands on its own: outcome, PR URL and head, merge order, what you need.
+  `report` is your full report, written for someone who hasn't read the code: what you did, what you verified (commands
   and results), what is left, and anything uncommitted or still running. Stop background
   servers first.
 - Use outcome blocked, with your question, when you can't continue.

@@ -85,7 +85,8 @@ describe("T57 question resolution and ownership", () => {
     const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [f.task(project.id).ref] });
     const input = { action: "decision", decision: { description: "Erwin chose the Linux checkout.", madeBy: "user" } };
     const result = JSON.parse(await f.harness.callAgentTool("initiative_decision", input, { threadId: worker.threadId! }) as string);
-    expect(result).toMatchObject({ madeBy: "user", review: null, recordedBy: { author: "worker", threadId: worker.threadId } });
+    expect(result).toMatchObject({ madeBy: "user", review: null });
+    expect(f.store.decisionItem(project.id, Number(result.ref.slice(1)))!.provenance).toMatchObject({ author: "worker", threadId: worker.threadId });
     const cli = await f.harness.runCli(["command", JSON.stringify(input), project.id], { threadId: worker.threadId! });
     expect(cli.exitCode).toBe(0);
     f.store.db.prepare("UPDATE workers SET state='retired' WHERE thread_id=?").run(worker.threadId);

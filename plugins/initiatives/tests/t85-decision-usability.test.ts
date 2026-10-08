@@ -52,7 +52,7 @@ describe("T85 questions: question + context is enough", () => {
     const { f, project } = await projectFixture();
     const task = f.task(project.id);
     const asked = await tool(f, { action: "question", question: "Where is the Monolith repo?", context: "It is not under ~/Code.", blocksTaskIds: [task.ref] });
-    expect(asked).toMatchObject({ madeBy: null, status: "active", description: "Where is the Monolith repo?" });
+    expect(asked).toMatchObject({ madeBy: null, status: "active" });
     const item = f.store.decisionItem(project.id, Number(asked.ref.slice(1)))!;
     expect(item).toMatchObject({ title: "Where is the Monolith repo?", humanAttention: "needs-opinion", madeBy: null });
     expect(f.store.task(project.id, task.num)?.status).toBe("blocked");
@@ -134,7 +134,6 @@ describe("T85 questions: question + context is enough", () => {
     const item = f.store.decisionItem(project.id, Number(asked.ref.slice(1)))!;
     expect(item.body).toMatchObject({ outcome: "Proposed: Erwin", rationale: "Has the machine.", tradeoff: "Slower" });
     // Needs-opinion records display their question, not a proposed outcome (D56/D60).
-    expect(asked.description).toBe("Who signs off?");
     expect(item.description).toBe("Who signs off?");
     const read = await f.harness.callAgentTool("initiative_read", { refs: [asked.ref] }, { threadId: "coordinator" });
     expect(JSON.parse(read as string).items[0].description).toBe("Who signs off?");

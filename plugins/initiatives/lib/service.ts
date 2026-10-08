@@ -36,6 +36,7 @@ import {
 } from "./policy";
 import { reportVersion } from "./write-holds";
 import { fullRecord, handoffSource, latestReport, renderPriorReport, resolveHandoffs } from "./handoffs";
+import { canonicalPrUrl } from "./pr-stages";
 import {
   briefSchema,
   FINAL_MESSAGE_MAX,
@@ -77,6 +78,7 @@ import {
 import { DiscoveryMemory, DISCOVERY_PARENT_CAP } from "./discovery";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
 import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
+import { createCoordinatorCompaction, type CoordinatorCompaction } from "./compaction";
 
 export const METADATA_VERSION = 1;
 /** Unconfirmed creates and sends older than this are surfaced to the coordinator; they are never assumed failed. */
@@ -317,6 +319,7 @@ export class ProjectsService {
   }
 
   private readonly coldCache: ColdCacheGuard;
+  readonly compaction: CoordinatorCompaction;
 
   constructor(
     readonly bb: BbPluginApi,
@@ -328,6 +331,15 @@ export class ProjectsService {
       store,
       limit: () => preferences.configuration().coldResumeTokens,
       log: (message) => bb.log.warn(message),
+    });
+    this.compaction = createCoordinatorCompaction({
+      sdk: bb.sdk,
+      store,
+      limit: () => preferences.configuration().coordinatorCompactTokens,
+      replacing: (projectId) => {
+        const start = this.coordinatorStart(projectId);
+        return this.coordinatorSwitches.has(projectId) || (!!start && ["pending", "uncertain"].includes(start.state));
+      },
     });
   }
 
@@ -1463,6 +1475,8 @@ export class ProjectsService {
       throw new ProjectError(
         "Adopting keeps that thread’s execution settings. Choose a profile when starting a new coordinator.",
       );
+    // W218: a compaction issued before this switch was claimed lands first; the incumbent then reads busy.
+    await this.compaction.settled(projectId);
     await this.assertCoordinatorIdle(project.coordinatorThreadId);
     if (input.adoptThreadId) {
       const start = this.coordinatorStart(projectId);
@@ -2228,6 +2242,8 @@ export class ProjectsService {
       const d = this.store.handoverDraft(projectId);
       return d?.state === "generating" && d.detail === token ? d : null;
     };
+    // W218: a compaction issued before this claim lands first, so the capture sees its result.
+    await this.compaction.settled(projectId);
     if (existing?.threadId) await this.archiveWriter(existing.threadId, projectId);
     // W188 (F1–F3): the fingerprint first, then the snapshot, so any change during the capture
     // shows up as a stale fingerprint, never as a fresh one. A draft for a replacement whose
@@ -3953,18 +3969,26 @@ export class ProjectsService {
       a.role === "work" && a.access === "write" && a.bbProjectId === bbProjectId && a.workerNum !== self?.num &&
       (["dispatching", "queued", "running"].includes(a.state) || ["pending", "uncertain"].includes(a.opState)));
     const worktree = new Map<string, boolean | null>();
-    const warnings: string[] = [];
+    const writers: { worker: string; work: string }[] = [];
     for (const a of live) {
-      const theirs = a.environmentId ?? this.store.worker(project.id, a.workerNum)?.environmentId ?? null;
+      // A new worktree is provisioned after the spawn returns, so its environment is often
+      // unrecorded; the live thread knows it (W218).
+      const theirs = a.environmentId ?? this.store.worker(project.id, a.workerNum)?.environmentId ??
+        (a.threadId ? await this.sdk.threads.get({ threadId: a.threadId }).then(t => t.environmentId ?? null, () => null) : null);
       if (theirs && env.environmentId && theirs !== env.environmentId) continue;
       if (theirs && !env.environmentId) {
         if (!worktree.has(theirs))
           worktree.set(theirs, await this.sdk.environments.get({ environmentId: theirs }).then(e => (e as { isWorktree?: boolean }).isWorktree ?? null, () => null));
         if (worktree.get(theirs) === true) continue;
       }
-      warnings.push(`${workerRef(a.workerNum)} is also writing in this checkout (${a.ref}, ${a.state}). Sequence the work, or give one of them a worktree (environment {"type":"worktree"}).`);
+      writers.push({ worker: workerRef(a.workerNum), work: `${a.ref}, ${a.state}` });
     }
-    return warnings;
+    // W215: one warning naming every other writer, e.g. "W3 (A7, running), W5 (A9, queued) are also writing…".
+    if (!writers.length) return [];
+    const who = writers.length === 1
+      ? `${writers[0]!.worker} is also writing in this checkout (${writers[0]!.work})`
+      : `${writers.map(w => `${w.worker} (${w.work})`).join(", ")} are also writing in this checkout`;
+    return [`${who}. Sequence the work, or give one of them a worktree (environment {"type":"worktree"}).`];
   }
 
   /**
@@ -6824,22 +6848,41 @@ export class ProjectsService {
   }
 }
 
-/** How much of a report's text its coordinator notice carries; the rest is read on demand. */
-const REPORT_NOTICE_MAX = 8000;
+/** A report up to this long reaches the coordinator whole; a longer one as its summary (W215). */
+const REPORT_NOTICE_WHOLE = 1200;
+/** How much of the worker's summary the notice of a longer report carries. */
+const REPORT_NOTICE_SUMMARY = 1000;
+/** How many PR links from a longer report's body its notice lists. */
+const REPORT_NOTICE_PRS = 3;
+const PR_URL = /https?:\/\/(?:www\.)?github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/gi;
+/** A PR a summary names, by URL or owner/repo#12; a number clipped by "…" names no PR. */
+const PR_NAMED = /https?:\/\/(?:www\.)?github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+(?![\d…])|[\w.-]+\/[\w.-]+#\d+(?![\d…])/gi;
 
 /**
- * The coordinator's notice of a report: the dashboard line, then the report text (clipped,
- * with where to read the rest), e.g. "W12 reported (done) on A301: Search covers archived
- * records.\n\n<report>".
+ * The coordinator's notice of a report. A short report comes whole: "W12 reported (done) on
+ * A301: Search covers archived records.\n\n<report>". A longer one comes as the worker's
+ * summary, the PR links its body names that the summary doesn't, and how to read the rest,
+ * so the coordinator's context grows by about 1.5 KB per report rather than 8 (W215). A
+ * blocked notice leads with the question.
  */
 function reportNotice(workerRef: string, assignmentRef: string, report: Report) {
-  const head = report.outcome === "blocked"
-    ? `${workerRef} is blocked on ${assignmentRef}: ${report.blocker?.question ?? report.summary}`
-    : `${workerRef} reported (${report.outcome === "succeeded" ? "done" : report.outcome}) on ${assignmentRef}: ${report.summary}`;
+  const blocked = report.outcome === "blocked";
+  const status = blocked ? `${workerRef} is blocked on ${assignmentRef}` : `${workerRef} reported (${report.outcome === "succeeded" ? "done" : report.outcome}) on ${assignmentRef}`;
+  const line = `${status}: ${blocked ? report.blocker?.question ?? report.summary : report.summary}`;
   const body = report.finalMessage;
-  if (!body) return `${head}\n\nDetails: ${fullRecord(assignmentRef)}`;
-  if (body.length <= REPORT_NOTICE_MAX) return `${head}\n\n${body}`;
-  return `${head}\n\n${body.slice(0, REPORT_NOTICE_MAX).trimEnd()}\n\n[… ${body.length - REPORT_NOTICE_MAX} more characters. The full report: ${fullRecord(assignmentRef)}]`;
+  if (!body) return `${line}\n\nDetails: ${fullRecord(assignmentRef)}`;
+  if (body.length <= REPORT_NOTICE_WHOLE) return `${line}\n\n${body}`;
+  const full = report.handoff.summary || report.summary;
+  const summary = full.length > REPORT_NOTICE_SUMMARY ? `${full.slice(0, REPORT_NOTICE_SUMMARY - 1).trimEnd()}…` : full;
+  // PRs compare by identity (owner/repo/number): a summary naming /pull/123 does not name /pull/12.
+  const named = new Set([...summary.matchAll(PR_NAMED)].map(m => canonicalPrUrl(m[0])));
+  const prs = [...new Set([...body.matchAll(PR_URL)].map(m => canonicalPrUrl(m[0])!))]
+    .filter(url => !named.has(url)).slice(0, REPORT_NOTICE_PRS);
+  return [
+    blocked ? `${line}${summary === report.blocker?.question ? "" : `\n\n${summary}`}` : `${status}: ${summary}`,
+    ...(prs.length ? [`PRs in the report: ${prs.join(", ")}`] : []),
+    `Full report (${body.length} characters): ${fullRecord(assignmentRef)}`,
+  ].join("\n\n");
 }
 
 /** A final message stored as the report: its head and tail when longer than the cap. */

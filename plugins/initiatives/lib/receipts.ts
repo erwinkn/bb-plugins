@@ -83,3 +83,33 @@ export function reportedRetryHint(a: AssignmentRecord, taskRef: string): string 
     return `Read the review's final message, send the fixes to the reviewed worker with initiative_message {"to":"${a.reviewTargets?.[0]?.worker ?? "W#"}","text":"<the fixes>","work":true}, and ask ${worker} to re-review with initiative_message {"to":"${worker}","text":"<what changed>","work":true}.`;
   return `To retry, send ${worker} the fixes as more work: initiative_message {"to":"${worker}","text":"<the fixes>","work":true}${task ? `. If it is done, close the task: initiative_task {"action":"close","task":"${task}","outcome":"done"}` : ""}.`;
 }
+
+/** A ledger record: task, worker, assignment or update. Decisions answer with their own short shape. */
+const RECORD_REF = /^[TWAU]\d+$/;
+
+/**
+ * W215: what a write tool answers the coordinator. A record it just wrote comes back as its
+ * ref and new state, never the brief or report the coordinator already has; what it must act
+ * on (warnings, notes, notifications, a settlement, the new W# and thread) stays. Nulls are
+ * dropped. Full records are one initiative_read {refs:[…]} away. E.g. a closed task is
+ * {"ref":"T20","state":"done"}, a stop {"ref":"A187","worker":"W121","state":"cancelled"}.
+ */
+export function toolReceipt(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(toolReceipt);
+  if (!value || typeof value !== "object") return value;
+  const v = value as Record<string, any>;
+  if (typeof v.ref === "string" && RECORD_REF.test(v.ref)) {
+    const a = v.ref.startsWith("A");
+    return {
+      ref: v.ref,
+      ...(a && typeof v.workerNum === "number" ? { worker: `W${v.workerNum}` } : {}),
+      ...(v.state ?? v.status ? { state: v.state ?? v.status } : {}),
+      ...(a && v.opState && v.opState !== "done" ? { opState: v.opState } : {}),
+      ...(v.settlement ? { settlement: v.settlement } : {}),
+    };
+  }
+  // A plain message: who got it and whether it was sent now or queued.
+  if ("target" in v && "receipt" in v) return { to: v.target, delivery: v.receipt?.delivery ?? null };
+  if (Array.isArray(v.prs)) return { prs: v.prs.map(({ url, stage }: { url: string; stage: string }) => ({ url, stage })) };
+  return Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null && x !== undefined).map(([k, x]) => [k, toolReceipt(x)]));
+}

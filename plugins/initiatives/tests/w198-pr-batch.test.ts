@@ -24,7 +24,7 @@ describe("W198 PR stages", () => {
       { url: "erwinkn/bb#12", stage: "ready-for-erwin" },
     ] });
     expect(result).toEqual({ prs: [
-      { url: PR, stage: "in-review", note: "W14 reviewing" },
+      { url: PR, stage: "in-review" },
       { url: "https://github.com/erwinkn/bb/pull/12", stage: "ready-for-erwin" },
     ] });
     const stages = f.store.prStages(project.id);
@@ -98,7 +98,10 @@ describe("W198 initiative_batch", () => {
     ]);
     // Same validation and errors as the tool itself.
     expect(result.results[1].error).toMatch(/T999/);
-    expect(result.results[0].result).toMatchObject({ ref: "T1" });
+    // W215: a write's receipt sits flat in its entry; a read keeps its result.
+    expect(result.results[0]).toEqual({ tool: "task", ok: true, ref: "T1", state: "planned" });
+    expect(result.results[2]).toEqual({ tool: "pr", ok: true, prs: [{ url: PR, stage: "in-review" }] });
+    expect(result.results[3]).toEqual({ tool: "task", ok: true, ref: "T1", state: "done" });
     expect(f.store.task(project.id, 1)?.status).toBe("done");
     expect(f.store.prStages(project.id).get(PR)?.stage).toBe("in-review");
     expect(JSON.stringify(result.results[4].result)).toContain("Merge queue");

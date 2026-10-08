@@ -77,9 +77,9 @@ export const updateToolSchema = z.object({
 
 export const reportToolSchema = z.object({
   outcome: z.enum(["done", "blocked", "failed"]),
-  summary: text(4000).describe("One line for the dashboard. Longer text is kept in full; the dashboard line is clipped to 300 characters."),
+  summary: text(4000).describe("What the coordinator reads first, standing on its own: outcome, PR URL and head, merge order, what you need. Its first 300 characters are the dashboard line; a long report reaches the coordinator as its first 1000."),
   question: text(1000).optional().describe("blocked: what you need answered."),
-  report: text(FINAL_MESSAGE_MAX).describe("Your full report, as you would write it to the coordinator: what you did, what you verified, what is left. It is recorded and sent to the coordinator."),
+  report: text(FINAL_MESSAGE_MAX).describe("Your full report, as you would write it to the coordinator: what you did, what you verified, what is left. It is recorded; the coordinator gets it whole when short, otherwise reads it on demand."),
 }).strict();
 
 const need = <T>(value: T | undefined, what: string): T => {

@@ -104,17 +104,16 @@ describe("W210 report delivery", () => {
     expect(f.store.assignment(project.id, 1)!.report!.finalMessage).toBe(REPORT);
   });
 
-  it("the report text is required and bounded; a long one is clipped in the message", async () => {
+  it("the report text is required and bounded; a long one is sent as its summary", async () => {
     const { f, project, w } = await spawned();
     await expect(tool(f, "initiative_report", { outcome: "done", summary: "No text" }, w.threadId)).rejects.toThrow(/report/);
     await expect(tool(f, "initiative_report", { outcome: "done", summary: "Too long", report: "x".repeat(20001) }, w.threadId)).rejects.toThrow();
     const long = `Start. ${"x".repeat(12000)} End.`;
     await tool(f, "initiative_report", { outcome: "done", summary: "Long", report: long }, w.threadId);
     expect(f.store.assignment(project.id, 1)!.report!.finalMessage).toBe(long);
+    // W215: the message carries the summary and where to read the rest, not the report.
     const [text] = sentTexts(f);
-    expect(text).toContain("Start. ");
-    expect(text).not.toContain(" End.");
-    expect(text).toMatch(/\[… \d+ more characters\. The full report: initiative_read \{refs:\["A1"\],detailed:true,fields:\["report"\]\}\]$/);
+    expect(text).toBe(`Initiative · Search · W1\n\nW1 reported (done) on A1: Long\n\nFull report (${long.length} characters): initiative_read {refs:["A1"],detailed:true,fields:["report"]}`);
   });
 
   it("a worker with turn notices is sent the report the same way", async () => {
@@ -365,13 +364,15 @@ describe("W210 stuck workers", () => {
 
 describe("W210 guidance", () => {
   it("defaults say how to report; the previous shipped defaults upgrade to them", async () => {
-    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report {outcome, summary, report}, which sends your report to the coordinator.");
+    expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report {outcome, summary, report}.");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Stop background servers first.");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain('A "stopped without reporting" message means a worker is stuck; read its thread.');
-    const f = fixture({ coordinatorInstructions: PREVIOUS_DEFAULTS.coordinator[0]!, workerInstructions: PREVIOUS_DEFAULTS.worker[0]! });
+    const before = { coordinator: PREVIOUS_DEFAULTS.coordinator.find(text => text.includes("Read it, send fixes back"))!, worker: PREVIOUS_DEFAULTS.worker.find(text => text.includes("Your final message is your report"))! };
+    const f = fixture({ coordinatorInstructions: before.coordinator, workerInstructions: before.worker });
     f.store.setFlag(GUIDANCE_RESET_FLAG);
     await f.preferences.ready;
     expect(f.preferences.configuration()).toMatchObject({ coordinatorInstructions: DEFAULT_COORDINATOR_INSTRUCTIONS, workerInstructions: DEFAULT_WORKER_INSTRUCTIONS });
-    expect(PREVIOUS_DEFAULTS.worker[0]).toContain("Your final message is your report");
+    expect(before.worker).toBeDefined();
+    expect(before.coordinator).toBeDefined();
   });
 });

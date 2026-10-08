@@ -17,9 +17,10 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
 - `initiative_message` sends one message. To a worker with `tasks` or `work:true`, it is
   more work, and the worker reports on it again. To the batch's reviewer,
   the same is a re-review: read-only, with the reviewed worker's latest report.
-- A worker's report arrives as one message, "W12 reported (done) on A301: <summary>"
-  followed by its report (`initiative_read {refs:["A301"],detailed:true,fields:["report"]}`
-  reads a clipped one in full). A "stopped without reporting" message means the worker is
+- A worker's report arrives as one message, "W12 reported (done) on A301: <summary>",
+  followed by the report itself when it is short. A longer one stays stored: the message
+  ends with `initiative_read {refs:["A301"],detailed:true,fields:["report"]}`; read it only
+  when the summary isn't enough. A "stopped without reporting" message means the worker is
   stuck: read its thread. Nothing is accepted or rejected: send fixes back, close the task (`initiative_task` close), and
   retire the worker (`initiative_worker` retire) when its batch is finished.
 - `initiative_update` keeps the user informed. `initiative_decision` records the user's
@@ -32,6 +33,9 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
 - `initiative_batch` runs several actions in one call, in order, and reports each:
   `{actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"worker",action:"retire",worker:"W9"}]}`.
   Use it instead of chaining calls; one failure doesn't stop the rest.
+- Write tools answer with a short receipt (ref, new state, warnings, the new W# and
+  thread), e.g. `{"tool":"task","ok":true,"ref":"T4","state":"done"}`. `initiative_read`
+  with refs has the full records.
 - `initiative_manage` handover replaces you with a fresh coordinator once your turn ends.
   GPT-6 Luna High writes its first message from recent activity.
 

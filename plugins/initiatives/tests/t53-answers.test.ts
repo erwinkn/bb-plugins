@@ -25,7 +25,7 @@ describe("T53 recording the user's explicit chat answer", () => {
   it("the coordinator closes the existing question as the user's choice, unblocking its task", async () => {
     const { f, project, task, q } = await openQuestion();
     const result = JSON.parse(await viaTool(f, "coordinator", answer(q.ref)) as string);
-    expect(result).toMatchObject({ ref: q.ref, madeBy: "user", status: "answered", recordedBy: { author: "coordinator", threadId: "coordinator" } });
+    expect(result).toMatchObject({ ref: q.ref, madeBy: "user", status: "answered" });
     const item = f.store.decisionItem(project.id, q.num)!;
     expect(item).toMatchObject({ madeBy: "user", review: null, provenance: coordinator });
     expect((item.body as { answer?: object }).answer).toMatchObject({ choice: "Main", note: "Linux main checkout", recordedBy: { author: "coordinator" } });

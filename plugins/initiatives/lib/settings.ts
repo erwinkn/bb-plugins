@@ -8,6 +8,7 @@ import {
   PREVIOUS_DEFAULTS,
 } from "./guidance";
 import { COLD_RESUME_DEFAULT_TOKENS } from "./cold-cache";
+import { COMPACT_COORDINATOR_DEFAULT_TOKENS } from "./compaction";
 
 // BB truncates dynamic instructions at 4096; reserve 512 for role/start guards.
 export const MAX_GUIDANCE_CHARACTERS = 4096 - 512;
@@ -60,12 +61,20 @@ export const settingsDescriptors = {
     default: COLD_RESUME_DEFAULT_TOKENS,
     experimental_schema: z.number().int().min(0),
   },
+  coordinatorCompactTokens: {
+    type: "number" as const,
+    label: "Coordinator compaction limit (tokens)",
+    description: "When a coordinator's turn ends with its context larger than this, it is compacted in place (BB's /compact) while idle, never mid-turn. Every request re-reads the whole context, so this caps what each one costs. 0 turns it off.",
+    default: COMPACT_COORDINATOR_DEFAULT_TOKENS,
+    experimental_schema: z.number().int().min(0),
+  },
 };
 export type Preferences = {
   coordinatorInstructions: string;
   workerInstructions: string;
   profiles: Policy["profiles"];
   coldResumeTokens: number;
+  coordinatorCompactTokens: number;
 };
 export const withProfileDefaults = (
   policy: Policy,
@@ -85,6 +94,7 @@ export function definePreferences(bb: BbPluginApi, flags?: MigrationFlags) {
     workerInstructions: reset() || PREVIOUS_DEFAULTS.worker.includes(raw.workerInstructions) ? DEFAULT_WORKER_INSTRUCTIONS : instructionSchema.parse(raw.workerInstructions),
     profiles: parseProfileDefaults(raw.executionProfiles),
     coldResumeTokens: raw.coldResumeTokens,
+    coordinatorCompactTokens: raw.coordinatorCompactTokens,
   });
   // configure is synchronous in SDK 0.4.87. Its authoritative snapshot is
   // initialized from persisted settings and advanced on every effective edit.

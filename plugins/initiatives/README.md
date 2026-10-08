@@ -21,10 +21,14 @@ An example, in the bb-plugins Initiative:
    coordinator's text and one report line; standing rules live in the worker
    instructions, given once per session.
 3. W190 **reports with `initiative_report {outcome:"done"|"blocked"|"failed",
-   summary, report}`** (D417): `summary` is the dashboard line, `report` the full
-   text. The plugin records it and sends the coordinator one message, e.g.
-   "W190 reported (done) on A301: Search covers archives" followed by the report
-   (clipped past 8000 characters, with the `initiative_read` call for the rest).
+   summary, report}`** (D417): `summary` stands on its own (outcome, PR URL and
+   head, merge order, what is needed; its first 300 characters are the dashboard
+   line), `report` is the full text. The plugin records it and sends the
+   coordinator one message, e.g. "W190 reported (done) on A301: Search covers
+   archives", followed by the report when it is at most 1200 characters. A longer
+   one (W215) arrives as its summary (up to 1000 characters), the PR links its
+   body names that the summary doesn't (up to 3) and the `initiative_read` call
+   for the full report; a blocked one leads with the question.
    Blocked needs the question, which also waits in the Inbox. A worker that never
    calls the tool has the final message of the first normally completed turn
    after its brief arrived recorded as its report (a resumed turn counts; for an
@@ -361,8 +365,10 @@ coordinator thread, or from a terminal with the Initiative id.
 "parse, then handle" function as its standalone tool, so its schema, errors and
 rules are the tool's own; a parse failure is that action's error. A failing
 action never stops the rest. The result is `{succeeded, failed,
-results:[{tool, ok, result|error}]}`, and the dashboard hears one change for the
-whole batch. The whole response stays within one read's 64 KiB: past it, an
+results:[...]}`, and the dashboard hears one change for the whole batch. A write
+action's receipt sits flat in its entry (`{tool:"task", ok:true, ref:"T4",
+state:"done"}`), a read keeps `{tool:"read", ok:true, result}`, and a failure is
+`{tool, ok:false, error}`. The whole response stays within one read's 64 KiB: past it, an
 action still runs but its entry is `{tool, ok, omitted:true, reason}`, with a
 `note` to read those results separately. `manage` (pause,
 handover, archive) stays a call of its own.
@@ -781,6 +787,47 @@ context record only corrects the size: a snapshot newer than the Pooler's last
 request gives the current size (smaller after a compaction), and a compaction
 with no snapshot since leaves it unknown, so the work goes ahead. A worker that
 is running, or starts running while the Pooler answers, always passes.
+
+### Lean coordinator context (W215)
+
+A coordinator re-reads its whole context on every request. Equisafe's grew from
+25k to 554k tokens in 14 hours, about half of it tool results and report
+messages. Three things keep it small:
+
+- **Receipts.** `initiative_spawn`, `message`, `task`, `worker`, `pr`,
+  `update` and `decision` answer with a short receipt, never the brief, report
+  or text the coordinator just wrote: a task, worker or update is `{ref, state}`,
+  a stopped assignment adds its worker and any unsettled `opState`, a spawn keeps
+  its W#, thread, profile, note and warnings, a plain message is `{to,
+  delivery}`, a PR is `{url, stage}`, a decision `{ref, madeBy, status,
+  review}`. `initiative_read` with refs has the full records. Writers sharing a
+  checkout get one warning naming them all. The CLI's `bb initiative command`
+  still prints full records.
+- **Report summaries.** A long report reaches the coordinator as its summary
+  (see the example at the top); the full report stays stored and readable.
+- **Lean listings.** `initiative_read {view:"tasks"}` and the overview list a
+  task as one line (ref, status, title, priority, progress, dependencies, the
+  accepted assignment); refs add its summary.
+
+Replaying the Equisafe coordinator's transcript through this formatting cut its
+Initiative tool results from 455 KB to 193 KB and its report messages from
+339 KB to 32 KB.
+
+**Compaction.** When a coordinator's turn ends with its context larger than the
+`coordinatorCompactTokens` setting (default 300,000; 0 turns it off), the
+plugin compacts it in place with BB's `threads.compact` (Claude Code's
+`/compact`, Codex's thread compaction): the same thread, no handover. It runs
+after the coordinator's idle event, without holding up the idle handler, and
+stops when the plugin shuts down; BB refuses unless the thread is idle or
+errored, so a turn is never cut. The size is BB's latest context-window
+snapshot, read fresh from the thread's events rather than from usage sampling,
+which can lag behind a long turn; when that read fails, nothing is attempted.
+One snapshot triggers at most one attempt; a compaction or clear after it
+leaves the size unknown until the next turn; a thread is not compacted twice
+within 30 minutes; a paused or archived Initiative, or one with a pending
+handover, is left alone. A coordinator replacement or start in flight, or a
+handover being written, skips it; a replacement or handover writer that begins
+while a compaction call is in flight waits for that call. Each attempt, and any refusal, is in the activity log.
 
 ## The former projects ID
 

@@ -258,6 +258,13 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
       return { delivery: "sent", thread: threads.get(args.threadId) };
     },
   );
+  // W215: BB's manual compaction; the real route refuses unless the thread is idle or errored.
+  const compact = vi.fn(async ({ threadId }: { threadId: string }) => {
+    const status = threads.get(threadId)?.status;
+    if (status !== "idle" && status !== "error")
+      throw Object.assign(new Error("Context can only be compacted while the thread is idle or errored"), { status: 409 });
+    return { ok: true as const };
+  });
   const archive = vi.fn(async ({ threadId }: { threadId: string }) => {
     const t = threads.get(threadId)!;
     threads.set(threadId, { ...t, archivedAt: Date.now() });
@@ -372,6 +379,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
         fork,
         send,
         archive,
+        compact,
         stop,
         update,
         list: async (
@@ -524,6 +532,7 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
     send,
     pluginRpc,
     archive,
+    compact,
     update,
     stop,
     create,

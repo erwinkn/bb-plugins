@@ -40,8 +40,7 @@ describe("T98 the current coordinator withdraws its own open question", () => {
     f.store.updateDecision(project.id, q.num, { notification: receipt });
 
     const result = await tool(f, withdraw(q.ref));
-    expect(result).toMatchObject({ ref: q.ref, status: "withdrawn", madeBy: null, question: "Which component kit?",
-      resolution: { note: reason, withdrawnBy: coordinator }, recordedBy: coordinator, tasks: [{ ref: task.ref, status: "planned" }] });
+    expect(result).toMatchObject({ ref: q.ref, status: "withdrawn", madeBy: null, tasks: [{ ref: task.ref, status: "planned" }] });
     expect(result.answer).toBeUndefined();
 
     const stored = f.store.decisionItem(project.id, q.num)!;

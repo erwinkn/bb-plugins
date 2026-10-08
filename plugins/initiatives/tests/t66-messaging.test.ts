@@ -21,8 +21,8 @@ describe("T66 trusted thin native messaging", () => {
     const queued = { delivery: "queued", queuedMessage: { id: "q-message", senderThreadId: caller, initiator: "agent" } };
     if (mode === "queue") f.send.mockResolvedValueOnce(queued);
     const result = JSON.parse(await f.harness.behavior.callAgentTool("initiative_message", { ...message, mode }, { threadId: caller }) as string);
-    expect(result).toMatchObject({ target: "W2", threadId: target, generation: 1, receipt: { delivery: mode === "queue" ? "queued" : "sent" } });
-    if (mode === "queue") expect(result.receipt).toEqual(queued);
+    // W215: the tool answers with a short receipt.
+    expect(result).toEqual({ to: "W2", delivery: mode === "queue" ? "queued" : "sent" });
     expect(f.send).toHaveBeenCalledTimes(1);
     expect(f.send.mock.calls[0][0]).toMatchObject({ threadId: target, senderThreadId: caller, mode: `${mode}-if-active` });
     expect(f.send.mock.calls[0][0].input[0].text).toContain("From W1 (work)");

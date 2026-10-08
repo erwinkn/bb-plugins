@@ -58,6 +58,7 @@ const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "comman
 const BATCH_TOOLS = ["spawn", "message", "task", "worker", "decision", "update", "pr", "read"] as const;
 const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
 import { decisionToolJsonSchema } from "./lib/decision-input";
+import { toolReceipt } from "./lib/receipts";
 import { objectRootSchema } from "./lib/tool-schema";
 import { ProjectError, errorMessage } from "./lib/bb";
 import { isOwnOrigin } from "./lib/identity";
@@ -727,13 +728,15 @@ export default function plugin(bb: BbPluginApi) {
     return perform(p.id, target?.role === "review" ? { ...command, role: "review" } as Command : command, "coordinator", threadId);
   };
   const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: "input" }) as Record<string, unknown>;
+  /** W215: write tools answer with a short receipt; initiative_read has the full records. */
+  const receipt = (value: unknown) => JSON.stringify(toolReceipt(value));
   registerTool({
     name: "initiative_spawn",
     parameters: jsonSchema(spawnToolSchema),
     description: 'Give work to a new worker. Example: {label:"Search index",purpose:"search ranking",text:"<brief: task, context, explicit user instructions, how to verify>",tasks:["T40"]}. A review: {role:"review",reviews:"W12",label:"Review search",purpose:"review W12",text:"What to check"}; the reviewed report is embedded. handoffs:["W9"] embeds earlier reports. The result lists warnings, such as another writer in the same checkout.',
     async execute(raw, { threadId }) {
       const p = await coordinatorProject(threadId);
-      return JSON.stringify(await perform(p.id, spawnCommand(parsed(spawnToolSchema, raw, "initiative_spawn")), "coordinator", threadId!));
+      return receipt(await perform(p.id, spawnCommand(parsed(spawnToolSchema, raw, "initiative_spawn")), "coordinator", threadId!));
     },
   });
   registerTool({
@@ -742,7 +745,7 @@ export default function plugin(bb: BbPluginApi) {
     description: 'Send one message to a worker (W#) or the coordinator. {to:"W4",text:"…"}. The coordinator gives an existing worker more work with tasks:["T41"] or work:true; it reports on it again. To correct work already in progress, send a plain message (no work:true). mode steer for urgent corrections, queue (default) otherwise. Messages never resume a stopped or retired worker.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
-      return JSON.stringify(await sendMessage(raw, threadId));
+      return receipt(await sendMessage(raw, threadId));
     },
   });
   registerTool({
@@ -753,7 +756,7 @@ export default function plugin(bb: BbPluginApi) {
       const legacy = await legacyCommand(raw, threadId!, ["task-create", "task-update", "task-cancel", "task-reopen", "assignment-stop", "assignment-settle", ...Object.keys(REMOVED_ACTIONS)]);
       if (legacy) return legacy;
       const p = await coordinatorProject(threadId);
-      return JSON.stringify(await perform(p.id, taskCommand(parsed(taskToolSchema, raw, "initiative_task")), "coordinator", threadId!));
+      return receipt(await perform(p.id, taskCommand(parsed(taskToolSchema, raw, "initiative_task")), "coordinator", threadId!));
     },
   });
   registerTool({
@@ -775,9 +778,9 @@ export default function plugin(bb: BbPluginApi) {
         const worker = service.requireWorker(p, command.worker);
         const open = store.openAssignment(p.id, worker.num);
         if (!open) throw new ProjectError(`${worker.ref} has no running work to stop.`);
-        return JSON.stringify(await perform(p.id, { action: "assignment-stop", assignment: open.ref, reason: command.reason }, "coordinator", threadId!));
+        return receipt(await perform(p.id, { action: "assignment-stop", assignment: open.ref, reason: command.reason }, "coordinator", threadId!));
       }
-      return JSON.stringify(await perform(p.id, command, "coordinator", threadId!));
+      return receipt(await perform(p.id, command, "coordinator", threadId!));
     },
   });
   registerTool({
@@ -821,7 +824,7 @@ export default function plugin(bb: BbPluginApi) {
       if (input.action === "answer") {
         const { projectId, recordedBy } = chatAnswerRecorder(threadId);
         const answered = await service.answerOpinion(projectId, input.decision, input, recordedBy);
-        return JSON.stringify({ ref: answered.ref, description: answered.description, madeBy: answered.madeBy, status: answered.status, recordedBy, notification: answered.notification });
+        return JSON.stringify({ ref: answered.ref, madeBy: answered.madeBy, status: answered.status, notification: answered.notification });
       }
       const { projectId, recordedBy: provenance } = chatAnswerRecorder(threadId);
       let result;
@@ -830,12 +833,11 @@ export default function plugin(bb: BbPluginApi) {
         result = service.recordQuestion(projectId, input.question, provenance);
       } else if (input.action === "question-withdraw") {
         const withdrawn = service.withdrawQuestion(projectId, input.decision, input.reason, provenance);
-        const body = withdrawn.body as { question?: string };
-        return JSON.stringify({ ref: withdrawn.ref, status: withdrawn.status, madeBy: withdrawn.madeBy, question: body.question ?? withdrawn.title,
-          resolution: withdrawn.body.resolution, recordedBy: withdrawn.provenance, notification: withdrawn.notification,
+        return JSON.stringify({ ref: withdrawn.ref, status: withdrawn.status, madeBy: withdrawn.madeBy, notification: withdrawn.notification,
           tasks: withdrawn.blocks.map(num => store.task(projectId, num)).filter(task => task !== null).map(task => ({ ref: task.ref, status: task.status, progress: task.progress })) });
       } else result = service.recordDecision(projectId, input, provenance);
-      return JSON.stringify({ ref: result.ref, description: result.description, madeBy: result.madeBy, status: result.status, review: result.review, recordedBy: result.provenance });
+      // W215: no echo of the description the caller just wrote; initiative_read has the record.
+      return JSON.stringify({ ref: result.ref, madeBy: result.madeBy, status: result.status, review: result.review });
     },
   });
   /** initiative_pr and `bb initiative pr`: record or clear PR workflow stages, in one transaction. */
@@ -856,7 +858,7 @@ export default function plugin(bb: BbPluginApi) {
     description: 'Set the workflow stage of pull requests in the merge queue; batch them in one call. {prs:[{url:"https://github.com/o/r/pull/12",stage:"in-review",note?:"W14 reviewing"}]}. Stages: working, ready-for-review, in-review, ready-for-erwin, experiment; clear removes yours, and the dashboard guesses from GitHub again. Coordinator only.',
     async execute(raw, { threadId }) {
       const p = await coordinatorProject(threadId);
-      return JSON.stringify(setPrStages(p.id, raw, "initiative_pr"));
+      return receipt(setPrStages(p.id, raw, "initiative_pr"));
     },
   });
   registerTool({
@@ -873,7 +875,7 @@ export default function plugin(bb: BbPluginApi) {
           "Publish updates from the coordinator or the user's own initiative thread.",
         );
       const input = parsed(updateToolSchema, raw, "initiative_update");
-      return JSON.stringify(
+      return receipt(
         await perform(
           m.project.id,
           parsed(updateSchema, { action: "update", ...input }, "initiative_update"),
@@ -919,7 +921,7 @@ export default function plugin(bb: BbPluginApi) {
     async execute(raw, context) {
       await coordinatorProject(context.threadId);
       const { actions } = parsed(batchSchema, raw, "initiative_batch");
-      type Result = { tool: string; ok: boolean; result?: unknown; error?: string; omitted?: true; reason?: string };
+      type Result = { tool: string; ok: boolean; result?: unknown; error?: string; omitted?: true; reason?: string; [key: string]: unknown };
       // Every action runs first; the response is built afterwards.
       const full: Result[] = [];
       for (const { tool, ...args } of actions) {
@@ -927,16 +929,19 @@ export default function plugin(bb: BbPluginApi) {
           const out = await handlers.get(`initiative_${tool}`)!(args, context);
           let result: unknown = out;
           if (typeof out === "string") try { result = JSON.parse(out); } catch { /* plain text result */ }
-          full.push({ tool, ok: true, result });
+          // W215: a write's receipt sits flat in its entry, {tool,ok,ref,state}; a read stays under result.
+          if (tool !== "read" && Array.isArray(result) && result.length === 1) result = result[0];
+          const flat = tool !== "read" && !!result && typeof result === "object" && !Array.isArray(result) && !("tool" in result) && !("ok" in result);
+          full.push(flat ? { tool, ok: true, ...(result as Record<string, unknown>) } : { tool, ok: true, result });
         } catch (error) {
           full.push({ tool, ok: false, error: errorMessage(error) });
         }
       }
       // One budget for the complete serialized response, the size of a single read:
-      // start from a receipt per action and admit each full entry, in order, only
+      // start from a placeholder per action and admit each full entry, in order, only
       // when the whole response (envelope, note, separators) still fits.
-      const receipt = (entry: Result): Result => ({ tool: entry.tool, ok: entry.ok, omitted: true, reason: `${entry.ok ? "result" : "error"} left out: the batch response is capped at ${MAX_READ_BYTES / 1024} KiB` });
-      const shown = full.map(receipt);
+      const capped = (entry: Result): Result => ({ tool: entry.tool, ok: entry.ok, omitted: true, reason: `${entry.ok ? "result" : "error"} left out: the batch response is capped at ${MAX_READ_BYTES / 1024} KiB` });
+      const shown = full.map(capped);
       const render = () => {
         const omitted = shown.filter(r => r.omitted).length;
         return JSON.stringify({
@@ -948,14 +953,14 @@ export default function plugin(bb: BbPluginApi) {
       };
       for (const [index, entry] of full.entries()) {
         shown[index] = entry;
-        if (Buffer.byteLength(render()) > MAX_READ_BYTES) shown[index] = receipt(entry);
+        if (Buffer.byteLength(render()) > MAX_READ_BYTES) shown[index] = capped(entry);
       }
       return render();
     },
   });
   registerTool({
     name: "initiative_report",
-    description: 'Finish with this: {outcome:"done"|"blocked"|"failed",summary,report}. summary is one line for the dashboard; report is your full report, recorded and sent to the coordinator. blocked needs question.',
+    description: 'Finish with this: {outcome:"done"|"blocked"|"failed",summary,report}. The coordinator gets summary (which must stand on its own: outcome, PR URL and head, merge order, what you need) and reads report, your full report, on demand; a short report is sent whole. blocked needs question.',
     parameters: jsonSchema(reportToolSchema),
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Report from the worker thread.");

@@ -81,7 +81,8 @@ describe("T136 the final message is the report", () => {
     // D417: a captured final message only fills the dashboard record; it is never sent.
     expect(f.send).not.toHaveBeenCalled();
     const closed = await tool(f, "initiative_task", { action: "close", task: task.ref, outcome: "done", note: "Shipped." });
-    expect(closed).toMatchObject({ status: "done", result: "Shipped.", acceptedAssignment: 1 });
+    expect(closed).toEqual({ ref: task.ref, state: "done" });
+    expect(f.store.task(project.id, task.num)).toMatchObject({ status: "done", result: "Shipped.", acceptedAssignment: 1 });
     expect(f.store.assignment(project.id, 1)!.state).toBe("reported");
     const read = await tool(f, "initiative_read", { refs: ["W1"] });
     expect(read.items[0].latestReport).toMatchObject({ ref: "A1", outcome: "done", summary: "Done" });
@@ -199,10 +200,12 @@ describe("T136 instructions", () => {
     // W198 added PR stages and batching (one line).
     // Erwin (2026-10-07) added the per-role model line.
     // W210 (D417) added the stuck-worker line.
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(1900);
+    // W215: reports arrive as summaries; read the full report only when needed.
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(2000);
     // Erwin (2026-10-07) added the no-narration rule to the worker text.
     // W210 (D417): reports go through initiative_report; stop background work first.
-    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1300);
+    // W215: the summary stands on its own (outcome, PR and head, merge order, what is needed).
+    expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1400);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("one work worker per related batch and one fresh reviewer");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report");

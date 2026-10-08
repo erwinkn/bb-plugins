@@ -6,6 +6,7 @@ import {
   threadExecution,
   type ThreadDto,
 } from "./bb";
+import { contextUsedTokens } from "./compaction";
 import { foldUsage } from "./policy";
 import { type ProjectsService } from "./service";
 import { zeroTotals, type Membership, type UsageRecord } from "./store";
@@ -25,6 +26,7 @@ export class Runtime {
   // aborts, idle events stop starting handovers and convergence.
   private stopSignal?: AbortSignal;
   private usageSamples = new Map<string, Promise<void>>();
+  private compactions = new Map<string, { abort: AbortController; done: Promise<void> }>();
 
   constructor(private readonly service: ProjectsService) {}
 
@@ -40,6 +42,7 @@ export class Runtime {
 
   dispose() {
     this.disposed = true;
+    for (const { abort } of this.compactions.values()) abort.abort();
   }
 
   start(signal?: AbortSignal) {
@@ -90,6 +93,37 @@ export class Runtime {
     // thread reads as "awaiting its report" in the overview.
     if (membership.workerNum !== 0 || membership.former) return;
     await this.service.drainHandover(membership.project.id, this.stopSignal);
+    this.compactAfterIdle(membership.project.id, thread.id);
+  }
+
+  /**
+   * W215: a large coordinator context is compacted between turns. The check reads BB's
+   * events, so it runs detached from the idle handler, owned here: dispose and the service
+   * signal abort it, and one runs per thread at a time.
+   */
+  private compactAfterIdle(projectId: string, threadId: string) {
+    const stop = this.stopSignal;
+    if (this.disposed || stop?.aborted || this.compactions.has(threadId) || !this.service.compaction.enabled()) return;
+    const abort = new AbortController();
+    const link = stop ? addAbortListener(stop, () => abort.abort(stop.reason)) : null;
+    const done = this.service.compaction
+      .afterIdle(projectId, threadId, abort.signal)
+      .then(
+        () => {},
+        (error) => {
+          if (!abort.signal.aborted) this.log.warn(`Coordinator compaction failed: ${errorMessage(error)}`);
+        },
+      )
+      .finally(() => {
+        link?.[Symbol.dispose]();
+        this.compactions.delete(threadId);
+      });
+    this.compactions.set(threadId, { abort, done });
+  }
+
+  /** Resolves once every compaction check this runtime started has finished. */
+  async compactionsSettled() {
+    await Promise.all([...this.compactions.values()].map(({ done }) => done));
   }
 
   async onThreadFailed(thread: ThreadDto, error: string | null) {
@@ -512,7 +546,7 @@ export class Runtime {
         record = {
           ...record,
           lastSeq: row.seq,
-          contextUsed: usage.snapshot ? usage.snapshot.usedTokens : usage.usedTokens ?? null,
+          contextUsed: contextUsedTokens(data),
           contextObservedAt: row.createdAt,
           contextWindow: usage.snapshot
             ? usage.snapshot.contextWindowTokens

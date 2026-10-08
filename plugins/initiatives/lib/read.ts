@@ -42,7 +42,8 @@ function fullRow(view: ReadView, row: Record<string, any>) {
     recordedBy: body.answer?.recordedBy ?? row.provenance, supersedes: row.supersedes, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
     question: body.question ?? null, answer: body.answer ?? null, resolution: body.resolution ?? null, body };
 }
-function summary(view: ReadView, row: Record<string, any>) {
+/** listing: a page of a collection (no refs), where a task is one short line (W215). */
+function summary(view: ReadView, row: Record<string, any>, listing = false) {
   const common = { ref: rowRef(view, row), ...(row.state ? { state: row.state } : {}), ...(row.status ? { status: row.status } : {}) };
   const trimmed: string[] = [];
   const text = (key: string, value: unknown, length = 400) => {
@@ -57,7 +58,10 @@ function summary(view: ReadView, row: Record<string, any>) {
   };
   let item: Record<string, unknown>;
   switch (view) {
-    case "tasks": item = { ...common, title: text("title", row.title, 200), summary: text("summary", row.summary), progress: text("progress", row.progress, 240), priority: row.priority, dependsOn: refs("dependsOn", row.dependsOn), acceptedAssignment: row.acceptedAssignment ? `A${row.acceptedAssignment}` : null }; break;
+    case "tasks": item = listing
+      ? { ...common, title: text("title", row.title, 200), priority: row.priority, ...(row.progress ? { progress: text("progress", row.progress, 160) } : {}),
+        ...(row.dependsOn?.length ? { dependsOn: refs("dependsOn", row.dependsOn) } : {}), ...(row.acceptedAssignment ? { acceptedAssignment: `A${row.acceptedAssignment}` } : {}) }
+      : { ...common, title: text("title", row.title, 200), summary: text("summary", row.summary), progress: text("progress", row.progress, 240), priority: row.priority, dependsOn: refs("dependsOn", row.dependsOn), acceptedAssignment: row.acceptedAssignment ? `A${row.acceptedAssignment}` : null }; break;
     case "workers": item = { ...common, label: text("label", row.label, 200), area: text("area", row.area, 200), role: row.role, threadId: row.threadId, generation: row.generation, bbProjectId: row.bbProjectId, userStopped: row.userStopped, assignments: row.assignments, assignmentsTruncated: row.assignmentsTruncated, ...(row.latestReport !== undefined ? { latestReport: row.latestReport } : {}) }; break;
     case "assignments": item = { ...common, reportVersion: row.report ? reportVersion(row as AssignmentRecord) : null, worker: `W${row.workerNum}`, tasks: refs("tasks", row.taskNums), role: row.role, access: row.access, route: row.route, opState: row.opState, queuedMessageId: row.queuedMessageId, profile: row.actualProfile ?? row.profile, reviewOf: refs("reviewOf", row.reviewOf), report: row.report ? { outcome: row.report.outcome, summary: text("report.summary", row.report.summary) } : null, notification: row.reportNotice ? { ...row.reportNotice, ...(row.reportNotice.detail ? { detail: text("notification.detail", row.reportNotice.detail, 240) } : {}) } : null, verificationRevision: text("verificationRevision", row.report?.handoff.verificationRevision ?? row.report?.handoff.workspaceRevision, 200), checkpoint: row.checkpoint ? { recordedBy: row.checkpoint.recordedBy } : null, ...(row.handoffSources?.length ? { handoffSources: row.handoffSources.map((h: { assignment: string }) => h.assignment) } : {}) }; break;
     case "reports": item = { ...common, worker: `W${row.workerNum}`, tasks: refs("tasks", row.taskNums), role: row.role, outcome: row.report?.outcome === "succeeded" ? "done" : row.report?.outcome ?? null, summary: text("summary", row.report?.summary), reportedAt: row.reportedAt, finalMessage: text("finalMessage", row.report?.finalMessage ?? null, 600) }; break;
@@ -94,7 +98,7 @@ export function validateSelection(view: ReadView, options: ReadOptions) {
 /** W188 (F5): selecting fields reads full records; detailed is implied. */
 export const withImpliedDetail = (options: ReadOptions): ReadOptions => (options.fields ? { ...options, detailed: true } : options);
 function projectRow(view: ReadView, row: Record<string, any>, options: ReadOptions) {
-  if (!options.detailed) return summary(view, row);
+  if (!options.detailed) return summary(view, row, !options.refs);
   const full = fullRow(view, row);
   if (!options.fields) return full;
   return { ref: rowRef(view, row), view, ...Object.fromEntries(options.fields.map(f => [f, f.split(".").reduce<any>((value, key) => value?.[key], full) ?? null])) };
@@ -118,7 +122,7 @@ export function readRows(rows: { view: ReadView; row: Record<string, any> }[], o
     items.push(item);
   }
   const nextOffset = options.offset + items.length < rows.length ? options.offset + items.length : null;
-  return { items, total: rows.length, missingRefs, offset: options.offset, limit: options.limit, nextOffset, truncated: nextOffset !== null || items.some(i => i.truncatedFields?.length), byteLimited, detail: options.detailed ? "Full selected records/fields; no JSON clipping." : "Summaries only. Use detailed:true and optionally fields for full records." };
+  return { items, total: rows.length, missingRefs, offset: options.offset, limit: options.limit, nextOffset, truncated: nextOffset !== null || items.some(i => i.truncatedFields?.length), byteLimited, detail: options.detailed ? "Full selected records/fields; no JSON clipping." : `Summaries only${options.refs ? "" : "; a task is one line, refs:[\"T4\"] adds its summary"}. Use detailed:true and optionally fields for full records.` };
 }
 
 // The standard handoff is rendered from the canonical report on request, never stored twice.
@@ -188,9 +192,9 @@ export function compactOverview(store: Store, projectId: string) {
       return { ref: w.ref, label: w.label, purpose: w.area, role: w.role, working: now ? { ref: now.ref, state: now.state, tasks: now.taskNums.map(n => `T${n}`) } : null,
         latestReport: last ? { ref: last.ref, outcome: last.outcome, summary: last.summary } : null };
     }),
-    tasks: open.slice(0, limit).map(row => summary("tasks", row)),
+    tasks: open.slice(0, limit).map(row => summary("tasks", row, true)),
     humanAttention: { questions: questions.slice(0, limit).map(row => ({ ...summary("decisions", row), question: (row.body as { question?: string }).question?.slice(0, 400), ...(((row.body as { question?: string }).question?.length ?? 0) > 400 ? { questionTruncated: true } : {}) })), uncheckedAgentDecisions: unchecked.slice(-limit).map(row => row.ref) },
     truncated: workers.length > limit || open.length > limit || questions.length > limit || unchecked.length > limit,
-    reads: 'refs:["W12","T40"] for exact records; view workers, tasks, reports, context or activity to list.',
+    reads: 'refs:["W12","T40"] for exact records (a task with its summary); view workers, tasks, reports, context or activity to list.',
   };
 }
