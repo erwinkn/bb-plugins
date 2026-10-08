@@ -85,7 +85,7 @@ export const settingsDescriptors = {
   memoryConcurrency: {
     type: "number" as const,
     label: "Memory summarizer calls at once",
-    description: "How many Luna calls one Initiative's memory tree runs in parallel (8 in the OptChat design).",
+    description: "How many Luna calls the memory trees run in parallel, shared by every Initiative and let in by turns (8 in the OptChat design).",
     default: 8,
     experimental_schema: z.number().int().min(1).max(16),
   },

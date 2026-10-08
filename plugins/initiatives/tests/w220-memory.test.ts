@@ -5,8 +5,8 @@ import { MIGRATIONS } from "../lib/store";
 import { MEMORY_MIGRATIONS } from "../lib/memory/store";
 import type { Summarizer, SummarizerRequest } from "../lib/memory/summarizer";
 
-// W220 (D431): every Initiative keeps a memory log of its coordinators, read from BB's events;
-// a hybrid Initiative also builds the summary tree, and its coordinator reads, zooms and dates it.
+// W220 (D431): every Initiative keeps a memory log of its coordinators, read from BB's events,
+// and (D447) builds the summary tree over it in every mode; its coordinator reads, zooms and dates it.
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 let seq = 500_000;
 let at = 1_790_000_000_000;
@@ -59,8 +59,9 @@ describe("W220 memory log", () => {
     reply(f, "coordinator", "Done.");
     await idles(f);
     expect(log(f, project.id).at(-1)).toBe("coord: Done.");
-    // Regular mode builds nothing.
-    expect(f.service.memory.status(project.id).tree).toMatchObject({ state: "off", nodes: 0 });
+    // D447: regular mode builds the tree too, so a switch is instant.
+    expect(f.service.memory.settings(project.id).mode).toBe("regular");
+    expect(f.service.memory.status(project.id).tree).toMatchObject({ state: "idle", summarized: 5 });
   });
 
   it("names a worker's messages by its W# and logs a worker's report notice as work", async () => {
@@ -97,19 +98,19 @@ describe("W220 memory log", () => {
 });
 
 describe("W220 memory modes", () => {
-  it("is set per Initiative by command, and only hybrid gives the coordinator its tools and guidance", async () => {
+  it("is set per Initiative by command; the coordinator's tools and guidance are the same in every mode, so a switch needs no new session", async () => {
     const { f, project } = await projectFixture();
     const before = await config(f);
-    expect(before.tools.map((t) => t.name)).not.toContain("initiative_zoom");
-    expect(before.instructions).not.toContain("Memory (hybrid)");
+    expect(before.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_zoom", "initiative_date"]));
+    expect(before.instructions).toContain("Memory: every message of this Initiative is logged and summarized");
+    expect(before.instructions!.length).toBeLessThanOrEqual(4096);
+    expect(before.instructions).toMatch(/Current Initiative membership: \{.*\}\n\nMemory: /);
     const status = await f.perform(project.id, { action: "memory", mode: "hybrid" }, "user", null);
-    expect(status).toMatchObject({ mode: "hybrid", effectiveMode: "hybrid", compactTokens: 150_000, session: expect.stringMatching(/session is next constructed/) });
-    const after = await config(f);
-    expect(after.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_zoom", "initiative_date"]));
-    expect(after.instructions).toContain('Memory (hybrid): every message of this Initiative is logged');
-    expect(after.instructions!.length).toBeLessThanOrEqual(4096);
-    expect(after.instructions).toMatch(/Current Initiative membership: \{.*\}\n\nMemory \(hybrid\)/);
-    expect(f.store.activity(project.id, 5).map((a) => a.summary)).toContain("Coordinator memory set to hybrid by you");
+    expect(status).toMatchObject({ mode: "hybrid", effectiveMode: "hybrid", compactTokens: 150_000 });
+    // A coordinator built since every coordinator got the tools has no session note (W244).
+    expect(status).toMatchObject({ session: null });
+    expect(await config(f)).toEqual(before);
+    expect(f.store.activity(project.id, 5).map((a) => a.summary)).toContain("Memory set to hybrid by you, from the next turn");
     // optchat is stored and runs as hybrid until its runtime exists.
     expect(await f.perform(project.id, { action: "memory", mode: "optchat" }, "user", null)).toMatchObject({ mode: "optchat", effectiveMode: "hybrid", note: expect.stringMatching(/not available yet/) });
     expect(await f.perform(project.id, { action: "memory", mode: "regular" }, "user", null)).toMatchObject({ mode: "regular", compactTokens: 300_000 });
@@ -184,16 +185,20 @@ describe("W220 hybrid memory: tree, view, zoom and date", () => {
     expect(JSON.parse(cli.stdout!)).toBe(`user: ${big(0)}`);
   });
 
-  it("stops building when switched back to regular, and goes on from what was built", async () => {
+  it("keeps building after a switch back to regular, so switching again is instant (D447)", async () => {
     const { f, project } = await hybrid();
     await f.perform(project.id, { action: "memory", mode: "regular" }, "user", null);
     say(f, "coordinator", big(6));
     await idles(f);
-    expect(f.service.memory.status(project.id).tree).toMatchObject({ state: "off", nodes: 22 });
-    expect(await tool(f, "initiative_read", { view: "memory" })).toMatchObject({ mode: "regular", messages: 13 });
-    await f.perform(project.id, { action: "memory", mode: "hybrid" }, "user", null);
-    await f.service.memory.settled();
-    expect(f.service.memory.status(project.id).tree).toMatchObject({ summarized: 13, nodes: 23 });
+    expect(f.service.memory.status(project.id).tree).toMatchObject({ state: "idle", summarized: 13, nodes: 23 });
+    expect(await tool(f, "initiative_read", { view: "memory" })).toMatchObject({ messages: 13, view: expect.stringMatching(/^0\+1\|summary of 0 /) });
+  });
+
+  it("stops building once the Initiative is archived", async () => {
+    const { f, project } = await hybrid();
+    f.store.db.prepare(`UPDATE projects SET archived_at = 1 WHERE id = ?`).run(project.id);
+    expect(f.service.memory.building(project.id)).toBe(false);
+    expect(await f.service.memory.waitSummarized(project.id, 13, new AbortController().signal)).toBe(false);
   });
 
   it("logs as the coordinator works, not only when its turn ends", async () => {

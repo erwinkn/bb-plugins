@@ -17,14 +17,14 @@ it("shows the coordinator's memory and switches its mode", async () => {
   const command = vi.fn(async () => ({}));
   const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => o, inventory: async () => [], command } }); slots.push(s);
   fireEvent.click(await s.findByRole("tab", { name: "Context" }));
-  const panel = within(await s.findByRole("region", { name: "Coordinator memory" }));
-  expect(panel.getByRole("button", { name: "OptChat" })).toHaveProperty("disabled", true);
+  const panel = within(await s.findByRole("region", { name: "Memory" }));
+  expect(panel.getByRole("radio", { name: "OptChat" }).getAttribute("aria-checked")).toBe("true");
   panel.getByText(/A fresh turn per message over the summary view\. Not available yet/);
   panel.getByText(/1,370 messages · 1\.6MB · 2 coordinator threads/);
   panel.getByText(/1,200 of 2,734 lines \(43%\) · Summarizer unavailable: 403 advisor route for codex is off/);
   panel.getByText(/\$1\.34 at list price · 900 calls · 20\.0M in \(85% cached\)/);
   panel.getByText(/past 150k tokens · hybrid default/);
-  fireEvent.click(panel.getByRole("button", { name: "Hybrid" }));
+  fireEvent.click(panel.getByRole("radio", { name: "Hybrid" }));
   await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ command: { action: "memory", mode: "hybrid" } })));
   fireEvent.change(panel.getByRole("textbox", { name: /Compaction limit/ }), { target: { value: "120k" } });
   fireEvent.click(panel.getByRole("button", { name: "Save limit" }));

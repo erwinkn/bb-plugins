@@ -935,21 +935,35 @@ else the setting for its memory mode: `coordinatorCompactTokens` (default
 300,000) for regular, `hybridCompactTokens` (default 150,000) for hybrid. 0
 turns it off.
 
-## Coordinator memory (D431)
+## Memory (D431, D447)
 
-Each Initiative has a memory mode, set in the dashboard (Context → Coordinator
-memory) or with `bb initiative command '{"action":"memory","mode":"hybrid"}'
-<initiative-id>`:
+Each Initiative has one memory setting, for its coordinator and, once they
+exist, its discussion threads (D446). Every mode keeps the same log and builds
+the same summary tree of everything the coordinators ever said and saw, so a
+switch is instant; it applies from each thread's next turn.
 
-- **regular** (default): today's chat, compacted past its limit.
-- **hybrid**: the same chat and compaction, plus a summary tree of everything the
-  coordinators ever said and saw, so a compacted coordinator can reopen what a
-  compaction dropped. It compacts at 150k instead of 300k.
+- **regular** (default): one long chat, compacted past 300k tokens.
+- **hybrid**: compacts sooner, at 150k; what a compaction drops stays one zoom
+  away in the tree.
 - **optchat**: a fresh turn per message over the summary view, as in Victor
   Taelin's [OptChat gist](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449).
   It is stored but runs as hybrid until its runtime exists (phase 2).
 
-**The log** is kept in every mode, so a switch is instant. It is append-only,
+Switch it from the coordinator thread's header (the "Memory · Hybrid" pill opens
+a popover), the dashboard header under the coordinator, or Context → Memory:
+each is a three-way segmented control with a line per mode. From a shell:
+`bb initiative command '{"action":"memory","mode":"hybrid"}' <initiative-id>`
+(a coordinator's CLI manages only its own Initiative). A switch never waits
+behind another write: it only saves the setting.
+
+What depends on the mode is read at each turn, never fixed in a session: the
+compaction limit (read when the coordinator goes idle) and, in phase 2, the
+optchat runtime. The coordinator's memory tools and guidance are the same in
+every mode, because BB fixes a session's tools and instructions when the
+session is built. A coordinator from before this (D447) may lack them: outside
+regular mode the switch says so until the coordinator is replaced (W244).
+
+**The log** is append-only, It is append-only,
 one row per message, across every coordinator thread of the Initiative
 (replacements, handovers, compactions), read from BB's own thread events
 (`client/turn/requested`, `item/completed`, and Claude Code's compaction
@@ -957,8 +971,9 @@ summary), the same for Claude Code and Codex coordinators. Kinds: `user`,
 `coord` (replies), `tool` (calls), `echo` (results, head and tail within 30,000
 characters), `work` (`[W12] …` from a worker, `[bb] …` from BB), `note`
 (handovers and compaction summaries). Thoughts are never logged. It is read
-when a coordinator's turn ends, every second while a hybrid one works, and by
-the sweep. Threads are read oldest first, and a later one only once every
+when a coordinator's turn ends, every second while it works, and by the
+sweep, which starts the three least recently read Initiatives not read for 5
+minutes, so every live Initiative, paused ones too, gets its first log and tree. Threads are read oldest first, and a later one only once every
 earlier one is read through, so the log stays in order across slices and
 failed reads. Each read first takes the thread's newest event as its boundary,
 so an event that lands mid-read waits for the next read instead of being
@@ -980,13 +995,19 @@ further on a 32→16 KB sawtooth. Both views are saved, never rebuilt. GPT-6 Lun
 (`memoryEffort`, xhigh by default) writes the lines with the gist's prompt and
 512-dash ruler; a line over 512 bytes gets "Too long …| ← LIMIT" in the same
 conversation, up to 5 tries, keeping the shortest. Up to `memoryConcurrency`
-(8) calls run at once; ready nodes wait in a queue; a call waits while another
+(8) calls run at once across every Initiative, let in round-robin by Initiative,
+so one large backlog never holds every call while another Initiative waits
+(W244); ready nodes wait in a queue; a call waits while another
 writes the same cached prefix. A node that fails 3 times is cut to fit (shown as
 "cut after failures"), so one bad message never blocks the tree. A 429 pauses
 every new call with a growing backoff (or Retry-After); an unavailable route
-pauses for 10 minutes. It runs only in hybrid or optchat, detached from the idle
-handler, and stops on shutdown or a switch back to regular; what is built stays,
-and a stopped run writes nothing more. Only the nodes in use are held in memory
+pauses for 10 minutes. It runs in every mode (D447; the bb-plugins Initiative's
+2 MB log cost about $2.40 to summarize whole), detached from the idle handler, and stops on
+shutdown or at once when the Initiative is archived (its calls abort and its summary
+waiters give up); what is built stays, and a stopped
+run writes nothing more. Its progress reaches the dashboards at most every 30
+seconds per Initiative (they also poll every 15), so a busy coordinator never
+floods every open client with re-reads. Only the nodes in use are held in memory
 (a 2 MB cache over the database); a builder's first run finds its ready nodes
 from which nodes exist, in slices, and the dashboard reads running counts.
 
@@ -997,12 +1018,10 @@ accounts: no credential of its own. Every call of one Initiative sends one
 advisor route on (`bb pool-local advisor set codex on`) and a Pooler that passes
 `session_id` through; until then the dashboard shows "Summarizer unavailable".
 
-**The coordinator** (hybrid) gets `initiative_zoom {id,n}` (the two lines line
-id+n was made from; n 1 is the message whole), `initiative_date {id}`, and one
-line of guidance: after a compaction, read `initiative_read {view:"memory"}` (the
-16–32 KB memory view) and zoom before acting. Tools and guidance reach a running
-coordinator when its session is next constructed, and a replacement from its
-first session. `bb initiative read memory`,
+**The coordinator** gets, in every mode, `initiative_zoom {id,n}` (the two
+lines line id+n was made from; n 1 is the message whole), `initiative_date
+{id}`, and one line of guidance: after a compaction, read `initiative_read
+{view:"memory"}` (the 16–32 KB memory view) and zoom before acting. `bb initiative read memory`,
 `bb initiative zoom <id> <n>` and `bb initiative date <id>` serve the same from a
 shell. The dashboard shows the mode, log size, tree progress, view sizes and the
 summarizer's cost at list price.
@@ -1150,6 +1169,25 @@ becomes visible again or a network that returns reads at once (W196). Each clien
 reports at most one timeout a minute through `reportReadTimeout`, logged as one warn
 line with the elapsed time, whether the tab was or had been hidden, `navigator.onLine`
 and the time since the tab was last visible (`bb plugin logs initiatives` or `sidebar`).
+Dashboard writes never fail silently either (W239): a button or switch says "Still
+saving: the connection is slow" after 5 s, and a write with no answer after 30 s
+fails as unconfirmed ("may still be saved"), which also releases the
+dashboard reads the write was holding. The write itself is not cancelled; the next
+read shows whether it landed. The remote app reaches bb through the bb connect relay,
+which can lose a request without answering. Sending the same write again is safe
+(W244, W248). A command that adds something (Add task, New Initiative, a message, an
+answer) carries an idempotency key; a command that sets a value (memory mode, pause,
+closing a task) carries none, since setting the same value again changes nothing and a
+later different choice simply wins. The page keeps a key from the first send until an
+answer settles it: a timeout, a dropped connection or a server error all keep it, so
+sending the same content again reuses it; only the server's own answer (saved, refused
+with nothing saved, or "unclear, check first") releases it. Keys live in localStorage,
+so a page reload keeps them. The server records each key's receipt in the plugin
+database with its Initiative, command and request fingerprint, runs each key once,
+answers a repeat from the receipt, refuses a key reused for a different request, and
+keeps receipts 8 days, across plugin reloads. The page uses a key for 7 days; after
+that, sending the same again asks the user to check whether it was saved instead of
+silently running it a second time.
 
 The Inbox's Blocked workers card has two split buttons (T130). **Send to
 coordinator** records the answer as the user's decision and sends it to the

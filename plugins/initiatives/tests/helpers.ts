@@ -28,3 +28,14 @@ export async function expectWarned(dispatch: Promise<{ warnings?: string[] }[]>,
   if (!(result!.warnings ?? []).some((w) => pattern.test(w)))
     throw new Error(`expected a warning matching ${pattern}, got ${JSON.stringify(result!.warnings ?? [])}`);
 }
+
+/**
+ * W248: a mocked command RPC answering as the server does: a keyed send (sendWrite) gets its
+ * answer as a WriteAnswer. A mock that throws stays a thrown error.
+ */
+export const answersLikeServer =
+  (command: (input: any) => unknown) =>
+  async (input: unknown) => {
+    const answer = await command(input);
+    return (input as { key?: string } | null)?.key ? { write: "done", answer } : answer;
+  };

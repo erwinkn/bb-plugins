@@ -70,7 +70,12 @@ export const projectsContract = defineRpcContract({
     output: z.unknown(),
   },
   command: {
-    input: z.object({ projectId: id.optional(), command: z.union([commandSchema, legacyThreadCreateSchema]) }),
+    input: z.object({
+      projectId: id.optional(),
+      command: z.union([commandSchema, legacyThreadCreateSchema]),
+      /** W244, W248: the write's idempotency key; the answer is then a WriteAnswer (WriteReceipts). */
+      key: z.string().min(1).max(100).optional(),
+    }),
     output: z.unknown(),
   },
   /**

@@ -8,6 +8,7 @@ import { TreeBuilder, type BuilderStatus } from "./builder";
 import { readEvents, startsAfresh, type ListEvents } from "./ingest";
 import { eventEntries, splitEntry } from "./log";
 import { messageText, systemPrompt } from "./prompt";
+import { FairPermits } from "./permits";
 import { MemoryStore, type MemoryMode, type MemorySettings } from "./store";
 import type { Summarizer } from "./summarizer";
 import { NodeCache, end, label, nodeAt, children, renderLine, viewBytes } from "./tree";
@@ -21,17 +22,32 @@ const INGEST_PAGES = 20;
 const TAIL_WAIT_MS = 10 * 60_000;
 /** The sweep re-reads a quiet Initiative's coordinators this often; idle and event signals come first. */
 const SWEEP_INGEST_MS = 5 * 60_000;
-/** Initiatives one sweep starts reading, so the first logs after an upgrade don't all start at once. */
+/**
+ * Initiatives one sweep starts reading, so the first logs after an upgrade don't all start at
+ * once; the least recently read go first, so every Initiative gets its turn (W244).
+ */
 const SWEEP_KICKS = 3;
 
 export const OPTCHAT_NOTE = "optchat is stored, but its runtime is not available yet: until it is, the coordinator runs as hybrid.";
-export const SESSION_NOTE = "A running coordinator gets its memory tools and guidance when its session is next constructed; replacing the coordinator applies them now.";
+/**
+ * W244: BB fixes a session's tools and instructions when it is built and mostly keeps them on
+ * resume, so a coordinator from before every coordinator got its memory tools (D447) may lack
+ * them; that matters once its mode compacts sooner than regular. Those coordinators are noted
+ * once, at the first start that gives the tools in every mode, and keep the note until replaced.
+ */
+export const SESSION_NOTE = "This coordinator's session predates its memory tools, so it may lack initiative_zoom and initiative_date: replace the coordinator to give it them.";
+const LEGACY_SEEDED = "memory-tools-legacy";
+const legacyFlag = (threadId: string) => `${LEGACY_SEEDED}:${threadId}`;
+/** The memory's own progress (log and tree) reaches the dashboards at most this often; they also poll. */
+const PROGRESS_PUBLISH_MS = 30_000;
 
 export interface MemoryStatus {
   mode: MemoryMode;
   /** The mode the coordinator actually runs in (optchat runs as hybrid for now). */
   effectiveMode: "regular" | "hybrid";
   note: string | null;
+  /** SESSION_NOTE outside regular mode while the coordinator is one from before D447 (it may lack its memory tools). */
+  session: string | null;
   compactTokens: number;
   compactTokensOverride: number | null;
   log: { messages: number; bytes: number; threads: number };
@@ -43,7 +59,7 @@ export interface MemoryStatus {
     fallbacks: number;
     viewBytes: number;
     memoryViewBytes: number;
-    state: BuilderStatus["state"] | "off";
+    state: BuilderStatus["state"];
     detail: string | null;
     until: number | null;
   };
@@ -58,15 +74,20 @@ const treeSize = (n: number) => {
 };
 
 /**
- * D431 phase 1: each Initiative's coordinator memory. The log is always kept, in every mode: it
- * is read from BB's events of every coordinator thread, starting, on its first read, from the
- * current coordinator back to the last handover (or new-Initiative start), the handover being
- * a note. In hybrid mode (and optchat, until its runtime exists), GPT-6 Luna builds the summary
- * tree in the background, and the coordinator reads its view, zoom and date.
+ * D431 phase 1: each Initiative's shared memory. The log is read from BB's events of every
+ * coordinator thread, starting, on its first read, from the current coordinator back to the
+ * last handover (or new-Initiative start), the handover being a note. D447: GPT-6 Luna builds
+ * the summary tree over it in the background in every mode, so a switch between modes is
+ * instant; the coordinator reads its view, zoom and date in every mode.
+ *
+ * The mode is one setting per Initiative (regular, hybrid or optchat), for the coordinator and
+ * later its discussion threads (D446). What depends on it is read at each turn: the compaction
+ * limit (compactLimit) and, once it exists, the optchat runtime (settings().mode).
  *
  * Ingests and builds run detached and owned here: one of each per Initiative at a time, aborted
- * by dispose (the service signal disposes too) and, for a build, by a switch back to regular.
- * Nothing waits on them. An aborted run stays owned until it settles, and writes nothing more;
+ * by dispose (the service signal disposes too) and when their Initiative is archived (stop).
+ * Every Initiative's summarizer calls share one limit, memoryConcurrency, let in round-robin
+ * by Initiative (W244). Nothing waits on them. An aborted run stays owned until it settles, and writes nothing more;
  * after dispose the store refuses every access (BB closes the database), whichever path asks.
  */
 interface Run {
@@ -84,6 +105,9 @@ export class CoordinatorMemory {
   private builds = new Map<string, Run>();
   private builders = new Map<string, TreeBuilder>();
   private lastIngest = new Map<string, number>();
+  private published = new Map<string, number>();
+  /** Summarizer calls in flight across every Initiative (W244). */
+  readonly permits: FairPermits;
 
   constructor(
     private readonly deps: {
@@ -99,6 +123,7 @@ export class CoordinatorMemory {
     },
   ) {
     this.store = new MemoryStore(deps.ledger.db, () => deps.ledger.now());
+    this.permits = new FairPermits(() => deps.preferences().memoryConcurrency);
   }
 
   /** Test seam: the summarizer later calls use. */
@@ -109,6 +134,11 @@ export class CoordinatorMemory {
   start(signal?: AbortSignal) {
     this.disposed = false;
     this.store.open();
+    if (!this.deps.ledger.hasFlag(LEGACY_SEEDED)) {
+      for (const project of this.deps.ledger.projects())
+        if (project.coordinatorThreadId) this.deps.ledger.setFlag(legacyFlag(project.coordinatorThreadId));
+      this.deps.ledger.setFlag(LEGACY_SEEDED);
+    }
     this.stopLink?.[Symbol.dispose]();
     this.stopLink = signal ? addAbortListener(signal, () => this.dispose()) : null;
   }
@@ -133,11 +163,12 @@ export class CoordinatorMemory {
   settings(projectId: string): MemorySettings {
     return this.store.settings(projectId);
   }
-  /** Whether the tree is built: hybrid, and optchat until its runtime exists. */
+  /** D447: the tree is built for every live Initiative, whatever its mode. */
   building(projectId: string) {
-    return this.settings(projectId).mode !== "regular";
+    const project = this.deps.ledger.project(projectId);
+    return !!project && project.archivedAt === null;
   }
-  /** The coordinator's compaction limit: the Initiative's own, else the setting for its mode. */
+  /** The compaction limit of the Initiative's memory threads: its own, else the setting for its mode. Read at each turn. */
   compactLimit(projectId: string) {
     const { mode, compactTokens } = this.settings(projectId);
     if (compactTokens !== null) return compactTokens;
@@ -156,13 +187,18 @@ export class CoordinatorMemory {
     this.store.saveSettings(projectId, next);
     const who = author === "user" ? "you" : "the coordinator";
     if (next.mode !== before.mode)
-      this.deps.ledger.log(projectId, "project", `Coordinator memory set to ${next.mode} by ${who}${next.mode === "optchat" ? " (runs as hybrid until the optchat runtime exists)" : ""}`);
+      this.deps.ledger.log(projectId, "project", `Memory set to ${next.mode} by ${who}, from the next turn${next.mode === "optchat" ? " (runs as hybrid until the optchat runtime exists)" : ""}`);
     if (next.compactTokens !== before.compactTokens)
-      this.deps.ledger.log(projectId, "project", next.compactTokens === null ? `Coordinator compaction limit reset to the ${next.mode} default by ${who}` : `Coordinator compaction limit set to ${Math.round(next.compactTokens / 1000)}k tokens by ${who}`);
-    if (next.mode === "regular") this.stopBuilding(projectId);
-    else this.kick(projectId);
-    const status = this.status(projectId);
-    return { ...status, ...(next.mode !== before.mode && next.mode !== "regular" ? { session: SESSION_NOTE } : {}) };
+      this.deps.ledger.log(projectId, "project", next.compactTokens === null ? `Compaction limit reset to the ${next.mode} default by ${who}` : `Compaction limit set to ${Math.round(next.compactTokens / 1000)}k tokens by ${who}`);
+    return this.status(projectId);
+  }
+
+  /** The log or tree grew: tell the dashboards, at most every PROGRESS_PUBLISH_MS per Initiative. */
+  private progressed(projectId: string) {
+    const now = this.deps.ledger.now();
+    if (now - (this.published.get(projectId) ?? -Infinity) < PROGRESS_PUBLISH_MS) return;
+    this.published.set(projectId, now);
+    this.deps.changed?.(projectId);
   }
 
   // Ingest and build ------------------------------------------------------------------
@@ -194,7 +230,7 @@ export class CoordinatorMemory {
           if (signal.aborted) break;
           // A long first log is read in slices; the next one follows at once.
           if (read.behind) entry.again = true;
-          if (read.appended) this.deps.changed?.(projectId);
+          if (read.appended) this.progressed(projectId);
           if (this.building(projectId)) this.build(projectId);
         } while (entry.again && !signal.aborted);
       } catch (error) {
@@ -206,16 +242,16 @@ export class CoordinatorMemory {
     this.ingests.set(projectId, entry);
   }
 
-  /** The sweep's kick: every Initiative not read for a while (a missed idle, a first log). */
+  /** The sweep's kick: the least recently read Initiatives not read for a while (a missed idle, a first log). */
   sweep() {
     const now = this.deps.ledger.now();
-    let kicks = 0;
-    for (const project of this.deps.ledger.projects()) {
-      if (kicks >= SWEEP_KICKS) break;
-      if (project.archivedAt !== null || this.ingests.has(project.id) || now - (this.lastIngest.get(project.id) ?? -Infinity) < SWEEP_INGEST_MS) continue;
-      this.kick(project.id);
-      kicks++;
-    }
+    const read = (projectId: string) => this.lastIngest.get(projectId) ?? -Infinity;
+    this.deps.ledger
+      .projects()
+      .filter((p) => p.archivedAt === null && !this.ingests.has(p.id) && now - read(p.id) >= SWEEP_INGEST_MS)
+      .sort((a, b) => read(a.id) - read(b.id))
+      .slice(0, SWEEP_KICKS)
+      .forEach((p) => this.kick(p.id));
   }
 
   /**
@@ -322,7 +358,9 @@ export class CoordinatorMemory {
     if (!builder) {
       const tree = this.store.tree(projectId);
       builder = new TreeBuilder(tree, this.store.views(projectId), {
-        summarize: (request) => this.deps.summarizer(request),
+        // A call waiting for a permit and stopped meanwhile never starts.
+        summarize: async (request) =>
+          (await this.permits.run(projectId, request.signal, () => this.deps.summarizer(request))) ?? { ok: false, reason: "aborted", error: "stopped" },
         instructions: () => systemPrompt(this.deps.preferences().coordinatorInstructions),
         effort: () => this.deps.preferences().memoryEffort,
         concurrency: () => this.deps.preferences().memoryConcurrency,
@@ -337,7 +375,7 @@ export class CoordinatorMemory {
 
   /** Start (or extend) the background build. Behind a stopped run that is still settling, it starts once that one has. */
   build(projectId: string) {
-    if (this.disposed) return;
+    if (this.disposed || !this.building(projectId)) return;
     const running = this.builds.get(projectId);
     if (running) {
       running.again = true;
@@ -351,7 +389,7 @@ export class CoordinatorMemory {
         do {
           entry.again = false;
           await builder.run(signal);
-          if (!signal.aborted) this.deps.changed?.(projectId);
+          if (!signal.aborted) this.progressed(projectId);
         } while (entry.again && !signal.aborted);
       } catch (error) {
         if (!signal.aborted) this.deps.log(`Coordinator memory tree for ${projectId} failed: ${errorMessage(error)}`);
@@ -361,6 +399,12 @@ export class CoordinatorMemory {
       }
     })();
     this.builds.set(projectId, entry);
+  }
+
+  /** The Initiative is archived: abort its ingest and build at once (W244). */
+  stop(projectId: string) {
+    this.ingests.get(projectId)?.abort.abort();
+    this.stopBuilding(projectId);
   }
 
   /**
@@ -383,15 +427,17 @@ export class CoordinatorMemory {
 
   status(projectId: string): MemoryStatus {
     const settings = this.settings(projectId);
+    const coordinator = this.deps.ledger.project(projectId)?.coordinatorThreadId ?? null;
     const messages = this.store.count(projectId);
     const { nodes, views } = this.tree(projectId);
     const totals = this.store.totals(projectId);
     const builder = this.builders.get(projectId);
-    const state = settings.mode === "regular" ? "off" : builder?.status.state ?? (this.builds.has(projectId) ? "building" : "idle");
+    const state = builder?.status.state ?? (this.builds.has(projectId) ? "building" : "idle");
     return {
       mode: settings.mode,
       effectiveMode: settings.mode === "regular" ? "regular" : "hybrid",
       note: settings.mode === "optchat" ? OPTCHAT_NOTE : null,
+      session: settings.mode !== "regular" && coordinator && this.deps.ledger.hasFlag(legacyFlag(coordinator)) ? SESSION_NOTE : null,
       compactTokens: this.compactLimit(projectId),
       compactTokensOverride: settings.compactTokens,
       log: { messages, bytes: totals.logBytes, threads: this.store.cursors(projectId).length },
@@ -420,7 +466,7 @@ export class CoordinatorMemory {
 
   /**
    * A view as "id+n|text" lines, oldest first. "memory" is the compaction view (16–32 KB), what a
-   * hybrid coordinator reads; "chat" is the 64–128 KB view an optchat turn will see.
+   * coordinator reads after a compaction; "chat" is the 64–128 KB view an optchat turn will see.
    */
   view(projectId: string, which: "memory" | "chat" = "memory") {
     const { nodes, views } = this.tree(projectId);
@@ -450,8 +496,8 @@ export class CoordinatorMemory {
 
   /**
    * Resolves once messages 0..count-1 have their line (the gist's rule before a turn: wait until
-   * earlier messages are summarized); false when the signal aborts, the mode builds nothing, or
-   * the build stops (a switch to regular, dispose) before then.
+   * earlier messages are summarized); false when the signal aborts, the Initiative is archived,
+   * or the build stops (archive, dispose) before then.
    */
   async waitSummarized(projectId: string, count: number, signal: AbortSignal) {
     if (this.disposed || !this.building(projectId)) return false;

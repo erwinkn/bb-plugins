@@ -186,7 +186,7 @@ describe("W225 shutdown: no SDK read starts after dispose (P2)", () => {
 });
 
 describe("W225 a replacement coordinator's first session (P1)", () => {
-  it("gets the hybrid tools and guidance before its spawn is confirmed", async () => {
+  it("gets the memory tools and guidance before its spawn is confirmed", async () => {
     const { f, project } = await projectFixture();
     await f.perform(project.id, { action: "memory", mode: "hybrid" }, "user", null);
     await f.service.memory.settled();
@@ -201,7 +201,7 @@ describe("W225 a replacement coordinator's first session (P1)", () => {
     await f.service.replaceCoordinator(project.id, { reason: "Fresh hybrid context" });
     expect(seen!.instructions).toContain("pending coordinator");
     expect(seen!.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_zoom", "initiative_date"]));
-    expect(seen!.instructions).toMatch(/pending coordinator[\s\S]*\n\nMemory \(hybrid\)/);
+    expect(seen!.instructions).toMatch(/pending coordinator[\s\S]*\n\nMemory: /);
     await f.service.memory.settled();
   });
 });
@@ -449,21 +449,23 @@ describe("W225 builder edges (P2)", () => {
 });
 
 describe("W225 summary waiters end with their builder (P2)", () => {
-  it("resolves false on a switch to regular, and on dispose", async () => {
-    const hold = gate();
-    const { db, memory } = setup(listing({}), { summarizer: async () => (await hold.promise, ok("summary")) });
+  it("keeps waiting across a switch to regular, which builds too (D447), and resolves false on dispose", async () => {
+    const holds = [gate(), gate()];
+    let calls = 0;
+    const { db, memory } = setup(listing({}), { summarizer: async () => (await holds[Math.min(calls++, 1)]!.promise, ok("summary")) });
     hybridWith(memory, ["x".repeat(700)]);
     const forever = new AbortController().signal;
     const switched = memory.waitSummarized("p", 1, forever);
     await tick();
     memory.configure("p", { mode: "regular" }, "user");
-    expect(await switched).toBe(false);
-    memory.configure("p", { mode: "hybrid" }, "user");
-    const disposed = memory.waitSummarized("p", 1, forever);
+    holds[0]!.release();
+    expect(await switched).toBe(true);
+    memory.store.append("p", "current", [{ kind: "user", text: "y".repeat(700), at: 2, threadId: "current", seq: 2 }], 2);
+    const disposed = memory.waitSummarized("p", 2, forever);
     await tick();
     memory.dispose();
     expect(await disposed).toBe(false);
-    hold.release();
+    holds[1]!.release();
     await memory.settled();
     db.close();
   });

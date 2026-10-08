@@ -39,6 +39,7 @@ import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-sc
 import { PR_STAGE_IDS, type PrRecord, type PrStage } from "./pr-stages";
 import { MEMORY_MIGRATIONS } from "./memory/store";
 import { PR_NOTE_MIGRATIONS } from "./pr-notes";
+import { WRITE_RECEIPT_MIGRATIONS } from "./write-receipts";
 
 
 // The plugin server is the only writer. Every multi-row change runs in one
@@ -442,6 +443,8 @@ export const MIGRATIONS = [
   // live reviews; the query repeats these expressions and this predicate to use it.
   `CREATE INDEX assignments_open_review ON assignments(project_id, json_extract(handoff_sources, '$[0].assignment'),
     json_extract(handoff_sources, '$[0].reportVersion'), num) WHERE role = 'review' AND state IN ('dispatching', 'queued', 'running')`,
+  // W248: dashboard writes' receipts by key, so a write sent again runs once, across reloads.
+  ...WRITE_RECEIPT_MIGRATIONS,
 ];
 
 /** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */

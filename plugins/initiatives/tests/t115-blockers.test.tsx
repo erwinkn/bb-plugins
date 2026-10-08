@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { projectFixture, report } from "./fake-native";
+import { answersLikeServer } from "./helpers";
 import { needsYouCount, openBlockers, type BlockerFacts } from "../lib/blockers";
 await loadPluginApp(() => import("../app"));
 const { Dashboard } = await import("../app");
@@ -120,7 +121,7 @@ describe("T115 blocked reports in the Inbox and Needs you", () => {
     const o = await f.overview(project.id, "summary");
     const commands: any[] = [];
     const slot = renderSlot({ component: Dashboard }, { projectId: project.id }, {
-      rpc: { overview: async () => o, command: async ({ command }: any) => { commands.push(command); return f.service.answerBlocker(project.id, command.assignment, { question: command.question, context: command.context }, command.note); } },
+      rpc: { overview: async () => o, command: answersLikeServer(async ({ command }: any) => { commands.push(command); return f.service.answerBlocker(project.id, command.assignment, { question: command.question, context: command.context }, command.note); }) },
     } as never);
     slots.push(slot);
     expect(await slot.findByRole("button", { name: "Needs you · 1" })).toBeTruthy();

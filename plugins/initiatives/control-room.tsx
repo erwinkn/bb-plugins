@@ -18,6 +18,9 @@ import type { Command } from "./lib/commands";
 import type { MemoryStatus } from "./lib/memory/memory";
 import type { projectsContract } from "./lib/contract";
 import { UsagePage } from "./usage-view";
+import { MemorySwitch } from "./memory-switch";
+import { useWrite } from "./write-status";
+import { WRITE_SLOW_MESSAGE } from "./lib/write-timeout";
 import "./control-room.css";
 
 export type Tab = "inbox" | "decisions" | "threads" | "tasks" | "prs" | "context" | "usage" | "log";
@@ -153,33 +156,25 @@ function Action({
   /** Reads a refusal the service answers without throwing, shown like an error. */
   refusal?: (result: unknown) => string | null;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const write = useWrite();
   return (
     <>
       <button
         className={className}
         title={title}
-        disabled={busy}
+        disabled={write.busy}
         onClick={async () => {
-          setBusy(true);
-          setError(null);
-          try {
-            const result = await run(command);
-            const refused = refusal?.(result) ?? null;
-            if (refused) setError(refused);
-          } catch (e) {
-            setError(message(e));
-          } finally {
-            setBusy(false);
-          }
+          const done = await write.run(() => run(command));
+          const refused = done.ok ? refusal?.(done.value) ?? null : null;
+          if (refused) write.setError(refused);
         }}
       >
-        {busy ? "Saving…" : children}
+        {write.busy ? "Saving…" : children}
       </button>
-      {error ? (
+      {write.slow ? <p role="status" className="project-muted">{WRITE_SLOW_MESSAGE}</p> : null}
+      {write.error ? (
         <p role="alert" className="project-error">
-          {error}
+          {write.error}
         </p>
       ) : null}
     </>
@@ -545,6 +540,7 @@ export function ControlRoom({
         <p className="cr-coordinator-meta" title={p.coordinatorHome?.path ?? undefined}>
           {p.coordinatorProfile ?? "Profile unavailable"}{p.coordinatorHome?.path ? ` · ${p.coordinatorHome.path.split("/").filter(Boolean).at(-1)}` : ""}
         </p>
+        {o.memory ? <MemorySwitch mode={o.memory.mode} session={o.memory.session} choose={(mode) => run({ action: "memory", mode })} explain="selected" /> : null}
         </div>
         {coordinatorDetail ? (
           <div className="cr-coordinator-detail">
@@ -1817,49 +1813,31 @@ function Repositories({
     </section>
   );
 }
-const MEMORY_MODE_TEXT: Record<MemoryStatus["mode"], [string, string]> = {
-  regular: ["Regular", "Chat, compacted past its limit. The log is kept; no summary tree."],
-  hybrid: ["Hybrid", "Chat and compaction, plus a GPT-6 Luna summary tree of the whole log that the coordinator zooms into."],
-  optchat: ["OptChat", "A fresh turn per message over the summary view. Not available yet: runs as hybrid."],
-};
 const kilo = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
-/** D431: the Initiative's coordinator memory: mode, compaction limit, log, tree progress and cost. */
+/** D431, D447: the Initiative's memory: mode, compaction limit, log, tree progress and cost. */
 function MemoryPanel({ memory: m, run }: { memory: MemoryStatus; run: Run }) {
   const [limit, setLimit] = useState("");
   const tokens = Number(limit.replace(/k$/i, "")) * (/k$/i.test(limit) ? 1000 : 1);
   const t = m.tree;
   const state =
-    t.state === "off" ? null
-    : t.state === "unavailable" ? `Summarizer unavailable: ${t.detail}`
+    t.state === "unavailable" ? `Summarizer unavailable: ${t.detail}`
     : t.state === "backoff" ? `Rate-limited; retrying${t.until ? ` at ${new Date(t.until).toLocaleTimeString()}` : ""}`
     : t.state === "building" ? "Building"
     : "Up to date";
   return (
-    <section aria-label="Coordinator memory">
-      <h2 className="cr-section-heading">Coordinator memory</h2>
-      <div className="project-actions" role="group" aria-label="Memory mode">
-        {(Object.keys(MEMORY_MODE_TEXT) as MemoryStatus["mode"][]).map((mode) =>
-          mode === m.mode ? (
-            <button key={mode} disabled aria-pressed="true">{MEMORY_MODE_TEXT[mode][0]}</button>
-          ) : (
-            <Action key={mode} run={run} command={{ action: "memory", mode }}>{MEMORY_MODE_TEXT[mode][0]}</Action>
-          ),
-        )}
-      </div>
-      <p className="project-meta">{MEMORY_MODE_TEXT[m.mode][1]}</p>
+    <section aria-label="Memory">
+      <h2 className="cr-section-heading">Memory</h2>
+      <p className="project-meta">One setting for the coordinator and, later, the Initiative's discussion threads. The summary tree builds in every mode, so a switch is instant and applies from the next turn.</p>
+      <MemorySwitch mode={m.mode} session={m.session} choose={(mode) => run({ action: "memory", mode })} explain="all" label={false} />
       <div className="cr-memory">
         <span>Log</span>
         <span>{m.log.messages.toLocaleString()} messages · {kilo(m.log.bytes)}B · {m.log.threads} coordinator thread{m.log.threads === 1 ? "" : "s"}</span>
-        {t.state !== "off" ? (
-          <>
-            <span>Tree</span>
-            <span>
-              {t.nodes.toLocaleString()} of {t.total.toLocaleString()} lines ({t.total ? Math.floor((100 * Math.min(t.nodes, t.total)) / t.total) : 100}%){t.fallbacks ? ` · ${t.fallbacks} cut after failures` : ""} · {state}
-            </span>
-            <span>Views</span>
-            <span>chat {kilo(t.viewBytes)}B · memory {kilo(t.memoryViewBytes)}B</span>
-          </>
-        ) : null}
+        <span>Tree</span>
+        <span>
+          {t.nodes.toLocaleString()} of {t.total.toLocaleString()} lines ({t.total ? Math.floor((100 * Math.min(t.nodes, t.total)) / t.total) : 100}%){t.fallbacks ? ` · ${t.fallbacks} cut after failures` : ""} · {state}
+        </span>
+        <span>Views</span>
+        <span>chat {kilo(t.viewBytes)}B · memory {kilo(t.memoryViewBytes)}B</span>
         {m.cost.calls ? (
           <>
             <span>Cost</span>

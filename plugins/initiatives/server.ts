@@ -36,7 +36,8 @@ import {
 import { legacyReportSchema, LEGACY_TOOL_NAMES } from "./lib/legacy";
 import { reportSchema } from "./lib/schema";
 import { definePreferences } from "./lib/settings";
-import { HYBRID_MEMORY_GUIDANCE } from "./lib/guidance";
+import { MEMORY_GUIDANCE } from "./lib/guidance";
+import { WriteReceipts } from "./lib/write-receipts";
 import { dateToolSchema, zoomToolSchema } from "./lib/memory/memory";
 import { Store, MIGRATIONS } from "./lib/store";
 import { ProjectsService } from "./lib/service";
@@ -126,6 +127,8 @@ export default function plugin(bb: BbPluginApi) {
   // Native calls yield. Serialize mutations so concurrent requests cannot both
   // decide that a worker or shared workspace is available.
   let writes: Promise<unknown> = Promise.resolve();
+  // W244, W248: a dashboard write sent again after its answer was lost runs once.
+  const receipts = new WriteReceipts(db, ledgerVersion);
   const perform = (
     id: string | undefined,
     command: Command,
@@ -133,8 +136,9 @@ export default function plugin(bb: BbPluginApi) {
     threadId: string | null,
   ) => {
     const run = () => runCommand(service, id, command, author, threadId);
+    // A memory switch only writes its setting, so it never waits behind a slow write (W239).
     if (
-      ["answer", "blocker-answer", "blocker-dismiss", "pause", "assignment-stop", "stop-work"].includes(
+      ["answer", "blocker-answer", "blocker-dismiss", "pause", "assignment-stop", "stop-work", "memory"].includes(
         command.action,
       )
     )
@@ -427,15 +431,19 @@ export default function plugin(bb: BbPluginApi) {
       };
     },
     read: async ({ projectId, view, ...options }) => view === "threads" ? readThreads(projectId, options) : read(projectId, view, options),
-    command: ({ projectId, command }) => {
-      if (command.action === "thread-create" && "prompt" in command) {
-        if (!projectId) throw new ProjectError("Pass an Initiative ID.");
-        const run = () => service.createLegacyUserThread(projectId, command);
-        const next = writes.then(run, run);
-        writes = next.catch(() => undefined);
-        return announcing(() => next, () => projectId);
-      }
-      return announcing(() => perform(projectId, command, "user", null), () => projectId);
+    command: ({ projectId, command, key }) => {
+      const write = () => {
+        if (command.action === "thread-create" && "prompt" in command) {
+          if (!projectId) throw new ProjectError("Pass an Initiative ID.");
+          const run = () => service.createLegacyUserThread(projectId, command);
+          const next = writes.then(run, run);
+          writes = next.catch(() => undefined);
+          return announcing(() => next, () => projectId);
+        }
+        return announcing(() => perform(projectId, command, "user", null), () => projectId);
+      };
+      // A keyed write answers with a WriteAnswer, which sendWrite unwraps.
+      return key ? receipts.run(key, { projectId, command }, async () => write()) : write();
     },
     inventory: async () => {
       const projects = await bb.sdk.projects.list({ includePersonal: false });
@@ -593,18 +601,17 @@ export default function plugin(bb: BbPluginApi) {
             "UPDATE coordinator_starts SET thread_id=? WHERE project_id=? AND op_id=? AND state IN ('pending','uncertain') AND (thread_id IS NULL OR thread_id=?)",
           )
           .run(ctx.thread.id, meta.projectId, meta.op, ctx.thread.id);
-      // D431: this session is the coordinator's first (a replacement's too), so a hybrid
-      // Initiative's tools and guidance come now; zoom and date still require confirmed membership.
-      const hybrid = service.memory.building(meta.projectId);
+      // D447: the memory tools and guidance come in every mode, so a switch needs no new
+      // session; zoom and date still require confirmed membership.
       return {
-        tools: hybrid ? [...coordinatorTools, ...MEMORY_TOOLS] : coordinatorTools,
+        tools: [...coordinatorTools, ...MEMORY_TOOLS],
         skills: ["initiative-coordinator"],
         instructions: [
           guidance().coordinatorInstructions,
           start && ["pending", "uncertain"].includes(start.state)
             ? `You are the pending coordinator of this initiative. Your start receipt is recorded but this thread's checkout is still being proven against the primary repository's default source. Read initiative state once this thread is confirmed; until then, Initiative reads and mutations require confirmed membership. If membership is unavailable, leave confirmation and settlement to the operator. Do not retry the start.`
             : `Your coordinator start did not confirm (state ${start?.state ?? "unknown"}). Initiative reads and mutations require confirmed membership. Leave settlement to the operator. Do not retry the start.`,
-          ...(hybrid ? [HYBRID_MEMORY_GUIDANCE] : []),
+          MEMORY_GUIDANCE,
         ].join("\n\n"),
       };
     }
@@ -644,13 +651,13 @@ export default function plugin(bb: BbPluginApi) {
           "This is a former context. Read initiative state, but leave coordination and reporting to the current threads.",
       };
     if (m?.workerNum === 0) {
-      // D431: a hybrid coordinator also gets its memory tools and one line of guidance.
-      const hybrid = service.memory.building(m.project.id);
+      // D447: the coordinator gets its memory tools and one line of guidance in every mode: BB
+      // fixes a session's tools when it is built, and a mode switch applies at the next turn.
       return {
-        tools: hybrid ? [...coordinatorTools, ...MEMORY_TOOLS] : coordinatorTools,
+        tools: [...coordinatorTools, ...MEMORY_TOOLS],
         skills: ["initiative-coordinator"],
         // Last, so instructions near BB's 4,096-character cap lose this line, never the membership.
-        instructions: [guidance().coordinatorInstructions, `Current Initiative membership: ${JSON.stringify(currentIdentity(store, m))}`, ...(hybrid ? [HYBRID_MEMORY_GUIDANCE] : [])].join("\n\n"),
+        instructions: [guidance().coordinatorInstructions, `Current Initiative membership: ${JSON.stringify(currentIdentity(store, m))}`, MEMORY_GUIDANCE].join("\n\n"),
       };
     }
     const worker = m?.worker ?? pendingMember(ctx)?.worker;
@@ -957,13 +964,10 @@ export default function plugin(bb: BbPluginApi) {
       return JSON.stringify(read(m.project.id, view, options));
     },
   });
-  /** D431: the memory view a hybrid coordinator reads after a compaction (16–32 KB). */
+  /** D431: the memory view a coordinator reads after a compaction (16–32 KB), in every mode (D447). */
   const readMemory = (projectId: string) => {
     service.requireProject(projectId);
-    const memory = service.memory;
-    if (!memory.building(projectId))
-      return { mode: "regular", messages: memory.store.count(projectId), note: "This Initiative keeps its memory log but builds no summary tree (memory mode regular). initiative_zoom {id:12,n:1} reads logged message 12 whole." };
-    const view = memory.view(projectId, "memory");
+    const view = service.memory.view(projectId, "memory");
     const pending = view.summarized < view.messages ? ` Messages ${view.summarized} to ${view.messages - 1} are not in the view yet: read them with n:1.` : "";
     return {
       messages: view.messages,

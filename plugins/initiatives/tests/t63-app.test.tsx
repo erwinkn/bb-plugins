@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { projectFixture } from "./fake-native";
+import { answersLikeServer } from "./helpers";
 import type { Overview } from "../lib/overview";
 await loadPluginApp(() => import("../app"));
 const { Dashboard, ProjectsPage } = await import("../app");
@@ -57,7 +58,7 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
       const saved = await f.service.reviewDecision(project.id, d.ref, input.verdict, input.message);
       return { ...saved, notification: { op: "test", state, coordinatorThreadId: "coordinator", ...(state === "failed" ? { detail: "Refused" } : {}) } };
     });
-    const slot = mount(project.id, { overview, command });
+    const slot = mount(project.id, { overview, command: answersLikeServer(command) });
     fireEvent.click(await slot.findByRole("button", { name: "Not okay" }));
     fireEvent.change(slot.getByLabelText("Message to coordinator"), { target: { value: "Keep the draft" } });
     fireEvent.click(slot.getByRole("button", { name: "Send and mark not okay" }));
@@ -95,7 +96,7 @@ describe("T63 dashboard request/acknowledgment boundaries", () => {
       const saved = await f.service.answerOpinion(project.id, q.ref, input);
       return { ...saved, notification: { op: "test", state, coordinatorThreadId: "coordinator", ...(state === "failed" ? { detail: "Refused" } : {}) } };
     });
-    const slot = mount(project.id, { overview, command });
+    const slot = mount(project.id, { overview, command: answersLikeServer(command) });
     fireEvent.click(await slot.findByRole("radio", { name: /Yes/ })); fireEvent.click(slot.getByRole("button", { name: "Send answer" }));
     await waitFor(() => expect(slot.container.textContent).toContain(`${q.ref}: answer saved. Coordinator notification ${state}`));
     expect(slot.queryByText("Saving…")).toBeNull(); expect(slot.queryByRole("radio", { name: /Yes/ })).toBeNull();

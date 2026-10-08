@@ -1,6 +1,13 @@
 import type { ReadTimeoutReport } from "./contract";
 import { REPORT_INTERVAL_MS, ReadTimeoutError, withReadTimeout } from "./read-timeout";
 
+/**
+ * A read for refresh. A read that also carries another key's data (the panel read carries its
+ * Initiative's overview) passes it to seed, which keeps it only while the read is current and
+ * the other key has not been written or saved since the read began (W248).
+ */
+export type Fetch = (seed: (key: string, data: unknown) => void) => Promise<unknown>;
+
 /** Read sharing for the app session. Native RPC/realtime remain the transport. */
 export class SharedReads {
   private entries = new Map<string, {
@@ -8,17 +15,20 @@ export class SharedReads {
     pending: Promise<void> | null; listeners: Set<() => void>; holds: number;
     timer?: ReturnType<typeof setTimeout>;
     /** A change arrived while a read or save was in flight: read again once it clears. */
-    again?: () => Promise<unknown>;
+    again?: Fetch;
     /** Failed reads in a row. */
     misses: number;
+    /** clock when its data was last written or a save of it began or ended. */
+    at: number;
   }>();
+  private clock = 0;
   /** Sends a timed-out read's report; the app wires it to its RPC. */
   reporter: ((report: ReadTimeoutReport & { read: string }) => void) | null = null;
   private lastReportAt = -Infinity;
   entry(key: string) {
     let entry = this.entries.get(key);
     if (!entry) {
-      entry = { data: null, error: null, loaded: false, epoch: 0, pending: null, listeners: new Set(), holds: 0, misses: 0 };
+      entry = { data: null, error: null, loaded: false, epoch: 0, pending: null, listeners: new Set(), holds: 0, misses: 0, at: 0 };
       this.entries.set(key, entry);
     }
     return entry;
@@ -31,13 +41,18 @@ export class SharedReads {
     this.lastReportAt = now;
     this.reporter({ read: key.split(":")[0]!.slice(0, 40), ...error.report });
   }
-  refresh(key: string, fetch: () => Promise<unknown>): Promise<void> {
+  refresh(key: string, fetch: Fetch): Promise<void> {
     const entry = this.entry(key);
     if (entry.holds) return Promise.resolve();
     if (entry.pending) return entry.pending;
     const epoch = entry.epoch;
-    const pending = Promise.resolve().then(() => withReadTimeout(fetch())).then(data => {
-      if (entry.epoch === epoch) { entry.misses = 0; entry.data = data; entry.error = null; entry.loaded = true; this.publish(key); }
+    const started = this.clock;
+    let settled = false;
+    const seed = (other: string, data: unknown) => {
+      if (!settled && entry.epoch === epoch && this.entry(other).at <= started) this.seed(other, data);
+    };
+    const pending = Promise.resolve().then(() => withReadTimeout(fetch(seed))).finally(() => { settled = true; }).then(data => {
+      if (entry.epoch === epoch) { entry.misses = 0; entry.data = data; entry.error = null; entry.loaded = true; entry.at = ++this.clock; this.publish(key); }
     }, error => {
       if (error instanceof ReadTimeoutError) this.report(key, error);
       if (entry.epoch !== epoch) return;
@@ -56,7 +71,7 @@ export class SharedReads {
    * scheduled read runs after it instead of joining it. A save in progress
    * defers it the same way.
    */
-  schedule(key: string, fetch: () => Promise<unknown>) {
+  schedule(key: string, fetch: Fetch) {
     const entry = this.entry(key);
     if (entry.timer) clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
@@ -81,15 +96,15 @@ export class SharedReads {
     };
   }
   /**
-   * Store data another read returned for this key (the panel read carries the
-   * summary overview). A held key keeps its pending save; a newer seed wins
+   * Store data another read returned for this key (a refresh's seed passes it
+   * on while current). A held key keeps its pending save; a newer seed wins
    * over any older fetch still in flight.
    */
   seed(key: string, data: unknown) {
     const entry = this.entry(key);
     if (entry.holds) return;
     entry.epoch++; entry.pending = null; entry.misses = 0;
-    entry.data = data; entry.error = null; entry.loaded = true;
+    entry.data = data; entry.error = null; entry.loaded = true; entry.at = ++this.clock;
     this.publish(key);
   }
   /** Forget every entry (tests). */
@@ -99,12 +114,12 @@ export class SharedReads {
   }
   /** Reject pre-save snapshots and hold optional reads until the RPC settles. */
   begin(key: string) {
-    const entry = this.entry(key); entry.holds++; entry.epoch++; entry.pending = null;
+    const entry = this.entry(key); entry.holds++; entry.epoch++; entry.pending = null; entry.at = ++this.clock;
     if (entry.timer) { clearTimeout(entry.timer); entry.timer = undefined; }
     let ended = false;
     return (update?: (data: unknown) => unknown) => {
       if (ended) return; ended = true;
-      entry.holds--; entry.epoch++; entry.pending = null;
+      entry.holds--; entry.epoch++; entry.pending = null; entry.at = ++this.clock;
       if (update && entry.data !== null) { entry.data = update(entry.data); this.publish(key); }
       this.catchUp(key);
     };

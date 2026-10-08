@@ -4,7 +4,7 @@ import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { createElement } from "react";
 import type { NewThreadComposerProps } from "@get-bb/plugin-sdk/app";
 import { installTestPluginRuntime, loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { memoryStore } from "./helpers";
+import { answersLikeServer, memoryStore } from "./helpers";
 import { buildOverview, type LiveThread } from "../lib/overview";
 
 // The portable SDK composer stub calls onSubmit without catching rejections.
@@ -124,7 +124,7 @@ function mount(
   const slot = renderSlot(
     app.navPanels[0],
     { subPath },
-    { rpc: { inventory: () => [], ...rpc } },
+    { rpc: { inventory: () => [], ...rpc, ...(rpc?.command ? { command: answersLikeServer(rpc.command) } : {}) } },
   );
   mounted.push(slot);
   return slot;
@@ -389,6 +389,7 @@ describe("project dashboard", () => {
     await waitFor(() => expect(command).toHaveBeenCalledTimes(2));
     expect(command.mock.calls[1][0]).toEqual({
       projectId: "p1",
+      key: expect.any(String),
       command: {
         action: "answer",
         notify: true,
@@ -670,6 +671,7 @@ describe("project dashboard", () => {
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0][0]).toEqual({
       projectId: "p1",
+      key: expect.any(String),
       command: {
         action: "answer",
         notify: true,
@@ -703,6 +705,7 @@ describe("project dashboard", () => {
     await waitFor(() => expect(command).toHaveBeenCalledTimes(1));
     expect(command.mock.calls[0][0]).toEqual({
       projectId: "p1",
+      key: expect.any(String),
       command: {
         action: "answer",
         notify: true,

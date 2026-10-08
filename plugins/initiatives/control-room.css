@@ -290,3 +290,5 @@
 /* A stage guessed from GitHub reads quieter than one the coordinator set. */
 .cr-mq-guess { flex: none; color: var(--cr-faint); font-style: italic; }
 .cr-mq-stage-note { font-size: 11px; color: var(--cr-ink-secondary); padding-left: 7px; border-left: 2px solid var(--border); }
+.cr-coordinator .memory-switch { padding-left: 15px; }
+.memory-switch + .cr-memory { margin-top: 12px; }

@@ -42,6 +42,8 @@ export function applyCommitted(o: Overview, command: Command, result: unknown): 
     // An undone dismissal brings its blocker back on the next read, if it is still open.
     if (command.action === "blocker-dismiss") next.blockers = next.blockers.filter(b => b.assignment !== command.assignment);
   }
+  // The memory command answers with the Initiative's new memory status.
+  if (command.action === "memory" && (result as { mode?: unknown } | null)?.mode) next.memory = result as Overview["memory"];
   next.counts.opinionNeeded = next.opinionNeeded.length;
   next.counts.revisit = next.revisit.length;
   next.counts.answered = next.answered.length;

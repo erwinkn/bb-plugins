@@ -9,6 +9,7 @@ import {
   type Policy,
 } from "./lib/schema";
 import { describeProfile } from "./lib/policy";
+import { withWriteTimeout } from "./lib/write-timeout";
 
 export function ProjectsSettings() {
   const rpc = useRpc<typeof projectsContract>();
@@ -66,7 +67,7 @@ export function ProjectsSettings() {
             setError(null);
             setReset(null);
             try {
-              await rpc.call("resetSetting", { field });
+              await withWriteTimeout(rpc.call("resetSetting", { field }));
               setReset(`Reset ${label}.`);
             } catch (e) {
               setError(e instanceof Error ? e.message : String(e));

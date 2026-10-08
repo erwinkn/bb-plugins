@@ -126,13 +126,13 @@ export class Runtime {
   }
 
   /**
-   * D431: BB's per-thread event signal (at most once a second). A hybrid coordinator's log is
-   * read as it works, not only when its turn ends; a regular one waits for its idle.
+   * D431: BB's per-thread event signal (at most once a second). A coordinator's log is read, and
+   * its tree built, as it works, not only when its turn ends, in every mode (D447).
    */
   onThreadEvents(threadId: string) {
     if (this.disposed || this.stopSignal?.aborted) return;
     const projectId = this.service.memory.projectOfCoordinator(threadId);
-    if (projectId && this.service.memory.building(projectId)) this.service.memory.kick(projectId);
+    if (projectId) this.service.memory.kick(projectId);
   }
 
   /** Resolves once every compaction check this runtime started has finished. */

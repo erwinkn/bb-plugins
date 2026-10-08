@@ -3238,7 +3238,10 @@ export class ProjectsService {
       throw new ProjectError(
         "Accept or cancel the remaining assignments before archiving this Initiative.",
       );
-    return this.store.updateProject(projectId, { archivedAt: this.now() });
+    const archived = this.store.updateProject(projectId, { archivedAt: this.now() });
+    // W244: its memory spends nothing more, and its summary waiters give up now.
+    this.memory.stop(projectId);
+    return archived;
   }
 
   /** Cancels every assignment still in an open state and stops its thread. */

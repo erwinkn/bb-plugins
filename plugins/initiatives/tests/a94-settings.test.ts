@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makePluginAgentConfigurationContext } from "@get-bb/plugin-sdk/testing";
 import { settingsDescriptors, MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
-import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS } from "../lib/guidance";
+import { DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS, MEMORY_GUIDANCE } from "../lib/guidance";
 import { projectFixture, report } from "./fake-native";
 import { brief } from "./helpers";
 import { type Profile } from "../lib/schema";
@@ -83,7 +83,7 @@ describe("A94 editable native Settings consumers", () => {
     await f.preferences.handle.experimental_set({ coordinatorInstructions: "Custom coordinator", workerInstructions: "Custom worker" });
     await f.harness.callRpc("resetSetting", { field: "coordinatorInstructions" });
     await f.harness.callRpc("resetSetting", { field: "workerInstructions" });
-    expect((await configuration(f, "coordinator")).instructions).toBe(DEFAULT_COORDINATOR_INSTRUCTIONS + "\n\n" + `Current Initiative membership: ${JSON.stringify({ initiative: project.id, coordinator: "coordinator", role: "coordinator", threadId: "coordinator" })}`);
+    expect((await configuration(f, "coordinator")).instructions).toBe(DEFAULT_COORDINATOR_INSTRUCTIONS + "\n\n" + `Current Initiative membership: ${JSON.stringify({ initiative: project.id, coordinator: "coordinator", role: "coordinator", threadId: "coordinator" })}` + "\n\n" + MEMORY_GUIDANCE);
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { ...workerInput(task.ref), profile: fast });
     expect((await configuration(f, d.threadId!)).instructions).toContain(DEFAULT_WORKER_INSTRUCTIONS);

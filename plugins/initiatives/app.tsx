@@ -37,6 +37,9 @@ import "./app.css";
 import { ProjectsSettings } from "./settings-view";
 import { AutoTextarea, ControlRoom, isTab, type Tab } from "./control-room";
 import { useRemembered } from "./ui-memory";
+import { MemorySwitch, MEMORY_MODES_TEXT } from "./memory-switch";
+import { sendWrite } from "./lib/write-timeout";
+import type { MemoryMode } from "./lib/memory/store";
 import { MergeQueueView } from "./merge-queue-view";
 import type { MergeQueue } from "./lib/merge-queue";
 
@@ -64,7 +67,7 @@ const rememberedNote = (id: string) => {
  * their own data. A passive read only follows its key: another read keeps it
  * current (the panel read seeds its Initiative's summary overview).
  */
-function useData<T>(key: string, fetchData: () => Promise<T>, enabled = true, passive = false) {
+function useData<T>(key: string, fetchData: (seed: (key: string, data: unknown) => void) => Promise<T>, enabled = true, passive = false) {
   const cache = appReads;
   const [, render] = useState(0);
   const refresh = useCallback(() => enabled ? cache.refresh(key, fetchData) : Promise.resolve(), [cache, key, enabled]);
@@ -863,7 +866,9 @@ export function Dashboard({
     const endHistory = history.begin();
     const endDetails = details.begin();
     try {
-      const result = await api.call("command", { projectId, command });
+      // A write the relay never answers fails as unconfirmed after 30 s (W239), so neither its
+      // button nor the dashboard's held reads wait forever; a late answer is left to the next read.
+      const result = await sendWrite({ projectId, command }, (keyed) => api.call("command", { projectId, command, ...keyed }));
       end(data => applyCommitted(data as Overview, command, result));
       endHistory(data => applyCommitted(data as Overview, command, result));
       endDetails(data => applyCommitted(data as Overview, command, result));
@@ -1039,24 +1044,23 @@ function CreateProject({
     setBusy(true);
     setError(null);
     try {
-      const result = (await api.call("command", {
-        command: {
-          action: "create",
-          name,
-          objective,
-          memberProjectIds: members,
-          coordinator:
-            adopt && threadId
-              ? { kind: "adopt", threadId }
-              : {
-                  kind: "new",
-                  bbProjectId: members[0],
-                  environment: environmentId
-                    ? { type: "reuse", environmentId }
-                    : { type: "project-default" },
-                },
-        },
-      })) as { project: { id: string }; note: string | null };
+      const command: Command = {
+        action: "create",
+        name,
+        objective,
+        memberProjectIds: members,
+        coordinator:
+          adopt && threadId
+            ? { kind: "adopt", threadId }
+            : {
+                kind: "new",
+                bbProjectId: members[0]!,
+                environment: environmentId
+                  ? { type: "reuse", environmentId }
+                  : { type: "project-default" },
+              },
+      };
+      const result = (await sendWrite({ command }, (keyed) => api.call("command", { command, ...keyed }))) as { project: { id: string }; note: string | null };
       rememberNote(result.project.id, result.note);
       created(result.project.id, result.note);
     } catch (e) {
@@ -1176,7 +1180,8 @@ export function InitiativeCompose({ projectId }: { projectId: string }) {
   const submit = async (request: NewThreadRequest) => {
     setError(null);
     try {
-      const result = await api.call("command", { projectId, command: { action: "thread-create", request } }) as { threadId: string | null; note: string | null };
+      const command: Command = { action: "thread-create", request };
+      const result = await sendWrite({ projectId, command }, (keyed) => api.call("command", { projectId, command, ...keyed })) as { threadId: string | null; note: string | null };
       if (result.threadId) navigate.toThread(result.threadId);
       else throw new Error(result.note ?? "BB has not confirmed creation. Inspect the Initiative before retrying.");
     } catch (failure) {
@@ -1284,9 +1289,10 @@ function Catalog({ open }: { open: (id: string) => void }) {
  */
 function usePanel(threadId: string) {
   const api = useRpc<typeof projectsContract>();
-  return useData(`panel:${threadId}`, async () => {
+  return useData(`panel:${threadId}`, async (seed) => {
     const panel = await api.call("panel", { threadId });
-    if (panel.membership && panel.summary) appReads.seed(`overview:${panel.membership.projectId}`, panel.summary);
+    // W248: kept only if no save or newer read has written the overview since this read began.
+    if (panel.membership && panel.summary) seed(`overview:${panel.membership.projectId}`, panel.summary);
     return panel;
   });
 }
@@ -1328,10 +1334,16 @@ export function ProjectHeader({
   isCompactViewport,
 }: PluginThreadHeaderActionProps) {
   const navigate = useBbNavigate();
+  const api = useRpc<typeof projectsContract>();
   const panel = usePanel(threadId);
+  const projectId = panel.data?.membership?.projectId;
+  // W251: the Initiative's overview holds every committed save, the dashboard's too; the panel's
+  // own summary can be older (its read refused as a seed), so the mode comes from the overview.
+  const overview = useData(`overview:${projectId}`, () => api.call("overview", { projectId: projectId!, detailed: false }), !!projectId, true);
   const membership = { data: panel.data?.membership ?? null };
   if (!membership.data) return null;
-  return (
+  const memory = overview.data?.memory ?? panel.data?.summary?.memory;
+  const open = (
     <button
       className="project-header-button"
       aria-label={`Initiative overview: ${membership.data.name}`}
@@ -1346,6 +1358,86 @@ export function ProjectHeader({
     >
       {isCompactViewport ? "◈" : "◈ Initiative"}
     </button>
+  );
+  // D447: the memory setting is the coordinator's (and later its discussion threads'), so its
+  // thread header carries the switch.
+  if (membership.data.role !== "coordinator" || membership.data.former || !memory) return open;
+  return (
+    <span className="project-header-group">
+      {open}
+      <MemoryHeaderSwitch
+        threadId={threadId}
+        projectId={membership.data.projectId}
+        mode={memory.mode}
+        session={memory.session}
+        compact={isCompactViewport}
+        revalidate={panel.schedule}
+      />
+    </span>
+  );
+}
+
+/** The thread header's memory pill and its popover, in the top layer so the header never clips it. */
+function MemoryHeaderSwitch({ threadId, projectId, mode, session, compact, revalidate }: {
+  threadId: string;
+  projectId: string;
+  mode: MemoryMode;
+  session: string | null;
+  compact: boolean;
+  revalidate: () => void;
+}) {
+  const api = useRpc<typeof projectsContract>();
+  const id = useId();
+  const button = useRef<HTMLButtonElement>(null);
+  const [place, setPlace] = useState<{ top: number; right: number } | null>(null);
+  return (
+    <>
+      <button
+        ref={button}
+        className="project-header-button project-header-memory"
+        popoverTarget={id}
+        aria-label={`Memory: ${MEMORY_MODES_TEXT[mode].label}. Change it`}
+        title="Memory mode"
+      >
+        {compact ? MEMORY_MODES_TEXT[mode].label : `Memory · ${MEMORY_MODES_TEXT[mode].label}`}
+      </button>
+      <div
+        id={id}
+        popover="auto"
+        className="project-memory-popover"
+        style={place ? { top: place.top, right: place.right } : undefined}
+        onBeforeToggle={(e) => {
+          if (e.newState !== "open" || !button.current) return;
+          const r = button.current.getBoundingClientRect();
+          setPlace({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
+        }}
+      >
+        <MemorySwitch
+          mode={mode}
+          session={session}
+          explain="all"
+          choose={async (next) => {
+            const command: Command = { action: "memory", mode: next };
+            // W244: the saved status shows at once; a panel read from before the save never overwrites it.
+            const endPanel = appReads.begin(`panel:${threadId}`);
+            const endOverview = appReads.begin(`overview:${projectId}`);
+            try {
+              const result = await sendWrite({ projectId, command }, (keyed) => api.call("command", { projectId, command, ...keyed }));
+              endPanel((data) => {
+                const panel = data as { summary: Overview | null };
+                return panel.summary ? { ...panel, summary: applyCommitted(panel.summary, command, result) } : panel;
+              });
+              endOverview((data) => applyCommitted(data as Overview, command, result));
+            } finally {
+              endPanel();
+              endOverview();
+              revalidate();
+            }
+          }}
+        />
+        <p className="memory-switch-note">The summary tree builds in every mode, so a switch is instant and applies from the next turn.</p>
+      </div>
+    </>
   );
 }
 export default definePluginApp((app) => {
