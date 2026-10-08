@@ -68,6 +68,7 @@ export const DEFAULT_WARMING_CONFIG = {
   maxWaitMinutes: 60,
   maxBackgroundWaitMinutes: 20,
   reviewHoldMinutes: 45,
+  reportedGraceMinutes: 5,
   pauseStopsWarming: true,
   families: ["opus"] as WarmingFamily[],
   safetyMarginSeconds: 60,
@@ -97,6 +98,12 @@ const fieldSchemas = {
   // refreshes cost less than a rewrite. It lifts maxBackgroundWaitMinutes, not maxWaitMinutes, and a
   // hold that maxWaitMinutes cuts short does not count. 0 is off.
   reviewHoldMinutes: integer(0, 240),
+  // An idle work worker whose latest assignment is reported (Initiatives' assignment.reportedAt)
+  // and that has no next assignment gets no refresh once its report is this old, even under a
+  // review hold: fixes go to a fresh worker by default. A wait on a tool, background task or
+  // question, a coordinator, a reviewer, and a worker with queued work are unaffected. 0 sends no
+  // refresh after the report. Without reportedAt (an older Initiatives) there is no such limit.
+  reportedGraceMinutes: integer(0, 240),
   // A paused Initiative's threads are not warmed (D357, an agent default).
   pauseStopsWarming: z.boolean(),
   families: familiesSchema,
@@ -128,6 +135,9 @@ export const warmingConfigSchema = z
     ),
     reviewHoldMinutes: fieldSchemas.reviewHoldMinutes.default(
       DEFAULT_WARMING_CONFIG.reviewHoldMinutes,
+    ),
+    reportedGraceMinutes: fieldSchemas.reportedGraceMinutes.default(
+      DEFAULT_WARMING_CONFIG.reportedGraceMinutes,
     ),
     pauseStopsWarming: fieldSchemas.pauseStopsWarming.default(
       DEFAULT_WARMING_CONFIG.pauseStopsWarming,

@@ -50,14 +50,14 @@ function pooler(f: Fx, cache: Cache | null | (() => Promise<never>)) {
 const poolerCalls = (f: Fx) => f.pluginRpc.mock.calls.filter(([args]) => args.pluginId === "account-pool-local");
 const cold = (now = Date.now()): Cache => ({ lastRequestAt: now - 23 * MINUTE, prefixTokens: 480_000, ttl: "5m", coveredUntil: now - 18 * MINUTE });
 const assignments = (f: Fx, projectId: string) => f.store.assignments(projectId).length;
-const REFUSAL = 'W1\'s cache is cold (last request 23 min ago) and its context is ~480k tokens: resuming costs ~600k tokens of cache rewrite. Spawn a fresh worker with handoffs:["W1"] (its report is embedded), or pass resumeCold:true to resume anyway.';
+const REFUSAL = 'W1\'s cache is cold (last request 23 min ago) and its context is ~480k tokens: resuming costs ~600k tokens of cache rewrite. Spawn a fresh worker with handoffs:["W1"] (its report is embedded). Agents cannot override this; only the user can resume W1 from the dashboard.';
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe("W213 cold-cache guard on work messages", () => {
-  it("refuses a large cold worker with the numbers and alternatives; resumeCold:true sends it", async () => {
+  it("refuses a large cold worker with the numbers and the fresh-worker alternative; resumeCold is gone", async () => {
     const { f, project } = await idleWorker();
     pooler(f, cold());
     const before = assignments(f, project.id);
@@ -66,9 +66,10 @@ describe("W213 cold-cache guard on work messages", () => {
     expect(f.send).not.toHaveBeenCalled();
     expect(poolerCalls(f)[0]![0].input).toEqual({ threadIds: [f.store.worker(project.id, 1)!.threadId] });
 
-    const [sent] = await tool(f, "initiative_message", { to: "W1", text: "Fix the findings.", tasks: [], work: true, resumeCold: true });
-    expect(sent).toMatchObject({ worker: "W1" });
-    expect(assignments(f, project.id)).toBe(before + 1);
+    // The old override is no longer part of the tool: an agent cannot bypass the refusal.
+    await expect(tool(f, "initiative_message", { to: "W1", text: "Fix the findings.", tasks: [], work: true, resumeCold: true })).rejects.toThrow(/resumeCold/);
+    expect(assignments(f, project.id)).toBe(before);
+    expect(f.send).not.toHaveBeenCalled();
   });
 
   it("a 1-hour entry is priced at twice its prefix", async () => {
@@ -118,12 +119,11 @@ describe("W213 cold-cache guard on work messages", () => {
     const { f } = await idleWorker(undefined, true);
     pooler(f, cold());
     await expect(tool(f, "initiative_message", { to: "W2", text: "Re-review.", work: true })).rejects.toThrow(/^W2 is a reviewer, and reviews are not reused/);
-    await expect(tool(f, "initiative_message", { to: "W2", text: "Re-review.", work: true, resumeCold: true })).rejects.toThrow(/reviews are not reused/);
     pooler(f, { ...cold(), prefixTokens: 90_000 });
     await expect(tool(f, "initiative_message", { to: "W2", text: "Re-review.", work: true })).rejects.toThrow(/reviews are not reused/);
   });
 
-  it("in a batch, the refused action fails alone and resumeCold sends it", async () => {
+  it("in a batch, the refused action fails alone and resumeCold does not send it", async () => {
     const { f, project } = await idleWorker();
     pooler(f, cold());
     const result = await tool(f, "initiative_batch", { actions: [
@@ -131,21 +131,21 @@ describe("W213 cold-cache guard on work messages", () => {
       { tool: "task", action: "create", title: "Follow-up" },
       { tool: "message", to: "W1", text: "Fix it.", work: true, resumeCold: true },
     ] });
-    expect(result).toMatchObject({ succeeded: 2, failed: 1 });
+    expect(result).toMatchObject({ succeeded: 1, failed: 2 });
     expect(result.results[0]).toEqual({ tool: "message", ok: false, error: REFUSAL });
-    expect(result.results[2]).toMatchObject({ tool: "message", ok: true });
-    expect(f.store.assignments(project.id)).toHaveLength(2);
+    expect(result.results[2]).toMatchObject({ tool: "message", ok: false });
+    expect(f.store.assignments(project.id)).toHaveLength(1);
   });
 
-  it("the coordinator's CLI refuses the same way and accepts resumeCold", async () => {
+  it("the coordinator's CLI refuses the same way and rejects resumeCold", async () => {
     const { f, project } = await idleWorker();
     pooler(f, cold());
     const refused = await f.harness.runCli(["message", JSON.stringify({ to: "W1", text: "More.", work: true })], { threadId: "coordinator" });
     expect(refused.exitCode).not.toBe(0);
-    expect(refused.stderr + refused.stdout).toContain("resumeCold:true");
-    const sent = await f.harness.runCli(["message", JSON.stringify({ to: "W1", text: "More.", work: true, resumeCold: true })], { threadId: "coordinator" });
-    expect(sent.exitCode).toBe(0);
-    expect(f.store.assignments(project.id)).toHaveLength(2);
+    expect(refused.stderr + refused.stdout).toContain("Agents cannot override this");
+    const bypass = await f.harness.runCli(["message", JSON.stringify({ to: "W1", text: "More.", work: true, resumeCold: true })], { threadId: "coordinator" });
+    expect(bypass.exitCode).not.toBe(0);
+    expect(f.store.assignments(project.id)).toHaveLength(1);
   });
 });
 
@@ -160,7 +160,7 @@ function context(f: Fx, projectId: string, threadId: string, record: { used: num
 }
 
 describe("W213 every coordinator path, and never the user's", () => {
-  it("bb initiative command delegate/continue and the legacy initiative_delegate are refused; resumeCold passes", async () => {
+  it("bb initiative command delegate/continue and the legacy initiative_delegate are refused; resumeCold does not pass", async () => {
     const { f, project } = await idleWorker();
     pooler(f, cold());
     const command = { action: "delegate", route: "continue", worker: "W1", note: "More." };
@@ -169,12 +169,13 @@ describe("W213 every coordinator path, and never the user's", () => {
     expect(refused.stderr + refused.stdout).toContain(REFUSAL);
     await expect(tool(f, "initiative_delegate", { route: "continue", worker: "W1", note: "More." })).rejects.toThrow(REFUSAL);
     expect(f.store.assignments(project.id)).toHaveLength(1);
-    const sent = await f.harness.runCli(["command", JSON.stringify({ ...command, resumeCold: true })], { threadId: "coordinator" });
-    expect(sent.exitCode).toBe(0);
-    expect(f.store.assignments(project.id)).toHaveLength(2);
+    const bypass = await f.harness.runCli(["command", JSON.stringify({ ...command, resumeCold: true })], { threadId: "coordinator" });
+    expect(bypass.exitCode).not.toBe(0);
+    await expect(tool(f, "initiative_delegate", { route: "continue", worker: "W1", note: "More.", resumeCold: true })).rejects.toThrow(/resumeCold/);
+    expect(f.store.assignments(project.id)).toHaveLength(1);
   });
 
-  it("the user's dashboard send is never refused", async () => {
+  it("the user's dashboard send is never refused: the operator can still resume a large cold worker", async () => {
     const { f, project } = await idleWorker();
     pooler(f, cold());
     await f.harness.callRpc("command", { projectId: project.id, command: { action: "delegate", route: "continue", worker: "W1", note: "More." } });
@@ -182,9 +183,10 @@ describe("W213 every coordinator path, and never the user's", () => {
     expect(poolerCalls(f)).toHaveLength(0);
   });
 
-  it("resumeCold belongs to more work for an existing worker", async () => {
-    const { f } = await idleWorker();
-    await expect(tool(f, "initiative_delegate", { route: "fresh", label: "New", area: "new", note: "Go.", resumeCold: true })).rejects.toThrow("resumeCold applies only to more work for an existing worker");
+  it("no agent tool documents an override", async () => {
+    const { messageToolSchema } = await import("../lib/agent-tools");
+    expect(Object.keys(messageToolSchema.shape)).not.toContain("resumeCold");
+    expect(JSON.stringify(messageToolSchema.shape.work.description)).not.toMatch(/resumeCold/);
   });
 });
 
@@ -264,5 +266,33 @@ describe("W213 BB's context record and the worker's state", () => {
     });
     await expect(tool(f, "initiative_message", { to: "W1", text: "Queue this.", work: true })).resolves.toBeTruthy();
     expect(poolerCalls(f)).toHaveLength(1);
+  });
+});
+
+describe("W213 a BB thread lookup that never answers (D427: fail open)", () => {
+  it.each([
+    ["first status read", 1],
+    ["final idle recheck", 2],
+  ])("the guard's %s is aborted after 2 s, the work goes ahead, and it is logged once", async (_name, which) => {
+    const { f, w } = await idleWorker();
+    pooler(f, cold());
+    // Only the guard's reads carry a signal; the chosen one hangs until it is aborted.
+    const hung: AbortSignal[] = [];
+    let reads = 0;
+    f.intercept((path, args, call) => {
+      const { threadId, signal } = (args ?? {}) as { threadId?: string; signal?: AbortSignal };
+      if (path !== "threads.get" || threadId !== w.threadId || !signal || ++reads !== which) return call();
+      hung.push(signal);
+      return new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    });
+    const warn = vi.spyOn(f.bb.log, "warn");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const sent = tool(f, "initiative_message", { to: "W1", text: "More.", work: true });
+    await vi.advanceTimersByTimeAsync(2_000);
+    vi.useRealTimers();
+    await expect(sent).resolves.toBeTruthy();
+    expect(hung.map(signal => signal.aborted)).toEqual([true]);
+    expect(poolerCalls(f)).toHaveLength(which === 1 ? 0 : 1);
+    expect(warn.mock.calls.filter(([message]) => String(message).includes("BB's thread status is unavailable"))).toHaveLength(1);
   });
 });

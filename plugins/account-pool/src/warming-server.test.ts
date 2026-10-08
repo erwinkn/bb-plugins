@@ -211,9 +211,15 @@ interface Fixture {
   sessions: Map<string, string>;
   // Per thread, how BB's thread list shows it; a running thread mid-turn when unset.
   rows: Map<string, Partial<ThreadRow>>;
+  // Per thread, the createdAt of BB's latest turn/started event; none when unset.
+  turnStarts: Map<string, number | string>;
   // Threads BB reports running (threads.listRunning); every thread with a session when unset.
   running: Set<string> | null;
-  calls: { listRunning: number };
+  calls: { listRunning: number; list: number };
+  // How long BB's thread list takes to answer its nth call (1-based); immediate when unset.
+  listDelays: Map<number, number>;
+  // While on, BB's turn/started reads never answer on their own: each rejects only when aborted.
+  stalledTurnStarts: { on: boolean; signals: AbortSignal[] };
 }
 
 async function fixture(args: {
@@ -225,8 +231,11 @@ async function fixture(args: {
 } = {}): Promise<Fixture> {
   const sessions = new Map(Object.entries(args.sessions ?? { thr_coord: SESSION }));
   const rows = new Map<string, Partial<ThreadRow>>();
+  const turnStarts = new Map<string, number | string>();
   const state: { running: Set<string> | null } = { running: null };
-  const calls = { listRunning: 0 };
+  const calls = { listRunning: 0, list: 0 };
+  const listDelays = new Map<number, number>();
+  const stalledTurnStarts = { on: false, signals: [] as AbortSignal[] };
   const start = Date.now();
   const clock = fakeClock(start);
   const upstream = vendor();
@@ -249,7 +258,17 @@ async function fixture(args: {
       },
       threads: {
         events: {
-          list: async ({ threadId, types }: { threadId: string; types?: string[] }) => {
+          list: async ({ threadId, types, signal }: { threadId: string; types?: string[]; signal: AbortSignal }) => {
+            if (types?.includes("turn/started")) {
+              if (stalledTurnStarts.on) {
+                stalledTurnStarts.signals.push(signal);
+                return new Promise<never>((_, reject) =>
+                  signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+                );
+              }
+              const createdAt = turnStarts.get(threadId);
+              return createdAt === undefined ? [] : [{ id: "evt_2", seq: 40, type: "turn/started", createdAt, threadId, data: {} }];
+            }
             const session = sessions.get(threadId);
             if (session === undefined || !types?.includes("thread/identity")) return [];
             return [
@@ -274,14 +293,17 @@ async function fixture(args: {
           projectId: "project-one",
           environmentId: "env-one",
         }),
-        list: async () =>
-          [...new Set([...sessions.keys(), ...rows.keys()])].map((id) => ({
+        list: async () => {
+          const delay = listDelays.get((calls.list += 1));
+          if (delay !== undefined) await new Promise<void>((resolve) => clock.timers.setTimeout(resolve, delay));
+          return [...new Set([...sessions.keys(), ...rows.keys()])].map((id) => ({
             id,
             status: "active",
             hasPendingInteraction: false,
             activity: { activeBackgroundCommandCount: 0, activeBackgroundAgentCount: 0 },
             ...rows.get(id),
-          })),
+          }));
+        },
       },
     } as never,
   });
@@ -339,7 +361,10 @@ async function fixture(args: {
     stop,
     sessions,
     rows,
+    turnStarts,
     calls,
+    listDelays,
+    stalledTurnStarts,
     get running() {
       return state.running;
     },
@@ -589,13 +614,14 @@ describe("cache warming through the hub", () => {
     await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(1));
     const leaseAccount = (await warmingStatus(f.host)).leases[0]?.accountId;
     await f.host.harness.behavior.callRpc("account.disable", { id: leaseAccount });
-    await f.clock.advanceTo(30 * MINUTE);
-    expect(f.upstream.keepAlive).toHaveLength(0);
+    await f.clock.advanceTo(4 * MINUTE);
     await vi.waitFor(async () =>
       expect((await warmingStatus(f.host)).events.at(-1)?.message).toBe(
         "refresh not sent: the account is not eligible (disabled, not OAuth, error, held, or at the warming reserve)",
       ),
     );
+    await f.clock.advanceTo(30 * MINUTE);
+    expect(f.upstream.keepAlive).toHaveLength(0);
   });
 
   it.each([
@@ -637,13 +663,16 @@ describe("cache warming through the hub", () => {
     await nativeRequest(f.host);
     await idle(f.host);
     await leased(f.host);
-    await f.clock.advanceTo(30 * MINUTE);
-    expect(f.upstream.keepAlive).toHaveLength(0);
+    // The send-time checks read through the host and are not timers, so wait for their verdict
+    // before moving past the entry's expiry, which stays armed until they approve.
+    await f.clock.advanceTo(4 * MINUTE);
     await vi.waitFor(async () =>
       expect((await warmingStatus(f.host)).events.at(-1)?.message).toBe(
         "refresh not sent: worker retired",
       ),
     );
+    await f.clock.advanceTo(30 * MINUTE);
+    expect(f.upstream.keepAlive).toHaveLength(0);
     // Admission, timer classification, then the fresh send-time read that refuses.
     expect(f.projectReads).toHaveLength(3);
   });
@@ -689,13 +718,14 @@ describe("cache warming through the hub", () => {
     await idle(f.host);
     await leased(f.host);
     f.sessions.set("thr_coord", "7f1d3c1e-2222-4222-8222-222222222222");
-    await f.clock.advanceTo(30 * MINUTE);
-    expect(f.upstream.keepAlive).toHaveLength(0);
+    await f.clock.advanceTo(4 * MINUTE);
     await vi.waitFor(async () =>
       expect((await warmingStatus(f.host)).events.at(-1)?.message).toBe(
         "refresh not sent: the thread moved to a newer Claude session",
       ),
     );
+    await f.clock.advanceTo(30 * MINUTE);
+    expect(f.upstream.keepAlive).toHaveLength(0);
   });
 
   it("observe mode links and plans but never sends a keep-alive", async () => {
@@ -1300,6 +1330,109 @@ describe("W211 corrections through the hub", () => {
     await vi.waitFor(() =>
       expect(rows(f, "usage_warming")).toMatchObject([{ role: "worker", state: "idle", review_hold: why }]),
     );
+  });
+
+  describe("a refresh is never sent into an expired entry", () => {
+    // The send-time wait-state read is the second thread list read after the lease starts.
+    async function refreshAt295(margin: number, confirmReadMs: number) {
+      const f = await fixture({ seed: { "warming-config": { mode: "warm", safetyMarginSeconds: margin } } });
+      expect(await nativeRequest(f.host)).toBe(200);
+      await idle(f.host);
+      await leased(f.host);
+      f.listDelays.set(f.calls.list + 2, confirmReadMs);
+      return f;
+    }
+    // The checks before the slow read go through the host, not timers: wait until the read is
+    // under way (its delay pending) before moving the clock on.
+    const slowReadUntil = (f: Fixture, at: number) =>
+      vi.waitFor(() => expect(f.clock.pendingAt()).toContain(at));
+
+    it("refuses a refresh whose send-time wait read outlasts the entry", async () => {
+      const f = await refreshAt295(5, 6_000);
+      await f.clock.advanceTo(295_000);
+      await slowReadUntil(f, 301_000);
+      await f.clock.advanceTo(302_000);
+      expect(f.upstream.keepAlive).toHaveLength(0);
+      await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
+    });
+
+    it("sends on time when the margin covers the same slow read", async () => {
+      const f = await refreshAt295(15, 6_000);
+      await f.clock.advanceTo(285_000);
+      await slowReadUntil(f, 291_000);
+      await f.clock.advanceTo(292_000);
+      await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
+      expect((await warmingStatus(f.host)).leases).toHaveLength(1);
+    });
+  });
+
+  describe("reported grace after a plugin reload", () => {
+    // W1 reported a minute ago, a review runs, and the thread is idle. Nothing here saw a
+    // thread.active: the plugin has just loaded, as after an update.
+    async function reloaded(turnStartedAt: (reportedAt: number) => number | string | undefined) {
+      const reportedAt = Date.now() - MINUTE;
+      const contexts: Record<string, Membership> = {
+        thr_coord: WORKER("reported", {
+          assignment: { ...assignment("reported"), reportedAt },
+          review: { ref: "A2", worker: "W2", phase: "active", since: reportedAt },
+        }),
+      };
+      const f = await fixture({ contexts, seed: { "warming-config": { mode: "warm" } } });
+      const started = turnStartedAt(reportedAt);
+      if (started !== undefined) f.turnStarts.set("thr_coord", started);
+      f.rows.set("thr_coord", { status: "idle" });
+      expect(await nativeRequest(f.host)).toBe(200);
+      await leased(f.host);
+      await f.clock.advanceTo(4 * MINUTE);
+      return f;
+    }
+
+    it("a continuation that began while the plugin was unloaded lifts the report's cap, from BB's events", async () => {
+      for (const started of [(at: number) => at + 5_000, (at: number) => new Date(at + 5_000).toISOString()]) {
+        const f = await reloaded(started);
+        await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
+      }
+    });
+
+    it("a turn-start read that never answers is aborted at its deadline and at disposal", async () => {
+      const f = await fixture({
+        contexts: {
+          thr_coord: WORKER("reported", {
+            assignment: { ...assignment("reported"), reportedAt: Date.now() - MINUTE },
+            review: { ref: "A2", worker: "W2", phase: "active", since: Date.now() - MINUTE },
+          }),
+        },
+        seed: { "warming-config": { mode: "warm" } },
+      });
+      f.stalledTurnStarts.on = true;
+      f.rows.set("thr_coord", { status: "idle" });
+      expect(await nativeRequest(f.host)).toBe(200);
+      await leased(f.host);
+      // Only the idle wait's refresh decision needs the turn start: it is read at 4 minutes, and
+      // its deadline is 3 seconds later.
+      expect(f.stalledTurnStarts.signals).toHaveLength(0);
+      await f.clock.advanceTo(4 * MINUTE);
+      await vi.waitFor(() => expect(f.stalledTurnStarts.signals).toHaveLength(1));
+      await f.clock.advanceTo(4 * MINUTE + 3_000);
+      await vi.waitFor(() => expect(f.stalledTurnStarts.signals[0]?.aborted).toBe(true));
+      // Unknown, so no cap: the refresh is sent without reading again, and the next one reads again.
+      await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(1));
+      expect(f.stalledTurnStarts.signals).toHaveLength(1);
+      await f.clock.advanceTo(8 * MINUTE + 10_000);
+      await vi.waitFor(() => expect(f.stalledTurnStarts.signals.length).toBeGreaterThan(1));
+      await f.stop();
+      await f.host.harness.lifecycle.dispose();
+      expect(f.stalledTurnStarts.signals.length).toBeGreaterThan(1);
+      expect(f.stalledTurnStarts.signals.every((signal) => signal.aborted)).toBe(true);
+    });
+
+    it("the reporting turn's own start does not: the grace caps the idle wait", async () => {
+      const f = await reloaded((at) => at - 5_000);
+      await f.clock.advanceTo(30 * MINUTE);
+      await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
+      expect(f.upstream.keepAlive).toHaveLength(0);
+      expect(await lastMessage(f.host)).toMatch(/its report reached reportedGraceMinutes/);
+    });
   });
 
   it("6: a warmed standalone thread's native and refresh rows say standalone", async () => {

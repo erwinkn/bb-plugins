@@ -250,6 +250,20 @@ export function createAccountPoolPlugin(
         ? event.data.providerThreadId
         : null;
     };
+    // When BB last started a turn on a thread: its latest turn/started event, not the later
+    // client/turn/requested of a message queued behind a running turn. 0 when it has none.
+    const turnStartedAt = async (threadId: string, signal: AbortSignal): Promise<number | null> => {
+      const [event] = await bb.sdk.threads.events.list({
+        threadId,
+        types: ["turn/started"],
+        order: "desc",
+        limit: "1",
+        signal,
+      });
+      if (event === undefined) return 0;
+      const at = typeof event.createdAt === "number" ? event.createdAt : Date.parse(String(event.createdAt));
+      return Number.isFinite(at) ? at : null;
+    };
     // A request on a session no thread is linked to (a thread's first turn, or any turn after a
     // reload) asks, in the background, which running thread reports that session. Linking also reads
     // the thread's Initiative context, so the ledger labels its requests from the start.
@@ -330,6 +344,7 @@ export function createAccountPoolPlugin(
         projectsContext.read(threadId, signal, readOptions),
       threadSession: (threadId, signal) => threadIdentity(threadId, signal),
       resolveSession: (session) => resolver.resolve(session),
+      turnStartedAt,
       waitState,
       resumeHistory: currentResumeHistory,
       recordOutcome: (outcome) => ledger.warming(outcome),

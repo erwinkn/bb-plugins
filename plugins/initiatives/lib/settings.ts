@@ -57,7 +57,7 @@ export const settingsDescriptors = {
   coldResumeTokens: {
     type: "number" as const,
     label: "Cold worker context limit (tokens)",
-    description: "More work for an idle worker whose prompt cache has expired and whose context is larger than this is refused with the rewrite cost; the coordinator spawns a fresh worker with handoffs, or passes resumeCold:true. Cache state comes from the Account Pooler. 0 turns the check off.",
+    description: "More work for an idle worker whose prompt cache has expired and whose context is larger than this is refused to the coordinator with the rewrite cost, and no agent can override it: the coordinator spawns a fresh worker with handoffs, and only your own sends resume the worker. Cache state comes from the Account Pooler; without it the work goes ahead. 0 turns the check off.",
     default: COLD_RESUME_DEFAULT_TOKENS,
     experimental_schema: z.number().int().min(0),
   },

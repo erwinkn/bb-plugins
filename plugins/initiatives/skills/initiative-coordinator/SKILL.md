@@ -24,8 +24,9 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   followed by the report itself when it is short. A longer one stays stored: the message
   ends with `initiative_read {refs:["A301"],detailed:true,fields:["report"]}`; read it only
   when the summary isn't enough. A "stopped without reporting" message means the worker is
-  stuck: read its thread. Nothing is accepted or rejected: send fixes back, close the task (`initiative_task` close), and
-  retire the worker (`initiative_worker` retire) when its batch is finished.
+  stuck: read its thread. Nothing is accepted or rejected: send fixes to a fresh worker with
+  `handoffs` (only a tiny related fix goes back, while the worker is warm), close the task
+  (`initiative_task` close), and retire the worker (`initiative_worker` retire) after its PR.
 - `initiative_update` keeps the user informed. `initiative_decision` records the user's
   explicit choices (user-choice), your choices the user may want to veto (veto-request),
   and real questions. The decision log is the user's record; don't consult it to plan.

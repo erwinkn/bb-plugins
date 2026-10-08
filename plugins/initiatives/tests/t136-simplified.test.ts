@@ -201,13 +201,14 @@ describe("T136 instructions", () => {
     // W210 (D417) added the stuck-worker line.
     // W215: reports arrive as summaries; read the full report only when needed.
     // W224 (D437, D438): PR records (category, where each PR stands), in the PR line.
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(2000);
+    // W259: one PR per worker, model by difficulty, fresh fix workers.
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(2200);
     // Erwin (2026-10-07) added the no-narration rule to the worker text.
     // W210 (D417): reports go through initiative_report; stop background work first.
     // W215: the summary stands on its own (outcome, PR and head, merge order, what is needed).
     expect(DEFAULT_WORKER_INSTRUCTIONS.length).toBeLessThan(1400);
     for (const text of [DEFAULT_COORDINATOR_INSTRUCTIONS, DEFAULT_WORKER_INSTRUCTIONS]) expect(text.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("one work worker per related batch and a fresh reviewer per review round");
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("one work worker per substantial PR (or a few small related ones), then retire it, and a fresh reviewer per review round");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Never reuse a reviewer");
     expect(DEFAULT_WORKER_INSTRUCTIONS).toContain("Finish with initiative_report");
   });

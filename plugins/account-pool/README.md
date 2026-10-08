@@ -142,6 +142,7 @@ read, with no output tokens. It is not a thread message, turn or agent run.
 | `maxWaitMinutes` | 60 | No refresh once a wait is this old, whatever the odds (5–240) |
 | `maxBackgroundWaitMinutes` | 20 | No refresh once a thread waiting on a background task has waited this long (5–240); `maxWaitMinutes` still applies if lower |
 | `reviewHoldMinutes` | 45 | Hold a worker warm while Initiatives reviews its latest report, for at most this long from the review's start (0–240, 0 is off); see below |
+| `reportedGraceMinutes` | 5 | No refresh for an idle reported work worker with no next assignment once its report is this old, review hold or not (0–240; 0: none after the report); see below |
 | `pauseStopsWarming` | `true` | No refreshes while the thread's Initiative is paused (an agent default, D357) |
 | `families` | `opus` | Model families whose requests can start a lease; a request in any family ends one |
 | `safetyMarginSeconds` | 60 | Refresh this long before expiry |
@@ -219,6 +220,20 @@ later is warmed through the steps in between. C cancels out.
   held wait's `usage_warming` row names the hold in `review_hold`, and
   calibration leaves it out. Without Initiatives, with an older one, or with a
   malformed field, nothing is held; Codex threads are never warmed.
+- **Reported grace (W259).** Fixes go to a fresh worker by default, so an idle
+  work worker that has reported (Initiatives' `assignment.reportedAt`) with no
+  next assignment gets no refresh once the report is `reportedGraceMinutes`
+  (default 5) old, and its review hold ends there too. With 5-minute entries
+  the report's own entry covers the default grace, so nothing is sent. Waits on
+  a tool, background task or question, coordinators, reviewers and workers
+  with queued work are unaffected; at the lease limit and at the send, the
+  wait state is read again so only a really idle wait is capped. A turn BB
+  starts after the report (a continuation; helper requests start none) lifts
+  the grace; after a reload the latest start comes from BB's `turn/started`
+  events. That lookup runs only for an idle wait the grace could cap, at most
+  once per refresh, and is bounded and aborted like the context read; while
+  it is unknown there is no cap. Without `reportedAt` (an older Initiatives)
+  there is no grace limit.
 - A waiting-state read that takes over 10 seconds counts as unknown and ends the
   lease, and whatever a refresh's checks wait on, the lease ends when its entry
   expires.

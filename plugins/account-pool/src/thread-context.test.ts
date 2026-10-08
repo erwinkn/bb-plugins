@@ -96,6 +96,7 @@ describe("Initiatives context reader (contract v1)", () => {
       worker: "W1",
       assignment: { ref: "A7", phase: "reported" },
       next: { ref: "A8", phase: "pending" },
+      reportedAt: null,
       review: null,
     });
     expect(calls).toEqual([`${ROUTE}?threadId=thr_a%2Fb`]);
@@ -114,6 +115,17 @@ describe("Initiatives context reader (contract v1)", () => {
     const { worker: _worker, ...older } = member();
     expect(await read(older)).toMatchObject({ kind: "member", worker: null, review: null });
     expect(await read(member({ review: { ref: "A9" } }))).toMatchObject({ kind: "member", review: null });
+  });
+
+  it("reads assignment.reportedAt; an older Initiatives without it, or a malformed one, means null, not unknown", async () => {
+    const read = async (membership: Record<string, unknown>) =>
+      reader(() => ok("thr_x", membership)).instance.read("thr_x", signal());
+    expect(await read(member({ assignment: { ...assignment("reported", "A7"), reportedAt: 1791189116000 } }))).toMatchObject({
+      kind: "member",
+      reportedAt: 1791189116000,
+    });
+    expect(await read(member({ assignment: assignment("reported", "A7") }))).toMatchObject({ kind: "member", reportedAt: null });
+    expect(await read(member({ assignment: { ...assignment("reported", "A7"), reportedAt: "soon" } }))).toMatchObject({ kind: "member", reportedAt: null });
   });
 
   it("reads membership null as no Initiatives record, not as a standalone thread", async () => {
@@ -223,6 +235,7 @@ describe("warming roles (contract v1)", () => {
     worker: "W1",
     assignment: { ref: "A1", phase: "active" },
     next: null,
+    reportedAt: null,
     review: null,
     ...overrides,
   });
@@ -241,7 +254,21 @@ describe("warming roles (contract v1)", () => {
     ["adhoc thread", ctx({ memberKind: "adhoc", role: "adhoc", assignment: null }), "standalone", "adhoc Initiative thread"],
     ["thread outside any Initiative", { kind: "none" } as ThreadContext, "standalone", "no Initiative"],
   ])("a %s is warmed as %s", (_name, context, role, label) => {
-    expect(warmingRole(context, config)).toEqual({ ok: true, role, label, reviewHold: null });
+    expect(warmingRole(context, config)).toEqual({ ok: true, role, label, reviewHold: null, reportedGrace: null });
+  });
+
+  it("gives only a reported work worker with no next assignment a reported grace", () => {
+    const at = 1791189116000;
+    expect(warmingRole(ctx({ assignment: { ref: "A1", phase: "reported" }, reportedAt: at }), config)).toMatchObject({
+      reportedGrace: { reportedAt: at, until: at + 5 * 60_000, why: "W1 reported A1" },
+    });
+    for (const context of [
+      ctx({ assignment: { ref: "A1", phase: "reported" }, reportedAt: at, next: { ref: "A2", phase: "pending" } }),
+      ctx({ role: "review", assignment: { ref: "A1", phase: "reported" }, reportedAt: at }),
+      ctx({ memberKind: "coordinator", role: "coordinator", worker: null, assignment: null, reportedAt: at }),
+      ctx({ assignment: { ref: "A1", phase: "reported" }, reportedAt: null }),
+    ])
+      expect(warmingRole(context, config)).toMatchObject({ ok: true, reportedGrace: null });
   });
 
   it.each([

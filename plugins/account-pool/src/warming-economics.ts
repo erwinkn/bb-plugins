@@ -30,6 +30,10 @@ import { CACHE_TTL_MS, type CacheTtl } from "./cache-usage.js";
 // maxBackgroundWaitMinutes but not maxWaitMinutes. A hold that costs more, or that maxWaitMinutes
 // ends before the refreshes reach it, falls back to the odds.
 //
+// A reported grace (a work worker that reported, with no next assignment) caps an idle wait: no
+// refresh is sent after it, and a review hold lasts at most until it. The last refresh before it
+// still keeps the entry for one TTL.
+//
 // Pi (earendil-works/pi-coding-agent 1.0.4, core/cache-warmer.js) makes the same comparison one
 // refresh at a time: refresh while P(resume before expiry) * missCost - warmCost >= $0.05, with
 // P = 1 while the agent runs and 0.15 when idle, and a 60/30-minute cap. This adds the lookahead and
@@ -122,6 +126,20 @@ export interface HeldWait {
   maxAgeMs: number;
   // The wait age a review hold lasts until, and why it holds.
   reviewHold: { untilMs: number; why: string } | null;
+  // The wait age after which an idle wait gets no refresh, and why.
+  reportedGrace: { untilMs: number; why: string } | null;
+}
+
+// An idle wait as its reported grace bounds it: no refresh after the grace, no hold past it.
+export function withReportedGrace<W extends HeldWait>(wait: W): W {
+  const grace = wait.reportedGrace;
+  if (grace === null) return wait;
+  const hold = wait.reviewHold;
+  return {
+    ...wait,
+    maxAgeMs: Math.min(wait.maxAgeMs, grace.untilMs),
+    reviewHold: hold === null ? null : { ...hold, untilMs: Math.min(hold.untilMs, grace.untilMs) },
+  };
 }
 
 // Whether a review hold alone pays for refreshing an idle or questioning wait: the n refreshes that
@@ -161,24 +179,24 @@ export function decideHold(wait: HeldWait): RefreshDecision | null {
 
 export function decideRefresh(
   history: ResumeHistory,
-  wait: HeldWait & {
+  unbounded: HeldWait & {
     state: WaitState;
     role: WarmingRole;
     maxBackgroundAgeMs: number;
   },
 ): RefreshDecision {
-  const miss = WRITE_COST[wait.ttl] - REFRESH_COST;
-  const ttlMs = CACHE_TTL_MS[wait.ttl];
-  const { state, role, ageMs, coveredMs, stepMs, maxAgeMs } = wait;
-  if (ageMs >= maxAgeMs)
+  const miss = WRITE_COST[unbounded.ttl] - REFRESH_COST;
+  const ttlMs = CACHE_TTL_MS[unbounded.ttl];
+  const { state, ageMs } = unbounded;
+  if (ageMs >= unbounded.maxAgeMs)
     return {
       refresh: false,
       resumeChance: 0,
       net: 0,
       horizonMs: 0,
-      why: `the wait reached maxWaitMinutes (${Math.round(maxAgeMs / 60_000)})`,
+      why: `the wait reached maxWaitMinutes (${Math.round(unbounded.maxAgeMs / 60_000)})`,
     };
-  const backgroundEnded = state === "background" && ageMs >= wait.maxBackgroundAgeMs;
+  const backgroundEnded = state === "background" && ageMs >= unbounded.maxBackgroundAgeMs;
   if (state === "tool" || (state === "background" && !backgroundEnded))
     return {
       refresh: true,
@@ -190,6 +208,18 @@ export function decideRefresh(
           ? "mid-turn: the turn resumes when its tool returns"
           : "a background task is running: the thread resumes when it reports back",
     };
+  // Only an idle wait is capped by a reported grace.
+  const grace = state === "idle" ? unbounded.reportedGrace : null;
+  if (grace !== null && ageMs >= grace.untilMs)
+    return {
+      refresh: false,
+      resumeChance: 0,
+      net: 0,
+      horizonMs: 0,
+      why: `${grace.why}: its report reached reportedGraceMinutes`,
+    };
+  const wait = grace === null ? unbounded : withReportedGrace(unbounded);
+  const { role, coveredMs, stepMs, maxAgeMs } = wait;
   const held = decideHold(wait);
   if (held?.refresh) return held;
   const unheld = held === null ? "" : `${held.why}; `;

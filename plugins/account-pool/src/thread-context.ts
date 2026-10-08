@@ -23,6 +23,9 @@ export type ThreadContext =
       // The last assignment whose brief reached this thread, and a later one still undelivered.
       assignment: { ref: string; phase: AssignmentPhase } | null;
       next: { ref: string; phase: AssignmentPhase } | null;
+      // When that assignment was reported (its assignment.reportedAt), null before a report or from
+      // an Initiatives that does not send it.
+      reportedAt: number | null;
       // The review pending or running of the thread's latest report (D440).
       review: { ref: string; worker: string; since: number } | null;
     }
@@ -39,8 +42,13 @@ const assignmentPhaseSchema = z.enum([
 ]);
 type AssignmentPhase = z.infer<typeof assignmentPhaseSchema>;
 
+// reportedAt is read leniently like review: absent or malformed means no reported grace.
 const assignmentSchema = z
-  .object({ ref: z.string().min(1), phase: assignmentPhaseSchema })
+  .object({
+    ref: z.string().min(1),
+    phase: assignmentPhaseSchema,
+    reportedAt: z.number().int().nullable().optional().catch(null),
+  })
   .passthrough();
 
 // Read leniently: an Initiatives that predates it, or a malformed one, means no review hold, not an
@@ -228,6 +236,7 @@ async function readOnce(
       membership.next === null
         ? null
         : { ref: membership.next.ref, phase: membership.next.phase },
+    reportedAt: membership.assignment?.reportedAt ?? null,
     review:
       membership.review === null
         ? null
@@ -263,10 +272,24 @@ export interface ReviewHold {
   why: string;
 }
 
+// An idle work worker that has reported, with no next assignment, gets no refresh after `until`
+// (reportedAt + reportedGraceMinutes), whatever holds it.
+export interface ReportedGrace {
+  reportedAt: number;
+  until: number;
+  why: string;
+}
+
 type Refusal = { ok: false; reason: string; kind: "skip" | "end" };
 
 export type WarmingClass =
-  | { ok: true; role: WarmingRole; label: string; reviewHold: ReviewHold | null }
+  | {
+      ok: true;
+      role: WarmingRole;
+      label: string;
+      reviewHold: ReviewHold | null;
+      reportedGrace: ReportedGrace | null;
+    }
   | Refusal;
 
 // The thread's warming role, from Initiatives context. The assignment's phase does not matter: a
@@ -279,7 +302,10 @@ export type WarmingClass =
 // - a stopped, retired or former member: its conversation is done;
 // - a role that is not enabled in the settings.
 // A review of the thread's latest report running holds it warm for reviewHoldMinutes from the
-// review's start (warming-economics decides whether that pays).
+// review's start (warming-economics decides whether that pays). A work worker whose latest
+// assignment is reported and that has no next one gets reportedGraceMinutes of idle warming from
+// the report, hold or not; an Initiatives that does not send reportedAt gives no grace limit. The
+// warmer lifts the grace when BB started a turn after the report (CacheWarmer.graceOf).
 export function warmingRole(
   context: ThreadContext,
   config: WarmingConfig,
@@ -301,7 +327,19 @@ export function warmingRole(
           why: `review of ${context.worker ?? "the thread"} by ${context.review.worker} running (${context.review.ref})`,
         }
       : null;
-  return { ...classified, reviewHold };
+  const reportedAt = context.kind === "member" ? context.reportedAt : null;
+  const reportedGrace =
+    context.kind === "member" &&
+    classified.role === "worker" &&
+    context.next === null &&
+    reportedAt !== null
+      ? {
+          reportedAt,
+          until: reportedAt + config.reportedGraceMinutes * 60_000,
+          why: `${context.worker ?? "the worker"} reported ${context.assignment?.ref ?? "its work"}`,
+        }
+      : null;
+  return { ...classified, reviewHold, reportedGrace };
 }
 
 function classify(

@@ -118,6 +118,7 @@ const COORDINATOR: Member = {
   worker: null,
   assignment: null,
   next: null,
+  reportedAt: null,
   review: null,
 };
 function worker(
@@ -148,6 +149,9 @@ interface Harness {
   sessions: Map<string, string>;
   // What each thread waits on at a refresh decision; "tool" (mid-turn) when unset.
   waits: Map<string, WaitState | null>;
+  // BB's latest turn/started per thread (0 when unset); null makes the read fail. turnReads counts reads.
+  turnStarts: Map<string, number | null>;
+  turnReads: string[];
   // When set, a waiting-state read returns this instead of answering from the map.
   waitHook: ((threadId: string) => Promise<WaitState | null>) | null;
   history: ResumeHistory;
@@ -184,6 +188,8 @@ function harness(overrides: Partial<WarmingConfig> = {}): Harness {
   const contextReads: Harness["contextReads"] = [];
   const sessions = new Map<string, string>();
   const waits = new Map<string, WaitState | null>();
+  const turnStarts = new Map<string, number | null>();
+  const turnReads: string[] = [];
   const resolved: string[] = [];
   const outcomes: WarmingOutcome[] = [];
   const sent: Harness["sent"] = [];
@@ -206,6 +212,10 @@ function harness(overrides: Partial<WarmingConfig> = {}): Harness {
       return sessions.get(threadId) ?? null;
     },
     resolveSession: (sessionId) => resolved.push(sessionId),
+    turnStartedAt: async (threadId) => {
+      turnReads.push(threadId);
+      return turnStarts.has(threadId) ? turnStarts.get(threadId)! : 0;
+    },
     waitState: (threadId) =>
       h.waitHook?.(threadId) ?? Promise.resolve(waits.has(threadId) ? waits.get(threadId)! : "tool"),
     resumeHistory: () => h.history,
@@ -237,6 +247,8 @@ function harness(overrides: Partial<WarmingConfig> = {}): Harness {
     sessionHook: null,
     sessions,
     waits,
+    turnStarts,
+    turnReads,
     waitHook: null,
     history: new ResumeHistory(PRIOR_SAMPLES),
     resolved,
@@ -1858,5 +1870,490 @@ describe("D440: review holds", () => {
     expect(h.warmer.status()).toMatchObject({ leases: [], admissions: [], retainedBodyBytes: 0 });
     expect(h.events().at(-1)).toBe("skip: skipped: thread context read failed or timed out");
     expect(signals.map((signal) => signal.aborted)).toEqual([true]);
+  });
+});
+
+describe("reported grace: an idle work worker that reported stops being warmed", () => {
+  const review = { ref: "A2", worker: "W2", since: T0 };
+  const never = () =>
+    new ResumeHistory(Array.from({ length: 30 }, () => ({ state: "idle" as const, role: "worker" as const, waitMs: null })));
+  // W1 reported A1 at T0, as Initiatives' assignment.reportedAt says, and W2 is reviewing it.
+  function reported(overrides: Partial<Harness["config"]> = {}, member: Partial<Member> = {}) {
+    const h = harness(overrides);
+    h.history = never();
+    h.context.set("thr_coord", worker("reported", { worker: "W1", review, reportedAt: T0, ...member }));
+    h.waits.set("thr_coord", "idle");
+    return h;
+  }
+
+  it("caps the review hold at reportedGraceMinutes from the report", async () => {
+    const h = reported({ reportedGraceMinutes: 10 });
+    await h.native();
+    await h.clock.advanceTo(60 * MINUTE);
+    // Held until 600 s: the refresh at 480 s lasts to 780 s; none after the grace.
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480]);
+    expect(h.events().at(-1)).toBe("end: stopped (idle): W1 reported A1: its report reached reportedGraceMinutes");
+  });
+
+  it("by default (5 minutes) the 5-minute entry already covers the grace: no refresh; 0 is the same", async () => {
+    for (const config of [{}, { reportedGraceMinutes: 0 }]) {
+      const h = reported(config);
+      await h.native();
+      await h.clock.advanceTo(60 * MINUTE);
+      expect(h.sent).toHaveLength(0);
+    }
+  });
+
+  it("an Initiatives without reportedAt keeps the full review hold (backward compatible)", async () => {
+    const h = reported({}, { reportedAt: null });
+    await h.native();
+    await h.clock.advanceTo(17 * MINUTE);
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480, 720, 960]);
+  });
+
+  it("a worker with a queued next assignment is not capped", async () => {
+    const h = reported({}, { next: { ref: "A3", phase: "pending" } });
+    await h.native();
+    await h.clock.advanceTo(17 * MINUTE);
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480, 720, 960]);
+  });
+
+  it("a background or mid-turn wait is not capped", async () => {
+    for (const wait of ["background", "tool"] as const) {
+      const h = reported();
+      h.waits.set("thr_coord", wait);
+      await h.native();
+      await h.clock.advanceTo(10 * MINUTE);
+      expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480]);
+    }
+  });
+
+  it("a report seen only by the fresh read before the send refuses the refresh", async () => {
+    // The cached classification still shows W1 working under a review hold of an earlier report.
+    const h = reported({}, { reportedAt: null });
+    h.freshContext.set("thr_coord", worker("reported", { worker: "W1", review, reportedAt: T0 - 10 * MINUTE }));
+    await h.native();
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.sent).toHaveLength(0);
+    expect(h.events().at(-1)).toMatch(/W1 reported A1: its report reached reportedGraceMinutes/);
+  });
+});
+
+describe("send-time checks never outlive the entry", () => {
+  // A refresh is due at second 295; its send-time wait-state read (the second read) takes 6 seconds.
+  function slowConfirm(margin: number) {
+    const h = harness({ safetyMarginSeconds: margin });
+    let reads = 0;
+    h.waitHook = async () => {
+      if (++reads === 2) await new Promise<void>((resolve) => h.clock.timers.setTimeout(resolve, 6 * SECOND));
+      return "tool";
+    };
+    return h;
+  }
+
+  it("refuses the send when the confirmation read consumed the safety margin, and ends the lease", async () => {
+    const h = slowConfirm(5);
+    await h.native();
+    await h.clock.advanceTo(5 * MINUTE + 2 * SECOND);
+    expect(h.sent).toEqual([]);
+    expect(h.warmer.status().leases).toEqual([]);
+    expect(h.events().at(-1)).toBe("end: the entry expired while its refresh was being checked");
+  });
+
+  it("sends on time when the margin covers the same slow read", async () => {
+    const h = slowConfirm(15);
+    await h.native();
+    await h.clock.advanceTo(5 * MINUTE);
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([291]);
+  });
+
+  it("still processes a refresh sent in time whose response arrives after the entry's expiry", async () => {
+    const h = harness({ safetyMarginSeconds: 5 });
+    h.replies.push(async () => {
+      await new Promise<void>((resolve) => h.clock.timers.setTimeout(resolve, 10 * SECOND));
+      return { kind: "response", status: 200, usage: hit(), outputEmpty: true, startedAt: h.clock.now() - 10 * SECOND };
+    });
+    await h.native();
+    await h.clock.advanceTo(5 * MINUTE + 12 * SECOND);
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([295]);
+    expect(h.warmer.status().leases[0]).toMatchObject({ refreshes: 1 });
+  });
+});
+
+describe("reported grace: fixes from review", () => {
+  const WHY_A4 = "review of W3 by W4 running (A4)";
+  const hold = (ref = "A2", worker = "W2") => ({ ref, worker, since: T0 });
+  const never = () =>
+    new ResumeHistory(Array.from({ length: 30 }, () => ({ state: "idle" as const, role: "worker" as const, waitMs: null })));
+  // W1 reported A1 at T0 under a review hold (45 minutes by default).
+  function reportedW1(overrides: Partial<Harness["config"]> = {}, member: Partial<Member> = {}) {
+    const h = harness(overrides);
+    h.history = never();
+    h.context.set("thr_coord", worker("reported", { worker: "W1", review: hold(), reportedAt: T0, ...member }));
+    return h;
+  }
+
+  describe("R1: lease competition applies the grace only to a genuinely idle wait", () => {
+    // W3 has queued work and a review hold, and arrives at the single lease slot.
+    const W3 = worker("reported", {
+      worker: "W3",
+      next: { ref: "A5", phase: "pending" },
+      review: hold("A4", "W4"),
+    });
+
+    it.each(["tool", "background", "question"] as const)("keeps a %s wait's slot after the grace, as before the grace existed", async (wait) => {
+      const h = reportedW1({ maxLeases: 1 });
+      h.waits.set("thr_coord", wait);
+      await h.native();
+      await h.clock.advanceTo(4 * MINUTE + 30 * SECOND);
+      expect(h.sent.map((request) => request.at / SECOND)).toEqual([240]);
+      expect(h.warmer.status().leases[0]).toMatchObject({ waitingOn: wait });
+      await h.clock.advanceTo(5 * MINUTE + 30 * SECOND);
+      h.context.set("thr_w3", W3);
+      await h.native({ threadId: "thr_w3" });
+      expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_coord"]);
+      expect(h.events().at(-1)).toBe("skip: lease limit reached (maxLeases 1)");
+    });
+
+    it("protects a lease that has not had a first wait-state read", async () => {
+      const h = reportedW1({ maxLeases: 1 });
+      h.waits.set("thr_coord", "tool");
+      await h.native();
+      expect(h.warmer.status().leases[0]).toMatchObject({ waitingOn: null });
+      h.context.set("thr_w3", W3);
+      await h.native({ threadId: "thr_w3" });
+      expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_coord"]);
+    });
+
+    it("reads the wait fresh: a lease last seen mid-turn that is now idle past its grace gives up the slot", async () => {
+      const h = reportedW1({ maxLeases: 1 });
+      h.waits.set("thr_coord", "tool");
+      await h.native();
+      await h.clock.advanceTo(4 * MINUTE + 30 * SECOND);
+      expect(h.warmer.status().leases[0]).toMatchObject({ waitingOn: "tool" });
+      h.waits.set("thr_coord", "idle");
+      await h.clock.advanceTo(5 * MINUTE + 30 * SECOND);
+      h.context.set("thr_w3", W3);
+      await h.native({ threadId: "thr_w3" });
+      expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_w3"]);
+      expect(h.events()).toContain(`end: lease slot taken by a thread under review (${WHY_A4})`);
+    });
+
+    it("applies to the arriving thread too: an idle reported worker past its grace takes no slot, a mid-turn one does", async () => {
+      for (const [wait, taken] of [["idle", false], ["tool", true]] as const) {
+        const h = harness({ maxLeases: 1 });
+        h.history = never();
+        await h.native();
+        await h.clock.advanceTo(10 * MINUTE);
+        h.context.set("thr_w3", worker("reported", { worker: "W3", review: { ref: "A4", worker: "W4", since: h.clock.now() }, reportedAt: T0 }));
+        h.waits.set("thr_w3", wait);
+        await h.native({ threadId: "thr_w3" });
+        const remaining = h.warmer.status().leases.map((lease) => lease.threadId);
+        expect(remaining).toEqual([taken ? "thr_w3" : "thr_coord"]);
+      }
+    });
+  });
+
+  describe("R5: the arriving thread is read again after the victims' context", () => {
+    // W3's report is past its grace and its review hold is live; only an idle wait loses the grace.
+    const arriving = () => worker("reported", {
+      worker: "W3", reportedAt: T0, review: { ref: "A4", worker: "W4", since: T0 },
+    });
+    async function contested(after: WaitState) {
+      const h = harness({ maxLeases: 1 });
+      await h.native();
+      await h.clock.advanceTo(5 * MINUTE + 30 * SECOND);
+      h.context.set("thr_w3", arriving());
+      h.waits.set("thr_w3", "tool");
+      // Reading the coordinator's current context is when W3's turn ends.
+      h.readHook = async (id, fresh) => {
+        if (id === "thr_coord" && fresh) h.waits.set("thr_w3", after);
+        return h.context.get(id)!;
+      };
+      await h.native({ threadId: "thr_w3" });
+      return h;
+    }
+
+    it("a worker that went idle past its grace while the victims were read takes no slot", async () => {
+      const h = await contested("idle");
+      expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_coord"]);
+      expect(h.events().at(-1)).toBe("skip: lease limit reached (maxLeases 1)");
+    });
+
+    it("a worker still mid-turn after the victims were read keeps its protected hold and takes the slot", async () => {
+      const h = await contested("tool");
+      expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_w3"]);
+    });
+  });
+
+  describe("R2: a later turn BB started is not capped by the earlier report", () => {
+    it("a user continuation after the report gets the idle warming of an unreported wait", async () => {
+      const h = reportedW1();
+      h.waits.set("thr_coord", "idle");
+      await h.native();
+      await h.clock.advanceTo(10 * MINUTE);
+      expect(h.sent).toHaveLength(0);
+      h.warmer.threadStarted("thr_coord");
+      await h.native();
+      await h.clock.advanceTo(20 * MINUTE);
+      // The continuation's own wait, from minute 10: refreshes one 5-minute entry apart.
+      expect(h.sent.map((request) => request.at / SECOND)).toEqual([840, 1080]);
+    });
+
+    it("a helper request after the report does not: no turn started, so the report still caps the wait", async () => {
+      const h = reportedW1();
+      h.waits.set("thr_coord", "idle");
+      await h.native();
+      await h.clock.advanceTo(10 * MINUTE);
+      await h.native();
+      await h.clock.advanceTo(30 * MINUTE);
+      expect(h.sent).toHaveLength(0);
+      expect(h.events().at(-1)).toMatch(/its report reached reportedGraceMinutes/);
+    });
+
+    it("after a reload, a continuation that began while the plugin was unloaded is found in BB's events", async () => {
+      const h = reportedW1();
+      h.waits.set("thr_coord", "idle");
+      // No threadStarted: the plugin was not running. BB's latest turn/started is minute 10.
+      await h.clock.advanceTo(10 * MINUTE);
+      h.turnStarts.set("thr_coord", h.clock.now());
+      await h.native();
+      await h.clock.advanceTo(20 * MINUTE);
+      expect(h.sent.map((request) => request.at / SECOND)).toEqual([840, 1080]);
+    });
+
+    it("reads BB's events once per thread: the reporting turn's start keeps the cap, and a later start is noted", async () => {
+      const h = reportedW1();
+      h.waits.set("thr_coord", "idle");
+      h.turnStarts.set("thr_coord", T0 - MINUTE);
+      await h.native();
+      await h.clock.advanceTo(10 * MINUTE);
+      expect(h.sent).toHaveLength(0);
+      expect(h.turnReads).toEqual(["thr_coord"]);
+      h.warmer.threadStarted("thr_coord");
+      await h.native();
+      await h.clock.advanceTo(20 * MINUTE);
+      expect(h.sent.map((request) => request.at / SECOND)).toEqual([840, 1080]);
+      expect(h.turnReads).toEqual(["thr_coord"]);
+    });
+
+    it("a turn start BB cannot tell lifts the cap this time and is read again at the next refresh", async () => {
+      const h = reportedW1();
+      h.waits.set("thr_coord", "idle");
+      h.turnStarts.set("thr_coord", null);
+      await h.native();
+      await h.clock.advanceTo(4 * MINUTE + 30 * SECOND);
+      // Read once for the refresh, not again for its send.
+      expect(h.sent.map((request) => request.at / SECOND)).toEqual([240]);
+      expect(h.turnReads).toEqual(["thr_coord"]);
+      await h.clock.advanceTo(8 * MINUTE + 30 * SECOND);
+      expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480]);
+      expect(h.turnReads).toEqual(["thr_coord", "thr_coord"]);
+    });
+
+    describe("a turn-start read that does not answer", () => {
+      // Each lookup hangs until its signal aborts, unless it is answered through `answer`.
+      function stalled(h: Harness) {
+        const lookups: { signal: AbortSignal; answer: (at: number) => void }[] = [];
+        (h.warmer as any).deps.turnStartedAt = (_: string, signal: AbortSignal) =>
+          new Promise<number>((resolve, reject) => {
+            lookups.push({ signal, answer: resolve });
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        return lookups;
+      }
+
+      it("is aborted at its deadline, retried at the next refresh, and aborted again at disposal", async () => {
+        const h = reportedW1();
+        h.waits.set("thr_coord", "idle");
+        const lookups = stalled(h);
+        await h.native();
+        // Read at the idle wait's first refresh decision, not at admission.
+        expect(lookups).toHaveLength(0);
+        await h.clock.advanceTo(240 * SECOND);
+        expect(lookups.map((lookup) => lookup.signal.aborted)).toEqual([false]);
+        await h.clock.advanceTo(250 * SECOND);
+        // Unknown turn start: no cap, so the refresh is sent 3 seconds late.
+        expect(h.sent.map((request) => request.at / SECOND)).toEqual([243]);
+        expect(lookups.map((lookup) => lookup.signal.aborted)).toEqual([true]);
+        await h.clock.advanceTo(485 * SECOND);
+        expect(lookups.map((lookup) => lookup.signal.aborted)).toEqual([true, false]);
+        h.warmer.dispose();
+        expect(lookups.every((lookup) => lookup.signal.aborted)).toBe(true);
+      });
+
+      it("is aborted with its caller: disposal while pending, and a caller that is already aborted never starts one", async () => {
+        const h = reportedW1();
+        h.waits.set("thr_coord", "idle");
+        const lookups = stalled(h);
+        await h.native();
+        await h.clock.advanceTo(241 * SECOND);
+        expect(lookups).toHaveLength(1);
+        h.warmer.dispose();
+        expect(lookups[0]!.signal.aborted).toBe(true);
+        const controller = new AbortController();
+        controller.abort();
+        await (h.warmer as any).recoverTurnStart("thr_other", controller.signal);
+        expect(lookups).toHaveLength(1);
+      });
+
+      it("never lets an answer after the deadline reach the cache", async () => {
+        const h = reportedW1();
+        h.waits.set("thr_coord", "idle");
+        const lookups = stalled(h);
+        await h.native();
+        // The thread is read at the refresh 240 seconds in, and the lookup's deadline is 3 seconds later.
+        await h.clock.advanceTo(244 * SECOND);
+        expect(lookups[0]!.signal.aborted).toBe(true);
+        lookups[0]!.answer(h.clock.now() + MINUTE);
+        await flush();
+        // Had the late answer been noted, the next read would find a turn after the report.
+        expect((h.warmer as any).turnStarts.has("thr_coord")).toBe(false);
+      });
+    });
+
+    it("the reporting turn's own start is not a later turn", async () => {
+      const h = reportedW1();
+      h.waits.set("thr_coord", "idle");
+      h.warmer.threadStarted("thr_coord");
+      await h.native();
+      await h.clock.advanceTo(30 * MINUTE);
+      expect(h.sent).toHaveLength(0);
+    });
+  });
+
+  describe("R3: the send uses what the thread waits on at the send", () => {
+    // The cached classification has not seen the report; the fresh read just before the send does,
+    // and the thread changes state while it is read.
+    function racing(from: WaitState, to: WaitState, config: Partial<Harness["config"]> = { reportedGraceMinutes: 0 }) {
+      const h = reportedW1(config, { reportedAt: null });
+      h.waits.set("thr_coord", from);
+      h.readHook = async (threadId, fresh) => {
+        if (fresh) h.waits.set(threadId, to);
+        return fresh
+          ? worker("reported", { worker: "W1", review: hold(), reportedAt: T0 })
+          : h.context.get(threadId)!;
+      };
+      return h;
+    }
+
+    it("a tool wait that went idle during the read honours a zero grace", async () => {
+      const h = racing("tool", "idle");
+      await h.native();
+      await h.clock.advanceTo(10 * MINUTE);
+      expect(h.sent).toHaveLength(0);
+      expect(h.events().at(-1)).toMatch(/^skip: refresh not sent: stopped \(idle\): W1 reported A1: its report reached reportedGraceMinutes/);
+    });
+
+    it("an idle wait that went back to work during the read is still refreshed", async () => {
+      const h = racing("idle", "tool");
+      await h.native();
+      await h.clock.advanceTo(4 * MINUTE + 30 * SECOND);
+      expect(h.sent.map((request) => request.at / SECOND)).toEqual([240]);
+      expect(h.warmer.status().leases[0]).toMatchObject({ waitingOn: "tool" });
+    });
+
+    it("a wait BB cannot read at the send refuses it", async () => {
+      const h = racing("tool", "tool");
+      h.waitHook = (() => {
+        let reads = 0;
+        return async () => (++reads === 1 ? "tool" : null);
+      })();
+      await h.native();
+      await h.clock.advanceTo(4 * MINUTE + 30 * SECOND);
+      expect(h.sent).toHaveLength(0);
+      expect(h.events().at(-1)).toBe("skip: refresh not sent: BB could not tell what the thread waits on");
+    });
+
+    it("a background task that ended during the read still ends the lease", async () => {
+      const h = racing("background", "idle", { reportedGraceMinutes: 5 });
+      // No review holds the thread, in either read.
+      h.readHook = async (threadId, fresh) => {
+        if (fresh) h.waits.set(threadId, "idle");
+        return worker("reported", { worker: "W1" });
+      };
+      h.waits.set("thr_coord", "background");
+      await h.native();
+      await h.clock.advanceTo(4 * MINUTE + 30 * SECOND);
+      expect(h.sent).toHaveLength(0);
+      expect(h.events().at(-1)).toBe("skip: refresh not sent: stopped: the background task ended without the thread resuming");
+    });
+  });
+});
+
+describe("reported grace: BB reads only where the grace applies, and none outlives its wait", () => {
+  const never = () =>
+    new ResumeHistory(Array.from({ length: 30 }, () => ({ state: "idle" as const, role: "worker" as const, waitMs: null })));
+  // Each call hangs until its signal aborts, unless answered through `answer`.
+  function hanging<T>() {
+    const calls: { signal: AbortSignal; answer: (value: T) => void }[] = [];
+    const call = (_: string, signal: AbortSignal) =>
+      new Promise<T>((resolve, reject) => {
+        calls.push({ signal, answer: resolve });
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    return { calls, call };
+  }
+
+  it.each([
+    ["a reviewer waiting on a tool", { role: "review" as const }, "tool"],
+    ["a worker with a next assignment", { next: { ref: "A3", phase: "pending" as const } }, "idle"],
+    ["a worker waiting on a tool", {}, "tool"],
+    ["a worker waiting on a question", {}, "question"],
+    ["a worker waiting on a background task", {}, "background"],
+  ] as const)("%s never waits on the turn history: a 5-second margin still sends on time", async (_name, member, wait) => {
+    const h = harness({ safetyMarginSeconds: 5 });
+    h.history = never();
+    h.context.set(
+      "thr_coord",
+      worker("reported", { worker: "W1", review: { ref: "A2", worker: "W2", since: T0 }, reportedAt: T0, ...member }),
+    );
+    h.waits.set("thr_coord", wait);
+    const history = hanging<number>();
+    (h.warmer as any).deps.turnStartedAt = history.call;
+    await h.native();
+    await h.clock.advanceTo(5 * MINUTE);
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([295]);
+    expect(history.calls).toHaveLength(0);
+  });
+
+  it("at the lease limit, aborts each wait-state read at its own deadline, before admission and disposal", async () => {
+    const h = harness({ maxLeases: 1 });
+    // The incumbent W1 reported and no review holds it; the arriving W3 is held by its review.
+    h.context.set("thr_coord", worker("reported", { worker: "W1", reportedAt: T0 }));
+    await h.native();
+    const states = hanging<WaitState>();
+    (h.warmer as any).deps.waitState = states.call;
+    h.context.set(
+      "thr_w3",
+      worker("reported", { worker: "W3", reportedAt: T0, review: { ref: "A4", worker: "W4", since: T0 } }),
+    );
+    await h.native({ threadId: "thr_w3" });
+    expect(states.calls.length).toBeGreaterThan(0);
+    // Every read BB cannot answer is unknown, so no lease is capped: W3's hold takes W1's slot.
+    await h.clock.advanceTo(2 * MINUTE);
+    expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_w3"]);
+    expect(states.calls.map((call) => call.signal.aborted).every(Boolean)).toBe(true);
+    h.warmer.dispose();
+    expect(states.calls.map((call) => call.signal.aborted).every(Boolean)).toBe(true);
+  });
+
+  it("never caches a turn start that answered just before its caller gave up", async () => {
+    const h = harness();
+    const history = hanging<number>();
+    (h.warmer as any).deps.turnStartedAt = history.call;
+    const caller = new AbortController();
+    const recovering = (h.warmer as any).recoverTurnStart("thr_coord", caller.signal);
+    // The answer arrives, and the caller is cancelled before the lookup's continuation runs.
+    history.calls[0]!.answer(T0 - MINUTE);
+    caller.abort();
+    await recovering;
+    expect((h.warmer as any).turnStarts.has("thr_coord")).toBe(false);
+    // So the next caller reads again, and keeps that answer.
+    const retry = (h.warmer as any).recoverTurnStart("thr_coord", new AbortController().signal);
+    history.calls[1]!.answer(T0 - MINUTE);
+    await retry;
+    expect(history.calls).toHaveLength(2);
+    expect((h.warmer as any).turnStarts.get("thr_coord")).toBe(T0 - MINUTE);
   });
 });

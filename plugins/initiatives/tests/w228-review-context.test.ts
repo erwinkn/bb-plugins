@@ -41,7 +41,7 @@ describe("W228 review in the thread context", () => {
     await turn(f, r.threadId, "Two findings.");
     expect(await review(f, w.threadId)).toBeNull();
 
-    await tool(f, "initiative_message", { to: "W1", text: "Fix the findings.", work: true, resumeCold: true });
+    await tool(f, "initiative_message", { to: "W1", text: "Fix the findings.", work: true });
     await turn(f, w.threadId, "Fixed both.");
     expect(await review(f, w.threadId)).toBeNull();
     const [again] = await tool(f, "initiative_spawn", { role: "review", label: "Review fixes", purpose: "review the fixes", reviews: "W1", handoffs: ["W2"], text: "Review the fixes." });
@@ -49,7 +49,7 @@ describe("W228 review in the thread context", () => {
     expect(await review(f, w.threadId)).toMatchObject({ ref: second.ref, worker: "W3", since: second.createdAt });
 
     // Newer work for the worker while the review still runs: the review is of an older report.
-    await tool(f, "initiative_message", { to: "W1", text: "Also do this.", work: true, resumeCold: true });
+    await tool(f, "initiative_message", { to: "W1", text: "Also do this.", work: true });
     await turn(f, w.threadId, "Did it.");
     expect(await review(f, w.threadId)).toBeNull();
   });

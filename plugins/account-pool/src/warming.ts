@@ -9,7 +9,7 @@ import {
   type CacheUsage,
 } from "./cache-usage.js";
 import type { ReviewHold, ThreadContext } from "./thread-context.js";
-import { warmingRole } from "./thread-context.js";
+import { warmingRole, type ReportedGrace } from "./thread-context.js";
 import {
   effectiveWarmingQuotaReserve,
   warmingModeSchema,
@@ -19,6 +19,7 @@ import {
 } from "./warming-config.js";
 import {
   decideHold,
+  withReportedGrace,
   decideRefresh,
   waitStates,
   type HeldWait,
@@ -75,6 +76,7 @@ const WAIT_STATE_TIMEOUT_MS = 10_000;
 // How long the warmer waits for an Initiatives context read, whatever the reader does, before it
 // counts the context as unknown. The reader's own deadline is 2 seconds.
 const CONTEXT_READ_TIMEOUT_MS = 3_000;
+const BACKGROUND_ENDED = "stopped: the background task ended without the thread resuming";
 const AMBIGUOUS = Symbol("ambiguous");
 
 export interface WarmingTimers {
@@ -164,6 +166,9 @@ export interface WarmerDeps {
   // Asks BB, in the background, which thread runs a session no thread is linked to yet; the answer
   // arrives as linkSession. Called once per request on such a session; the server rate-limits it.
   resolveSession(sessionId: string): void;
+  // When BB last started a turn on the thread (its latest turn/started event), 0 when it recorded
+  // none, null when BB cannot tell. Not the time of a request queued behind a running turn.
+  turnStartedAt(threadId: string, signal: AbortSignal): Promise<number | null>;
   // What the thread waits on now, read fresh; null when BB cannot tell.
   waitState(threadId: string, signal: AbortSignal): Promise<WaitState | null>;
   // How long waits of each state and role have lasted.
@@ -228,6 +233,8 @@ interface Lease {
   // The review hold from the latest classification, and the last one the wait was under.
   reviewHold: ReviewHold | null;
   heldFor: string | null;
+  // The reported grace the latest classification's context gives; graceOf says if it is in force.
+  reportedGrace: ReportedGrace | null;
   // What the thread waited on at the latest and at the first refresh decision.
   waitingOn: WaitState | null;
   firstWaitingOn: WaitState | null;
@@ -337,6 +344,8 @@ export class CacheWarmer {
   private readonly admissions = new Map<string, Admission>();
   private readonly sessionThreads = new Map<string, string | typeof AMBIGUOUS>();
   private readonly threadSessions = new Map<string, string>();
+  // When BB last started a turn on a thread: threadStarted, or recoverTurnStart from BB's events.
+  private readonly turnStarts = new Map<string, number>();
   // Per session: the start sequence of every native request in flight, of every model family; the
   // starts that could themselves lease (no parent session, enabled family) and have not ended
   // without a usable response; how the latest eligible one that did end that way failed; and the
@@ -517,10 +526,24 @@ export class CacheWarmer {
       void this.classify(admission);
   }
 
+  // The latest turn start known for a thread; a bounded cache of BB's own events, newest last.
+  private noteTurnStart(threadId: string, at: number): void {
+    const known = this.turnStarts.get(threadId) ?? 0;
+    this.turnStarts.delete(threadId);
+    this.turnStarts.set(threadId, Math.max(known, at));
+    while (this.turnStarts.size > MAX_SESSION_LINKS) {
+      const oldest = this.turnStarts.keys().next();
+      if (!oldest.done) this.turnStarts.delete(oldest.value);
+    }
+  }
+
   // BB reports that the thread started a turn. Every lease and admission linked to it ends before
   // anything re-reads the session link: BB's snapshot may still name the previous session while
   // the new turn runs on another one.
   threadStarted(threadId: string): void {
+    // BB's own turn start, unlike a model request: a helper never produces one, so a turn started
+    // after a worker's report is the user's or a coordinator's continuation (warmingRole).
+    this.noteTurnStart(threadId, this.deps.now());
     const reason = "the thread started a new turn";
     // The thread's last known session counts even if another thread has since claimed it.
     const known = this.threadSessions.get(threadId);
@@ -796,6 +819,7 @@ export class CacheWarmer {
         label: null,
         reviewHold: null,
         heldFor: null,
+        reportedGrace: null,
         waitingOn: null,
         firstWaitingOn: null,
         firstDecisionAt: null,
@@ -946,15 +970,24 @@ export class CacheWarmer {
     if (config === null) return;
     if (this.leases.size >= config.maxLeases) {
       const full = `lease limit reached (maxLeases ${config.maxLeases})`;
-      if (!this.holdPays(lease, config)) return this.dropAdmission(admission, full);
+      const signal = admission.controller.signal;
+      const idle = await this.idleLeases([lease, ...this.leases.values()], signal);
+      config = settled();
+      if (config === null) return;
+      if (!this.holdPays(lease, config, idle)) return this.dropAdmission(admission, full);
       // A review may also have started on a lease since its last read.
-      await this.rereadHolds(admission.controller.signal, config);
+      await this.rereadHolds(signal, config, idle);
+      // The arriving thread may have changed state while the others were read.
+      idle.delete(lease);
+      for (const read of await this.idleLeases([lease], signal)) idle.add(read);
       config = settled();
       if (config === null) return;
       while (this.leases.size >= config.maxLeases)
-        if (!this.evictFor(lease, config)) return this.dropAdmission(admission, full);
+        if (!this.evictFor(lease, config, idle)) return this.dropAdmission(admission, full);
     }
     this.admissions.delete(lease.sessionId);
+    // No read started for the admission outlives it.
+    admission.controller.abort(new Error("admitted"));
     this.leases.set(lease.sessionId, lease);
     this.totals.leasesStarted += 1;
     this.recordLease(
@@ -969,13 +1002,13 @@ export class CacheWarmer {
   // to save least: one with no decision yet counts as 0 (most are mid-turn and resume before their
   // first refresh is due), and among equals the newest wait goes first. Two held threads never
   // displace each other.
-  private evictFor(lease: Lease, config: WarmingConfig): boolean {
-    if (!this.holdPays(lease, config)) return false;
+  private evictFor(lease: Lease, config: WarmingConfig, idle: Set<Lease>): boolean {
+    if (!this.holdPays(lease, config, idle)) return false;
     const saving = (other: Lease) => other.expectedSaving ?? 0;
     let victim: Lease | null = null;
     for (const other of this.leases.values())
       if (
-        !this.holdPays(other, config) &&
+        !this.holdPays(other, config, idle) &&
         (victim === null ||
           saving(other) < saving(victim) ||
           (saving(other) === saving(victim) && other.nativeCompletedAt > victim.nativeCompletedAt))
@@ -989,18 +1022,48 @@ export class CacheWarmer {
 
   // Re-reads, fresh and in parallel, the context of every lease evictFor could take a slot from,
   // so a review that started since a lease's last read protects it. Each read is bounded; one that
-  // fails leaves the lease's last classification.
-  private async rereadHolds(signal: AbortSignal, config: WarmingConfig): Promise<void> {
-    const candidates = [...this.leases.values()].filter((other) => !this.holdPays(other, config));
+  // fails leaves the lease's last classification. A lease whose new classification carries a
+  // reported grace has its wait state read again, and `idle` follows it.
+  private async rereadHolds(
+    signal: AbortSignal,
+    config: WarmingConfig,
+    idle: Set<Lease>,
+  ): Promise<void> {
+    const candidates = [...this.leases.values()].filter((other) => !this.holdPays(other, config, idle));
     await Promise.all(
       candidates.map(async (other) => {
         const thread = this.linkedThread(other.sessionId);
         if (thread === null) return;
         const context = await this.readContext(thread, signal, true);
-        if (!other.ended && context.kind !== "unknown")
-          this.applyRole(other, context, this.deps.config());
+        if (other.ended || context.kind === "unknown") return;
+        this.applyRole(other, context, this.deps.config());
+        idle.delete(other);
+        for (const read of await this.idleLeases([other], signal)) idle.add(read);
       }),
     );
+  }
+
+  // The leases among `leases` with a reported grace whose thread is idle right now, read fresh from
+  // BB. The grace caps only an idle wait, and a lease's last decision may be minutes old (or not
+  // exist), so a lease whose state cannot be read, or is not idle, is not in the set and keeps the
+  // hold's protection.
+  private async idleLeases(leases: Lease[], signal: AbortSignal): Promise<Set<Lease>> {
+    const idle = new Set<Lease>();
+    await Promise.all(
+      leases.map(async (lease) => {
+        const thread = this.linkedThread(lease.sessionId);
+        if (lease.reportedGrace === null || thread === null) return;
+        const state = await this.within(
+          (linked) => this.deps.waitState(thread, linked),
+          signal,
+          WAIT_STATE_TIMEOUT_MS,
+        );
+        if (state !== "idle") return;
+        await this.recoverTurnStart(thread, signal);
+        idle.add(lease);
+      }),
+    );
+    return idle;
   }
 
   private reviewHeld(lease: Lease): boolean {
@@ -1008,16 +1071,19 @@ export class CacheWarmer {
   }
 
   // Whether the lease's review hold alone pays for warming it (decideHold), planned from its next
-  // refresh decision. Only such a hold takes, or keeps, a slot at the lease limit.
-  private holdPays(lease: Lease, config: WarmingConfig): boolean {
+  // refresh decision. Only such a hold takes, or keeps, a slot at the lease limit. The reported
+  // grace bounds the hold of an idle wait only (`idle`: see idleLeases).
+  private holdPays(lease: Lease, config: WarmingConfig, idle: Set<Lease>): boolean {
     const margin = config.safetyMarginSeconds * 1_000;
     const next = Math.max(this.deps.now(), lease.coveredUntil - margin);
-    return decideHold(this.heldWait(lease, next, config))?.refresh === true;
+    const wait = this.heldWait(lease, next, config);
+    return decideHold(idle.has(lease) ? withReportedGrace(wait) : wait)?.refresh === true;
   }
 
   // The wait as warming-economics sees it at `at`, with its review hold if one is in force.
   private heldWait(lease: Lease, at: number, config: WarmingConfig): HeldWait {
     const hold = this.reviewHeld(lease) ? lease.reviewHold! : null;
+    const grace = this.graceOf(lease);
     return {
       ageMs: at - lease.nativeCompletedAt,
       coveredMs: lease.coveredUntil - lease.nativeCompletedAt,
@@ -1026,7 +1092,19 @@ export class CacheWarmer {
       maxAgeMs: config.maxWaitMinutes * 60_000,
       reviewHold:
         hold === null ? null : { untilMs: hold.until - lease.nativeCompletedAt, why: hold.why },
+      reportedGrace: grace === null ? null : { untilMs: grace.until - lease.nativeCompletedAt, why: grace.why },
     };
+  }
+
+  // The lease's reported grace, unless BB started a turn on the thread after the report (the user's
+  // or a coordinator's continuation, never a helper request: the report no longer describes the
+  // thread's waits) or cannot tell whether it did.
+  private graceOf(lease: Lease): ReportedGrace | null {
+    const grace = lease.reportedGrace;
+    const thread = this.linkedThread(lease.sessionId);
+    if (grace === null || thread === null) return null;
+    const started = this.turnStarts.get(thread);
+    return started !== undefined && started <= grace.reportedAt ? grace : null;
   }
 
   private dropAdmission(admission: Admission, message: string | null): void {
@@ -1098,14 +1176,25 @@ export class CacheWarmer {
     if (lease.ended) return;
     if (classified !== null) return this.endLease(lease, classified.message, classified.kind);
     const state = await this.within(
-      this.deps.waitState(thread, controller.signal),
+      (signal) => this.deps.waitState(thread, signal),
+      controller.signal,
       WAIT_STATE_TIMEOUT_MS,
     );
     if (lease.ended) return;
     if (state === null)
       return this.endLease(lease, "skipped: BB could not tell what the thread waits on", "skip");
-    if (lease.waitingOn === "background" && state === "idle" && !this.reviewHeld(lease))
-      return this.endLease(lease, "stopped: the background task ended without the thread resuming");
+    if (this.backgroundEnded(lease, state))
+      return this.endLease(lease, BACKGROUND_ENDED);
+    // Whether a turn followed the report matters only to an idle wait with a reported grace. One
+    // lookup per refresh: a failed one leaves the grace unknown, so not capping, for the send too.
+    let turnLookedUp = false;
+    const recoverGrace = async (waiting: WaitState, signal: AbortSignal) => {
+      if (waiting !== "idle" || lease.reportedGrace === null || turnLookedUp) return;
+      turnLookedUp = true;
+      await this.recoverTurnStart(thread, signal);
+    };
+    await recoverGrace(state, controller.signal);
+    if (lease.ended) return;
     config = this.deps.config();
     const changed = this.gate(lease, config);
     if (changed !== null) return this.endLease(lease, changed);
@@ -1140,11 +1229,31 @@ export class CacheWarmer {
       const refused = await this.qualify(lease, thread, signal, true);
       if (refused !== null) return refused.message;
       if (lease.ended) return "the lease ended";
+      // What the thread waits on now, not when the refresh was planned: the context just read may
+      // carry a report that only caps an idle wait, and the thread may have changed state since.
+      const waiting = await this.within(
+        (linked) => this.deps.waitState(thread, linked),
+        signal,
+        WAIT_STATE_TIMEOUT_MS,
+      );
+      if (lease.ended) return "the lease ended";
+      if (waiting === null) return "BB could not tell what the thread waits on";
+      if (this.backgroundEnded(lease, waiting)) return BACKGROUND_ENDED;
+      await recoverGrace(waiting, signal);
+      if (lease.ended) return "the lease ended";
       const current = this.deps.config();
       const after = this.gate(lease, current);
       if (after !== null) return after;
-      const confirmed = this.decide(lease, state, this.deps.now(), current);
-      return confirmed.refresh ? null : `stopped (${state}): ${confirmed.why}`;
+      const now = this.deps.now();
+      const confirmed = this.decide(lease, waiting, now, current);
+      if (!confirmed.refresh) return `stopped (${waiting}): ${confirmed.why}`;
+      // The reads above may have used up the safety margin. Approving is the last step before the
+      // request, so a refresh is never sent into an entry that already expired; until now the
+      // expiry timer cancels these reads, after it only the response decides.
+      if (now >= lease.coveredUntil) return "the entry expired before the refresh was sent";
+      if (lease.timer !== null) this.deps.timers.clearTimeout(lease.timer);
+      lease.timer = null;
+      return null;
     };
     if (lease.dryRun) {
       const refused = await confirm(controller.signal);
@@ -1163,9 +1272,8 @@ export class CacheWarmer {
     }
     if (lease.body === null)
       return this.endLease(lease, "no request body was kept for this lease");
-    // The keep-alive, its send-time checks included, is bounded by refreshTimeoutSeconds.
-    if (lease.timer !== null) this.deps.timers.clearTimeout(lease.timer);
-    lease.timer = null;
+    // The keep-alive, its send-time checks included, is bounded by refreshTimeoutSeconds; the
+    // expiry timer stays armed until `confirm` approves the send.
     lease.state = "refreshing";
     this.refreshing += 1;
     let result: KeepAliveResult;
@@ -1204,6 +1312,8 @@ export class CacheWarmer {
       this.totals.refreshOutputTokens += result.usage.outputTokens ?? 0;
     }
     if (lease.ended) return;
+    if (lease.timer !== null) this.deps.timers.clearTimeout(lease.timer);
+    lease.timer = null;
     lease.controller = null;
     this.applyKeepAlive(lease, result, this.deps.config());
   }
@@ -1243,13 +1353,28 @@ export class CacheWarmer {
     signal: AbortSignal,
     fresh: boolean,
   ): Promise<ThreadContext> {
-    const deadline = new AbortController();
-    const read = async () =>
-      this.deps.readContext(thread, AbortSignal.any([signal, deadline.signal]), { fresh });
-    const context = await this.within(read(), CONTEXT_READ_TIMEOUT_MS);
-    if (context !== null) return context;
-    deadline.abort(new Error("thread context read timed out"));
-    return { kind: "unknown", reason: "thread context read failed or timed out" };
+    const context = await this.within(
+      (linked) => this.deps.readContext(thread, linked, { fresh }),
+      signal,
+      CONTEXT_READ_TIMEOUT_MS,
+    );
+    return context ?? { kind: "unknown", reason: "thread context read failed or timed out" };
+  }
+
+  // The thread's last turn start, from BB's events, when this plugin has not seen the thread start a
+  // turn since it loaded: a continuation may have begun while it was unloaded or restarting, and the
+  // report's deadline must not outlive it. Needed only to tell whether a turn followed a report
+  // (graceOf), so read only for an idle wait with a grace. After it, threadStarted keeps the cache
+  // current. A failed or timed-out read is aborted and retried at the next one; an answer that
+  // arrives late, or after the caller gave up, is never cached.
+  private async recoverTurnStart(thread: string, signal: AbortSignal): Promise<void> {
+    if (this.turnStarts.has(thread) || signal.aborted) return;
+    const at = await this.within(
+      (linked) => this.deps.turnStartedAt(thread, linked),
+      signal,
+      CONTEXT_READ_TIMEOUT_MS,
+    );
+    if (at !== null && !signal.aborted) this.noteTurnStart(thread, at);
   }
 
   // Sets the lease's role from the thread's context; null, or why it is not warmed.
@@ -1263,19 +1388,36 @@ export class CacheWarmer {
     lease.role = classified.role;
     lease.label = classified.label;
     lease.reviewHold = classified.reviewHold;
+    lease.reportedGrace = classified.reportedGrace;
     return null;
   }
 
-  // The promise's value, or null once it fails or takes longer than ms.
-  private within<T>(promise: Promise<T | null>, ms: number): Promise<T | null> {
-    return new Promise((resolve) => {
+  // What `read` answers, or null once it fails or takes longer than ms. The read gets its own
+  // deadline, linked to the caller's signal, and one that fails or times out is aborted: no read
+  // outlives the wait for it, whatever becomes of the caller.
+  private async within<T>(
+    read: (signal: AbortSignal) => Promise<T | null>,
+    signal: AbortSignal,
+    ms: number,
+  ): Promise<T | null> {
+    const deadline = new AbortController();
+    const linked = AbortSignal.any([signal, deadline.signal]);
+    const value = await new Promise<T | null>((resolve) => {
       const timer = this.deps.timers.setTimeout(() => resolve(null), ms);
       const settle = (value: T | null) => {
         this.deps.timers.clearTimeout(timer);
         resolve(value);
       };
-      promise.then(settle, () => settle(null));
+      (async () => read(linked))().then(settle, () => settle(null));
     });
+    if (value === null) deadline.abort(new Error("read failed or timed out"));
+    return value;
+  }
+
+  // A background wait that BB now reads as idle ended without the thread resuming, unless a review
+  // still holds the thread.
+  private backgroundEnded(lease: Lease, state: WaitState): boolean {
+    return lease.waitingOn === "background" && state === "idle" && !this.reviewHeld(lease);
   }
 
   // Whether the next refresh is expected to pay, from what the thread waits on now.

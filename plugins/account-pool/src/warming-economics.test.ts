@@ -36,6 +36,7 @@ function decide(
     stepMs?: number;
     coveredMinutes?: number;
     reviewHoldMinutes?: number;
+    reportedGraceMinutes?: number;
   } = {},
 ) {
   return decideRefresh(history, {
@@ -52,6 +53,10 @@ function decide(
       overrides.reviewHoldMinutes === undefined
         ? null
         : { untilMs: overrides.reviewHoldMinutes * MINUTE, why: "review of W1 by W2 running (A2)" },
+    reportedGrace:
+      overrides.reportedGraceMinutes === undefined
+        ? null
+        : { untilMs: overrides.reportedGraceMinutes * MINUTE, why: "W1 reported A1" },
   });
 }
 
@@ -245,5 +250,28 @@ describe("D440: review holds", () => {
     );
     // A hold far past maxWaitMinutes is the same, however few refreshes fit.
     expect(decide(never, "idle", "worker", 4, { reviewHoldMinutes: 120, maxAgeMinutes: 20 }).refresh).toBe(false);
+  });
+});
+
+describe("reported grace", () => {
+  const never = new ResumeHistory(samples("idle", "worker", Array(50).fill(null)));
+  const graced = { reviewHoldMinutes: 45, reportedGraceMinutes: 10 };
+
+  it("ends an idle wait's review hold at the grace and sends nothing after it", () => {
+    // Without the grace the hold runs to minute 45; with it, to minute 10: refreshes at 3.5 and 7.5.
+    expect(decide(never, "idle", "worker", 3.5, graced)).toMatchObject({ refresh: true, horizonMs: 9 * MINUTE });
+    // The entry already lasts past minute 10: the hold is over and the odds say no.
+    expect(decide(never, "idle", "worker", 7.5, { ...graced, coveredMinutes: 10.5 }).refresh).toBe(false);
+    expect(decide(never, "idle", "worker", 10, graced)).toMatchObject({
+      refresh: false,
+      why: "W1 reported A1: its report reached reportedGraceMinutes",
+    });
+    expect(decide(never, "idle", "worker", 0.5, { ...graced, reportedGraceMinutes: 0 }).refresh).toBe(false);
+  });
+
+  it("leaves tool, background and question waits alone", () => {
+    expect(decide(never, "tool", "worker", 30, graced).refresh).toBe(true);
+    expect(decide(never, "background", "worker", 30, { ...graced, maxBackgroundAgeMinutes: 40 }).refresh).toBe(true);
+    expect(decide(never, "question", "worker", 30, graced)).toMatchObject({ refresh: true, why: expect.stringMatching(/^held: /) });
   });
 });

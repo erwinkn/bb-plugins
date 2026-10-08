@@ -197,8 +197,6 @@ export interface DelegateInput {
   handoffs?: string[];
   /** Explicit approval posture for the new thread; omitted uses the environment's configured default. */
   permissionMode?: "accept-edits" | "auto" | "full";
-  /** Continue work even though the worker's large prompt cache has gone cold (T142). */
-  resumeCold?: boolean;
 }
 
 export interface DelegateResult {
@@ -3950,9 +3948,9 @@ export class ProjectsService {
     return `${reviewer.ref} is a reviewer, and reviews are not reused. Spawn a fresh reviewer instead: initiative_spawn {role:"review",reviews:"${reviewed}",handoffs:["${findings}"],label:"Review ${reviewed}",purpose:"review the fixes",text:"<what changed, what to check>"}, with reviews naming the latest worker on the change (e.g. a fix worker). A plain message (no work) still reaches ${reviewer.ref}.`;
   }
 
-  /** T142: refuses more work for an idle worker whose large prompt cache has gone cold, unless resumeCold. */
+  /** T142: refuses more work for an idle worker whose large prompt cache has gone cold. Only the user can resume it. */
   async refuseColdResume(projectId: string, input: DelegateInput): Promise<void> {
-    if (input.route !== "continue" || !input.worker || input.resumeCold) return;
+    if (input.route !== "continue" || !input.worker) return;
     const project = this.requireProject(projectId);
     const worker = this.requireWorker(project, input.worker);
     // delegate refuses work for a reviewer outright.
