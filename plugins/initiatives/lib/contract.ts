@@ -3,6 +3,7 @@ import { z } from "zod";
 import { commandSchema } from "./commands";
 import { legacyThreadCreateSchema } from "./legacy";
 import type { MergeQueue } from "./merge-queue";
+import type { PrNote } from "./pr-notes";
 import type { Overview } from "./overview";
 import { projectSummarySchema, treeSchema } from "./tree-schema";
 import { readOptionsSchema, READ_VIEWS } from "./read";
@@ -74,13 +75,20 @@ export const projectsContract = defineRpcContract({
   },
   /**
    * Open PRs by the `gh` user in the member projects' GitHub repositories,
-   * in merge-queue order. Served from a server cache refreshed every two
-   * minutes; `refresh` asks for a fresh read now. Fetch failures come back
-   * per repository beside the last good data, never as a thrown error.
+   * in merge-queue order. Answered from a server cache at once, never waiting
+   * on GitHub (D441): a stale repository (two minutes) or `refresh` starts a
+   * fetch behind the answer, shown as `fetching`, and its end is announced on
+   * the merge-queue-changed realtime channel. Fetch failures come back per
+   * repository beside the last good data, never as a thrown error.
    */
   mergeQueue: {
     input: z.object({ projectId: id, refresh: z.boolean().optional() }),
     output: z.custom<MergeQueue>(),
+  },
+  /** D442: one PR's whole notes log, oldest first (the queue carries only the last few). */
+  prNotes: {
+    input: z.object({ projectId: id, url: z.string().min(1).max(300) }),
+    output: z.custom<PrNote[]>(),
   },
   /**
    * A client's read timed out; logged as one warn line. `read` names the view

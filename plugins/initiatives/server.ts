@@ -52,6 +52,9 @@ import {
 import { LiveThreads, Recent } from "./lib/live-threads";
 import { MergeQueueCache } from "./lib/merge-queue-server";
 import { canonicalPrUrl, prToolSchema } from "./lib/pr-stages";
+import { AssignedPrs, COORDINATOR, recordPrs, type PrCaller } from "./lib/pr-records";
+import { branchThreadId } from "./lib/merge-queue";
+import { prSummary } from "./lib/pr-map";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
 
@@ -378,6 +381,7 @@ export default function plugin(bb: BbPluginApi) {
         }
       : null;
   };
+  const assignedPrs = new AssignedPrs(store);
   const mergeQueue = new MergeQueueCache({
     memberProjectIds: (projectId) => service.requireProject(projectId).memberProjectIds,
     project: async (bbProjectId) => {
@@ -386,10 +390,20 @@ export default function plugin(bb: BbPluginApi) {
     },
     workers: (projectId) =>
       new Map(store.workers(projectId).flatMap((w) => (w.threadId ? [[w.threadId, w.ref] as const] : []))),
-    prStages: (projectId) => store.prStages(projectId),
-  });
+    prRecords: (projectId) => store.prRecords(projectId),
+    assignedPrs: (projectId) => assignedPrs.read(projectId),
+    notes: (projectId) => service.prNotes.summaries(projectId),
+  }, undefined, undefined,
+  // D441: reads never wait on GitHub; a finished fetch tells the dashboards to read again.
+  (repo) => bb.realtime.publish("merge-queue-changed", { repo }));
   bb.rpc.register(projectsContract, {
     mergeQueue: ({ projectId, refresh }) => mergeQueue.read(projectId, { refresh }),
+    prNotes: ({ projectId, url }) => {
+      service.requireProject(projectId);
+      const key = canonicalPrUrl(url);
+      if (!key) throw new ProjectError("Expected a GitHub PR URL.");
+      return service.prNotes.list(projectId, key);
+    },
     resetSetting: async ({ field }) => {
       await preferences.handle.experimental_set({ [field]: null });
       return { ok: true as const };
@@ -643,7 +657,7 @@ export default function plugin(bb: BbPluginApi) {
     const work = m?.worker ? workerWork(store, m.project.id, m.worker.num, m.worker.generation).assignments[0] : null;
     if (worker)
       return {
-        tools: ["initiative_read", "initiative_report", "initiative_message", "initiative_decision"],
+        tools: ["initiative_read", "initiative_report", "initiative_message", "initiative_decision", "initiative_pr"],
         skills: ["initiative-worker"],
         instructions: guidance().workerInstructions + "\n\n" + `You are ${worker.ref} "${worker.label}" (${worker.area}), role ${worker.role}${m && !m.former ? "" : " (membership still being confirmed)"}.`,
       };
@@ -858,25 +872,39 @@ export default function plugin(bb: BbPluginApi) {
       return JSON.stringify({ ref: result.ref, madeBy: result.madeBy, status: result.status, review: result.review });
     },
   });
-  /** initiative_pr and `bb initiative pr`: record or clear PR workflow stages, in one transaction. */
-  const setPrStages = (projectId: string, raw: unknown, tool: string) => {
+  /** initiative_pr and `bb initiative pr`: record PR stages, categories and notes, in one transaction. */
+  const setPrStages = (projectId: string, raw: unknown, tool: string, caller: PrCaller) => {
     const input = parsed(prToolSchema, raw, tool);
     service.requireProject(projectId);
-    const at = Date.now();
-    const prs = store.db.transaction(() => input.prs.map(({ url, stage, note }) => {
-      const key = canonicalPrUrl(url)!;
-      store.setPrStage(projectId, key, stage === "clear" ? null : stage, stage === "clear" ? null : note || null, at);
-      return { url: key, stage, ...(note && stage !== "clear" ? { note } : {}) };
-    }))();
-    return { prs };
+    return store.db.transaction(() => recordPrs(store, service.prNotes, projectId, input, Date.now(), caller))();
   };
+  /** D442: a worker notes the PRs its assignments name, the coordinator gave it, or its branch opened. */
+  const workerCaller = (projectId: string, worker: { num: number; ref: string; threadId: string | null }, threadId: string): PrCaller => ({
+    author: worker.ref,
+    threadId,
+    worker: {
+      ref: worker.ref,
+      owns: (url) => {
+        if (assignedPrs.ofWorker(projectId, worker.num).has(url) || store.prRecords(projectId).get(url)?.worker === worker.ref) return true;
+        const head = mergeQueue.cachedPr(url)?.head;
+        return !!head && branchThreadId(head) === worker.threadId;
+      },
+    },
+  });
   registerTool({
     name: "initiative_pr",
     parameters: jsonSchema(prToolSchema),
-    description: 'Set the workflow stage of pull requests in the merge queue; batch them in one call. {prs:[{url:"https://github.com/o/r/pull/12",stage:"in-review",note?:"W14 reviewing"}]}. Stages: working, ready-for-review, in-review, ready-for-erwin, experiment; clear removes yours, and the dashboard guesses from GitHub again. Coordinator only.',
+    description: 'Keep each pull request\'s record and notes; batch PRs in one call. Only the fields given change; null clears one. {prs:[{url:"https://github.com/o/r/pull/12",stage:"in-review",note?:"W14 reviewing",category?:"Security",waitingOn?:"W14: move the lock to resume",changes?:["drop the retry"],decision?:{text:"Keep 5m TTL",link?:"D437, a thread id or URL"},worker?:"W14",assignment?:"A301",notes?:[{kind?:"note"|"question"|"comment",text:"Caveat: no migration test",link?}],answered?:[{n:3,text?:"Yes, 5m"}]}]}. Stages: working, ready-for-review, in-review, ready-for-erwin, experiment; clear removes yours, and the dashboard guesses from GitHub again. category is a free-form workstream; reuse one from the result\'s categories. changes replace the whole list. notes append to the PR\'s log (the result gives their numbers n); answered closes questions by n. An assignment names its worker. Rename or merge categories with {rename:[{from:"Sec",to:"Security"}]}. Workers only add notes, to PRs their assignments name or their branch opened.',
     async execute(raw, { threadId }) {
+      if (!threadId) throw new ProjectError("Use Initiative tools from a BB thread.");
+      await ensureMember(threadId);
+      const m = store.membership(threadId);
+      if (m && !m.former && m.workerNum > 0 && m.worker) {
+        const { project, worker } = service.workerOf(threadId);
+        return receipt(setPrStages(project.id, raw, "initiative_pr", workerCaller(project.id, worker, threadId)));
+      }
       const p = await coordinatorProject(threadId);
-      return receipt(setPrStages(p.id, raw, "initiative_pr"));
+      return receipt(setPrStages(p.id, raw, "initiative_pr", { ...COORDINATOR, threadId }));
     },
   });
   registerTool({
@@ -905,7 +933,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_read",
-    description: 'Read the Initiative. {} is the overview. {refs:["W12","T40","A301"]} reads exact records (a W# includes its latest report). {view:"workers"|"tasks"|"reports"|"context"|"activity"} lists them; limit 1..30, offset to page. detailed:true for full records; fields picks some, e.g. {refs:["W12"],fields:["report"]} for a worker\'s full latest report. Reading never wakes agents.',
+    description: 'Read the Initiative. {} is the overview. {refs:["W12","T40","A301"]} reads exact records (a W# includes its latest report). {view:"workers"|"tasks"|"reports"|"context"|"activity"} lists them; {view:"prs"} summarizes open PRs by category and stage, their stacks and what the user can review next; limit 1..30, offset to page. detailed:true for full records; fields picks some, e.g. {refs:["W12"],fields:["report"]} for a worker\'s full latest report. Reading never wakes agents.',
     parameters: agentReadSchema,
     async execute(input, { threadId }) {
       if (!threadId) throw new ProjectError("Use initiative_read from an Initiative thread.");
@@ -927,6 +955,7 @@ export default function plugin(bb: BbPluginApi) {
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
       if (view === "context") return JSON.stringify(readContext(store, m.project.id));
       if (view === "memory") return JSON.stringify(readMemory(m.project.id));
+      if (view === "prs") return JSON.stringify(prSummary(await mergeQueue.read(m.project.id)));
       return JSON.stringify(read(m.project.id, view, options));
     },
   });
@@ -1157,7 +1186,7 @@ export default function plugin(bb: BbPluginApi) {
               throw new ProjectError("A coordinator cannot set another initiative's PR stages.");
           }
           if (!id) throw new ProjectError("Pass the initiative id: bb initiative pr '<json>' <initiative-id>.");
-          result = setPrStages(id, JSON.parse(value), "bb initiative pr");
+          result = setPrStages(id, JSON.parse(value), "bb initiative pr", ctx.threadId ? { ...COORDINATOR, threadId: ctx.threadId } : { ...COORDINATOR, author: "user" });
         } else if (
           action === "report" &&
           value &&

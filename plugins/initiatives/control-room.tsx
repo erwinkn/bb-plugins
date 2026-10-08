@@ -20,7 +20,7 @@ import type { projectsContract } from "./lib/contract";
 import { UsagePage } from "./usage-view";
 import "./control-room.css";
 
-type Tab = "inbox" | "decisions" | "threads" | "tasks" | "prs" | "context" | "usage" | "log";
+export type Tab = "inbox" | "decisions" | "threads" | "tasks" | "prs" | "context" | "usage" | "log";
 type Inventory = typeof projectsContract.inventory.output._output;
 type Run = (command: Command) => Promise<unknown>;
 const message = (error: unknown) =>
@@ -242,6 +242,7 @@ const tabSpecs = [
   ["log", "Log", "log"],
   ["usage", "Usage", "usage"],
 ] as const;
+export const isTab = (value: unknown): value is Tab => tabSpecs.some(([id]) => id === value);
 const TAB_LEVELS = 3;
 function Tabs({
   tab,
@@ -360,6 +361,7 @@ export function ControlRoom({
   renderContext,
   newTask,
   onTab,
+  initialTab = "inbox",
   detailNotice,
   readHandoff,
   mergeQueue,
@@ -369,6 +371,8 @@ export function ControlRoom({
   /** The standard handoff text of a reported assignment, rendered from its stored report. */
   readHandoff?: (ref: string) => Promise<string | null>;
   onTab?: (tab: Tab) => void;
+  /** The tab to open on (a route's or the remembered one); onTab hears it on mount. */
+  initialTab?: Tab;
   detailNotice?: string | null;
   overview: Overview;
   inventory: Inventory;
@@ -382,9 +386,18 @@ export function ControlRoom({
   renderContext: (close: () => void) => ReactNode;
   newTask: ReactNode;
 }) {
-  const [tab, setTab] = useState<Tab>("inbox");
+  const [tab, setTab] = useState<Tab>(initialTab);
   const acceptDecisions = useAcceptAgentDecisions(o, run);
   const chooseTab = (value: Tab) => { setTab(value); onTab?.(value); };
+  // Once, on mount: load what the opening tab needs.
+  useEffect(() => { if (initialTab !== "inbox") onTab?.(initialTab); }, []);
+  // A route change under a mounted dashboard (history, a deep link) opens its tab like a click.
+  const routedTab = useRef(initialTab);
+  useEffect(() => {
+    if (initialTab === routedTab.current) return;
+    routedTab.current = initialTab;
+    if (initialTab !== tab) chooseTab(initialTab);
+  }, [initialTab]);
   const [replace, setReplace] = useState(false);
   const [menu, setMenu] = useState(false);
   const [coordinatorDetail, setCoordinatorDetail] = useState(false);

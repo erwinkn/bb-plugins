@@ -182,7 +182,7 @@ describe("A94 editable native Settings consumers", () => {
     const task = f.task(project.id);
     const [d] = await f.service.delegate(project.id, { ...workerInput(task.ref), profile: fast });
     const config = await configuration(f, d.threadId!);
-    expect(config.tools.map((tool) => tool.name).sort()).toEqual(["initiative_decision", "initiative_message", "initiative_read", "initiative_report"]);
+    expect(config.tools.map((tool) => tool.name).sort()).toEqual(["initiative_decision", "initiative_message", "initiative_pr", "initiative_read", "initiative_report"]);
     expect(config.instructions).toContain('You are W1 "Search" (Archived search), role work.');
     expect(() => f.service.coordinatorOf(d.threadId)).toThrow(/not the current coordinator/);
   });

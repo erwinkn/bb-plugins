@@ -36,8 +36,9 @@ import {
 
 import { isLegacyReport, storedReportSchema } from "./legacy";
 import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-schema";
-import { PR_STAGE_IDS, type PrStage, type PrStageRecord } from "./pr-stages";
+import { PR_STAGE_IDS, type PrRecord, type PrStage } from "./pr-stages";
 import { MEMORY_MIGRATIONS } from "./memory/store";
+import { PR_NOTE_MIGRATIONS } from "./pr-notes";
 
 
 // The plugin server is the only writer. Every multi-row change runs in one
@@ -413,6 +414,30 @@ export const MIGRATIONS = [
   `ALTER TABLE workers ADD COLUMN kind TEXT`,
   // W220 (D431): coordinator memory: mode, log, cursors, tree nodes and saved views.
   ...MEMORY_MIGRATIONS,
+  // W224 (D437, D438): one record per pull request (canonical URL): the stage of pr_stages,
+  // plus category and where it stands. JSON columns: changes [text], decision {text,link,at}.
+  // discussion_thread_id is the D439 hook. Questions live in pr_notes (D442).
+  `CREATE TABLE pr_records (
+    project_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    stage TEXT,
+    note TEXT,
+    stage_set_at INTEGER,
+    category TEXT,
+    waiting_on TEXT,
+    changes TEXT,
+    decision TEXT,
+    worker TEXT,
+    assignment TEXT,
+    discussion_thread_id TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, url)
+  )`,
+  // W224: carry the recorded stages over; pr_stages stays, unread, so an older build still works.
+  `INSERT INTO pr_records (project_id, url, stage, note, stage_set_at, updated_at)
+    SELECT project_id, url, stage, note, set_at, set_at FROM pr_stages`,
+  // W232 (D442): each PR's notes log.
+  ...PR_NOTE_MIGRATIONS,
 ];
 
 export const ACTIVITY_LIMIT = 300;
@@ -2843,27 +2868,72 @@ export class Store {
     })();
   }
 
-  /** W198: one stage per PR; `null` removes it. `url` is canonical (see canonicalPrUrl). */
-  setPrStage(projectId: string, url: string, stage: PrStage | null, note: string | null, at: number): void {
-    if (stage === null) {
-      this.db.prepare("DELETE FROM pr_stages WHERE project_id = ? AND url = ?").run(projectId, url);
-      return;
-    }
-    this.db.prepare(`INSERT INTO pr_stages (project_id, url, stage, note, set_at) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(project_id, url) DO UPDATE SET stage = excluded.stage, note = excluded.note, set_at = excluded.set_at`)
-      .run(projectId, url, stage, note, at);
+  /**
+   * W224: the coordinator's PR records by canonical URL. A stage this version
+   * doesn't know reads as none (the queue guesses one); malformed JSON reads as empty.
+   */
+  prRecords(projectId: string): Map<string, PrRecord> {
+    const known = new Set<string>(PR_STAGE_IDS);
+    const json = <T,>(value: unknown, fallback: T): T => {
+      try { return typeof value === "string" ? JSON.parse(value) as T : fallback; } catch { return fallback; }
+    };
+    const rows = this.db.prepare("SELECT * FROM pr_records WHERE project_id = ?").all(projectId) as Row[];
+    return new Map(rows.map((row) => {
+      const stage = known.has(row.stage as string) ? row.stage as PrStage : null;
+      return [row.url as string, {
+        url: row.url as string,
+        stage,
+        note: stage ? (row.note as string | null) ?? null : null,
+        setAt: stage ? (row.stage_set_at as number | null) ?? null : null,
+        category: (row.category as string | null) ?? null,
+        waitingOn: (row.waiting_on as string | null) ?? null,
+        changes: json<string[]>(row.changes, []),
+        decision: json<PrRecord["decision"]>(row.decision, null),
+        worker: (row.worker as string | null) ?? null,
+        assignment: (row.assignment as string | null) ?? null,
+        discussionThreadId: (row.discussion_thread_id as string | null) ?? null,
+        updatedAt: row.updated_at as number,
+      }];
+    }));
   }
 
-  /** Recorded PR stages by canonical URL; a stage this version doesn't know is skipped. */
-  prStages(projectId: string): Map<string, PrStageRecord> {
-    const known = new Set<string>(PR_STAGE_IDS);
-    const rows = this.db.prepare("SELECT url, stage, note, set_at FROM pr_stages WHERE project_id = ?").all(projectId) as Row[];
-    return new Map(rows.filter((row) => known.has(row.stage as string)).map((row) => [row.url as string, {
-      url: row.url as string,
-      stage: row.stage as PrStage,
-      note: (row.note as string | null) ?? null,
-      setAt: row.set_at as number,
-    }]));
+  /** Writes one PR record whole; a record with nothing left in it is removed. */
+  savePrRecord(projectId: string, r: PrRecord): void {
+    const empty = !r.stage && !r.category && !r.waitingOn && !r.changes.length && !r.decision
+      && !r.worker && !r.assignment && !r.discussionThreadId;
+    if (empty) {
+      this.db.prepare("DELETE FROM pr_records WHERE project_id = ? AND url = ?").run(projectId, r.url);
+      return;
+    }
+    const list = <T,>(values: T[]) => (values.length ? JSON.stringify(values) : null);
+    this.db.prepare(`INSERT OR REPLACE INTO pr_records (project_id, url, stage, note, stage_set_at, category, waiting_on,
+      changes, decision, worker, assignment, discussion_thread_id, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(projectId, r.url, r.stage, r.stage ? r.note : null, r.stage ? r.setAt : null, r.category, r.waitingOn,
+        list(r.changes), r.decision ? JSON.stringify(r.decision) : null, r.worker, r.assignment,
+        r.discussionThreadId, r.updatedAt);
+  }
+
+  /** Moves every PR of category `from` (any case) to `to`, merging when `to` exists; returns how many moved. */
+  renamePrCategory(projectId: string, from: string, to: string): number {
+    return this.db.prepare("UPDATE pr_records SET category = ? WHERE project_id = ? AND category = ? COLLATE NOCASE")
+      .run(to, projectId, from).changes;
+  }
+
+  /** W224: changes whenever any of the Initiative's assignments does; a cache key for prMentions. */
+  assignmentsStamp(projectId: string): string {
+    const row = this.db.prepare("SELECT count(*) AS n, max(updated_at) AS at, total(report_seq) AS seq FROM assignments WHERE project_id = ?")
+      .get(projectId) as Row;
+    return `${row.n}:${row.at}:${row.seq}`;
+  }
+
+  /** W224: the assignments whose brief or report names a GitHub PR, oldest first; the report as stored JSON. */
+  prMentions(projectId: string): { num: number; workerNum: number; role: string; brief: string; report: string | null }[] {
+    const rows = this.db.prepare(`SELECT num, worker_num, role, brief_text, report FROM assignments
+      WHERE project_id = ? AND (brief_text LIKE '%github.com/%/pull/%' OR report LIKE '%github.com/%/pull/%') ORDER BY num`)
+      .all(projectId) as Row[];
+    return rows.map((row) => ({ num: row.num as number, workerNum: row.worker_num as number, role: row.role as string,
+      brief: (row.brief_text as string | null) ?? "", report: (row.report as string | null) ?? null }));
   }
 
   usageTurns(threadId: string): UsageTurn[] {

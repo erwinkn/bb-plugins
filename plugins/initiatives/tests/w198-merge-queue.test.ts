@@ -5,14 +5,15 @@ import {
   branchThreadId,
   classify,
   githubRepo,
-  groupQueue,
   orderQueue,
+  parseDetailsPage,
   parsePullRequests,
   githubStage,
   summarizeChecks,
 } from "../lib/merge-queue";
-import { PR_STAGES, type PrStageRecord } from "../lib/pr-stages";
-import { MergeQueueCache, REFRESH_MS, type GhRunner } from "../lib/merge-queue-server";
+import { PR_STAGES, blankPrRecord, type PrRecord } from "../lib/pr-stages";
+import { groupPrs } from "../lib/pr-map";
+import { MergeQueueCache, REFRESH_MS, type GhRunner, type MergeQueueSources } from "../lib/merge-queue-server";
 
 /** One `gh pr list --json` entry, shaped like real output. */
 const ghPr = (overrides: Record<string, unknown> = {}) => ({
@@ -73,6 +74,16 @@ describe("parsing gh pr list", () => {
       stageSetAt: null,
       reasons: [],
       worker: null,
+      size: null,
+      reviewers: [],
+      category: null,
+      waitingOn: null,
+      changes: [],
+      decision: null,
+      discussionThreadId: null,
+      stack: null,
+      available: false,
+      notes: { count: 0, recent: [], open: [] },
     });
   });
 
@@ -141,8 +152,8 @@ describe("merge-queue order", () => {
       ghPr({ number: 5, url: url(5), createdAt: at(4) }),
       ghPr({ number: 6, url: url(6), isDraft: true, createdAt: at(5) }),
     ]));
-    const record = (n: number, stage: PrStageRecord["stage"], note: string | null = null): [string, PrStageRecord] =>
-      [url(n), { url: url(n), stage, note, setAt: 1000 + n }];
+    const record = (n: number, stage: PrRecord["stage"], note: string | null = null): [string, PrRecord] =>
+      [url(n), { ...blankPrRecord(url(n), 1000 + n), stage, note, setAt: 1000 + n }];
     // Recorded keys are canonical (lower case); PR #4 matches whatever its case.
     const staged = assignStages(prs.map((pr) => pr.number === 4 ? { ...pr, url: "https://github.com/ErwinKN/bb/pull/4" } : pr), new Map([
       record(4, "in-review", "W14 reviewing"),
@@ -156,7 +167,7 @@ describe("merge-queue order", () => {
       [5, "ready-for-review", "github", null],
       [6, "experiment", "coordinator", null],
     ]);
-    expect(groupQueue(orderQueue(staged)).map((g) => [g.label, g.pullRequests.map((pr) => pr.number)])).toEqual([
+    expect(groupPrs(orderQueue(staged), "stage", PR_STAGES).map((g) => [g.label, g.groups.flatMap((c) => c.pullRequests).map((pr) => pr.number)])).toEqual([
       ["Ready for you", [3]],
       ["In review", [4]],
       ["Ready for review", [2, 5]],
@@ -174,7 +185,7 @@ describe("merge-queue order", () => {
       ghPr({ number: 2, headRefName: "bb/w12-other-thr_unknown" }),
     ]));
     const labelled = attachWorkers(prs, new Map([["thr_5t6t6jjct3", "W198"]]));
-    expect(labelled.map((pr) => pr.worker)).toEqual([{ ref: "W198", threadId: "thr_5t6t6jjct3" }, null]);
+    expect(labelled.map((pr) => pr.worker)).toEqual([{ ref: "W198", threadId: "thr_5t6t6jjct3", assignment: null, role: null, source: "branch" }, null]);
   });
 });
 
@@ -184,53 +195,94 @@ describe("MergeQueueCache", () => {
     "proj-fork": { name: "bb-fork", gitRemoteUrl: "git@github.com:erwinkn/bb.git" },
     "proj-local": { name: "scratch", gitRemoteUrl: null },
   };
+  const sources = (overrides: Partial<MergeQueueSources> = {}): MergeQueueSources => ({
+    memberProjectIds: () => ["proj-plugins"], project: async (id) => remotes[id]!, workers: () => new Map(),
+    prRecords: () => new Map(), assignedPrs: () => new Map(), notes: () => new Map(), ...overrides,
+  });
   const setup = (gh: GhRunner, members = ["proj-plugins", "proj-fork", "proj-local"]) => {
     let now = 1_000_000;
     const project = vi.fn(async (id: string) => remotes[id]!);
+    const fetched = vi.fn();
     const cache = new MergeQueueCache(
-      { memberProjectIds: () => members, project, workers: () => new Map([["thr_abc", "W7"]]), prStages: () => new Map() },
+      sources({ memberProjectIds: () => members, project, workers: () => new Map([["thr_abc", "W7"]]) }),
       gh,
       () => now,
+      fetched,
     );
-    return { cache, project, advance: (ms: number) => { now += ms; }, at: () => now };
+    return { cache, project, fetched, advance: (ms: number) => { now += ms; }, at: () => now };
   };
+  /** A read, then the one after the fetch it started settles: what a client sees once told. */
+  const settledRead = async (cache: MergeQueueCache, id: string, options: { refresh?: boolean } = {}) => {
+    await cache.read(id, options);
+    await cache.settled();
+    return cache.read(id);
+  };
+  const page = (nodes: unknown[], next: string | null = null) =>
+    JSON.stringify({ data: { search: { pageInfo: { hasNextPage: next !== null, endCursor: next }, nodes } } });
   const answers = (lists: Record<string, unknown[]>) =>
     vi.fn<GhRunner>(async (args) => {
-      if (args[0] === "api") return "erwinkn\n";
+      if (args[1] === "user") return "erwinkn\n";
+      if (args[1] === "graphql") return page([]);
       const repo = args[args.indexOf("--repo") + 1]!;
       return JSON.stringify(lists[repo] ?? []);
     });
+  const fresh = (at: number) => ({ fetchedAt: at, error: null, fetching: false, detailsFetchedAt: at, detailsError: null });
 
-  it("reads each member's GitHub repo once per two minutes with one gh call per repo", async () => {
+  it("answers at once from the cache and fetches behind it, never waiting on gh (D441)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const gh = vi.fn<GhRunner>(async (args) => {
+      await gate;
+      if (args[1] === "user") return "erwinkn";
+      return args[1] === "graphql" ? page([]) : JSON.stringify([ghPr()]);
+    });
+    const { cache, fetched } = setup(gh, ["proj-plugins"]);
+    // gh hangs: the read still answers, with the first fetch running.
+    const first = await cache.read("a");
+    expect(first.pullRequests).toEqual([]);
+    expect(first.repos).toEqual([{ repo: "erwinkn/bb-plugins", fetchedAt: null, error: null, fetching: true, detailsFetchedAt: null, detailsError: null }]);
+    expect(fetched).not.toHaveBeenCalled();
+    release();
+    await cache.settled();
+    expect(fetched).toHaveBeenCalledWith("erwinkn/bb-plugins");
+    const second = await cache.read("a");
+    expect(second.repos[0]!.fetching).toBe(false);
+    expect(second.pullRequests.map((pr) => pr.number)).toEqual([68]);
+  });
+
+  it("reads each member's GitHub repo once per two minutes with one gh list per repo", async () => {
     const gh = answers({
       "erwinkn/bb-plugins": [ghPr({ headRefName: "bb/w7-x-thr_abc" })],
       "erwinkn/bb": [ghPr({ number: 9, url: "https://github.com/erwinkn/bb/pull/9", isDraft: true })],
     });
     const { cache, advance, at } = setup(gh);
-    const first = await cache.read("init-1");
+    const first = await settledRead(cache, "init-1");
     expect(first.login).toBe("erwinkn");
     expect(first.repos).toEqual([
-      { repo: "erwinkn/bb-plugins", fetchedAt: at(), error: null },
-      { repo: "erwinkn/bb", fetchedAt: at(), error: null },
+      { repo: "erwinkn/bb-plugins", ...fresh(at()) },
+      { repo: "erwinkn/bb", ...fresh(at()) },
     ]);
     expect(first.skipped).toEqual([{ project: "scratch", reason: "no GitHub origin remote" }]);
     expect(first.pullRequests.map((pr) => [pr.repo, pr.number, pr.stage, pr.worker?.ref ?? null])).toEqual([
       ["erwinkn/bb-plugins", 68, "ready-for-review", "W7"],
       ["erwinkn/bb", 9, "working", null],
     ]);
-    // The account resolves once; each repo is one batched list call.
-    expect(gh.mock.calls.filter(([args]) => args[0] === "api")).toHaveLength(1);
+    // The account resolves once; each repo is one batched list call, with its details query beside it.
+    expect(gh.mock.calls.filter(([args]) => args[0] === "api" && args[1] === "user")).toHaveLength(1);
     const list = gh.mock.calls.find(([args]) => args[0] === "pr")![0];
     expect(list).toEqual(expect.arrayContaining(["--repo", "erwinkn/bb-plugins", "--author", "erwinkn", "--state", "open", "--json"]));
-    expect(gh).toHaveBeenCalledTimes(3);
+    const details = gh.mock.calls.find(([args]) => args[1] === "graphql")![0];
+    expect(details).toEqual(expect.arrayContaining(["q=repo:erwinkn/bb-plugins is:pr is:open author:erwinkn"]));
+    expect(details).not.toContain("--paginate");
+    expect(gh).toHaveBeenCalledTimes(5);
 
     // Within two minutes reads come from the cache.
     advance(REFRESH_MS - 1);
-    await cache.read("init-1");
-    expect(gh).toHaveBeenCalledTimes(3);
-    advance(1);
-    await cache.read("init-1");
+    await settledRead(cache, "init-1");
     expect(gh).toHaveBeenCalledTimes(5);
+    advance(1);
+    await settledRead(cache, "init-1");
+    expect(gh).toHaveBeenCalledTimes(9);
   });
 
   it("treats owner/repo case variants as one repository, shown in the remote's casing", async () => {
@@ -239,105 +291,196 @@ describe("MergeQueueCache", () => {
       upper: { name: "bb-plugins", gitRemoteUrl: "https://github.com/ErwinKN/BB-Plugins.git" },
       lower: { name: "bb-plugins-mirror", gitRemoteUrl: "git@github.com:erwinkn/bb-plugins.git" },
     };
-    const cache = new MergeQueueCache({ memberProjectIds: () => ["upper", "lower"], project: async (id) => variants[id]!, workers: () => new Map(), prStages: () => new Map() }, gh);
-    const q = await cache.read("a");
+    const cache = new MergeQueueCache(sources({ memberProjectIds: () => ["upper", "lower"], project: async (id) => variants[id]! }), gh);
+    const q = await settledRead(cache, "a");
     expect(q.repos.map((r) => r.repo)).toEqual(["ErwinKN/BB-Plugins"]);
     expect(q.pullRequests.map((pr) => [pr.repo, pr.number])).toEqual([["ErwinKN/BB-Plugins", 68]]);
-    // One account lookup and one list call: the variants share a cache entry.
-    expect(gh).toHaveBeenCalledTimes(2);
+    // One account lookup and one list (and details) call: the variants share a cache entry.
+    expect(gh).toHaveBeenCalledTimes(3);
   });
 
-  it("applies the coordinator's recorded stages on every read", async () => {
+  it("applies the coordinator's recorded stages and the notes on every read", async () => {
     const gh = answers({ "erwinkn/bb-plugins": [ghPr()] });
-    const stages = new Map<string, PrStageRecord>();
-    const cache = new MergeQueueCache({
-      memberProjectIds: () => ["proj-plugins"],
-      project: async (id) => remotes[id]!,
-      workers: () => new Map(),
-      prStages: () => stages,
-    }, gh);
-    expect((await cache.read("a")).pullRequests.map((pr) => [pr.stage, pr.stageSource])).toEqual([["ready-for-review", "github"]]);
-    stages.set("https://github.com/erwinkn/bb-plugins/pull/68", { url: "https://github.com/erwinkn/bb-plugins/pull/68", stage: "in-review", note: null, setAt: 5 });
+    const stages = new Map<string, PrRecord>();
+    const url = "https://github.com/erwinkn/bb-plugins/pull/68";
+    const notes = new Map([[url, { count: 1, recent: [{ n: 1, at: 5, author: "W7", kind: "note" as const, text: "Rebased", link: "A3", answered: null }], open: [] }]]);
+    const cache = new MergeQueueCache(sources({ prRecords: () => stages, notes: () => notes }), gh);
+    expect((await settledRead(cache, "a")).pullRequests.map((pr) => [pr.stage, pr.stageSource, pr.notes.count])).toEqual([["ready-for-review", "github", 1]]);
+    stages.set(url, { ...blankPrRecord(url, 5), stage: "in-review", setAt: 5 });
     // A stage change needs no GitHub fetch: the cached list is staged again.
     const q = await cache.read("a");
     expect(q.pullRequests.map((pr) => [pr.stage, pr.stageSource])).toEqual([["in-review", "coordinator"]]);
     expect(q.stages.map((s) => s.id)).toEqual(PR_STAGES.map((s) => s.id));
-    expect(gh).toHaveBeenCalledTimes(2);
+    expect(gh).toHaveBeenCalledTimes(3);
   });
 
-  it("shares one in-flight fetch between concurrent reads and honors a manual refresh", async () => {
+  it("runs one fetch per repository for concurrent reads and honors a manual refresh", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const gh = vi.fn<GhRunner>(async (args) => {
-      if (args[0] === "api") return "erwinkn";
+      if (args[1] === "user") return "erwinkn";
       await gate;
-      return JSON.stringify([ghPr()]);
+      return args[1] === "graphql" ? page([]) : JSON.stringify([ghPr()]);
     });
     const { cache, advance } = setup(gh, ["proj-plugins"]);
-    const reads = [cache.read("a"), cache.read("b")];
+    await Promise.all([cache.read("a"), cache.read("b"), cache.read("a", { refresh: true })]);
     release();
-    const [a, b] = await Promise.all(reads);
-    expect(a.pullRequests).toHaveLength(1);
-    expect(b.pullRequests).toHaveLength(1);
-    expect(gh).toHaveBeenCalledTimes(2);
-    // A refresh right after a fetch reuses it; ten seconds later it reads again.
-    await cache.read("a", { refresh: true });
-    expect(gh).toHaveBeenCalledTimes(2);
-    advance(10_000);
-    await cache.read("a", { refresh: true });
+    await cache.settled();
+    expect((await cache.read("b")).pullRequests).toHaveLength(1);
     expect(gh).toHaveBeenCalledTimes(3);
+    // A refresh right after a fetch reuses it; ten seconds later it reads again.
+    await settledRead(cache, "a", { refresh: true });
+    expect(gh).toHaveBeenCalledTimes(3);
+    advance(10_000);
+    await settledRead(cache, "a", { refresh: true });
+    expect(gh).toHaveBeenCalledTimes(5);
+  });
+
+  it("keeps the repository's fetch in flight until both calls settle, so no second details query overlaps (W229)", async () => {
+    let releaseDetails!: () => void;
+    const detailsGate = new Promise<void>((resolve) => { releaseDetails = resolve; });
+    let detailsRunning = 0;
+    let most = 0;
+    const gh = vi.fn<GhRunner>(async (args) => {
+      if (args[1] === "user") return "erwinkn";
+      if (args[1] === "graphql") {
+        most = Math.max(most, ++detailsRunning);
+        await detailsGate;
+        detailsRunning--;
+        return page([]);
+      }
+      throw new Error("HTTP 502");
+    });
+    const { cache, advance } = setup(gh, ["proj-plugins"]);
+    await cache.read("a");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The list failed at once; the details still run, so a forced refresh starts nothing.
+    advance(10_000);
+    const during = await cache.read("a", { refresh: true });
+    expect(during.repos[0]!.fetching).toBe(true);
+    releaseDetails();
+    await cache.settled();
+    expect(most).toBe(1);
+    expect(gh.mock.calls.filter(([args]) => args[1] === "graphql")).toHaveLength(1);
+  });
+
+  it("adds each PR's size and reviewers; a failed details query keeps sizes, withholds reviewers and says so (W229)", async () => {
+    let details: string | Error = page([
+      { number: 68, additions: 908, deletions: 386, changedFiles: 48, commits: { totalCount: 5 },
+        latestReviews: { nodes: [{ author: { login: "coderabbitai" }, state: "COMMENTED" }, { author: { login: "alice" }, state: "APPROVED" }] },
+        reviewRequests: { nodes: [{ requestedReviewer: { login: "bob" } }, { requestedReviewer: { name: "core" } }, { requestedReviewer: { login: "alice" } }] } },
+      "not a PR",
+    ]);
+    const gh = vi.fn<GhRunner>(async (args) => {
+      if (args[1] === "user") return "erwinkn";
+      if (args[1] === "graphql") { if (details instanceof Error) throw details; return details; }
+      return JSON.stringify([ghPr(), ghPr({ number: 69, url: "https://github.com/erwinkn/bb-plugins/pull/69" })]);
+    });
+    const { cache, advance, at } = setup(gh, ["proj-plugins"]);
+    const first = await settledRead(cache, "a");
+    const loadedAt = at();
+    expect(first.pullRequests.map((pr) => [pr.number, pr.size, pr.reviewers])).toEqual([
+      [68, { additions: 908, deletions: 386, files: 48, commits: 5 }, [
+        { login: "coderabbitai", state: "commented" }, { login: "alice", state: "approved" }, { login: "bob", state: "requested" }, { login: "core", state: "requested" },
+      ]],
+      [69, null, []],
+    ]);
+    details = new Error("HTTP 502");
+    advance(REFRESH_MS);
+    const second = await settledRead(cache, "a");
+    expect(second.repos[0]).toMatchObject({ fetchedAt: at(), error: null, detailsFetchedAt: loadedAt, detailsError: "HTTP 502" });
+    expect(second.pullRequests[0]!.size).toEqual({ additions: 908, deletions: 386, files: 48, commits: 5 });
+    // GitHub may have a newer review than the cached "approved": no reviewer states until they load again.
+    expect(second.pullRequests[0]!.reviewers).toEqual([]);
+  });
+
+  it("keeps a successful list when the details answer has a malformed shape (W229)", async () => {
+    const gh = vi.fn<GhRunner>(async (args) => {
+      if (args[1] === "user") return "erwinkn";
+      if (args[1] === "graphql") return args.some((a) => a.startsWith("endCursor=")) ? "{}" : page([{ number: 68, latestReviews: { nodes: {} }, reviewRequests: null }], "c1");
+      return JSON.stringify([ghPr()]);
+    });
+    const { cache } = setup(gh, ["proj-plugins"]);
+    const q = await settledRead(cache, "a");
+    expect(q.pullRequests.map((pr) => pr.number)).toEqual([68]);
+    expect(q.repos[0]).toMatchObject({ error: null, detailsError: "the details query returned no search results" });
+    expect(parseDetailsPage(page([{ number: 68, additions: 3, latestReviews: { nodes: {} } }])).details.get(68)).toEqual({
+      size: { additions: 3, deletions: 0, files: 0, commits: 0 }, reviewers: [],
+    });
+  });
+
+  it("pages the details query no further than the list's 200 PRs (W229)", async () => {
+    let pages = 0;
+    const gh = vi.fn<GhRunner>(async (args) => {
+      if (args[1] === "user") return "erwinkn";
+      if (args[1] === "graphql") return page([{ number: ++pages }], `cursor-${pages}`);
+      return "[]";
+    });
+    const { cache } = setup(gh, ["proj-plugins"]);
+    await settledRead(cache, "a");
+    expect(pages).toBe(4);
+    const cursors = gh.mock.calls.filter(([args]) => args[1] === "graphql").map(([args]) => args.find((a) => a.startsWith("endCursor=")) ?? null);
+    expect(cursors).toEqual([null, "endCursor=cursor-1", "endCursor=cursor-2", "endCursor=cursor-3"]);
   });
 
   it("keeps the last good list beside a failed refresh and retries on the next one", async () => {
     let failing = false;
     const gh = vi.fn<GhRunner>(async (args) => {
-      if (args[0] === "api") return "erwinkn";
+      if (args[1] === "user") return "erwinkn";
       if (failing) throw new Error("HTTP 502: Server Error");
-      return JSON.stringify([ghPr()]);
+      return args[1] === "graphql" ? page([]) : JSON.stringify([ghPr()]);
     });
     const { cache, advance, at } = setup(gh, ["proj-plugins"]);
-    await cache.read("a");
+    await settledRead(cache, "a");
     const goodAt = at();
     failing = true;
     advance(REFRESH_MS);
-    const stale = await cache.read("a");
-    expect(stale.repos).toEqual([{ repo: "erwinkn/bb-plugins", fetchedAt: goodAt, error: "HTTP 502: Server Error" }]);
+    const stale = await settledRead(cache, "a");
+    expect(stale.repos).toEqual([{ repo: "erwinkn/bb-plugins", fetchedAt: goodAt, error: "HTTP 502: Server Error", fetching: false, detailsFetchedAt: goodAt, detailsError: "HTTP 502: Server Error" }]);
     expect(stale.pullRequests.map((pr) => pr.number)).toEqual([68]);
     failing = false;
     advance(REFRESH_MS);
-    const fresh = await cache.read("a");
-    expect(fresh.repos[0]).toEqual({ repo: "erwinkn/bb-plugins", fetchedAt: at(), error: null });
+    const again = await settledRead(cache, "a");
+    expect(again.repos[0]).toEqual({ repo: "erwinkn/bb-plugins", ...fresh(at()) });
   });
 
   it("reports a gh that is not signed in, then resolves the account once it is", async () => {
     let signedIn = false;
     const gh = vi.fn<GhRunner>(async (args) => {
-      if (args[0] === "api") {
+      if (args[1] === "user") {
         if (!signedIn) throw new Error("To get started with GitHub CLI, please run: gh auth login");
         return "erwinkn";
       }
-      return "[]";
+      return args[1] === "graphql" ? page([]) : "[]";
     });
     const { cache, advance } = setup(gh, ["proj-plugins"]);
-    const first = await cache.read("a");
+    const first = await settledRead(cache, "a");
     expect(first.login).toBeNull();
     expect(first.repos[0]).toMatchObject({ fetchedAt: null, error: expect.stringContaining("gh auth login") });
     expect(first.pullRequests).toEqual([]);
     signedIn = true;
     advance(10_000);
-    const second = await cache.read("a", { refresh: true });
+    const second = await settledRead(cache, "a", { refresh: true });
     expect(second.login).toBe("erwinkn");
     expect(second.repos[0]!.error).toBeNull();
   });
 
-  it("looks a member's remote up again after a failed project read", async () => {
+  it("looks a member's remote up again after a failed project read, and serves the last one while it does", async () => {
     const gh = answers({});
-    const { cache, project } = setup(gh, ["proj-plugins"]);
+    const { cache, project, advance } = setup(gh, ["proj-plugins"]);
     project.mockRejectedValueOnce(new Error("BB busy"));
     const first = await cache.read("a");
     expect(first.repos).toEqual([]);
     expect(first.skipped).toEqual([{ project: "proj-plugins", reason: "no GitHub origin remote" }]);
     const second = await cache.read("a");
     expect(second.repos.map((r) => r.repo)).toEqual(["erwinkn/bb-plugins"]);
+    // Past its five minutes the last answer serves at once while BB is asked again.
+    let answer!: (value: { name: string; gitRemoteUrl: string | null }) => void;
+    project.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    advance(5 * 60_000);
+    expect((await cache.read("a")).repos.map((r) => r.repo)).toEqual(["erwinkn/bb-plugins"]);
+    answer({ name: "bb-plugins", gitRemoteUrl: "https://github.com/erwinkn/bb.git" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect((await cache.read("a")).repos.map((r) => r.repo)).toEqual(["erwinkn/bb"]);
   });
 });

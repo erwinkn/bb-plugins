@@ -41,7 +41,8 @@ const big = (n: number) => `${n}: `.padEnd(800, "z");
 
 describe("W220 memory log", () => {
   it("is a migration of new tables only", () => {
-    expect(MIGRATIONS.slice(-MEMORY_MIGRATIONS.length)).toEqual(MEMORY_MIGRATIONS);
+    // Deployed at indexes 72–76; later migrations append after them.
+    expect(MIGRATIONS.slice(72, 72 + MEMORY_MIGRATIONS.length)).toEqual(MEMORY_MIGRATIONS);
     expect(MEMORY_MIGRATIONS.every((m) => m.startsWith("CREATE TABLE memory_"))).toBe(true);
   });
 

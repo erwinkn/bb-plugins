@@ -201,6 +201,7 @@ describe("T136 instructions", () => {
     // Erwin (2026-10-07) added the per-role model line.
     // W210 (D417) added the stuck-worker line.
     // W215: reports arrive as summaries; read the full report only when needed.
+    // W224 (D437, D438): PR records (category, where each PR stands), in the PR line.
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(2000);
     // Erwin (2026-10-07) added the no-narration rule to the worker text.
     // W210 (D417): reports go through initiative_report; stop background work first.

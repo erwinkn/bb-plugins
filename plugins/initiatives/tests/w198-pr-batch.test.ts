@@ -27,21 +27,21 @@ describe("W198 PR stages", () => {
       { url: PR, stage: "in-review" },
       { url: "https://github.com/erwinkn/bb/pull/12", stage: "ready-for-erwin" },
     ] });
-    const stages = f.store.prStages(project.id);
+    const stages = f.store.prRecords(project.id);
     expect(stages.get(PR)).toMatchObject({ stage: "in-review", note: "W14 reviewing" });
     expect(stages.get(PR)!.setAt).toBeGreaterThan(0);
     // A later stage replaces the earlier one and its note.
     await call(f, "initiative_pr", { prs: [{ url: PR, stage: "ready-for-erwin" }] });
-    expect(f.store.prStages(project.id).get(PR)).toMatchObject({ stage: "ready-for-erwin", note: null });
+    expect(f.store.prRecords(project.id).get(PR)).toMatchObject({ stage: "ready-for-erwin", note: null });
     await call(f, "initiative_pr", { prs: [{ url: PR, stage: "clear" }] });
-    expect([...f.store.prStages(project.id).keys()]).toEqual(["https://github.com/erwinkn/bb/pull/12"]);
+    expect([...f.store.prRecords(project.id).keys()]).toEqual(["https://github.com/erwinkn/bb/pull/12"]);
 
     await expect(call(f, "initiative_pr", { prs: [{ url: PR, stage: "merged" }] })).rejects.toThrow(/Invalid arguments for initiative_pr: prs\.0\.stage/);
     await expect(call(f, "initiative_pr", { prs: [{ url: "https://github.com/erwinkn/bb-plugins/issues/3", stage: "working" }] })).rejects.toThrow(/GitHub PR URL/);
     await expect(call(f, "initiative_pr", { prs: [] })).rejects.toThrow(/prs/);
     // A bad entry stores none of the call's entries.
     await expect(call(f, "initiative_pr", { prs: [{ url: PR, stage: "working" }, { url: "nope", stage: "working" }] })).rejects.toThrow();
-    expect(f.store.prStages(project.id).has(PR)).toBe(false);
+    expect(f.store.prRecords(project.id).has(PR)).toBe(false);
   });
 
   it("is the coordinator's: a worker cannot set stages, through the tool or the CLI", async () => {
@@ -62,22 +62,22 @@ describe("W198 PR stages", () => {
     expect(noId.stderr).toMatch(/Pass the initiative id/);
     const fromTerminal = await f.harness.runCli(["pr", JSON.stringify({ prs: [{ url: PR, stage: "experiment" }] }), project.id]);
     expect(fromTerminal.exitCode).toBe(0);
-    expect(f.store.prStages(project.id).get(PR)?.stage).toBe("experiment");
+    expect(f.store.prRecords(project.id).get(PR)?.stage).toBe("experiment");
   });
 
   it("is stored by an additive migration, appended after the earlier ones", () => {
     const index = MIGRATIONS.findIndex(migration => /^CREATE TABLE pr_stages/.test(migration));
     expect(index).toBeGreaterThan(0);
-    // An existing database gains the table without touching earlier ones.
+    // A database with W198 stages keeps them when W224 moves them into pr_records.
     const db = new Database(":memory:");
-    for (const migration of MIGRATIONS.slice(0, index)) db.exec(migration);
-    db.exec(MIGRATIONS[index]!);
-    const store = new Store(db);
-    store.setPrStage("p1", PR, "in-review", null, 1);
-    expect(store.prStages("p1").get(PR)).toEqual({ url: PR, stage: "in-review", note: null, setAt: 1 });
-    // A stage a later version wrote and this one doesn't know is skipped, not misread.
+    for (const migration of MIGRATIONS.slice(0, index + 1)) db.exec(migration);
+    db.prepare("INSERT INTO pr_stages (project_id, url, stage, note, set_at) VALUES ('p1', ?, 'in-review', 'W14', 1)").run(PR);
+    // A stage a later version wrote and this one doesn't know reads as none, not misread.
     db.prepare("INSERT INTO pr_stages (project_id, url, stage, note, set_at) VALUES ('p1', 'x', 'shipped', NULL, 2)").run();
-    expect([...store.prStages("p1").keys()]).toEqual([PR]);
+    for (const migration of MIGRATIONS.slice(index + 1)) db.exec(migration);
+    const records = new Store(db).prRecords("p1");
+    expect(records.get(PR)).toMatchObject({ url: PR, stage: "in-review", note: "W14", setAt: 1, category: null });
+    expect(records.get("x")).toMatchObject({ stage: null, note: null, setAt: null });
   });
 });
 
@@ -103,7 +103,7 @@ describe("W198 initiative_batch", () => {
     expect(result.results[2]).toEqual({ tool: "pr", ok: true, prs: [{ url: PR, stage: "in-review" }] });
     expect(result.results[3]).toEqual({ tool: "task", ok: true, ref: "T1", state: "done" });
     expect(f.store.task(project.id, 1)?.status).toBe("done");
-    expect(f.store.prStages(project.id).get(PR)?.stage).toBe("in-review");
+    expect(f.store.prRecords(project.id).get(PR)?.stage).toBe("in-review");
     expect(JSON.stringify(result.results[4].result)).toContain("Merge queue");
   });
 
@@ -137,7 +137,7 @@ describe("W198 initiative_batch", () => {
     expect(omitted[0]).toEqual({ tool: "read", ok: true, omitted: true, reason: "result left out: the batch response is capped at 64 KiB" });
     expect(result.note).toMatch(/left out to stay under 64 KiB; the actions ran\. Read what you need separately/);
     // Mutations past the budget ran; only their detail was trimmed.
-    expect(f.store.prStages(project.id).get(PR)?.stage).toBe("working");
+    expect(f.store.prRecords(project.id).get(PR)?.stage).toBe("working");
     expect(f.store.task(project.id, 1)?.status).toBe("done");
   });
 

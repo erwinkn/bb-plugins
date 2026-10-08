@@ -35,7 +35,8 @@ import {
 } from "./lib/schema";
 import "./app.css";
 import { ProjectsSettings } from "./settings-view";
-import { AutoTextarea, ControlRoom } from "./control-room";
+import { AutoTextarea, ControlRoom, isTab, type Tab } from "./control-room";
+import { useRemembered } from "./ui-memory";
 import { MergeQueueView } from "./merge-queue-view";
 import type { MergeQueue } from "./lib/merge-queue";
 
@@ -761,10 +762,13 @@ export function Dashboard({
   creationNote,
   variant = "page",
   seeded = false,
+  routeTab,
 }: {
   projectId: string;
   creationNote?: string | null;
   variant?: "page" | "panel";
+  /** The page route's tab segment (`<id>/prs`); the panel has no route and remembers its tab. */
+  routeTab?: string;
   /** A panel read keeps this Initiative's summary current; the dashboard only follows it. */
   seeded?: boolean;
 }) {
@@ -776,15 +780,25 @@ export function Dashboard({
   const [detailsNeeded, setDetailsNeeded] = useState(false);
   const api = useRpc<typeof projectsContract>();
   const navigate = useBbNavigate();
+  // The open tab survives leaving and coming back: the page keeps it in its route, both remember it.
+  const [rememberedTab, rememberTab] = useRemembered<Tab>(`initiatives:tab:${projectId}`, "inbox", isTab);
+  const showTab = (tab: Tab) => {
+    rememberTab(tab);
+    const routed = tab === "inbox" ? undefined : tab;
+    if (variant === "page" && routed !== routeTab)
+      navigate.toPluginPanel("initiatives", { subPath: routed ? `${projectId}/${routed}` : projectId, replace: true });
+  };
   // In a thread's panel the panel read supplies (and refreshes) this summary.
   const state = useData(`overview:${projectId}`, () =>
     api.call("overview", { projectId, detail: "summary" }),
   true, seeded && appReads.entry(`overview:${projectId}`).loaded);
   const history = useData(`history:${projectId}`, () => api.call("overview", { projectId, detail: "history" }), historyNeeded && !detailsNeeded);
   const details = useData(`details:${projectId}`, () => api.call("overview", { projectId, detail: "full" }), detailsNeeded);
-  // The server caches the queue and re-reads GitHub every two minutes; these
-  // reads follow the dashboard's polling and only fetch on a stale cache.
+  // The server answers from its cache at once and re-reads GitHub behind it
+  // every two minutes (D441); these reads follow the dashboard's polling, and
+  // read again as soon as a fetch ends.
   const queue = useData<MergeQueue>(`merge-queue:${projectId}`, () => api.call("mergeQueue", { projectId }));
+  useRealtime("merge-queue-changed", () => queue.schedule());
   const [queueRefresh, setQueueRefresh] = useState<{ projectId: string; error: string | null; running: boolean } | null>(null);
   const refreshQueue = async () => {
     setQueueRefresh({ projectId, error: null, running: true });
@@ -879,7 +893,8 @@ export function Dashboard({
         <ControlRoom
           key={projectId}
           overview={o}
-          onTab={tab => { if (tab === "decisions") setHistoryNeeded(true); if (["threads", "usage", "log"].includes(tab)) { setDetailsNeeded(true); } if (["threads", "context"].includes(tab)) void loadInventory(); }}
+          initialTab={isTab(routeTab) ? routeTab : rememberedTab}
+          onTab={tab => { showTab(tab); if (tab === "decisions") setHistoryNeeded(true); if (["threads", "usage", "log"].includes(tab)) { setDetailsNeeded(true); } if (["threads", "context"].includes(tab)) void loadInventory(); }}
           detailNotice={detailsNeeded && !details.loaded ? "Loading thread details…" : details.error}
           inventory={inventory}
           run={command}
@@ -896,6 +911,7 @@ export function Dashboard({
                 error={ownQueueRefresh?.error ?? queue.error}
                 refreshing={!!ownQueueRefresh?.running}
                 onRefresh={() => void refreshQueue()}
+                loadNotes={(url) => api.call("prNotes", { projectId, url })}
               />
             ),
           }}
@@ -1186,6 +1202,8 @@ export function ProjectsPage({ subPath }: PluginNavPanelProps) {
   const navigate = useBbNavigate();
   const [creationNote, setCreationNote] = useState<string | null>(null);
   const id = subPath.replace(/^\/+|\/+$/g, "");
+  // `<id>` or `<id>/<tab>`: the dashboard's tab is part of its route.
+  const [projectId, routeTab] = id.split("/");
 
   const open = (id: string) =>
     navigate.toPluginPanel("initiatives", { subPath: id });
@@ -1208,7 +1226,7 @@ export function ProjectsPage({ subPath }: PluginNavPanelProps) {
           <button className="project-back" onClick={() => open("")}>
             ← Initiatives
           </button>
-          <Dashboard key={id} projectId={id} creationNote={creationNote} />
+          <Dashboard key={projectId} projectId={projectId!} routeTab={routeTab} creationNote={creationNote} />
         </>
       ) : (
         <Catalog open={open} />

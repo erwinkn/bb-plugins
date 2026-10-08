@@ -110,6 +110,7 @@ export function toolReceipt(value: unknown): unknown {
   }
   // A plain message: who got it and whether it was sent now or queued.
   if ("target" in v && "receipt" in v) return { to: v.target, delivery: v.receipt?.delivery ?? null };
-  if (Array.isArray(v.prs)) return { prs: v.prs.map(({ url, stage }: { url: string; stage: string }) => ({ url, stage })) };
+  // initiative_pr: no echo of the notes; the categories stay so the coordinator reuses them.
+  if (Array.isArray(v.prs)) return { ...v, prs: v.prs.map(({ note: _, ...pr }: Record<string, unknown>) => pr) };
   return Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null && x !== undefined).map(([k, x]) => [k, toolReceipt(x)]));
 }

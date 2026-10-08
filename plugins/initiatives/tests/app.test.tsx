@@ -959,6 +959,9 @@ describe("project dashboard", () => {
     const slot = mount({ list: () => [], overview: () => o });
     await slot.findByRole("tab", { name: /Threads/ });
     fireEvent.click(slot.getByRole("tab", { name: /Threads/ }));
+    // W224: the tab is part of the page's route, replaced in place.
+    expect(slot.navigateCalls).toEqual([expect.objectContaining({ method: "toPluginPanel", path: "initiatives" })]);
+    slot.navigateCalls.length = 0;
     fireEvent.click(
       slot.getByRole("button", { name: "Details for W1 Builder" }),
     );

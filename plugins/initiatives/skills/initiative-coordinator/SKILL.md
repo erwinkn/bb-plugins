@@ -26,10 +26,22 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
 - `initiative_update` keeps the user informed. `initiative_decision` records the user's
   explicit choices (user-choice), your choices the user may want to veto (veto-request),
   and real questions. The decision log is the user's record; don't consult it to plan.
-- `initiative_pr` sets each PR's workflow stage for the dashboard's merge queue:
-  `{prs:[{url, stage, note?}]}` with working, ready-for-review, in-review,
-  ready-for-erwin, experiment or clear. Set it when you delegate, review or hand a PR to
-  the user, several PRs per call. `bb initiative pr '<json>'` is the CLI form.
+- `initiative_pr` keeps each PR's record for the dashboard's merge queue:
+  `{prs:[{url, stage?, note?, category?, waitingOn?, changes?, decision?, worker?, assignment?, notes?, answered?}]}`.
+  Stages: working, ready-for-review, in-review, ready-for-erwin, experiment or clear. Only
+  given fields change; null clears one. Update it whenever a PR's state changes (you
+  delegate, review or hand it over; a decision is made), so nobody relies on chat memory.
+  A category is a free-form workstream ("Security", "CI"); reuse one from the result's
+  `categories`, and merge near-duplicates with `{rename:[{from:"Sec",to:"Security"}]}`.
+  `bb initiative pr '<json>'` is the CLI form.
+- Each PR has an append-only notes log: `notes:[{kind?:"note"|"question"|"comment", text,
+  link?}]` appends (the result gives each note's number `n`), `answered:[{n, text?}]`
+  closes a question. Whatever you tell the user about a PR (caveats, questions, review
+  comments) goes there too; open questions show as "?" on the dashboard. A worker's
+  report lands on the PRs it names by itself, and workers may add notes to their own PRs.
+- `initiative_read {view:"prs"}` answers "which PR next": what the user can review now,
+  PRs by category and stage, the stacks, and where each PR stands with its open
+  questions and latest note.
 - `initiative_batch` runs several actions in one call, in order, and reports each:
   `{actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"worker",action:"retire",worker:"W9"}]}`.
   Use it instead of chaining calls; one failure doesn't stop the rest.

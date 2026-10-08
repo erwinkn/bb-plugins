@@ -14,6 +14,9 @@ its context and the report instruction.
   and results), what is left, and anything uncommitted or still running. Stop background
   servers first.
 - Use outcome blocked, with your question, when you can't continue.
+- `initiative_pr {prs:[{url, notes:[{kind?:"note"|"question"|"comment", text}]}]}` puts
+  caveats and questions on a PR your assignment names or your branch opened, so they
+  outlive the chat. Your report's summary is added to the PRs it names by itself.
 - `initiative_message {to:"coordinator", text}` is for blockers, scope changes, or facts
   another worker needs (`to:"W4"`). No progress pings. Reviewers talk to the coordinator.
 - The coordinator dispatches reviews and other workers. When your work calls for an

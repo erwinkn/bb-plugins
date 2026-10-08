@@ -303,6 +303,14 @@ or mock action is imported. The external prototype and feedback data are separat
 
 ### Merge queue (PRs tab)
 
+The dashboard remembers its open tab per Initiative. On the Initiatives page
+the tab is part of the route (`/plugins/initiatives/initiatives/<id>/prs`,
+replaced in place as tabs change, so back still leaves the dashboard); a
+thread's side panel has no route, so both remember the last tab in
+localStorage and reopen it when the dashboard mounts again, e.g. after a
+browser tab took the panel. The PRs tab's list or graph view, grouping and
+filters are remembered the same way.
+
 The PRs tab lists the open pull requests authored by the `gh` account (`gh api
 user`, resolved once) in the GitHub repositories of the Initiative's member BB
 projects. A project's repository comes from the `gitRemoteUrl` BB records for
@@ -317,6 +325,12 @@ requires none), mergeability, and the W# whose thread pushed it. That last one
 costs nothing: BB worktree branches end in `-thr_<id>`, matched against the
 workers' recorded threads.
 
+Rows also show the diff size (`+908 −386`, then files and commits) and the
+reviewers, each colored by their latest review (approved, changes requested,
+commented) or amber while a review is requested; three show, the rest
+count as `+N` with all of them on hover. The graph's nodes carry a compact
+`+1.2k −386`, and its hover card the full size, last update and reviewers.
+
 Rows are grouped by workflow stage, oldest first within a stage: **Ready for
 you** (`ready-for-erwin`), **In review**, **Ready for review**, **Being worked
 on** (`working`) and **Experiments**. The coordinator records a PR's stage with
@@ -329,6 +343,30 @@ glyph color still shows GitHub health (green ready, amber waiting on checks,
 review or mergeability, red failing checks, conflicts or changes requested,
 grey draft), and its tooltip says why.
 
+**Categories, stacks and the graph (D437).** The coordinator may give each PR a
+free-form category ("Security", "CI"). Once any PR has one, the list groups by
+category, then stage (a switch flips it to stage, then category), with
+uncategorized PRs last; without categories it stays the plain stage list. A
+PR whose base branch is another open PR's head branch in the same repository
+is *stacked* on it (`lib/pr-map.ts`); stacks are trees, and a row shows its
+place as "2 of 4 · on #2172" (level, the stack's height, the PR beneath). A PR
+is **available** to review when it is ready for you and so is every PR beneath
+it, so an all-ready stack can be reviewed bottom-up in one sitting; a ready PR
+on an unready base says "waits on #N" instead. A base branch that is no open
+PR's head (the default branch, a merged PR's leftover branch, someone else's
+PR) counts as the bottom. **Next up** lists the available PRs, oldest stack
+first and each stack bottom-up. Filters: one category, any set of stages, and
+"Review now" (available only); stage chips count within the picked category.
+
+**Graph** draws one lane per category: each stack as a small tree (straight up
+a chain, an indented elbow where it branches; base below head), the unstacked
+PRs after it in a grid. Nodes are colored by stage (green ready for you, blue
+in review, amber ready for review, hollow grey being worked on, hollow violet
+experiment); available ones are tinted and ringed. A piece of a stack whose
+lower PR is in another category or filtered out says "on #N". Hovering or
+focusing a node shows the title, stage, availability, stack position, worker,
+GitHub health and the coordinator's note; a click opens the PR like a row.
+
 A click opens the PR through `useBbNavigate().openUrl`: a tab of BB's built-in
 browser on desktop while "open links in the app browser" is on (BB's default),
 the external browser otherwise, and a new tab if the host declines. The row is
@@ -336,28 +374,90 @@ a real anchor, so modifier clicks, middle clicks and copying the link work as
 usual.
 
 The server keeps one cache per repository, shared by every Initiative and
-client (`lib/merge-queue-server.ts`). The `mergeQueue` RPC re-reads a
-repository when its last attempt is two minutes old, and Refresh forces a read
-(at most once per 10 s). Each read is one asynchronous `gh pr list --repo R
---author LOGIN --state open --json …` per repository, at most one in flight per
-repository and capped at 50 PRs, with a 20 s timeout. No token is stored. The
-dashboard reads the queue when it opens, so the tab shows the open PR count, and
-then follows its usual polling; those reads hit the cache. A failed fetch keeps
-the last good list with "Couldn't refresh" and the error; a repository that
-never loaded shows the error with Retry.
+client (`lib/merge-queue-server.ts`). Nothing waits on GitHub (D441): the
+`mergeQueue` RPC and `initiative_read {view:"prs"}` answer from the cache at
+once and start a fetch behind the answer when a repository's last attempt is
+two minutes old, or on Refresh (at most once per 10 s). The repository shows
+`fetching` meanwhile, and the end of each fetch is announced on the
+`merge-queue-changed` realtime channel, so the dashboard reads again at once.
+Until the first fetch lands the tab shows skeleton rows. Each fetch is one
+asynchronous `gh pr list --repo R --author LOGIN --state open --json …`,
+capped at 200 PRs, and beside it the details query for sizes and reviewers
+(additions, deletions, changed files, commit count, latest reviews, requested
+reviewers): `gh api graphql`, one call per page of 50 and never more than the
+list's 200 PRs (about 3 s a page). They can't share one query: GitHub answers
+502 when `gh pr list` asks for additions beside the checks rollup at 100 PRs a
+page. Every `gh` call has a 20 s timeout, the details pages 20 s in all (each
+page gets only the time left), and a repository has at most one fetch in flight: it is released only when both the list and the details have
+settled. A failed details query never fails the list: it keeps the last sizes,
+hides reviewer states (they may have changed) and says so above the list. No
+token is stored. A failed fetch keeps the last good list with "Couldn't
+refresh" and the error; a repository that never loaded shows the error with
+Retry.
 
 ## Backend and tools
 
-**PR stages.** `initiative_pr {prs:[{url, stage, note?}]}` (coordinator only) sets
-or clears the workflow stage of several PRs in one transaction: `working`,
-`ready-for-review`, `in-review`, `ready-for-erwin`, `experiment`, or `clear`. A
-URL may carry any suffix (`/files`, `?diff=split`) or be `owner/repo#12`; it is
-stored canonical and lower case, one stage per PR per Initiative, with the time
-and an optional note of at most 200 characters (table `pr_stages`, an appended
-migration). One invalid entry rejects the whole call. A stage on a PR that
-closes or merges simply stops showing, since the queue lists open PRs only; its
-row stays. `bb initiative pr '<json>' [initiative-id]` is the CLI form: from the
-coordinator thread, or from a terminal with the Initiative id.
+**PR records.** `initiative_pr {prs:[{url, stage?, note?, category?, waitingOn?,
+changes?, decision?, worker?, assignment?, notes?, answered?}], rename?:[{from, to}]}`
+(the coordinator; workers add notes only) keeps one record per PR, several PRs per call, in one
+transaction: `stage` is `working`, `ready-for-review`, `in-review`,
+`ready-for-erwin`, `experiment`, or `clear`. A URL may carry any suffix
+(`/files`, `?diff=split`) or be `owner/repo#12`; it is stored canonical and
+lower case, one record per PR per Initiative (table `pr_records`). One invalid
+entry rejects the whole call. A record on a PR that closes or merges simply
+stops showing, since the queue lists open PRs only; its row stays.
+
+Only the fields an entry gives change, and `null` clears one. A stage replaces
+its note (at most 200 characters) and records when it was set; `clear` removes
+the stage, so the queue guesses it from GitHub again, and keeps the rest.
+Where a PR stands (D438): `waitingOn` (one line, "W188: move the lock to
+resume"), pending `changes` requested (one line each, replaced whole), the last
+`decision` (`{text, link?}`, the link a URL, a BB thread id or a ref like
+D437), and the `worker` and `assignment` on it. An assignment names its
+worker unless the entry names one; unknown W# or A# refs are rejected. A
+record with nothing left in it is deleted. `discussion_thread_id` is the hook
+for D439's "Discuss" threads; nothing writes it yet.
+
+A category is 1 to 40 characters; "Uncategorized" is reserved for the PRs
+without one. One that differs from an existing category
+only in case takes the existing spelling. `rename` moves every PR of a
+category (any case) to another, merging into it when it exists; an unknown
+source rejects the call. The result lists every category with its PR count so
+the coordinator reuses them, and echoes the other fields it changed by name.
+
+Without a recorded worker, a PR's worker is the latest assignment that names
+it, in its brief (the PR it was given) or its report (the PR it opened or
+reviewed), so a reviewer shows as "W190 · A385 (review)". Without either, it is the worker whose BB worktree branch
+opened it. The scan runs only when an assignment changes (`AssignedPrs`).
+
+**PR notes (D442).** Each PR also has an append-only log of notes (table
+`pr_notes`): `{n, at, author, kind: note|question|comment, text, link,
+answered}`. `notes:[{kind?, text, link?}]` appends (up to 1000 characters
+each; the link defaults to the caller's thread) and the result gives each new
+note's number; `answered:[{n, text?}]` closes a question, once. The author is
+the caller: `coordinator`, the worker's W#, or `user` from a terminal. A
+worker may add notes, and only notes, to the PRs its assignments name, the
+coordinator put on it, or its branch opened. When a worker reports, its
+summary is appended as a note to each PR the report names (else those its
+brief named), linked to the assignment. The queue carries each PR's note
+count, last three notes and open questions; the `prNotes` RPC reads a PR's
+whole log.
+
+The list shows where a PR stands in one line under its row ("waiting on
+W188: move the lock to resume · coordinator asks: Redis TTL? · decided: keep
+5m thread"), the decision's link opening its URL or BB thread, and the
+latest note below it with a toggle that opens the PR's whole notes log (the
+place for D439's "Discuss" action). The graph marks open questions with "?"
+and lists every part, and the last notes, in its hover card.
+
+`initiative_read {view:"prs"}` gives the coordinator the queue in a few lines:
+Next up with titles, PR numbers by category and stage with stack positions,
+each stack as `#1 → #2 → (#3 | #4)`, and `state`: each PR's worker, waiting
+on, open questions (`n3 coordinator: …`), note count and latest note, changes
+and decision. It reads the same cache as the dashboard, and says when a first
+fetch is still running.
+`bb initiative pr '<json>' [initiative-id]` is the CLI
+form: from the coordinator thread, or from a terminal with the Initiative id.
 
 **Batches.** `initiative_batch {actions:[{tool, ...args}]}` (coordinator only,
 1 to 20 actions) runs `spawn`, `message`, `task`, `worker`, `decision`,

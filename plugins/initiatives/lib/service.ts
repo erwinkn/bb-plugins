@@ -37,6 +37,8 @@ import {
 import { reportVersion } from "./write-holds";
 import { fullRecord, handoffSource, latestReport, renderPriorReport, resolveHandoffs } from "./handoffs";
 import { canonicalPrUrl } from "./pr-stages";
+import { PrNotes } from "./pr-notes";
+import { prsNamed, reportNote } from "./pr-records";
 import {
   briefSchema,
   FINAL_MESSAGE_MAX,
@@ -324,6 +326,8 @@ export class ProjectsService {
   private readonly coldCache: ColdCacheGuard;
   readonly compaction: CoordinatorCompaction;
   readonly memory: CoordinatorMemory;
+  /** D442: each PR's notes log; a worker's report lands on the PRs it is about. */
+  readonly prNotes: PrNotes;
 
   constructor(
     readonly bb: BbPluginApi,
@@ -336,6 +340,7 @@ export class ProjectsService {
       limit: () => preferences.configuration().coldResumeTokens,
       log: (message) => bb.log.warn(message),
     });
+    this.prNotes = new PrNotes(store.db);
     this.memory = new CoordinatorMemory({
       ledger: store,
       list: sdkEvents(bb.sdk),
@@ -6574,6 +6579,11 @@ export class ProjectsService {
       this.store.log(project.id, "report", summary, {
         assignment: assignment.num,
       });
+      // D442: the summary goes on every PR the report names, else on those its brief gave it.
+      // The report's own length bounds how many that can be.
+      const named = prsNamed(`${report.handoff.summary}\n${report.finalMessage ?? ""}`);
+      for (const url of named.length ? named : prsNamed(assignment.briefText))
+        this.prNotes.append(project.id, url, { at: this.now(), author: worker.ref, kind: "note", text: reportNote(report.handoff.summary), link: assignment.ref });
     });
     if (!captured) notifyNote = await this.sendReport(threadId, this.store.assignment(project.id, assignment.num)!);
     // A cancelled assignment reported on stays reserved while its thread can

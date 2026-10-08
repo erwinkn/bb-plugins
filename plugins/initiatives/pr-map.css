@@ -1,0 +1,139 @@
+/* The PR map (D437): stage colors, filters, Next up, list sub-groups and the
+   stack graph. Colors come from the Control Room palette (control-room.css). */
+.cr { --cr-pm-violet: #b493f2; }
+.bb-projects[data-appearance="light"] .cr { --cr-pm-violet: #7a52c9; }
+
+/* One dot per stage, shared by chips, sub-headings, nodes and hover cards. */
+.cr-pm-dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--cr-faint); }
+.cr-pm-dot[data-stage="ready-for-erwin"] { background: var(--cr-green); }
+.cr-pm-dot[data-stage="in-review"] { background: var(--primary); }
+.cr-pm-dot[data-stage="ready-for-review"] { background: var(--cr-amber); }
+.cr-pm-dot[data-stage="working"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--cr-faint); }
+.cr-pm-dot[data-stage="experiment"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--cr-pm-violet); }
+.cr-pm-dot[data-available] { background: var(--cr-green); box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--cr-green) 28%, transparent); }
+
+/* Toolbar: view and grouping switches, the category picker, stage chips. */
+.cr-pm-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 6px; }
+.cr .cr-pm-select { height: 24px; margin-left: auto; max-width: 100%; padding: 0 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--background); color: var(--cr-ink-secondary); font: 600 11px ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
+.cr-pm-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 0 10px; }
+.bb-projects .cr .cr-pm-chip { display: inline-flex; align-items: center; gap: 5px; min-height: 22px; padding: 1px 8px 1px 7px; border-radius: 99px; border: 1px solid var(--border); background: transparent; color: var(--muted-foreground); font-size: 11px; font-weight: 550; }
+.bb-projects .cr .cr-pm-chip:hover { background: var(--accent); color: var(--foreground); }
+.bb-projects .cr .cr-pm-chip[aria-pressed="true"] { background: var(--muted); color: var(--foreground); border-color: color-mix(in srgb, var(--foreground) 28%, transparent); }
+.cr-pm-chip-count { font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--cr-faint); }
+.bb-projects .cr .cr-pm-clear, .bb-projects .cr .cr-pm-more { min-height: 22px; padding: 1px 6px; border: 0; background: transparent; color: var(--muted-foreground); font-size: 11px; }
+.bb-projects .cr .cr-pm-clear:hover, .bb-projects .cr .cr-pm-more:hover { background: transparent; color: var(--foreground); text-decoration: underline; text-underline-offset: 2px; }
+
+/* Next up: what the user can review now, in order. */
+.cr-pm-next { margin: 0 0 12px; padding: 7px 8px 5px; border-radius: 9px; border: 1px solid color-mix(in srgb, var(--cr-green) 24%, var(--border)); background: color-mix(in srgb, var(--cr-green) 6%, transparent); }
+.cr-pm-next h3 { display: flex; align-items: center; gap: 6px; margin: 0 2px 3px; font-size: 11.5px; font-weight: 650; color: var(--foreground); }
+.cr-pm-hint { margin-left: auto; font-size: 10.5px; font-weight: 400; color: var(--muted-foreground); }
+.cr-pm-next ol { margin: 0; padding: 0; list-style: none; }
+.cr-pm-next-pr { display: flex; align-items: baseline; gap: 8px; padding: 3px 4px; border-radius: 6px; color: inherit; text-decoration: none; }
+.cr-pm-next-pr:hover { background: var(--accent); }
+.cr-pm-next-pr:hover .cr-pm-title { text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 2px; }
+.cr-pm-next-pr .cr-pm-title { font-weight: 550; color: var(--foreground); }
+.cr-pm-next-meta { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--muted-foreground); }
+.cr-pm-next .cr-pm-more { margin: 1px 0 0; }
+
+/* List: categories, then stages within them (or the other way round). */
+.cr-mq-group[data-category] { padding-top: 10px; border-top: 1px solid var(--border); }
+.cr-mq-group[data-category] > h3 { font-size: 12.5px; color: var(--foreground); }
+.cr-mq-sub h4 { display: flex; align-items: center; gap: 6px; margin: 8px 0 1px; font-size: 11px; font-weight: 600; color: var(--muted-foreground); }
+.cr-mq-sub-count { font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--cr-faint); }
+.cr-mq-stack { flex: none; color: var(--cr-ink-secondary); font-variant-numeric: tabular-nums; }
+.cr-mq-available { flex: none; font-weight: 650; color: var(--cr-green); }
+.cr-mq-waits { flex: none; color: var(--cr-amber-ink, var(--cr-amber)); }
+
+/* Graph: a lane per category; stacks as trees, unstacked PRs after them. */
+.cr-pm-graph { display: grid; gap: 14px; }
+.cr-pm-lane h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 12.5px; font-weight: 650; color: var(--foreground); }
+.cr-pm-stacks { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); align-items: start; gap: 8px; }
+.cr-pm-stack { min-width: 0; padding: 4px; border-radius: 8px; border: 1px solid var(--border); background: var(--cr-surface); }
+.cr-pm-on { padding: 1px 6px 3px; font-size: 10.5px; color: var(--cr-faint); }
+.cr-pm-stack ol, .cr-pm-singles { margin: 0; padding: 0; list-style: none; }
+.cr-pm-stack ol { position: relative; }
+.cr-pm-singles { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 0 8px; padding: 0 5px; }
+.cr-pm-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.cr-pm-edges path { fill: none; stroke: color-mix(in srgb, var(--muted-foreground) 55%, transparent); stroke-width: 1.5; stroke-linecap: round; }
+
+/* A node: fixed 26px rows; pr-graph.tsx draws the edges on the same grid. */
+.cr-pm-node { position: relative; min-width: 0; }
+.cr-pm-node > a { position: relative; display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 6px; border-radius: 6px; color: var(--cr-ink-secondary); text-decoration: none; }
+.cr-pm-node > a:hover { background: var(--accent); color: var(--foreground); }
+.cr-pm-node[data-stage="working"] > a, .cr-pm-node[data-stage="experiment"] > a { color: var(--muted-foreground); }
+.cr-pm-node[data-available] > a { color: var(--foreground); background: color-mix(in srgb, var(--cr-green) 11%, transparent); }
+.cr-pm-node[data-available] > a:hover { background: color-mix(in srgb, var(--cr-green) 18%, transparent); }
+.cr-pm-node[data-available] .cr-pm-dot { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--cr-green) 30%, transparent); }
+.cr-pm-node[data-available] .cr-pm-title { font-weight: 600; }
+.cr-pm-num { flex: none; font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.cr-pm-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Hover card: shown after a short pause, never in the pointer's way. */
+.cr-pm-tip { display: none; position: absolute; z-index: 20; left: 0; top: calc(100% + 3px); width: min(320px, calc(100cqw - 24px)); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--cr-surface); box-shadow: 0 8px 24px #0006; font-size: 11.5px; line-height: 1.4; color: var(--cr-ink-secondary); pointer-events: none; }
+.cr-pm-node:hover > .cr-pm-tip, .cr-pm-node > a:focus-visible + .cr-pm-tip { display: grid; gap: 3px; animation: cr-pm-tip-in .12s ease-out .35s both; }
+@keyframes cr-pm-tip-in { from { opacity: 0; transform: translateY(-2px); } }
+.cr-pm-tip strong { font-weight: 600; color: var(--foreground); }
+.cr-pm-tip-line { display: flex; align-items: center; flex-wrap: wrap; gap: 0 5px; }
+.cr-pm-tip-line em { font-style: italic; color: var(--cr-faint); }
+.cr-pm-tip-good { font-weight: 600; color: var(--cr-green); }
+.cr-pm-tip-meta { font-size: 11px; color: var(--muted-foreground); }
+.cr-pm-tip-note { margin-top: 2px; padding-left: 7px; border-left: 2px solid var(--border); }
+
+/* Where a PR stands (D438): a line under its row, lines in the hover card, a "?" for open questions. */
+.cr-mq-state { display: flex; flex-wrap: wrap; align-items: baseline; margin: -5px 0 6px !important; padding-left: 24px; font-size: 11px; color: var(--cr-ink-secondary); }
+.cr-mq-state > span + span::before { content: "·"; margin: 0 6px; color: var(--cr-faint); }
+.cr-mq-state [data-kind="question"], .cr-pm-tip-state[data-kind="question"] { color: var(--cr-amber-ink, var(--cr-amber)); }
+.cr-mq-state [data-kind="changes"], .cr-pm-tip-state[data-kind="changes"] { color: color-mix(in srgb, var(--destructive) 85%, var(--foreground)); }
+.cr-mq-state-link { color: var(--primary); text-decoration: none; }
+.cr-mq-state-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.cr-mq-state-ref { color: var(--muted-foreground); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10.5px; }
+.cr-pm-ask { flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%; background: color-mix(in srgb, var(--cr-amber) 22%, transparent); color: var(--cr-amber-ink, var(--cr-amber)); font: 700 9.5px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", sans-serif; }
+.cr-pm-tip-state { font-size: 11px; }
+
+/* PR metadata: +/- lines, files and commits, reviewers. */
+.cr-pr-delta { display: inline-flex; gap: 4px; font: 10.5px ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cr-pr-delta [data-tone="add"] { color: var(--cr-green); }
+.cr-pr-delta [data-tone="del"] { color: color-mix(in srgb, var(--destructive) 85%, var(--foreground)); }
+.cr-mq-size { flex: none; display: inline-flex; align-items: baseline; gap: 6px; }
+.cr-mq-files { color: var(--muted-foreground); }
+.cr-mq-reviewers { flex: none; display: inline-flex; gap: 6px; color: var(--muted-foreground); }
+.cr-mq-reviewers > span::before { content: "@"; color: var(--cr-faint); }
+.cr-mq-reviewers > span:last-child:not([data-state])::before { content: none; }
+.cr-mq-reviewers [data-state="approved"] { color: var(--cr-green); }
+.cr-mq-reviewers [data-state="changes_requested"] { color: var(--destructive); }
+.cr-mq-reviewers [data-state="requested"] { color: var(--cr-amber-ink, var(--cr-amber)); }
+.cr-pm-node > a .cr-pr-delta { flex: none; margin-left: auto; padding-left: 4px; font-size: 9.5px; opacity: .75; }
+.cr-pm-node > a:hover .cr-pr-delta { opacity: 1; }
+
+/* Notes (D442): the latest under a row, the whole log in a panel, the last few in the hover card. */
+.cr-pr-notes { padding-left: 24px; margin: -4px 0 6px; font-size: 11px; color: var(--cr-ink-secondary); }
+.cr-pr-notes-line { display: flex; align-items: baseline; gap: 8px; margin: 0 !important; min-width: 0; }
+.cr-pr-note-latest { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cr-pr-note-meta { display: inline-flex; align-items: baseline; gap: 5px; color: var(--muted-foreground); }
+.cr-pr-note-meta > * + *::before { content: "·"; margin-right: 5px; color: var(--cr-faint); }
+.cr-pr-note-author { font-weight: 600; color: var(--cr-ink-secondary); }
+.cr-pr-note-kind[data-kind="question"] { color: var(--cr-amber-ink, var(--cr-amber)); }
+.cr-pr-note-kind[data-kind="comment"] { color: var(--primary); }
+.cr-pr-note-text { margin-left: 2px; }
+.bb-projects .cr .cr-pr-notes-toggle { flex: none; margin-left: auto; min-height: 0; padding: 0 2px; border: 0; background: transparent; color: var(--muted-foreground); font-size: 10.5px; font-weight: 550; }
+.bb-projects .cr .cr-pr-notes-toggle:hover { background: transparent; color: var(--foreground); text-decoration: underline; text-underline-offset: 2px; }
+.cr-pr-notes-panel { margin: 5px 0 4px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--cr-surface); }
+.cr-pr-notes-panel ol { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.cr-pr-notes-panel li { display: grid; gap: 1px; padding-left: 8px; border-left: 2px solid var(--border); }
+.cr-pr-notes-panel li[data-kind="question"] { border-left-color: color-mix(in srgb, var(--cr-amber) 45%, var(--border)); }
+.cr-pr-notes-panel li[data-open] { border-left-color: var(--cr-amber); }
+.cr-pr-notes-head { display: flex; align-items: baseline; gap: 7px; }
+.cr-pr-note-n { font: 10px ui-monospace, "SF Mono", Menlo, monospace; color: var(--cr-faint); font-variant-numeric: tabular-nums; }
+.cr-pr-note-body { margin: 0 !important; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; color: var(--foreground); }
+.cr-pr-note-answer { margin: 0 !important; color: var(--cr-green); }
+.cr-pr-notes-loading { margin: 6px 0 0 !important; color: var(--cr-faint); }
+.cr-pm-tip-notes { display: grid; gap: 3px; margin-top: 3px; padding-top: 4px; border-top: 1px solid var(--border); }
+.cr-pm-tip-note-entry { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 11px; }
+
+/* The first read from GitHub: rows shaped like the list, so nothing jumps when it lands (D441). */
+.cr-mq-skeleton ul { display: grid; gap: 12px; margin: 10px 0 0; padding: 0; list-style: none; }
+.cr-mq-skeleton li { display: grid; gap: 6px; padding-left: 24px; }
+.cr-mq-skeleton li span { display: block; height: 10px; border-radius: 4px; --cr-mq-bone: color-mix(in srgb, var(--foreground) 9%, transparent); background: linear-gradient(90deg, var(--cr-mq-bone) 0%, color-mix(in srgb, var(--foreground) 4%, transparent) 50%, var(--cr-mq-bone) 100%); background-size: 200% 100%; animation: cr-mq-shimmer 1.4s ease-in-out infinite; }
+.cr-mq-skeleton li span + span { width: 38%; height: 8px; opacity: .7; }
+@keyframes cr-mq-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .cr-mq-skeleton li span { animation: none; } }

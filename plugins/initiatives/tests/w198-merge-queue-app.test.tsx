@@ -36,11 +36,11 @@ const queue = (overrides: Partial<MergeQueue> = {}, prs = [
 ]): MergeQueue => ({
   projectId: "init-1",
   login: "erwinkn",
-  repos: [{ repo: "erwinkn/bb-plugins", fetchedAt: NOW - 60_000, error: null }],
+  repos: [{ repo: "erwinkn/bb-plugins", fetchedAt: NOW - 60_000, error: null, fetching: false, detailsFetchedAt: null, detailsError: null }],
   skipped: [],
   stages: PR_STAGES.map((stage) => ({ ...stage })),
   pullRequests: orderQueue(parsePullRequests("erwinkn/bb-plugins", JSON.stringify(prs)).map((pr) =>
-    pr.number === 68 ? { ...pr, worker: { ref: "W198", threadId: "thr_5t6t6jjct3" } } : pr)),
+    pr.number === 68 ? { ...pr, worker: { ref: "W198", threadId: "thr_5t6t6jjct3", assignment: null, role: null, source: "branch" as const } } : pr)),
   ...overrides,
 });
 const view = (props: Partial<Parameters<typeof MergeQueueView>[0]>, openUrl: (url: string) => boolean = () => true) => {
@@ -123,7 +123,7 @@ describe("W198 merge queue view", () => {
   });
 
   it("keeps the last good data beside a failed refresh", () => {
-    const slot = view({ queue: queue({ repos: [{ repo: "erwinkn/bb-plugins", fetchedAt: NOW - 12 * 60_000, error: "HTTP 502: Server Error" }] }) });
+    const slot = view({ queue: queue({ repos: [{ repo: "erwinkn/bb-plugins", fetchedAt: NOW - 12 * 60_000, error: "HTTP 502: Server Error", fetching: false, detailsFetchedAt: null, detailsError: null }] }) });
     expect(slot.getByText("Couldn't refresh · from 12m ago")).toBeTruthy();
     expect(slot.getByRole("status").textContent).toBe("erwinkn/bb-plugins: HTTP 502: Server Error. Showing the last data that loaded.");
     expect(slot.getAllByRole("link")).toHaveLength(4);
@@ -133,7 +133,7 @@ describe("W198 merge queue view", () => {
     const onRefresh = vi.fn();
     const slot = view({
       onRefresh,
-      queue: queue({ login: null, repos: [{ repo: "erwinkn/bb-plugins", fetchedAt: null, error: "To get started with GitHub CLI, please run: gh auth login" }], pullRequests: [] }),
+      queue: queue({ login: null, repos: [{ repo: "erwinkn/bb-plugins", fetchedAt: null, error: "To get started with GitHub CLI, please run: gh auth login", fetching: false, detailsFetchedAt: null, detailsError: null }], pullRequests: [] }),
     });
     const alert = slot.getByRole("alert");
     expect(alert.textContent).toContain("gh auth login");
@@ -143,7 +143,7 @@ describe("W198 merge queue view", () => {
   });
 
   it("shows loading, empty, no-remote and read-error states", () => {
-    expect(view({ queue: null }).getByText("Loading pull requests…")).toBeTruthy();
+    expect(view({ queue: null }).getByText("Loading pull requests from GitHub…")).toBeTruthy();
     cleanup();
     expect(view({ queue: queue({}, []) }).getByText("No open pull requests by erwinkn.")).toBeTruthy();
     cleanup();
