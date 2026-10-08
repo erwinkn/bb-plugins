@@ -134,6 +134,7 @@ read, with no output tokens. It is not a thread message, turn or agent run.
 | `roles` | all four | Which threads may be warmed: `coordinator`, `worker`, `reviewer`, `standalone` (BB threads outside any Initiative, and adhoc Initiative threads) |
 | `maxWaitMinutes` | 60 | No refresh once a wait is this old, whatever the odds (5–240) |
 | `maxBackgroundWaitMinutes` | 20 | No refresh once a thread waiting on a background task has waited this long (5–240); `maxWaitMinutes` still applies if lower |
+| `reviewHoldMinutes` | 45 | Hold a worker warm while Initiatives reviews its latest report, for at most this long from the review's start (0–240, 0 is off); see below |
 | `pauseStopsWarming` | `true` | No refreshes while the thread's Initiative is paused (an agent default, D357) |
 | `families` | `opus` | Model families whose requests can start a lease; a request in any family ends one |
 | `safetyMarginSeconds` | 60 | Refresh this long before expiry |
@@ -189,6 +190,28 @@ later is warmed through the steps in between. C cancels out.
   newest 20,000, through an index), read again at most every 10 minutes. A role
   with few waits is shrunk toward its state's (5 pseudo-waits); past every
   observed wait the thread is assumed not to resume.
+- **Review holds** (D440). Initiatives' thread context names the review still
+  pending or running of a worker's latest report (`membership.review`). Until
+  it reports, is stopped, or the worker gets newer work, the worker is held: its
+  resume counts as certain, at the latest when the hold ends (`since` +
+  `reviewHoldMinutes`). It is refreshed while the refreshes that keep the entry
+  until then cost less than a rewrite, past `maxBackgroundWaitMinutes` but never
+  past `maxWaitMinutes`, and within `maxRefreshesPerHour`. Example: a 190k-token
+  worker reports and a review starts; 3.5 minutes in, a 45-minute hold needs 11
+  refreshes (1.1 × 190k = 209k) against a 1.15 × 190k = 219k rewrite, so it is
+  held, and a review that reports after 20 minutes has cost 5 refreshes (95k).
+  With 5-minute entries, a hold longer than about 45 minutes fails that test at
+  the first refresh and falls back to the odds. So does a hold that ends after
+  `maxWaitMinutes` stops the refreshes: a resume after the last one would find
+  the entry gone. At the `maxLeases` limit, a worker's completion whose hold
+  passes that test (planned from its first due refresh) takes the slot of the
+  lease without such a hold expected to save least (one with no decision yet
+  counts as zero). It reads its own context fresh, then re-reads those leases'
+  contexts fresh, in parallel, so a review that started after a lease's last
+  read protects it; two held workers never displace each other. A
+  held wait's `usage_warming` row names the hold in `review_hold`, and
+  calibration leaves it out. Without Initiatives, with an older one, or with a
+  malformed field, nothing is held; Codex threads are never warmed.
 - A waiting-state read that takes over 10 seconds counts as unknown and ends the
   lease, and whatever a refresh's checks wait on, the lease ends when its entry
   expires.
@@ -260,9 +283,13 @@ membership; `null` and unknown results are never cached. Immediately before ever
 keep-alive, after credential preparation, the hub re-checks two things with
 fresh, uncached reads: BB still links the thread to the lease's session, and
 Initiatives still gives the thread a role that may be warmed. The current mode
-and model families are checked before and after those reads. A settings change,
-retirement, Stop, replacement, pause or new session since classification refuses
-the send. This also applies to the dry runs in `observe`.
+and model families are checked before and after those reads, and the refresh
+decision runs again with the fresh context and the current time. A settings
+change, retirement, Stop, replacement, pause, new session or ended review hold
+since classification refuses the send. This also applies to the dry runs in
+`observe`. Every Initiatives read, plugin token included, gives up after 2 s,
+and the warmer counts any read still pending after 3 s as unknown, so a stalled
+read never keeps an admission or its body.
 
 **Cancellation.**
 - Any native request in the same session, in any model family, ends its lease and

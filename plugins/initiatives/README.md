@@ -1032,7 +1032,11 @@ or model call:
   Phases (`pending`, `active`, `reported`, `accepted`, `rejected`,
   `cancelled`, `failed`) come from canonical assignment records, so reported
   work stays visible after it leaves the active-work list. An unknown thread is
-  `membership: null`.
+  `membership: null`. `membership.review` is the review still pending or running
+  of the thread's latest report, as filed now (`ref`, the reviewer's `worker`,
+  `phase`, `since` in ms), else null: a review of an earlier filing of the same
+  assignment's report does not count. The Account Pooler keeps the thread's prompt cache
+  warm while it is set, for the fix round the review may bring (D440).
 - `/api/v1/plugins/initiatives/http/context/v1/record?initiativeId=…&ref=T#|A#&part=brief|handoff`
   pages a live task brief, an assignment's exact delivered brief, or its
   standard handoff, at most 16,000 characters per page with `nextOffset`.

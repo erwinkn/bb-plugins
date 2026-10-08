@@ -93,11 +93,27 @@ describe("Initiatives context reader (contract v1)", () => {
       state: "active",
       archived: false,
       paused: false,
+      worker: "W1",
       assignment: { ref: "A7", phase: "reported" },
       next: { ref: "A8", phase: "pending" },
+      review: null,
     });
     expect(calls).toEqual([`${ROUTE}?threadId=thr_a%2Fb`]);
     expect(token).toBe("initiatives-token");
+  });
+
+  it("D440: reads a running review of the thread's report; an older or malformed one means no review, not unknown", async () => {
+    const review = { ref: "A9", worker: "W2", phase: "active", since: 1791189116000 };
+    const read = async (membership: Record<string, unknown>) =>
+      reader(() => ok("thr_x", membership)).instance.read("thr_x", signal());
+    expect(await read(member({ review }))).toMatchObject({
+      kind: "member",
+      worker: "W1",
+      review: { ref: "A9", worker: "W2", since: 1791189116000 },
+    });
+    const { worker: _worker, ...older } = member();
+    expect(await read(older)).toMatchObject({ kind: "member", worker: null, review: null });
+    expect(await read(member({ review: { ref: "A9" } }))).toMatchObject({ kind: "member", review: null });
   });
 
   it("reads membership null as no Initiatives record, not as a standalone thread", async () => {
@@ -136,6 +152,18 @@ describe("Initiatives context reader (contract v1)", () => {
       kind: "unknown",
       reason: "Initiatives context read failed or timed out",
     });
+  });
+
+  it("bounds the plugin token by the same deadline as the request", async () => {
+    const { instance, calls } = reader(() => ok("thr_x", null), {
+      token: () => new Promise<string>(() => undefined),
+      timeoutMs: 20,
+    });
+    expect(await instance.read("thr_x", signal())).toEqual({
+      kind: "unknown",
+      reason: "Initiatives plugin token timed out",
+    });
+    expect(calls).toHaveLength(0);
   });
 
   it("treats a missing Initiatives plugin token as unknown context", async () => {
@@ -192,8 +220,10 @@ describe("warming roles (contract v1)", () => {
     state: "active",
     archived: false,
     paused: false,
+    worker: "W1",
     assignment: { ref: "A1", phase: "active" },
     next: null,
+    review: null,
     ...overrides,
   });
 
@@ -211,7 +241,7 @@ describe("warming roles (contract v1)", () => {
     ["adhoc thread", ctx({ memberKind: "adhoc", role: "adhoc", assignment: null }), "standalone", "adhoc Initiative thread"],
     ["thread outside any Initiative", { kind: "none" } as ThreadContext, "standalone", "no Initiative"],
   ])("a %s is warmed as %s", (_name, context, role, label) => {
-    expect(warmingRole(context, config)).toEqual({ ok: true, role, label });
+    expect(warmingRole(context, config)).toEqual({ ok: true, role, label, reviewHold: null });
   });
 
   it.each([

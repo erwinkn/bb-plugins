@@ -308,7 +308,7 @@ function formatWarmingStatus(status: WarmingStatus): string {
       : status.leases
           .map(
             (lease) =>
-              `${lease.threadId} ${lease.model ?? "-"} ttl=${lease.ttl} ${lease.dryRun ? "dry-run " : ""}${lease.state} refreshes=${lease.refreshes} covered=${formatTime(lease.coveredUntil)} next=${formatTime(lease.nextRefreshAt)} role=${lease.role ?? "-"} (${lease.label ?? "-"}) waiting-on=${lease.waitingOn ?? "-"} p-resume=${lease.resumeChance?.toFixed(2) ?? "-"} expected-saving=${lease.expectedSaving ?? "-"} prefix=${lease.prefixTokens} body=${lease.bodyHash}`,
+              `${lease.threadId} ${lease.model ?? "-"} ttl=${lease.ttl} ${lease.dryRun ? "dry-run " : ""}${lease.state} refreshes=${lease.refreshes} covered=${formatTime(lease.coveredUntil)} next=${formatTime(lease.nextRefreshAt)} role=${lease.role ?? "-"} (${lease.label ?? "-"}) waiting-on=${lease.waitingOn ?? "-"}${lease.reviewHold === null ? "" : ` held=(${lease.reviewHold})`} p-resume=${lease.resumeChance?.toFixed(2) ?? "-"} expected-saving=${lease.expectedSaving ?? "-"} prefix=${lease.prefixTokens} body=${lease.bodyHash}`,
           )
           .join("\n"),
     "",

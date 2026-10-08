@@ -33,7 +33,7 @@ describe("W229 P1: the PR migrations follow the deployed memory ones", () => {
     expect(MIGRATIONS.slice(72, 77)).toEqual(MEMORY_MIGRATIONS);
     expect(MIGRATIONS[77]).toMatch(/^CREATE TABLE pr_records/);
     expect(MIGRATIONS[78]).toMatch(/^INSERT INTO pr_records/);
-    expect(MIGRATIONS.slice(79)).toEqual(PR_NOTE_MIGRATIONS);
+    expect(MIGRATIONS.slice(79, 79 + PR_NOTE_MIGRATIONS.length)).toEqual(PR_NOTE_MIGRATIONS);
     const host = createFakePluginHost();
     const db = host.bb.storage.database();
     try {

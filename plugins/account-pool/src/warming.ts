@@ -8,7 +8,7 @@ import {
   type CacheTtl,
   type CacheUsage,
 } from "./cache-usage.js";
-import type { ThreadContext } from "./thread-context.js";
+import type { ReviewHold, ThreadContext } from "./thread-context.js";
 import { warmingRole } from "./thread-context.js";
 import {
   effectiveWarmingQuotaReserve,
@@ -18,8 +18,10 @@ import {
   type WarmingFamily,
 } from "./warming-config.js";
 import {
+  decideHold,
   decideRefresh,
   waitStates,
+  type HeldWait,
   type ResumeHistory,
   type WaitState,
   type WarmingRole,
@@ -48,7 +50,9 @@ import {
 // Admission: a completed request takes a lease slot, and keeps its body, only once its session is
 // linked to a thread and that thread's Initiative context gives it a role that may be warmed.
 // Until then it waits as an admission, bounded in count (maxLeases) and time (LINK_WAIT_MS), and
-// any newer request in the session, a turn start or a settings change drops it.
+// any newer request in the session, a turn start or a settings change drops it. At the limit, a
+// thread whose review hold (D440) pays for warming it takes the slot of a lease without one
+// (evictFor).
 //
 // Subagents and helpers: Claude Code 2.1.287 sets metadata.user_id.parent_session_id from its
 // agent-team context (getParentSessionId), so it marks a teammate session, not an ordinary Task
@@ -68,6 +72,9 @@ const MAX_SESSION_LINKS = 1_024;
 const LINK_WAIT_MS = 60_000;
 // How long the warmer waits for BB to say what a thread waits on before it gives up on the refresh.
 const WAIT_STATE_TIMEOUT_MS = 10_000;
+// How long the warmer waits for an Initiatives context read, whatever the reader does, before it
+// counts the context as unknown. The reader's own deadline is 2 seconds.
+const CONTEXT_READ_TIMEOUT_MS = 3_000;
 const AMBIGUOUS = Symbol("ambiguous");
 
 export interface WarmingTimers {
@@ -194,6 +201,8 @@ export interface WarmingOutcome {
   refreshes: number;
   kind: "end" | "skip";
   reason: string;
+  // The review hold the wait was under at a refresh decision or admission, if any (D440).
+  reviewHold: string | null;
 }
 
 interface Lease {
@@ -216,6 +225,9 @@ interface Lease {
   role: WarmingRole | null;
   // How Initiatives describes the thread, for status.
   label: string | null;
+  // The review hold from the latest classification, and the last one the wait was under.
+  reviewHold: ReviewHold | null;
+  heldFor: string | null;
   // What the thread waited on at the latest and at the first refresh decision.
   waitingOn: WaitState | null;
   firstWaitingOn: WaitState | null;
@@ -276,6 +288,7 @@ export const warmingStatusSchema = z
           coveredUntil: z.number().int(),
           role: warmingRoleSchema.nullable(),
           label: z.string().nullable(),
+          reviewHold: z.string().nullable(),
           waitingOn: z.enum(waitStates).nullable(),
           resumeChance: z.number().nullable(),
           expectedSaving: z.number().nullable(),
@@ -587,6 +600,7 @@ export class CacheWarmer {
         coveredUntil: lease.coveredUntil,
         role: lease.role,
         label: lease.label,
+        reviewHold: this.reviewHeld(lease) ? lease.reviewHold!.why : null,
         waitingOn: lease.waitingOn,
         resumeChance: lease.resumeChance,
         expectedSaving: lease.expectedSaving,
@@ -718,6 +732,7 @@ export class CacheWarmer {
         refreshes: 0,
         kind: "skip",
         reason: message,
+        reviewHold: null,
       });
     };
     if (start.parentSessionId !== null)
@@ -779,6 +794,8 @@ export class CacheWarmer {
         coveredUntil,
         role: null,
         label: null,
+        reviewHold: null,
+        heldFor: null,
         waitingOn: null,
         firstWaitingOn: null,
         firstDecisionAt: null,
@@ -901,32 +918,42 @@ export class CacheWarmer {
     admission.state = "classifying";
     if (admission.timer !== null) this.deps.timers.clearTimeout(admission.timer);
     admission.timer = null;
-    let context: ThreadContext;
-    try {
-      context = await this.deps.readContext(thread, admission.controller.signal);
-    } catch {
-      context = { kind: "unknown", reason: "thread context read failed" };
+    // At the lease limit only a review hold that pays takes a slot, and a review may have started
+    // since the cached read.
+    const fresh = this.leases.size >= this.deps.config().maxLeases;
+    const context = await this.readContext(thread, admission.controller.signal, fresh);
+    // After every wait: the admission still stands, its entry has not expired, and the thread
+    // still qualifies under the current settings and link, its role and hold classified again.
+    const settled = (): WarmingConfig | null => {
+      if (
+        this.admissions.get(lease.sessionId) !== admission ||
+        admission.controller.signal.aborted
+      )
+        return null;
+      const current = this.deps.config();
+      const refused =
+        this.gate(lease, current) ??
+        (this.deps.now() >= lease.coveredUntil
+          ? "the entry expired during classification"
+          : this.sessionThreads.get(lease.sessionId) !== thread
+            ? "the session's thread link changed during classification"
+            : (this.applyRole(lease, context, current)?.message ?? null));
+      if (refused === null) return current;
+      this.dropAdmission(admission, refused);
+      return null;
+    };
+    let config = settled();
+    if (config === null) return;
+    if (this.leases.size >= config.maxLeases) {
+      const full = `lease limit reached (maxLeases ${config.maxLeases})`;
+      if (!this.holdPays(lease, config)) return this.dropAdmission(admission, full);
+      // A review may also have started on a lease since its last read.
+      await this.rereadHolds(admission.controller.signal, config);
+      config = settled();
+      if (config === null) return;
+      while (this.leases.size >= config.maxLeases)
+        if (!this.evictFor(lease, config)) return this.dropAdmission(admission, full);
     }
-    if (
-      this.admissions.get(lease.sessionId) !== admission ||
-      admission.controller.signal.aborted
-    )
-      return;
-    const config = this.deps.config();
-    const blocked = this.gate(lease, config);
-    if (blocked !== null) return this.dropAdmission(admission, blocked);
-    if (this.sessionThreads.get(lease.sessionId) !== thread)
-      return this.dropAdmission(
-        admission,
-        "the session's thread link changed during classification",
-      );
-    const refused = this.applyRole(lease, context, config);
-    if (refused !== null) return this.dropAdmission(admission, refused.message);
-    if (this.leases.size >= config.maxLeases)
-      return this.dropAdmission(
-        admission,
-        `lease limit reached (maxLeases ${config.maxLeases})`,
-      );
     this.admissions.delete(lease.sessionId);
     this.leases.set(lease.sessionId, lease);
     this.totals.leasesStarted += 1;
@@ -936,6 +963,70 @@ export class CacheWarmer {
       `${lease.dryRun ? "dry-run " : ""}lease on ${lease.prefixTokens} cached tokens; entry covered until ${new Date(lease.coveredUntil).toISOString()}`,
     );
     this.schedule(lease, config);
+  }
+
+  // A thread whose review hold pays for warming it takes the slot of the lease without one expected
+  // to save least: one with no decision yet counts as 0 (most are mid-turn and resume before their
+  // first refresh is due), and among equals the newest wait goes first. Two held threads never
+  // displace each other.
+  private evictFor(lease: Lease, config: WarmingConfig): boolean {
+    if (!this.holdPays(lease, config)) return false;
+    const saving = (other: Lease) => other.expectedSaving ?? 0;
+    let victim: Lease | null = null;
+    for (const other of this.leases.values())
+      if (
+        !this.holdPays(other, config) &&
+        (victim === null ||
+          saving(other) < saving(victim) ||
+          (saving(other) === saving(victim) && other.nativeCompletedAt > victim.nativeCompletedAt))
+      )
+        victim = other;
+    if (victim === null) return false;
+    lease.heldFor = lease.reviewHold!.why;
+    this.endLease(victim, `lease slot taken by a thread under review (${lease.reviewHold!.why})`);
+    return true;
+  }
+
+  // Re-reads, fresh and in parallel, the context of every lease evictFor could take a slot from,
+  // so a review that started since a lease's last read protects it. Each read is bounded; one that
+  // fails leaves the lease's last classification.
+  private async rereadHolds(signal: AbortSignal, config: WarmingConfig): Promise<void> {
+    const candidates = [...this.leases.values()].filter((other) => !this.holdPays(other, config));
+    await Promise.all(
+      candidates.map(async (other) => {
+        const thread = this.linkedThread(other.sessionId);
+        if (thread === null) return;
+        const context = await this.readContext(thread, signal, true);
+        if (!other.ended && context.kind !== "unknown")
+          this.applyRole(other, context, this.deps.config());
+      }),
+    );
+  }
+
+  private reviewHeld(lease: Lease): boolean {
+    return lease.reviewHold !== null && this.deps.now() < lease.reviewHold.until;
+  }
+
+  // Whether the lease's review hold alone pays for warming it (decideHold), planned from its next
+  // refresh decision. Only such a hold takes, or keeps, a slot at the lease limit.
+  private holdPays(lease: Lease, config: WarmingConfig): boolean {
+    const margin = config.safetyMarginSeconds * 1_000;
+    const next = Math.max(this.deps.now(), lease.coveredUntil - margin);
+    return decideHold(this.heldWait(lease, next, config))?.refresh === true;
+  }
+
+  // The wait as warming-economics sees it at `at`, with its review hold if one is in force.
+  private heldWait(lease: Lease, at: number, config: WarmingConfig): HeldWait {
+    const hold = this.reviewHeld(lease) ? lease.reviewHold! : null;
+    return {
+      ageMs: at - lease.nativeCompletedAt,
+      coveredMs: lease.coveredUntil - lease.nativeCompletedAt,
+      stepMs: CACHE_TTL_MS[lease.ttl] - config.safetyMarginSeconds * 1_000,
+      ttl: lease.ttl,
+      maxAgeMs: config.maxWaitMinutes * 60_000,
+      reviewHold:
+        hold === null ? null : { untilMs: hold.until - lease.nativeCompletedAt, why: hold.why },
+    };
   }
 
   private dropAdmission(admission: Admission, message: string | null): void {
@@ -1013,7 +1104,7 @@ export class CacheWarmer {
     if (lease.ended) return;
     if (state === null)
       return this.endLease(lease, "skipped: BB could not tell what the thread waits on", "skip");
-    if (lease.waitingOn === "background" && state === "idle")
+    if (lease.waitingOn === "background" && state === "idle" && !this.reviewHeld(lease))
       return this.endLease(lease, "stopped: the background task ended without the thread resuming");
     config = this.deps.config();
     const changed = this.gate(lease, config);
@@ -1039,16 +1130,21 @@ export class CacheWarmer {
     }
     this.refreshTimes.push(now);
     // Runs immediately before the vendor request: the settings must still allow the lease, BB must
-    // still link the thread to this session, and a context read that bypasses the cache must still
-    // qualify it, so a settings change, retirement, Stop, replacement, acceptance, pause or new
-    // session since classification refuses the send.
+    // still link the thread to this session, a context read that bypasses the cache must still
+    // qualify it, and the refresh must still pay with that context, so a settings change,
+    // retirement, Stop, replacement, acceptance, pause, new session or ended review hold since
+    // classification refuses the send.
     const confirm = async (signal: AbortSignal): Promise<string | null> => {
       const before = this.gate(lease, this.deps.config());
       if (before !== null) return before;
       const refused = await this.qualify(lease, thread, signal, true);
       if (refused !== null) return refused.message;
       if (lease.ended) return "the lease ended";
-      return this.gate(lease, this.deps.config());
+      const current = this.deps.config();
+      const after = this.gate(lease, current);
+      if (after !== null) return after;
+      const confirmed = this.decide(lease, state, this.deps.now(), current);
+      return confirmed.refresh ? null : `stopped (${state}): ${confirmed.why}`;
     };
     if (lease.dryRun) {
       const refused = await confirm(controller.signal);
@@ -1136,13 +1232,24 @@ export class CacheWarmer {
           kind: "end",
         };
     }
-    let context: ThreadContext;
-    try {
-      context = await this.deps.readContext(thread, signal, { fresh });
-    } catch {
-      context = { kind: "unknown", reason: "thread context read failed" };
-    }
+    const context = await this.readContext(thread, signal, fresh);
     return this.applyRole(lease, context, this.deps.config());
+  }
+
+  // The thread's Initiatives context, bounded in time whatever the reader does: a read that fails
+  // or takes longer than CONTEXT_READ_TIMEOUT_MS is unknown, and is aborted.
+  private async readContext(
+    thread: string,
+    signal: AbortSignal,
+    fresh: boolean,
+  ): Promise<ThreadContext> {
+    const deadline = new AbortController();
+    const read = async () =>
+      this.deps.readContext(thread, AbortSignal.any([signal, deadline.signal]), { fresh });
+    const context = await this.within(read(), CONTEXT_READ_TIMEOUT_MS);
+    if (context !== null) return context;
+    deadline.abort(new Error("thread context read timed out"));
+    return { kind: "unknown", reason: "thread context read failed or timed out" };
   }
 
   // Sets the lease's role from the thread's context; null, or why it is not warmed.
@@ -1155,6 +1262,7 @@ export class CacheWarmer {
     if (!classified.ok) return { message: classified.reason, kind: classified.kind };
     lease.role = classified.role;
     lease.label = classified.label;
+    lease.reviewHold = classified.reviewHold;
     return null;
   }
 
@@ -1182,15 +1290,12 @@ export class CacheWarmer {
       lease.firstWaitingOn = state;
       lease.firstDecisionAt = now;
     }
+    if (this.reviewHeld(lease)) lease.heldFor = lease.reviewHold!.why;
     const decision = decideRefresh(this.deps.resumeHistory(), {
+      ...this.heldWait(lease, now, config),
       state,
       // Set by qualify, which always runs first.
       role: lease.role ?? "standalone",
-      ageMs: now - lease.nativeCompletedAt,
-      coveredMs: lease.coveredUntil - lease.nativeCompletedAt,
-      stepMs: CACHE_TTL_MS[lease.ttl] - config.safetyMarginSeconds * 1_000,
-      ttl: lease.ttl,
-      maxAgeMs: config.maxWaitMinutes * 60_000,
       maxBackgroundAgeMs: config.maxBackgroundWaitMinutes * 60_000,
     });
     lease.resumeChance = decision.resumeChance;
@@ -1270,6 +1375,7 @@ export class CacheWarmer {
       refreshes: lease.refreshes,
       kind,
       reason,
+      reviewHold: lease.heldFor,
     });
   }
 

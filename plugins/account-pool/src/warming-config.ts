@@ -67,6 +67,7 @@ export const DEFAULT_WARMING_CONFIG = {
   roles: [...warmingRoles] as WarmingRole[],
   maxWaitMinutes: 60,
   maxBackgroundWaitMinutes: 20,
+  reviewHoldMinutes: 45,
   pauseStopsWarming: true,
   families: ["opus"] as WarmingFamily[],
   safetyMarginSeconds: 60,
@@ -91,6 +92,11 @@ const fieldSchemas = {
   // coordinator's decision: in the back-test, most background tasks that ran longer never led to a
   // resume). maxWaitMinutes still applies if it is lower.
   maxBackgroundWaitMinutes: integer(5, 240),
+  // D440: while Initiatives reports a review of a worker's latest report running, the worker is
+  // warmed as if it will resume, for at most this long from the review's start, and only while the
+  // refreshes cost less than a rewrite. It lifts maxBackgroundWaitMinutes, not maxWaitMinutes, and a
+  // hold that maxWaitMinutes cuts short does not count. 0 is off.
+  reviewHoldMinutes: integer(0, 240),
   // A paused Initiative's threads are not warmed (D357, an agent default).
   pauseStopsWarming: z.boolean(),
   families: familiesSchema,
@@ -119,6 +125,9 @@ export const warmingConfigSchema = z
     ),
     maxBackgroundWaitMinutes: fieldSchemas.maxBackgroundWaitMinutes.default(
       DEFAULT_WARMING_CONFIG.maxBackgroundWaitMinutes,
+    ),
+    reviewHoldMinutes: fieldSchemas.reviewHoldMinutes.default(
+      DEFAULT_WARMING_CONFIG.reviewHoldMinutes,
     ),
     pauseStopsWarming: fieldSchemas.pauseStopsWarming.default(
       DEFAULT_WARMING_CONFIG.pauseStopsWarming,

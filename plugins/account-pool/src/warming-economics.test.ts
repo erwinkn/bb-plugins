@@ -35,6 +35,7 @@ function decide(
     maxBackgroundAgeMinutes?: number;
     stepMs?: number;
     coveredMinutes?: number;
+    reviewHoldMinutes?: number;
   } = {},
 ) {
   return decideRefresh(history, {
@@ -47,6 +48,10 @@ function decide(
     ttl: overrides.ttl ?? "5m",
     maxAgeMs: (overrides.maxAgeMinutes ?? 60) * MINUTE,
     maxBackgroundAgeMs: (overrides.maxBackgroundAgeMinutes ?? 60) * MINUTE,
+    reviewHold:
+      overrides.reviewHoldMinutes === undefined
+        ? null
+        : { untilMs: overrides.reviewHoldMinutes * MINUTE, why: "review of W1 by W2 running (A2)" },
   });
 }
 
@@ -170,5 +175,75 @@ describe("the built-in history", () => {
   it("has samples for the states judged by odds only", () => {
     const states = new Set(PRIOR_SAMPLES.map((sample) => sample.state));
     expect([...states].sort()).toEqual(["idle", "question"]);
+  });
+});
+
+describe("D440: review holds", () => {
+  const never = new ResumeHistory(samples("idle", "worker", Array(50).fill(null)));
+  const WHY = "review of W1 by W2 running (A2)";
+
+  it("warms a worker under review whatever its odds while the refreshes until the hold ends cost less than a rewrite", () => {
+    // 3.5 minutes in, a hold to minute 45 needs refreshes at 3.5, 7.5, ..., 43.5: 11 of them, 1.1 < 1.15.
+    expect(decide(never, "idle", "worker", 3.5, { reviewHoldMinutes: 45 })).toMatchObject({
+      refresh: true,
+      resumeChance: 1,
+      horizonMs: 45 * MINUTE,
+      why: `held: ${WHY}; 11 refreshes until the hold ends cost 1.1×prefix, less than a 1.15×prefix rewrite`,
+    });
+    expect(decide(never, "question", "worker", 3.5, { reviewHoldMinutes: 45 }).refresh).toBe(true);
+    // Without the hold, the same wait stops.
+    expect(decide(never, "idle", "worker", 3.5).refresh).toBe(false);
+  });
+
+  it("falls back to the odds when the hold would cost more than a rewrite", () => {
+    // A hold to minute 60 needs 14 refreshes (1.4 > 1.15) from 3.5 minutes in.
+    const at = decide(never, "idle", "worker", 3.5, { reviewHoldMinutes: 60, maxAgeMinutes: 120 });
+    expect(at.refresh).toBe(false);
+    expect(at.why).toMatch(
+      new RegExp(`^not held \\(${WHY.replace(/[()]/g, "\\$&")}\\): 14 refreshes until the hold ends would cost more than a rewrite; expected savings no longer cover refreshes`),
+    );
+    // Later in the same hold, fewer refreshes are left and it pays.
+    expect(decide(never, "idle", "worker", 19.5, { reviewHoldMinutes: 60, maxAgeMinutes: 120 }).refresh).toBe(true);
+    // A 1h entry: one refresh outlasts the hold, against a 1.9 rewrite.
+    expect(decide(never, "idle", "worker", 58, { ttl: "1h", stepMs: 59 * MINUTE, reviewHoldMinutes: 90, maxAgeMinutes: 120 })).toMatchObject({
+      refresh: true,
+      why: `held: ${WHY}; 1 refresh until the hold ends cost 0.1×prefix, less than a 1.90×prefix rewrite`,
+    });
+  });
+
+  it("ends with the hold: an entry that already outlasts it is judged by the odds", () => {
+    expect(decide(never, "idle", "worker", 3.5, { reviewHoldMinutes: 4 }).refresh).toBe(false);
+    expect(decide(never, "idle", "worker", 3.5, { reviewHoldMinutes: 5 }).refresh).toBe(true);
+  });
+
+  it("lifts maxBackgroundWaitMinutes until the hold ends, never maxWaitMinutes", () => {
+    const capped = { maxBackgroundAgeMinutes: 20, reviewHoldMinutes: 40 };
+    expect(decide(never, "background", "worker", 23.5, capped)).toMatchObject({ refresh: true, why: expect.stringMatching(/^held: /) });
+    expect(decide(never, "background", "worker", 23.5, { maxBackgroundAgeMinutes: 20 }).refresh).toBe(false);
+    expect(decide(never, "background", "worker", 39.5, { ...capped, reviewHoldMinutes: 39 })).toMatchObject({
+      refresh: false,
+      why: "the background wait reached maxBackgroundWaitMinutes (20)",
+    });
+    expect(decide(never, "idle", "worker", 60, { reviewHoldMinutes: 90 })).toMatchObject({
+      refresh: false,
+      why: "the wait reached maxWaitMinutes (60)",
+    });
+  });
+
+  it("W233: does not count a hold that maxWaitMinutes ends before the refreshes reach it", () => {
+    // 3.5 minutes in, under maxWaitMinutes 20, the last refresh goes out at 19.5 and lasts to 24.5.
+    expect(decide(never, "idle", "worker", 3.5, { reviewHoldMinutes: 24, maxAgeMinutes: 20 })).toMatchObject({
+      refresh: true,
+      resumeChance: 1,
+      why: `held: ${WHY}; 5 refreshes until the hold ends cost 0.5×prefix, less than a 1.15×prefix rewrite`,
+    });
+    // A resume between 24.5 and the hold's end would find the entry gone: the odds decide.
+    const short = decide(never, "idle", "worker", 3.5, { reviewHoldMinutes: 25, maxAgeMinutes: 20 });
+    expect(short).toMatchObject({ refresh: false, resumeChance: 0 });
+    expect(short.why).toMatch(
+      new RegExp(`^not held \\(${WHY.replace(/[()]/g, "\\$&")}\\): maxWaitMinutes \\(20\\) stops warming before the hold ends; expected savings no longer cover refreshes`),
+    );
+    // A hold far past maxWaitMinutes is the same, however few refreshes fit.
+    expect(decide(never, "idle", "worker", 4, { reviewHoldMinutes: 120, maxAgeMinutes: 20 }).refresh).toBe(false);
   });
 });

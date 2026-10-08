@@ -119,11 +119,24 @@ const integer = (query: URLSearchParams, key: string, fallback: number, min: num
   return value;
 };
 
+/**
+ * D440: the review pending or running of the thread's latest report, so the Account Pooler keeps
+ * the thread's prompt cache warm for the fix round the review may bring. It ends when the review
+ * reports or stops, once the thread gets newer work, or once the report is amended (a review of
+ * the earlier filing). Only the thread route reads it.
+ */
+function reviewContext(store: Store, m: NonNullable<ReturnType<typeof membershipContext>>) {
+  if (!m.assignment?.reportVersion) return null;
+  const review = store.openReviewOf(m.initiativeId, m.assignment.ref, m.assignment.reportVersion);
+  return review && { ref: review.ref, worker: workerRef(review.workerNum), phase: PHASES[review.state], since: review.createdAt };
+}
+
 /** GET context/v1/thread?threadId= */
 export function threadContext(store: Store, query: URLSearchParams): ContextResponse {
   return guard(() => {
     const threadId = required(query, "threadId", /^[\w-]{1,200}$/, "pass a BB thread id");
-    return { threadId, membership: membershipContext(store, threadId) };
+    const membership = membershipContext(store, threadId);
+    return { threadId, membership: membership && { ...membership, review: reviewContext(store, membership) } };
   });
 }
 

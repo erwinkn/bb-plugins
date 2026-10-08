@@ -115,8 +115,10 @@ const COORDINATOR: Member = {
   state: "active",
   archived: false,
   paused: false,
+  worker: null,
   assignment: null,
   next: null,
+  review: null,
 };
 function worker(
   phase: "pending" | "active" | "reported" | "accepted" | "rejected" | null,
@@ -140,7 +142,7 @@ interface Harness {
   freshContext: Map<string, ThreadContext>;
   contextReads: Array<{ threadId: string; fresh: boolean }>;
   // When set, a context read waits on this instead of answering from the maps.
-  readHook: ((threadId: string, fresh: boolean) => Promise<ThreadContext>) | null;
+  readHook: ((threadId: string, fresh: boolean, signal: AbortSignal) => Promise<ThreadContext>) | null;
   sessionHook: ((threadId: string) => void) | null;
   // BB's current provider session per thread, as its latest thread/identity event reports it.
   sessions: Map<string, string>;
@@ -191,9 +193,9 @@ function harness(overrides: Partial<WarmingConfig> = {}): Harness {
     timers: clock.timers,
     config: () => config,
     switchThreshold: () => 0.98,
-    readContext: async (threadId, _signal, options) => {
+    readContext: async (threadId, signal, options) => {
       contextReads.push({ threadId, fresh: options?.fresh === true });
-      if (h.readHook !== null) return h.readHook(threadId, options?.fresh === true);
+      if (h.readHook !== null) return h.readHook(threadId, options?.fresh === true, signal);
       return (
         (options?.fresh ? freshContext.get(threadId) : undefined) ??
         context.get(threadId) ?? { kind: "unknown", reason: "no stub" }
@@ -319,6 +321,7 @@ describe("cache warmer timing", () => {
         refreshes: 5,
         kind: "end",
         reason: "the wait reached maxWaitMinutes (20)",
+        reviewHold: null,
       },
     ]);
   });
@@ -414,14 +417,32 @@ describe("cache warmer timing", () => {
   });
 
   it("W211 2: a check that never answers ends the lease when the entry expires", async () => {
-    const h = harness();
+    // The waiting-state read gives up after 10 seconds, after the entry expires.
+    const h = harness({ safetyMarginSeconds: 5 });
     await h.native({ durationMs: 30 * SECOND });
-    h.readHook = () => new Promise(() => {});
+    h.waitHook = () => new Promise(() => {});
     await h.clock.advanceTo(10 * MINUTE);
     expect(h.warmer.status()).toMatchObject({ leases: [], retainedBodyBytes: 0 });
     expect(h.clock.pendingAt()).toEqual([]);
     expect(h.events().at(-1)).toBe("end: the entry expired while its refresh was being checked");
     expect(h.outcomes).toMatchObject([{ kind: "end", reason: "the entry expired while its refresh was being checked" }]);
+  });
+
+  it("W233: a context read that never answers counts as unknown after 3 seconds", async () => {
+    const h = harness();
+    await h.native({ durationMs: 30 * SECOND });
+    const signals: AbortSignal[] = [];
+    h.readHook = (_threadId, _fresh, signal) => {
+      signals.push(signal);
+      return new Promise(() => {});
+    };
+    await h.clock.advanceTo(4 * MINUTE + 2 * SECOND);
+    expect(h.warmer.status().leases).toHaveLength(1);
+    await h.clock.advanceTo(4 * MINUTE + 3 * SECOND);
+    expect(h.warmer.status()).toMatchObject({ leases: [], retainedBodyBytes: 0 });
+    expect(h.clock.pendingAt()).toEqual([]);
+    expect(h.events().at(-1)).toBe("skip: skipped: thread context read failed or timed out");
+    expect(signals.map((signal) => signal.aborted)).toEqual([true]);
   });
 
   it("W211 2: a wait-state read that takes over 10 seconds counts as unknown", async () => {
@@ -886,6 +907,7 @@ describe("cache warmer bounds", () => {
     });
     tap?.push(sse(NATIVE_USAGE));
     tap?.finish(true);
+    await flush();
     await h.clock.advanceTo(4 * MINUTE + 2 * SECOND);
     expect(h.sent).toHaveLength(1);
     (release as (() => void) | null)?.();
@@ -1612,5 +1634,229 @@ describe("T104: a newer request that ends without a usable response stops blocki
     await opus.finish();
     await haiku.abandon();
     expect(h.warmer.status()).toMatchObject({ leases: [], admissions: [] });
+  });
+});
+
+describe("D440: review holds", () => {
+  const WHY = "review of W1 by W2 running (A2)";
+  const review = (ref = "A2", since = T0) => ({ ref, worker: "W2", since });
+  // Idle workers never resume, so without a hold a reported worker's lease stops at once.
+  const never = () =>
+    new ResumeHistory(Array.from({ length: 30 }, () => ({ state: "idle" as const, role: "worker" as const, waitMs: null })));
+  function reported(overrides: Partial<Harness["config"]> = {}) {
+    const h = harness(overrides);
+    h.history = never();
+    h.context.set("thr_coord", worker("reported", { worker: "W1", review: review() }));
+    h.waits.set("thr_coord", "idle");
+    return h;
+  }
+
+  it("keeps a reported worker warm while its review runs, and lets the odds decide once it reports", async () => {
+    const h = reported();
+    await h.native();
+    await h.clock.advanceTo(17 * MINUTE);
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480, 720, 960]);
+    expect(h.warmer.status().leases[0]).toMatchObject({ reviewHold: WHY, waitingOn: "idle", resumeChance: 1 });
+    h.context.set("thr_coord", worker("reported", { worker: "W1" }));
+    await h.clock.advanceTo(60 * MINUTE);
+    expect(h.sent).toHaveLength(4);
+    expect(h.events().at(-1)).toMatch(/^end: stopped \(idle\): expected savings no longer cover refreshes/);
+    // The ledger names the hold, so calibration leaves this wait out.
+    expect(h.outcomes.at(-1)).toMatchObject({ role: "worker", state: "idle", refreshes: 4, reviewHold: WHY });
+  });
+
+  it("expires reviewHoldMinutes after the review started, and a re-review renews it", async () => {
+    const expired = reported({ reviewHoldMinutes: 10 });
+    await expired.native();
+    await expired.clock.advanceTo(60 * MINUTE);
+    expect(expired.sent.map((request) => request.at / SECOND)).toEqual([240, 480]);
+    expect(expired.events().at(-1)).toMatch(/^end: stopped \(idle\): expected savings/);
+
+    const renewed = reported({ reviewHoldMinutes: 10 });
+    await renewed.native();
+    await renewed.clock.advanceTo(500 * SECOND);
+    renewed.context.set("thr_coord", worker("reported", { worker: "W1", review: review("A4", T0 + 500 * SECOND) }));
+    await renewed.clock.advanceTo(60 * MINUTE);
+    // Held until 1100 s: the entry refreshed at 960 already lasts past it.
+    expect(renewed.sent.map((request) => request.at / SECOND)).toEqual([240, 480, 720, 960]);
+    expect(renewed.outcomes.at(-1)?.reviewHold).toBe("review of W1 by W2 running (A4)");
+  });
+
+  it("ends when the worker resumes or retires; reviewHoldMinutes 0 turns holds off", async () => {
+    const resumed = reported();
+    await resumed.native();
+    await resumed.clock.advanceTo(5 * MINUTE);
+    resumed.context.set("thr_coord", worker("active", { worker: "W1" }));
+    await resumed.native();
+    expect(resumed.outcomes.at(-1)).toMatchObject({ reason: "a native request on the thread took over", refreshes: 1, reviewHold: WHY });
+
+    const retired = reported();
+    await retired.native();
+    await retired.clock.advanceTo(5 * MINUTE);
+    retired.context.set("thr_coord", worker("reported", { worker: "W1", review: review(), state: "retired" }));
+    await retired.clock.advanceTo(60 * MINUTE);
+    expect(retired.sent).toHaveLength(1);
+    expect(retired.events().at(-1)).toBe("end: worker retired");
+
+    const off = reported({ reviewHoldMinutes: 0 });
+    await off.native();
+    await off.clock.advanceTo(60 * MINUTE);
+    expect(off.sent).toHaveLength(0);
+    expect(off.outcomes.at(-1)?.reviewHold).toBeNull();
+  });
+
+  it("keeps warming when a background task ends during the hold", async () => {
+    const h = reported();
+    h.waits.set("thr_coord", "background");
+    await h.native();
+    await h.clock.advanceTo(5 * MINUTE);
+    h.waits.set("thr_coord", "idle");
+    await h.clock.advanceTo(10 * MINUTE);
+    expect(h.sent.map((request) => request.at / SECOND)).toEqual([240, 480]);
+  });
+
+  it("at the lease limit, a worker under review takes an unheld lease's slot, read fresh", async () => {
+    const h = harness({ maxLeases: 1 });
+    h.history = never();
+    await h.native();
+    expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_coord"]);
+    // The cached read predates the review; the fresh read at the limit sees it.
+    h.context.set("thr_w1", worker("reported", { worker: "W1" }));
+    h.freshContext.set("thr_w1", worker("reported", { worker: "W1", review: review() }));
+    await h.native({ threadId: "thr_w1" });
+    expect(h.contextReads).toContainEqual({ threadId: "thr_w1", fresh: true });
+    expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_w1"]);
+    expect(h.events()).toContain(`end: lease slot taken by a thread under review (${WHY})`);
+    // Neither an unheld thread nor another held one takes a held lease's slot.
+    h.context.set("thr_w3", worker("reported", { worker: "W3" }));
+    await h.native({ threadId: "thr_w3" });
+    h.context.set("thr_w5", worker("reported", { worker: "W5", review: review("A6") }));
+    await h.native({ threadId: "thr_w5" });
+    expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_w1"]);
+    expect(h.events().filter((event) => event === "skip: lease limit reached (maxLeases 1)")).toHaveLength(2);
+  });
+
+  it("W233: a lease whose review started after its admission keeps its slot", async () => {
+    const h = harness({ maxLeases: 1 });
+    h.history = never();
+    h.context.set("thr_coord", worker("reported", { worker: "W1" }));
+    await h.native();
+    expect(h.warmer.status().leases[0]).toMatchObject({ threadId: "thr_coord", reviewHold: null });
+    // The review of W1 starts now: only a fresh read sees it.
+    h.freshContext.set("thr_coord", worker("reported", { worker: "W1", review: review() }));
+    h.context.set("thr_w3", worker("reported", { worker: "W3", review: review("A4") }));
+    await h.native({ threadId: "thr_w3" });
+    expect(h.contextReads).toContainEqual({ threadId: "thr_coord", fresh: true });
+    expect(h.warmer.status().leases).toMatchObject([{ threadId: "thr_coord", reviewHold: WHY }]);
+    expect(h.events().at(-1)).toBe("skip: lease limit reached (maxLeases 1)");
+  });
+
+  // Admission at the limit; once armed, thr_coord's next fresh (victim) read stays open until
+  // released.
+  async function racing() {
+    const h = harness({ maxLeases: 1 });
+    h.history = never();
+    await h.native();
+    let armed = false;
+    let release: (() => void) | null = null;
+    h.readHook = (threadId, fresh) => {
+      if (!(armed && threadId === "thr_coord" && fresh)) return Promise.resolve(h.context.get(threadId)!);
+      armed = false;
+      return new Promise((resolve) => (release = () => resolve(h.context.get(threadId)!)));
+    };
+    h.context.set("thr_w1", worker("reported", { worker: "W1", review: review() }));
+    return { h, arm: () => (armed = true), release: () => (release as (() => void) | null)?.() };
+  }
+
+  it("W233: an entry that expires while the leases it could evict are read takes no slot", async () => {
+    const { h, arm } = await racing();
+    // W1's request started at 90 s and completes at 388 s; its 5-minute entry expires at 390 s.
+    await h.clock.advanceTo(90 * SECOND);
+    h.sessions.set("thr_w1", "s-thr_w1");
+    h.warmer.linkSession("thr_w1", "s-thr_w1");
+    const observation = h.warmer.observe({ sessionId: "s-thr_w1", parentSessionId: null, family: "opus" });
+    const tap = observation!.responded({
+      accountId: ACCOUNT, url: URL_, body: requestBody({ turn: "w1" }), headers: new Headers(),
+      startedAt: h.clock.now(), status: 200, contentType: "text/event-stream",
+    });
+    tap.push(sse(NATIVE_USAGE));
+    await h.clock.advanceTo(388 * SECOND);
+    arm();
+    tap.finish(true);
+    await flush();
+    expect(h.contextReads.at(-1)).toEqual({ threadId: "thr_coord", fresh: true });
+    // The victim read gives up after 3 seconds, past the entry's expiry.
+    await h.clock.advanceTo(391 * SECOND);
+    expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_coord"]);
+    expect(h.events().at(-1)).toBe("skip: the entry expired during classification");
+  });
+
+  it("W233: holds or the role turned off while the leases it could evict are read take no slot", async () => {
+    const off = await racing();
+    off.arm();
+    await off.h.native({ threadId: "thr_w1" });
+    expect(off.h.contextReads.at(-1)).toEqual({ threadId: "thr_coord", fresh: true });
+    off.h.config.reviewHoldMinutes = 0;
+    off.h.warmer.reconcile();
+    off.release();
+    await flush();
+    expect(off.h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_coord"]);
+    expect(off.h.events().at(-1)).toBe("skip: lease limit reached (maxLeases 1)");
+
+    const role = await racing();
+    role.arm();
+    await role.h.native({ threadId: "thr_w1" });
+    role.h.config.roles = role.h.config.roles.filter((name) => name !== "worker");
+    role.h.warmer.reconcile();
+    role.release();
+    await flush();
+    expect(role.h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_coord"]);
+    expect(role.h.events().at(-1)).toMatch(/^skip: role worker is not enabled for warming/);
+  });
+
+  it("W233: a hold that would not pay for itself takes no slot", async () => {
+    // A hold to minute 60 needs 14 refreshes from the first due time (1.4 > 1.15 × prefix).
+    const h = harness({ maxLeases: 1, reviewHoldMinutes: 60, maxWaitMinutes: 120 });
+    h.history = never();
+    await h.native();
+    h.context.set("thr_w1", worker("reported", { worker: "W1", review: review() }));
+    await h.native({ threadId: "thr_w1" });
+    expect(h.warmer.status().leases.map((lease) => lease.threadId)).toEqual(["thr_coord"]);
+    expect(h.events().at(-1)).toBe("skip: lease limit reached (maxLeases 1)");
+    // Nothing was re-read for an eviction that could not happen.
+    expect(h.contextReads.filter((read) => read.threadId === "thr_coord" && read.fresh)).toEqual([]);
+  });
+
+  it("W233: the fresh read before a send decides again: a review that just reported stops the refresh", async () => {
+    const h = reported();
+    await h.native();
+    // The cached read still shows the review; the fresh one just before the send does not.
+    h.freshContext.set("thr_coord", worker("reported", { worker: "W1" }));
+    await h.clock.advanceTo(60 * MINUTE);
+    expect(h.sent).toHaveLength(0);
+    expect(h.events().at(-1)).toMatch(
+      /^skip: refresh not sent: stopped \(idle\): expected savings no longer cover refreshes/,
+    );
+    // And the other way round: a fresh read still showing the review sends it.
+    const held = reported();
+    held.freshContext.set("thr_coord", worker("reported", { worker: "W1", review: review() }));
+    await held.native();
+    await held.clock.advanceTo(5 * MINUTE);
+    expect(held.sent).toHaveLength(1);
+  });
+
+  it("W233: an admission whose context read never answers is dropped after 3 seconds", async () => {
+    const h = harness();
+    const signals: AbortSignal[] = [];
+    h.readHook = (_threadId, _fresh, signal) => {
+      signals.push(signal);
+      return new Promise(() => {});
+    };
+    await h.native();
+    expect(h.warmer.status().admissions).toHaveLength(1);
+    await h.clock.advanceTo(33 * SECOND);
+    expect(h.warmer.status()).toMatchObject({ leases: [], admissions: [], retainedBodyBytes: 0 });
+    expect(h.events().at(-1)).toBe("skip: skipped: thread context read failed or timed out");
+    expect(signals.map((signal) => signal.aborted)).toEqual([true]);
   });
 });

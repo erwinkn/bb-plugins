@@ -140,6 +140,7 @@ export interface UsageWarmingRow {
   refreshes: number;
   kind: "end" | "skip";
   reason: string;
+  review_hold: string | null;
 }
 
 export interface UsageSettingsRow {
@@ -239,10 +240,10 @@ export class UsageLedger {
     this.insertWarming = deps.db.prepare(
       `INSERT INTO usage_warming (
         at, session_key, thread_id, model, role, state, wait_started_at, first_decision_at,
-        prefix_tokens, ttl, refreshes, kind, reason
+        prefix_tokens, ttl, refreshes, kind, reason, review_hold
       ) VALUES (
         @at, @session_key, @thread_id, @model, @role, @state, @wait_started_at,
-        @first_decision_at, @prefix_tokens, @ttl, @refreshes, @kind, @reason
+        @first_decision_at, @prefix_tokens, @ttl, @refreshes, @kind, @reason, @review_hold
       )`,
     );
     // The dedupe baselines are read once, at startup, so quota() never touches SQLite.
@@ -326,6 +327,7 @@ export class UsageLedger {
         refreshes: outcome.refreshes,
         kind: outcome.kind,
         reason: outcome.reason,
+        review_hold: outcome.reviewHold,
       });
       if (this.warmingRows.length > MAX_QUEUED_REQUESTS) {
         this.warmingRows.shift();
@@ -751,7 +753,8 @@ const NO_RESUME_MS = 3 * 60 * 60_000;
 
 // The waits warming reached a refresh decision on since `since`, newest first and at most `limit`
 // of them, each with how long it lasted: until the next native request of its session on the same
-// model. Synchronous: callers bound it and cache the result.
+// model. A wait under a review hold is left out: its odds are the review's, not its role's.
+// Synchronous: callers bound it and cache the result.
 export function readResumeSamples(
   db: Database.Database,
   since: number,
@@ -767,6 +770,7 @@ export function readResumeSamples(
        ) AS resumed_at
        FROM usage_warming w
        WHERE w.wait_started_at >= ? AND w.state IS NOT NULL AND w.role IS NOT NULL
+         AND w.review_hold IS NULL
        ORDER BY w.wait_started_at DESC LIMIT ?`,
     )
     .all(since, limit) as Array<{

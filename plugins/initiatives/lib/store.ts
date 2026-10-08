@@ -438,7 +438,16 @@ export const MIGRATIONS = [
     SELECT project_id, url, stage, note, set_at, set_at FROM pr_stages`,
   // W232 (D442): each PR's notes log.
   ...PR_NOTE_MIGRATIONS,
+  // W233 (D440): Store.openReviewOf, run on every thread-context read. Partial, so it holds only
+  // live reviews; the query repeats these expressions and this predicate to use it.
+  `CREATE INDEX assignments_open_review ON assignments(project_id, json_extract(handoff_sources, '$[0].assignment'),
+    json_extract(handoff_sources, '$[0].reportVersion'), num) WHERE role = 'review' AND state IN ('dispatching', 'queued', 'running')`,
 ];
+
+/** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */
+export const OPEN_REVIEW_QUERY = `SELECT * FROM assignments WHERE project_id = ? AND role = 'review'
+  AND state IN ('dispatching', 'queued', 'running') AND json_extract(handoff_sources, '$[0].assignment') = ?
+  AND json_extract(handoff_sources, '$[0].reportVersion') = ? ORDER BY num DESC LIMIT 1`;
 
 export const ACTIVITY_LIMIT = 300;
 
@@ -2376,6 +2385,16 @@ export class Store {
         .prepare(`SELECT * FROM assignments WHERE project_id = ? AND worker_num = ? ORDER BY num`)
         .all(projectId, workerNum) as Row[]
     ).map(toAssignment);
+  }
+
+  /**
+   * D440: the newest review still pending or running whose brief embeds this filing of the report
+   * (its first handoff source): an amended report on the same A# is a new version. Uses the
+   * assignments_open_review index.
+   */
+  openReviewOf(projectId: string, ref: string, version: string): AssignmentRecord | null {
+    const row = this.db.prepare(OPEN_REVIEW_QUERY).get(projectId, ref, version) as Row | undefined;
+    return row ? toAssignment(row) : null;
   }
 
   assignmentsWithOpState(

@@ -988,7 +988,7 @@ describe("usage ledger through the plugin", () => {
         at: start + 7 * MINUTE, session_key: `session:${SESSION}`, thread_id: "thr_coord",
         model: "claude-opus-5-5", role: "coordinator", state: "tool", wait_started_at: start,
         first_decision_at: start + 4 * MINUTE, prefix_tokens: 100_000, ttl: "5m", refreshes: 1,
-        kind: "end", reason: "the thread started a new turn",
+        kind: "end", reason: "the thread started a new turn", review_hold: null,
       },
     ]);
     await f.clock.advanceTo(10 * MINUTE);
@@ -1277,6 +1277,29 @@ describe("W211 corrections through the hub", () => {
     await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
     expect(f.upstream.keepAlive).toHaveLength(1);
     expect(await lastMessage(f.host)).toBe("stopped: the background task ended without the thread resuming");
+  });
+
+  it("D440: a worker Initiatives reports under review is held warm, and the ledger names the hold", async () => {
+    const why = "review of W1 by W2 running (A2)";
+    const contexts: Record<string, Membership> = {
+      thr_coord: WORKER("reported", { review: { ref: "A2", worker: "W2", phase: "active", since: Date.now() } }),
+    };
+    const f = await fixture({ contexts, seed: { "warming-config": { mode: "warm" } } });
+    f.rows.set("thr_coord", { status: "idle" });
+    expect(await nativeRequest(f.host)).toBe(200);
+    await leased(f.host);
+    for (let step = 1; step <= 3; step += 1) {
+      await f.clock.advanceTo(step * 4 * MINUTE);
+      await vi.waitFor(() => expect(f.upstream.keepAlive).toHaveLength(step));
+    }
+    expect((await warmingStatus(f.host)).leases[0]).toMatchObject({ waitingOn: "idle", resumeChance: 1, reviewHold: why });
+    // The review reported: the odds decide again.
+    contexts.thr_coord = WORKER("reported");
+    await f.clock.advanceTo(90 * MINUTE);
+    await vi.waitFor(async () => expect((await warmingStatus(f.host)).leases).toHaveLength(0));
+    await vi.waitFor(() =>
+      expect(rows(f, "usage_warming")).toMatchObject([{ role: "worker", state: "idle", review_hold: why }]),
+    );
   });
 
   it("6: a warmed standalone thread's native and refresh rows say standalone", async () => {

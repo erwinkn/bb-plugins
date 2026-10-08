@@ -230,6 +230,7 @@ const ROLES: Record<WarmingRole, string> = {
 const LIMITS: Array<{ key: WarmingConfigKey; label: string; description: string; nullable?: boolean }> = [
   { key: "maxWaitMinutes", label: "Longest wait (minutes)", description: "Send no refresh once a thread has waited this long since its last request, whatever the odds." },
   { key: "maxBackgroundWaitMinutes", label: "Longest background wait (minutes)", description: "Send no refresh once a thread waiting on a background task has waited this long. Most longer tasks never lead to a resume." },
+  { key: "reviewHoldMinutes", label: "Review hold (minutes)", description: "Keep a worker warm while Initiatives reviews its report, for at most this long from the review's start, while that costs less than a cache rewrite. 0 turns it off." },
   { key: "safetyMarginSeconds", label: "Safety margin (seconds)", description: "Send a refresh this long before the entry would expire." },
   { key: "maxRefreshesPerHour", label: "Refreshes per hour", description: "Across all threads." },
   { key: "maxConcurrentRefreshes", label: "Concurrent refreshes", description: "Refreshes in flight at once." },
@@ -304,6 +305,7 @@ function WarmingStatusPanel({ status }: { status: WarmingStatus }) {
                   {Math.round((lease.resumeChance ?? 0) * 100)}%
                 </span>
               )}
+              {lease.reviewHold === null ? null : <span>held: {lease.reviewHold}</span>}
               <span>
                 {lease.dryRun ? "dry run, " : ""}
                 {lease.refreshes} refresh{lease.refreshes === 1 ? "" : "es"}

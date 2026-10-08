@@ -669,6 +669,7 @@ describe("usage ledger warming outcomes (T141)", () => {
       refreshes: 3,
       kind: "end",
       reason: "a native request on the thread took over",
+      reviewHold: null,
       ...overrides,
     };
   }
@@ -685,11 +686,13 @@ describe("usage ledger warming outcomes (T141)", () => {
         at: T0 + 20 * MINUTE, session_key: "session:s1", thread_id: "thr_1", model: "claude-opus-5-5",
         role: "worker", state: "background", wait_started_at: T0 + 2_000, first_decision_at: T0 + 4 * MINUTE,
         prefix_tokens: 100_000, ttl: "5m", refreshes: 3, kind: "end", reason: "a native request on the thread took over",
+        review_hold: null,
       },
       {
         at: T0 + 20 * MINUTE, session_key: "session:s1", thread_id: "thr_1", model: "claude-opus-5-5",
         role: null, state: null, wait_started_at: T0 + 2_000, first_decision_at: null,
         prefix_tokens: 100_000, ttl: "5m", refreshes: 0, kind: "skip", reason: "skipped: no BB thread is linked to this Claude session",
+        review_hold: null,
       },
     ]);
     r.set(T0 + 31 * DAY);
@@ -716,6 +719,18 @@ describe("usage ledger warming outcomes (T141)", () => {
       { role: "worker", state: "background", waitMs: 9 * MINUTE },
       { role: "standalone", state: "idle", waitMs: null },
     ]);
+  });
+
+  it("D440: leaves waits under a review hold out of calibration", () => {
+    const r = rig();
+    r.ledger.warming(outcome({ sessionId: "s1", state: "idle", waitStartedAt: T0 - 4 * 60 * MINUTE }));
+    r.ledger.warming(outcome({ sessionId: "s2", state: "idle", waitStartedAt: T0 - 4 * 60 * MINUTE, reviewHold: "review of W1 by W2 running (A2)" }));
+    r.flushes[0]?.();
+    expect(r.db.prepare("SELECT session_key, review_hold FROM usage_warming ORDER BY rowid").all()).toEqual([
+      { session_key: "session:s1", review_hold: null },
+      { session_key: "session:s2", review_hold: "review of W1 by W2 running (A2)" },
+    ]);
+    expect(readResumeSamples(r.db, T0 - DAY, T0, 100)).toEqual([{ role: "worker", state: "idle", waitMs: null }]);
   });
 
   it("W211 7: reads at most the newest `limit` waits through the wait_started_at index", () => {

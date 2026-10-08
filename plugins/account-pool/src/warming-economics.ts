@@ -24,6 +24,12 @@ import { CACHE_TTL_MS, type CacheTtl } from "./cache-usage.js";
 // comes from observed waits of the same state and role: the prior below plus the ledger's own
 // history (readResumeSamples), each role's waits shrunk toward its state's.
 //
+// A review hold (D440: Initiatives reports a review of the thread's latest report running) counts
+// the resume as certain, at the latest when the hold ends: the thread is refreshed while the n
+// refreshes that keep the entry until then cost less than a rewrite (r * n < m), past
+// maxBackgroundWaitMinutes but not maxWaitMinutes. A hold that costs more, or that maxWaitMinutes
+// ends before the refreshes reach it, falls back to the odds.
+//
 // Pi (earendil-works/pi-coding-agent 1.0.4, core/cache-warmer.js) makes the same comparison one
 // refresh at a time: refresh while P(resume before expiry) * missCost - warmCost >= $0.05, with
 // P = 1 while the agent runs and 0.15 when idle, and a 60/30-minute cap. This adds the lookahead and
@@ -107,17 +113,57 @@ export interface RefreshDecision {
   why: string;
 }
 
+export interface HeldWait {
+  ageMs: number;
+  // The wait age the entry already lasts until.
+  coveredMs: number;
+  stepMs: number;
+  ttl: CacheTtl;
+  maxAgeMs: number;
+  // The wait age a review hold lasts until, and why it holds.
+  reviewHold: { untilMs: number; why: string } | null;
+}
+
+// Whether a review hold alone pays for refreshing an idle or questioning wait: the n refreshes that
+// keep the entry until the hold ends, each sent before maxAgeMs, cost less than a rewrite. Null when
+// nothing holds the wait or the entry already lasts until the hold ends. A plan that maxAgeMs cuts
+// short of the hold's end does not count: the resume may come after it.
+export function decideHold(wait: HeldWait): RefreshDecision | null {
+  const { ageMs, coveredMs, stepMs, maxAgeMs } = wait;
+  const hold = wait.reviewHold;
+  if (hold === null || coveredMs >= hold.untilMs) return null;
+  const miss = WRITE_COST[wait.ttl] - REFRESH_COST;
+  const ttlMs = CACHE_TTL_MS[wait.ttl];
+  let n = 1;
+  while (ageMs + (n - 1) * stepMs + ttlMs < hold.untilMs && ageMs + n * stepMs < maxAgeMs) n += 1;
+  const horizonMs = (n - 1) * stepMs + ttlMs;
+  const unheld = (why: string): RefreshDecision => ({
+    refresh: false,
+    resumeChance: 0,
+    net: 0,
+    horizonMs: 0,
+    why: `not held (${hold.why}): ${why}`,
+  });
+  if (ageMs >= maxAgeMs || ageMs + horizonMs < hold.untilMs)
+    return unheld(`maxWaitMinutes (${Math.round(maxAgeMs / 60_000)}) stops warming before the hold ends`);
+  const cost = REFRESH_COST * n;
+  const refreshes = `${n} refresh${n === 1 ? "" : "es"}`;
+  if (cost >= miss)
+    return unheld(`${refreshes} until the hold ends would cost more than a rewrite`);
+  return {
+    refresh: true,
+    resumeChance: 1,
+    net: miss - cost,
+    horizonMs,
+    why: `held: ${hold.why}; ${refreshes} until the hold ends cost ${cost.toFixed(1)}×prefix, less than a ${miss.toFixed(2)}×prefix rewrite`,
+  };
+}
+
 export function decideRefresh(
   history: ResumeHistory,
-  wait: {
+  wait: HeldWait & {
     state: WaitState;
     role: WarmingRole;
-    ageMs: number;
-    // The wait age the entry already lasts until.
-    coveredMs: number;
-    stepMs: number;
-    ttl: CacheTtl;
-    maxAgeMs: number;
     maxBackgroundAgeMs: number;
   },
 ): RefreshDecision {
@@ -132,15 +178,8 @@ export function decideRefresh(
       horizonMs: 0,
       why: `the wait reached maxWaitMinutes (${Math.round(maxAgeMs / 60_000)})`,
     };
-  if (state === "background" && ageMs >= wait.maxBackgroundAgeMs)
-    return {
-      refresh: false,
-      resumeChance: 0,
-      net: 0,
-      horizonMs: 0,
-      why: `the background wait reached maxBackgroundWaitMinutes (${Math.round(wait.maxBackgroundAgeMs / 60_000)})`,
-    };
-  if (state === "tool" || state === "background")
+  const backgroundEnded = state === "background" && ageMs >= wait.maxBackgroundAgeMs;
+  if (state === "tool" || (state === "background" && !backgroundEnded))
     return {
       refresh: true,
       resumeChance: 1,
@@ -150,6 +189,17 @@ export function decideRefresh(
         state === "tool"
           ? "mid-turn: the turn resumes when its tool returns"
           : "a background task is running: the thread resumes when it reports back",
+    };
+  const held = decideHold(wait);
+  if (held?.refresh) return held;
+  const unheld = held === null ? "" : `${held.why}; `;
+  if (backgroundEnded)
+    return {
+      refresh: false,
+      resumeChance: 0,
+      net: 0,
+      horizonMs: 0,
+      why: `${unheld}the background wait reached maxBackgroundWaitMinutes (${Math.round(wait.maxBackgroundAgeMs / 60_000)})`,
     };
   let best: RefreshDecision = {
     refresh: false,
@@ -181,9 +231,9 @@ export function decideRefresh(
   const odds = `P(resume between expiry and ${Math.round(best.horizonMs / 60_000)} min from now) ${best.resumeChance.toFixed(2)} from ${history.size(state, role)} ${state}/${role} waits`;
   return {
     ...best,
-    why: best.refresh
+    why: unheld + (best.refresh
       ? `${odds}, expected net +${best.net.toFixed(2)}×prefix`
-      : `expected savings no longer cover refreshes: ${odds}`,
+      : `expected savings no longer cover refreshes: ${odds}`),
   };
 }
 
