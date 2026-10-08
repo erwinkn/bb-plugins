@@ -1814,7 +1814,8 @@ function waitForDelay(
 // Advisor routes carry no client identity. Only these caller headers reach the vendor; the
 // adapter's credential headers stay. The Pooler names the client itself, so no caller can present
 // Claude Code or Codex CLI identity. Claude: claude-code-* beta values are dropped and the OAuth
-// beta is merged for OAuth secrets only.
+// beta is merged for OAuth secrets only. Codex: session_id is no identity but the prompt-cache
+// routing key; without it a caller's repeated prefix is never served from cache (W216, W220).
 const ADVISOR_CALLER_HEADERS: Record<PoolProvider, ReadonlySet<string>> = {
   claude: new Set([
     "accept",
@@ -1822,7 +1823,7 @@ const ADVISOR_CALLER_HEADERS: Record<PoolProvider, ReadonlySet<string>> = {
     "anthropic-version",
     "anthropic-beta",
   ]),
-  codex: new Set(["accept", "content-type"]),
+  codex: new Set(["accept", "content-type", "session_id"]),
 };
 const CREDENTIAL_HEADERS = new Set([
   "authorization",

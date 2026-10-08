@@ -451,7 +451,7 @@ describe("advisor header hygiene (A161 F2 / D337)", () => {
     expect(Object.fromEntries(apiKey)).toEqual({ "x-api-key": "k", "user-agent": "bb-advisor" });
   });
 
-  it("codex: Pooler originator and user-agent, codex identity and session headers dropped", async () => {
+  it("codex: Pooler originator and user-agent, codex identity headers dropped, session_id kept for caching", async () => {
     const env = makeHub({ accounts: [account("A", "codex")] });
     await advise(env, advisorRequest("codex", {
       originator: "codex_cli_rs",
@@ -469,8 +469,9 @@ describe("advisor header hygiene (A161 F2 / D337)", () => {
       "chatgpt-account-id": "acct-A",
       authorization: "Bearer tok-0",
       accept: "text/event-stream",
+      session_id: "s",
     });
-    expect(Object.keys(headers).filter((name) => /^(x-codex-|x-stainless-|session_id|anthropic-beta)/u.test(name))).toEqual([]);
+    expect(Object.keys(headers).filter((name) => /^(x-codex-|x-stainless-|anthropic-beta)/u.test(name))).toEqual([]);
   });
 
   it("leaves native hub-token traffic exactly as before", async () => {
