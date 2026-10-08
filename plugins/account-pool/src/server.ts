@@ -216,6 +216,7 @@ export function createAccountPoolPlugin(
       now,
       retentionDays: () => retentionDays,
       thread: (sessionKey) => threadLabel(sessionKey),
+      role: (threadId) => threadRoleLabel(projectsContext.peek(threadId)),
       log: (message) => bb.log.warn(message),
     });
     const quotas = new QuotaStore(db, (quota) => ledger.quota(quota));

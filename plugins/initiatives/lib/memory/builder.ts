@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { MemoryMessage } from "./log";
 import { cleanLine, messageText, task, tooLong } from "./prompt";
-import { usageCost, type InputItem, type Summarizer, type Usage } from "./summarizer";
+import { usageCost, type Attribution, type InputItem, type Summarizer, type Usage } from "./summarizer";
 import { LIMIT, NodeCache, bytes, children, contextLines, end, feed, headBytes, key, label, settleViews, type NodeRef, type Views } from "./tree";
 
 /** What the builder reads and writes; the plugin backs it with its database, tests with memory. */
@@ -27,6 +27,8 @@ export interface BuilderOptions {
   concurrency: () => number;
   /** The prompt-cache session, one per Initiative. */
   cacheKey: string;
+  /** Who the calls are for, read at each call: the coordinator thread changes at a handover. */
+  attribution?: () => Attribution;
   now?: () => number;
   log?: (message: string) => void;
   /** Pauses after a 429 grow from min to max; an unavailable route pauses for `unavailable` (ms). */
@@ -321,7 +323,7 @@ export class TreeBuilder {
     let pause: Pause | undefined;
     try {
       for (let a = 0; a < ATTEMPTS; a++) {
-        const r = await this.options.summarize({ instructions: this.options.instructions(), input, effort: this.options.effort(), cacheKey: this.options.cacheKey, signal, onStart: started });
+        const r = await this.options.summarize({ instructions: this.options.instructions(), input, effort: this.options.effort(), cacheKey: this.options.cacheKey, attribution: this.options.attribution?.(), signal, onStart: started });
         started();
         tries++;
         if (r.usage) addUsage(usage, r.usage);

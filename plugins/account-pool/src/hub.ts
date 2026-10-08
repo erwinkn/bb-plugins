@@ -25,7 +25,7 @@ import {
   DEFAULT_CODEX_REFRESH_URL,
   DEFAULT_CODEX_USAGE_URL,
 } from "./codex-adapter.js";
-import type { RequestKind, RequestRecord } from "./ledger.js";
+import type { RequestAttribution, RequestKind, RequestRecord } from "./ledger.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import type { ImportedProviderAccount } from "./provider-adapter.js";
 import { TransientOAuthRefreshError } from "./provider-adapter.js";
@@ -364,6 +364,7 @@ export class AccountPoolHub {
           accountId: selected.id,
           family: parsed.family,
           body: upstreamBody,
+          attribution: advisorAttribution(request.headers),
         },
         startedAt,
       );
@@ -1845,6 +1846,25 @@ const CREDENTIAL_HEADERS = new Set([
   "chatgpt-account-id",
 ]);
 const ADVISOR_CLIENT = "bb-advisor";
+// Who an advisor caller says its request is for. They are not in ADVISOR_CALLER_HEADERS, so they
+// never reach the vendor; the usage ledger keeps them (ledger.ts RequestAttribution).
+const MAX_ATTRIBUTION_CHARS = 128;
+
+export function advisorAttribution(headers: Headers): RequestAttribution | null {
+  const read = (name: string) => {
+    // Printable ASCII only: the values end up in reports and database rows.
+    const value = headers.get(name)?.trim() ?? "";
+    return value !== "" && value.length <= MAX_ATTRIBUTION_CHARS && /^[\x20-\x7e]+$/u.test(value)
+      ? value
+      : null;
+  };
+  const attribution = {
+    initiative: read("x-bb-initiative"),
+    threadId: read("x-bb-thread"),
+    purpose: read("x-bb-purpose"),
+  };
+  return Object.values(attribution).some((value) => value !== null) ? attribution : null;
+}
 const WARMING_CLIENT = "bb-account-pool-warming";
 // A keep-alive replays the native request's protocol headers, so the vendor renders the same
 // prompt (anthropic-beta selects features that change it), and nothing else: no credential, no

@@ -104,6 +104,13 @@ Codex `accept`, `content-type`. `sent` is stamped just before the vendor fetch
 starts; a response without the header came from BB itself (its own 401/404/503 or
 `500 plugin route failed`) and may have executed.
 
+Advisor calls have no session to find their thread by, so a caller may name
+who the call is for with `x-bb-initiative`, `x-bb-thread` and `x-bb-purpose` (printable,
+at most 128 characters each). They are never forwarded to the vendor. The ledger stores
+the thread in `thread_id` (with its role, when known) and the other two in the
+`initiative` and `purpose` columns; the usage report's "Advisor by purpose and
+Initiative" section and the `advisor` array of `--json` sum each combination.
+
 | Status | Dispatch | Meaning |
 | --- | --- | --- |
 | 403 | none | Route off, or `advisor-config` invalid (the body says which) |

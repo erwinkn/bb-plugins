@@ -439,6 +439,7 @@ export class CoordinatorMemory {
         effort: () => this.deps.preferences().memoryEffort,
         concurrency: () => this.deps.preferences().memoryConcurrency,
         cacheKey: cacheKey(projectId),
+        attribution: () => ({ initiative: projectId, thread: this.deps.ledger.project(projectId)?.coordinatorThreadId ?? null, purpose: "memory-tree" }),
         now: () => this.deps.ledger.now(),
         log: (message) => this.deps.log(`${projectId}: ${message}`),
       });

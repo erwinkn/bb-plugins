@@ -14,12 +14,24 @@ export type InputItem =
   | { role: "user"; content: { type: "input_text"; text: string }[] }
   | { role: "assistant"; content: { type: "output_text"; text: string }[] };
 
+/**
+ * Who a call is for, so the Pooler's usage report can attribute it: the Initiative, its coordinator
+ * thread, and why (e.g. "memory-tree"). Sent as the x-bb-initiative, x-bb-thread and x-bb-purpose
+ * headers, which the Pooler's ledger reads and never forwards to the vendor.
+ */
+export interface Attribution {
+  initiative: string;
+  thread: string | null;
+  purpose: string;
+}
+
 export interface SummarizerRequest {
   instructions: string;
   input: InputItem[];
   effort: string;
   /** One per Initiative: the prompt-cache session. */
   cacheKey: string;
+  attribution?: Attribution;
   signal: AbortSignal;
   /** The response started: its prefix is in the cache by now. */
   onStart?: () => void;
@@ -72,6 +84,9 @@ const retryAfter = (value: string | null) => {
   return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
 };
 
+const attributionHeaders = (a?: Attribution): Record<string, string> =>
+  a ? { "x-bb-initiative": a.initiative, ...(a.thread ? { "x-bb-thread": a.thread } : {}), "x-bb-purpose": a.purpose } : {};
+
 /**
  * A Responses API client. `url` and `headers` come from the caller: the Pooler route in the
  * plugin, the native pool route in the read-only measurement script.
@@ -82,7 +97,7 @@ export function responsesSummarizer(deps: {
   headers: (signal: AbortSignal) => Promise<Record<string, string>>;
   model?: string;
 }): Summarizer {
-  return async ({ instructions, input, effort, cacheKey, signal, onStart }) => {
+  return async ({ instructions, input, effort, cacheKey, attribution, signal, onStart }) => {
     const t0 = Date.now();
     let headers: Record<string, string>;
     try {
@@ -95,7 +110,7 @@ export function responsesSummarizer(deps: {
     try {
       res = await deps.fetch(deps.url(), {
         method: "POST",
-        headers: { "content-type": "application/json", accept: "text/event-stream", session_id: cacheKey, ...headers },
+        headers: { "content-type": "application/json", accept: "text/event-stream", session_id: cacheKey, ...attributionHeaders(attribution), ...headers },
         body: JSON.stringify(body),
         signal,
       });

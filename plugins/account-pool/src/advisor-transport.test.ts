@@ -753,6 +753,26 @@ describe("advisor body bound (A229)", () => {
   });
 });
 
+describe("advisor attribution headers (W256)", () => {
+  const named = { "x-bb-initiative": "ini_1", "x-bb-thread": "thr_coord", "x-bb-purpose": "memory-tree" };
+
+  it("hands the Initiative, thread and purpose to the ledger and never to the vendor", async () => {
+    const records: RequestRecord[] = [];
+    const env = makeHub({ ledger: { request: (record) => records.push(record) } });
+    expect((await advise(env, advisorRequest("claude", named))).status).toBe(200);
+    expect(records[0]?.attribution).toEqual({ initiative: "ini_1", threadId: "thr_coord", purpose: "memory-tree" });
+    expect(Object.keys(env.sent[0] ?? {}).filter((name) => name.startsWith("x-bb-"))).toEqual([]);
+  });
+
+  it("keeps what is named, drops what is blank or too long, and records none for no headers", async () => {
+    const records: RequestRecord[] = [];
+    const env = makeHub({ ledger: { request: (record) => records.push(record) } });
+    await advise(env, advisorRequest("claude", { "x-bb-purpose": "memory-tree", "x-bb-thread": "t".repeat(129), "x-bb-initiative": "  " }));
+    await advise(env, advisorRequest("claude"));
+    expect(records.map((record) => record.attribution)).toEqual([{ initiative: null, threadId: null, purpose: "memory-tree" }, null]);
+  });
+});
+
 describe("usage ledger records (T102)", () => {
   const recorder = () => {
     const records: RequestRecord[] = [];

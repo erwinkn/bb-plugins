@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { PoolProvider } from "./contracts.js";
 import { CACHE_TTL_MS, type CacheTtl } from "./cache-usage.js";
 import {
   readQuotaRows,
@@ -91,6 +92,15 @@ export interface BucketStats {
   accounts: Record<string, AccountStats>;
 }
 
+// Advisor requests (kind "advisor") by who they were for, as the caller named it: purpose and
+// Initiative from its headers, the thread from the same or, for older callers, none (null).
+export interface AdvisorUsage extends TokenTotals {
+  provider: PoolProvider;
+  purpose: string | null;
+  initiative: string | null;
+  threadId: string | null;
+}
+
 export interface UsageReport {
   since: number;
   until: number;
@@ -98,6 +108,8 @@ export interface UsageReport {
   weights: typeof INPUT_EQUIVALENT_WEIGHTS;
   accountLabels: Record<string, string>;
   total: BucketStats;
+  // Most input-equivalent first.
+  advisor: AdvisorUsage[];
   periods: Array<{
     from: number;
     to: number | null;
@@ -121,6 +133,7 @@ export interface WindowState {
 
 export class UsageAggregator {
   private readonly total = emptyBucket();
+  private readonly advisor = new Map<string, AdvisorUsage>();
   private readonly periods: Array<{
     from: number;
     to: number | null;
@@ -160,10 +173,27 @@ export class UsageAggregator {
       account.requests += 1;
       account.inputEquivalent += tokens.inputEquivalent;
     }
+    if (row.kind === "advisor") this.addAdvisor(row, tokens);
     if (row.kind === "refresh")
       for (const bucket of buckets)
         bucket.estimate.refreshCostInputEquivalent += tokens.inputEquivalent;
     this.chain(row, buckets);
+  }
+
+  private addAdvisor(row: UsageRequestRow, tokens: ReturnType<typeof rowTokens>): void {
+    const key = JSON.stringify([row.provider, row.purpose, row.initiative, row.thread_id]);
+    let usage = this.advisor.get(key);
+    if (usage === undefined) {
+      usage = {
+        provider: row.provider,
+        purpose: row.purpose,
+        initiative: row.initiative,
+        threadId: row.thread_id,
+        ...emptyTotals(),
+      };
+      this.advisor.set(key, usage);
+    }
+    addTokens(usage, tokens, row.status);
   }
 
   // Cache history from before since: moves the chains, counts nothing. Rows in time order.
@@ -229,6 +259,9 @@ export class UsageAggregator {
       weights: INPUT_EQUIVALENT_WEIGHTS,
       accountLabels: input.accountLabels,
       total: this.total,
+      advisor: [...this.advisor.values()].sort(
+        (left, right) => right.inputEquivalent - left.inputEquivalent,
+      ),
       // A period with nothing in it (before the first recorded settings, say) is left out.
       periods: this.periods.filter(
         (period) => Object.keys(period.stats.accounts).length > 0,
@@ -587,6 +620,8 @@ function statsLines(
   return lines.map((line) => `${indent}${line}`);
 }
 
+const ADVISOR_LINES = 20;
+
 export function formatUsageReport(report: UsageReport): string {
   const ledger = report.ledger;
   const lines = [
@@ -603,6 +638,21 @@ export function formatUsageReport(report: UsageReport): string {
       `  ${minute(period.from)} → ${period.to === null ? "now" : minute(period.to)} · ${settingsLabel(period.settings)}`,
       ...statsLines(period.stats, report.accountLabels, "    "),
     );
+  }
+  if (report.advisor.length > 0) {
+    lines.push("", "Advisor by purpose and Initiative");
+    for (const usage of report.advisor.slice(0, ADVISOR_LINES)) {
+      const who = [
+        usage.purpose ?? "(no purpose)",
+        usage.initiative ?? "(no Initiative)",
+        usage.threadId ?? "(no thread)",
+      ].join(" · ");
+      lines.push(
+        `  ${usage.provider} ${who}: ${usage.requests} req${usage.errors > 0 ? ` (${usage.errors} not 2xx)` : ""}, ${compact(usage.inputEquivalent)} input-eq (in ${compact(usage.input)}, cached ${compact(usage.cacheRead)}, out ${compact(usage.output)})`,
+      );
+    }
+    if (report.advisor.length > ADVISOR_LINES)
+      lines.push(`  … ${report.advisor.length - ADVISOR_LINES} more in --json`);
   }
   lines.push("", "By day (UTC)");
   for (const { day, stats } of report.days) {

@@ -51,6 +51,14 @@ export type UsageLedgerConfig = z.infer<typeof usageLedgerConfigSchema>;
 
 export type RequestKind = "native" | "refresh" | "advisor";
 
+// Who an advisor caller says a request is for (the x-bb-initiative, x-bb-thread and x-bb-purpose
+// headers, read by the hub; null for a field the caller left out).
+export interface RequestAttribution {
+  initiative: string | null;
+  threadId: string | null;
+  purpose: string | null;
+}
+
 // What the hub knows about one upstream request once it has finished: answered, failed to
 // connect, or canceled after it was sent (status and usage null when unknown).
 export interface RequestRecord {
@@ -62,6 +70,8 @@ export interface RequestRecord {
   family: ModelFamily;
   // Read once, for the model and the tail breakpoint's TTL; never stored.
   body: Uint8Array;
+  // Advisor requests only: with no session to find the thread by, the caller names it.
+  attribution?: RequestAttribution | null;
   startedAt: number;
   finishedAt: number;
   status: number | null;
@@ -81,6 +91,8 @@ export interface LedgerDeps {
   retentionDays: () => number;
   // The BB thread behind a session key and its Initiative role, from what is already known.
   thread: (sessionKey: string) => ThreadLabel | null;
+  // The Initiative role of a thread a caller named, from what is already known.
+  role?: (threadId: string) => string | null;
   log: (message: string) => void;
   // Test seam: runs a flush after delayMs.
   defer?: (flush: () => void, delayMs: number) => void;
@@ -93,6 +105,9 @@ export interface UsageRequestRow {
   session_key: string | null;
   thread_id: string | null;
   role: string | null;
+  // The Initiative and purpose an advisor caller named (attribution), else null.
+  initiative: string | null;
+  purpose: string | null;
   account_id: string;
   model: string | null;
   family: string;
@@ -216,13 +231,14 @@ export class UsageLedger {
     };
     this.insertRequest = deps.db.prepare(
       `INSERT INTO usage_requests (
-        at, kind, provider, session_key, thread_id, role, account_id, model, family, ttl, status,
-        completed, latency_ms, idle_gap_ms, input_tokens, output_tokens, cache_read_tokens,
-        cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens
+        at, kind, provider, session_key, thread_id, role, initiative, purpose, account_id, model,
+        family, ttl, status, completed, latency_ms, idle_gap_ms, input_tokens, output_tokens,
+        cache_read_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens
       ) VALUES (
-        @at, @kind, @provider, @session_key, @thread_id, @role, @account_id, @model, @family, @ttl,
-        @status, @completed, @latency_ms, @idle_gap_ms, @input_tokens, @output_tokens,
-        @cache_read_tokens, @cache_write_tokens, @cache_write_5m_tokens, @cache_write_1h_tokens
+        @at, @kind, @provider, @session_key, @thread_id, @role, @initiative, @purpose, @account_id,
+        @model, @family, @ttl, @status, @completed, @latency_ms, @idle_gap_ms, @input_tokens,
+        @output_tokens, @cache_read_tokens, @cache_write_tokens, @cache_write_5m_tokens,
+        @cache_write_1h_tokens
       )`,
     );
     this.insertQuota = deps.db.prepare(
@@ -521,13 +537,17 @@ export class UsageLedger {
     const label =
       record.sessionKey === null ? null : this.deps.thread(record.sessionKey);
     const usage = record.usage;
+    const named = record.attribution?.threadId ?? null;
+    const threadId = label?.threadId ?? named;
     return {
       at: record.startedAt,
       kind: record.kind,
       provider: record.provider,
       session_key: record.sessionKey,
-      thread_id: label?.threadId ?? null,
-      role: label?.role ?? null,
+      thread_id: threadId,
+      role: label !== null ? label.role : named === null ? null : (this.deps.role?.(named) ?? null),
+      initiative: record.attribution?.initiative ?? null,
+      purpose: record.attribution?.purpose ?? null,
       account_id: record.accountId,
       model,
       family: record.family,

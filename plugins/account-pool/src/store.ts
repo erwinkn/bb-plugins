@@ -850,4 +850,8 @@ export const QUOTA_MIGRATIONS = [
   INSERT INTO usage_rollup_cursor (id, at, request_rowid) VALUES (1, 0, 0)`,
   // The review hold a wait was under (D440), so calibration can leave it out.
   `ALTER TABLE usage_warming ADD COLUMN review_hold TEXT`,
+  // Who an advisor request was for (ledger.ts RequestAttribution): its Initiative and purpose. The
+  // thread goes in the existing thread_id column.
+  `ALTER TABLE usage_requests ADD COLUMN initiative TEXT`,
+  `ALTER TABLE usage_requests ADD COLUMN purpose TEXT`,
 ];

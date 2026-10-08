@@ -146,6 +146,8 @@ describe("usage ledger request rows", () => {
       session_key: "session:s1",
       thread_id: "thr_1",
       role: "coordinator",
+      initiative: null,
+      purpose: null,
       account_id: ACCOUNT,
       model: "claude-opus-5-5",
       family: "opus",
@@ -327,6 +329,52 @@ describe("usage ledger retention and settings", () => {
     // The previous build's list: the same statements without the last one.
     expect(() => host.bb.storage.migrate(db, QUOTA_MIGRATIONS.slice(0, -1))).not.toThrow();
     expect(() => host.bb.storage.migrate(db, QUOTA_MIGRATIONS)).not.toThrow();
+  });
+});
+
+describe("advisor attribution (W256)", () => {
+  const codexBody = () => new TextEncoder().encode(JSON.stringify({ model: "gpt-6-luna", input: [] }));
+  const advisor = (attribution: RequestRecord["attribution"], usage = { inputTokens: 1_000, outputTokens: 20, cacheReadTokens: 900, cacheWriteTokens: 0, cacheWrite5mTokens: null, cacheWrite1hTokens: null }) =>
+    record({ kind: "advisor", provider: "codex", sessionKey: null, family: "other", body: codexBody(), attribution, usage });
+
+  it("stores the named thread, its role, the Initiative and the purpose on the row", () => {
+    const r = rig(database(), { role: (threadId) => (threadId === "thr_coord" ? "coordinator" : null) });
+    r.ledger.request(advisor({ initiative: "ini_1", threadId: "thr_coord", purpose: "memory-tree" }));
+    r.ledger.request(advisor(null));
+    r.flushes[0]?.();
+    expect(requestRows(r.db).map((row) => [row.kind, row.thread_id, row.role, row.initiative, row.purpose])).toEqual([
+      ["advisor", "thr_coord", "coordinator", "ini_1", "memory-tree"],
+      ["advisor", null, null, null, null],
+    ]);
+  });
+
+  it("the report breaks advisor usage down by purpose and Initiative, in JSON and in text", () => {
+    const r = rig(database(), { role: () => "coordinator" });
+    const tree = (initiative: string, threadId: string | null, inputTokens: number) =>
+      advisor({ initiative, threadId, purpose: "memory-tree" }, { inputTokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite5mTokens: null, cacheWrite1hTokens: null });
+    r.ledger.request(tree("ini_small", "thr_small", 1_000));
+    r.ledger.request(tree("ini_big", "thr_big", 4_000_000));
+    r.ledger.request(tree("ini_big", "thr_big", 1_000_000));
+    r.ledger.request({ ...tree("ini_big", "thr_big", 5), status: 429, usage: null });
+    r.ledger.request(advisor(null));
+    r.flushes[0]?.();
+    const report = buildUsageReport(r.db, {
+      since: T0 - MINUTE,
+      until: T0 + MINUTE,
+      ledger: { since: T0, rowsWritten: 0, writeErrors: 0, busyRetries: 0, dropped: 0, lastError: null, retentionDays: 30 },
+      accountLabels: {},
+    });
+    expect(report.advisor.map(({ provider, purpose, initiative, threadId, requests, errors, input, inputEquivalent }) => ({ provider, purpose, initiative, threadId, requests, errors, input, inputEquivalent }))).toEqual([
+      { provider: "codex", purpose: "memory-tree", initiative: "ini_big", threadId: "thr_big", requests: 3, errors: 1, input: 5_000_000, inputEquivalent: 5_000_000 },
+      // The unattributed call: 1,000 input, 20 output (5x), 900 cached (0.1x).
+      { provider: "codex", purpose: null, initiative: null, threadId: null, requests: 1, errors: 0, input: 1_000, inputEquivalent: 1_000 + 20 * 5 + 900 * 0.1 },
+      { provider: "codex", purpose: "memory-tree", initiative: "ini_small", threadId: "thr_small", requests: 1, errors: 0, input: 1_000, inputEquivalent: 1_000 },
+    ]);
+    expect(JSON.parse(JSON.stringify(report)).advisor).toHaveLength(3);
+    const text = formatUsageReport(report);
+    expect(text).toContain("Advisor by purpose and Initiative");
+    expect(text).toContain("codex memory-tree · ini_big · thr_big: 3 req (1 not 2xx), 5.0M input-eq (in 5.0M, cached 0, out 0)");
+    expect(text).toContain("codex (no purpose) · (no Initiative) · (no thread): 1 req");
   });
 });
 
