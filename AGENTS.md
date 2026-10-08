@@ -15,6 +15,13 @@ implementation: a recorded README entry, a suggested issue title, or a past
 filing is not authorization. Record candidates in README.md and propose them to
 me instead.
 
+## Responsiveness
+
+Interactions never freeze or wait on GitHub's API or any other slow external
+call. RPCs and UI answer immediately from cache, show a loading placeholder or
+skeleton while the first fetch runs, and refresh in the background. Cache every
+external query.
+
 ## Development topology
 
 This repository is developed from the **main checkout** at `~/Code/bb-plugins`
