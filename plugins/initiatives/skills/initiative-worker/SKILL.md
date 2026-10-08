@@ -16,6 +16,8 @@ its context and the report instruction.
 - Use outcome blocked, with your question, when you can't continue.
 - `initiative_message {to:"coordinator", text}` is for blockers, scope changes, or facts
   another worker needs (`to:"W4"`). No progress pings. Reviewers talk to the coordinator.
+- The coordinator dispatches reviews and other workers. When your work calls for an
+  independent review or another agent, ask the coordinator for it instead of starting one.
 - `initiative_decision` records the user's explicit choices (user-choice) and your own
   choices the user may want to veto (veto-request). Never consult the decision log for
   your own work.
