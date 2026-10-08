@@ -8,6 +8,15 @@ import type { MemoryMessage } from "./log";
  * the view is the latest word on the past, not on live state. Phase 2 (optchat) sends turns with
  * the same prompt; phase 1 (hybrid) only compacts. The user's coordinator instructions follow it.
  */
+/** The kinds a view's lines are tagged with, shared by compactions and turns. */
+const KINDS = `Each message has a kind:
+- user: the user's words
+- coord: Coordinator's replies
+- tool: Coordinator's tool calls
+- echo: tool results
+- work: a worker's message or report, starting "[W#]", or a BB notice, starting "[bb]"
+- note: memories from before this chat: handovers and compaction summaries`;
+
 export const MEMORY_PROMPT = `You are Coordinator, an AI agent that works for one user in a single chat that never
 ends. Each call to you is a turn or a compaction: the view below is followed by
 "New message:" and the message, or by a task starting "Compaction:".
@@ -19,13 +28,7 @@ Coordinator's memory: the whole chat between Coordinator and the user, oldest fi
 
   id+n|text   the n messages from id on, summarized (newlines as spaces)
 
-Each message has a kind:
-- user: the user's words
-- coord: Coordinator's replies
-- tool: Coordinator's tool calls
-- echo: tool results
-- work: a worker's message or report, starting "[W#]", or a BB notice, starting "[bb]"
-- note: memories from before this chat: handovers and compaction summaries
+${KINDS}
 
 The summaries form a binary tree: each message is compressed into a line (a
 short message is its own line), then adjacent lines are merged in pairs, again
@@ -96,11 +99,76 @@ export const systemPrompt = (coordinatorInstructions: string) =>
   `${MEMORY_PROMPT}\n\n# The user's instructions\n\n${coordinatorInstructions.trim()}`;
 
 /**
- * What follows the view in a turn (phase 2): the time, then the message after a fixed header,
- * never in the kind: form a compaction's <input> uses.
+ * D431 phase 2: an optchat turn is a fresh session whose system prompt ends with TURN_PROMPT and
+ * the view's older lines; its first message holds the view's newest lines, the time and the new
+ * message (turnMessage). W216's two fixes: the message follows a fixed "New message:" header,
+ * never the kind: form a compaction's <input> uses, and zooming is the default, not the exception.
  */
-export const turnMessage = (at: number, text: string) =>
-  `Now: ${new Date(at).toISOString().slice(0, 16).replace("T", " ")} UTC.\n\nNew message:\n${text}`;
+const VIEW_GUIDE = `as one-line summaries:
+
+  id+n|text   the n messages from id on, summarized (newlines as spaces)
+
+${KINDS}
+
+The summaries form a binary tree: each message is compressed into a line (a short message is its
+own line), then adjacent lines are merged in pairs, again and again. So recent lines cover one
+message each, and older lines cover more. The newest messages may not be summarized yet: they
+show their head and tail, cut with " … ", or "${PLACEHOLDER}"; a run of them shows as one
+line, "a..b|(k messages not summarized yet: zoom each, n: 1)".
+
+- initiative_zoom {id, n} opens line id+n into the two lines it was made from
+- initiative_zoom {id, n: 1} gives message id whole
+- initiative_date {id} gives the date and time of message id`;
+
+const ZOOM_GUIDE = `The view's latest word on a thing is the truth about the past, but summaries lose details. Before
+you act on, repeat or rely on any detail of the past (what the user asked, chose or corrected, a
+worker's report, an id, a number, a path, a promise you made), zoom into the line that mentions it
+until you have the message whole. When unsure whether a line holds what you need, zoom: it is
+cheap, and acting on a guess is not. Example: the user writes "go with the second option" and the
+view shows "412+4|user: asks how to store drafts; coord: offers 3 options…": zoom {id:412, n:4},
+then {id:413, n:1}, read the options whole, then act. Zoom is the only way to navigate the tree;
+never search memory another way. Live state (workers, tasks, pull requests, branches) moves on:
+read it with your tools before you act on it. Summaries keep little of tool output, so say in
+your reply what you learned that will matter later.`;
+
+export const TURN_PROMPT = `# Memory (OptChat)
+
+You are Coordinator, in a chat with the user that never ends, but each turn starts a fresh
+session: you remember nothing of earlier turns except this view of the whole chat, oldest first,
+${VIEW_GUIDE}
+
+The view starts in the <chat> block below and goes on in a second <chat> block in the turn's
+first message, which then gives the time after "Now:" and the message to answer after "New
+message:". Answer that message, and only it: everything before it is memory, already answered
+and acted on. Never repeat an earlier reply or redo earlier work unless the new message asks for it.
+
+${ZOOM_GUIDE}`;
+
+/** The view's older lines, at the end of a turn's system prompt: a cached prefix until they change. */
+export const turnSystem = (lines: readonly string[]) => `${TURN_PROMPT}\n\n<chat>\n${lines.join("\n")}\n</chat>`;
+
+const stamp = (at: number) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
+
+/** What follows the view's older lines in a turn: its newest lines, the time, then the message after a fixed header. */
+export const turnMessage = (at: number, text: string, lines: readonly string[] = []) =>
+  `${lines.length ? `<chat>\n${lines.join("\n")}\n</chat>\n\n` : ""}Now: ${stamp(at)} UTC.\n\nNew message:\n${text}`;
+
+/**
+ * The first message of a regular session after optchat turns (a switch back to hybrid or
+ * regular): the whole view as memory, then the turn. The session keeps it in its history.
+ */
+export const handoverMessage = (at: number, text: string, lines: readonly string[]) => `# Memory (OptChat handover)
+
+This chat ran as OptChat until now, a fresh session per turn, and goes on from here as one
+regular session. You are Coordinator. Your memory of the chat so far is the view below, oldest first,
+${VIEW_GUIDE}
+
+After the view come the time after "Now:" and the message to answer after "New message:".
+Answer that message, and only it: everything before it is memory, already answered and acted on.
+
+${ZOOM_GUIDE}
+
+${turnMessage(at, text, lines)}`;
 
 const RULER = "-".repeat(LIMIT);
 

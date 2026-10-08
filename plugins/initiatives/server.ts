@@ -38,7 +38,7 @@ import { reportSchema } from "./lib/schema";
 import { definePreferences } from "./lib/settings";
 import { MEMORY_GUIDANCE } from "./lib/guidance";
 import { WriteReceipts } from "./lib/write-receipts";
-import { dateToolSchema, zoomToolSchema } from "./lib/memory/memory";
+import { TURN_CONTEXT_TOOL, dateToolSchema, turnAskSchema, zoomToolSchema } from "./lib/memory/memory";
 import { Store, MIGRATIONS } from "./lib/store";
 import { ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
@@ -567,6 +567,16 @@ export default function plugin(bb: BbPluginApi) {
     "initiative_batch",
   ];
   const MEMORY_TOOLS = ["initiative_zoom", "initiative_date"];
+  /**
+   * D447: a coordinator has zoom and date in every mode, and D431 a Claude Code one the hidden
+   * turn context tool, so a switch to or from optchat takes effect at its next turn: tools reach
+   * a session only when it is constructed.
+   */
+  const coordinatorSelection = (providerId: string) => [
+    ...coordinatorTools,
+    ...MEMORY_TOOLS,
+    ...(providerId === "claude-code" ? [TURN_CONTEXT_TOOL] : []),
+  ];
   bb.agents.configure((ctx) => {
     const guidance = () => preferences.configuration();
     const meta = ctx.pluginMetadata;
@@ -604,7 +614,7 @@ export default function plugin(bb: BbPluginApi) {
       // D447: the memory tools and guidance come in every mode, so a switch needs no new
       // session; zoom and date still require confirmed membership.
       return {
-        tools: [...coordinatorTools, ...MEMORY_TOOLS],
+        tools: coordinatorSelection(ctx.provider.id),
         skills: ["initiative-coordinator"],
         instructions: [
           guidance().coordinatorInstructions,
@@ -654,7 +664,7 @@ export default function plugin(bb: BbPluginApi) {
       // D447: the coordinator gets its memory tools and one line of guidance in every mode: BB
       // fixes a session's tools when it is built, and a mode switch applies at the next turn.
       return {
-        tools: [...coordinatorTools, ...MEMORY_TOOLS],
+        tools: coordinatorSelection(ctx.provider.id),
         skills: ["initiative-coordinator"],
         // Last, so instructions near BB's 4,096-character cap lose this line, never the membership.
         instructions: [guidance().coordinatorInstructions, `Current Initiative membership: ${JSON.stringify(currentIdentity(store, m))}`, MEMORY_GUIDANCE].join("\n\n"),
@@ -991,6 +1001,22 @@ export default function plugin(bb: BbPluginApi) {
     description: "The date and time (UTC) of message id of your memory log.",
     parameters: dateToolSchema,
     execute: async ({ id }, { threadId }) => service.memory.date(memoryThread(threadId), id),
+  });
+  // D431 phase 2: not shown to the model. BB's Claude Code provider calls it before each new
+  // turn of a coordinator, with the turn's request and session and what became of its earlier
+  // calls (turnAskSchema); "{}" lets the session go on. A model that sees it (a provider without
+  // the patch) sends only `input`: "{}", and nothing changes.
+  bb.agents.registerTool({
+    name: TURN_CONTEXT_TOOL,
+    description: "Internal to BB's Claude Code provider: how the next turn of an Initiative coordinator runs (OptChat memory). Never call it.",
+    parameters: z.object({ input: z.string() }).passthrough(),
+    execute: async (args, { threadId }) => {
+      const ask = turnAskSchema.safeParse(args);
+      if (!ask.success) return "{}";
+      const m = threadId ? store.membership(threadId) : null;
+      if (!m || m.workerNum !== 0 || m.former || m.project.archivedAt !== null) return "{}";
+      return JSON.stringify(await service.memory.turnContext(m.project.id, threadId!, ask.data));
+    },
   });
   const batchSchema = z.object({
     actions: z.array(z.object({ tool: z.enum(BATCH_TOOLS) }).passthrough()).min(1).max(20),

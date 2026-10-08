@@ -19,7 +19,7 @@ it("shows the coordinator's memory and switches its mode", async () => {
   fireEvent.click(await s.findByRole("tab", { name: "Context" }));
   const panel = within(await s.findByRole("region", { name: "Memory" }));
   expect(panel.getByRole("radio", { name: "OptChat" }).getAttribute("aria-checked")).toBe("true");
-  panel.getByText(/A fresh turn per message over the summary view\. Not available yet/);
+  panel.getByText(/A fresh session per message over the summary view/);
   panel.getByText(/1,370 messages · 1\.6MB · 2 coordinator threads/);
   panel.getByText(/1,200 of 2,734 lines \(43%\) · Summarizer unavailable: 403 advisor route for codex is off/);
   panel.getByText(/\$1\.34 at list price · 900 calls · 20\.0M in \(85% cached\)/);

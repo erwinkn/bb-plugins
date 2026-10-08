@@ -36,8 +36,8 @@ export function contextUsedTokens(data: unknown): number | null {
 export function createCoordinatorCompaction(deps: {
   sdk: Sdk;
   store: Store;
-  /** The Initiative's compaction limit; 0 is off. */
-  limit: (projectId: string) => number;
+  /** The Initiative's compaction limit, for one of its threads when given; 0 is off. */
+  limit: (projectId: string, threadId?: string) => number;
   /** A coordinator replacement or start is in flight for the project. */
   replacing: (projectId: string) => boolean;
 }) {
@@ -46,7 +46,7 @@ export function createCoordinatorCompaction(deps: {
   const compacting = new Map<string, Promise<unknown>>();
   /** The limit when this thread may be compacted now, else null. Rechecked after every await. */
   const eligible = (projectId: string, threadId: string) => {
-    const limit = deps.limit(projectId);
+    const limit = deps.limit(projectId, threadId);
     if (limit <= 0) return null;
     const project = deps.store.project(projectId);
     if (!project || project.coordinatorThreadId !== threadId || project.archivedAt !== null || project.paused) return null;

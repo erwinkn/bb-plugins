@@ -1,17 +1,18 @@
 import { z } from "zod";
 import { addAbortListener } from "node:events";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { BUSY_STATUSES, ProjectError, errorMessage } from "../bb";
 import type { Preferences } from "../settings";
 import type { Store } from "../store";
 import { TreeBuilder, type BuilderStatus } from "./builder";
 import { readEvents, startsAfresh, type ListEvents } from "./ingest";
-import { eventEntries, splitEntry } from "./log";
-import { messageText, systemPrompt } from "./prompt";
+import { eventEntries, splitEntry, type EventRow } from "./log";
+import { handoverMessage, messageText, systemPrompt, turnMessage, turnSystem } from "./prompt";
 import { FairPermits } from "./permits";
 import { MemoryStore, type MemoryMode, type MemorySettings } from "./store";
 import type { Summarizer } from "./summarizer";
-import { NodeCache, end, label, nodeAt, children, renderLine, viewBytes } from "./tree";
+import { NodeCache, end, label, nodeAt, children, renderLine, viewBytes, type NodeRef } from "./tree";
+import { MAX_MISSING, turnView } from "./turn";
 
 export const zoomToolSchema = z.object({ id: z.number().int().min(0), n: z.number().int().min(1) }).strict();
 export const dateToolSchema = z.object({ id: z.number().int().min(0) }).strict();
@@ -27,8 +28,14 @@ const SWEEP_INGEST_MS = 5 * 60_000;
  * once; the least recently read go first, so every Initiative gets its turn (W244).
  */
 const SWEEP_KICKS = 3;
+/** Waits for the log to catch up before a turn's view is built; past it, the turn uses what is logged. */
+const CATCH_UP_MS = 5_000;
+/** An OptChat turn that ran as hybrid is in the activity log at most this often per Initiative. */
+const FALLBACK_LOG_MS = 10 * 60_000;
+/** Requests read per page while looking for a turn's own. */
+const REQUEST_PAGE = 100;
 
-export const OPTCHAT_NOTE = "optchat is stored, but its runtime is not available yet: until it is, the coordinator runs as hybrid.";
+export const OPTCHAT_NOTE = "Each turn of a Claude Code coordinator is a fresh session over the memory view. A Codex coordinator, or one whose session was built before OptChat existed, runs as hybrid until it is replaced.";
 /**
  * W244: BB fixes a session's tools and instructions when it is built and mostly keeps them on
  * resume, so a coordinator from before every coordinator got its memory tools (D447) may lack
@@ -41,13 +48,65 @@ const legacyFlag = (threadId: string) => `${LEGACY_SEEDED}:${threadId}`;
 /** The memory's own progress (log and tree) reaches the dashboards at most this often; they also poll. */
 const PROGRESS_PUBLISH_MS = 30_000;
 
+/**
+ * The hidden tool BB's Claude Code provider (Erwin's fork) calls before each new turn of a thread
+ * that has it, with a TurnAsk: a TurnAnswer with a fresh session runs the turn in it, anything
+ * else lets the thread's session go on.
+ */
+export const TURN_CONTEXT_TOOL = "claude_code_turn_context";
+/** What became of one of the provider's asks; see TurnAsk.reports. */
+const turnReportSchema = z.object({
+  requestId: z.string().min(1),
+  offeredSessionId: z.string().min(1).nullable(),
+  outcome: z.enum(["fresh", "resident", "failed"]),
+  sessionId: z.string().min(1).nullable(),
+});
+type TurnReport = z.infer<typeof turnReportSchema>;
+/** The provider's ask. A call that does not parse is not the provider's: it gets "{}" and changes nothing. */
+export const turnAskSchema = z.object({
+  protocol: z.literal(3),
+  /** The turn's own text. */
+  input: z.string(),
+  /** Its BB request (the client/turn/requested event's requestId). */
+  requestId: z.string().min(1),
+  /** The provider session the thread runs in now. */
+  sessionId: z.string().min(1).nullable(),
+  /**
+   * What became of the provider's earlier asks on the thread that no answer has acknowledged yet,
+   * oldest first: the turn ran in the fresh session offered (fresh), in its current one without
+   * an answer (resident), or there after the fresh one failed to start (failed). None for a turn
+   * that never ran. The provider sends a report again until an answer's `ack` names it or a later one.
+   */
+  reports: z.array(turnReportSchema),
+});
+export type TurnAsk = z.infer<typeof turnAskSchema>;
+/** A thread's last ask taken, and the fresh session answered to it: an optchat one, or a handover's regular one. */
+interface TakenAsk {
+  requestId: string;
+  seq: number;
+  offer: { sessionId: string; handover: boolean } | null;
+}
+export interface TurnContext {
+  session: "fresh";
+  /** The fresh session's id, which the provider's next ask reports back. */
+  sessionId: string;
+  /** Appended to the thread's system prompt; empty keeps it as it is. */
+  systemPrompt: string;
+  /** The session's first message, in place of the turn's own text. */
+  input: string;
+}
+/** `ack`: the newest report taken in, so the provider stops sending it and those before it. */
+export type TurnAnswer = { ack?: string } & (TurnContext | { session?: undefined });
+
 export interface MemoryStatus {
   mode: MemoryMode;
-  /** The mode the coordinator actually runs in (optchat runs as hybrid for now). */
-  effectiveMode: "regular" | "hybrid";
+  /** The mode the coordinator runs in; an optchat turn whose view is unavailable runs as hybrid (optchat.fallbacks). */
+  effectiveMode: MemoryMode;
   note: string | null;
   /** SESSION_NOTE outside regular mode while the coordinator is one from before D447 (it may lack its memory tools). */
   session: string | null;
+  /** Since the plugin started: optchat turns served, those that ran as hybrid, and why the last did. */
+  optchat: { turns: number; fallbacks: number; lastFallback: string | null };
   compactTokens: number;
   compactTokensOverride: number | null;
   log: { messages: number; bytes: number; threads: number };
@@ -82,7 +141,7 @@ const treeSize = (n: number) => {
  *
  * The mode is one setting per Initiative (regular, hybrid or optchat), for the coordinator and
  * later its discussion threads (D446). What depends on it is read at each turn: the compaction
- * limit (compactLimit) and, once it exists, the optchat runtime (settings().mode).
+ * limit (compactLimit) and, in optchat, a fresh session per turn over the view (turnContext).
  *
  * Ingests and builds run detached and owned here: one of each per Initiative at a time, aborted
  * by dispose (the service signal disposes too) and when their Initiative is archived (stop).
@@ -108,6 +167,14 @@ export class CoordinatorMemory {
   private published = new Map<string, number>();
   /** Summarizer calls in flight across every Initiative (W244). */
   readonly permits: FairPermits;
+  /** By thread: the view lines its last optchat turn froze into its system prompt. */
+  private frozen = new Map<string, NodeRef[]>();
+  /** By thread: the provider session its last turn reported (TurnAsk.sessionId). */
+  private sessions = new Map<string, string | null>();
+  /** By thread: its last ask taken (TakenAsk). */
+  private asks = new Map<string, TakenAsk>();
+  private optchat = new Map<string, MemoryStatus["optchat"]>();
+  private lastFallbackLog = new Map<string, number>();
 
   constructor(
     private readonly deps: {
@@ -168,9 +235,16 @@ export class CoordinatorMemory {
     const project = this.deps.ledger.project(projectId);
     return !!project && project.archivedAt === null;
   }
-  /** The compaction limit of the Initiative's memory threads: its own, else the setting for its mode. Read at each turn. */
-  compactLimit(projectId: string) {
+  /**
+   * The compaction limit of the Initiative's memory threads: its own, else the setting for its
+   * mode (optchat's is hybrid's, for a coordinator that runs as hybrid). Read at each turn. 0,
+   * off, for a thread whose session is an optchat one that ran no turn as hybrid: its next turn
+   * is a fresh session anyway.
+   */
+  compactLimit(projectId: string, threadId?: string) {
     const { mode, compactTokens } = this.settings(projectId);
+    const session = threadId ? this.sessions.get(threadId) : null;
+    if (threadId && session && this.isOptchatSession(threadId, session) && !this.deps.ledger.hasFlag(hybridFlag(threadId, session))) return 0;
     if (compactTokens !== null) return compactTokens;
     const preferences = this.deps.preferences();
     return mode === "regular" ? preferences.coordinatorCompactTokens : preferences.hybridCompactTokens;
@@ -187,7 +261,7 @@ export class CoordinatorMemory {
     this.store.saveSettings(projectId, next);
     const who = author === "user" ? "you" : "the coordinator";
     if (next.mode !== before.mode)
-      this.deps.ledger.log(projectId, "project", `Memory set to ${next.mode} by ${who}, from the next turn${next.mode === "optchat" ? " (runs as hybrid until the optchat runtime exists)" : ""}`);
+      this.deps.ledger.log(projectId, "project", `Memory set to ${next.mode} by ${who}, from the next turn`);
     if (next.compactTokens !== before.compactTokens)
       this.deps.ledger.log(projectId, "project", next.compactTokens === null ? `Compaction limit reset to the ${next.mode} default by ${who}` : `Compaction limit set to ${Math.round(next.compactTokens / 1000)}k tokens by ${who}`);
     return this.status(projectId);
@@ -435,9 +509,10 @@ export class CoordinatorMemory {
     const state = builder?.status.state ?? (this.builds.has(projectId) ? "building" : "idle");
     return {
       mode: settings.mode,
-      effectiveMode: settings.mode === "regular" ? "regular" : "hybrid",
+      effectiveMode: settings.mode,
       note: settings.mode === "optchat" ? OPTCHAT_NOTE : null,
       session: settings.mode !== "regular" && coordinator && this.deps.ledger.hasFlag(legacyFlag(coordinator)) ? SESSION_NOTE : null,
+      optchat: { ...this.optchatStats(projectId) },
       compactTokens: this.compactLimit(projectId),
       compactTokensOverride: settings.compactTokens,
       log: { messages, bytes: totals.logBytes, threads: this.store.cursors(projectId).length },
@@ -466,7 +541,7 @@ export class CoordinatorMemory {
 
   /**
    * A view as "id+n|text" lines, oldest first. "memory" is the compaction view (16–32 KB), what a
-   * coordinator reads after a compaction; "chat" is the 64–128 KB view an optchat turn will see.
+   * coordinator reads after a compaction; "chat" is the 64–128 KB view an optchat turn sees.
    */
   view(projectId: string, which: "memory" | "chat" = "memory") {
     const { nodes, views } = this.tree(projectId);
@@ -517,12 +592,203 @@ export class CoordinatorMemory {
     });
   }
 
+  // OptChat turns ----------------------------------------------------------------------
+
+  private optchatStats(projectId: string) {
+    let stats = this.optchat.get(projectId);
+    if (!stats) this.optchat.set(projectId, (stats = { turns: 0, fallbacks: 0, lastFallback: null }));
+    return stats;
+  }
+
+  /**
+   * D431 phase 2: how a memory thread's next turn runs, asked before each new turn (TURN_CONTEXT_TOOL).
+   * - optchat: a fresh session, the view's older lines frozen into its system prompt, its newest
+   *   lines, the time and the message in its first message.
+   * - left optchat (hybrid or regular) while the thread's session is an optchat one: a fresh
+   *   regular session handed the whole view; later turns go on in it.
+   * - otherwise no session: the thread's session goes on. So does a turn whose view is
+   *   unavailable (it runs as hybrid, logged): never a broken turn.
+   *
+   * The provider alone knows whether it ran a fresh answer: each ask reports what became of the
+   * earlier ones (applyReport), and only those reports make a session an optchat one, consume a
+   * handover, or turn compaction back on. The answer acknowledges the reports once they are
+   * taken in (`ack`); an ask that cannot be checked (its request unreadable, unknown or older
+   * than the last) is not acknowledged, so its reports come again with the next ask, and changes
+   * nothing. `role` names the thread in the activity log: the coordinator today, discussion threads later (D446).
+   */
+  async turnContext(projectId: string, threadId: string, ask: TurnAsk, role = "coordinator"): Promise<TurnAnswer> {
+    if (this.disposed) return {};
+    const optchat = this.settings(projectId).mode === "optchat";
+    const last = this.asks.get(threadId) ?? null;
+    let request: EventRow | null;
+    try {
+      request = await this.findRequest(threadId, ask.requestId);
+    } catch (error) {
+      if (this.disposed) return {};
+      if (optchat) this.fallback(projectId, role, true, `the turn's request could not be read: ${errorMessage(error)}`);
+      return {};
+    }
+    if (!request || (last && request.seq < last.seq)) {
+      this.deps.log(`${projectId}: ignored a ${TURN_CONTEXT_TOOL} call of the ${role}: ${request ? `request ${ask.requestId} is older than the last one asked about` : `unknown request ${ask.requestId}`}`);
+      return {};
+    }
+    const newest = ask.reports.at(-1);
+    const ack = newest ? { ack: newest.requestId } : {};
+    // Reports the provider never sends: acknowledged, so they never come again, but nothing changes.
+    const contradiction = contradictoryReports(ask);
+    if (contradiction) {
+      this.deps.log(`${projectId}: ignored a ${TURN_CONTEXT_TOOL} call of the ${role}: ${contradiction}`);
+      return ack;
+    }
+    for (const report of ask.reports) this.applyReport(projectId, threadId, role, report, last);
+    const taken: TakenAsk = { requestId: ask.requestId, seq: request.seq, offer: null };
+    this.asks.set(threadId, taken);
+    const inOptchat = this.observeSession(threadId, ask.sessionId);
+    if (!optchat && !inOptchat) return ack;
+    try {
+      await this.catchUp(projectId);
+      const cut = this.turnCut(projectId, threadId, request.seq);
+      const { nodes, views } = this.tree(projectId);
+      const view = turnView({
+        chat: views.chat,
+        fed: views.fed,
+        nodes,
+        message: (i) => this.store.message(projectId, i),
+        cut,
+        frozen: optchat ? (this.frozen.get(threadId) ?? null) : null,
+      });
+      const now = this.deps.ledger.now();
+      const sessionId = randomUUID();
+      if (optchat) {
+        // A handover shows a backlog as placeholders; a turn's whole memory would be too thin.
+        if (view.missing > MAX_MISSING) throw new Error(`${view.missing} recent messages have no summary yet`);
+        this.frozen.set(threadId, view.frozen);
+        this.optchatStats(projectId).turns++;
+        taken.offer = { sessionId, handover: false };
+        return { ...ack, session: "fresh", sessionId, systemPrompt: turnSystem(view.frozenLines), input: turnMessage(now, ask.input, view.tailLines) };
+      }
+      this.frozen.delete(threadId);
+      taken.offer = { sessionId, handover: true };
+      return { ...ack, session: "fresh", sessionId, systemPrompt: "", input: handoverMessage(now, ask.input, [...view.frozenLines, ...view.tailLines]) };
+    } catch (error) {
+      if (this.disposed) return ack;
+      // The optchat session goes on with a regular turn: it compacts as hybrid from now on.
+      if (inOptchat) this.deps.ledger.setFlag(hybridFlag(threadId, ask.sessionId!));
+      this.fallback(projectId, role, optchat, errorMessage(error));
+      return ack;
+    }
+  }
+
+  /**
+   * What became of one of the thread's earlier asks, as the provider reports it. A fresh session
+   * the plugin offered for that very request (the last ask taken), and that ran, is the thread's:
+   * an optchat one, or the regular one a handover started. Otherwise the turn ran as a regular
+   * turn in the session it names, which compacts from then on if it is an optchat one; an offer
+   * it dropped is a fallback. A report sent again (its acknowledgement lost) matches no offer any
+   * more, so it changes nothing twice.
+   */
+  private applyReport(projectId: string, threadId: string, role: string, report: TurnReport, last: TakenAsk | null) {
+    const offer = last?.requestId === report.requestId ? last.offer : null;
+    if (offer) last!.offer = null;
+    if (report.outcome === "fresh") {
+      if (!offer || offer.sessionId !== report.sessionId) return;
+      if (offer.handover) this.deps.ledger.log(projectId, "project", `Coordinator memory: the ${role} left OptChat for a regular session, handed its memory view`);
+      else this.deps.ledger.setFlag(optchatFlag(threadId, offer.sessionId));
+      return;
+    }
+    if (report.sessionId !== null && this.isOptchatSession(threadId, report.sessionId)) this.deps.ledger.setFlag(hybridFlag(threadId, report.sessionId));
+    if (offer) this.fallback(projectId, role, !offer.handover, report.outcome === "failed" ? "its fresh session failed to start" : "the provider got no answer in time");
+  }
+
+  /** A turn that ran without its fresh session: counted, and in the activity log at most every FALLBACK_LOG_MS. */
+  private fallback(projectId: string, role: string, optchat: boolean, reason: string) {
+    const stats = this.optchatStats(projectId);
+    stats.fallbacks++;
+    stats.lastFallback = reason;
+    this.deps.log(`${projectId}: the ${role}'s ${optchat ? "OptChat turn ran as hybrid" : "OptChat handover waits for the next turn"}: ${reason}`);
+    const now = this.deps.ledger.now();
+    if (now - (this.lastFallbackLog.get(projectId) ?? -Infinity) >= FALLBACK_LOG_MS) {
+      this.lastFallbackLog.set(projectId, now);
+      this.deps.ledger.log(projectId, "project", `Coordinator memory: an OptChat turn of the ${role} ran as hybrid (${reason})`);
+    }
+  }
+
+  /**
+   * Records the session a thread's turn reports it runs in; whether it is an optchat one (a
+   * report said an optchat answer's session ran). Other sessions' flags go: the thread left them.
+   */
+  private observeSession(threadId: string, sessionId: string | null) {
+    this.sessions.set(threadId, sessionId);
+    const optchat = sessionId !== null && this.isOptchatSession(threadId, sessionId);
+    this.deps.ledger.clearFlags(optchatFlag(threadId, ""), optchat ? optchatFlag(threadId, sessionId) : null);
+    return optchat;
+  }
+
+  private isOptchatSession(threadId: string, sessionId: string) {
+    return this.deps.ledger.hasFlag(optchatFlag(threadId, sessionId));
+  }
+
+  /** The thread's client/turn/requested event for `requestId`, newest first, page by page; null if it has none. */
+  private async findRequest(threadId: string, requestId: string) {
+    for (let before: number | null = null; ; ) {
+      const page = await this.deps.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: String(REQUEST_PAGE), ...(before === null ? {} : { beforeSeq: String(before) }) });
+      const request = page.find((row) => row.data?.requestId === requestId);
+      if (request) return request;
+      if (page.length < REQUEST_PAGE) return null;
+      before = Math.min(...page.map((row) => row.seq));
+    }
+  }
+
+  /** Bring the log up to the turn's own message, for at most CATCH_UP_MS. */
+  private async catchUp(projectId: string) {
+    this.kick(projectId);
+    const run = this.ingests.get(projectId);
+    if (!run) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([run.done, new Promise<void>((resolve) => (timer = setTimeout(resolve, CATCH_UP_MS)))]);
+    clearTimeout(timer);
+  }
+
+  /**
+   * Where the turn's own message, its request at `seq`, begins in the log. Throws unless the log
+   * has read the thread through it: a view cut from a log that missed messages would pass a stale
+   * or empty memory off as the whole chat. Reading a thread through also means every earlier
+   * coordinator was (ingest reads them in order).
+   */
+  private turnCut(projectId: string, threadId: string, seq: number) {
+    const cursor = this.store.cursors(projectId).find((c) => c.threadId === threadId);
+    if (!cursor || cursor.lastSeq < seq) throw new Error("the log has not caught up with the turn");
+    return this.store.firstFrom(projectId, threadId, seq) ?? this.store.count(projectId);
+  }
+
   date(projectId: string, id: number) {
     const m = this.store.message(projectId, id);
     if (!m) throw new ProjectError(`No message ${id}.`);
     return `${new Date(m.at).toISOString().slice(0, 16).replace("T", " ")} UTC`;
   }
 }
+
+/**
+ * Why an ask's reports are not ones the provider sends, or null: one reports on the ask's own
+ * request, a fresh one names a session other than the one offered, or the newest names a session
+ * other than the one the ask runs in.
+ */
+function contradictoryReports(ask: TurnAsk) {
+  for (const report of ask.reports) {
+    if (report.requestId === ask.requestId) return "it reports on its own request";
+    if (report.outcome === "fresh" && (report.offeredSessionId === null || report.sessionId !== report.offeredSessionId)) return "it reports a fresh session other than the one offered";
+  }
+  const newest = ask.reports.at(-1);
+  if (newest && newest.sessionId !== ask.sessionId) return "it reports a session other than the one it runs in";
+  return null;
+}
+
+/**
+ * An optchat answer's session, once the provider reports it ran: the turn after leaving optchat
+ * hands it over. With ":hybrid", it ran a turn as hybrid and compacts.
+ */
+const optchatFlag = (threadId: string, sessionId: string) => `optchat:${threadId}:${sessionId}`;
+const hybridFlag = (threadId: string, sessionId: string) => `${optchatFlag(threadId, sessionId)}:hybrid`;
 
 /** A stable prompt-cache session per Initiative, shaped like the UUID Codex sends. */
 export function cacheKey(projectId: string) {

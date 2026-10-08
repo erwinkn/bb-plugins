@@ -111,8 +111,8 @@ describe("W220 memory modes", () => {
     expect(status).toMatchObject({ session: null });
     expect(await config(f)).toEqual(before);
     expect(f.store.activity(project.id, 5).map((a) => a.summary)).toContain("Memory set to hybrid by you, from the next turn");
-    // optchat is stored and runs as hybrid until its runtime exists.
-    expect(await f.perform(project.id, { action: "memory", mode: "optchat" }, "user", null)).toMatchObject({ mode: "optchat", effectiveMode: "hybrid", note: expect.stringMatching(/not available yet/) });
+    // W240: optchat runs from the coordinator's next turn, each a fresh session over the view.
+    expect(await f.perform(project.id, { action: "memory", mode: "optchat" }, "user", null)).toMatchObject({ mode: "optchat", effectiveMode: "optchat", note: expect.stringMatching(/fresh session/) });
     expect(await f.perform(project.id, { action: "memory", mode: "regular" }, "user", null)).toMatchObject({ mode: "regular", compactTokens: 300_000 });
   });
 

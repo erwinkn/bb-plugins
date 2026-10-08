@@ -10,7 +10,7 @@ import { useWrite } from "./write-status";
 export const MEMORY_MODES_TEXT: Record<MemoryMode, { label: string; line: string }> = {
   regular: { label: "Regular", line: "One long chat, compacted once it gets large." },
   hybrid: { label: "Hybrid", line: "Compacts sooner; what it drops stays one zoom away in the summary tree." },
-  optchat: { label: "OptChat", line: "A fresh turn per message over the summary view. Not available yet: runs as hybrid." },
+  optchat: { label: "OptChat", line: "A fresh session per message over the summary view (Claude Code; Codex runs as hybrid)." },
 };
 const MODES = Object.keys(MEMORY_MODES_TEXT) as MemoryMode[];
 

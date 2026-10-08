@@ -945,9 +945,11 @@ switch is instant; it applies from each thread's next turn.
 - **regular** (default): one long chat, compacted past 300k tokens.
 - **hybrid**: compacts sooner, at 150k; what a compaction drops stays one zoom
   away in the tree.
-- **optchat**: a fresh turn per message over the summary view, as in Victor
-  Taelin's [OptChat gist](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449).
-  It is stored but runs as hybrid until its runtime exists (phase 2).
+- **optchat**: each turn is a fresh Claude session over the summary view, as in
+  Victor Taelin's [OptChat gist](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449),
+  in the same BB thread (see [OptChat turns](#optchat-turns-d431-phase-2)). An
+  optchat session is never compacted; a coordinator that runs as hybrid
+  compacts at hybrid's limit.
 
 Switch it from the coordinator thread's header (the "Memory · Hybrid" pill opens
 a popover), the dashboard header under the coordinator, or Context → Memory:
@@ -957,8 +959,8 @@ each is a three-way segmented control with a line per mode. From a shell:
 behind another write: it only saves the setting.
 
 What depends on the mode is read at each turn, never fixed in a session: the
-compaction limit (read when the coordinator goes idle) and, in phase 2, the
-optchat runtime. The coordinator's memory tools and guidance are the same in
+compaction limit (read when the coordinator goes idle) and whether a turn runs
+in a fresh session (OptChat turns, below). The coordinator's memory tools and guidance are the same in
 every mode, because BB fixes a session's tools and instructions when the
 session is built. A coordinator from before this (D447) may lack them: outside
 regular mode the switch says so until the coordinator is replaced (W244).
@@ -989,7 +991,7 @@ the next pass looks again.
 **The tree** follows the gist exactly, as W216 replayed it: message i becomes
 a line of at most 512 bytes (`id+n|text`), adjacent lines merge in pairs into
 512-byte lines; text that fits is kept with no call. The chat view (what an
-optchat turn will see) is a 128→64 KB sawtooth merged by due = (T+1)/2^l − i;
+optchat turn sees) is a 128→64 KB sawtooth merged by due = (T+1)/2^l − i;
 the memory view, the context of every summarizer call, is the chat view merged
 further on a 32→16 KB sawtooth. Both views are saved, never rebuilt. GPT-6 Luna
 (`memoryEffort`, xhigh by default) writes the lines with the gist's prompt and
@@ -1025,6 +1027,130 @@ lines line id+n was made from; n 1 is the message whole), `initiative_date
 `bb initiative zoom <id> <n>` and `bb initiative date <id>` serve the same from a
 shell. The dashboard shows the mode, log size, tree progress, view sizes and the
 summarizer's cost at list price.
+
+### OptChat turns (D431 phase 2)
+
+A memory mode switch takes effect at the coordinator's next turn, in both
+directions, in the same BB thread: Erwin keeps talking to the coordinator as
+before, and its transcript shows every turn.
+
+It needs a fork patch to BB's Claude Code provider (`~/Code/bb`, branch `erwin`,
+"Claude Code: per-turn context from a hidden tool"). Before each new turn (not a
+message steered into a running one) of a thread that has the hidden tool
+`claude_code_turn_context`, the provider calls it with `{protocol: 3, input,
+requestId, sessionId, reports}`: the turn's text, its BB request, the Claude
+session the thread runs in, and what became of its earlier calls (below). The
+plugin gives that tool to Claude Code coordinators only, in every mode, and it
+is never shown to the model. An answer `{session:"fresh", sessionId,
+systemPrompt, input}` runs the turn in a new Claude session with that id: BB's
+system prompt plus `systemPrompt`, with `input` as its first message; `{}`, an
+error, or no answer within 20 seconds lets the thread's session go on (the
+provider forgets the request, so a late answer is ignored). The new session has
+the thread's tools, from its own MCP server instance (one instance serves one
+connection, and the new session starts while the old one is still connected),
+settings and permissions, and BB records it as the thread's provider session,
+so the Account Pooler links, counts and warms it like any other. The provider
+switches only once the new session's CLI has initialized (30 seconds at most);
+if it fails to start, the thread's session goes on with the turn's own text. A
+message steered into the turn while the provider prepares it is held, then
+follows the turn's input into the session the turn runs in, or fails with it;
+an interrupt cancels the preparation. If the thread's session stops on its own
+meanwhile, the provider restarts it and the turn and its held messages run
+there, in order.
+
+An optchat turn's prompt, in order:
+
+1. Claude Code's and BB's system prompt (the coordinator's instructions), then
+   the OptChat prompt (`TURN_PROMPT`: how the view works, answer only the new
+   message, zoom before relying on any detail of the past), then the view's
+   older lines in `<chat>`. These lines are frozen per thread: the next turn
+   keeps them while the view only grows at its end, so the whole system prompt
+   is read from the prompt cache turn after turn. They are frozen again when a
+   merge batch rewrites them or the lines after them pass 32 KB.
+2. The first message: the view's newest lines in a second `<chat>`, then
+   `Now: 2026-10-08 14:32 UTC.`, then `New message:` and the turn's text. The
+   view stops before the turn's own message (W216's failure mode 1).
+
+Turns never wait for the summarizer (W216's failure mode 3). A message without
+its line yet is shown whole up to 2 KB (512 bytes for tool calls and output),
+else as its head and tail around " … ", newest first within 48 KB; older ones
+are placeholders that `initiative_zoom {id, n:1}` opens. Before building the
+view, the plugin reads the coordinator's newest events (up to 5 seconds), and
+the view stops at the turn's own request (`requestId`), not at a later queued
+one. A merged line that crosses that point opens into the lines it was made
+from, so the turn's message is never in its own memory. If the log has not read
+the thread through that request (a failed or slow read), the turn runs as
+hybrid rather than over a stale or empty view.
+
+**Leaving optchat.** The first turn after a switch to hybrid or regular starts
+one more fresh session, this time a regular one: its first message hands over
+the whole view, with the same guide, then the turn. Later turns go on in that
+session, compacted as usual. The handover never waits for the summarizer: a
+backlog of messages with no line shows as one placeholder line per run.
+
+**What runs where.** Only the provider knows whether it ran an answer, so it
+says so: each call carries `reports`, oldest first, one `{requestId,
+offeredSessionId, outcome, sessionId}` per earlier call not yet acknowledged,
+`outcome` being `fresh` (the offered session ran the turn), `resident` (no
+fresh answer, or none in time: the turn ran in the thread's session) or
+`failed` (the offered session failed to start: the turn ran in the thread's
+session). A turn that never ran (interrupted) reports nothing. An answer
+acknowledges the reports it took in with `ack: <the newest one's requestId>`;
+the provider keeps every other report and sends it again with its next call
+(16 at most). So a call the plugin could not check (its request unreadable,
+unknown, or older than the last) loses nothing: it gets `{}`, and its reports
+come again. The provider also keeps a thread's unacknowledged reports, and its
+fresh session's system prompt, across an ordinary Stop: resuming that Claude
+session gets them back (for the last 64 sessions it stopped, until it
+restarts). Answering commits nothing; the plugin acts on the reports only:
+
+- `fresh`, for the session it offered for that very request: an optchat one is
+  flagged (`optchat:<thread>:<session>`) and no longer compacts; a handover's
+  regular session is the thread's, and the handover is done (logged then).
+- `resident` or `failed`: the session named ran a regular turn. An optchat one
+  gets `:hybrid` and compacts at hybrid's limit, and is still handed over when
+  the coordinator leaves optchat. An answer the provider did not run counts as a
+  fallback, and is simply given again next turn.
+
+A report sent again (its acknowledgement lost with a late answer) matches no
+offer any more, so it changes nothing twice. For example: optchat, the
+coordinator in its optchat session S. A turn's fresh answer T times out, so the
+turn runs in S. The next call reports `{outcome: "resident", sessionId: S}`: S
+compacts from then on, and the fallback is counted. Switched to regular, the
+exit turn's request read fails: that call gets `{}`, runs in S, and the next
+call reports both S's last optchat turn and the exit turn, so it is handed
+over then. A handover whose session fails to start reports `failed`, so S is
+still optchat and the next turn is handed over again.
+
+Every call is checked before anything changes: it must parse (`protocol: 3`),
+and its request must be on the thread (looked up page by page, however many
+steers followed it) and no older than the last call taken; otherwise it gets
+`{}`. Its reports must agree with it (each on another request, a fresh one in
+the session offered, the newest in the session it runs in now); otherwise they
+are acknowledged and change nothing. So a model that sees the tool (a provider
+without the patch) and sends only `input` changes nothing. The checks do not
+authenticate the caller, though: a model that knew the private fields and a
+real request ID of its thread could still report a session of its own
+invention and clear the real one's optchat flag. Hence the deploy order, the
+fork first: the patched provider hides the tool.
+
+**Fail safe.** When the view cannot be built (the log, tree or turn's request unreadable, the
+log behind the turn, or more than 16 recent messages with no line, as after
+switching an Initiative whose tree was never built), the turn runs as hybrid:
+the thread's current session goes on. It is counted in the memory status (`optchat.fallbacks`, `lastFallback`) and in the
+activity log, at most once per 10 minutes. A provider without the patch, a
+Codex coordinator, or a coordinator whose session was built before the tool
+existed, runs as hybrid until it is replaced.
+
+**Limits.** Rewinding or forking a coordinator thread to a turn before its
+latest optchat session is not supported. The status's optchat counts reset
+when the plugin restarts, and so does what it knows of each thread's session
+until its next turn (meanwhile an optchat session compacts at hybrid's limit),
+and of its last offer (so a report of it then changes no session). A provider
+that restarts loses its unacknowledged reports; the plugin then keeps what it
+knew, and a fresh session it never heard of compacts as usual.
+The provider cannot cancel the plugin's handler, only stop waiting for it; the
+handler bounds itself (5 seconds of catch-up).
 
 ## The former projects ID
 

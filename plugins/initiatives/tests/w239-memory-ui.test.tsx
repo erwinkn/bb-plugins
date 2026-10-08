@@ -34,7 +34,7 @@ describe("W239 memory switch", () => {
     const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => o, command, inventory: async () => [] } }); slots.push(s);
     fireEvent.click(await s.findByRole("tab", { name: "Context" }));
     const panel = await s.findByRole("region", { name: "Memory" });
-    for (const line of ["One long chat", "Compacts sooner", "A fresh turn per message"]) expect(within(panel).getByText(new RegExp(line))).toBeTruthy();
+    for (const line of ["One long chat", "Compacts sooner", "A fresh session per message"]) expect(within(panel).getByText(new RegExp(line))).toBeTruthy();
     fireEvent.click(within(panel).getByRole("radio", { name: "OptChat" }));
     expect(await within(panel).findByRole("alert")).toHaveProperty("textContent", "Unknown Initiative x.");
     expect(within(panel).getByRole("radio", { name: "Regular" }).getAttribute("aria-checked")).toBe("true");

@@ -1751,6 +1751,13 @@ export class Store {
     this.db.prepare("INSERT OR IGNORE INTO plugin_flags(key, set_at) VALUES(?, ?)").run(key, Date.now());
   }
 
+  /** Clears every flag starting with `prefix`, but those starting with `keep`. */
+  clearFlags(prefix: string, keep: string | null = null) {
+    this.db
+      .prepare("DELETE FROM plugin_flags WHERE substr(key, 1, length(?)) = ? AND (? IS NULL OR substr(key, 1, length(?)) <> ?)")
+      .run(prefix, prefix, keep, keep, keep);
+  }
+
   handoverDraft(projectId: string): HandoverDraft | null {
     const row = this.db.prepare("SELECT * FROM handover_drafts WHERE project_id=?").get(projectId) as Row | undefined;
     return row ? toDraft(row) : null;

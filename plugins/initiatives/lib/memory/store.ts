@@ -101,6 +101,15 @@ export class MemoryStore {
   messages(projectId: string, from = 0, to = Number.MAX_SAFE_INTEGER): MemoryMessage[] {
     return (this.sql(`SELECT * FROM memory_log WHERE project_id = ? AND i >= ? AND i < ? ORDER BY i`).all(projectId, from, to) as Row[]).map(message);
   }
+  /**
+   * The first of the log's last `within` messages logged from a thread's event `seq` or later:
+   * where a turn's new message begins (it is at the log's end, so the scan stays short).
+   */
+  firstFrom(projectId: string, threadId: string, seq: number, within = 1000): number | null {
+    const from = Math.max(0, this.count(projectId) - within);
+    const i = this.sql(`SELECT MIN(i) FROM memory_log WHERE project_id = ? AND i >= ? AND thread_id = ? AND seq >= ?`).pluck().get(projectId, from, threadId, seq);
+    return i == null ? null : Number(i);
+  }
   /** Append entries and move the thread's cursor, in one transaction: a message is logged exactly once. */
   append(projectId: string, threadId: string, entries: LogEntry[], lastSeq: number) {
     this.db.transaction(() => {

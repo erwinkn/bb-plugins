@@ -361,7 +361,7 @@ export class ProjectsService {
     this.compaction = createCoordinatorCompaction({
       sdk: bb.sdk,
       store,
-      limit: (projectId) => this.memory.compactLimit(projectId),
+      limit: (projectId, threadId) => this.memory.compactLimit(projectId, threadId),
       replacing: (projectId) => {
         const start = this.coordinatorStart(projectId);
         return this.coordinatorSwitches.has(projectId) || (!!start && ["pending", "uncertain"].includes(start.state));
