@@ -45,7 +45,9 @@ export interface EventRow {
   data?: Record<string, any>;
 }
 /** The event types the log reads. */
-export const LOG_EVENT_TYPES = ["client/turn/requested", "item/completed", "provider/unhandled"] as const;
+export const LOG_EVENT_TYPES = ["client/turn/requested", "item/completed", "provider/unhandled", "turn/completed"] as const;
+/** T143: a stopped turn's mark, after whatever it had said, so later views know its reply was cut off. */
+export const STOPPED = "[bb] (stopped) This turn was stopped before it finished.";
 
 /** The plugin's first message to a coordinator: a new Initiative's brief, or a replacement's handover. */
 const SEED = /^This thread is starting as (?:the replacement )?coordinator/;
@@ -86,6 +88,7 @@ export function eventEntries(row: EventRow, threadId: string, workerRef: (thread
     const content = d.rawEvent?.params?.message?.message?.content;
     return d.rawType === "sdk/user" && typeof content === "string" && CONTINUED.test(content) ? entry("note", content) : [];
   }
+  if (row.type === "turn/completed") return d.status === "interrupted" ? entry("work", STOPPED) : [];
   if (row.type !== "item/completed") return [];
   const item = d.item as Record<string, any> | undefined;
   if (!item || item.parentToolCallId || item.presentation?.suppress === true) return [];

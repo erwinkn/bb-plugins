@@ -36,20 +36,40 @@ describe("T59 selective agent reads", () => {
     const alias = JSON.parse(await f.harness.callAgentTool("initiative_read", { refs: ["K999"] }, { threadId: "coordinator" }) as string);
     expect(alias.missingRefs).toEqual(["K999"]);
     await expect(f.harness.callAgentTool("initiative_read", { view: "overview", limit: 20 }, { threadId: "coordinator" })).rejects.toThrow(/overview/);
-    await expect(f.harness.callAgentTool("initiative_read", { view: "workers", fields: ["body"], detailed: true }, { threadId: "coordinator" })).rejects.toThrow(/not selectable/);
+    // T143: a selection that fits no kind read is refused, even with no records to read.
+    await expect(f.harness.callAgentTool("initiative_read", { view: "workers", fields: ["body"], detailed: true }, { threadId: "coordinator" })).rejects.toThrow(/applies to none/);
     // W188 (F5): fields implies detailed.
     expect(JSON.parse(await f.harness.callAgentTool("initiative_read", { view: "assignments", fields: ["report"] }, { threadId: "coordinator" }) as string).detail).toMatch(/^Full selected/);
   });
 
-  it("W188: an unsupported selection names every bad field and one complete call that works (Equisafe)", async () => {
+  it("W188, T143: a selection no record has names every bad field and one complete call that works (Equisafe)", async () => {
     const { f, project } = await projectFixture();
     const task = f.task(project.id);
     const read = (input: unknown) => f.harness.callAgentTool("initiative_read", input, { threadId: "coordinator" });
-    const message = await read({ refs: [task.ref], detailed: true, fields: ["resolution", "checkpoint"] }).then(() => "", (e: Error) => e.message);
-    expect(message).toContain("resolution, checkpoint are not selectable in tasks. Valid fields: brief.");
+    const fails = (input: unknown) => read(input).then(() => "", (e: Error) => e.message);
+    const message = await fails({ refs: [task.ref], detailed: true, fields: ["resolution", "checkpoint"] });
+    expect(message).toContain("resolution, checkpoint apply to none of the records read. Valid fields by kind: tasks: brief.");
     const example = JSON.parse(/initiative_read (\{.*\})\.$/.exec(message)![1]!);
     expect(example).toEqual({ refs: [task.ref], fields: ["brief"] });
     expect(JSON.parse(await read(example) as string).items).toEqual([{ ref: task.ref, view: "tasks", brief: expect.anything() }]);
+    // A single ref whose kind lacks the one field, and mixed refs none of whose kinds has any.
+    expect(await fails({ refs: [task.ref], fields: ["report"] })).toMatch(/^report applies to none of the records read/);
+    await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
+    expect(await fails({ refs: [task.ref, "W1"], fields: ["body", "resolution"] })).toContain("Valid fields by kind: tasks: brief; workers: handoff, report.");
+  });
+
+  it("T143: mixed refs read each record's own fields in one call (W238 and D446–D449)", async () => {
+    const { f, project } = await projectFixture();
+    const task = f.task(project.id);
+    const [worker] = await f.service.delegate(project.id, { route: "fresh", tasks: [task.ref] });
+    await f.service.report(worker.threadId!, report());
+    const decision = JSON.parse(await f.harness.callAgentTool("initiative_decision", { action: "user-choice", description: "Keep the 5m TTL." }, { threadId: "coordinator" }) as string);
+    const result = JSON.parse(await f.harness.callAgentTool("initiative_read", { refs: [worker.worker, decision.ref, "D999"], fields: ["report", "body", "resolution"] }, { threadId: "coordinator" }) as string);
+    expect(result.items.map((i: any) => Object.keys(i))).toEqual([["ref", "view", "report"], ["ref", "view", "body", "resolution"]]);
+    expect(result.items[0].report).toMatchObject({ ref: worker.assignment, summary: expect.stringMatching(/archived records/) });
+    expect(result.items[1].body).toBeTruthy();
+    expect(result.fieldsNotApplied).toEqual({ workers: ["body", "resolution"], decisions: ["report"] });
+    expect(result.missingRefs).toEqual(["D999"]);
   });
 
   it("pages complete large records, exposes field selection, and never clips valid JSON", async () => {
@@ -90,7 +110,7 @@ describe("T59 selective agent reads", () => {
     expect(threads.items).toHaveLength(1);
     expect(threads.items[0].threadId).toBe("coordinator");
     expect(threads).not.toHaveProperty("usage");
-    await expect(f.harness.callAgentTool("initiative_read", { view: "threads", detailed: true, fields: ["report"] }, { threadId: "coordinator" })).rejects.toThrow(/not selectable/);
+    await expect(f.harness.callAgentTool("initiative_read", { view: "threads", detailed: true, fields: ["report"] }, { threadId: "coordinator" })).rejects.toThrow(/threads: none, omit fields/);
     expect(f.store.project(project.id)).not.toBeNull();
     const legacy = JSON.parse(await f.harness.callAgentTool("project_read", { view: "overview", refs: ["T999"], offset: 0, limit: 20, detailed: false }, { threadId: "coordinator" }) as string);
     expect(legacy.missingRefs).toEqual(["T999"]);

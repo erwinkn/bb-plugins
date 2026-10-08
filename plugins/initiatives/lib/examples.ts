@@ -14,7 +14,7 @@ export const COMMAND_EXAMPLES = {
   supersede: { action: "user-choice", description: "Erwin now wants two batch-size settings, per input.", supersedes: "D7" },
   withdraw: { action: "withdraw", ref: "D12", reason: "Settled by D15: Erwin chose Base UI in chat." },
   handover: { action: "coordinator-handover", reason: "Context is getting long", note: "W4 is mid-way through T11; the review of T9 is due." },
-  memory: { action: "memory", mode: "hybrid", compactTokens: null },
+  memory: { action: "memory" },
 } as const;
 /** W188 (F5): names agents reach for, routed to the examples they mean. */
 export const DESCRIBE_GROUPS: Record<string, readonly (keyof typeof COMMAND_EXAMPLES)[]> = {

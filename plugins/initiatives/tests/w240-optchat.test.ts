@@ -97,15 +97,15 @@ describe("W240 turn view", () => {
 describe("W240 turn framing", () => {
   it("puts the view first, then the time, then the new message after a fixed header", () => {
     const at = Date.UTC(2026, 9, 8, 9, 22);
-    expect(turnMessage(at, "W12 reported")).toBe("Now: 2026-10-08 09:22 UTC.\n\nNew message:\nW12 reported");
-    expect(turnMessage(at, "[W12] done", ["5+1|coord: ok"])).toBe("<chat>\n5+1|coord: ok\n</chat>\n\nNow: 2026-10-08 09:22 UTC.\n\nNew message:\n[W12] done");
+    expect(turnMessage(at, "W12 reported")).toBe("Now: 2026-10-08 09:22Z.\n\nNew message:\nW12 reported");
+    expect(turnMessage(at, "[W12] done", ["5+1|coord: ok"])).toBe("<chat>\n5+1|coord: ok\n</chat>\n\nNow: 2026-10-08 09:22Z.\n\nNew message:\n[W12] done");
     expect(turnSystem(["0+4|user: hi"])).toBe(`${TURN_PROMPT}\n\n<chat>\n0+4|user: hi\n</chat>`);
     // W216's fixes: the message never takes a compaction's kind: form, and zooming comes first.
     expect(TURN_PROMPT).toContain('Answer that message, and only it');
     expect(TURN_PROMPT).toContain("When unsure whether a line holds what you need, zoom");
     expect(TURN_PROMPT).not.toMatch(/Compaction:|<input>/);
     const handover = handoverMessage(at, "Back to normal?", ["0+1|user: hi"]);
-    expect(handover).toMatch(/^# Memory \(OptChat handover\)[\s\S]*<chat>\n0\+1\|user: hi\n<\/chat>\n\nNow: 2026-10-08 09:22 UTC\.\n\nNew message:\nBack to normal\?$/);
+    expect(handover).toMatch(/^# Memory \(OptChat handover\)[\s\S]*<chat>\n0\+1\|user: hi\n<\/chat>\n\nNow: 2026-10-08 09:22Z\.\n\nNew message:\nBack to normal\?$/);
   });
 });
 
@@ -192,11 +192,11 @@ describe("W240 optchat turns", () => {
     expect(context.systemPrompt).toContain(TURN_PROMPT);
     expect(context.systemPrompt).toMatch(/<chat>\n0\+\d+\|[\s\S]*\n<\/chat>$/);
     // The new message is the turn's, never a line of the view.
-    expect(context.input).toMatch(/(^|\n)Now: \d{4}-\d\d-\d\d \d\d:\d\d UTC\.\n\nNew message:\nWhat did I ask first\?$/);
+    expect(context.input).toMatch(/(^|\n)Now: \d{4}-\d\d-\d\d \d\d:\d\dZ\.\n\nNew message:\nWhat did I ask first\?$/);
     expect(`${context.systemPrompt}\n${context.input}`.match(/What did I ask first/g)).toHaveLength(1);
     expect(f.service.memory.status(project.id).optchat).toEqual({ turns: 1, fallbacks: 0, lastFallback: null });
     // Zoom reads the log whole, whatever the view shows.
-    expect(await f.harness.callAgentTool("initiative_zoom", { id: 0, n: 1 }, { threadId: "coordinator" })).toMatch(/^user: Ask 0: q+$/);
+    expect(await f.harness.callAgentTool("initiative_zoom", { id: 0, n: 1 }, { threadId: "coordinator" })).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\dZ 0\+1\|user: Ask 0: q+$/);
     await f.service.memory.settled();
   });
 
@@ -265,7 +265,7 @@ describe("W240 optchat turns", () => {
     const { f } = await projectFixture();
     const tools = async (provider: string) =>
       (await f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get("coordinator")!, provider: { id: provider } as never }))).tools.map((t) => t.name);
-    expect(await tools("claude-code")).toEqual(expect.arrayContaining([TURN_CONTEXT_TOOL, "initiative_zoom", "initiative_date"]));
+    expect(await tools("claude-code")).toEqual(expect.arrayContaining([TURN_CONTEXT_TOOL, "initiative_zoom"]));
     expect(await tools("codex")).not.toContain(TURN_CONTEXT_TOOL);
   });
 });

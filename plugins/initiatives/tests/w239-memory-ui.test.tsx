@@ -13,15 +13,15 @@ afterEach(() => { for (const s of slots.splice(0)) s.unmount(); cleanup(); });
 describe("W239 memory switch", () => {
   it("switches from the dashboard header, at once, and explains the chosen mode", async () => {
     const { f, project } = await projectFixture();
-    const command = vi.fn((input: unknown) => f.harness.callRpc("command", input as never));
+    const setMemory = vi.fn((input: unknown) => f.harness.callRpc("setMemory", input as never));
     const overview = vi.fn(async () => f.overview(project.id));
-    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview, command } }); slots.push(s);
+    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview, setMemory } }); slots.push(s);
     const group = await s.findByRole("radiogroup", { name: "Memory" });
     expect(within(group).getByRole("radio", { name: "Regular" }).getAttribute("aria-checked")).toBe("true");
     expect(s.getByText("One long chat, compacted once it gets large.")).toBeTruthy();
     fireEvent.click(within(group).getByRole("radio", { name: "Hybrid" }));
     await waitFor(() => expect(within(group).getByRole("radio", { name: "Hybrid" }).getAttribute("aria-checked")).toBe("true"));
-    expect(command).toHaveBeenCalledWith({ projectId: project.id, command: { action: "memory", mode: "hybrid" } });
+    expect(setMemory).toHaveBeenCalledWith({ projectId: project.id, mode: "hybrid" });
     expect(f.service.memory.settings(project.id).mode).toBe("hybrid");
     expect(s.getByText("Compacts sooner; what it drops stays one zoom away in the summary tree.")).toBeTruthy();
     await f.service.memory.settled();
@@ -29,9 +29,9 @@ describe("W239 memory switch", () => {
 
   it("the Context tab lists every mode with its line, and shows a failed switch", async () => {
     const { f, project } = await projectFixture();
-    const command = vi.fn(async () => { throw new Error("Unknown Initiative x."); });
+    const setMemory = vi.fn(async () => { throw new Error("Unknown Initiative x."); });
     const o = await f.overview(project.id);
-    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => o, command, inventory: async () => [] } }); slots.push(s);
+    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => o, setMemory, inventory: async () => [] } }); slots.push(s);
     fireEvent.click(await s.findByRole("tab", { name: "Context" }));
     const panel = await s.findByRole("region", { name: "Memory" });
     for (const line of ["One long chat", "Compacts sooner", "A fresh session per message"]) expect(within(panel).getByText(new RegExp(line))).toBeTruthy();
@@ -43,15 +43,15 @@ describe("W239 memory switch", () => {
   it("the coordinator's thread header carries a memory pill and popover; a worker's does not", async () => {
     const { f, project } = await projectFixture();
     const panel = vi.fn((input: unknown) => f.harness.callRpc("panel", input as never));
-    const command = vi.fn((input: unknown) => f.harness.callRpc("command", input as never));
-    const s = renderSlot({ component: ProjectHeader }, { threadId: "coordinator", isCompactViewport: false } as never, { rpc: { panel, command } }); slots.push(s);
+    const setMemory = vi.fn((input: unknown) => f.harness.callRpc("setMemory", input as never));
+    const s = renderSlot({ component: ProjectHeader }, { threadId: "coordinator", isCompactViewport: false } as never, { rpc: { panel, setMemory } }); slots.push(s);
     const pill = await s.findByRole("button", { name: "Memory: Regular. Change it" });
     expect(pill.textContent).toBe("Memory · Regular");
     const group = s.getByRole("radiogroup", { name: "Memory" });
     expect(within(group.closest(".project-memory-popover") as HTMLElement).getByText("The summary tree builds in every mode, so a switch is instant and applies from the next turn.")).toBeTruthy();
     fireEvent.click(within(group).getByRole("radio", { name: "Hybrid" }));
     await s.findByRole("button", { name: "Memory: Hybrid. Change it" });
-    expect(command).toHaveBeenCalledWith({ projectId: project.id, command: { action: "memory", mode: "hybrid" } });
+    expect(setMemory).toHaveBeenCalledWith({ projectId: project.id, mode: "hybrid" });
     await f.service.memory.settled();
     slots.splice(slots.indexOf(s), 1);
     s.unmount();
@@ -70,8 +70,8 @@ describe("W239 a write the relay never answers", () => {
       const { f, project } = await projectFixture();
       const o = await f.overview(project.id);
       const overview = vi.fn(async () => o);
-      const command = vi.fn(() => new Promise<never>(() => {}));
-      const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview, command } }); slots.push(s);
+      const setMemory = vi.fn(() => new Promise<never>(() => {}));
+      const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview, setMemory } }); slots.push(s);
       const group = await s.findByRole("radiogroup", { name: "Memory" });
       fireEvent.click(within(group).getByRole("radio", { name: "Hybrid" }));
       expect(within(group).getByRole("radio", { name: "Hybrid" }).getAttribute("aria-checked")).toBe("true");

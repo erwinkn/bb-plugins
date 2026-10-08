@@ -16,12 +16,12 @@ export const spawnToolSchema = z.object({
   label: text(200).describe("Short name, shown in the W# title."),
   purpose: text(300).describe("What this worker is for."),
   text: text(20000).describe("The brief: the task, the context it needs, explicit user instructions that matter, how to verify."),
-  role: z.enum(["work", "review"]).optional().describe("work (default) or review. A review is read-only and reports findings."),
-  tasks: z.array(ref).max(30).optional().describe("Optional T# tasks this work is for."),
+  role: z.enum(["work", "review"]).optional().describe("work by default. A review is read-only and reports findings."),
+  tasks: z.array(ref).max(30).optional().describe("T# tasks this work is for."),
   reviews: ref.optional().describe("Review only: the W# (its latest report) or A# to review; that report is embedded."),
   handoffs: z.array(ref).max(3).optional().describe("Up to 3 prior reports to embed, as W# (latest report) or A#."),
-  kind: workerKindSchema.optional().describe("Work only: worker (default; implement a known change), experimenter (try things, prototype, report options), fast (small, well-specified) or analyst (read lots and report; no building or running). Settings map each kind to a model. investigator is a deprecated alias for analyst."),
-  profile: profileSchema.optional().describe("Explicit execution profile; wins over kind. Omitted uses the Settings default for the kind or review."),
+  kind: workerKindSchema.optional().describe("Work only: worker (default; a known change), experimenter (prototype, report options), fast (small, well-specified) or analyst (read and report; no building). Settings map each to a model."),
+  profile: profileSchema.optional().describe("An explicit model; wins over kind."),
   project: ref.optional().describe("Member BB project id, when not the primary one."),
   environment: environmentSchema.optional().describe("{type:\"worktree\"} for an isolated checkout; default is the project checkout (a review defaults to the reviewed worker's)."),
   permissionMode: z.enum(["accept-edits", "auto", "full"]).optional(),
@@ -29,12 +29,15 @@ export const spawnToolSchema = z.object({
 
 export const messageToolSchema = z.object({
   to: z.string().max(32).optional().describe("W# or \"coordinator\"."),
-  target: z.string().max(32).optional().describe("Older name for to."),
+  /** Older sessions' name for to; not advertised (messageToolAdvertised). */
+  target: z.string().max(32).optional(),
   text: text(20000),
   mode: z.enum(["steer", "queue"]).optional().describe("steer: urgent corrections and blockers; queue (default): everything else."),
   tasks: z.array(ref).max(30).optional().describe("Coordinator only: give this worker more work on these tasks."),
   work: z.boolean().optional().describe("Coordinator only: this message is more work (the worker reports on it again), even without tasks. Refused for a reviewer: reviews are not reused, so spawn a fresh reviewer."),
 }).strict();
+/** What agents see: messageToolSchema without the older target. */
+export const messageToolAdvertised = messageToolSchema.omit({ target: true });
 
 export const taskToolSchema = z.object({
   action: z.enum(["create", "update", "close", "reopen"]),
@@ -80,6 +83,23 @@ export const reportToolSchema = z.object({
   question: text(1000).optional().describe("blocked: what you need answered."),
   report: text(FINAL_MESSAGE_MAX).describe("Your full report, as you would write it to the coordinator: what you did, what you verified, what is left. It is recorded; the coordinator gets it whole when short, otherwise reads it on demand."),
 }).strict();
+
+/**
+ * T143: a tool's parameters as agents see them. Each advertised tool costs its tokens in every
+ * session, so this drops what says nothing: $schema and zod's implicit integer maximum
+ * (9007199254740991). Bounds stay, since the tool refuses what exceeds them (W262).
+ */
+export function advertisedSchema(schema: z.ZodType | Record<string, unknown>): Record<string, unknown> {
+  const json = typeof (schema as { safeParse?: unknown }).safeParse === "function" ? z.toJSONSchema(schema as z.ZodType, { io: "input" }) : schema;
+  // Keys of a properties map are field names, never keywords.
+  const slim = (value: unknown, fields = false): unknown => {
+    if (Array.isArray(value)) return value.map((item) => slim(item));
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value).flatMap(([key, item]) =>
+      !fields && (key === "$schema" || (key === "maximum" && item === Number.MAX_SAFE_INTEGER)) ? [] : [[key, slim(item, !fields && key === "properties")]]));
+  };
+  return slim(json) as Record<string, unknown>;
+}
 
 const need = <T>(value: T | undefined, what: string): T => {
   if (value === undefined) throw new ProjectError(`${what} is required.`);

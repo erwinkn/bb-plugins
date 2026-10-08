@@ -6,7 +6,7 @@ import { MEMORY_MIGRATIONS } from "../lib/memory/store";
 import type { Summarizer, SummarizerRequest } from "../lib/memory/summarizer";
 
 // W220 (D431): every Initiative keeps a memory log of its coordinators, read from BB's events,
-// and (D447) builds the summary tree over it in every mode; its coordinator reads, zooms and dates it.
+// and (D447) builds the summary tree over it in every mode; its coordinator reads and zooms it.
 type Fx = Awaited<ReturnType<typeof projectFixture>>["f"];
 let seq = 500_000;
 let at = 1_790_000_000_000;
@@ -101,14 +101,14 @@ describe("W220 memory modes", () => {
   it("is set per Initiative by command; the coordinator's tools and guidance are the same in every mode, so a switch needs no new session", async () => {
     const { f, project } = await projectFixture();
     const before = await config(f);
-    expect(before.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_zoom", "initiative_date"]));
+    expect(before.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_zoom"]));
     expect(before.instructions).toContain("Memory: every message of this Initiative is logged and summarized");
     expect(before.instructions!.length).toBeLessThanOrEqual(4096);
     expect(before.instructions).toMatch(/Current Initiative membership: \{.*\}\n\nMemory: /);
     const status = await f.perform(project.id, { action: "memory", mode: "hybrid" }, "user", null);
     expect(status).toMatchObject({ mode: "hybrid", effectiveMode: "hybrid", compactTokens: 150_000 });
     // A coordinator built since every coordinator got the tools has no session note (W244).
-    expect(status).toMatchObject({ session: null });
+    expect(status).toMatchObject({ sessionNote: null });
     expect(await config(f)).toEqual(before);
     expect(f.store.activity(project.id, 5).map((a) => a.summary)).toContain("Memory set to hybrid by you, from the next turn");
     // W240: optchat runs from the coordinator's next turn, each a fresh session over the view.
@@ -116,11 +116,14 @@ describe("W220 memory modes", () => {
     expect(await f.perform(project.id, { action: "memory", mode: "regular" }, "user", null)).toMatchObject({ mode: "regular", compactTokens: 300_000 });
   });
 
-  it("through bb initiative command, with a per-Initiative compaction limit that wins over the mode's default", async () => {
+  it("a per-Initiative compaction limit wins over the mode's default; bb initiative command only reads it (D452)", async () => {
     const { f, project } = await projectFixture();
-    const run = await f.harness.runCli(["command", JSON.stringify({ action: "memory", mode: "hybrid", compactTokens: 200_000 }), project.id]);
-    expect(run.exitCode).toBe(0);
-    expect(JSON.parse(run.stdout!)).toMatchObject({ mode: "hybrid", compactTokens: 200_000, compactTokensOverride: 200_000 });
+    const refused = await f.harness.runCli(["command", JSON.stringify({ action: "memory", mode: "hybrid", compactTokens: 200_000 }), project.id]);
+    expect(refused.exitCode).toBe(1);
+    expect(f.service.memory.settings(project.id)).toEqual({ mode: "regular", compactTokens: null });
+    await f.perform(project.id, { action: "memory", mode: "hybrid", compactTokens: 200_000 }, "user", null);
+    const read = await f.harness.runCli(["command", '{"action":"memory"}', project.id]);
+    expect(JSON.parse(read.stdout!)).toMatchObject({ mode: "hybrid", compactTokens: 200_000, compactTokensOverride: 200_000 });
     expect(f.service.memory.compactLimit(project.id)).toBe(200_000);
     await f.perform(project.id, { action: "memory", compactTokens: null }, "user", null);
     expect(f.service.memory.compactLimit(project.id)).toBe(150_000);
@@ -145,7 +148,7 @@ describe("W220 memory modes", () => {
   });
 });
 
-describe("W220 hybrid memory: tree, view, zoom and date", () => {
+describe("W220 hybrid memory: tree, view and zoom", () => {
   async function hybrid() {
     const { f, project } = await projectFixture();
     f.service.memory.useSummarizer(fakeLuna);
@@ -168,21 +171,23 @@ describe("W220 hybrid memory: tree, view, zoom and date", () => {
     expect((await f.overview(project.id)).memory).toMatchObject({ mode: "hybrid", log: { messages: 12 } });
   });
 
-  it("serves the memory view, zoom and date to the coordinator", async () => {
+  it("serves the memory view and zoom, each zoomed line with its time, to the coordinator", async () => {
     const { f } = await hybrid();
     const memory = await tool(f, "initiative_read", { view: "memory" });
     expect(memory.messages).toBe(12);
     expect(memory.view.split("\n")[0]).toMatch(/^0\+1\|summary of 0 /);
     expect(memory.note).toContain("initiative_zoom {id:64,n:32}");
+    // T143: each line starts with the time (UTC) of its first message; initiative_date is gone.
+    const at = String.raw`\d{4}-\d\d-\d\d \d\d:\d\dZ`;
     // Message 1 is short: its parent with message 0 needed no call and keeps both lines.
-    expect(await tool(f, "initiative_zoom", { id: 0, n: 4 })).toMatch(/^0\+2\|summary of 0 \.+ coord: ok 0\n2\+2\|summary of 2 \.+ coord: ok 1$/);
-    expect(await tool(f, "initiative_zoom", { id: 0, n: 1 })).toBe(`user: ${big(0)}`);
-    expect(await tool(f, "initiative_zoom", { id: 1, n: 1 })).toBe("coord: ok 0");
-    expect(await tool(f, "initiative_date", { id: 1 })).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d UTC$/);
+    expect(await tool(f, "initiative_zoom", { id: 0, n: 4 })).toMatch(new RegExp(String.raw`^${at} 0\+2\|summary of 0 \.+ coord: ok 0\n${at} 2\+2\|summary of 2 \.+ coord: ok 1$`));
+    expect(await tool(f, "initiative_zoom", { id: 0, n: 1 })).toMatch(new RegExp(`^${at} 0\\+1\\|user: ${big(0)}$`));
+    expect(await tool(f, "initiative_zoom", { id: 1, n: 1 })).toMatch(new RegExp(`^${at} 1\\+1\\|coord: ok 0$`));
+    expect(f.harness.registrations.agentTools.map((t) => t.name)).not.toContain("initiative_date");
     await expect(f.harness.callAgentTool("initiative_zoom", { id: 3, n: 2 }, { threadId: "coordinator" })).rejects.toThrow(/no line/);
     await expect(f.harness.callAgentTool("initiative_zoom", { id: 8, n: 8 }, { threadId: "coordinator" })).rejects.toThrow(/past the last message, 11/);
     const cli = await f.harness.runCli(["zoom", "0", "1"], { threadId: "coordinator" });
-    expect(JSON.parse(cli.stdout!)).toBe(`user: ${big(0)}`);
+    expect(JSON.parse(cli.stdout!)).toBe(await tool(f, "initiative_zoom", { id: 0, n: 1 }));
   });
 
   it("keeps building after a switch back to regular, so switching again is instant (D447)", async () => {
@@ -229,6 +234,6 @@ describe("W220 phase 2 interface", () => {
     await f.service.memory.settled();
     expect(f.service.memory.view(project.id, "chat").lines).toEqual([expect.stringMatching(/^0\+1\|summary of 0 /)]);
     const { turnMessage } = await import("../lib/memory/prompt");
-    expect(turnMessage(Date.UTC(2026, 9, 8, 9, 22), "W12 reported")).toBe("Now: 2026-10-08 09:22 UTC.\n\nNew message:\nW12 reported");
+    expect(turnMessage(Date.UTC(2026, 9, 8, 9, 22), "W12 reported")).toBe("Now: 2026-10-08 09:22Z.\n\nNew message:\nW12 reported");
   });
 });

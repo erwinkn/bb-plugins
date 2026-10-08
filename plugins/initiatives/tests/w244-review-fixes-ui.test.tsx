@@ -59,8 +59,8 @@ describe("W244 the thread header's memory switch", () => {
   it("shows the saved mode at once, whatever a panel read from before the save returns later", async () => {
     const { f, project } = await projectFixture();
     const before = await f.harness.callRpc("panel", { threadId: "coordinator" });
-    const command = vi.fn((input: unknown) => f.harness.callRpc("command", input as never));
-    const s = renderSlot({ component: ProjectHeader }, { threadId: "coordinator", isCompactViewport: false } as never, { rpc: { panel: async () => before, command } }); slots.push(s);
+    const setMemory = vi.fn((input: unknown) => f.harness.callRpc("setMemory", input as never));
+    const s = renderSlot({ component: ProjectHeader }, { threadId: "coordinator", isCompactViewport: false } as never, { rpc: { panel: async () => before, setMemory } }); slots.push(s);
     await s.findByRole("button", { name: "Memory: Regular. Change it" });
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
@@ -79,7 +79,7 @@ describe("W244 the thread header's memory switch", () => {
   it("says when the coordinator may lack its memory tools", async () => {
     const { f, project } = await projectFixture();
     const o = await f.overview(project.id);
-    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => ({ ...o, memory: { ...o.memory!, mode: "hybrid", session: SESSION_NOTE } }) } }); slots.push(s);
+    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => ({ ...o, memory: { ...o.memory!, mode: "hybrid", sessionNote: SESSION_NOTE } }) } }); slots.push(s);
     expect(await s.findByText(SESSION_NOTE)).toBeTruthy();
   });
 });
@@ -87,8 +87,8 @@ describe("W244 the thread header's memory switch", () => {
 describe("W244 the memory switch is a radio group for the keyboard", () => {
   it("Tab reaches only the selected mode; the arrows select and save a neighbour, keeping focus", async () => {
     const { f, project } = await projectFixture();
-    const command = vi.fn((input: unknown) => f.harness.callRpc("command", input as never));
-    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => f.overview(project.id), command } }); slots.push(s);
+    const setMemory = vi.fn((input: unknown) => f.harness.callRpc("setMemory", input as never));
+    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => f.overview(project.id), setMemory } }); slots.push(s);
     const group = await s.findByRole("radiogroup", { name: "Memory" });
     const radio = (name: string) => within(group).getByRole("radio", { name });
     expect(["Regular", "Hybrid", "OptChat"].map((m) => radio(m).tabIndex)).toEqual([0, -1, -1]);

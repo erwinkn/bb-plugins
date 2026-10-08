@@ -58,6 +58,7 @@ function overview() {
       assignment: "A1",
       role: "review",
       outcome: "Verify archived search results",
+      brief: "Independent reviewer",
       tasks: [{ ref: "T1", title: "Search verification" }],
       owner: {
         worker: "W2",

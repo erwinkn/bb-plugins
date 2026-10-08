@@ -7,15 +7,14 @@ import type { Store } from "../store";
 import { TreeBuilder, type BuilderStatus } from "./builder";
 import { readEvents, startsAfresh, type ListEvents } from "./ingest";
 import { eventEntries, splitEntry, type EventRow } from "./log";
-import { handoverMessage, messageText, systemPrompt, turnMessage, turnSystem } from "./prompt";
+import { handoverMessage, messageText, stamp, systemPrompt, turnMessage, turnSystem } from "./prompt";
 import { FairPermits } from "./permits";
 import { MemoryStore, type MemoryMode, type MemorySettings } from "./store";
 import type { Summarizer } from "./summarizer";
-import { NodeCache, end, label, nodeAt, children, renderLine, viewBytes, type NodeRef } from "./tree";
+import { NodeCache, end, label, nodeAt, children, renderLine, start, viewBytes, type NodeRef } from "./tree";
 import { MAX_MISSING, turnView } from "./turn";
 
 export const zoomToolSchema = z.object({ id: z.number().int().min(0), n: z.number().int().min(1) }).strict();
-export const dateToolSchema = z.object({ id: z.number().int().min(0) }).strict();
 
 /** Event pages one ingest reads per thread before yielding; the next kick goes on. */
 const INGEST_PAGES = 20;
@@ -42,7 +41,7 @@ export const OPTCHAT_NOTE = "Each turn of a Claude Code coordinator is a fresh s
  * them; that matters once its mode compacts sooner than regular. Those coordinators are noted
  * once, at the first start that gives the tools in every mode, and keep the note until replaced.
  */
-export const SESSION_NOTE = "This coordinator's session predates its memory tools, so it may lack initiative_zoom and initiative_date: replace the coordinator to give it them.";
+export const SESSION_NOTE = "This coordinator's session predates its memory tools, so it may lack initiative_zoom: replace the coordinator to give it.";
 const LEGACY_SEEDED = "memory-tools-legacy";
 const legacyFlag = (threadId: string) => `${LEGACY_SEEDED}:${threadId}`;
 /** The memory's own progress (log and tree) reaches the dashboards at most this often; they also poll. */
@@ -104,7 +103,7 @@ export interface MemoryStatus {
   effectiveMode: MemoryMode;
   note: string | null;
   /** SESSION_NOTE outside regular mode while the coordinator is one from before D447 (it may lack its memory tools). */
-  session: string | null;
+  sessionNote: string | null;
   /** Since the plugin started: optchat turns served, those that ran as hybrid, and why the last did. */
   optchat: { turns: number; fallbacks: number; lastFallback: string | null };
   compactTokens: number;
@@ -137,7 +136,7 @@ const treeSize = (n: number) => {
  * coordinator thread, starting, on its first read, from the current coordinator back to the
  * last handover (or new-Initiative start), the handover being a note. D447: GPT-6 Luna builds
  * the summary tree over it in the background in every mode, so a switch between modes is
- * instant; the coordinator reads its view, zoom and date in every mode.
+ * instant; the coordinator reads its view and zooms in every mode.
  *
  * The mode is one setting per Initiative (regular, hybrid or optchat), for the coordinator and
  * later its discussion threads (D446). What depends on it is read at each turn: the compaction
@@ -250,7 +249,8 @@ export class CoordinatorMemory {
     return mode === "regular" ? preferences.coordinatorCompactTokens : preferences.hybridCompactTokens;
   }
 
-  configure(projectId: string, patch: { mode?: MemoryMode; compactTokens?: number | null }, author: "user" | "coordinator") {
+  /** The user's change (D452: the command refuses agents); a patch with neither field reads the status. */
+  configure(projectId: string, patch: { mode?: MemoryMode; compactTokens?: number | null }) {
     const project = this.deps.ledger.project(projectId);
     if (!project || project.archivedAt !== null) throw new ProjectError(`Unknown Initiative ${projectId}.`);
     const before = this.settings(projectId);
@@ -258,12 +258,12 @@ export class CoordinatorMemory {
       mode: patch.mode ?? before.mode,
       compactTokens: patch.compactTokens === undefined ? before.compactTokens : patch.compactTokens,
     };
-    this.store.saveSettings(projectId, next);
-    const who = author === "user" ? "you" : "the coordinator";
+    // A read, or a change to what is already set, writes nothing, so it announces nothing.
+    if (next.mode !== before.mode || next.compactTokens !== before.compactTokens) this.store.saveSettings(projectId, next);
     if (next.mode !== before.mode)
-      this.deps.ledger.log(projectId, "project", `Memory set to ${next.mode} by ${who}, from the next turn`);
+      this.deps.ledger.log(projectId, "project", `Memory set to ${next.mode} by you, from the next turn`);
     if (next.compactTokens !== before.compactTokens)
-      this.deps.ledger.log(projectId, "project", next.compactTokens === null ? `Compaction limit reset to the ${next.mode} default by ${who}` : `Compaction limit set to ${Math.round(next.compactTokens / 1000)}k tokens by ${who}`);
+      this.deps.ledger.log(projectId, "project", next.compactTokens === null ? `Compaction limit reset to the ${next.mode} default by you` : `Compaction limit set to ${Math.round(next.compactTokens / 1000)}k tokens by you`);
     return this.status(projectId);
   }
 
@@ -512,7 +512,7 @@ export class CoordinatorMemory {
       mode: settings.mode,
       effectiveMode: settings.mode,
       note: settings.mode === "optchat" ? OPTCHAT_NOTE : null,
-      session: settings.mode !== "regular" && coordinator && this.deps.ledger.hasFlag(legacyFlag(coordinator)) ? SESSION_NOTE : null,
+      sessionNote: settings.mode !== "regular" && coordinator && this.deps.ledger.hasFlag(legacyFlag(coordinator)) ? SESSION_NOTE : null,
       optchat: { ...this.optchatStats(projectId) },
       compactTokens: this.compactLimit(projectId),
       compactTokensOverride: settings.compactTokens,
@@ -555,19 +555,23 @@ export class CoordinatorMemory {
     };
   }
 
-  /** zoom(id, n): the two lines line id+n was made from; n = 1 gives message id whole. */
+  /**
+   * zoom(id, n): the two lines line id+n was made from; n = 1 gives message id whole. Each line
+   * starts with the time of its first message (T143): "2026-10-08 17:49Z 64+16|text".
+   */
   zoom(projectId: string, id: number, n: number) {
     const total = this.store.count(projectId);
+    const at = (i: number) => stamp(this.store.message(projectId, i)!.at);
     if (n === 1) {
       const m = this.store.message(projectId, id);
       if (!m) throw new ProjectError(`No message ${id}: the log holds messages 0 to ${total - 1}.`);
-      return messageText(m);
+      return `${stamp(m.at)} ${id}+1|${messageText(m)}`;
     }
     const node = nodeAt(id, n);
     if (!node) throw new ProjectError(`${id}+${n} is no line: n is a power of 2 and id a multiple of n.`);
     if (end(node) >= total) throw new ProjectError(`${label(node)} goes past the last message, ${total - 1}.`);
     const { nodes } = this.tree(projectId);
-    return children(node).map((c) => renderLine(c, nodes)).join("\n");
+    return children(node).map((c) => `${at(start(c))} ${renderLine(c, nodes)}`).join("\n");
   }
 
   /**
@@ -762,11 +766,6 @@ export class CoordinatorMemory {
     return this.store.firstFrom(projectId, threadId, seq) ?? this.store.count(projectId);
   }
 
-  date(projectId: string, id: number) {
-    const m = this.store.message(projectId, id);
-    if (!m) throw new ProjectError(`No message ${id}.`);
-    return `${new Date(m.at).toISOString().slice(0, 16).replace("T", " ")} UTC`;
-  }
 }
 
 /**

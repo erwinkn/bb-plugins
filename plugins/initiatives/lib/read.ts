@@ -81,27 +81,39 @@ const rowsFor = (store: Store, projectId: string, view: ReadView): Record<string
   if (view === "reports") return store.assignments(projectId).filter(a => a.report).sort((a, b) => (b.reportedAt ?? 0) - (a.reportedAt ?? 0)) as unknown as Record<string, any>[];
   return (view === "decisions" ? store.decisions(projectId, { includeHistory: true }) : store[view](projectId)) as unknown as Record<string, any>[];
 };
+/** A view's refs must be its own, and its fields must apply to it. */
 export function validateSelection(view: ReadView, options: ReadOptions) {
   for (const ref of options.refs ?? []) {
     if ((["tasks", "workers", "assignments", "decisions", "updates"].includes(view) || /^[TWADKU]\d+$/.test(ref)) && viewForRef(ref) !== view)
       throw new ProjectError(`${ref} belongs to ${viewForRef(ref)}, not ${view}. Omit view to read mixed durable refs.`);
   }
-  // W188 (F5): every unsupported field at once, with one complete call that works.
-  const invalid = options.fields?.filter(f => !fieldsByView[view]?.includes(f)) ?? [];
-  if (invalid.length) {
-    const valid = fieldsByView[view] ?? [];
-    const ref = options.refs?.find(r => /^[TWADKU]\d+$/.test(r) && viewForRef(r) === view);
-    const example = valid.length ? JSON.stringify({ ...(ref ? { refs: [ref] } : { view }), fields: [valid[0]] }) : JSON.stringify(ref ? { refs: [ref], detailed: true } : { view, detailed: true });
-    throw new ProjectError(`${invalid.join(", ")} ${invalid.length > 1 ? "are" : "is"} not selectable in ${view}. ${valid.length ? `Valid fields: ${valid.join(", ")}` : "It has no selectable fields; omit fields"}. For example: initiative_read ${example}.`);
-  }
+  validateFields([view], options);
+}
+const applicable = (view: ReadView, fields: readonly string[]) => fields.filter(f => fieldsByView[view]?.includes(f));
+/**
+ * T143: refs mix kinds, so a field that only some of them have is no error: each record gets the
+ * requested fields that apply to it and the result names the rest (fieldsNotApplied). A selection
+ * that applies to none of the kinds read is a mistake, refused with one complete call that works.
+ */
+export function validateFields(views: ReadView[], options: ReadOptions) {
+  const fields = options.fields;
+  if (!fields || views.some(view => applicable(view, fields).length)) return;
+  const view = views[0]!, valid = fieldsByView[view] ?? [];
+  const ref = options.refs?.find(r => /^[TWADKU]\d+$/.test(r) && viewForRef(r) === view);
+  const example = valid.length ? JSON.stringify({ ...(ref ? { refs: [ref] } : { view }), fields: [valid[0]] }) : JSON.stringify(ref ? { refs: [ref], detailed: true } : { view, detailed: true });
+  const choices = views.map(v => `${v}: ${fieldsByView[v]?.join(", ") || "none, omit fields"}`).join("; ");
+  throw new ProjectError(`${fields.join(", ")} ${fields.length > 1 ? "apply" : "applies"} to none of the records read. Valid fields by kind: ${choices}. For example: initiative_read ${example}.`);
 }
 /** W188 (F5): selecting fields reads full records; detailed is implied. */
 export const withImpliedDetail = (options: ReadOptions): ReadOptions => (options.fields ? { ...options, detailed: true } : options);
+/** With fields, a record none of them applies to is its summary. */
 function projectRow(view: ReadView, row: Record<string, any>, options: ReadOptions) {
   if (!options.detailed) return summary(view, row, !options.refs);
+  if (!options.fields) return fullRow(view, row);
+  const fields = applicable(view, options.fields);
+  if (!fields.length) return { ...summary(view, row), view };
   const full = fullRow(view, row);
-  if (!options.fields) return full;
-  return { ref: rowRef(view, row), view, ...Object.fromEntries(options.fields.map(f => [f, f.split(".").reduce<any>((value, key) => value?.[key], full) ?? null])) };
+  return { ref: rowRef(view, row), view, ...Object.fromEntries(fields.map(f => [f, f.split(".").reduce<any>((value, key) => value?.[key], full) ?? null])) };
 }
 
 /** Page complete records, never slice serialized JSON. Oversized individual details need explicit field selection. */
@@ -122,7 +134,13 @@ export function readRows(rows: { view: ReadView; row: Record<string, any> }[], o
     items.push(item);
   }
   const nextOffset = options.offset + items.length < rows.length ? options.offset + items.length : null;
-  return { items, total: rows.length, missingRefs, offset: options.offset, limit: options.limit, nextOffset, truncated: nextOffset !== null || items.some(i => i.truncatedFields?.length), byteLimited, detail: options.detailed ? "Full selected records/fields; no JSON clipping." : `Summaries only${options.refs ? "" : "; a task is one line, refs:[\"T4\"] adds its summary"}. Use detailed:true and optionally fields for full records.` };
+  // Per kind of record read, the requested fields that don't apply to it: {workers:["body"]}.
+  const notApplied: Record<string, string[]> = {};
+  for (const view of new Set(rows.map(entry => entry.view))) {
+    const left = (options.fields ?? []).filter(f => !applicable(view, [f]).length);
+    if (left.length) notApplied[view] = left;
+  }
+  return { items, total: rows.length, missingRefs, ...(Object.keys(notApplied).length ? { fieldsNotApplied: notApplied } : {}), offset: options.offset, limit: options.limit, nextOffset, truncated: nextOffset !== null || items.some(i => i.truncatedFields?.length), byteLimited, detail: options.detailed ? "Full selected records/fields; no JSON clipping." : `Summaries only${options.refs ? "" : "; a task is one line, refs:[\"T4\"] adds its summary"}. Use detailed:true and optionally fields for full records.` };
 }
 
 // The standard handoff is rendered from the canonical report on request, never stored twice.
@@ -160,10 +178,10 @@ export function readRefs(store: Store, projectId: string, options: ReadOptions) 
   if (!options.refs) throw new ProjectError("view records requires refs, for example refs:[\"A7\",\"T3\",\"D12\"].");
   const refs = options.refs;
   options = withImpliedDetail(options);
+  validateFields([...new Set(refs.map(viewForRef))], options);
   const caches = new Map<ReadView, Map<string, Record<string, any>>>();
   const rows = [...new Set(refs.map(canonical))].flatMap(ref => {
     const view = viewForRef(ref);
-    validateSelection(view, { ...options, refs: [ref] });
     if (!caches.has(view)) caches.set(view, new Map(rowsFor(store, projectId, view).map(r => [String(r.ref), r])));
     const row = caches.get(view)!.get(ref);
     if (!row) return [];

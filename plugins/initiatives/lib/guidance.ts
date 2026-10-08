@@ -34,7 +34,7 @@ export const DEFAULT_WORKER_INSTRUCTIONS = `You are a worker in an Initiative. Y
  * tree is always built, and BB fixes a session's instructions when it is built, so they can't
  * follow a mode switch. The coordinator instructions' default is unchanged.
  */
-export const MEMORY_GUIDANCE = `Memory: every message of this Initiative is logged and summarized, including what compactions dropped. After a compaction, or when you need older detail, read initiative_read {view:"memory"}: one-line summaries "id+n|text", oldest first. Open a line with initiative_zoom {id,n} (n:1 gives the message whole) before acting on it; initiative_date {id} gives its time.`;
+export const MEMORY_GUIDANCE = `Memory: every message of this Initiative is logged and summarized, including what compactions dropped. After a compaction, or when you need older detail, read initiative_read {view:"memory"}: one-line summaries "id+n|text", oldest first. Open a line with initiative_zoom {id,n} (n:1 gives the message whole; each line it gives starts with its time) before acting on it.`;
 
 /**
  * T136 (D406): saved instructions are replaced by these defaults once, outright. The user

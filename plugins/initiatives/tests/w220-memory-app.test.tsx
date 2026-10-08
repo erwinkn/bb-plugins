@@ -14,8 +14,8 @@ it("shows the coordinator's memory and switches its mode", async () => {
   await f.perform(project.id, { action: "memory", mode: "optchat" }, "user", null);
   const o = await f.overview(project.id);
   o.memory = { ...o.memory!, log: { messages: 1370, bytes: 1_581_293, threads: 2 }, tree: { ...o.memory!.tree, nodes: 1200, total: 2734, state: "unavailable", detail: "403 advisor route for codex is off" }, cost: { calls: 900, tries: 1900, inputTokens: 20_000_000, cachedTokens: 17_000_000, outputTokens: 1_500_000, usd: 1.34, callSeconds: 9000 } };
-  const command = vi.fn(async () => ({}));
-  const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => o, inventory: async () => [], command } }); slots.push(s);
+  const setMemory = vi.fn(async () => ({}));
+  const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => o, inventory: async () => [], setMemory } }); slots.push(s);
   fireEvent.click(await s.findByRole("tab", { name: "Context" }));
   const panel = within(await s.findByRole("region", { name: "Memory" }));
   expect(panel.getByRole("radio", { name: "OptChat" }).getAttribute("aria-checked")).toBe("true");
@@ -25,8 +25,8 @@ it("shows the coordinator's memory and switches its mode", async () => {
   panel.getByText(/\$1\.34 at list price · 900 calls · 20\.0M in \(85% cached\)/);
   panel.getByText(/past 150k tokens · hybrid default/);
   fireEvent.click(panel.getByRole("radio", { name: "Hybrid" }));
-  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ command: { action: "memory", mode: "hybrid" } })));
+  await waitFor(() => expect(setMemory).toHaveBeenCalledWith(expect.objectContaining({ mode: "hybrid" })));
   fireEvent.change(panel.getByRole("textbox", { name: /Compaction limit/ }), { target: { value: "120k" } });
   fireEvent.click(panel.getByRole("button", { name: "Save limit" }));
-  await waitFor(() => expect(command).toHaveBeenCalledWith(expect.objectContaining({ command: { action: "memory", compactTokens: 120_000 } })));
+  await waitFor(() => expect(setMemory).toHaveBeenCalledWith(expect.objectContaining({ compactTokens: 120_000 })));
 });

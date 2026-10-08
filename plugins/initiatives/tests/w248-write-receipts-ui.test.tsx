@@ -23,8 +23,8 @@ describe("W248 a panel read from before a save never seeds the overview (A425 fi
       if (panel.mock.calls.length === 2) { await gate; return before; }
       return new Promise<never>(() => {});
     });
-    const command = (input: unknown) => f.harness.callRpc("command", input as never);
-    const s = renderSlot({ component: ProjectHeader }, { threadId: "coordinator", isCompactViewport: false } as never, { rpc: { panel, command } }); slots.push(s);
+    const setMemory = (input: unknown) => f.harness.callRpc("setMemory", input as never);
+    const s = renderSlot({ component: ProjectHeader }, { threadId: "coordinator", isCompactViewport: false } as never, { rpc: { panel, setMemory } }); slots.push(s);
     const overviewMode = () => (appReads.entry(`overview:${project.id}`).data as Overview | null)?.memory?.mode;
     try {
       await s.findByRole("button", { name: "Memory: Regular. Change it" });
@@ -49,11 +49,11 @@ describe("W248 a panel read from before a save never seeds the overview (A425 fi
 describe("W248 a failed keyboard save takes focus back to the saved mode (A425 finding 6)", () => {
   it("after a refused save, focus is on the selected mode and the arrows move on from there", async () => {
     const { f, project } = await projectFixture();
-    const command = vi.fn(async (input: unknown) => {
-      if (command.mock.calls.length === 1) throw new Error("Save refused");
-      return f.harness.callRpc("command", input as never);
+    const setMemory = vi.fn(async (input: unknown) => {
+      if (setMemory.mock.calls.length === 1) throw new Error("Save refused");
+      return f.harness.callRpc("setMemory", input as never);
     });
-    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => f.overview(project.id), command } }); slots.push(s);
+    const s = renderSlot({ component: Dashboard }, { projectId: project.id }, { rpc: { overview: async () => f.overview(project.id), setMemory } }); slots.push(s);
     const group = await s.findByRole("radiogroup", { name: "Memory" });
     const radio = (name: string) => within(group).getByRole("radio", { name });
     radio("Regular").focus();
@@ -82,11 +82,11 @@ describe("W248 follow-up: the thread header follows a dashboard memory save (A42
       if (panel.mock.calls.length === 2) { await gate; return before; }
       return new Promise<never>(() => {});
     });
-    const command = vi.fn((input: unknown) => f.harness.callRpc("command", input as never));
-    const header = renderSlot({ component: ProjectHeader }, { threadId: "coordinator", isCompactViewport: false } as never, { rpc: { panel, command } }); slots.push(header);
+    const setMemory = vi.fn((input: unknown) => f.harness.callRpc("setMemory", input as never));
+    const header = renderSlot({ component: ProjectHeader }, { threadId: "coordinator", isCompactViewport: false } as never, { rpc: { panel, setMemory } }); slots.push(header);
     try {
       await header.findByRole("button", { name: "Memory: Regular. Change it" });
-      const page = renderSlot({ component: ProjectPanel }, { threadId: "coordinator" } as never, { rpc: { panel, overview: async () => f.overview(project.id), command } }); slots.push(page);
+      const page = renderSlot({ component: ProjectPanel }, { threadId: "coordinator" } as never, { rpc: { panel, overview: async () => f.overview(project.id), setMemory } }); slots.push(page);
       const group = await within(page.container).findByRole("radiogroup", { name: "Memory" });
       fireEvent(window, new Event("online"));
       await waitFor(() => expect(panel).toHaveBeenCalledTimes(2));

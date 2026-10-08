@@ -47,6 +47,11 @@ export const PROJECT_PANEL = "initiative-overview";
 const describeError = (e: unknown) =>
   e instanceof Error ? e.message : String(e);
 type Api = ReturnType<typeof useRpc<typeof projectsContract>>;
+/** D452: a memory change goes to the dashboard-only setMemory RPC; the generic command RPC refuses it. */
+const callCommand = (api: Api, projectId: string, command: Command, keyed: { key?: string }) =>
+  command.action === "memory" && (command.mode !== undefined || command.compactTokens !== undefined)
+    ? api.call("setMemory", { projectId, ...(command.mode !== undefined ? { mode: command.mode } : {}), ...(command.compactTokens !== undefined ? { compactTokens: command.compactTokens } : {}) })
+    : api.call("command", { projectId, command, ...keyed });
 const rememberNote = (id: string, note: string | null) => {
   try {
     if (note) sessionStorage.setItem(`initiatives:creation:${id}`, note);
@@ -868,7 +873,7 @@ export function Dashboard({
     try {
       // A write the relay never answers fails as unconfirmed after 30 s (W239), so neither its
       // button nor the dashboard's held reads wait forever; a late answer is left to the next read.
-      const result = await sendWrite({ projectId, command }, (keyed) => api.call("command", { projectId, command, ...keyed }));
+      const result = await sendWrite({ projectId, command }, (keyed) => callCommand(api, projectId, command, keyed));
       end(data => applyCommitted(data as Overview, command, result));
       endHistory(data => applyCommitted(data as Overview, command, result));
       endDetails(data => applyCommitted(data as Overview, command, result));
@@ -1369,7 +1374,7 @@ export function ProjectHeader({
         threadId={threadId}
         projectId={membership.data.projectId}
         mode={memory.mode}
-        session={memory.session}
+        sessionNote={memory.sessionNote}
         compact={isCompactViewport}
         revalidate={panel.schedule}
       />
@@ -1378,11 +1383,11 @@ export function ProjectHeader({
 }
 
 /** The thread header's memory pill and its popover, in the top layer so the header never clips it. */
-function MemoryHeaderSwitch({ threadId, projectId, mode, session, compact, revalidate }: {
+function MemoryHeaderSwitch({ threadId, projectId, mode, sessionNote, compact, revalidate }: {
   threadId: string;
   projectId: string;
   mode: MemoryMode;
-  session: string | null;
+  sessionNote: string | null;
   compact: boolean;
   revalidate: () => void;
 }) {
@@ -1414,7 +1419,7 @@ function MemoryHeaderSwitch({ threadId, projectId, mode, session, compact, reval
       >
         <MemorySwitch
           mode={mode}
-          session={session}
+          sessionNote={sessionNote}
           explain="all"
           choose={async (next) => {
             const command: Command = { action: "memory", mode: next };
@@ -1422,7 +1427,7 @@ function MemoryHeaderSwitch({ threadId, projectId, mode, session, compact, reval
             const endPanel = appReads.begin(`panel:${threadId}`);
             const endOverview = appReads.begin(`overview:${projectId}`);
             try {
-              const result = await sendWrite({ projectId, command }, (keyed) => api.call("command", { projectId, command, ...keyed }));
+              const result = await sendWrite({ projectId, command }, (keyed) => callCommand(api, projectId, command, keyed));
               endPanel((data) => {
                 const panel = data as { summary: Overview | null };
                 return panel.summary ? { ...panel, summary: applyCommitted(panel.summary, command, result) } : panel;

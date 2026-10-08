@@ -167,7 +167,12 @@ Coordinator tools: `initiative_read`, `initiative_spawn`, `initiative_message`,
 `initiative_message` and `initiative_decision`. User-owned threads get
 `initiative_read` and `initiative_update`; unmanaged threads get
 `initiative_create`. Every tool publishes one flat object schema (Claude's bridge
-blanks union roots) and validates it on the server. The CLI is `bb initiative`;
+blanks union roots) and validates it on the server. The published schema keeps its
+length bounds, so agents see the limits the server enforces, and leaves out
+`$schema` and zod's implicit integer maximum, which only cost tokens (T143). Claude Code loads `initiative_zoom`, `initiative_read`,
+`initiative_message`, `initiative_spawn` and `initiative_batch` upfront
+(`alwaysLoad`, a fork Plugin SDK field an older BB ignores); the others stay behind
+ToolSearch. The CLI is `bb initiative`;
 `bb initiative describe` lists valid examples.
 
 ## Install and use
@@ -527,7 +532,9 @@ spawn and coordinator commands. Spawns and work messages forward it through
 native execution fields. Omission uses native defaults on new threads and
 preserves the worker's current native settings on a work message. An explicit
 user task tier wins; an unavailable Fast tier is rejected without fallback.
-`permissionMode` is an explicit parameter on spawn; pass `full` when instructed. Replacement
+`permissionMode` is an explicit parameter on spawn; pass `full` when instructed. A new
+Initiative's coordinator starts in `full`, never the project default: under `auto`,
+Claude Code's classifier blocked benign coordinator actions (T143). Replacement
 coordinators inherit effective tier and permissions unless the profile explicitly
 changes the tier, preserving the existing replacement controls.
 
@@ -763,8 +770,11 @@ are 20 rows, maximum 30; pagination stops between complete records at a 64 KiB b
 A single oversized detailed record fails with field-selection guidance. No JSON
 is mechanically clipped. Selective details use `fields` (which implies
 `detailed:true`), e.g. `report` for assignments, or for a W# its latest report in
-full. An unsupported selection names every bad field and one complete call that
-works. View `reports` lists reports newest first with a 600-character excerpt of
+full. Refs mix kinds (T143), so each record gets the requested fields it has, a
+record with none of them is its summary, and `fieldsNotApplied` names the rest
+per kind, e.g. `{workers:["body"],decisions:["report"]}`. A selection that applies
+to no kind read, such as `{refs:["T1"],fields:["report"]}`, is refused with each
+kind's valid fields and a call that works. View `reports` lists reports newest first with a 600-character excerpt of
 each final message; view `context` returns the shared vision, objectives and
 ideas. A W# read includes its latest report. Explicit `threads` and `usage` views
 are independently paginated. A freshly spawned coordinator whose start is not
@@ -960,10 +970,17 @@ switch is instant; it applies from each thread's next turn.
 
 Switch it from the coordinator thread's header (the "Memory · Hybrid" pill opens
 a popover), the dashboard header under the coordinator, or Context → Memory:
-each is a three-way segmented control with a line per mode. From a shell:
-`bb initiative command '{"action":"memory","mode":"hybrid"}' <initiative-id>`
-(a coordinator's CLI manages only its own Initiative). A switch never waits
-behind another write: it only saves the setting.
+each is a three-way segmented control with a line per mode.
+Only the dashboard changes it (D452): `bb initiative command`, the agent tools
+and the generic `command` RPC refuse `mode` and `compactTokens` from every caller
+(an agent thread, a user terminal, a client), including `compactTokens: null`,
+and `{"action":"memory"}` only reads the current setting. The dashboard writes
+through a dedicated `setMemory` RPC that no guidance, skill or CLI help names.
+Known limit: BB gives plugin RPCs no caller identity, so a local caller who
+knows that method can still reach it; real enforcement needs BB to tell RPC
+handlers whether the UI or a CLI/agent called (an upstream candidate in the
+repository README). A switch never waits behind another write: it only
+saves the setting.
 
 What depends on the mode is read at each turn, never fixed in a session: the
 compaction limit (read when the coordinator goes idle) and whether a turn runs
@@ -975,11 +992,12 @@ regular mode the switch says so until the coordinator is replaced (W244).
 **The log** is append-only, It is append-only,
 one row per message, across every coordinator thread of the Initiative
 (replacements, handovers, compactions), read from BB's own thread events
-(`client/turn/requested`, `item/completed`, and Claude Code's compaction
+(`client/turn/requested`, `item/completed`, `turn/completed`, and Claude Code's compaction
 summary), the same for Claude Code and Codex coordinators. Kinds: `user`,
 `coord` (replies), `tool` (calls), `echo` (results, head and tail within 30,000
-characters), `work` (`[W12] …` from a worker, `[bb] …` from BB), `note`
-(handovers and compaction summaries). Thoughts are never logged. It is read
+characters), `work` (`[W12] …` from a worker, `[bb] …` from BB, including
+`[bb] (stopped) …` after a stopped turn, so later views know its reply was cut
+off), `note` (handovers and compaction summaries). Thoughts are never logged. It is read
 when a coordinator's turn ends, every second while it works, and by the
 sweep, which starts the three least recently read Initiatives not read for 5
 minutes, so every live Initiative, paused ones too, gets its first log and tree. Threads are read oldest first, and a later one only once every
@@ -1028,10 +1046,10 @@ advisor route on (`bb pool-local advisor set codex on`) and a Pooler that passes
 `session_id` through; until then the dashboard shows "Summarizer unavailable".
 
 **The coordinator** gets, in every mode, `initiative_zoom {id,n}` (the two
-lines line id+n was made from; n 1 is the message whole), `initiative_date
-{id}`, and one line of guidance: after a compaction, read `initiative_read
-{view:"memory"}` (the 16–32 KB memory view) and zoom before acting. `bb initiative read memory`,
-`bb initiative zoom <id> <n>` and `bb initiative date <id>` serve the same from a
+lines line id+n was made from; n 1 is the message whole; each line starts with
+the time of its first message, `2026-10-08 17:49Z 64+16|…`), and one line of guidance: after a compaction, read `initiative_read
+{view:"memory"}` (the 16–32 KB memory view) and zoom before acting. `bb initiative read memory`
+and `bb initiative zoom <id> <n>` serve the same from a
 shell. The dashboard shows the mode, log size, tree progress, view sizes and the
 summarizer's cost at list price.
 

@@ -701,9 +701,9 @@ export class ProjectsService {
         providerId: profile.providerId,
         model: profile.model,
         reasoningLevel: profile.reasoningLevel,
-        ...(options?.execution?.permissionMode
-          ? { permissionMode: options.execution.permissionMode }
-          : {}),
+        // T143: full unless a replacement keeps its predecessor's mode. The project default
+        // can be auto, whose classifier blocks benign coordinator actions.
+        permissionMode: options?.execution?.permissionMode ?? "full",
         ...(profile.serviceTier
           ? { serviceTier: profile.serviceTier }
           : {}),
@@ -4461,9 +4461,10 @@ export class ProjectsService {
       });
       for (const task of tasks)
         if (task.status === "planned" || task.status === "blocked")
+          // Who works on it is its assignments (T143), so progress is left for real notes.
           this.store.updateTask(project.id, task.num, {
             status: "in_progress",
-            progress: `With ${worker.ref}`,
+            progress: null,
             nextCheckpoint: null,
           });
       this.store.updateWorker(project.id, worker.num, { state: "active" });

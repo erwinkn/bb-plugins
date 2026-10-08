@@ -39,7 +39,7 @@ long for one message is split over several in a row.
 Tools:
 - zoom(id, n) opens line id+n into the two lines it was made from
 - zoom(id, 1) gives message id whole
-- date(id) gives the date and time of message id
+Each line zoom gives starts with the time of its first message.
 
 # Turns
 
@@ -118,7 +118,7 @@ line, "a..b|(k messages not summarized yet: zoom each, n: 1)".
 
 - initiative_zoom {id, n} opens line id+n into the two lines it was made from
 - initiative_zoom {id, n: 1} gives message id whole
-- initiative_date {id} gives the date and time of message id`;
+Each line zoom gives starts with the time (UTC) of its first message: "2026-10-08 17:49Z 64+16|…".`;
 
 const ZOOM_GUIDE = `The view's latest word on a thing is the truth about the past, but summaries lose details. Before
 you act on, repeat or rely on any detail of the past (what the user asked, chose or corrected, a
@@ -147,11 +147,12 @@ ${ZOOM_GUIDE}`;
 /** The view's older lines, at the end of a turn's system prompt: a cached prefix until they change. */
 export const turnSystem = (lines: readonly string[]) => `${TURN_PROMPT}\n\n<chat>\n${lines.join("\n")}\n</chat>`;
 
-const stamp = (at: number) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
+/** A message's time as the memory shows it, in UTC: "2026-10-08 17:49Z". */
+export const stamp = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace("T", " ")}Z`;
 
 /** What follows the view's older lines in a turn: its newest lines, the time, then the message after a fixed header. */
 export const turnMessage = (at: number, text: string, lines: readonly string[] = []) =>
-  `${lines.length ? `<chat>\n${lines.join("\n")}\n</chat>\n\n` : ""}Now: ${stamp(at)} UTC.\n\nNew message:\n${text}`;
+  `${lines.length ? `<chat>\n${lines.join("\n")}\n</chat>\n\n` : ""}Now: ${stamp(at)}.\n\nNew message:\n${text}`;
 
 /**
  * The first message of a regular session after optchat turns (a switch back to hybrid or

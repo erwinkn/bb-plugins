@@ -9,8 +9,10 @@ import {
   type ProjectTree,
 } from "./lib/contract";
 import {
+  changesMemory,
   createSchema,
   delegateSchema,
+  MEMORY_DASHBOARD_ONLY,
   parseCommandInput,
   parseDecisionCommand,
   refuseRemoved,
@@ -20,9 +22,11 @@ import {
   type Command,
 } from "./lib/commands";
 import {
+  advertisedSchema,
   manageCommand,
   manageToolSchema,
   messageCommand,
+  messageToolAdvertised,
   messageToolSchema,
   reportToolSchema,
   spawnCommand,
@@ -38,7 +42,7 @@ import { reportSchema } from "./lib/schema";
 import { definePreferences } from "./lib/settings";
 import { MEMORY_GUIDANCE } from "./lib/guidance";
 import { WriteReceipts } from "./lib/write-receipts";
-import { TURN_CONTEXT_TOOL, dateToolSchema, turnAskSchema, zoomToolSchema } from "./lib/memory/memory";
+import { TURN_CONTEXT_TOOL, turnAskSchema, zoomToolSchema } from "./lib/memory/memory";
 import { Store, MIGRATIONS } from "./lib/store";
 import { ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
@@ -59,13 +63,12 @@ import { prSummary } from "./lib/pr-map";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
 
-const CLI_COMMANDS = ["describe", "list", "overview", "read", "zoom", "date", "message", "command", "report", "pr", "reconcile", "recreate-coordinators"];
+const CLI_COMMANDS = ["describe", "list", "overview", "read", "zoom", "message", "command", "report", "pr", "reconcile", "recreate-coordinators"];
 /** Tools initiative_batch can run, by their name without the initiative_ prefix. */
 const BATCH_TOOLS = ["spawn", "message", "task", "worker", "decision", "update", "pr", "read"] as const;
-const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | zoom <id> <n> [initiative-id] | date <id> [initiative-id] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
+const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | zoom <id> <n> [initiative-id] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { toolReceipt } from "./lib/receipts";
-import { objectRootSchema } from "./lib/tool-schema";
 import { ProjectError, errorMessage } from "./lib/bb";
 import { isOwnOrigin } from "./lib/identity";
 import { scopedNativeEvent } from "./lib/native-events";
@@ -431,7 +434,16 @@ export default function plugin(bb: BbPluginApi) {
       };
     },
     read: async ({ projectId, view, ...options }) => view === "threads" ? readThreads(projectId, options) : read(projectId, view, options),
+    // D452: the dashboard's memory switch. Unlike `command`, which refuses memory changes, this
+    // is the one entry that writes them. BB gives RPC handlers no caller identity, so a local
+    // caller who knows this method can still reach it; see MEMORY_DASHBOARD_ONLY.
+    setMemory: ({ projectId, mode, compactTokens }) =>
+      announcing(
+        () => perform(projectId, { action: "memory", ...(mode !== undefined ? { mode } : {}), ...(compactTokens !== undefined ? { compactTokens } : {}) }, "user", null),
+        () => projectId,
+      ),
     command: ({ projectId, command, key }) => {
+      if (changesMemory(command)) throw new ProjectError(MEMORY_DASHBOARD_ONLY);
       const write = () => {
         if (command.action === "thread-create" && "prompt" in command) {
           if (!projectId) throw new ProjectError("Pass an Initiative ID.");
@@ -566,15 +578,14 @@ export default function plugin(bb: BbPluginApi) {
     "initiative_pr",
     "initiative_batch",
   ];
-  const MEMORY_TOOLS = ["initiative_zoom", "initiative_date"];
   /**
-   * D447: a coordinator has zoom and date in every mode, and D431 a Claude Code one the hidden
+   * D447: a coordinator has zoom in every mode, and D431 a Claude Code one the hidden
    * turn context tool, so a switch to or from optchat takes effect at its next turn: tools reach
    * a session only when it is constructed.
    */
   const coordinatorSelection = (providerId: string) => [
     ...coordinatorTools,
-    ...MEMORY_TOOLS,
+    "initiative_zoom",
     ...(providerId === "claude-code" ? [TURN_CONTEXT_TOOL] : []),
   ];
   bb.agents.configure((ctx) => {
@@ -612,7 +623,7 @@ export default function plugin(bb: BbPluginApi) {
           )
           .run(ctx.thread.id, meta.projectId, meta.op, ctx.thread.id);
       // D447: the memory tools and guidance come in every mode, so a switch needs no new
-      // session; zoom and date still require confirmed membership.
+      // session; zoom still requires confirmed membership.
       return {
         tools: coordinatorSelection(ctx.provider.id),
         skills: ["initiative-coordinator"],
@@ -683,20 +694,27 @@ export default function plugin(bb: BbPluginApi) {
   // New configurations advertise canonical names only. Retained native sessions
   // may still call their already-constructed old allowlist; no runtime restart.
   // One "parse, then handle" per tool, shared by the tool itself and initiative_batch,
-  // so a batched action gets exactly the tool's validation. Zod parameters are parsed
-  // here (BB parses them too for a direct call; parsing is idempotent); tools that
-  // publish plain JSON Schema parse inside their own execute.
+  // so a batched action gets exactly the tool's validation. Every tool publishes plain,
+  // slim JSON Schema (advertisedSchema, T143); zod parameters are parsed here, and tools
+  // that publish JSON Schema parse inside their own execute.
   type ToolExecute = Parameters<typeof bb.agents.registerTool>[0]["execute"];
   const handlers = new Map<string, ToolExecute>();
+  /**
+   * T143: the tools Claude Code loads upfront rather than behind ToolSearch (Erwin's choice),
+   * through the fork's alwaysLoad (MCP _meta "anthropic/alwaysLoad"). Older SDK types lack the
+   * field and an older BB ignores it, so it is spread in untyped.
+   */
+  const UPFRONT = ["initiative_zoom", "initiative_read", "initiative_message", "initiative_spawn", "initiative_batch"];
   const registerTool: typeof bb.agents.registerTool = (tool: Parameters<typeof bb.agents.registerTool>[0]) => {
     const schema = typeof (tool.parameters as { safeParse?: unknown }).safeParse === "function" ? tool.parameters as unknown as z.ZodType : null;
     const run: ToolExecute = (input, context) => tool.execute(schema ? parsed(schema, input, tool.name) : input, context);
     handlers.set(tool.name, run);
     const definition: typeof tool = {
       ...tool,
+      parameters: advertisedSchema(tool.parameters),
       execute: (input, context) => announcing(() => run(input, context), () => projectOf(context.threadId)),
     };
-    bb.agents.registerTool(definition);
+    bb.agents.registerTool({ ...definition, ...(UPFRONT.includes(definition.name) ? { alwaysLoad: true } : {}) });
     const suffix = definition.name.replace(/^initiative_/, "");
     if (!LEGACY_TOOL_NAMES.includes(suffix as typeof LEGACY_TOOL_NAMES[number])) return;
     bb.agents.registerTool({
@@ -780,7 +798,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_spawn",
     parameters: jsonSchema(spawnToolSchema),
-    description: 'Give work to a new worker. Example: {label:"Search index",purpose:"search ranking",text:"<brief: task, context, explicit user instructions, how to verify>",tasks:["T40"]}. A review: {role:"review",reviews:"W12",label:"Review search",purpose:"review W12",text:"What to check"}; the reviewed report is embedded. handoffs:["W9"] embeds earlier reports. The result lists warnings, such as another writer in the same checkout.',
+    description: 'Give work to a new worker: {label:"Search index",purpose:"search ranking",text:"<the brief>",tasks:["T40"]}. A review: {role:"review",reviews:"W12",label,purpose,text:"what to check"}. The result lists warnings, such as another writer in the same checkout.',
     async execute(raw, { threadId }) {
       const p = await coordinatorProject(threadId);
       return receipt(await perform(p.id, spawnCommand(parsed(spawnToolSchema, raw, "initiative_spawn")), "coordinator", threadId!));
@@ -788,8 +806,8 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_message",
-    parameters: jsonSchema(messageToolSchema),
-    description: 'Send one message to a worker (W#) or the coordinator. {to:"W4",text:"…"}. The coordinator gives an existing worker more work with tasks:["T41"] or work:true; it reports on it again. A reviewer gets no more work: spawn a fresh one per review round. To correct work already in progress, send a plain message (no work:true). mode steer for urgent corrections, queue (default) otherwise. Messages never resume a stopped or retired worker.',
+    parameters: jsonSchema(messageToolAdvertised),
+    description: 'One message to a worker (W#) or the coordinator: {to:"W4",text:"…"}. With tasks:["T41"] or work:true it gives the worker more work, and the worker reports again; a plain message corrects work in progress. Messages never resume a stopped or retired worker.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Message from a current Initiative thread.");
       return receipt(await sendMessage(raw, threadId));
@@ -863,7 +881,7 @@ export default function plugin(bb: BbPluginApi) {
     // Plain JSON Schema with an object root: Claude's bridge blanks union roots. Validation is
     // parseDecisionCommand, shared with the CLI, so every refusal carries a valid example.
     parameters: decisionToolJsonSchema as Record<string, unknown>,
-    description: 'Record choices for the user, who follows and redirects the work with them; never consult the log for your own work. {action:"user-choice",description} records the user\'s explicit choice from chat. {action:"veto-request",description} records a choice of yours the user may want to veto; you proceed unless they do. Routine steps are not decisions. Coordinator only: {action:"question",question,context,options?,recommendation?,blocksTaskIds?} asks a real open choice (never inferred from prose); {action:"withdraw",ref:"D12",reason} retracts your own open question. {action:"answer",ref:"D12",choice,note?} records the user\'s explicit answer; workers notify the coordinator unless notify:false.',
+    description: 'Record choices for the user, who follows and redirects the work with them; never consult the log for your own work. {action:"user-choice",description} records the user\'s explicit choice from chat; {action:"veto-request",description} a choice of yours the user may want to veto (you proceed unless they do). Routine steps are not decisions. Coordinator only: {action:"question",question,context,options?,recommendation?,blocksTaskIds?} asks a real open choice (never inferred from prose); {action:"withdraw",ref:"D12",reason} retracts your own open question. {action:"answer",ref:"D12",choice,note?} records the user\'s explicit answer; workers notify the coordinator unless notify:false.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Record decisions from an Initiative thread.");
       await ensureMember(threadId);
@@ -909,7 +927,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_pr",
     parameters: jsonSchema(prToolSchema),
-    description: 'Keep each pull request\'s record and notes; batch PRs in one call. Only the fields given change; null clears one. {prs:[{url:"https://github.com/o/r/pull/12",stage:"in-review",note?:"W14 reviewing",category?:"Security",waitingOn?:"W14: move the lock to resume",changes?:["drop the retry"],decision?:{text:"Keep 5m TTL",link?:"D437, a thread id or URL"},worker?:"W14",assignment?:"A301",notes?:[{kind?:"note"|"question"|"comment",text:"Caveat: no migration test",link?}],answered?:[{n:3,text?:"Yes, 5m"}]}]}. Stages: working, ready-for-review, in-review, ready-for-erwin, experiment; clear removes yours, and the dashboard guesses from GitHub again. category is a free-form workstream; reuse one from the result\'s categories. changes replace the whole list. notes append to the PR\'s log (the result gives their numbers n); answered closes questions by n. An assignment names its worker. Rename or merge categories with {rename:[{from:"Sec",to:"Security"}]}. Workers only add notes, to PRs their assignments name or their branch opened.',
+    description: 'Keep each pull request\'s record and notes, several PRs per call: {prs:[{url:"https://github.com/o/r/pull/12",stage:"in-review",note:"W14 reviewing",category:"Security",waitingOn:"W14: move the lock",changes:["drop the retry"],decision:{text:"Keep 5m TTL",link:"D437"},worker:"W14",notes:[{kind:"question",text:"No migration test?"}],answered:[{n:3,text:"Yes"}]}]}, every field but url optional. Only given fields change; null clears one. stage clear removes yours (the dashboard guesses from GitHub again). category is a free-form workstream: reuse one from the result\'s categories; {rename:[{from:"Sec",to:"Security"}]} renames or merges. changes replaces the list. notes append to the PR\'s log (the result numbers them n); answered closes questions by n. An assignment (A#) names its worker. Workers only add notes, to PRs their assignments name or their branch opened.',
     async execute(raw, { threadId }) {
       if (!threadId) throw new ProjectError("Use Initiative tools from a BB thread.");
       await ensureMember(threadId);
@@ -948,7 +966,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_read",
-    description: 'Read the Initiative. {} is the overview. {refs:["W12","T40","A301"]} reads exact records (a W# includes its latest report). {view:"workers"|"tasks"|"reports"|"context"|"activity"} lists them; {view:"prs"} summarizes open PRs by category and stage, their stacks and what the user can review next; limit 1..30, offset to page. detailed:true for full records; fields picks some, e.g. {refs:["W12"],fields:["report"]} for a worker\'s full latest report. Reading never wakes agents.',
+    description: 'Read the Initiative. {} is the overview; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: open PRs by category and stage, their stacks, what the user can review next. detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
     parameters: agentReadSchema,
     async execute(input, { threadId }) {
       if (!threadId) throw new ProjectError("Use initiative_read from an Initiative thread.");
@@ -982,7 +1000,7 @@ export default function plugin(bb: BbPluginApi) {
     return {
       messages: view.messages,
       view: view.lines.join("\n"),
-      note: `One line per summary, "id+n|text": the n messages from id on, oldest first; "(not summarized yet: zoom it)" marks a line still being written. Open line 64+32 with initiative_zoom {id:64,n:32}: its two halves; n:1 gives one message whole. initiative_date {id:64} gives a message's time.${pending}`,
+      note: `One line per summary, "id+n|text": the n messages from id on, oldest first; "(not summarized yet: zoom it)" marks a line still being written. Open line 64+32 with initiative_zoom {id:64,n:32}: its two halves; n:1 gives one message whole. Each line zoom gives starts with the time of its first message.${pending}`,
     };
   };
   const memoryThread = (threadId: string | undefined) => {
@@ -992,15 +1010,9 @@ export default function plugin(bb: BbPluginApi) {
   };
   registerTool({
     name: "initiative_zoom",
-    description: 'Open a line of your memory view (initiative_read {view:"memory"}): {id,n} for line id+n gives the two lines it was made from; n:1 gives message id whole.',
+    description: 'Open line id+n of your memory view (initiative_read {view:"memory"}) into the two lines it was made from; n:1 gives message id whole. Each line starts with the time of its first message.',
     parameters: zoomToolSchema,
     execute: async ({ id, n }, { threadId }) => service.memory.zoom(memoryThread(threadId), id, n),
-  });
-  registerTool({
-    name: "initiative_date",
-    description: "The date and time (UTC) of message id of your memory log.",
-    parameters: dateToolSchema,
-    execute: async ({ id }, { threadId }) => service.memory.date(memoryThread(threadId), id),
   });
   // D431 phase 2: not shown to the model. BB's Claude Code provider calls it before each new
   // turn of a coordinator, with the turn's request and session and what became of its earlier
@@ -1024,7 +1036,7 @@ export default function plugin(bb: BbPluginApi) {
   registerTool({
     name: "initiative_batch",
     parameters: jsonSchema(batchSchema),
-    description: `Several Initiative actions in one call, run in order through their own tools; one failing never stops the rest. {actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"worker",action:"retire",worker:"W9"},{tool:"message",to:"W12",text:"…"}]}. Each action is {tool, ...that tool's usual arguments}; tool is one of ${BATCH_TOOLS.join(", ")}. Returns one result per action. Coordinator only.`,
+    description: 'Several Initiative actions in one call, run in order; one failing never stops the rest. Each is {tool, ...that tool\'s arguments}: {actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"message",to:"W12",text:"…"}]}. Returns one result per action. Coordinator only.',
     async execute(raw, context) {
       await coordinatorProject(context.threadId);
       const { actions } = parsed(batchSchema, raw, "initiative_batch");
@@ -1109,13 +1121,8 @@ export default function plugin(bb: BbPluginApi) {
       },
       {
         name: "zoom",
-        summary: "Open line id+n of the coordinator's memory view (bb initiative read memory); n 1 gives message id whole",
+        summary: "Open line id+n of the coordinator's memory view (bb initiative read memory); n 1 gives message id whole; each line starts with its time",
         usage: "bb initiative zoom <id> <n> [initiative-id]",
-      },
-      {
-        name: "date",
-        summary: "The date and time of message id of the coordinator's memory log",
-        usage: "bb initiative date <id> [initiative-id]",
       },
       {
         name: "command",
@@ -1167,9 +1174,6 @@ export default function plugin(bb: BbPluginApi) {
           const projectId = args[3] ?? member?.project.id ?? "";
           service.requireProject(projectId);
           result = service.memory.zoom(projectId, Number(value), Number(args[2]));
-        } else if (action === "date" && value && args.length <= 3) {
-          service.requireProject(id ?? "");
-          result = service.memory.date(id ?? "", Number(value));
         } else if (action === "read" && args.length <= 4) {
           const view = z.enum(["records", ...READ_VIEWS]).parse(value);
           const options = readOptionsSchema.parse(args[3] ? JSON.parse(args[3]) : {});
@@ -1181,6 +1185,8 @@ export default function plugin(bb: BbPluginApi) {
           result = await sendMessage(JSON.parse(value), ctx.threadId);
         } else if (action === "command" && value && args.length <= 3) {
           const command = parseCommandInput(JSON.parse(value));
+          // D452: no CLI switches an Initiative's memory, an agent's or the user's terminal.
+          if (changesMemory(command)) throw new ProjectError(MEMORY_DASHBOARD_ONLY);
           if (
             ctx.threadId &&
             ["acknowledge", "decision-review", "question-close"].includes(command.action)

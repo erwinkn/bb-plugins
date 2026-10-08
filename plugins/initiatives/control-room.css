@@ -93,6 +93,15 @@
 .cr-kind { font-size: 9.5px; opacity: 0.7; letter-spacing: 0.02em; }
 .cr-gen { display: inline-grid; place-items: center; height: 18px; padding: 0 5px; border-radius: 4px; background: var(--muted); border: 1px solid var(--border); color: var(--cr-ink-secondary); }
 .cr-kind { display: inline-grid; place-items: center; width: 20px; height: 20px; flex: none; border-radius: 6px; font: 700 12px ui-monospace, monospace; background: color-mix(in srgb, var(--cr-amber) 10%, transparent); color: var(--cr-amber); }
+/* T143: a task with several assignments: the task once, then a sub-row per assignment. */
+.cr-inflight-group { border-bottom: 1px solid var(--border); }
+.cr-inflight-task { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 7px 0 0; font-weight: 500; }
+.cr-inflight-group > .cr-fold { margin-left: 14px; }
+.cr-inflight-group > .cr-fold:last-child { border-bottom: 0; }
+.cr-inflight-group > .cr-fold > summary { min-height: 30px; padding: 4px 0; }
+.cr-inflight-group > .cr-fold .cr-fold-title { font-weight: 400; color: var(--cr-ink-secondary); }
+/* A task's only assignment: its own label after the task, quieter, and first to give way. */
+.cr-inflight-brief { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--muted-foreground); }
 .cr-detail { padding: 4px 0 12px; }
 .cr-detail .project-card { border: 0; padding: 0; margin: 0; background: transparent; }
 .cr-detail .project-opinion { border-left: 0; }

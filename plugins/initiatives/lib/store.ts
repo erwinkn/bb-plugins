@@ -445,6 +445,9 @@ export const MIGRATIONS = [
     json_extract(handoff_sources, '$[0].reportVersion'), num) WHERE role = 'review' AND state IN ('dispatching', 'queued', 'running')`,
   // W248: dashboard writes' receipts by key, so a write sent again runs once, across reloads.
   ...WRITE_RECEIPT_MIGRATIONS,
+  // T143: the worker label this assignment was created under. A later continue rename must not
+  // relabel an earlier assignment still listed; null on older rows, which fall back to the worker's.
+  `ALTER TABLE assignments ADD COLUMN label TEXT`,
 ];
 
 /** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */
@@ -604,6 +607,8 @@ export interface AssignmentRecord {
   reviewKey: "reviewOfClaude" | "reviewOfGpt" | null;
   /** A continue rename staged until its brief is proven delivered. */
   pendingIdentity: { label?: string; area?: string } | null;
+  /** The label this assignment's brief named, fixed at creation; null on rows from before T143. */
+  label: string | null;
   /**
    * Declared write paths in bbProjectId, snapshotted when the assignment was
    * dispatched or checkpointed; later brief edits never change it. null for
@@ -1140,6 +1145,7 @@ function toAssignment(row: Row): AssignmentRecord {
       "pending_identity",
       pendingIdentitySchema,
     ),
+    label: (row.label as string | null) ?? null,
     writeScope: decodeNullable("assignments", row, "write_scope", z.array(z.string())),
     scopeRelease: decodeNullable("assignments", row, "scope_release", scopeReleaseSchema),
     handoffSources: decodeNullable("assignments", row, "handoff_sources", handoffSourcesSchema),
@@ -2257,6 +2263,7 @@ export class Store {
       | "briefDelivered"
       | "cancelRequested"
       | "pendingIdentity"
+      | "label"
       | "access"
       | "reviewTargets"
       | "checkpoint"
@@ -2276,8 +2283,8 @@ export class Store {
     const now = this.now();
     this.db
       .prepare(
-        `INSERT INTO assignments (project_id, num, worker_num, task_nums, route, role, work_kind, thread_id, generation, profile, bb_project_id, environment_id, state, op_id, op_state, brief_text, review_of, rationale, review_key, pending_identity, access, write_scope, handoff_sources, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO assignments (project_id, num, worker_num, task_nums, route, role, work_kind, thread_id, generation, profile, bb_project_id, environment_id, state, op_id, op_state, brief_text, review_of, rationale, review_key, pending_identity, label, access, write_scope, handoff_sources, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.projectId,
@@ -2300,6 +2307,7 @@ export class Store {
         input.rationale,
         input.reviewKey ?? null,
         json(input.pendingIdentity),
+        input.pendingIdentity?.label ?? this.worker(input.projectId, input.workerNum)?.label ?? null,
         input.role === "review" ? "read-only" : input.access ?? "write",
         json(input.writeScope ?? null),
         json(input.handoffSources?.length ? input.handoffSources : null),

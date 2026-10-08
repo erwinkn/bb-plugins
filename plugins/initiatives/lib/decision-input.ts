@@ -14,7 +14,7 @@ const OWNER = { "user-choice": "user", "veto-request": "agent" } as const;
 const text = (max: number) => z.string().max(max);
 const optionSchema = z.union([text(200), z.object({ label: text(200), consequences: text(1000).optional() }).strict()]);
 export const decisionToolSchema = z.object({
-  action: z.enum(DECISION_ACTIONS).describe("user-choice: record the user's explicit choice from chat. veto-request: a choice of yours the user may want to veto; you proceed unless they do. question: ask the user an unresolved choice (coordinator only). answer: record the user's explicit answer to an open question. withdraw: retract your own open question with a reason. decision+madeBy is the older form of the first two."),
+  action: z.enum(DECISION_ACTIONS).describe("Each action's fields are in the tool description; decision+madeBy is the older form of user-choice and veto-request."),
   madeBy: z.enum(["user", "agent"]).optional().describe("decision (older form): user or agent. Never defaulted."),
   description: text(2000).optional().describe("user-choice/veto-request: one or two sentences."),
   supersedes: text(80).optional().describe("user-choice/veto-request: D# of an active decision this one replaces; history is kept."),

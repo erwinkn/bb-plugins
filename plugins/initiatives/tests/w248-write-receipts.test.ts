@@ -156,12 +156,17 @@ describe("W248 a value set again is just set (A425 finding 3)", () => {
     const { f, project } = await projectFixture();
     const keys: (string | undefined)[] = [];
     const mode = (m: string) => ({ projectId: project.id, command: { action: "memory", mode: m } });
+    // D452: the dashboard saves a memory mode through setMemory, which takes no key.
+    const setMemory = (m: string): Send => (keyed) => {
+      keys.push(keyed.key);
+      return f.harness.callRpc("setMemory", { projectId: project.id, mode: m } as never);
+    };
     try {
-      const lost = expect(sendWrite(mode("hybrid"), lostAnswer(rpc(f, project.id, mode("hybrid").command, keys)))).rejects.toThrow("No answer");
+      const lost = expect(sendWrite(mode("hybrid"), lostAnswer(setMemory("hybrid")))).rejects.toThrow("No answer");
       await vi.advanceTimersByTimeAsync(WRITE_UNCONFIRMED_MS);
       await lost;
-      await sendWrite(mode("regular"), rpc(f, project.id, mode("regular").command, keys));
-      const result = await sendWrite<{ mode: string }>(mode("hybrid"), rpc(f, project.id, mode("hybrid").command, keys));
+      await sendWrite(mode("regular"), setMemory("regular"));
+      const result = await sendWrite<{ mode: string }>(mode("hybrid"), setMemory("hybrid"));
       expect(result.mode).toBe("hybrid");
       expect(f.service.memory.settings(project.id).mode).toBe("hybrid");
       // Pause is the same: paused true, false, true each run.

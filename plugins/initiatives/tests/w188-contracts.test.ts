@@ -2,8 +2,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { manageCommand, manageToolSchema, messageCommand, messageToolSchema, spawnCommand, spawnToolSchema, taskCommand, taskToolSchema, workerCommand, workerToolSchema } from "../lib/agent-tools";
 import { parseDecisionCommand, REMOVED_ACTIONS } from "../lib/commands";
-import { dateToolSchema, zoomToolSchema } from "../lib/memory/memory";
-import { agentReadSchema, readOptionsSchema, validateSelection, viewForRef, withImpliedDetail, type ReadView } from "../lib/read";
+import { zoomToolSchema } from "../lib/memory/memory";
+import { agentReadSchema, readOptionsSchema, validateFields, validateSelection, viewForRef, withImpliedDetail, type ReadView } from "../lib/read";
 
 /**
  * W188 (F5): every call an error or hint suggests must work through the real tool API.
@@ -79,12 +79,12 @@ function parseAs(tool: string, raw: Record<string, unknown>) {
     case "initiative_read": {
       const { view, ...rest } = agentReadSchema.parse(raw);
       const options = withImpliedDetail(readOptionsSchema.parse(rest));
-      const target = view ?? (options.refs ? viewForRef(options.refs[0]!) : "overview");
-      if (!["overview", "context", "records"].includes(target)) validateSelection(target as ReadView, options);
+      // Like the server: mixed refs need a field for some kind, a view needs its own refs and fields.
+      if (!view && options.refs || view === "records") validateFields([...new Set((options.refs ?? []).map(viewForRef))], options);
+      else if (view && !["overview", "context"].includes(view)) validateSelection(view as ReadView, options);
       return options;
     }
     case "initiative_zoom": return zoomToolSchema.parse(raw);
-    case "initiative_date": return dateToolSchema.parse(raw);
     default: throw new Error(`unknown tool ${tool}`);
   }
 }

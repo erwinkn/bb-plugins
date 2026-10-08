@@ -200,7 +200,7 @@ describe("W225 a replacement coordinator's first session (P1)", () => {
     f.idle("coordinator");
     await f.service.replaceCoordinator(project.id, { reason: "Fresh hybrid context" });
     expect(seen!.instructions).toContain("pending coordinator");
-    expect(seen!.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_zoom", "initiative_date"]));
+    expect(seen!.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["initiative_zoom"]));
     expect(seen!.instructions).toMatch(/pending coordinator[\s\S]*\n\nMemory: /);
     await f.service.memory.settled();
   });
@@ -268,13 +268,13 @@ describe("W225 aborted builds stay owned until settled (P2)", () => {
     memory.build("p");
     await tick();
     expect(live).toBe(2);
-    memory.configure("p", { mode: "regular" }, "user");
+    memory.configure("p", { mode: "regular" });
     let settled = false;
     const settling = memory.settled().then(() => (settled = true));
     await tick();
     expect(settled).toBe(false);
     // Back to hybrid while the stopped run still holds its calls: the next run waits for it.
-    memory.configure("p", { mode: "hybrid" }, "user");
+    memory.configure("p", { mode: "hybrid" });
     await tick();
     expect(live).toBe(2);
     hold.release();
@@ -457,7 +457,7 @@ describe("W225 summary waiters end with their builder (P2)", () => {
     const forever = new AbortController().signal;
     const switched = memory.waitSummarized("p", 1, forever);
     await tick();
-    memory.configure("p", { mode: "regular" }, "user");
+    memory.configure("p", { mode: "regular" });
     holds[0]!.release();
     expect(await switched).toBe(true);
     memory.store.append("p", "current", [{ kind: "user", text: "y".repeat(700), at: 2, threadId: "current", seq: 2 }], 2);

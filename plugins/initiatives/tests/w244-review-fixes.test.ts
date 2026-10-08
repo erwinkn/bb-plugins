@@ -241,15 +241,15 @@ describe("W244 a coordinator from before D447 may lack its memory tools", () => 
     // The first start of this version notes the coordinators it finds.
     f.store.db.prepare("DELETE FROM plugin_flags WHERE key LIKE 'memory-tools-legacy%'").run();
     f.service.memory.start();
-    expect(f.service.memory.status(project.id).session).toBeNull();
+    expect(f.service.memory.status(project.id).sessionNote).toBeNull();
     await f.perform(project.id, { action: "memory", mode: "hybrid" }, "user", null);
-    expect(f.service.memory.status(project.id).session).toBe(SESSION_NOTE);
-    expect((await f.overview(project.id)).memory).toMatchObject({ session: SESSION_NOTE });
+    expect(f.service.memory.status(project.id).sessionNote).toBe(SESSION_NOTE);
+    expect((await f.overview(project.id)).memory).toMatchObject({ sessionNote: SESSION_NOTE });
     // A later start notes nothing new; a coordinator built since has its tools.
     f.store.createProject({ id: "later", name: "later", objective: "test", memberProjectIds: [], coordinatorThreadId: "later-coordinator" });
     f.service.memory.start();
-    f.service.memory.configure("later", { mode: "hybrid" }, "user");
-    expect(f.service.memory.status("later").session).toBeNull();
+    f.service.memory.configure("later", { mode: "hybrid" });
+    expect(f.service.memory.status("later").sessionNote).toBeNull();
     await f.service.memory.settled();
   });
 });

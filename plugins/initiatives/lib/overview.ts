@@ -61,6 +61,8 @@ export interface InFlightItem {
   assignment: string;
   role: Role;
   outcome: string;
+  /** The label this assignment names its worker by: the one a queued continuation staged, until the worker takes it, else owner.label. */
+  brief: string;
   tasks: TaskLink[];
   owner: {
     worker: string;
@@ -372,6 +374,9 @@ export function buildOverview(
     inFlightAssignments.flatMap((assignment) => assignment.taskNums),
   );
 
+  // Before T143, delegating wrote "With W12" as the task's progress, which every assignment on
+  // the task then repeated. Who works on a task is its assignments; only a real note is shown.
+  const taskNote = (progress: string | null | undefined) => (progress && !/^With W\d+$/.test(progress) ? progress : null);
   const inFlight: InFlightItem[] = inFlightAssignments
     .map((assignment) => {
       const worker = workerByNum.get(assignment.workerNum)!;
@@ -402,10 +407,11 @@ export function buildOverview(
         assignment: assignment.ref,
         role: assignment.role,
         outcome,
+        brief: assignment.label ?? assignment.pendingIdentity?.label ?? worker.label,
         tasks:
           assignment.role === "review"
             ? reviewed
-            : assignment.taskNums.map(link),
+            : [...new Set(assignment.taskNums)].map(link),
         owner: {
           worker: worker.ref,
           label: worker.label,
@@ -421,7 +427,7 @@ export function buildOverview(
           (assignment.state === "reported"
             ? `Thread is still active after its report. ${assignment.report?.summary ?? ""}`
             : null) ??
-          first?.progress ??
+          taskNote(first?.progress) ??
           (assignment.state === "queued"
             ? "Queued behind the worker's current turn"
             : assignment.state === "dispatching"
@@ -463,7 +469,7 @@ export function buildOverview(
         tasks:
           assignment.role === "review"
             ? (assignment.reviewOf ?? []).map(link)
-            : assignment.taskNums.map(link),
+            : [...new Set(assignment.taskNums)].map(link),
         owner: {
           worker: worker.ref,
           label: worker.label,

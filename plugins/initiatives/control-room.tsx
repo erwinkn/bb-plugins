@@ -11,7 +11,7 @@ import {
   type TextareaHTMLAttributes,
 } from "react";
 import { Markdown } from "@get-bb/plugin-sdk/app";
-import type { BlockerItem, Overview, OpinionItem } from "./lib/overview";
+import type { BlockerItem, InFlightItem, Overview, OpinionItem, TaskLink } from "./lib/overview";
 import { needsYouCount } from "./lib/blockers";
 import type { DecisionRecord } from "./lib/store";
 import type { Command } from "./lib/commands";
@@ -138,6 +138,63 @@ function Fold({
       </summary>
       <div className="cr-detail">{children}</div>
     </details>
+  );
+}
+/**
+ * In-flight assignments under each task they are for, in order of each task's first; taskless
+ * ones stand alone. An assignment for T1 and T2 shows under both, so a task shows all its work.
+ */
+const uniqueTasks = (tasks: TaskLink[]) => tasks.filter((t, i) => tasks.findIndex((u) => u.ref === t.ref) === i);
+function inFlightGroups(items: InFlightItem[]) {
+  const groups = new Map<string, { key: string; task: TaskLink | null; items: InFlightItem[] }>();
+  for (const a of items)
+    for (const task of a.tasks.length ? uniqueTasks(a.tasks) : [null]) {
+      const key = task?.ref ?? a.assignment;
+      const group = groups.get(key) ?? { key, task, items: [] };
+      group.items.push(a);
+      groups.set(key, group);
+    }
+  return [...groups.values()];
+}
+
+/** One in-flight assignment: its worker, age and state, and what the worker is doing. */
+function InFlightRow({ a, title, detail, run, openThread }: {
+  a: InFlightItem;
+  title: ReactNode;
+  /** The task's description, shown for a task's only assignment. */
+  detail?: string;
+  run: Run;
+  openThread: (threadId: string) => void;
+}) {
+  return (
+    <Fold
+      title={title}
+      meta={
+        <span className="cr-row-meta">
+          <span className="cr-task-owner">{a.owner.worker}</span>
+          <Age at={a.since} />
+          <span className="cr-task-state" title={a.state.replaceAll("_", " ")}>
+            {a.threadBusy ? "working" : a.state === "idle_no_report" ? "idle" : a.state}
+          </span>
+        </span>
+      }
+    >
+      {detail ? <p>{detail}</p> : null}
+      <p className="project-muted">
+        {a.owner.worker} {a.brief} · {a.assignment} · {a.state.replaceAll("_", " ")}
+        {a.threadBusy ? " · working" : ""}
+      </p>
+      {a.checkpoint ? <p className="project-meta" title={`Recorded by the coordinator from ${a.owner.worker}`}>Coordinator checkpoint</p> : null}
+      <p>{a.progress}</p>
+      <p>Next: {a.nextCheckpoint}</p>
+      {a.warnings.map((w) => (
+        <p key={w} className="project-note">
+          {w}
+        </p>
+      ))}
+      {a.owner.threadId ? <button onClick={() => openThread(a.owner.threadId!)}>Open work thread</button> : null}
+      <ReasonAction label="Cancel assignment" run={run} make={(reason) => ({ action: "assignment-stop", assignment: a.assignment, reason })} />
+    </Fold>
   );
 }
 function Action({
@@ -540,7 +597,7 @@ export function ControlRoom({
         <p className="cr-coordinator-meta" title={p.coordinatorHome?.path ?? undefined}>
           {p.coordinatorProfile ?? "Profile unavailable"}{p.coordinatorHome?.path ? ` · ${p.coordinatorHome.path.split("/").filter(Boolean).at(-1)}` : ""}
         </p>
-        {o.memory ? <MemorySwitch mode={o.memory.mode} session={o.memory.session} choose={(mode) => run({ action: "memory", mode })} explain="selected" /> : null}
+        {o.memory ? <MemorySwitch mode={o.memory.mode} sessionNote={o.memory.sessionNote} choose={(mode) => run({ action: "memory", mode })} explain="selected" /> : null}
         </div>
         {coordinatorDetail ? (
           <div className="cr-coordinator-detail">
@@ -785,63 +842,21 @@ export function ControlRoom({
             <>
               {newTask}
               <section aria-label="In flight">
-                {o.inFlight.map((a) => (
-                  <Fold
-                    key={a.assignment}
-                    title={
-                      <>
-                        <span className="cr-ref">
-                          {a.tasks.map((t) => t.ref).join(", ")}
-                        </span>
-                        {a.tasks.map((t) => t.title).join(" · ") || a.outcome}
-                      </>
-                    }
-                    meta={
-                      <span className="cr-row-meta">
-                        <span className="cr-task-owner">{a.owner.worker}</span>
-                        <Age at={a.since} />
-                        <span
-                          className="cr-task-state"
-                          title={a.state.replaceAll("_", " ")}
-                        >
-                          {a.threadBusy
-                            ? "working"
-                            : a.state === "idle_no_report"
-                              ? "idle"
-                              : a.state}
-                        </span>
-                      </span>
-                    }
-                  >
-                    <p>{a.outcome}</p>
-                    <p className="project-muted">
-                      {a.owner.worker} · {a.state.replaceAll("_", " ")}
-                      {a.threadBusy ? " · working" : ""}
-                    </p>
-                    {a.checkpoint ? <p className="project-meta" title={`Recorded by the coordinator from ${a.owner.worker}`}>Coordinator checkpoint</p> : null}
-                    <p>{a.progress}</p>
-                    <p>Next: {a.nextCheckpoint}</p>
-                    {a.warnings.map((w) => (
-                      <p key={w} className="project-note">
-                        {w}
-                      </p>
-                    ))}
-                    {a.owner.threadId ? (
-                      <button onClick={() => openThread(a.owner.threadId!)}>
-                        Open work thread
-                      </button>
-                    ) : null}
-                    <ReasonAction
-                      label="Cancel assignment"
-                      run={run}
-                      make={(reason) => ({
-                        action: "assignment-stop",
-                        assignment: a.assignment,
-                        reason,
-                      })}
-                    />
-                  </Fold>
-                ))}
+                {inFlightGroups(o.inFlight).map(({ key, task, items }) => {
+                  const [a] = items as [InFlightItem];
+                  // Each assignment is named by its own brief (W262), never its worker's current label.
+                  if (!task) return <InFlightRow key={key} a={a} title={a.brief} detail={a.outcome} run={run} openThread={openThread} />;
+                  const head = <><span className="cr-ref">{task.ref}</span>{task.title}</>;
+                  // T143: a task with several assignments is one row, with a line per assignment.
+                  if (items.length === 1)
+                    return <InFlightRow key={key} a={a} title={<>{head}<span className="cr-inflight-brief">{a.brief}</span></>} detail={a.outcome} run={run} openThread={openThread} />;
+                  return (
+                    <div key={key} className="cr-inflight-group" role="group" aria-label={`${task.ref}: ${items.length} assignments`}>
+                      <div className="cr-inflight-task" title={items.find((i) => i.role === "work" && i.tasks[0]?.ref === task.ref)?.outcome}>{head}</div>
+                      {items.map((item) => <InFlightRow key={item.assignment} a={item} title={item.brief} run={run} openThread={openThread} />)}
+                    </div>
+                  );
+                })}
               </section>
               <section aria-label="Reported">
                 {o.awaitingAcceptance.map((a) => (
@@ -1828,7 +1843,7 @@ function MemoryPanel({ memory: m, run }: { memory: MemoryStatus; run: Run }) {
     <section aria-label="Memory">
       <h2 className="cr-section-heading">Memory</h2>
       <p className="project-meta">One setting for the coordinator and, later, the Initiative's discussion threads. The summary tree builds in every mode, so a switch is instant and applies from the next turn.</p>
-      <MemorySwitch mode={m.mode} session={m.session} choose={(mode) => run({ action: "memory", mode })} explain="all" label={false} />
+      <MemorySwitch mode={m.mode} sessionNote={m.sessionNote} choose={(mode) => run({ action: "memory", mode })} explain="all" label={false} />
       <div className="cr-memory">
         <span>Log</span>
         <span>{m.log.messages.toLocaleString()} messages · {kilo(m.log.bytes)}B · {m.log.threads} coordinator thread{m.log.threads === 1 ? "" : "s"}</span>

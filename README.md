@@ -295,6 +295,21 @@ issues, PRs, or comments on the BB repository or any other repo without the
 user's explicit request or approval in the current conversation — see
 AGENTS.md.
 
+### Plugin RPCs: tell handlers who called (2026-10-08)
+
+Candidate from the Initiatives memory switch (D452: only the dashboard changes
+an Initiative's memory mode); not filed. A plugin RPC handler gets its input
+and nothing about the caller, so it cannot tell the plugin's own UI from
+`bb plugin rpc call`, an agent, or any other local client. The plugin works
+around it with a dedicated method (`setMemory`) that the generic `command` RPC,
+the CLI and the agent tools never reach and no guidance mentions, but a local
+caller who knows its name can still call it.
+
+- **Smallest change:** pass the caller's origin to the handler as context
+  (`ui`, `cli` or `agent`, plus the thread ID for the last), the way agent
+  tool handlers already get `threadId`.
+- **Suggested issue title:** `Expose caller origin (UI, CLI, agent) to plugin RPC handlers`.
+
 ### Thread timeline: no forced layout per collapsible group on mount (2026-10-06)
 
 Candidate from T118's switch measurement (local BB 0.43.1, headless Chromium);

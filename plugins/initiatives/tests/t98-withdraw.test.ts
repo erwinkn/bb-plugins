@@ -299,7 +299,7 @@ describe("T98 published schema", () => {
     const schema = claudeNormalize()(record.inputSchema);
     expect(schema).toBe(record.inputSchema);
     expect(schema.properties.action.enum).toEqual(["user-choice", "veto-request", "question", "answer", "withdraw", "decision"]);
-    expect(schema.properties.action.description).toMatch(/withdraw/);
+    // T143: the actions' fields are told once, in the tool description.
     expect(schema.properties.ref.description).toMatch(/withdraw/);
     expect(schema.properties.reason).toMatchObject({ type: "string", maxLength: 2000 });
     expect(schema.properties.reason.description).toMatch(/withdraw/);

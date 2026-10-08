@@ -23,11 +23,11 @@ export function MemorySwitch({
   choose,
   explain,
   label = true,
-  session = null,
+  sessionNote = null,
 }: {
   mode: MemoryMode;
   /** W244: the memory status's session note, when the coordinator may lack its memory tools. */
-  session?: string | null;
+  sessionNote?: string | null;
   choose: (mode: MemoryMode) => Promise<unknown>;
   explain: "selected" | "all";
   /** False under a heading that already says Memory. */
@@ -98,7 +98,7 @@ export function MemorySwitch({
           ))}
         </dl>
       )}
-      {session ? <p role="status" className="memory-switch-line memory-switch-session">{session}</p> : null}
+      {sessionNote ? <p role="status" className="memory-switch-line memory-switch-session">{sessionNote}</p> : null}
       {write.slow ? <p role="status" className="memory-switch-line">{WRITE_SLOW_MESSAGE}</p> : null}
       {write.error ? <p role="alert" className="memory-switch-error">{write.error}</p> : null}
     </div>

@@ -31,7 +31,7 @@ describe("W239 memory setting", () => {
     });
     const slow = f.harness.callRpc("command", { projectId: project.id, command: { action: "delegate", label: "Search", area: "search", note: "Do it." } });
     await atGate;
-    const switched = await f.harness.callRpc("command", { projectId: project.id, command: { action: "memory", mode: "hybrid" } });
+    const switched = await f.harness.callRpc("setMemory", { projectId: project.id, mode: "hybrid" });
     expect(switched).toMatchObject({ mode: "hybrid", compactTokens: 150_000 });
     release();
     await slow;
@@ -44,13 +44,13 @@ describe("W239 memory setting", () => {
     f.service.memory.useSummarizer(fakeLuna);
     const turnEnds = (usedTokens: number) =>
       f.history.push({ type: "thread/contextWindowUsage/updated", seq: ++seq, createdAt: Date.now(), threadId: "coordinator", data: { contextWindowUsage: { usedTokens, modelContextWindow: 1_000_000, estimated: true } } } as never);
-    await f.harness.callRpc("command", { projectId: project.id, command: { action: "memory", mode: "hybrid" } });
-    await f.harness.callRpc("command", { projectId: project.id, command: { action: "memory", mode: "regular" } });
+    await f.harness.callRpc("setMemory", { projectId: project.id, mode: "hybrid" });
+    await f.harness.callRpc("setMemory", { projectId: project.id, mode: "regular" });
     turnEnds(200_000);
     await f.runtime.onThreadIdle(f.idle("coordinator"));
     await f.runtime.compactionsSettled();
     expect(f.compact).not.toHaveBeenCalled();
-    await f.harness.callRpc("command", { projectId: project.id, command: { action: "memory", mode: "hybrid" } });
+    await f.harness.callRpc("setMemory", { projectId: project.id, mode: "hybrid" });
     turnEnds(210_000);
     await f.runtime.onThreadIdle(f.idle("coordinator"));
     await f.runtime.compactionsSettled();
