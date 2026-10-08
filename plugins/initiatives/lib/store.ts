@@ -39,7 +39,7 @@ import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-sc
 import { PR_STAGE_IDS, type PrRecord, type PrStage } from "./pr-stages";
 import { MEMORY_MIGRATIONS } from "./memory/store";
 import { PR_NOTE_MIGRATIONS } from "./pr-notes";
-import { WRITE_RECEIPT_MIGRATIONS } from "./write-receipts";
+import { WRITE_RECEIPT_MIGRATIONS } from "./write-receipt-migrations";
 
 
 // The plugin server is the only writer. Every multi-row change runs in one

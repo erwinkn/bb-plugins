@@ -3,6 +3,8 @@ import type Database from "better-sqlite3";
 import { ProjectError } from "./bb";
 import { WRITE_RECEIPT_MS, type WriteAnswer } from "./write-timeout";
 
+export { WRITE_RECEIPT_MIGRATIONS } from "./write-receipt-migrations";
+
 /**
  * W248: the server's half of sendWrite. Each keyed write runs once; a send of the same key
  * gets the first run's answer from its receipt. Receipts live in the plugin database, so a
@@ -11,18 +13,6 @@ import { WRITE_RECEIPT_MS, type WriteAnswer } from "./write-timeout";
  * state: running (answer null), done (answer: the JSON answer), rejected (answer: the refusal;
  * nothing was saved), failed (answer: the error; what it saved is unknown).
  */
-export const WRITE_RECEIPT_MIGRATIONS = [
-  `CREATE TABLE write_receipts (
-    key TEXT PRIMARY KEY,
-    project_id TEXT,
-    command TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    state TEXT NOT NULL,
-    answer TEXT,
-    created_at INTEGER NOT NULL
-  )`,
-  `CREATE INDEX write_receipts_created ON write_receipts(created_at)`,
-];
 export const WRITE_RECEIPT_KEEP_MS = WRITE_RECEIPT_MS + 24 * 60 * 60_000;
 
 export const KEY_REUSED_MESSAGE = "This send's key belongs to a different request, so nothing was saved. Send it again.";
