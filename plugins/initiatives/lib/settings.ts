@@ -8,7 +8,7 @@ import {
   PREVIOUS_DEFAULTS,
 } from "./guidance";
 import { COLD_RESUME_DEFAULT_TOKENS } from "./cold-cache";
-import { COMPACT_COORDINATOR_DEFAULT_TOKENS } from "./compaction";
+import { COMPACT_COORDINATOR_DEFAULT_TOKENS, COMPACT_HYBRID_DEFAULT_TOKENS } from "./compaction";
 
 // BB truncates dynamic instructions at 4096; reserve 512 for role/start guards.
 export const MAX_GUIDANCE_CHARACTERS = 4096 - 512;
@@ -68,6 +68,27 @@ export const settingsDescriptors = {
     default: COMPACT_COORDINATOR_DEFAULT_TOKENS,
     experimental_schema: z.number().int().min(0),
   },
+  hybridCompactTokens: {
+    type: "number" as const,
+    label: "Hybrid coordinator compaction limit (tokens)",
+    description: "The compaction limit for Initiatives whose coordinator memory is hybrid: lower than the regular one, since what a compaction drops stays one zoom away in the memory tree. An Initiative's own limit wins. 0 turns it off.",
+    default: COMPACT_HYBRID_DEFAULT_TOKENS,
+    experimental_schema: z.number().int().min(0),
+  },
+  memoryEffort: {
+    type: "string" as const,
+    label: "Memory summarizer effort",
+    description: "GPT-6 Luna's reasoning effort when it builds a hybrid coordinator's memory tree: xhigh (best lines) or high (faster, a little worse).",
+    default: "xhigh",
+    experimental_schema: z.enum(["high", "xhigh"]),
+  },
+  memoryConcurrency: {
+    type: "number" as const,
+    label: "Memory summarizer calls at once",
+    description: "How many Luna calls one Initiative's memory tree runs in parallel (8 in the OptChat design).",
+    default: 8,
+    experimental_schema: z.number().int().min(1).max(16),
+  },
 };
 export type Preferences = {
   coordinatorInstructions: string;
@@ -75,6 +96,9 @@ export type Preferences = {
   profiles: Policy["profiles"];
   coldResumeTokens: number;
   coordinatorCompactTokens: number;
+  hybridCompactTokens: number;
+  memoryEffort: "high" | "xhigh";
+  memoryConcurrency: number;
 };
 export const withProfileDefaults = (
   policy: Policy,
@@ -95,6 +119,9 @@ export function definePreferences(bb: BbPluginApi, flags?: MigrationFlags) {
     profiles: parseProfileDefaults(raw.executionProfiles),
     coldResumeTokens: raw.coldResumeTokens,
     coordinatorCompactTokens: raw.coordinatorCompactTokens,
+    hybridCompactTokens: raw.hybridCompactTokens,
+    memoryEffort: raw.memoryEffort === "high" ? "high" : "xhigh",
+    memoryConcurrency: raw.memoryConcurrency,
   });
   // configure is synchronous in SDK 0.4.87. Its authoritative snapshot is
   // initialized from persisted settings and advanced on every effective edit.

@@ -18,6 +18,12 @@ import type { Store } from "./store";
  * waits while the other is in flight.
  */
 export const COMPACT_COORDINATOR_DEFAULT_TOKENS = 300_000;
+/**
+ * D431: a hybrid coordinator compacts at half that. What a compaction drops stays one zoom away
+ * in the memory tree. W216 priced Equisafe's day at $29 compacting at 150k, $39 at 300k, and $30
+ * in pure tree mode.
+ */
+export const COMPACT_HYBRID_DEFAULT_TOKENS = 150_000;
 const COMPACT_INTERVAL_MS = 30 * 60_000;
 const CONTEXT_EVIDENCE = ["thread/contextWindowUsage/updated", "thread/compacted", "thread/context/cleared"] as const;
 
@@ -30,7 +36,8 @@ export function contextUsedTokens(data: unknown): number | null {
 export function createCoordinatorCompaction(deps: {
   sdk: Sdk;
   store: Store;
-  limit: () => number;
+  /** The Initiative's compaction limit; 0 is off. */
+  limit: (projectId: string) => number;
   /** A coordinator replacement or start is in flight for the project. */
   replacing: (projectId: string) => boolean;
 }) {
@@ -39,7 +46,7 @@ export function createCoordinatorCompaction(deps: {
   const compacting = new Map<string, Promise<unknown>>();
   /** The limit when this thread may be compacted now, else null. Rechecked after every await. */
   const eligible = (projectId: string, threadId: string) => {
-    const limit = deps.limit();
+    const limit = deps.limit(projectId);
     if (limit <= 0) return null;
     const project = deps.store.project(projectId);
     if (!project || project.coordinatorThreadId !== threadId || project.archivedAt !== null || project.paused) return null;
@@ -51,7 +58,7 @@ export function createCoordinatorCompaction(deps: {
     return limit;
   };
   return {
-    enabled: () => deps.limit() > 0,
+    enabled: (projectId: string) => deps.limit(projectId) > 0,
     /** Resolves once no compact call is in flight for the project. */
     async settled(projectId: string) {
       await compacting.get(projectId)?.catch(() => {});

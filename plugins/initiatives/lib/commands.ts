@@ -1,3 +1,4 @@
+import { MEMORY_MODES } from "./memory/store";
 import { z } from "zod";
 import type { NewThreadRequest } from "@get-bb/plugin-sdk/app";
 import {
@@ -319,6 +320,18 @@ export const appearanceCommandSchema = z
     color: z.enum(PROJECT_COLORS).nullable().optional(),
   })
   .strict();
+/**
+ * D431: the Initiative's coordinator memory: regular (chat and compaction), hybrid (plus the
+ * memory tree and zoom), optchat (stored; runs as hybrid until its runtime exists).
+ * compactTokens: the Initiative's own compaction limit; null follows the setting for its mode.
+ */
+export const memoryCommandSchema = z
+  .object({
+    action: z.literal("memory"),
+    mode: z.enum(MEMORY_MODES).optional(),
+    compactTokens: z.number().int().min(0).max(2_000_000).nullable().optional(),
+  })
+  .strict();
 export const commandSchema = z.discriminatedUnion("action", [
   createSchema,
   messageSchema.extend({ action: z.literal("message") }),
@@ -341,6 +354,7 @@ export const commandSchema = z.discriminatedUnion("action", [
   queuedMessageSchema,
   updateSchema,
   appearanceCommandSchema,
+  memoryCommandSchema,
 ]);
 export type Command = z.infer<typeof commandSchema>;
 
@@ -494,5 +508,7 @@ export async function runCommand(
       return service.resolveHeldMessage(projectId, c.thread, c.message, c.operation);
     case "update":
       return service.recordUpdate(projectId, c, threadId);
+    case "memory":
+      return service.memory.configure(projectId, c, author);
   }
 }

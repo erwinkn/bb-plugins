@@ -28,6 +28,12 @@ export const DEFAULT_WORKER_INSTRUCTIONS = `You are a worker in an Initiative. Y
 - Record the user's explicit choices with initiative_decision user-choice. Record your own only when the user may want to veto it (veto-request).`;
 
 /**
+ * D431: added to a hybrid (or optchat) coordinator's instructions, after the user's own, so a
+ * regular coordinator never pays for it. The coordinator instructions' default is unchanged.
+ */
+export const HYBRID_MEMORY_GUIDANCE = `Memory (hybrid): every message of this Initiative is logged, including what compactions dropped. After a compaction, or when you need older detail, read initiative_read {view:"memory"}: one-line summaries "id+n|text", oldest first. Open a line with initiative_zoom {id,n} (n:1 gives the message whole) before acting on it; initiative_date {id} gives its time.`;
+
+/**
  * T136 (D406): saved instructions are replaced by these defaults once, outright. The user
  * never edited them; earlier text came from agent-applied upgrades. Edits made after the
  * replacement are the user's and stay.

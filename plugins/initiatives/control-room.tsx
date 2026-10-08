@@ -15,6 +15,7 @@ import type { BlockerItem, Overview, OpinionItem } from "./lib/overview";
 import { needsYouCount } from "./lib/blockers";
 import type { DecisionRecord } from "./lib/store";
 import type { Command } from "./lib/commands";
+import type { MemoryStatus } from "./lib/memory/memory";
 import type { projectsContract } from "./lib/contract";
 import { UsagePage } from "./usage-view";
 import "./control-room.css";
@@ -978,6 +979,7 @@ export function ControlRoom({
                 </div>
               )}
               <Repositories o={o} inventory={inventory} run={run} />
+              {o.memory ? <MemoryPanel memory={o.memory} run={run} /> : null}
             </>
           </KeepTab>
           <KeepTab current={tab} id="usage">
@@ -1799,6 +1801,78 @@ function Repositories({
       <p className="project-meta">
         Open files through the Editor's project picker.
       </p>
+    </section>
+  );
+}
+const MEMORY_MODE_TEXT: Record<MemoryStatus["mode"], [string, string]> = {
+  regular: ["Regular", "Chat, compacted past its limit. The log is kept; no summary tree."],
+  hybrid: ["Hybrid", "Chat and compaction, plus a GPT-6 Luna summary tree of the whole log that the coordinator zooms into."],
+  optchat: ["OptChat", "A fresh turn per message over the summary view. Not available yet: runs as hybrid."],
+};
+const kilo = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
+/** D431: the Initiative's coordinator memory: mode, compaction limit, log, tree progress and cost. */
+function MemoryPanel({ memory: m, run }: { memory: MemoryStatus; run: Run }) {
+  const [limit, setLimit] = useState("");
+  const tokens = Number(limit.replace(/k$/i, "")) * (/k$/i.test(limit) ? 1000 : 1);
+  const t = m.tree;
+  const state =
+    t.state === "off" ? null
+    : t.state === "unavailable" ? `Summarizer unavailable: ${t.detail}`
+    : t.state === "backoff" ? `Rate-limited; retrying${t.until ? ` at ${new Date(t.until).toLocaleTimeString()}` : ""}`
+    : t.state === "building" ? "Building"
+    : "Up to date";
+  return (
+    <section aria-label="Coordinator memory">
+      <h2 className="cr-section-heading">Coordinator memory</h2>
+      <div className="project-actions" role="group" aria-label="Memory mode">
+        {(Object.keys(MEMORY_MODE_TEXT) as MemoryStatus["mode"][]).map((mode) =>
+          mode === m.mode ? (
+            <button key={mode} disabled aria-pressed="true">{MEMORY_MODE_TEXT[mode][0]}</button>
+          ) : (
+            <Action key={mode} run={run} command={{ action: "memory", mode }}>{MEMORY_MODE_TEXT[mode][0]}</Action>
+          ),
+        )}
+      </div>
+      <p className="project-meta">{MEMORY_MODE_TEXT[m.mode][1]}</p>
+      <div className="cr-memory">
+        <span>Log</span>
+        <span>{m.log.messages.toLocaleString()} messages · {kilo(m.log.bytes)}B · {m.log.threads} coordinator thread{m.log.threads === 1 ? "" : "s"}</span>
+        {t.state !== "off" ? (
+          <>
+            <span>Tree</span>
+            <span>
+              {t.nodes.toLocaleString()} of {t.total.toLocaleString()} lines ({t.total ? Math.floor((100 * Math.min(t.nodes, t.total)) / t.total) : 100}%){t.fallbacks ? ` · ${t.fallbacks} cut after failures` : ""} · {state}
+            </span>
+            <span>Views</span>
+            <span>chat {kilo(t.viewBytes)}B · memory {kilo(t.memoryViewBytes)}B</span>
+          </>
+        ) : null}
+        {m.cost.calls ? (
+          <>
+            <span>Cost</span>
+            <span>
+              ${m.cost.usd.toFixed(2)} at list price · {m.cost.calls.toLocaleString()} calls · {kilo(m.cost.inputTokens)} in ({m.cost.inputTokens ? Math.round((100 * m.cost.cachedTokens) / m.cost.inputTokens) : 0}% cached), {kilo(m.cost.outputTokens)} out
+            </span>
+          </>
+        ) : null}
+        <span>Compaction</span>
+        <span>{m.compactTokens ? `past ${kilo(m.compactTokens)} tokens` : "off"} · {m.compactTokensOverride === null ? `${m.mode === "regular" ? "regular" : "hybrid"} default` : "this Initiative's limit"}</span>
+      </div>
+      {m.note ? <p role="status" className="project-muted">{m.note}</p> : null}
+      <div className="project-actions">
+        <label className="project-field">
+          Compaction limit (tokens)
+          <input value={limit} placeholder={kilo(m.compactTokens)} onChange={(e) => setLimit(e.target.value.trim())} inputMode="numeric" />
+        </label>
+        {limit && Number.isInteger(tokens) && tokens >= 0 ? (
+          <Action run={run} command={{ action: "memory", compactTokens: tokens }}>Save limit</Action>
+        ) : (
+          <button disabled>Save limit</button>
+        )}
+        {m.compactTokensOverride !== null ? (
+          <Action run={run} command={{ action: "memory", compactTokens: null }}>Use the default</Action>
+        ) : null}
+      </div>
     </section>
   );
 }

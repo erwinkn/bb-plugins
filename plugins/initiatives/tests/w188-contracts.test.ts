@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { manageCommand, manageToolSchema, messageCommand, messageToolSchema, spawnCommand, spawnToolSchema, taskCommand, taskToolSchema, workerCommand, workerToolSchema } from "../lib/agent-tools";
 import { parseDecisionCommand, REMOVED_ACTIONS } from "../lib/commands";
+import { dateToolSchema, zoomToolSchema } from "../lib/memory/memory";
 import { agentReadSchema, readOptionsSchema, validateSelection, viewForRef, withImpliedDetail, type ReadView } from "../lib/read";
 
 /**
@@ -82,6 +83,8 @@ function parseAs(tool: string, raw: Record<string, unknown>) {
       if (!["overview", "context", "records"].includes(target)) validateSelection(target as ReadView, options);
       return options;
     }
+    case "initiative_zoom": return zoomToolSchema.parse(raw);
+    case "initiative_date": return dateToolSchema.parse(raw);
     default: throw new Error(`unknown tool ${tool}`);
   }
 }

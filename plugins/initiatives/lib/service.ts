@@ -79,6 +79,9 @@ import { DiscoveryMemory, DISCOVERY_PARENT_CAP } from "./discovery";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
 import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
 import { createCoordinatorCompaction, type CoordinatorCompaction } from "./compaction";
+import { CoordinatorMemory } from "./memory/memory";
+import { sdkEvents } from "./memory/ingest";
+import { poolerSummarizer } from "./memory/pooler";
 
 export const METADATA_VERSION = 1;
 /** Unconfirmed creates and sends older than this are surfaced to the coordinator; they are never assumed failed. */
@@ -320,6 +323,7 @@ export class ProjectsService {
 
   private readonly coldCache: ColdCacheGuard;
   readonly compaction: CoordinatorCompaction;
+  readonly memory: CoordinatorMemory;
 
   constructor(
     readonly bb: BbPluginApi,
@@ -332,10 +336,27 @@ export class ProjectsService {
       limit: () => preferences.configuration().coldResumeTokens,
       log: (message) => bb.log.warn(message),
     });
+    this.memory = new CoordinatorMemory({
+      ledger: store,
+      list: sdkEvents(bb.sdk),
+      threadStatus: async (threadId) => {
+        try {
+          const thread = await bb.sdk.threads.get({ threadId });
+          return thread.archivedAt || thread.deletedAt ? "archived" : thread.status;
+        } catch (error) {
+          if ((error as { status?: number }).status === 404) return null;
+          throw error;
+        }
+      },
+      preferences: () => preferences.configuration(),
+      summarizer: poolerSummarizer(bb),
+      log: (message) => bb.log.warn(message),
+      changed: (projectId) => bb.realtime.publish("initiatives-changed", { projectId }),
+    });
     this.compaction = createCoordinatorCompaction({
       sdk: bb.sdk,
       store,
-      limit: () => preferences.configuration().coordinatorCompactTokens,
+      limit: (projectId) => this.memory.compactLimit(projectId),
       replacing: (projectId) => {
         const start = this.coordinatorStart(projectId);
         return this.coordinatorSwitches.has(projectId) || (!!start && ["pending", "uncertain"].includes(start.state));

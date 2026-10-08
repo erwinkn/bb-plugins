@@ -43,11 +43,13 @@ export class Runtime {
   dispose() {
     this.disposed = true;
     for (const { abort } of this.compactions.values()) abort.abort();
+    this.service.memory.dispose();
   }
 
   start(signal?: AbortSignal) {
     this.disposed = false;
     this.stopSignal = signal;
+    this.service.memory.start(signal);
   }
 
   // BB lifecycle events ----------------------------------------------------------
@@ -76,6 +78,8 @@ export class Runtime {
         this.log.warn(`Final-message capture failed: ${errorMessage(error)}`),
       );
     }
+    // D431: a coordinator's turn ended: its messages join the Initiative's memory log.
+    if (membership.workerNum === 0) this.service.memory.kick(membership.project.id);
     // A former coordinator generation going quiet may be the last blocker a
     // pending parenting transfer was waiting on.
     if (membership.workerNum === 0 && membership.former) {
@@ -103,7 +107,7 @@ export class Runtime {
    */
   private compactAfterIdle(projectId: string, threadId: string) {
     const stop = this.stopSignal;
-    if (this.disposed || stop?.aborted || this.compactions.has(threadId) || !this.service.compaction.enabled()) return;
+    if (this.disposed || stop?.aborted || this.compactions.has(threadId) || !this.service.compaction.enabled(projectId)) return;
     const abort = new AbortController();
     const link = stop ? addAbortListener(stop, () => abort.abort(stop.reason)) : null;
     const done = this.service.compaction
@@ -119,6 +123,16 @@ export class Runtime {
         this.compactions.delete(threadId);
       });
     this.compactions.set(threadId, { abort, done });
+  }
+
+  /**
+   * D431: BB's per-thread event signal (at most once a second). A hybrid coordinator's log is
+   * read as it works, not only when its turn ends; a regular one waits for its idle.
+   */
+  onThreadEvents(threadId: string) {
+    if (this.disposed || this.stopSignal?.aborted) return;
+    const projectId = this.service.memory.projectOfCoordinator(threadId);
+    if (projectId && this.service.memory.building(projectId)) this.service.memory.kick(projectId);
   }
 
   /** Resolves once every compaction check this runtime started has finished. */
@@ -430,6 +444,9 @@ export class Runtime {
           ),
         );
     }
+    // D431: Initiatives whose memory log no idle event refreshed lately, and first logs. Last,
+    // and detached: reading a log never delays the pass's own work.
+    if (!signal.aborted) this.service.memory.sweep();
   }
 
   // Usage --------------------------------------------------------------------------

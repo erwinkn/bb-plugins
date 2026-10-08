@@ -37,6 +37,7 @@ import {
 import { isLegacyReport, storedReportSchema } from "./legacy";
 import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-schema";
 import { PR_STAGE_IDS, type PrStage, type PrStageRecord } from "./pr-stages";
+import { MEMORY_MIGRATIONS } from "./memory/store";
 
 
 // The plugin server is the only writer. Every multi-row change runs in one
@@ -410,6 +411,8 @@ export const MIGRATIONS = [
   )`,
   // W206: the role a coordinator asked for on spawn (worker, experimenter, fast, analyst); null for reviewers and older workers.
   `ALTER TABLE workers ADD COLUMN kind TEXT`,
+  // W220 (D431): coordinator memory: mode, log, cursors, tree nodes and saved views.
+  ...MEMORY_MIGRATIONS,
 ];
 
 export const ACTIVITY_LIMIT = 300;

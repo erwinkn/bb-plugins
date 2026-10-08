@@ -813,8 +813,8 @@ Replaying the Equisafe coordinator's transcript through this formatting cut its
 Initiative tool results from 455 KB to 193 KB and its report messages from
 339 KB to 32 KB.
 
-**Compaction.** When a coordinator's turn ends with its context larger than the
-`coordinatorCompactTokens` setting (default 300,000; 0 turns it off), the
+**Compaction.** When a coordinator's turn ends with its context larger than its
+limit, the
 plugin compacts it in place with BB's `threads.compact` (Claude Code's
 `/compact`, Codex's thread compaction): the same thread, no handover. It runs
 after the coordinator's idle event, without holding up the idle handler, and
@@ -828,6 +828,82 @@ within 30 minutes; a paused or archived Initiative, or one with a pending
 handover, is left alone. A coordinator replacement or start in flight, or a
 handover being written, skips it; a replacement or handover writer that begins
 while a compaction call is in flight waits for that call. Each attempt, and any refusal, is in the activity log.
+The limit is the Initiative's own (`{"action":"memory","compactTokens":200000}`),
+else the setting for its memory mode: `coordinatorCompactTokens` (default
+300,000) for regular, `hybridCompactTokens` (default 150,000) for hybrid. 0
+turns it off.
+
+## Coordinator memory (D431)
+
+Each Initiative has a memory mode, set in the dashboard (Context → Coordinator
+memory) or with `bb initiative command '{"action":"memory","mode":"hybrid"}'
+<initiative-id>`:
+
+- **regular** (default): today's chat, compacted past its limit.
+- **hybrid**: the same chat and compaction, plus a summary tree of everything the
+  coordinators ever said and saw, so a compacted coordinator can reopen what a
+  compaction dropped. It compacts at 150k instead of 300k.
+- **optchat**: a fresh turn per message over the summary view, as in Victor
+  Taelin's [OptChat gist](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449).
+  It is stored but runs as hybrid until its runtime exists (phase 2).
+
+**The log** is kept in every mode, so a switch is instant. It is append-only,
+one row per message, across every coordinator thread of the Initiative
+(replacements, handovers, compactions), read from BB's own thread events
+(`client/turn/requested`, `item/completed`, and Claude Code's compaction
+summary), the same for Claude Code and Codex coordinators. Kinds: `user`,
+`coord` (replies), `tool` (calls), `echo` (results, head and tail within 30,000
+characters), `work` (`[W12] …` from a worker, `[bb] …` from BB), `note`
+(handovers and compaction summaries). Thoughts are never logged. It is read
+when a coordinator's turn ends, every second while a hybrid one works, and by
+the sweep. Threads are read oldest first, and a later one only once every
+earlier one is read through, so the log stays in order across slices and
+failed reads. Each read first takes the thread's newest event as its boundary,
+so an event that lands mid-read waits for the next read instead of being
+skipped; a former coordinator's status is read before its events, so it is
+marked complete only after a read that began once it was quiet. Newer
+coordinators wait for that read, but no longer than 10 minutes after the
+replacement: then they are logged, the former's last messages follow when they
+land, and the activity log notes it. An Initiative's first log reaches back from the current
+coordinator through earlier ones until one that began from a handover or a new
+Initiative, whose first message is a note; a failed read saves nothing, and
+the next pass looks again.
+
+**The tree** follows the gist exactly, as W216 replayed it: message i becomes
+a line of at most 512 bytes (`id+n|text`), adjacent lines merge in pairs into
+512-byte lines; text that fits is kept with no call. The chat view (what an
+optchat turn will see) is a 128→64 KB sawtooth merged by due = (T+1)/2^l − i;
+the memory view, the context of every summarizer call, is the chat view merged
+further on a 32→16 KB sawtooth. Both views are saved, never rebuilt. GPT-6 Luna
+(`memoryEffort`, xhigh by default) writes the lines with the gist's prompt and
+512-dash ruler; a line over 512 bytes gets "Too long …| ← LIMIT" in the same
+conversation, up to 5 tries, keeping the shortest. Up to `memoryConcurrency`
+(8) calls run at once; ready nodes wait in a queue; a call waits while another
+writes the same cached prefix. A node that fails 3 times is cut to fit (shown as
+"cut after failures"), so one bad message never blocks the tree. A 429 pauses
+every new call with a growing backoff (or Retry-After); an unavailable route
+pauses for 10 minutes. It runs only in hybrid or optchat, detached from the idle
+handler, and stops on shutdown or a switch back to regular; what is built stays,
+and a stopped run writes nothing more. Only the nodes in use are held in memory
+(a 2 MB cache over the database); a builder's first run finds its ready nodes
+from which nodes exist, in slices, and the dashboard reads running counts.
+
+**Luna** is called through the Account Pooler's isolated plugin route
+(`/advisor/v1/responses`, the Pooler's plugin token), on the pool's Codex
+accounts: no credential of its own. Every call of one Initiative sends one
+`session_id`, the key Codex caches a prefix by. It needs the Pooler's codex
+advisor route on (`bb pool-local advisor set codex on`) and a Pooler that passes
+`session_id` through; until then the dashboard shows "Summarizer unavailable".
+
+**The coordinator** (hybrid) gets `initiative_zoom {id,n}` (the two lines line
+id+n was made from; n 1 is the message whole), `initiative_date {id}`, and one
+line of guidance: after a compaction, read `initiative_read {view:"memory"}` (the
+16–32 KB memory view) and zoom before acting. Tools and guidance reach a running
+coordinator when its session is next constructed, and a replacement from its
+first session. `bb initiative read memory`,
+`bb initiative zoom <id> <n>` and `bb initiative date <id>` serve the same from a
+shell. The dashboard shows the mode, log size, tree progress, view sizes and the
+summarizer's cost at list price.
 
 ## The former projects ID
 

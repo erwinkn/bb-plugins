@@ -36,6 +36,8 @@ import {
 import { legacyReportSchema, LEGACY_TOOL_NAMES } from "./lib/legacy";
 import { reportSchema } from "./lib/schema";
 import { definePreferences } from "./lib/settings";
+import { HYBRID_MEMORY_GUIDANCE } from "./lib/guidance";
+import { dateToolSchema, zoomToolSchema } from "./lib/memory/memory";
 import { Store, MIGRATIONS } from "./lib/store";
 import { ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
@@ -53,10 +55,10 @@ import { canonicalPrUrl, prToolSchema } from "./lib/pr-stages";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
 
-const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "reconcile", "recreate-coordinators"];
+const CLI_COMMANDS = ["describe", "list", "overview", "read", "zoom", "date", "message", "command", "report", "pr", "reconcile", "recreate-coordinators"];
 /** Tools initiative_batch can run, by their name without the initiative_ prefix. */
 const BATCH_TOOLS = ["spawn", "message", "task", "worker", "decision", "update", "pr", "read"] as const;
-const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
+const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | zoom <id> <n> [initiative-id] | date <id> [initiative-id] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { toolReceipt } from "./lib/receipts";
 import { objectRootSchema } from "./lib/tool-schema";
@@ -166,6 +168,7 @@ export default function plugin(bb: BbPluginApi) {
       detail,
     );
     result.project.profileDefaults = profileDefaults;
+    result.memory = service.memory.status(projectId);
     result.revision = { epoch: instanceEpoch, version: ledgerVersion() };
     // One workspace-wide queue read, shared by every Initiative's refresh. A
     // failed read shows nothing rather than guessing (T133).
@@ -541,6 +544,7 @@ export default function plugin(bb: BbPluginApi) {
     "initiative_pr",
     "initiative_batch",
   ];
+  const MEMORY_TOOLS = ["initiative_zoom", "initiative_date"];
   bb.agents.configure((ctx) => {
     const guidance = () => preferences.configuration();
     const meta = ctx.pluginMetadata;
@@ -575,13 +579,19 @@ export default function plugin(bb: BbPluginApi) {
             "UPDATE coordinator_starts SET thread_id=? WHERE project_id=? AND op_id=? AND state IN ('pending','uncertain') AND (thread_id IS NULL OR thread_id=?)",
           )
           .run(ctx.thread.id, meta.projectId, meta.op, ctx.thread.id);
+      // D431: this session is the coordinator's first (a replacement's too), so a hybrid
+      // Initiative's tools and guidance come now; zoom and date still require confirmed membership.
+      const hybrid = service.memory.building(meta.projectId);
       return {
-        tools: coordinatorTools,
+        tools: hybrid ? [...coordinatorTools, ...MEMORY_TOOLS] : coordinatorTools,
         skills: ["initiative-coordinator"],
-        instructions: guidance().coordinatorInstructions + "\n\n" + (
+        instructions: [
+          guidance().coordinatorInstructions,
           start && ["pending", "uncertain"].includes(start.state)
             ? `You are the pending coordinator of this initiative. Your start receipt is recorded but this thread's checkout is still being proven against the primary repository's default source. Read initiative state once this thread is confirmed; until then, Initiative reads and mutations require confirmed membership. If membership is unavailable, leave confirmation and settlement to the operator. Do not retry the start.`
-            : `Your coordinator start did not confirm (state ${start?.state ?? "unknown"}). Initiative reads and mutations require confirmed membership. Leave settlement to the operator. Do not retry the start.`),
+            : `Your coordinator start did not confirm (state ${start?.state ?? "unknown"}). Initiative reads and mutations require confirmed membership. Leave settlement to the operator. Do not retry the start.`,
+          ...(hybrid ? [HYBRID_MEMORY_GUIDANCE] : []),
+        ].join("\n\n"),
       };
     }
     // A user thread can configure before the create RPC's own confirm lands.
@@ -619,8 +629,16 @@ export default function plugin(bb: BbPluginApi) {
         instructions:
           "This is a former context. Read initiative state, but leave coordination and reporting to the current threads.",
       };
-    if (m?.workerNum === 0)
-      return { tools: coordinatorTools, skills: ["initiative-coordinator"], instructions: guidance().coordinatorInstructions + "\n\n" + `Current Initiative membership: ${JSON.stringify(currentIdentity(store, m))}` };
+    if (m?.workerNum === 0) {
+      // D431: a hybrid coordinator also gets its memory tools and one line of guidance.
+      const hybrid = service.memory.building(m.project.id);
+      return {
+        tools: hybrid ? [...coordinatorTools, ...MEMORY_TOOLS] : coordinatorTools,
+        skills: ["initiative-coordinator"],
+        // Last, so instructions near BB's 4,096-character cap lose this line, never the membership.
+        instructions: [guidance().coordinatorInstructions, `Current Initiative membership: ${JSON.stringify(currentIdentity(store, m))}`, ...(hybrid ? [HYBRID_MEMORY_GUIDANCE] : [])].join("\n\n"),
+      };
+    }
     const worker = m?.worker ?? pendingMember(ctx)?.worker;
     const work = m?.worker ? workerWork(store, m.project.id, m.worker.num, m.worker.generation).assignments[0] : null;
     if (worker)
@@ -908,8 +926,40 @@ export default function plugin(bb: BbPluginApi) {
       if (!view || view === "overview") return JSON.stringify(compactOverview(store, m.project.id));
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
       if (view === "context") return JSON.stringify(readContext(store, m.project.id));
+      if (view === "memory") return JSON.stringify(readMemory(m.project.id));
       return JSON.stringify(read(m.project.id, view, options));
     },
+  });
+  /** D431: the memory view a hybrid coordinator reads after a compaction (16–32 KB). */
+  const readMemory = (projectId: string) => {
+    service.requireProject(projectId);
+    const memory = service.memory;
+    if (!memory.building(projectId))
+      return { mode: "regular", messages: memory.store.count(projectId), note: "This Initiative keeps its memory log but builds no summary tree (memory mode regular). initiative_zoom {id:12,n:1} reads logged message 12 whole." };
+    const view = memory.view(projectId, "memory");
+    const pending = view.summarized < view.messages ? ` Messages ${view.summarized} to ${view.messages - 1} are not in the view yet: read them with n:1.` : "";
+    return {
+      messages: view.messages,
+      view: view.lines.join("\n"),
+      note: `One line per summary, "id+n|text": the n messages from id on, oldest first; "(not summarized yet: zoom it)" marks a line still being written. Open line 64+32 with initiative_zoom {id:64,n:32}: its two halves; n:1 gives one message whole. initiative_date {id:64} gives a message's time.${pending}`,
+    };
+  };
+  const memoryThread = (threadId: string | undefined) => {
+    const m = threadId ? store.membership(threadId) : null;
+    if (!m || m.workerNum !== 0) throw new ProjectError("Coordinator memory is read from the Initiative's coordinator thread.");
+    return m.project.id;
+  };
+  registerTool({
+    name: "initiative_zoom",
+    description: 'Open a line of your memory view (initiative_read {view:"memory"}): {id,n} for line id+n gives the two lines it was made from; n:1 gives message id whole.',
+    parameters: zoomToolSchema,
+    execute: async ({ id, n }, { threadId }) => service.memory.zoom(memoryThread(threadId), id, n),
+  });
+  registerTool({
+    name: "initiative_date",
+    description: "The date and time (UTC) of message id of your memory log.",
+    parameters: dateToolSchema,
+    execute: async ({ id }, { threadId }) => service.memory.date(memoryThread(threadId), id),
   });
   const batchSchema = z.object({
     actions: z.array(z.object({ tool: z.enum(BATCH_TOOLS) }).passthrough()).min(1).max(20),
@@ -998,7 +1048,17 @@ export default function plugin(bb: BbPluginApi) {
         name: "read",
         summary: "Read a stored collection",
         usage:
-          "bb initiative read <records|tasks|workers|reports|assignments|decisions|updates|activity|usage|threads> [initiative-id] [options-json]; records takes mixed refs",
+          "bb initiative read <records|tasks|workers|reports|assignments|decisions|updates|activity|usage|threads|memory> [initiative-id] [options-json]; records takes mixed refs",
+      },
+      {
+        name: "zoom",
+        summary: "Open line id+n of the coordinator's memory view (bb initiative read memory); n 1 gives message id whole",
+        usage: "bb initiative zoom <id> <n> [initiative-id]",
+      },
+      {
+        name: "date",
+        summary: "The date and time of message id of the coordinator's memory log",
+        usage: "bb initiative date <id> [initiative-id]",
       },
       {
         name: "command",
@@ -1044,7 +1104,16 @@ export default function plugin(bb: BbPluginApi) {
           result = store.projects().map((p) => summary(p.id));
         else if (action === "overview" && args.length <= 2)
           result = ctx.threadId ? compactOverview(store, value ?? member?.project.id ?? "") : await overview(value ?? member?.project.id ?? "");
-        else if (action === "read" && args.length <= 4) {
+        else if (action === "read" && value === "memory" && args.length <= 3) {
+          result = readMemory(id ?? "");
+        } else if (action === "zoom" && value && args.length >= 3 && args.length <= 4) {
+          const projectId = args[3] ?? member?.project.id ?? "";
+          service.requireProject(projectId);
+          result = service.memory.zoom(projectId, Number(value), Number(args[2]));
+        } else if (action === "date" && value && args.length <= 3) {
+          service.requireProject(id ?? "");
+          result = service.memory.date(id ?? "", Number(value));
+        } else if (action === "read" && args.length <= 4) {
           const view = z.enum(["records", ...READ_VIEWS]).parse(value);
           const options = readOptionsSchema.parse(args[3] ? JSON.parse(args[3]) : {});
           result = view === "records" ? readRefs(store, id ?? "", options)
@@ -1160,6 +1229,7 @@ export default function plugin(bb: BbPluginApi) {
   // Lifecycle events carry the current DTO: keep dashboard facts current.
   for (const name of ["thread.created", "thread.active", "thread.idle", "thread.failed", "thread.archived", "thread.unarchived", "thread.deleted"] as const)
     bb.events.on(name, ({ thread }) => liveThreads.observe(thread));
+  bb.events.on("experimental_thread.events", ({ thread }) => runtime.onThreadEvents(thread.id));
   bb.events.on(
     "message.dispatched",
     event(({ entry }) => runtime.onMessageDispatched(entry.id)),

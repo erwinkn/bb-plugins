@@ -171,6 +171,8 @@
 .cr-repository { display: flex; align-items: start; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
 .cr-repository > div:first-child { min-width: 0; flex: 1; }
 .cr-repository strong { font-weight: 550; }
+.cr-memory { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; padding: 6px 0 8px; font-variant-numeric: tabular-nums; }
+.cr-memory > span:nth-child(odd) { color: var(--muted-foreground); }
 .cr-activity { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; }
 .cr-activity > time { width: 28px; text-align: right; }
 .cr-activity > span { flex: 1; min-width: 0; }
