@@ -192,6 +192,56 @@ describe("W220 tree builder", () => {
     expect(calls).toBe(6);
   });
 
+  it("builds a line whose three replies were empty as a fallback cut to fit, and lets a waiting turn go on", async () => {
+    // Multi-byte characters across the cut: it must land on a character boundary.
+    const messages: Message[] = [{ kind: "user", text: "é".repeat(600) }, ...long(1)];
+    const { store, saved } = memoryStore(messages);
+    const logs: string[] = [];
+    let calls = 0;
+    const b = builder(store, async (r) => (target(r) === "0+1" ? (calls++, ok("  ")) : ok(line(r, 300))), { log: (m) => logs.push(m) });
+    const release = b.need(1, Date.now() + 90_000);
+    await b.run(new AbortController().signal);
+    release();
+    expect(calls).toBe(3);
+    const node = saved.nodes.get(key(0, 0))!;
+    expect(node.how).toBe("fallback");
+    expect(node.text.startsWith("user: éé")).toBe(true);
+    expect(node.text.endsWith("…")).toBe(true);
+    expect(node.text).not.toContain("\uFFFD");
+    expect(bytes(node.text)).toBeLessThanOrEqual(LIMIT);
+    expect(b.failedLines()).toEqual([]);
+    expect(b.failedBefore(2)).toBeNull();
+    expect(b.summarized(1)).toBe(true);
+    expect(logs.filter((m) => m.includes("fallback"))).toHaveLength(1);
+    // Its parent is built from it, and a later run finds nothing left to retry.
+    expect(saved.nodes.get(key(1, 0))).toMatchObject({ how: "model" });
+    await b.run(new AbortController().signal);
+    expect(calls).toBe(3);
+  });
+
+  it("builds a merged line the same way when its replies are empty", async () => {
+    const { store, saved } = memoryStore(long(2));
+    const b = builder(store, async (r) => (target(r) === "0+2" ? ok("") : ok(line(r, 400))));
+    await b.run(new AbortController().signal);
+    const node = saved.nodes.get(key(1, 0))!;
+    expect(node.how).toBe("fallback");
+    expect(node.text.startsWith(`${saved.nodes.get(key(0, 0))!.text}\n`)).toBe(true);
+    expect(node.text.endsWith("…")).toBe(true);
+    expect(bytes(node.text)).toBeLessThanOrEqual(LIMIT);
+    expect(b.failedLines()).toEqual([]);
+  });
+
+  it("still fails a line, unbuilt, when its calls time out or error rather than answer empty", async () => {
+    for (const result of [{ ok: false, reason: "timeout", error: "no reply within 30 s" }, { ok: false, reason: "failed", error: "500" }] as const) {
+      const { store, saved } = memoryStore(long(1));
+      const b = builder(store, async () => result);
+      await b.run(new AbortController().signal);
+      expect(saved.nodes.has(key(0, 0))).toBe(false);
+      expect(b.failedBefore(1)).toEqual({ i: 0, error: result.error });
+      expect(b.summarized(1)).toBe(false);
+    }
+  });
+
   it("resumes from saved nodes and views: built nodes are never rebuilt", async () => {
     const messages = long(6);
     const { store, saved } = memoryStore(messages);

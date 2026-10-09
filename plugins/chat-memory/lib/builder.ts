@@ -17,8 +17,9 @@ export interface TreeStore {
   recordCall(call: { usage: Usage; cost: number; ms: number; tries: number }): void;
 }
 /**
- * model: a summarizer call; free: fits as is; fallback: cut to fit after failed calls, by the
- * Initiatives builder before T145 (imported lines only: a failed line now stays unbuilt, D458).
+ * model: a summarizer call; free: fits as is; fallback: cut to fit after the summarizer answered
+ * empty 3 times (a line that fails any other way stays unbuilt, D458), and by the Initiatives
+ * builder before T145 (imported lines).
  */
 export type NodeHow = "model" | "free" | "fallback";
 
@@ -47,6 +48,9 @@ const ATTEMPTS = 5;
 /** Nodes of one level that one step of the load's recovery reads, before yielding the event loop. */
 const RECOVER_SLICE = 4096;
 const FAILURES = 3;
+/** The error of a call whose reply held no line. */
+const EMPTY_REPLY = "empty reply";
+const ELLIPSIS = "…";
 /** A line that failed FAILURES times is tried again, FAILURES more times, this long after. */
 const FAILED_RETRY_MS = 30 * 60_000;
 /**
@@ -79,7 +83,8 @@ type Outcome =
  * every new call with a growing backoff (or the server's Retry-After); an unavailable route
  * pauses for 10 minutes. A call that does not answer within its bound fails. A line whose call
  * fails 3 times stays unbuilt and failed (never cut to fit: a turn must not read part of a message
- * as its summary), and is tried again 30 minutes later.
+ * as its summary), and is tried again 30 minutes later; except one that answered empty 3 times,
+ * which a retry would not change: it is built at once as a fallback, its text cut to 512 bytes.
  *
  * W315: a turn that waits for its earlier messages' lines (need) makes their calls go before every
  * other scope's for a permit. The build starts them first anyway (oldest first), and no more at
@@ -275,6 +280,15 @@ export class TreeBuilder {
     const [a, b] = children([l, i]).map((c) => this.nodes.get(key(...c))!);
     return bytes(a!) + 1 + bytes(b!) <= LIMIT ? `${a}\n${b}` : null;
   }
+  /** What a line says when the summarizer gives none: its input (a message, or its two lines), cut to LIMIT. */
+  private fallbackText([l, i]: NodeRef) {
+    const full = l === 0 ? messageText(this.store.message(i)!) : children([l, i]).map((c) => this.nodes.get(key(...c))!).join("\n");
+    if (bytes(full) <= LIMIT) return full;
+    const buf = Buffer.from(full, "utf8");
+    let cut = LIMIT - bytes(ELLIPSIS);
+    while ((buf[cut]! & 0xc0) === 0x80) cut--; // not inside a multi-byte character
+    return buf.subarray(0, cut).toString("utf8") + ELLIPSIS;
+  }
   /** Build every queued node that needs no call, and drop ones built meanwhile. */
   private buildFree() {
     let progressed = true;
@@ -356,6 +370,11 @@ export class TreeBuilder {
     const failures = (this.failures.get(k) ?? 0) + 1;
     this.failures.set(k, failures);
     if (failures < FAILURES) return this.requeue(n);
+    if (outcome.error === EMPTY_REPLY) {
+      this.options.log?.(`Memory line ${label(n)} built as a fallback (cut to fit) after ${failures} empty replies.`);
+      this.failures.delete(k);
+      return this.build(n, this.fallbackText(n), "fallback", failures);
+    }
     this.options.log?.(`Memory line ${label(n)} failed ${failures} times (${outcome.error}); it stays unsummarized, and is tried again in ${FAILED_RETRY_MS / 60_000} minutes.`);
     this.failures.delete(k);
     this.failed.set(k, { node: n, error: outcome.error, at: this.now() });
@@ -423,7 +442,7 @@ export class TreeBuilder {
         }
         const line = cleanLine(r.text);
         if (!line) {
-          if (best === null) outcome = { kind: "failed", error: "empty reply" };
+          if (best === null) outcome = { kind: "failed", error: EMPTY_REPLY };
           break;
         }
         if (best === null || bytes(line) < bytes(best)) best = line;

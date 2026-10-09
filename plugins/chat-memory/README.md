@@ -192,7 +192,9 @@ high answers 95% of calls within 30 s), so a hung call frees its slot; a call a
 turn waits for runs on to the turn's deadline instead, so a reply at 65 s still
 makes a 90 s turn. A stopped turn stops waiting, and a call past its bound
 that no turn waits for any more gives up at once. A line whose call fails 3 times
-stays unsummarized and failed, never cut to fit (D458): it holds no build slot,
+stays unsummarized and failed, never cut to fit (D458), unless every reply was empty
+(a retry gets the same): that line is built at once with its text cut to 512 bytes
+(its message, or its two lines joined; counted under "fallbacks"). A failed line holds no build slot,
 the pill shows it as a problem, an OptChat turn that needs it fails at once
 ("message 1234 could not be summarized (…)"), and it is tried again 30 minutes
 later. Lines Initiatives cut before T145 are imported as they are ("cut after
