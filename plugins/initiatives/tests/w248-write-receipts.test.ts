@@ -35,7 +35,6 @@ describe("W248 a key stays until an answer settles it (A425 finding 1)", () => {
     const again = await sendWrite<{ ref: string }>({ projectId: project.id, command: addTask("One task") }, send);
     expect(keys[1]).toBe(keys[0]);
     expect(f.store.tasks(project.id).map((t) => t.ref)).toEqual([again.ref]);
-    await f.service.memory.settled();
   });
 
   it("a refusal that saved nothing releases the key; an unknown failure keeps it until the server says to check", async () => {
@@ -71,7 +70,6 @@ describe("W248 a key stays until an answer settles it (A425 finding 1)", () => {
       expect(await sendWrite(request, send(async () => "saved"))).toBe("saved");
       expect(failingKeys[2]).not.toBe(failingKeys[0]);
     }
-    await f.service.memory.settled();
   });
 });
 
@@ -107,8 +105,7 @@ describe("W248 receipts outlast every retry the client allows (A425 finding 2)",
       expect(f.store.tasks(project.id).map((t) => t.title)).toEqual(["Week-old task", "Forgotten task", "Forgotten task"]);
     } finally {
       vi.useRealTimers();
-      await f.service.memory.settled();
-    }
+      }
   });
 
   it("the server keeps a receipt a day past the client's window, then forgets it", async () => {
@@ -125,8 +122,7 @@ describe("W248 receipts outlast every retry the client allows (A425 finding 2)",
       expect(f.store.tasks(project.id)).toHaveLength(2);
     } finally {
       vi.useRealTimers();
-      await f.service.memory.settled();
-    }
+      }
   });
 
   it("a plugin reload keeps the receipts: the same key after it creates nothing more", async () => {
@@ -134,7 +130,6 @@ describe("W248 receipts outlast every retry the client allows (A425 finding 2)",
     const { project } = await f.create();
     const input = { projectId: project.id, key: "reload-key", command: addTask("Before reload") };
     const first = await f.harness.callRpc("command", input as never);
-    await f.service.memory.settled();
     let again!: ReturnType<typeof plugin>;
     const host = await f.harness.reload((bb) => {
       again = plugin(bb);
@@ -142,42 +137,20 @@ describe("W248 receipts outlast every retry the client allows (A425 finding 2)",
     try {
       expect(await host.harness.callRpc("command", input as never)).toEqual(first);
       expect(again.store.tasks(project.id)).toHaveLength(1);
-      await again.service.memory.settled();
     } finally {
-      again.runtime.dispose();
       await host.harness.dispose();
     }
   });
 });
 
 describe("W248 a value set again is just set (A425 finding 3)", () => {
-  it("Hybrid lost, Regular saved, Hybrid again: the mode ends Hybrid, and setting commands carry no key", async () => {
-    vi.useFakeTimers();
+  it("paused true, false, true each run, and setting commands carry no key", async () => {
     const { f, project } = await projectFixture();
     const keys: (string | undefined)[] = [];
-    const mode = (m: string) => ({ projectId: project.id, command: { action: "memory", mode: m } });
-    // D452: the dashboard saves a memory mode through setMemory, which takes no key.
-    const setMemory = (m: string): Send => (keyed) => {
-      keys.push(keyed.key);
-      return f.harness.callRpc("setMemory", { projectId: project.id, mode: m } as never);
-    };
-    try {
-      const lost = expect(sendWrite(mode("hybrid"), lostAnswer(setMemory("hybrid")))).rejects.toThrow("No answer");
-      await vi.advanceTimersByTimeAsync(WRITE_UNCONFIRMED_MS);
-      await lost;
-      await sendWrite(mode("regular"), setMemory("regular"));
-      const result = await sendWrite<{ mode: string }>(mode("hybrid"), setMemory("hybrid"));
-      expect(result.mode).toBe("hybrid");
-      expect(f.service.memory.settings(project.id).mode).toBe("hybrid");
-      // Pause is the same: paused true, false, true each run.
-      for (const paused of [true, false, true])
-        await sendWrite({ projectId: project.id, command: { action: "pause", paused } }, rpc(f, project.id, { action: "pause", paused }, keys));
-      expect(f.store.project(project.id)!.paused).toBe(true);
-      expect(keys.every((k) => k === undefined)).toBe(true);
-    } finally {
-      vi.useRealTimers();
-      await f.service.memory.settled();
-    }
+    for (const paused of [true, false, true])
+      await sendWrite({ projectId: project.id, command: { action: "pause", paused } }, rpc(f, project.id, { action: "pause", paused }, keys));
+    expect(f.store.project(project.id)!.paused).toBe(true);
+    expect(keys.every((k) => k === undefined)).toBe(true);
   });
 });
 
@@ -196,7 +169,6 @@ describe("W248 a key belongs to one request (A425 finding 5)", () => {
     // The same request in another key order is the same request.
     const reordered = { summary: "Create once", title: "A", action: "task-create" };
     expect(await f.harness.callRpc("command", { projectId: project.id, key: "shared", command: reordered } as never)).toEqual(first);
-    await f.service.memory.settled();
   });
 });
 
@@ -231,8 +203,7 @@ describe("W248 follow-up: storage that refuses to keep a key (A429)", () => {
       // Answered: the next send is a new write.
       await sendWrite(request, send);
       expect(keys[2]).not.toBe(keys[0]);
-      await f.service.memory.settled();
-    } finally {
+      } finally {
       if (old) Object.defineProperty(globalThis, "localStorage", old);
       else delete (globalThis as { localStorage?: Storage }).localStorage;
     }

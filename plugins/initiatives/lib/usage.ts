@@ -160,3 +160,9 @@ export function unloadedUsage(): InitiativeUsage {
   const totals = { recordedThreads: 0, reportingThreads: 0, totals: null, resets: 0, lastObservedAt: null, activeStaleThreads: 0 };
   return { ...totals, profileGroups: [], coordinator: { ...totals, generations: [] }, workers: [], workerTotal: totals, conversations: { ...totals, threads: [] }, threads: [], notes: [] };
 }
+
+/** The used tokens a thread/contextWindowUsage/updated row records, in either payload shape. */
+export function contextUsedTokens(data: unknown): number | null {
+  const usage = (data as { contextWindowUsage?: { snapshot?: { usedTokens: number | null }; usedTokens?: number } })?.contextWindowUsage;
+  return (usage?.snapshot ? usage.snapshot.usedTokens : usage?.usedTokens) ?? null;
+}

@@ -1,6 +1,6 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { commandSchema, memoryCommandSchema } from "./commands";
+import { commandSchema } from "./commands";
 import { legacyThreadCreateSchema } from "./legacy";
 import type { MergeQueue } from "./merge-queue";
 import type { PrNote } from "./pr-notes";
@@ -76,11 +76,6 @@ export const projectsContract = defineRpcContract({
       /** W244, W248: the write's idempotency key; the answer is then a WriteAnswer (WriteReceipts). */
       key: z.string().min(1).max(100).optional(),
     }),
-    output: z.unknown(),
-  },
-  /** D452: the dashboard's memory switch (mode, compactTokens); `command` refuses these changes. */
-  setMemory: {
-    input: z.object({ projectId: id }).extend(memoryCommandSchema.omit({ action: true }).shape),
     output: z.unknown(),
   },
   /**

@@ -6,7 +6,7 @@ import {
   threadExecution,
   type ThreadDto,
 } from "./bb";
-import { contextUsedTokens } from "./compaction";
+import { contextUsedTokens } from "./usage";
 import { foldUsage } from "./policy";
 import { type ProjectsService } from "./service";
 import { zeroTotals, type Membership, type UsageRecord } from "./store";
@@ -20,13 +20,11 @@ export const SWEEP_INTERVAL_MS = 30_000;
  * no plugin inbox, wake delivery, retention or archive-on-idle machinery.
  */
 export class Runtime {
-  private disposed = false;
   // The running sweep service's signal. BB keeps delivering events to an
   // instance whose service it stopped, until dispose finishes; once this
   // aborts, idle events stop starting handovers and convergence.
   private stopSignal?: AbortSignal;
   private usageSamples = new Map<string, Promise<void>>();
-  private compactions = new Map<string, { abort: AbortController; done: Promise<void> }>();
 
   constructor(private readonly service: ProjectsService) {}
 
@@ -40,16 +38,8 @@ export class Runtime {
     return this.service.bb.log;
   }
 
-  dispose() {
-    this.disposed = true;
-    for (const { abort } of this.compactions.values()) abort.abort();
-    this.service.memory.dispose();
-  }
-
   start(signal?: AbortSignal) {
-    this.disposed = false;
     this.stopSignal = signal;
-    this.service.memory.start(signal);
   }
 
   // BB lifecycle events ----------------------------------------------------------
@@ -78,8 +68,6 @@ export class Runtime {
         this.log.warn(`Final-message capture failed: ${errorMessage(error)}`),
       );
     }
-    // D431: a coordinator's turn ended: its messages join the Initiative's memory log.
-    if (membership.workerNum === 0) this.service.memory.kick(membership.project.id);
     // A former coordinator generation going quiet may be the last blocker a
     // pending parenting transfer was waiting on.
     if (membership.workerNum === 0 && membership.former) {
@@ -97,47 +85,6 @@ export class Runtime {
     // thread reads as "awaiting its report" in the overview.
     if (membership.workerNum !== 0 || membership.former) return;
     await this.service.drainHandover(membership.project.id, this.stopSignal);
-    this.compactAfterIdle(membership.project.id, thread.id);
-  }
-
-  /**
-   * W215: a large coordinator context is compacted between turns. The check reads BB's
-   * events, so it runs detached from the idle handler, owned here: dispose and the service
-   * signal abort it, and one runs per thread at a time.
-   */
-  private compactAfterIdle(projectId: string, threadId: string) {
-    const stop = this.stopSignal;
-    if (this.disposed || stop?.aborted || this.compactions.has(threadId) || !this.service.compaction.enabled(projectId)) return;
-    const abort = new AbortController();
-    const link = stop ? addAbortListener(stop, () => abort.abort(stop.reason)) : null;
-    const done = this.service.compaction
-      .afterIdle(projectId, threadId, abort.signal)
-      .then(
-        () => {},
-        (error) => {
-          if (!abort.signal.aborted) this.log.warn(`Coordinator compaction failed: ${errorMessage(error)}`);
-        },
-      )
-      .finally(() => {
-        link?.[Symbol.dispose]();
-        this.compactions.delete(threadId);
-      });
-    this.compactions.set(threadId, { abort, done });
-  }
-
-  /**
-   * D431: BB's per-thread event signal (at most once a second). A coordinator's log is read, and
-   * its tree built, as it works, not only when its turn ends, in every mode (D447).
-   */
-  onThreadEvents(threadId: string) {
-    if (this.disposed || this.stopSignal?.aborted) return;
-    const projectId = this.service.memory.projectOfCoordinator(threadId);
-    if (projectId) this.service.memory.kick(projectId);
-  }
-
-  /** Resolves once every compaction check this runtime started has finished. */
-  async compactionsSettled() {
-    await Promise.all([...this.compactions.values()].map(({ done }) => done));
   }
 
   async onThreadFailed(thread: ThreadDto, error: string | null) {
@@ -444,9 +391,6 @@ export class Runtime {
           ),
         );
     }
-    // D431: Initiatives whose memory log no idle event refreshed lately, and first logs. Last,
-    // and detached: reading a log never delays the pass's own work.
-    if (!signal.aborted) this.service.memory.sweep();
   }
 
   // Usage --------------------------------------------------------------------------

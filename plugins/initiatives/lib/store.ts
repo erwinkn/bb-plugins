@@ -37,7 +37,6 @@ import {
 import { isLegacyReport, storedReportSchema } from "./legacy";
 import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-schema";
 import { PR_STAGE_IDS, type PrRecord, type PrStage } from "./pr-stages";
-import { MEMORY_MIGRATIONS } from "./memory/store";
 import { PR_NOTE_MIGRATIONS } from "./pr-notes";
 import { WRITE_RECEIPT_MIGRATIONS } from "./write-receipt-migrations";
 
@@ -413,8 +412,14 @@ export const MIGRATIONS = [
   )`,
   // W206: the role a coordinator asked for on spawn (worker, experimenter, fast, analyst); null for reviewers and older workers.
   `ALTER TABLE workers ADD COLUMN kind TEXT`,
-  // W220 (D431): coordinator memory: mode, log, cursors, tree nodes and saved views.
-  ...MEMORY_MIGRATIONS,
+  // W220 (D431): coordinator memory: mode, log, cursors, tree nodes and saved views. T145 moved
+  // memory to the Chat memory plugin, which copies these tables once; they stay, unwritten, as its
+  // rollback, and so that every later migration keeps its index.
+  `CREATE TABLE memory_settings (project_id TEXT PRIMARY KEY, mode TEXT NOT NULL, compact_tokens INTEGER, updated_at INTEGER NOT NULL)`,
+  `CREATE TABLE memory_log (project_id TEXT NOT NULL, i INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, size INTEGER NOT NULL, at INTEGER NOT NULL, thread_id TEXT, seq INTEGER, PRIMARY KEY (project_id, i))`,
+  `CREATE TABLE memory_cursors (project_id TEXT NOT NULL, thread_id TEXT NOT NULL, last_seq INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, PRIMARY KEY (project_id, thread_id))`,
+  `CREATE TABLE memory_nodes (project_id TEXT NOT NULL, l INTEGER NOT NULL, i INTEGER NOT NULL, text TEXT NOT NULL, how TEXT NOT NULL, tries INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (project_id, l, i))`,
+  `CREATE TABLE memory_trees (project_id TEXT PRIMARY KEY, views TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0, tries INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, call_ms INTEGER NOT NULL DEFAULT 0, log_bytes INTEGER NOT NULL DEFAULT 0, nodes INTEGER NOT NULL DEFAULT 0, fallbacks INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)`,
   // W224 (D437, D438): one record per pull request (canonical URL): the stage of pr_stages,
   // plus category and where it stands. JSON columns: changes [text], decision {text,link,at}.
   // discussion_thread_id is the D439 hook. Questions live in pr_notes (D442).

@@ -9,10 +9,8 @@ import {
   type ProjectTree,
 } from "./lib/contract";
 import {
-  changesMemory,
   createSchema,
   delegateSchema,
-  MEMORY_DASHBOARD_ONLY,
   parseCommandInput,
   parseDecisionCommand,
   refuseRemoved,
@@ -40,9 +38,8 @@ import {
 import { legacyReportSchema, LEGACY_TOOL_NAMES } from "./lib/legacy";
 import { reportSchema } from "./lib/schema";
 import { definePreferences } from "./lib/settings";
-import { MEMORY_GUIDANCE } from "./lib/guidance";
 import { WriteReceipts } from "./lib/write-receipts";
-import { TURN_CONTEXT_TOOL, turnAskSchema, zoomToolSchema } from "./lib/memory/memory";
+import { CHAT_MEMORY_PLUGIN_ID, MemoryScopes } from "./lib/memory-scopes";
 import { Store, MIGRATIONS } from "./lib/store";
 import { ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
@@ -63,10 +60,10 @@ import { prSummary } from "./lib/pr-map";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
 
-const CLI_COMMANDS = ["describe", "list", "overview", "read", "zoom", "message", "command", "report", "pr", "reconcile", "recreate-coordinators"];
+const CLI_COMMANDS = ["describe", "list", "overview", "read", "message", "command", "report", "pr", "reconcile", "recreate-coordinators"];
 /** Tools initiative_batch can run, by their name without the initiative_ prefix. */
 const BATCH_TOOLS = ["spawn", "message", "task", "worker", "decision", "update", "pr", "read"] as const;
-const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | zoom <id> <n> [initiative-id] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
+const CLI_USAGE = "Usage: bb initiative describe [name] | list | overview [id] | read <view> [id] [options-json] | message '<json>' | command '<json>' [id] | report '<json>' | pr '<json>' [id] | reconcile | recreate-coordinators (--all | <id>...) [--dry-run] [--wait=<s>]";
 import { decisionToolJsonSchema } from "./lib/decision-input";
 import { toolReceipt } from "./lib/receipts";
 import { ProjectError, errorMessage } from "./lib/bb";
@@ -90,8 +87,10 @@ export default function plugin(bb: BbPluginApi) {
   const preferences = definePreferences(bb, { has: (key) => store.hasFlag(key), set: (key) => store.setFlag(key) });
   const service = new ProjectsService(bb, store, preferences);
   const runtime = new Runtime(service);
-  bb.onDispose(() => runtime.dispose());
+  // T145: the Chat memory plugin learns each Initiative's threads from the ledger, after every change.
+  const memoryScopes = new MemoryScopes({ store, sdk: () => bb.sdk, log: (message) => bb.log.warn(message) });
   const changed = (projectId?: string) => {
+    void (projectId ? memoryScopes.sync(projectId) : memoryScopes.syncAll());
     const payload: Record<string, string> = projectId ? { projectId } : {};
     bb.realtime.publish("initiatives-changed", payload);
     // A plugin app only hears its own realtime signals: the Threads sidebar
@@ -139,9 +138,8 @@ export default function plugin(bb: BbPluginApi) {
     threadId: string | null,
   ) => {
     const run = () => runCommand(service, id, command, author, threadId);
-    // A memory switch only writes its setting, so it never waits behind a slow write (W239).
     if (
-      ["answer", "blocker-answer", "blocker-dismiss", "pause", "assignment-stop", "stop-work", "memory"].includes(
+      ["answer", "blocker-answer", "blocker-dismiss", "pause", "assignment-stop", "stop-work"].includes(
         command.action,
       )
     )
@@ -178,7 +176,6 @@ export default function plugin(bb: BbPluginApi) {
       detail,
     );
     result.project.profileDefaults = profileDefaults;
-    result.memory = service.memory.status(projectId);
     result.revision = { epoch: instanceEpoch, version: ledgerVersion() };
     // One workspace-wide queue read, shared by every Initiative's refresh. A
     // failed read shows nothing rather than guessing (T133).
@@ -434,16 +431,7 @@ export default function plugin(bb: BbPluginApi) {
       };
     },
     read: async ({ projectId, view, ...options }) => view === "threads" ? readThreads(projectId, options) : read(projectId, view, options),
-    // D452: the dashboard's memory switch. Unlike `command`, which refuses memory changes, this
-    // is the one entry that writes them. BB gives RPC handlers no caller identity, so a local
-    // caller who knows this method can still reach it; see MEMORY_DASHBOARD_ONLY.
-    setMemory: ({ projectId, mode, compactTokens }) =>
-      announcing(
-        () => perform(projectId, { action: "memory", ...(mode !== undefined ? { mode } : {}), ...(compactTokens !== undefined ? { compactTokens } : {}) }, "user", null),
-        () => projectId,
-      ),
     command: ({ projectId, command, key }) => {
-      if (changesMemory(command)) throw new ProjectError(MEMORY_DASHBOARD_ONLY);
       const write = () => {
         if (command.action === "thread-create" && "prompt" in command) {
           if (!projectId) throw new ProjectError("Pass an Initiative ID.");
@@ -578,16 +566,6 @@ export default function plugin(bb: BbPluginApi) {
     "initiative_pr",
     "initiative_batch",
   ];
-  /**
-   * D447: a coordinator has zoom in every mode, and D431 a Claude Code one the hidden
-   * turn context tool, so a switch to or from optchat takes effect at its next turn: tools reach
-   * a session only when it is constructed.
-   */
-  const coordinatorSelection = (providerId: string) => [
-    ...coordinatorTools,
-    "initiative_zoom",
-    ...(providerId === "claude-code" ? [TURN_CONTEXT_TOOL] : []),
-  ];
   bb.agents.configure((ctx) => {
     const guidance = () => preferences.configuration();
     const meta = ctx.pluginMetadata;
@@ -622,17 +600,16 @@ export default function plugin(bb: BbPluginApi) {
             "UPDATE coordinator_starts SET thread_id=? WHERE project_id=? AND op_id=? AND state IN ('pending','uncertain') AND (thread_id IS NULL OR thread_id=?)",
           )
           .run(ctx.thread.id, meta.projectId, meta.op, ctx.thread.id);
-      // D447: the memory tools and guidance come in every mode, so a switch needs no new
-      // session; zoom still requires confirmed membership.
+      // T145: the Initiative's memory takes the new coordinator in before its first turn asks for it.
+      void memoryScopes.sync(meta.projectId);
       return {
-        tools: coordinatorSelection(ctx.provider.id),
+        tools: coordinatorTools,
         skills: ["initiative-coordinator"],
         instructions: [
           guidance().coordinatorInstructions,
           start && ["pending", "uncertain"].includes(start.state)
             ? `You are the pending coordinator of this initiative. Your start receipt is recorded but this thread's checkout is still being proven against the primary repository's default source. Read initiative state once this thread is confirmed; until then, Initiative reads and mutations require confirmed membership. If membership is unavailable, leave confirmation and settlement to the operator. Do not retry the start.`
             : `Your coordinator start did not confirm (state ${start?.state ?? "unknown"}). Initiative reads and mutations require confirmed membership. Leave settlement to the operator. Do not retry the start.`,
-          MEMORY_GUIDANCE,
         ].join("\n\n"),
       };
     }
@@ -671,16 +648,13 @@ export default function plugin(bb: BbPluginApi) {
         instructions:
           "This is a former context. Read initiative state, but leave coordination and reporting to the current threads.",
       };
-    if (m?.workerNum === 0) {
-      // D447: the coordinator gets its memory tools and one line of guidance in every mode: BB
-      // fixes a session's tools when it is built, and a mode switch applies at the next turn.
+    if (m?.workerNum === 0)
+      // T145: the memory tools, guidance and turn hook come from the Chat memory plugin.
       return {
-        tools: coordinatorSelection(ctx.provider.id),
+        tools: coordinatorTools,
         skills: ["initiative-coordinator"],
-        // Last, so instructions near BB's 4,096-character cap lose this line, never the membership.
-        instructions: [guidance().coordinatorInstructions, `Current Initiative membership: ${JSON.stringify(currentIdentity(store, m))}`, MEMORY_GUIDANCE].join("\n\n"),
+        instructions: [guidance().coordinatorInstructions, `Current Initiative membership: ${JSON.stringify(currentIdentity(store, m))}`].join("\n\n"),
       };
-    }
     const worker = m?.worker ?? pendingMember(ctx)?.worker;
     const work = m?.worker ? workerWork(store, m.project.id, m.worker.num, m.worker.generation).assignments[0] : null;
     if (worker)
@@ -704,7 +678,7 @@ export default function plugin(bb: BbPluginApi) {
    * through the fork's alwaysLoad (MCP _meta "anthropic/alwaysLoad"). Older SDK types lack the
    * field and an older BB ignores it, so it is spread in untyped.
    */
-  const UPFRONT = ["initiative_zoom", "initiative_read", "initiative_message", "initiative_spawn", "initiative_batch"];
+  const UPFRONT = ["initiative_read", "initiative_message", "initiative_spawn", "initiative_batch"];
   const registerTool: typeof bb.agents.registerTool = (tool: Parameters<typeof bb.agents.registerTool>[0]) => {
     const schema = typeof (tool.parameters as { safeParse?: unknown }).safeParse === "function" ? tool.parameters as unknown as z.ZodType : null;
     const run: ToolExecute = (input, context) => tool.execute(schema ? parsed(schema, input, tool.name) : input, context);
@@ -746,6 +720,20 @@ export default function plugin(bb: BbPluginApi) {
       } : {}),
     } as Parameters<typeof bb.agents.registerTool>[0]);
   };
+  // T145 (A469): sessions built while this plugin owned the memory know initiative_zoom and
+  // initiative_read {view:"memory"}. Both stay, read only, over the Chat memory plugin's RPCs;
+  // configure never selects initiative_zoom, so new sessions use memory_zoom.
+  const chatMemory = <T>(method: "read" | "zoom", input: { threadId: string; id?: number; n?: number }, outputSchema: z.ZodType<T>) =>
+    bb.sdk.plugins.callRpc({ pluginId: CHAT_MEMORY_PLUGIN_ID, method, input, outputSchema });
+  registerTool({
+    name: "initiative_zoom",
+    description: "Retained-session compatibility only. Use memory_zoom after natural session construction.",
+    parameters: z.object({ id: z.number().int().min(0), n: z.number().int().min(1) }).strict(),
+    execute: async ({ id, n }, { threadId }) => {
+      if (!threadId) throw new ProjectError("Use initiative_zoom from a thread with chat memory.");
+      return chatMemory("zoom", { threadId, id, n }, z.string());
+    },
+  });
   // A cached obsolete publisher must fail visibly; it cannot write legacy rows.
   bb.agents.registerTool({
     name: "project_knowledge",
@@ -987,47 +975,9 @@ export default function plugin(bb: BbPluginApi) {
       if (!view || view === "overview") return JSON.stringify(compactOverview(store, m.project.id));
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
       if (view === "context") return JSON.stringify(readContext(store, m.project.id));
-      if (view === "memory") return JSON.stringify(readMemory(m.project.id));
+      if (view === "memory") return JSON.stringify(await chatMemory("read", { threadId }, z.object({ messages: z.number(), view: z.string(), note: z.string() })));
       if (view === "prs") return JSON.stringify(prSummary(await mergeQueue.read(m.project.id)));
       return JSON.stringify(read(m.project.id, view, options));
-    },
-  });
-  /** D431: the memory view a coordinator reads after a compaction (16–32 KB), in every mode (D447). */
-  const readMemory = (projectId: string) => {
-    service.requireProject(projectId);
-    const view = service.memory.view(projectId, "memory");
-    const pending = view.summarized < view.messages ? ` Messages ${view.summarized} to ${view.messages - 1} are not in the view yet: read them with n:1.` : "";
-    return {
-      messages: view.messages,
-      view: view.lines.join("\n"),
-      note: `One line per summary, "id+n|text": the n messages from id on, oldest first; "(not summarized yet: zoom it)" marks a line still being written. Open line 64+32 with initiative_zoom {id:64,n:32}: its two halves; n:1 gives one message whole. Each line zoom gives starts with the time of its first message.${pending}`,
-    };
-  };
-  const memoryThread = (threadId: string | undefined) => {
-    const m = threadId ? store.membership(threadId) : null;
-    if (!m || m.workerNum !== 0) throw new ProjectError("Coordinator memory is read from the Initiative's coordinator thread.");
-    return m.project.id;
-  };
-  registerTool({
-    name: "initiative_zoom",
-    description: 'Open line id+n of your memory view (initiative_read {view:"memory"}) into the two lines it was made from; n:1 gives message id whole. Each line starts with the time of its first message.',
-    parameters: zoomToolSchema,
-    execute: async ({ id, n }, { threadId }) => service.memory.zoom(memoryThread(threadId), id, n),
-  });
-  // D431 phase 2: not shown to the model. BB's Claude Code provider calls it before each new
-  // turn of a coordinator, with the turn's request and session and what became of its earlier
-  // calls (turnAskSchema); "{}" lets the session go on. A model that sees it (a provider without
-  // the patch) sends only `input`: "{}", and nothing changes.
-  bb.agents.registerTool({
-    name: TURN_CONTEXT_TOOL,
-    description: "Internal to BB's Claude Code provider: how the next turn of an Initiative coordinator runs (OptChat memory). Never call it.",
-    parameters: z.object({ input: z.string() }).passthrough(),
-    execute: async (args, { threadId }) => {
-      const ask = turnAskSchema.safeParse(args);
-      if (!ask.success) return "{}";
-      const m = threadId ? store.membership(threadId) : null;
-      if (!m || m.workerNum !== 0 || m.former || m.project.archivedAt !== null) return "{}";
-      return JSON.stringify(await service.memory.turnContext(m.project.id, threadId!, ask.data));
     },
   });
   const batchSchema = z.object({
@@ -1117,12 +1067,7 @@ export default function plugin(bb: BbPluginApi) {
         name: "read",
         summary: "Read a stored collection",
         usage:
-          "bb initiative read <records|tasks|workers|reports|assignments|decisions|updates|activity|usage|threads|memory> [initiative-id] [options-json]; records takes mixed refs",
-      },
-      {
-        name: "zoom",
-        summary: "Open line id+n of the coordinator's memory view (bb initiative read memory); n 1 gives message id whole; each line starts with its time",
-        usage: "bb initiative zoom <id> <n> [initiative-id]",
+          "bb initiative read <records|tasks|workers|reports|assignments|decisions|updates|activity|usage|threads> [initiative-id] [options-json]; records takes mixed refs. The coordinator's memory: bb chat-memory",
       },
       {
         name: "command",
@@ -1168,13 +1113,7 @@ export default function plugin(bb: BbPluginApi) {
           result = store.projects().map((p) => summary(p.id));
         else if (action === "overview" && args.length <= 2)
           result = ctx.threadId ? compactOverview(store, value ?? member?.project.id ?? "") : await overview(value ?? member?.project.id ?? "");
-        else if (action === "read" && value === "memory" && args.length <= 3) {
-          result = readMemory(id ?? "");
-        } else if (action === "zoom" && value && args.length >= 3 && args.length <= 4) {
-          const projectId = args[3] ?? member?.project.id ?? "";
-          service.requireProject(projectId);
-          result = service.memory.zoom(projectId, Number(value), Number(args[2]));
-        } else if (action === "read" && args.length <= 4) {
+        else if (action === "read" && args.length <= 4) {
           const view = z.enum(["records", ...READ_VIEWS]).parse(value);
           const options = readOptionsSchema.parse(args[3] ? JSON.parse(args[3]) : {});
           result = view === "records" ? readRefs(store, id ?? "", options)
@@ -1185,8 +1124,6 @@ export default function plugin(bb: BbPluginApi) {
           result = await sendMessage(JSON.parse(value), ctx.threadId);
         } else if (action === "command" && value && args.length <= 3) {
           const command = parseCommandInput(JSON.parse(value));
-          // D452: no CLI switches an Initiative's memory, an agent's or the user's terminal.
-          if (changesMemory(command)) throw new ProjectError(MEMORY_DASHBOARD_ONLY);
           if (
             ctx.threadId &&
             ["acknowledge", "decision-review", "question-close"].includes(command.action)
@@ -1292,7 +1229,6 @@ export default function plugin(bb: BbPluginApi) {
   // Lifecycle events carry the current DTO: keep dashboard facts current.
   for (const name of ["thread.created", "thread.active", "thread.idle", "thread.failed", "thread.archived", "thread.unarchived", "thread.deleted"] as const)
     bb.events.on(name, ({ thread }) => liveThreads.observe(thread));
-  bb.events.on("experimental_thread.events", ({ thread }) => runtime.onThreadEvents(thread.id));
   bb.events.on(
     "message.dispatched",
     event(({ entry }) => runtime.onMessageDispatched(entry.id)),
@@ -1304,29 +1240,27 @@ export default function plugin(bb: BbPluginApi) {
   bb.background.service("initiatives-sweep", {
     async start(signal) {
       runtime.start(signal);
-      try {
-        while (!signal.aborted) {
-          const before = ledgerVersion();
-          await runtime.sweep(signal);
-          if (signal.aborted) break;
-          if (ledgerVersion() !== before) changed();
-          await new Promise<void>((resolve) => {
-            const done = () => {
-              clearTimeout(timer);
-              signal.removeEventListener("abort", done);
-              resolve();
-            };
-            const timer = setTimeout(done, SWEEP_INTERVAL_MS);
-            signal.addEventListener("abort", done, { once: true });
-            if (signal.aborted) done();
-          });
-        }
-      } finally {
-        runtime.dispose();
+      while (!signal.aborted) {
+        const before = ledgerVersion();
+        await runtime.sweep(signal);
+        if (signal.aborted) break;
+        if (ledgerVersion() !== before) changed();
+        // T145: a send the Chat memory plugin missed (reloading, not yet installed) goes again.
+        else void memoryScopes.syncAll();
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", done);
+            resolve();
+          };
+          const timer = setTimeout(done, SWEEP_INTERVAL_MS);
+          signal.addEventListener("abort", done, { once: true });
+          if (signal.aborted) done();
+        });
       }
     },
   });
   // Tests drive commands as an entry point would, announcement included.
   const command = (...args: Parameters<typeof perform>) => announcing(() => perform(...args), () => args[0]);
-  return { service, store, runtime, perform: command, overview, tree, preferences };
+  return { service, store, runtime, perform: command, overview, tree, preferences, memoryScopes };
 }

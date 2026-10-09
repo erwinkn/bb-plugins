@@ -53,10 +53,10 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   thread), e.g. `{"tool":"task","ok":true,"ref":"T4","state":"done"}`. `initiative_read`
   with refs has the full records.
 - Every message of the Initiative is logged and summarized into a tree, in every memory
-  mode. `initiative_read {view:"memory"}` lists its one-line
-  summaries, `id+n|text`; `initiative_zoom {id:64,n:32}` opens a line into its two halves
-  (`n:1`: one message whole), each line starting with its time. Use them after a
-  compaction, or whenever you need what your context no longer holds.
+  mode (the Chat memory plugin). `memory_read` lists its one-line summaries, `id+n|text`;
+  `memory_zoom {id:64,n:32}` opens a line into its two halves (`n:1`: one message whole),
+  each line starting with its time. Use them after a compaction, or whenever you need what
+  your context no longer holds.
 - `initiative_manage` handover replaces you with a fresh coordinator once your turn ends.
   GPT-6 Luna High writes its first message from recent activity.
 

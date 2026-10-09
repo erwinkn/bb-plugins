@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import { projectFixture } from "./fake-native";
 import { MIGRATIONS } from "../lib/store";
-import { MEMORY_MIGRATIONS } from "../lib/memory/store";
 import { PR_NOTE_MIGRATIONS } from "../lib/pr-notes";
 import { parsePullRequests, type MergeQueue, type QueuedPullRequest } from "../lib/merge-queue";
 import { PR_STAGES, type PrStage } from "../lib/pr-stages";
@@ -30,7 +29,7 @@ const spawn = async (f: Fx, projectId: string, brief: string) => {
 
 describe("W229 P1: the PR migrations follow the deployed memory ones", () => {
   it("upgrades a database the SDK runner migrated through index 76, keeping its PR stages", async () => {
-    expect(MIGRATIONS.slice(72, 77)).toEqual(MEMORY_MIGRATIONS);
+    expect(MIGRATIONS.slice(72, 77).map((sql) => /^CREATE TABLE (memory_\w+)/.exec(sql)?.[1])).toEqual(["memory_settings", "memory_log", "memory_cursors", "memory_nodes", "memory_trees"]);
     expect(MIGRATIONS[77]).toMatch(/^CREATE TABLE pr_records/);
     expect(MIGRATIONS[78]).toMatch(/^INSERT INTO pr_records/);
     expect(MIGRATIONS.slice(79, 79 + PR_NOTE_MIGRATIONS.length)).toEqual(PR_NOTE_MIGRATIONS);

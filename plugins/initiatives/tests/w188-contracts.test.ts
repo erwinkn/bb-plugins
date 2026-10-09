@@ -2,7 +2,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { manageCommand, manageToolSchema, messageCommand, messageToolSchema, spawnCommand, spawnToolSchema, taskCommand, taskToolSchema, workerCommand, workerToolSchema } from "../lib/agent-tools";
 import { parseDecisionCommand, REMOVED_ACTIONS } from "../lib/commands";
-import { zoomToolSchema } from "../lib/memory/memory";
 import { agentReadSchema, readOptionsSchema, validateFields, validateSelection, viewForRef, withImpliedDetail, type ReadView } from "../lib/read";
 
 /**
@@ -84,7 +83,6 @@ function parseAs(tool: string, raw: Record<string, unknown>) {
       else if (view && !["overview", "context"].includes(view)) validateSelection(view as ReadView, options);
       return options;
     }
-    case "initiative_zoom": return zoomToolSchema.parse(raw);
     default: throw new Error(`unknown tool ${tool}`);
   }
 }

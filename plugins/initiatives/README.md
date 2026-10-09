@@ -169,7 +169,7 @@ Coordinator tools: `initiative_read`, `initiative_spawn`, `initiative_message`,
 `initiative_create`. Every tool publishes one flat object schema (Claude's bridge
 blanks union roots) and validates it on the server. The published schema keeps its
 length bounds, so agents see the limits the server enforces, and leaves out
-`$schema` and zod's implicit integer maximum, which only cost tokens (T143). Claude Code loads `initiative_zoom`, `initiative_read`,
+`$schema` and zod's implicit integer maximum, which only cost tokens (T143). Claude Code loads `initiative_read`,
 `initiative_message`, `initiative_spawn` and `initiative_batch` upfront
 (`alwaysLoad`, a fork Plugin SDK field an older BB ignores); the others stay behind
 ToolSearch. The CLI is `bb initiative`;
@@ -932,250 +932,33 @@ Replaying the Equisafe coordinator's transcript through this formatting cut its
 Initiative tool results from 455 KB to 193 KB and its report messages from
 339 KB to 32 KB.
 
-**Compaction.** When a coordinator's turn ends with its context larger than its
-limit, the
-plugin compacts it in place with BB's `threads.compact` (Claude Code's
-`/compact`, Codex's thread compaction): the same thread, no handover. It runs
-after the coordinator's idle event, without holding up the idle handler, and
-stops when the plugin shuts down; BB refuses unless the thread is idle or
-errored, so a turn is never cut. The size is BB's latest context-window
-snapshot, read fresh from the thread's events rather than from usage sampling,
-which can lag behind a long turn; when that read fails, nothing is attempted.
-One snapshot triggers at most one attempt; a compaction or clear after it
-leaves the size unknown until the next turn; a thread is not compacted twice
-within 30 minutes; a paused or archived Initiative, or one with a pending
-handover, is left alone. A coordinator replacement or start in flight, or a
-handover being written, skips it; a replacement or handover writer that begins
-while a compaction call is in flight waits for that call. Each attempt, and any refusal, is in the activity log.
-The limit is the Initiative's own (`{"action":"memory","compactTokens":200000}`),
-else the setting for its memory mode: `coordinatorCompactTokens` (default
-300,000) for regular, `hybridCompactTokens` (default 150,000) for hybrid. 0
-turns it off.
+## Memory (T145)
 
-## Memory (D431, D447)
+An Initiative's memory belongs to the [Chat memory](../chat-memory/README.md)
+plugin (D457): the log of everything its coordinators said and saw, the GPT-6
+Luna summary tree, the Regular / Hybrid / OptChat mode, compaction, the memory
+tools (`memory_read`, `memory_zoom`) and Claude Code's per-turn OptChat hook.
+Only the user switches it, from the coordinator's **Memory** pill (D452).
 
-Each Initiative has one memory setting, for its coordinator and, once they
-exist, its discussion threads (D446). Every mode keeps the same log and builds
-the same summary tree of everything the coordinators ever said and saw, so a
-switch is instant; it applies from each thread's next turn.
+This plugin only tells Chat memory which threads share an Initiative's memory:
+the scope `initiatives:<id>` holds its coordinator and a coordinator being
+started (its first turn may come before its start is confirmed); D446's
+discussion threads join it. Workers never do; an archived Initiative's scope is
+closed, and a paused one holds its automatic compaction (`hold`). The threads
+come from the ledger and are sent (`setScope`) after every ledger change and
+every sweep, when they differ from what Chat memory last accepted, so a send it
+missed while reloading goes again 30 s later. One send per Initiative runs at a
+time; a change made while one is under way is sent once it settles, so the
+latest state is always the last one sent. A coordinator this plugin spawns or
+adopts carries `memoryScope: <Initiative id>` in its metadata, so Chat memory
+waits for its registration if its first turn comes first.
 
-- **regular** (default): one long chat, compacted past 300k tokens.
-- **hybrid**: compacts sooner, at 150k; what a compaction drops stays one zoom
-  away in the tree.
-- **optchat**: each turn is a fresh Claude session over the summary view, as in
-  Victor Taelin's [OptChat gist](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449),
-  in the same BB thread (see [OptChat turns](#optchat-turns-d431-phase-2)). An
-  optchat session is never compacted; a coordinator that runs as hybrid
-  compacts at hybrid's limit.
-
-Switch it from the coordinator thread's header (the "Memory · Hybrid" pill opens
-a popover), the dashboard header under the coordinator, or Context → Memory:
-each is a three-way segmented control with a line per mode.
-Only the dashboard changes it (D452): `bb initiative command`, the agent tools
-and the generic `command` RPC refuse `mode` and `compactTokens` from every caller
-(an agent thread, a user terminal, a client), including `compactTokens: null`,
-and `{"action":"memory"}` only reads the current setting. The dashboard writes
-through a dedicated `setMemory` RPC that no guidance, skill or CLI help names.
-Known limit: BB gives plugin RPCs no caller identity, so a local caller who
-knows that method can still reach it; real enforcement needs BB to tell RPC
-handlers whether the UI or a CLI/agent called (an upstream candidate in the
-repository README). A switch never waits behind another write: it only
-saves the setting.
-
-What depends on the mode is read at each turn, never fixed in a session: the
-compaction limit (read when the coordinator goes idle) and whether a turn runs
-in a fresh session (OptChat turns, below). The coordinator's memory tools and guidance are the same in
-every mode, because BB fixes a session's tools and instructions when the
-session is built. A coordinator from before this (D447) may lack them: outside
-regular mode the switch says so until the coordinator is replaced (W244).
-
-**The log** is append-only, It is append-only,
-one row per message, across every coordinator thread of the Initiative
-(replacements, handovers, compactions), read from BB's own thread events
-(`client/turn/requested`, `item/completed`, `turn/completed`, and Claude Code's compaction
-summary), the same for Claude Code and Codex coordinators. Kinds: `user`,
-`coord` (replies), `tool` (calls), `echo` (results, head and tail within 30,000
-characters), `work` (`[W12] …` from a worker, `[bb] …` from BB, including
-`[bb] (stopped) …` after a stopped turn, so later views know its reply was cut
-off), `note` (handovers and compaction summaries). Thoughts are never logged. It is read
-when a coordinator's turn ends, every second while it works, and by the
-sweep, which starts the three least recently read Initiatives not read for 5
-minutes, so every live Initiative, paused ones too, gets its first log and tree. Threads are read oldest first, and a later one only once every
-earlier one is read through, so the log stays in order across slices and
-failed reads. Each read first takes the thread's newest event as its boundary,
-so an event that lands mid-read waits for the next read instead of being
-skipped; a former coordinator's status is read before its events, so it is
-marked complete only after a read that began once it was quiet. Newer
-coordinators wait for that read, but no longer than 10 minutes after the
-replacement: then they are logged, the former's last messages follow when they
-land, and the activity log notes it. An Initiative's first log reaches back from the current
-coordinator through earlier ones until one that began from a handover or a new
-Initiative, whose first message is a note; a failed read saves nothing, and
-the next pass looks again.
-
-**The tree** follows the gist exactly, as W216 replayed it: message i becomes
-a line of at most 512 bytes (`id+n|text`), adjacent lines merge in pairs into
-512-byte lines; text that fits is kept with no call. The chat view (what an
-optchat turn sees) is a 128→64 KB sawtooth merged by due = (T+1)/2^l − i;
-the memory view, the context of every summarizer call, is the chat view merged
-further on a 32→16 KB sawtooth. Both views are saved, never rebuilt. GPT-6 Luna
-(`memoryEffort`, xhigh by default) writes the lines with the gist's prompt and
-512-dash ruler; a line over 512 bytes gets "Too long …| ← LIMIT" in the same
-conversation, up to 5 tries, keeping the shortest. Up to `memoryConcurrency`
-(8) calls run at once across every Initiative, let in round-robin by Initiative,
-so one large backlog never holds every call while another Initiative waits
-(W244); ready nodes wait in a queue; a call waits while another
-writes the same cached prefix. A node that fails 3 times is cut to fit (shown as
-"cut after failures"), so one bad message never blocks the tree. A 429 pauses
-every new call with a growing backoff (or Retry-After); an unavailable route
-pauses for 10 minutes. It runs in every mode (D447; the bb-plugins Initiative's
-2 MB log cost about $2.40 to summarize whole), detached from the idle handler, and stops on
-shutdown or at once when the Initiative is archived (its calls abort and its summary
-waiters give up); what is built stays, and a stopped
-run writes nothing more. Its progress reaches the dashboards at most every 30
-seconds per Initiative (they also poll every 15), so a busy coordinator never
-floods every open client with re-reads. Only the nodes in use are held in memory
-(a 2 MB cache over the database); a builder's first run finds its ready nodes
-from which nodes exist, in slices, and the dashboard reads running counts.
-
-**Luna** is called through the Account Pooler's isolated plugin route
-(`/advisor/v1/responses`, the Pooler's plugin token), on the pool's Codex
-accounts: no credential of its own. Every call of one Initiative sends one
-`session_id`, the key Codex caches a prefix by. It needs the Pooler's codex
-advisor route on (`bb pool-local advisor set codex on`) and a Pooler that passes
-`session_id` through; until then the dashboard shows "Summarizer unavailable".
-
-**The coordinator** gets, in every mode, `initiative_zoom {id,n}` (the two
-lines line id+n was made from; n 1 is the message whole; each line starts with
-the time of its first message, `2026-10-08 17:49Z 64+16|…`), and one line of guidance: after a compaction, read `initiative_read
-{view:"memory"}` (the 16–32 KB memory view) and zoom before acting. `bb initiative read memory`
-and `bb initiative zoom <id> <n>` serve the same from a
-shell. The dashboard shows the mode, log size, tree progress, view sizes and the
-summarizer's cost at list price.
-
-### OptChat turns (D431 phase 2)
-
-A memory mode switch takes effect at the coordinator's next turn, in both
-directions, in the same BB thread: Erwin keeps talking to the coordinator as
-before, and its transcript shows every turn.
-
-It needs a fork patch to BB's Claude Code provider (`~/Code/bb`, branch `erwin`,
-"Claude Code: per-turn context from a hidden tool"). Before each new turn (not a
-message steered into a running one) of a thread that has the hidden tool
-`claude_code_turn_context`, the provider calls it with `{protocol: 3, input,
-requestId, sessionId, reports}`: the turn's text, its BB request, the Claude
-session the thread runs in, and what became of its earlier calls (below). The
-plugin gives that tool to Claude Code coordinators only, in every mode, and it
-is never shown to the model. An answer `{session:"fresh", sessionId,
-systemPrompt, input}` runs the turn in a new Claude session with that id: BB's
-system prompt plus `systemPrompt`, with `input` as its first message; `{}`, an
-error, or no answer within 20 seconds lets the thread's session go on (the
-provider forgets the request, so a late answer is ignored). The new session has
-the thread's tools, from its own MCP server instance (one instance serves one
-connection, and the new session starts while the old one is still connected),
-settings and permissions, and BB records it as the thread's provider session,
-so the Account Pooler links, counts and warms it like any other. The provider
-switches only once the new session's CLI has initialized (30 seconds at most);
-if it fails to start, the thread's session goes on with the turn's own text. A
-message steered into the turn while the provider prepares it is held, then
-follows the turn's input into the session the turn runs in, or fails with it;
-an interrupt cancels the preparation. If the thread's session stops on its own
-meanwhile, the provider restarts it and the turn and its held messages run
-there, in order.
-
-An optchat turn's prompt, in order:
-
-1. Claude Code's and BB's system prompt (the coordinator's instructions), then
-   the OptChat prompt (`TURN_PROMPT`: how the view works, answer only the new
-   message, zoom before relying on any detail of the past), then the view's
-   older lines in `<chat>`. These lines are frozen per thread: the next turn
-   keeps them while the view only grows at its end, so the whole system prompt
-   is read from the prompt cache turn after turn. They are frozen again when a
-   merge batch rewrites them or the lines after them pass 32 KB.
-2. The first message: the view's newest lines in a second `<chat>`, then
-   `Now: 2026-10-08 14:32 UTC.`, then `New message:` and the turn's text. The
-   view stops before the turn's own message (W216's failure mode 1).
-
-Turns never wait for the summarizer (W216's failure mode 3). A message without
-its line yet is shown whole up to 2 KB (512 bytes for tool calls and output),
-else as its head and tail around " … ", newest first within 48 KB; older ones
-are placeholders that `initiative_zoom {id, n:1}` opens. Before building the
-view, the plugin reads the coordinator's newest events (up to 5 seconds), and
-the view stops at the turn's own request (`requestId`), not at a later queued
-one. A merged line that crosses that point opens into the lines it was made
-from, so the turn's message is never in its own memory. If the log has not read
-the thread through that request (a failed or slow read), the turn runs as
-hybrid rather than over a stale or empty view.
-
-**Leaving optchat.** The first turn after a switch to hybrid or regular starts
-one more fresh session, this time a regular one: its first message hands over
-the whole view, with the same guide, then the turn. Later turns go on in that
-session, compacted as usual. The handover never waits for the summarizer: a
-backlog of messages with no line shows as one placeholder line per run.
-
-**What runs where.** Only the provider knows whether it ran an answer, so it
-says so: each call carries `reports`, oldest first, one `{requestId,
-offeredSessionId, outcome, sessionId}` per earlier call not yet acknowledged,
-`outcome` being `fresh` (the offered session ran the turn), `resident` (no
-fresh answer, or none in time: the turn ran in the thread's session) or
-`failed` (the offered session failed to start: the turn ran in the thread's
-session). A turn that never ran (interrupted) reports nothing. An answer
-acknowledges the reports it took in with `ack: <the newest one's requestId>`;
-the provider keeps every other report and sends it again with its next call
-(16 at most). So a call the plugin could not check (its request unreadable,
-unknown, or older than the last) loses nothing: it gets `{}`, and its reports
-come again. The provider also keeps a thread's unacknowledged reports, and its
-fresh session's system prompt, across an ordinary Stop: resuming that Claude
-session gets them back (for the last 64 sessions it stopped, until it
-restarts). Answering commits nothing; the plugin acts on the reports only:
-
-- `fresh`, for the session it offered for that very request: an optchat one is
-  flagged (`optchat:<thread>:<session>`) and no longer compacts; a handover's
-  regular session is the thread's, and the handover is done (logged then).
-- `resident` or `failed`: the session named ran a regular turn. An optchat one
-  gets `:hybrid` and compacts at hybrid's limit, and is still handed over when
-  the coordinator leaves optchat. An answer the provider did not run counts as a
-  fallback, and is simply given again next turn.
-
-A report sent again (its acknowledgement lost with a late answer) matches no
-offer any more, so it changes nothing twice. For example: optchat, the
-coordinator in its optchat session S. A turn's fresh answer T times out, so the
-turn runs in S. The next call reports `{outcome: "resident", sessionId: S}`: S
-compacts from then on, and the fallback is counted. Switched to regular, the
-exit turn's request read fails: that call gets `{}`, runs in S, and the next
-call reports both S's last optchat turn and the exit turn, so it is handed
-over then. A handover whose session fails to start reports `failed`, so S is
-still optchat and the next turn is handed over again.
-
-Every call is checked before anything changes: it must parse (`protocol: 3`),
-and its request must be on the thread (looked up page by page, however many
-steers followed it) and no older than the last call taken; otherwise it gets
-`{}`. Its reports must agree with it (each on another request, a fresh one in
-the session offered, the newest in the session it runs in now); otherwise they
-are acknowledged and change nothing. So a model that sees the tool (a provider
-without the patch) and sends only `input` changes nothing. The checks do not
-authenticate the caller, though: a model that knew the private fields and a
-real request ID of its thread could still report a session of its own
-invention and clear the real one's optchat flag. Hence the deploy order, the
-fork first: the patched provider hides the tool.
-
-**Fail safe.** When the view cannot be built (the log, tree or turn's request unreadable, the
-log behind the turn, or more than 16 recent messages with no line, as after
-switching an Initiative whose tree was never built), the turn runs as hybrid:
-the thread's current session goes on. It is counted in the memory status (`optchat.fallbacks`, `lastFallback`) and in the
-activity log, at most once per 10 minutes. A provider without the patch, a
-Codex coordinator, or a coordinator whose session was built before the tool
-existed, runs as hybrid until it is replaced.
-
-**Limits.** Rewinding or forking a coordinator thread to a turn before its
-latest optchat session is not supported. The status's optchat counts reset
-when the plugin restarts, and so does what it knows of each thread's session
-until its next turn (meanwhile an optchat session compacts at hybrid's limit),
-and of its last offer (so a report of it then changes no session). A provider
-that restarts loses its unacknowledged reports; the plugin then keeps what it
-knew, and a fresh session it never heard of compacts as usual.
-The provider cannot cancel the plugin's handler, only stop waiting for it; the
-handler bounds itself (5 seconds of catch-up).
+The old `memory_*` tables stay in this plugin's database, unwritten, as the
+rollback for Chat memory's one-time copy. `{"action":"memory"}` is refused with
+a pointer to Chat memory. Sessions built before T145 still know
+`initiative_read {view:"memory"}` and `initiative_zoom`: both stay as read-only
+aliases over Chat memory's `read` and `zoom` RPCs, never selected for a new
+session.
 
 ## The former projects ID
 
@@ -1327,7 +1110,7 @@ dashboard reads the write was holding. The write itself is not cancelled; the ne
 read shows whether it landed. The remote app reaches bb through the bb connect relay,
 which can lose a request without answering. Sending the same write again is safe
 (W244, W248). A command that adds something (Add task, New Initiative, a message, an
-answer) carries an idempotency key; a command that sets a value (memory mode, pause,
+answer) carries an idempotency key; a command that sets a value (pause,
 closing a task) carries none, since setting the same value again changes nothing and a
 later different choice simply wins. The page keeps a key from the first send until an
 answer settles it: a timeout, a dropped connection or a server error all keep it, so

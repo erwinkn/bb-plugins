@@ -480,7 +480,6 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
   }, () => intercept);
   const p = plugin(host.bb);
   closers.push(async () => {
-    p.runtime.dispose();
     await host.harness.dispose();
   });
   const create = () =>

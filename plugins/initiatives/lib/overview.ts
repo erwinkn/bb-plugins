@@ -1,4 +1,3 @@
-import type { MemoryStatus } from "./memory/memory";
 import type { NotDeliveredMessage } from "./not-delivered";
 import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { BUSY_STATUSES } from "./bb";
@@ -316,8 +315,6 @@ export interface Overview {
   activity: { at: number; kind: string; summary: string }[];
   /** Messages BB is holding for member threads with nothing running to deliver them (T133); filled by the server's native read. */
   notDelivered?: NotDeliveredMessage[];
-  /** D431: the coordinator's memory mode, log, tree progress and cost; set by the server. */
-  memory?: MemoryStatus;
 }
 
 /** Assignment states where work is still owed; reported work is separate. */

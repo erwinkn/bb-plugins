@@ -30,13 +30,6 @@ export const DEFAULT_WORKER_INSTRUCTIONS = `You are a worker in an Initiative. Y
 - Record the user's explicit choices with initiative_decision user-choice. Record your own only when the user may want to veto it (veto-request).`;
 
 /**
- * D431, D447: added to the coordinator's instructions after the user's own, in every mode: the
- * tree is always built, and BB fixes a session's instructions when it is built, so they can't
- * follow a mode switch. The coordinator instructions' default is unchanged.
- */
-export const MEMORY_GUIDANCE = `Memory: every message of this Initiative is logged and summarized, including what compactions dropped. After a compaction, or when you need older detail, read initiative_read {view:"memory"}: one-line summaries "id+n|text", oldest first. Open a line with initiative_zoom {id,n} (n:1 gives the message whole; each line it gives starts with its time) before acting on it.`;
-
-/**
  * T136 (D406): saved instructions are replaced by these defaults once, outright. The user
  * never edited them; earlier text came from agent-applied upgrades. Edits made after the
  * replacement are the user's and stay.

@@ -37,9 +37,7 @@ import "./app.css";
 import { ProjectsSettings } from "./settings-view";
 import { AutoTextarea, ControlRoom, isTab, type Tab } from "./control-room";
 import { useRemembered } from "./ui-memory";
-import { MemorySwitch, MEMORY_MODES_TEXT } from "./memory-switch";
 import { sendWrite } from "./lib/write-timeout";
-import type { MemoryMode } from "./lib/memory/store";
 import { MergeQueueView } from "./merge-queue-view";
 import type { MergeQueue } from "./lib/merge-queue";
 
@@ -47,11 +45,8 @@ export const PROJECT_PANEL = "initiative-overview";
 const describeError = (e: unknown) =>
   e instanceof Error ? e.message : String(e);
 type Api = ReturnType<typeof useRpc<typeof projectsContract>>;
-/** D452: a memory change goes to the dashboard-only setMemory RPC; the generic command RPC refuses it. */
 const callCommand = (api: Api, projectId: string, command: Command, keyed: { key?: string }) =>
-  command.action === "memory" && (command.mode !== undefined || command.compactTokens !== undefined)
-    ? api.call("setMemory", { projectId, ...(command.mode !== undefined ? { mode: command.mode } : {}), ...(command.compactTokens !== undefined ? { compactTokens: command.compactTokens } : {}) })
-    : api.call("command", { projectId, command, ...keyed });
+  api.call("command", { projectId, command, ...keyed });
 const rememberNote = (id: string, note: string | null) => {
   try {
     if (note) sessionStorage.setItem(`initiatives:creation:${id}`, note);
@@ -1339,20 +1334,14 @@ export function ProjectHeader({
   isCompactViewport,
 }: PluginThreadHeaderActionProps) {
   const navigate = useBbNavigate();
-  const api = useRpc<typeof projectsContract>();
   const panel = usePanel(threadId);
-  const projectId = panel.data?.membership?.projectId;
-  // W251: the Initiative's overview holds every committed save, the dashboard's too; the panel's
-  // own summary can be older (its read refused as a seed), so the mode comes from the overview.
-  const overview = useData(`overview:${projectId}`, () => api.call("overview", { projectId: projectId!, detailed: false }), !!projectId, true);
-  const membership = { data: panel.data?.membership ?? null };
-  if (!membership.data) return null;
-  const memory = overview.data?.memory ?? panel.data?.summary?.memory;
-  const open = (
+  const membership = panel.data?.membership;
+  if (!membership) return null;
+  return (
     <button
       className="project-header-button"
-      aria-label={`Initiative overview: ${membership.data.name}`}
-      title={membership.data.name}
+      aria-label={`Initiative overview: ${membership.name}`}
+      title={membership.name}
       onClick={() =>
         navigate.openThreadPanel({
           actionId: PROJECT_PANEL,
@@ -1364,87 +1353,8 @@ export function ProjectHeader({
       {isCompactViewport ? "◈" : "◈ Initiative"}
     </button>
   );
-  // D447: the memory setting is the coordinator's (and later its discussion threads'), so its
-  // thread header carries the switch.
-  if (membership.data.role !== "coordinator" || membership.data.former || !memory) return open;
-  return (
-    <span className="project-header-group">
-      {open}
-      <MemoryHeaderSwitch
-        threadId={threadId}
-        projectId={membership.data.projectId}
-        mode={memory.mode}
-        sessionNote={memory.sessionNote}
-        compact={isCompactViewport}
-        revalidate={panel.schedule}
-      />
-    </span>
-  );
 }
 
-/** The thread header's memory pill and its popover, in the top layer so the header never clips it. */
-function MemoryHeaderSwitch({ threadId, projectId, mode, sessionNote, compact, revalidate }: {
-  threadId: string;
-  projectId: string;
-  mode: MemoryMode;
-  sessionNote: string | null;
-  compact: boolean;
-  revalidate: () => void;
-}) {
-  const api = useRpc<typeof projectsContract>();
-  const id = useId();
-  const button = useRef<HTMLButtonElement>(null);
-  const [place, setPlace] = useState<{ top: number; right: number } | null>(null);
-  return (
-    <>
-      <button
-        ref={button}
-        className="project-header-button project-header-memory"
-        popoverTarget={id}
-        aria-label={`Memory: ${MEMORY_MODES_TEXT[mode].label}. Change it`}
-        title="Memory mode"
-      >
-        {compact ? MEMORY_MODES_TEXT[mode].label : `Memory · ${MEMORY_MODES_TEXT[mode].label}`}
-      </button>
-      <div
-        id={id}
-        popover="auto"
-        className="project-memory-popover"
-        style={place ? { top: place.top, right: place.right } : undefined}
-        onBeforeToggle={(e) => {
-          if (e.newState !== "open" || !button.current) return;
-          const r = button.current.getBoundingClientRect();
-          setPlace({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
-        }}
-      >
-        <MemorySwitch
-          mode={mode}
-          sessionNote={sessionNote}
-          explain="all"
-          choose={async (next) => {
-            const command: Command = { action: "memory", mode: next };
-            // W244: the saved status shows at once; a panel read from before the save never overwrites it.
-            const endPanel = appReads.begin(`panel:${threadId}`);
-            const endOverview = appReads.begin(`overview:${projectId}`);
-            try {
-              const result = await sendWrite({ projectId, command }, (keyed) => callCommand(api, projectId, command, keyed));
-              endPanel((data) => {
-                const panel = data as { summary: Overview | null };
-                return panel.summary ? { ...panel, summary: applyCommitted(panel.summary, command, result) } : panel;
-              });
-              endOverview((data) => applyCommitted(data as Overview, command, result));
-            } finally {
-              endPanel();
-              endOverview();
-              revalidate();
-            }
-          }}
-        />
-        <p className="memory-switch-note">The summary tree builds in every mode, so a switch is instant and applies from the next turn.</p>
-      </div>
-    </>
-  );
-}
 export default definePluginApp((app) => {
   app.slots.settingsSection({ id: "initiatives-guidance", title: "Guidance and execution defaults", component: ProjectsSettings });
   app.slots.navPanel({

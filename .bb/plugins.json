@@ -16,6 +16,10 @@
       "source": "./plugins/initiatives"
     },
     {
+      "name": "chat-memory",
+      "source": "./plugins/chat-memory"
+    },
+    {
       "name": "voice-mode",
       "source": "./plugins/voice-mode"
     },

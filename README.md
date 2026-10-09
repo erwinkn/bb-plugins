@@ -17,6 +17,11 @@ review panel, comments, revision history, and feedback to the original agent. Se
 worker threads, shared context, and an editable Initiative overview. It was
 installed as `projects` until a one-time move; see [Initiatives](plugins/initiatives/README.md).
 
+`chat-memory` gives any thread (or a group of threads, such as an Initiative's
+coordinator) one chat that never ends: every message logged, a GPT-6 Luna summary
+tree, `memory_read` and `memory_zoom`, and Regular, Hybrid or OptChat mode,
+switched from the thread's Memory pill. See [Chat memory](plugins/chat-memory/README.md).
+
 `sidebar` adds a status-first thread list: Needs Attention, Unread,
 Working, Draft, and Done. It also supports project grouping and spaces, named
 project selections shared by every client, plus an Initiatives view with one colored row per Initiative that opens its coordinator. See
@@ -297,18 +302,80 @@ AGENTS.md.
 
 ### Plugin RPCs: tell handlers who called (2026-10-08)
 
-Candidate from the Initiatives memory switch (D452: only the dashboard changes
-an Initiative's memory mode); not filed. A plugin RPC handler gets its input
-and nothing about the caller, so it cannot tell the plugin's own UI from
-`bb plugin rpc call`, an agent, or any other local client. The plugin works
-around it with a dedicated method (`setMemory`) that the generic `command` RPC,
-the CLI and the agent tools never reach and no guidance mentions, but a local
-caller who knows its name can still call it.
+Candidate from the memory switch (D452: only the user changes a memory's mode);
+not filed. Since 0.45 a plugin RPC handler learns whether another plugin called
+(`experimental_caller: {kind: "plugin", pluginId}`), but every other caller is
+`client`, so it cannot tell the plugin's own UI from `bb plugin rpc call`, an
+agent, or any other local client. Chat memory's `configure` RPC refuses plugin
+callers, and no CLI command or agent tool writes, but a local caller who knows
+the method can still call it.
 
 - **Smallest change:** pass the caller's origin to the handler as context
   (`ui`, `cli` or `agent`, plus the thread ID for the last), the way agent
   tool handlers already get `threadId`.
 - **Suggested issue title:** `Expose caller origin (UI, CLI, agent) to plugin RPC handlers`.
+
+### Agent tools: say whether a registration took its name (2026-10-09)
+
+Candidate from T145's hook handover (A469); not filed. `bb.agents.registerTool`
+skips a name another loaded plugin holds with only a warning and returns
+nothing, so a plugin cannot tell whether it serves the name. Chat memory finds
+out by registering again (a name it holds throws "already registered") and so
+takes the turn hook the moment the Initiatives plugin before T145 lets it go.
+That works because BB accepts registrations after activation, which is not
+documented. A related trap: BB lists a plugin's tools before calling its
+`configure`, so a tool registered inside `configure` cannot be selected in the
+same resolution.
+
+- **Smallest change:** return `{ registered: boolean, heldBy?: pluginId }` from
+  `registerTool`, and document whether late registration is supported.
+- **Suggested issue title:** `registerTool: report whether the name was taken, and support late registration`.
+
+### Parent-system notices skip `message.dispatch` (2026-10-09)
+
+Candidate from T145 (A469, A471); not filed. A notice BB sends a parent thread
+when a child finishes (`deliverParentSystemMessage`) goes straight to
+`prepareTurnSubmitCommandPayload`, without the `message.dispatch` pass, and so
+does Send now (by design). A plugin's dispatch hook is therefore no place to
+enforce anything about a turn. Chat memory no longer relies on it: Erwin's fork
+makes each turn carry its resolved tools (next entry), and the turn enforces
+the mode. A plugin that only wants to explain or hold such a notice still
+cannot.
+
+- **Smallest change:** run the dispatch pass for parent-system notices too
+  (`initiator: "system"`), or give hooks a read-only `notice` attempt kind.
+- **Suggested issue title:** `Run message.dispatch hooks for parent-system notices`.
+
+### Send each turn the tools BB resolved for it (2026-10-09)
+
+Candidate from T145 (A471); not filed. BB resolves a thread's tools (plugin
+`configure`) for every turn it starts, and sends them in `turn.submit`'s
+`resumeContext`, but the runtime passes them to the provider only when it
+builds a session. A provider therefore runs every later turn with the tools of
+the session's construction, however a plugin's selection changed since. Erwin's
+fork passes them in `turn/start` (`dynamicTools`), which is what lets the Chat
+memory plugin's turn hook reach sessions built before it was selected, on every
+path that starts a turn.
+
+- **Smallest change:** add optional `dynamicTools` to `turn/start` params and
+  pass `resumeContext.dynamicTools` through `runTurn`; providers that build
+  tools into a session can ignore it or rebuild.
+- **Suggested issue title:** `Pass a turn's resolved dynamic tools to the provider on turn/start`.
+
+### Give `agents.configure` the origin plugin's metadata (2026-10-09)
+
+Candidate from T145 (A473); not filed. A plugin's `configure` sees only its own
+metadata on a thread, and configure is synchronous, so it cannot read what the
+plugin that spawned the thread recorded there. Chat memory needs that for a
+coordinator Initiatives spawned and has not registered yet: its first turns,
+Send now included, must carry the mode of the memory it is about to join.
+Erwin's fork adds `origin.pluginMetadata` (the origin plugin's metadata,
+deep-frozen, `{}` when none).
+
+- **Smallest change:** add `origin.pluginMetadata` to
+  `PluginAgentConfigurationContext`, read in the same query as the configuring
+  plugins' metadata.
+- **Suggested issue title:** `agents.configure: expose the origin plugin's thread metadata`.
 
 ### Thread timeline: no forced layout per collapsible group on mount (2026-10-06)
 

@@ -173,9 +173,8 @@ describe("T112 sidebar tree and sweep signals", () => {
 
   it("a sweep that wrote nothing announces nothing", async () => {
     const { f, project } = await projectFixture();
-    // Settle the fixture's first-sweep work, with the memory log it kicked, so the next one is quiet.
+    // Settle the fixture's first-sweep work, so the next one is quiet.
     await f.runtime.sweep();
-    await f.service.memory.settled();
     const sweep = vi.spyOn(f.runtime, "sweep");
     const run = async () => {
       const before = f.harness.inspection.realtimeSignals.length;

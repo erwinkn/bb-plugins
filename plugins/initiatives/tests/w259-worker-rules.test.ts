@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fixture, projectFixture } from "./fake-native";
-import { DEFAULT_COORDINATOR_INSTRUCTIONS, GUIDANCE_RESET_FLAG, MEMORY_GUIDANCE, PREVIOUS_DEFAULTS } from "../lib/guidance";
+import { DEFAULT_COORDINATOR_INSTRUCTIONS, GUIDANCE_RESET_FLAG, PREVIOUS_DEFAULTS } from "../lib/guidance";
 import { MAX_GUIDANCE_CHARACTERS } from "../lib/settings";
 
 // W259: one PR per worker, model by difficulty, fresh fix workers. The cold-worker refusal has no
@@ -29,7 +29,7 @@ describe("W259 coordinator guidance", () => {
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Fixes go to a fresh worker with handoffs; only a tiny related fix goes back to the original worker while it is warm.");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).toContain("Never reuse a reviewer");
     expect(DEFAULT_COORDINATOR_INSTRUCTIONS).not.toContain("Send fixes to the same worker");
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length + 2 + MEMORY_GUIDANCE.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThanOrEqual(MAX_GUIDANCE_CHARACTERS);
   });
 
   it("a saved copy of the previous default upgrades; the user's edited text stays", async () => {

@@ -1,4 +1,3 @@
-import { MEMORY_MODES } from "./memory/store";
 import { z } from "zod";
 import type { NewThreadRequest } from "@get-bb/plugin-sdk/app";
 import {
@@ -318,28 +317,6 @@ export const appearanceCommandSchema = z
     color: z.enum(PROJECT_COLORS).nullable().optional(),
   })
   .strict();
-/**
- * D431: the Initiative's coordinator memory: regular (chat and compaction), hybrid (plus the
- * memory tree and zoom), optchat (stored; runs as hybrid until its runtime exists).
- * compactTokens: the Initiative's own compaction limit; null follows the setting for its mode.
- */
-export const memoryCommandSchema = z
-  .object({
-    action: z.literal("memory"),
-    mode: z.enum(MEMORY_MODES).optional(),
-    compactTokens: z.number().int().min(0).max(2_000_000).nullable().optional(),
-  })
-  .strict();
-/** A memory command that changes the setting (without either, the memory action only reads it). */
-export const changesMemory = (command: { action: string; mode?: unknown; compactTokens?: unknown }) =>
-  command.action === "memory" && (command.mode !== undefined || command.compactTokens !== undefined);
-/**
- * D452: only the dashboard changes an Initiative's memory, through the setMemory RPC. Every other
- * entry point (agent tools, bb initiative command, the generic command RPC) refuses with this.
- * Known limit: BB gives plugin RPCs no caller identity, so a local caller who knows setMemory can
- * still reach it; true enforcement needs BB to tell RPC handlers whether the UI or a CLI/agent called.
- */
-export const MEMORY_DASHBOARD_ONLY = "Only the user changes an Initiative's memory, from its dashboard. The memory action without mode or compactTokens reads the current setting.";
 export const commandSchema = z.discriminatedUnion("action", [
   createSchema,
   messageSchema.extend({ action: z.literal("message") }),
@@ -362,7 +339,6 @@ export const commandSchema = z.discriminatedUnion("action", [
   queuedMessageSchema,
   updateSchema,
   appearanceCommandSchema,
-  memoryCommandSchema,
 ]);
 export type Command = z.infer<typeof commandSchema>;
 
@@ -385,6 +361,7 @@ export const REMOVED_ACTIONS: Record<string, string> = {
   "task-checkpoint": 'Checkpoints were removed: record the outcome with initiative_task {"action":"update","task":"T#","note":"…"} or close the task.',
   "decision-cleanup": "Decision cleanup was removed; the user checks agent decisions in the Inbox.",
   fork: "Forking was removed: spawn a fresh worker with handoffs, or message the existing one.",
+  memory: "Memory moved to the Chat memory plugin (T145): the coordinator reads it with memory_read and memory_zoom, or `bb chat-memory status`; only the user switches it, from the coordinator's Memory pill.",
 };
 export function refuseRemoved(raw: unknown) {
   if (typeof raw !== "object" || raw === null) return;
@@ -516,9 +493,5 @@ export async function runCommand(
       return service.resolveHeldMessage(projectId, c.thread, c.message, c.operation);
     case "update":
       return service.recordUpdate(projectId, c, threadId);
-    case "memory":
-      // D452: only the user switches an Initiative's memory, from the dashboard; agents may read it.
-      if (author !== "user" && changesMemory(c)) throw new ProjectError(MEMORY_DASHBOARD_ONLY);
-      return service.memory.configure(projectId, c);
   }
 }

@@ -80,10 +80,7 @@ import {
 import { DiscoveryMemory, DISCOVERY_PARENT_CAP } from "./discovery";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
 import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
-import { createCoordinatorCompaction, type CoordinatorCompaction } from "./compaction";
-import { CoordinatorMemory } from "./memory/memory";
-import { sdkEvents } from "./memory/ingest";
-import { poolerSummarizer } from "./memory/pooler";
+import { MEMORY_SCOPE_KEY } from "./memory-scopes";
 
 export const METADATA_VERSION = 1;
 /** Unconfirmed creates and sends older than this are surfaced to the coordinator; they are never assumed failed. */
@@ -322,8 +319,6 @@ export class ProjectsService {
   }
 
   private readonly coldCache: ColdCacheGuard;
-  readonly compaction: CoordinatorCompaction;
-  readonly memory: CoordinatorMemory;
   /** D442: each PR's notes log; a worker's report lands on the PRs it is about. */
   readonly prNotes: PrNotes;
 
@@ -339,32 +334,6 @@ export class ProjectsService {
       log: (message) => bb.log.warn(message),
     });
     this.prNotes = new PrNotes(store.db);
-    this.memory = new CoordinatorMemory({
-      ledger: store,
-      list: sdkEvents(bb.sdk),
-      threadStatus: async (threadId) => {
-        try {
-          const thread = await bb.sdk.threads.get({ threadId });
-          return thread.archivedAt || thread.deletedAt ? "archived" : thread.status;
-        } catch (error) {
-          if ((error as { status?: number }).status === 404) return null;
-          throw error;
-        }
-      },
-      preferences: () => preferences.configuration(),
-      summarizer: poolerSummarizer(bb),
-      log: (message) => bb.log.warn(message),
-      changed: (projectId) => bb.realtime.publish("initiatives-changed", { projectId }),
-    });
-    this.compaction = createCoordinatorCompaction({
-      sdk: bb.sdk,
-      store,
-      limit: (projectId, threadId) => this.memory.compactLimit(projectId, threadId),
-      replacing: (projectId) => {
-        const start = this.coordinatorStart(projectId);
-        return this.coordinatorSwitches.has(projectId) || (!!start && ["pending", "uncertain"].includes(start.state));
-      },
-    });
   }
 
   get sdk(): Sdk {
@@ -497,6 +466,7 @@ export class ProjectsService {
       await this.tagThread(thread.id, {
         role: "coordinator",
         projectId: project.id,
+        [MEMORY_SCOPE_KEY]: project.id,
       });
       const note = await this.reloadToolsIfIdle(thread);
       return { project, note };
@@ -719,6 +689,8 @@ export class ProjectsService {
           projectId: project.id,
           op,
           v: METADATA_VERSION,
+          // T145: Chat memory waits for this coordinator's registration if its first turn comes first.
+          [MEMORY_SCOPE_KEY]: project.id,
         },
       });
     } catch (error) {
@@ -1499,8 +1471,6 @@ export class ProjectsService {
       throw new ProjectError(
         "Adopting keeps that thread’s execution settings. Choose a profile when starting a new coordinator.",
       );
-    // W218: a compaction issued before this switch was claimed lands first; the incumbent then reads busy.
-    await this.compaction.settled(projectId);
     await this.assertCoordinatorIdle(project.coordinatorThreadId);
     if (input.adoptThreadId) {
       const start = this.coordinatorStart(projectId);
@@ -1552,7 +1522,7 @@ export class ProjectsService {
           `Coordinator replaced by ${thread.title ?? thread.id}: ${input.reason}`,
         );
       });
-      await this.tagThread(thread.id, { role: "coordinator", projectId });
+      await this.tagThread(thread.id, { role: "coordinator", projectId, [MEMORY_SCOPE_KEY]: projectId });
       const note = await this.reloadToolsIfIdle(thread);
       await this.convergeFormerCoordinators(projectId);
       return {
@@ -2266,8 +2236,6 @@ export class ProjectsService {
       const d = this.store.handoverDraft(projectId);
       return d?.state === "generating" && d.detail === token ? d : null;
     };
-    // W218: a compaction issued before this claim lands first, so the capture sees its result.
-    await this.compaction.settled(projectId);
     if (existing?.threadId) await this.archiveWriter(existing.threadId, projectId);
     // W188 (F1–F3): the fingerprint first, then the snapshot, so any change during the capture
     // shows up as a stale fingerprint, never as a fresh one. A draft for a replacement whose
@@ -3237,8 +3205,6 @@ export class ProjectsService {
         "Accept or cancel the remaining assignments before archiving this Initiative.",
       );
     const archived = this.store.updateProject(projectId, { archivedAt: this.now() });
-    // W244: its memory spends nothing more, and its summary waiters give up now.
-    this.memory.stop(projectId);
     return archived;
   }
 
