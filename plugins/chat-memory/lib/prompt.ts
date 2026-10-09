@@ -1,4 +1,4 @@
-import { LIMIT, bytes, children, headBytes, label, end, renderLine, type NodeRef, type Nodes } from "./tree";
+import { LIMIT, bytes, children, label, end, renderLine, type NodeRef, type Nodes } from "./tree";
 import type { MemoryMessage } from "./log";
 
 /**
@@ -139,9 +139,16 @@ export function task(node: NodeRef, nodes: Nodes, message?: Pick<MemoryMessage, 
   return `Compaction: merge lines ${label(a)} and ${label(b)}, adjacent, into one line of at most ${LIMIT} bytes (about 70 words), the length of this ruler:\n${RULER}\n<chat> may hold their messages, ${label(node).split("+")[0]} to ${end(node)}, in more detail: take details of them from there too.\n<input>\n${renderLine(a, nodes)}\n${renderLine(b, nodes)}\n</input>`;
 }
 
-/** The follow-up for a line over the limit: its size, and its first 512 bytes with a cut mark. */
+/**
+ * W315: a retry asks for a quarter less than the limit. Luna at high overshoots its ask (first
+ * replies p50 667 bytes for 512); asked to cut "just enough" it cut ~10% a try, 3.5 calls a line
+ * and 1 line in 4 still over after 5 tries. Asked for 384, 3 retries in 4 fit: 2.1 calls a line.
+ */
+const RETRY_BYTES = 384;
+
+/** The follow-up for a line over the limit: its size, and a shorter ruler to write it again to. */
 export const tooLong = (line: string) =>
-  `Too long: your line is ${bytes(line)} bytes, over the ${LIMIT}-byte limit. Write the whole line again for the same <input>, cutting just enough of the least valuable items to fit before this cut:\n${headBytes(line, LIMIT)}| ← LIMIT`;
+  `Too long: your line is ${bytes(line)} bytes, over the ${LIMIT}-byte limit. Write the whole line again for the same <input> in at most ${RETRY_BYTES} bytes (about 50 words), the length of this ruler:\n${"-".repeat(RETRY_BYTES)}\nDrop or shorten the least valuable items; keep the user's words and lasting effects.`;
 
 /** A reply as a line: no fences, tags or id+n| head. */
 export const cleanLine = (text: string) =>

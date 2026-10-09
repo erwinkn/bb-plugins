@@ -569,8 +569,8 @@ export class ChatMemory {
     if (!builder) {
       builder = new TreeBuilder(this.store.tree(scopeId), this.store.views(scopeId), {
         // A call waiting for a permit and stopped meanwhile never starts.
-        summarize: async (request) =>
-          (await this.permits.run(scopeId, request.signal, () => this.deps.summarizer(request))) ?? { ok: false, reason: "aborted", error: "stopped" },
+        summarize: async (request, urgent) =>
+          (await this.permits.run(scopeId, request.signal, () => this.deps.summarizer(request), urgent)) ?? { ok: false, reason: "aborted", error: "stopped" },
         instructions: () => COMPACTION_PROMPT,
         effort: () => this.deps.settings().summarizerEffort,
         concurrency: () => this.deps.settings().summarizerConcurrency,
@@ -759,9 +759,9 @@ export class ChatMemory {
    * throws (D458): the provider fails the turn visibly and keeps its input, never runs it in the
    * old session. It waits at most TURN_WAIT_MS for its membership, for the log to catch up with it
    * and for every earlier message to be summarized (gist §6), and tries a failed read at most
-   * TURN_READ_ATTEMPTS times.
+   * TURN_READ_ATTEMPTS times. A turn stopped meanwhile (signal) stops waiting for its summaries.
    */
-  async turnContext(threadId: string, ask: TurnAsk): Promise<TurnAnswer> {
+  async turnContext(threadId: string, ask: TurnAsk, signal?: AbortSignal): Promise<TurnAnswer> {
     const deadline = this.store.now() + this.waits.turn[ask.protocol];
     const fail = (why: string) => new MemoryError(`OptChat memory unavailable for this turn: ${why}. The message was not sent; send it again, or switch this thread's memory mode.`);
     if (ask.protocol === 3) this.legacyProvider = true;
@@ -781,7 +781,7 @@ export class ChatMemory {
       if (originalId !== null && !original) throw fail(`the original ${originalId} of its retried request is not among the thread's last ${REQUEST_PAGE * REQUEST_PAGES} requests`);
       await this.catchUp(scope.id, threadId, request.seq, deadline, fail);
       const cut = this.store.firstFrom(scope.id, threadId, (original ?? request).seq) ?? this.store.count(scope.id);
-      await this.waitSummarized(scope.id, cut, deadline, fail);
+      await this.waitSummarized(scope.id, cut, deadline, fail, signal);
       const { nodes, views } = this.tree(scope.id);
       const view = turnView({ chat: views.chat, fed: views.fed, nodes, cut, frozen: this.frozen.get(threadId) ?? null });
       this.frozen.set(threadId, view.frozen);
@@ -860,9 +860,13 @@ export class ChatMemory {
     }
   }
 
-  /** Wait until messages 0..count-1 have their line, before the deadline (gist §6). */
-  private async waitSummarized(scopeId: string, count: number, deadline: number, fail: (why: string) => Error) {
+  /**
+   * Wait until messages 0..count-1 have their line, before the deadline (gist §6), unless the turn
+   * stops; their calls go first meanwhile (W315).
+   */
+  private async waitSummarized(scopeId: string, count: number, deadline: number, fail: (why: string) => Error, signal?: AbortSignal) {
     if (this.disposed || !this.building(scopeId)) throw fail("the memory is closed");
+    if (signal?.aborted) throw fail("the turn stopped");
     this.build(scopeId);
     const builder = this.builder(scopeId);
     if (builder.summarized(count)) return;
@@ -873,8 +877,11 @@ export class ChatMemory {
     };
     const failure = failed();
     if (failure) throw failure;
+    const release = builder.need(count, deadline);
     let unsubscribe = () => {};
+    let unlink: Disposable | undefined;
     const done = new Promise<boolean | Error>((resolve) => {
+      unlink = signal && addAbortListener(signal, () => resolve(fail("the turn stopped")));
       unsubscribe = builder.onBuilt(() => {
         if (builder.closed) resolve(false);
         else if (builder.summarized(count)) resolve(true);
@@ -884,7 +891,7 @@ export class ChatMemory {
         }
       });
     });
-    const settled = await within(done, deadline - this.store.now()).finally(unsubscribe);
+    const settled = await within(done, deadline - this.store.now()).finally(() => (unsubscribe(), unlink?.[Symbol.dispose](), release()));
     if (settled?.value === true) return;
     if (settled?.value instanceof Error) throw settled.value;
     if (settled?.value === false) throw fail("the memory closed");

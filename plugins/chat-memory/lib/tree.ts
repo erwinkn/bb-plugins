@@ -170,8 +170,3 @@ export class NodeCache implements Nodes {
     }
   }
 }
-
-/** The first `n` bytes of a string, never splitting a character. */
-export function headBytes(s: string, n: number) {
-  return Buffer.from(s, "utf8").subarray(0, n).toString("utf8").replace(/�$/, "");
-}

@@ -84,10 +84,10 @@ export default function plugin(bb: BbPluginApi) {
     name: TURN_CONTEXT_TOOL,
     description: "Internal to BB's Claude Code provider: how the next turn of a thread with chat memory runs (OptChat). Never call it.",
     parameters: z.object({}).passthrough(),
-    execute: async (args: Record<string, unknown>, { threadId }: { threadId: string }) => {
+    execute: async (args: Record<string, unknown>, { threadId, signal }: { threadId: string; signal: AbortSignal }) => {
       const ask = turnAskSchema.safeParse(args);
       if (!ask.success) throw new MemoryError(`${TURN_CONTEXT_TOOL} is called by BB's Claude Code provider only (protocol 3 or 4).`);
-      return JSON.stringify(await memory.turnContext(threadId, ask.data));
+      return JSON.stringify(await memory.turnContext(threadId, ask.data, signal));
     },
   };
   const recheck = () => void bb.experimental_hooks.recheck("message.dispatch").catch((error) => bb.log.warn(`Chat memory could not ask BB to re-check held messages: ${errorMessage(error)}`));

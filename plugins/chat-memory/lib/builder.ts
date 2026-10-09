@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { MemoryMessage } from "./log";
 import { cleanLine, messageText, task, tooLong } from "./prompt";
-import { usageCost, type Attribution, type InputItem, type Summarizer, type Usage } from "./summarizer";
+import { usageCost, type Attribution, type InputItem, type SummarizerRequest, type SummarizerResult, type Usage } from "./summarizer";
 import { LIMIT, NodeCache, bytes, children, contextLines, end, feed, key, label, settleViews, type NodeRef, type Views } from "./tree";
 
 /** What the builder reads and writes; the plugin backs it with its database, tests with memory. */
@@ -23,7 +23,8 @@ export interface TreeStore {
 export type NodeHow = "model" | "free" | "fallback";
 
 export interface BuilderOptions {
-  summarize: Summarizer;
+  /** urgent: whether a turn is waiting for this call's node now (W315: it goes before every other call). */
+  summarize: (request: SummarizerRequest, urgent: () => boolean) => Promise<SummarizerResult>;
   /** The compactions' system prompt. */
   instructions: () => string;
   effort: () => string;
@@ -48,6 +49,14 @@ const RECOVER_SLICE = 4096;
 const FAILURES = 3;
 /** A line that failed FAILURES times is tried again, FAILURES more times, this long after. */
 const FAILED_RETRY_MS = 30 * 60_000;
+/**
+ * W315: a call's bound, doubled after each failure of its node (30, 60, 120 s), so a node that is
+ * slow every time still gets built. Luna at high answers 95% of calls within 30 s (p50 3 s, p90
+ * 8 s; at xhigh p90 26 s, p95 38 s). A call a turn waits for is never cut before the turn's
+ * deadline: a reply at 65 s still makes a 90 s turn, where a retry at 30 s would be cut at 90 s.
+ * Once no turn waits for it any more (they stopped), a call past its bound gives up at once.
+ */
+export const CALL_TIMEOUT_MS = 30_000;
 const BACKOFF = { min: 15_000, max: 10 * 60_000, unavailable: 10 * 60_000 };
 
 type Pause = { reason: "rate-limited" | "transient" | "unavailable"; error: string; retryAfterMs?: number };
@@ -68,8 +77,14 @@ type Outcome =
  * run() returns when everything logged so far is built, or when its signal aborts: calls in
  * flight are cancelled and their nodes queued again, and nothing more is written. 429s pause
  * every new call with a growing backoff (or the server's Retry-After); an unavailable route
- * pauses for 10 minutes. A line whose call fails 3 times stays unbuilt and failed (never cut to
- * fit: a turn must not read part of a message as its summary), and is tried again 30 minutes later.
+ * pauses for 10 minutes. A call that does not answer within its bound fails. A line whose call
+ * fails 3 times stays unbuilt and failed (never cut to fit: a turn must not read part of a message
+ * as its summary), and is tried again 30 minutes later.
+ *
+ * W315: a turn that waits for its earlier messages' lines (need) makes their calls go before every
+ * other scope's for a permit. The build starts them first anyway (oldest first), and no more at
+ * once than its limit, the permits' own: a backlog of thousands still goes in batches. A turn only
+ * ever waits for message lines: a view merges two lines only once their parent is built.
  *
  * Only the nodes in use are held: texts are read from the store through a bounded cache, and
  * the first run after a load finds the ready nodes from which nodes exist, in slices.
@@ -87,6 +102,10 @@ export class TreeBuilder {
   private recovered = false;
   /** Fed messages without their line yet, once recovered: the build's frontier, never the history. */
   private unbuilt = new Set<number>();
+  /** By waiting turn: the messages 0..count-1 whose lines it needs, and until when it waits. */
+  private needs = new Set<{ count: number; deadline: number }>();
+  /** Calls past their bound, told when a turn lets go (their extension may end). */
+  private releases = new Set<() => void>();
   /** Its scope closed or the service stopped: listeners hear it once more. */
   closed = false;
   readonly nodes: NodeCache;
@@ -147,6 +166,34 @@ export class TreeBuilder {
   private settle([l, i]: NodeRef) {
     if (this.nodes.has(key(l, i ^ 1))) this.enqueue([l + 1, i >> 1]);
   }
+  /** Messages 0..n-1 have a turn waiting for their lines. */
+  private urgentBelow() {
+    let n = 0;
+    for (const { count } of this.needs) n = Math.max(n, count);
+    return n;
+  }
+  /**
+   * A turn waits for this node, or for a later line: merges as well, which keep the context of
+   * every call at its bound (a wait that built only lines would grow it with each one).
+   */
+  private urgent(n: NodeRef) {
+    return end(n) < this.urgentBelow();
+  }
+  /** How much longer the turns its node is urgent for wait; 0 or less if none does. */
+  private waitedMs(n: NodeRef) {
+    let deadline = -Infinity;
+    for (const need of this.needs) if (end(n) < need.count) deadline = Math.max(deadline, need.deadline);
+    return deadline - this.now();
+  }
+  /** A turn waits for the lines of messages 0..count-1 until the returned release, or its deadline. */
+  need(count: number, deadline: number) {
+    const need = { count, deadline };
+    this.needs.add(need);
+    return () => {
+      if (this.needs.delete(need)) for (const listener of this.releases) listener();
+    };
+  }
+
   /** Recent messages still being summarized (failed ones wait for their retry, so they hold no slot). */
   private unbuiltRecent() {
     let n = 0;
@@ -353,15 +400,18 @@ export class TreeBuilder {
     let tries = 0;
     let outcome: Outcome | null = null;
     let pause: Pause | undefined;
+    const timeoutMs = CALL_TIMEOUT_MS * 2 ** (this.failures.get(key(...node)) ?? 0);
+    const onRelease = (listener: () => void) => (this.releases.add(listener), () => void this.releases.delete(listener));
     try {
       for (let a = 0; a < ATTEMPTS; a++) {
-        const r = await this.options.summarize({ instructions: this.options.instructions(), input, effort: this.options.effort(), cacheKey: this.options.cacheKey, attribution: this.options.attribution?.(), signal, onStart: started });
+        const request = { instructions: this.options.instructions(), input, effort: this.options.effort(), cacheKey: this.options.cacheKey, attribution: this.options.attribution?.(), signal, timeoutMs, extendMs: () => this.waitedMs(node), onRelease, onStart: started };
+        const r = await this.options.summarize(request, () => this.urgent(node));
         started();
         tries++;
         if (r.usage) addUsage(usage, r.usage);
         if (!r.ok) {
           if (r.reason === "aborted") outcome = { kind: "aborted" };
-          else if (r.reason === "failed") {
+          else if (r.reason === "failed" || r.reason === "timeout") {
             if (best === null) outcome = { kind: "failed", error: r.error };
           } else {
             const refused: Pause = { reason: r.reason, error: r.error, retryAfterMs: r.retryAfterMs };

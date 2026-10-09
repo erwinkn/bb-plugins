@@ -108,7 +108,7 @@ describe("W220 tree builder", () => {
     const retry = requests[1]!.input;
     expect(retry).toHaveLength(3);
     expect(retry[1]).toMatchObject({ role: "assistant" });
-    expect((retry[2]!.content[0] as { text: string }).text).toMatch(/^Too long: your line is 700 bytes, over the 512-byte limit\.[\s\S]*\| ← LIMIT$/);
+    expect((retry[2]!.content[0] as { text: string }).text).toMatch(/^Too long: your line is 700 bytes, over the 512-byte limit\. Write the whole line again for the same <input> in at most 384 bytes/);
     // The first task carries the ruler and the message as kind: text.
     const task = (requests[0]!.input[0]!.content[1] as { text: string }).text;
     expect(task).toContain("-".repeat(512));

@@ -180,10 +180,18 @@ As the gist and W216: message i becomes a line of at most 512 bytes
 call. The chat view (what an OptChat turn sees) is a 128→64 KB sawtooth merged
 by due = (T+1)/2^l − i; the memory view (`memory_read`, the context of every
 summarizer call) is it merged further, 32→16 KB. Both are saved, never rebuilt.
-GPT-6 Luna (`summarizerEffort`, xhigh) writes lines with the gist's compaction
-prompt and its 512-dash ruler; a line too long gets "Too long …| ← LIMIT", up to
-5 tries, keeping the shortest. Up to `summarizerConcurrency` (8) calls run at
-once across every scope, round-robin by scope. A line whose call fails 3 times
+GPT-6 Luna (`summarizerEffort`, high since D484) writes lines with the gist's
+compaction prompt and its 512-dash ruler; a line too long is asked again for at
+most 384 bytes, up to 5 tries, keeping the shortest (W315: Luna overshoots its
+ask, so asking again for 512 took 3.5 calls a line; asking for 384 takes 2.1).
+Up to `summarizerConcurrency` (8) calls run at once across every scope,
+round-robin by scope, except that the lines an OptChat turn is waiting for, and
+their merges, take the next free call before any other scope's backlog (W315).
+A call gives up after 30 s, then 60 s, then 120 s for the same line (Luna at
+high answers 95% of calls within 30 s), so a hung call frees its slot; a call a
+turn waits for runs on to the turn's deadline instead, so a reply at 65 s still
+makes a 90 s turn. A stopped turn stops waiting, and a call past its bound
+that no turn waits for any more gives up at once. A line whose call fails 3 times
 stays unsummarized and failed, never cut to fit (D458): it holds no build slot,
 the pill shows it as a problem, an OptChat turn that needs it fails at once
 ("message 1234 could not be summarized (…)"), and it is tried again 30 minutes
@@ -216,7 +224,7 @@ bb chat-memory zoom <id> <n> [thread-id]
 ## Settings
 
 `regularCompactTokens` (300,000), `hybridCompactTokens` (150,000),
-`summarizerEffort` (xhigh), `summarizerConcurrency` (8).
+`summarizerEffort` (high), `summarizerConcurrency` (8).
 
 ## The move from Initiatives (T145)
 

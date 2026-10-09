@@ -26,8 +26,8 @@ export const settingsDescriptors = {
   summarizerEffort: {
     type: "string" as const,
     label: "Summarizer effort",
-    description: "GPT-6 Luna's reasoning effort when it builds the memory trees: xhigh (best lines) or high (faster, a little worse).",
-    default: "xhigh",
+    description: "GPT-6 Luna's reasoning effort when it builds the memory trees: high (D484: good lines, 90% of calls within 8 s) or xhigh (a little better, 90% within 26 s).",
+    default: "high",
     experimental_schema: z.enum(["high", "xhigh"]),
   },
   summarizerConcurrency: {
@@ -47,7 +47,7 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   regularCompactTokens: REGULAR_COMPACT_TOKENS,
   hybridCompactTokens: HYBRID_COMPACT_TOKENS,
-  summarizerEffort: "xhigh",
+  summarizerEffort: "high",
   summarizerConcurrency: 8,
 };
 
@@ -57,7 +57,7 @@ export function defineSettings(bb: BbPluginApi) {
   const decode = (raw: Awaited<ReturnType<typeof handle.get>>): Settings => ({
     regularCompactTokens: raw.regularCompactTokens,
     hybridCompactTokens: raw.hybridCompactTokens,
-    summarizerEffort: raw.summarizerEffort === "high" ? "high" : "xhigh",
+    summarizerEffort: raw.summarizerEffort === "xhigh" ? "xhigh" : "high",
     summarizerConcurrency: raw.summarizerConcurrency,
   });
   let current = DEFAULT_SETTINGS;

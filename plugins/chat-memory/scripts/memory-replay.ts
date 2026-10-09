@@ -19,7 +19,7 @@ import { COMPACTION_PROMPT } from "../lib/prompt";
 import { responsesSummarizer, usageCost, type Summarizer, type Usage } from "../lib/summarizer";
 import { bytes, emptyViews, key, renderLine, viewBytes } from "../lib/tree";
 
-const [file, fromArg, countArg, out, effort = "xhigh"] = process.argv.slice(2);
+const [file, fromArg, countArg, out, effort = "high"] = process.argv.slice(2);
 if (!file || !out) throw new Error("usage: memory-replay.ts <events.json> <from> <count> <out-dir> [effort]");
 const base = process.env.ANTHROPIC_BASE_URL;
 const token = process.env.ANTHROPIC_AUTH_TOKEN;
