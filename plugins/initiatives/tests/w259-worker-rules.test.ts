@@ -33,7 +33,7 @@ describe("W259 coordinator guidance", () => {
   });
 
   it("a saved copy of the previous default upgrades; the user's edited text stays", async () => {
-    const previous = PREVIOUS_DEFAULTS.coordinator[0]!;
+    const previous = PREVIOUS_DEFAULTS.coordinator.find((text) => text.includes("Send fixes to the same worker"))!;
     expect(previous).toContain("Send fixes to the same worker");
     const f = fixture({ coordinatorInstructions: previous });
     f.store.setFlag(GUIDANCE_RESET_FLAG);

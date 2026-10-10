@@ -202,7 +202,8 @@ describe("T136 instructions", () => {
     // W215: reports arrive as summaries; read the full report only when needed.
     // W224 (D437, D438): PR records (category, where each PR stands), in the PR line.
     // W259: one PR per worker, model by difficulty, fresh fix workers.
-    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(2200);
+    // Erwin (2026-10-10): slow hands-on work goes to a worker, so the coordinator answers fast.
+    expect(DEFAULT_COORDINATOR_INSTRUCTIONS.length).toBeLessThan(2350);
     // Erwin (2026-10-07) added the no-narration rule to the worker text.
     // W210 (D417): reports go through initiative_report; stop background work first.
     // W215: the summary stands on its own (outcome, PR and head, merge order, what is needed).
