@@ -55,6 +55,21 @@ export interface PrRecord extends PrState {
   updatedAt: number;
 }
 
+/** T157: one change of a PR's stage, as initiative_pr recorded it; a PR's history is append-only. */
+export interface PrStageChange {
+  /** 1, 2, …: its place in this PR's history. */
+  n: number;
+  at: number;
+  /** Who set it: "coordinator", "user" from a terminal, or a worker ref. */
+  author: string;
+  /** The stage before; null when none was recorded (the queue guessed one). */
+  from: string | null;
+  /** The stage set; null when it was cleared. */
+  to: string | null;
+  /** The note given with it. */
+  note: string | null;
+}
+
 export const blankPrRecord = (url: string, at: number): PrRecord => ({
   url, stage: null, note: null, setAt: null, category: null, waitingOn: null, changes: [],
   decision: null, discussionThreadId: null, worker: null, assignment: null, updatedAt: at,

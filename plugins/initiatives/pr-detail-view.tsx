@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useBbNavigate } from "@get-bb/plugin-sdk/app";
-import type { QueuedPullRequest } from "./lib/merge-queue";
+import type { QueuedPullRequest, StageDefinition } from "./lib/merge-queue";
 import type { PrDetail, PrVia } from "./lib/pr-detail";
-import { sizeDetail, workerLabel } from "./lib/pr-map";
+import { noteAuthor, sizeDetail, workerLabel } from "./lib/pr-map";
 import { compactAge } from "./control-room";
 import { NotesList, Signals, SizeDelta, StateLine, numberIndex, reviewerText, usePrLink, waitsOn, workerTitle } from "./pr-graph";
 
@@ -93,14 +93,15 @@ function Bones() {
 
 /**
  * One PR, everything known about it: GitHub's side from the queue, the
- * Initiative's (record, notes, work, decisions, updates) from prDetail.
+ * Initiative's (record, stage history, notes, work, decisions, updates) from prDetail.
  * Esc closes it, wherever focus is in the PRs tab.
  */
-export function PrDetailPanel({ pr, all, stageLabel, login, load, revision, onOpen, onClose }: {
+export function PrDetailPanel({ pr, all, stages, login, load, revision, onOpen, onClose }: {
   pr: QueuedPullRequest;
   /** Every PR, for its stack. */
   all: readonly QueuedPullRequest[];
-  stageLabel: string;
+  /** The queue's stages, for their labels. */
+  stages: readonly StageDefinition[];
   login: string | null;
   load?: LoadDetail;
   /** Changes when the queue is read again. */
@@ -116,21 +117,33 @@ export function PrDetailPanel({ pr, all, stageLabel, login, load, revision, onOp
   const heading = useRef<HTMLHeadingElement>(null);
   // Below the dashboard's sticky header and as tall as the page's scroller leaves, measured as they
   // resize: the tabs wrap, its details open. Set on the element, not in state, so that the opening
-  // scroll below already lands below the header.
+  // scroll below already lands below the header. And how far the page goes on below the list (its
+  // footer, the page's padding), which the panel's containing block reaches over (pr-map.css).
   useLayoutEffect(() => {
     const aside = panel.current;
-    const header = aside?.closest(".cr")?.querySelector(".cr-sticky");
-    if (!aside || !header) return;
+    const root = aside?.closest(".cr");
+    const header = root?.querySelector(".cr-sticky");
+    const grid = aside?.parentElement;
+    if (!aside || !root || !header || !grid) return;
     const page = aside.closest(".project-page");
     const measure = () => {
       aside.style.setProperty("--cr-pd-top", `${Math.ceil(header.getBoundingClientRect().height)}px`);
-      if (page) aside.style.setProperty("--cr-pd-view", `${page.clientHeight}px`);
+      if (!page) return;
+      aside.style.setProperty("--cr-pd-view", `${page.clientHeight}px`);
+      const reach = parseFloat(grid.style.getPropertyValue("--cr-pd-below")) || 0;
+      const end = page.getBoundingClientRect().top + page.clientTop - page.scrollTop + page.scrollHeight;
+      grid.style.setProperty("--cr-pd-below", `${Math.max(0, Math.floor(end - grid.getBoundingClientRect().bottom + reach))}px`);
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(header);
+    // The dashboard: its footer wraps or another line shows below the list.
+    observer.observe(root);
     if (page) observer.observe(page);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      grid.style.removeProperty("--cr-pd-below");
+    };
   }, []);
   // Focus moves in when a PR opens and back to where it came from on close.
   useEffect(() => {
@@ -158,6 +171,7 @@ export function PrDetailPanel({ pr, all, stageLabel, login, load, revision, onOp
   const below = pr.stack?.on != null ? byNumber.get(`${pr.repo}#${pr.stack.on}`) ?? null : null;
   const above = all.filter((p) => p.repo === pr.repo && p.stack?.on === pr.number);
   const blocker = waitsOn(pr, byNumber);
+  const stageLabel = (id: string) => stages.find((s) => s.id === id)?.label ?? id;
   return (
     <aside ref={panel} className="cr-pd" aria-label={`Pull request #${pr.number}`}>
       <header className="cr-pd-head">
@@ -174,7 +188,7 @@ export function PrDetailPanel({ pr, all, stageLabel, login, load, revision, onOp
         <h3 ref={heading} tabIndex={-1} className="cr-pd-title">{pr.title}</h3>
         <p className="cr-pd-stage">
           <span className="cr-pm-dot" data-stage={pr.stage} data-available={pr.available || undefined} aria-hidden="true" />
-          <strong>{stageLabel}</strong>
+          <strong>{stageLabel(pr.stage)}</strong>
           {pr.stageSource === "github" ? <em>guessed from GitHub</em> : pr.stageSetAt ? <span>set <Ago at={pr.stageSetAt} label="Stage set" /> ago</span> : null}
           {pr.category ? <span className="cr-pd-category">{pr.category}</span> : null}
           {pr.available ? <span className="cr-mq-available">review now</span> : blocker ? <span className="cr-mq-waits">waits on #{blocker.number}</span> : null}
@@ -213,6 +227,7 @@ export function PrDetailPanel({ pr, all, stageLabel, login, load, revision, onOp
         ) : (
           <>
             {read.error ? <p className="cr-mq-note" role="status">Couldn't refresh: {read.error}</p> : null}
+            <StageHistory detail={detail} label={stageLabel} />
             {detail.notes.items.length ? (
               <section className="cr-pd-section cr-pr-notes-panel" aria-label="Notes">
                 <h4>Notes<span className="cr-count">{detail.notes.total}</span></h4>
@@ -270,6 +285,59 @@ export function PrDetailPanel({ pr, all, stageLabel, login, load, revision, onOp
     </aside>
   );
 }
+
+/** A stage's dot and label; `id` null is a cleared stage. */
+function StageName({ id, label }: { id: string | null; label: (id: string) => string }) {
+  if (!id) return <em className="cr-pd-cleared">no stage</em>;
+  return <span className="cr-pd-stage-name"><span className="cr-pm-dot" data-stage={id} aria-hidden="true" />{label(id)}</span>;
+}
+
+/**
+ * T157: who moved the PR between stages and when, oldest first, the last few
+ * shown. A PR staged before the history was kept shows its stage as it stands.
+ */
+function StageHistory({ detail, label }: { detail: PrDetail; label: (id: string) => string }) {
+  const [all, setAll] = useState(false);
+  const { items, total } = detail.stages;
+  const record = detail.record;
+  if (!items.length && !record?.stage) return null;
+  const shown = all ? items : items.slice(-STAGES_SHOWN);
+  return (
+    <section className="cr-pd-section cr-pd-stages" aria-label="Stage history">
+      <h4>Stage history{total ? <span className="cr-count">{total}</span> : null}</h4>
+      <ol>
+        {items.length ? shown.map((change) => (
+          <li key={change.n} className="cr-pd-item">
+            <span className="cr-pd-line">
+              {change.from && change.from !== change.to ? <StageName id={change.from} label={label} /> : null}
+              {change.from === change.to ? null : <span className="cr-pd-arrow" aria-label={change.from ? "to" : "set to"}>→</span>}
+              <StageName id={change.to} label={label} />
+              {change.from === change.to ? <span className="cr-pd-label">new note</span> : null}
+              <span className="cr-pd-by">{noteAuthor(change.author)}</span>
+              <span className="cr-pd-when"><Ago at={change.at} label="Changed" /></span>
+            </span>
+            {change.note ? <p className="cr-pd-stage-note">{change.note}</p> : null}
+          </li>
+        )) : (
+          <li className="cr-pd-item" data-current>
+            <span className="cr-pd-line">
+              <StageName id={record!.stage} label={label} />
+              <span className="cr-pd-label">current, set before stage history was kept</span>
+              <span className="cr-pd-when"><Ago at={record!.setAt} label="Set" /></span>
+            </span>
+          </li>
+        )}
+      </ol>
+      {items.length > STAGES_SHOWN ? (
+        <button type="button" className="cr-pm-more" aria-expanded={all} onClick={() => setAll(!all)}>
+          {all ? "Show the latest" : `Show all ${items.length}`}
+        </button>
+      ) : null}
+      {all && total > items.length ? <p className="cr-pd-empty">The newest {items.length} of {total}.</p> : null}
+    </section>
+  );
+}
+const STAGES_SHOWN = 5;
 
 /** The last few notes, all of them on demand. */
 function LatestNotes({ detail }: { detail: PrDetail }) {

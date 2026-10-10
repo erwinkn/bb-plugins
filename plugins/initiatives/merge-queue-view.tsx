@@ -339,7 +339,7 @@ function PrMap({ queue, loadNotes, loadDetail }: { queue: MergeQueue; loadNotes?
       )}
       </div>
       {openPr ? (
-        <PrDetailPanel pr={openPr} all={all} stageLabel={queue.stages.find((s) => s.id === openPr.stage)?.label ?? openPr.stage}
+        <PrDetailPanel pr={openPr} all={all} stages={queue.stages}
           login={queue.login} load={loadDetail} revision={queue} onOpen={setOpen} onClose={() => setOpen(null)} />
       ) : null}
       </div>

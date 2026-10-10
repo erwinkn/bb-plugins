@@ -20,13 +20,14 @@ export const COORDINATOR: PrCaller = { author: "coordinator", worker: null, thre
 /**
  * Apply one initiative_pr call, in a transaction: renames first (into an
  * existing category merges them), then each PR's fields. Only the given fields
- * change; null clears one. A stage replaces its note. An assignment names its
- * worker too, unless the entry names one. Notes append to the PR's log and
- * `answered` closes its questions. The result lists every category with its PR
+ * change; null clears one. A stage replaces its note; a changed stage or note
+ * lands in the PR's stage history (T157). An assignment names its worker too,
+ * unless the entry names one. Notes append to the PR's log and `answered`
+ * closes its questions. The result lists every category with its PR
  * count, once there is one, so the coordinator reuses them.
  */
 export function recordPrs(
-  store: Pick<Store, "prRecords" | "savePrRecord" | "renamePrCategory" | "worker" | "assignment">,
+  store: Pick<Store, "prRecords" | "savePrRecord" | "addPrStageChange" | "renamePrCategory" | "worker" | "assignment">,
   notes: Pick<PrNotes, "append" | "answer">,
   projectId: string,
   input: PrToolInput,
@@ -69,6 +70,7 @@ export function recordPrs(
       || Object.values(state).some((value) => value !== undefined);
     if (!patched) return receipt;
     const r = { ...(records.get(key) ?? blankPrRecord(key, at)), updatedAt: at };
+    const was = { stage: r.stage, note: r.note };
     if (stage !== undefined) {
       const set = stage === "clear" ? null : stage;
       Object.assign(r, { stage: set, note: set ? note || null : null, setAt: set ? at : null });
@@ -90,6 +92,9 @@ export function recordPrs(
       // The looked-up ref, so W001 is stored as the W1 its thread is known by.
       r.worker = w ? w.ref : null;
     }
+    // T157: the PR's stage history, with who changed it; the same stage and note set again changes nothing.
+    if (r.stage !== was.stage || r.note !== was.note)
+      store.addPrStageChange(projectId, key, { at, author: caller.author, from: was.stage, to: r.stage, note: r.note });
     store.savePrRecord(projectId, r);
     records.set(key, r);
     const updated = (Object.keys(state) as (keyof typeof state)[]).filter((field) => state[field] !== undefined);

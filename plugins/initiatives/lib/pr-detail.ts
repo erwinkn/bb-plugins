@@ -1,12 +1,12 @@
 // T156: everything the Initiative knows about one pull request, for its detail
 // panel. Local state only, never GitHub (D441; the dashboard already holds the
-// GitHub side in the merge queue): the coordinator's record, the notes log, and
-// the assignments, workers, decisions and updates linked to the PR or naming
-// it. No tasks (D506): what matters about a PR is on its record and notes.
+// GitHub side in the merge queue): the coordinator's record and its stage
+// history (T157), the notes log, and the assignments, workers, decisions and
+// updates linked to the PR or naming it. No tasks (D506): what matters about a PR is on its record and notes.
 // Long lists keep their newest entries and say how many there are.
 import type { Store } from "./store";
 import type { PrNote, PrNotes } from "./pr-notes";
-import type { PrRecord } from "./pr-stages";
+import type { PrRecord, PrStageChange } from "./pr-stages";
 import { prsNamed } from "./pr-records";
 import { branchThreadId } from "./merge-queue";
 
@@ -65,6 +65,8 @@ export interface PrDetailUpdate {
 export interface PrDetail {
   url: string;
   record: PrRecord | null;
+  /** T157: who changed its stage, and when; oldest first. */
+  stages: Clipped<PrStageChange>;
   notes: Clipped<PrNote>;
   assignments: Clipped<PrDetailAssignment>;
   workers: PrDetailWorker[];
@@ -72,7 +74,7 @@ export interface PrDetail {
   updates: Clipped<PrDetailUpdate>;
 }
 
-export const DETAIL_LIMITS = { notes: 200, assignments: 60, decisions: 40, updates: 10 } as const;
+export const DETAIL_LIMITS = { stages: 50, notes: 200, assignments: 60, decisions: 40, updates: 10 } as const;
 const TEXT_MAX = 1200;
 
 const clip = (text: string, max = TEXT_MAX) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
@@ -112,7 +114,7 @@ const byNewest = <V,>(map: Map<number, V>) => [...map].sort(([a], [b]) => b - a)
  * returned are read whole.
  */
 export function readPrDetail(
-  store: Pick<Store, "prRecords" | "prDetailRows" | "decisionsBy" | "listedDecisions" | "assignment" | "worker" | "decisionItem" | "membership">,
+  store: Pick<Store, "prRecords" | "prStageChanges" | "prDetailRows" | "decisionsBy" | "listedDecisions" | "assignment" | "worker" | "decisionItem" | "membership">,
   notes: Pick<PrNotes, "list">,
   projectId: string,
   url: string,
@@ -164,6 +166,7 @@ export function readPrDetail(
   return {
     url,
     record,
+    stages: store.prStageChanges(projectId, url, DETAIL_LIMITS.stages),
     // Oldest first, like the log; the newest are kept.
     notes: { items: log.slice(-DETAIL_LIMITS.notes), total: log.length },
     assignments: {

@@ -36,7 +36,7 @@ import {
 
 import { isLegacyReport, storedReportSchema } from "./legacy";
 import { PROJECT_COLORS, PROJECT_ICONS, type ProjectAppearance } from "./tree-schema";
-import { PR_STAGE_IDS, type PrRecord, type PrStage } from "./pr-stages";
+import { PR_STAGE_IDS, type PrRecord, type PrStage, type PrStageChange } from "./pr-stages";
 import { PR_NOTE_MIGRATIONS } from "./pr-notes";
 import { WRITE_RECEIPT_MIGRATIONS } from "./write-receipt-migrations";
 
@@ -453,6 +453,19 @@ export const MIGRATIONS = [
   // T143: the worker label this assignment was created under. A later continue rename must not
   // relabel an earlier assignment still listed; null on older rows, which fall back to the worker's.
   `ALTER TABLE assignments ADD COLUMN label TEXT`,
+  // T157: each PR's stage changes, appended by initiative_pr (recordPrs), never edited. Its key
+  // indexes the detail panel's read of a PR's newest changes.
+  `CREATE TABLE pr_stage_changes (
+    project_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    from_stage TEXT,
+    to_stage TEXT,
+    note TEXT,
+    PRIMARY KEY (project_id, url, n)
+  )`,
 ];
 
 /** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */
@@ -2988,6 +3001,27 @@ export class Store {
       .run(projectId, r.url, r.stage, r.stage ? r.note : null, r.stage ? r.setAt : null, r.category, r.waitingOn,
         list(r.changes), r.decision ? JSON.stringify(r.decision) : null, r.worker, r.assignment,
         r.discussionThreadId, r.updatedAt);
+  }
+
+  /** T157: appends one change to a PR's stage history. */
+  addPrStageChange(projectId: string, url: string, change: Omit<PrStageChange, "n">): void {
+    this.db.prepare(`INSERT INTO pr_stage_changes (project_id, url, n, at, author, from_stage, to_stage, note)
+      SELECT ?, ?, coalesce(max(n), 0) + 1, ?, ?, ?, ?, ? FROM pr_stage_changes WHERE project_id = ? AND url = ?`)
+      .run(projectId, url, change.at, change.author, change.from, change.to, change.note, projectId, url);
+  }
+
+  /** T157: a PR's newest `limit` stage changes, oldest first, and how many it has. */
+  prStageChanges(projectId: string, url: string, limit: number): { items: PrStageChange[]; total: number } {
+    const rows = this.db.prepare("SELECT * FROM pr_stage_changes WHERE project_id = ? AND url = ? ORDER BY n DESC LIMIT ?")
+      .all(projectId, url, limit) as Row[];
+    return {
+      items: rows.reverse().map((row) => ({
+        n: Number(row.n), at: Number(row.at), author: String(row.author),
+        from: (row.from_stage as string | null) ?? null, to: (row.to_stage as string | null) ?? null, note: (row.note as string | null) ?? null,
+      })),
+      // Numbered 1, 2, … per PR: the newest's number counts them.
+      total: rows.length ? Number(rows.at(-1)!.n) : 0,
+    };
   }
 
   /** Moves every PR of category `from` (any case) to `to`, merging when `to` exists; returns how many moved. */

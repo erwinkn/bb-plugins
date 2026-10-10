@@ -147,7 +147,7 @@
 .cr-pm-found kbd { padding: 0 4px; border-radius: 4px; border: 1px solid var(--border); font: 10px ui-monospace, "SF Mono", Menlo, monospace; color: var(--cr-ink-secondary); }
 
 /* The detail panel: beside the list when there is room, in its place when not. */
-.cr-pm-body[data-open] { display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 44%); gap: 16px; align-items: start; }
+.cr-pm-body[data-open] { display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, 44%); column-gap: 16px; align-items: start; }
 @container (max-width: 760px) {
   .cr-pm-body[data-open] { display: block; }
   .cr-pm-body[data-open] > .cr-pm-results { display: none; }
@@ -169,10 +169,14 @@
  * wherever the list is scrolled, and the opening scroll knows its size
  * before the history loads. Its head, with Close, stays on top; the body
  * scrolls, without carrying the list along at its ends. In place of the list
- * (narrow), the body hands its ends to the page, which holds the search. At
- * the page's end, what lies below the list (its footer, the page's padding)
- * pushes the panel up: its head sticks below the header there too.
+ * (narrow), the body hands its ends to the page, which holds the search.
+ * What lies below the list (the queue's footer, the page's padding,
+ * --cr-pd-below) would push the panel up under the header at the page's end:
+ * the panel's containing block reaches over it, and gives the space back.
+ * Its head sticks below the header too, should the panel still be pushed up.
  */
+.cr-pm-body[data-open] { margin-bottom: calc(-1 * var(--cr-pd-below, 0px)); }
+.cr-pm-body[data-open]::after { content: ""; display: block; grid-column: 1 / -1; height: var(--cr-pd-below, 0px); }
 .cr-pd { position: sticky; top: var(--cr-pd-top); scroll-margin-top: var(--cr-pd-top); display: flex; flex-direction: column; box-sizing: border-box; height: calc(var(--cr-pd-view, 100dvh) - var(--cr-pd-top) - 8px); margin-top: 2px; overflow: clip; border-radius: 10px; border: 1px solid var(--border); background: var(--cr-surface); }
 .cr-pd-head { position: sticky; top: var(--cr-pd-top); z-index: 1; flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 8px 2px 12px; background: var(--cr-surface); font-size: 11px; color: var(--muted-foreground); }
 .cr-pd-body { display: grid; align-content: start; gap: 8px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 12px 12px; }
@@ -223,3 +227,12 @@
 .cr .cr-pd-empty { font-size: 11px; color: var(--cr-faint); }
 .cr-pd-bones ul { margin-top: 2px; }
 .cr-pd-bones li { padding-left: 0; }
+
+/* T157: who moved the PR between stages, and when. */
+.cr-pd-stages ol { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.cr-pd-stage-name { display: inline-flex; align-items: center; gap: 5px; color: var(--foreground); }
+.cr-pd-stage-name .cr-pm-dot { width: 7px; height: 7px; }
+.cr-pd-arrow { color: var(--cr-faint); }
+.cr-pd-cleared { color: var(--muted-foreground); }
+.cr-pd-by { font-size: 11px; color: var(--cr-ink-secondary); }
+.cr .cr-pd-stage-note { margin: 0; padding-left: 8px; border-left: 2px solid var(--border); font-size: 11px; line-height: 1.4; color: var(--cr-ink-secondary); overflow-wrap: anywhere; }

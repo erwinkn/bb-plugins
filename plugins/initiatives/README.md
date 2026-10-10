@@ -420,6 +420,12 @@ stops showing, since the queue lists open PRs only; its row stays.
 Only the fields an entry gives change, and `null` clears one. A stage replaces
 its note (at most 200 characters) and records when it was set; `clear` removes
 the stage, so the queue guesses it from GitHub again, and keeps the rest.
+Each change of stage or stage note is also appended to the PR's stage history
+(T157, table `pr_stage_changes`): the stage before and after (none when
+cleared), the note, who called (`coordinator`, or `user` from a terminal) and
+when. Setting the same stage and note again records nothing. The PR's detail
+panel shows the history, its newest 50 changes; a stage set before the history
+was kept shows as the current stage with its time.
 Where a PR stands (D438): `waitingOn` (one line, "W188: move the lock to
 resume"), pending `changes` requested (one line each, replaced whole), the last
 `decision` (`{text, link?}`, the link a URL, a BB thread id or a ref like

@@ -30,7 +30,7 @@ const queue = (): MergeQueue => ({
     : pr.number === 2251 ? { ...pr, category: "SWC", size: { additions: 908, deletions: 386, files: 48, commits: 5 }, reviewers: [{ login: "alice", state: "approved" }] } : pr))),
 });
 const detail = (n: number): PrDetail => ({
-  url: url(n), record: null,
+  url: url(n), record: null, stages: { items: [], total: 0 },
   notes: { items: [{ n: 1, at: NOW, author: "W217", kind: "note", text: "Pushed with the hook escape.", link: "A277", answered: null }], total: 1 },
   assignments: { items: [
     { ref: "A973", worker: "W833", role: "review", state: "running", via: ["mention"], threadId: "thr_w833", createdAt: NOW, reportedAt: null, outcome: null, summary: null },
@@ -201,7 +201,7 @@ describe("T156 PR search and detail", () => {
     expect(rule(".cr-pd")).toContain("position: sticky; top: var(--cr-pd-top); scroll-margin-top: var(--cr-pd-top);");
     expect(rule(".cr-pd")).toContain(" height: calc(var(--cr-pd-view, 100dvh) - var(--cr-pd-top) - 8px);");
     expect(rule(".cr-pd-body")).toContain("overflow-y: auto; overscroll-behavior: contain;");
-    // What lies below the list pushes the panel up at the page's end: its head sticks.
+    // Should the panel still be pushed up under the header, its head sticks (T157 keeps it from being pushed).
     expect(rule(".cr-pd-head")).toContain("position: sticky; top: var(--cr-pd-top);");
     expect(within(panel).getByRole("button", { name: "Close details" }).closest(".cr-pd-head")?.parentElement).toBe(panel);
     expect(within(panel).getByRole("heading", { name: "Old docs" }).closest(".cr-pd-body")?.parentElement).toBe(panel);
@@ -228,7 +228,7 @@ describe("T156 PR search and detail", () => {
     await settle();
     const panel = slot.getByRole("complementary", { name: "Pull request #22" });
     expect([panel.style.getPropertyValue("--cr-pd-top"), panel.style.getPropertyValue("--cr-pd-view")]).toEqual(["91px", "740px"]);
-    expect(observed.map((e) => e.className)).toEqual(["cr-sticky", "project-page"]);
+    expect(observed.map((e) => e.className)).toEqual(["cr-sticky", "cr", "project-page"]);
     expect(scrolled).toEqual(["91px"]);
     // The coordinator's details open in the header.
     height = 239.6;
