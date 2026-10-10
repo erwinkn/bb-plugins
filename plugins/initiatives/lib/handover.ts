@@ -72,6 +72,22 @@ export async function latestTurn(sdk: Sdk, threadId: string): Promise<{ status: 
   return { status: "ended", outcome, final, inputs, startSeq: start.seq, endSeq: end.seq, startedAt: timeOf(start), endedAt: timeOf(end) };
 }
 
+/**
+ * T150: what the thread's latest failure said — its failed turn's error, the provider's error
+ * detail, or BB's own system error, newest first. Null when none carries text, or when a
+ * normally completed turn is newer than any of them.
+ */
+export async function failureText(sdk: Sdk, threadId: string): Promise<string | null> {
+  const rows = await list(sdk, { threadId, types: ["turn/completed", "provider/error", "system/error"], order: "desc", limit: "3" });
+  for (const row of rows.sort((a, b) => b.seq - a.seq)) {
+    const data = row.data ?? {};
+    if (row.type === "turn/completed" && data.status === "completed") return null;
+    const text = row.type === "turn/completed" ? data.error?.message : row.type === "provider/error" ? data.detail ?? data.message : data.message;
+    if (typeof text === "string" && text.trim()) return text.trim();
+  }
+  return null;
+}
+
 /** The latest turn when it completed normally; null while running, after any other outcome, or with none. */
 export async function latestCompletedTurn(sdk: Sdk, threadId: string): Promise<EndedTurn | null> {
   const turn = await latestTurn(sdk, threadId);

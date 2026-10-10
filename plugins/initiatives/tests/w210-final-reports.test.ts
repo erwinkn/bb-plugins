@@ -189,7 +189,7 @@ describe("W210 stuck workers", () => {
     f.idle(w.threadId);
     let clock = Date.now();
     const now = vi.spyOn(f.service, "now");
-    const check = async () => { clock += 4 * 60_000; now.mockReturnValue(clock); await f.service.flagStuckWorkers(); };
+    const check = async () => { clock += 4 * 60_000; now.mockReturnValue(clock); await f.service.checkWorkers(); };
     return { f, project, w, inputAt, check };
   }
   const stuckSends = (f: Fx) => sentTexts(f).filter(t => t.includes("without reporting"));
@@ -277,7 +277,7 @@ describe("W210 stuck workers", () => {
     f.send.mockClear();
     const calls: { path: string; args: any }[] = [];
     f.intercept((path, args, call) => { calls.push({ path, args }); return call(); });
-    await f.service.flagStuckWorkers();
+    await f.service.checkWorkers();
     expect(f.send).not.toHaveBeenCalled();
     const reads = (thread: (id: string) => boolean) => calls.filter(c => c.path === "threads.events.list" && thread(c.args.threadId)).length;
     expect(reads(id => id === "coordinator")).toBeLessThanOrEqual(2);
@@ -300,22 +300,27 @@ describe("W210 stuck workers", () => {
     expect(stuckSends(f)).toHaveLength(2);
   });
 
-  it("says error for a failed thread", async () => {
-    const { f, w, check } = await stopped();
+  // T150: open work on a failed thread is closed and reported by the failed-thread check instead.
+  it("says error for a failed thread, and leaves open work on it to the failed-thread check", async () => {
+    const { f, project, w, check } = await stopped();
     f.threads.set(w.threadId, { ...f.threads.get(w.threadId)!, status: "error" });
+    await check();
+    expect(stuckSends(f)).toHaveLength(0);
+    await f.service.report(w.threadId, report(), { captured: true });
+    expect(f.store.assignment(project.id, 1)!.state).toBe("reported");
     await check();
     expect(stuckSends(f)[0]).toContain("W1 stopped (error) without reporting");
   });
 
   it("checks at most every few minutes", async () => {
     const { f } = await stopped();
-    await f.service.flagStuckWorkers();
-    await f.service.flagStuckWorkers();
+    await f.service.checkWorkers();
+    await f.service.checkWorkers();
     expect(stuckSends(f)).toHaveLength(1);
     const later = await stopped();
     vi.spyOn(later.f.service, "now").mockReturnValue(Date.now());
-    await later.f.service.flagStuckWorkers();
-    await later.f.service.flagStuckWorkers();
+    await later.f.service.checkWorkers();
+    await later.f.service.checkWorkers();
     expect(stuckSends(later.f)).toHaveLength(1);
   });
 

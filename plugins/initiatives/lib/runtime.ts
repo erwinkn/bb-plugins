@@ -112,7 +112,9 @@ export class Runtime {
       !["running", "idle_no_report"].includes(assignment.state)
     )
       return;
-    // The ledger keeps the assignment open — the worker may still report —
+    // T150: the sweep closes this work once BB is evidently not retrying it.
+    this.service.noteThreadFailed(thread.id, assignment.num, error);
+    // The ledger keeps the assignment open for now — BB may retry the turn —
     // and records the native cause once. The overview derives liveness from
     // the thread's own status.
     const cause = (error ?? "unknown error").trim().replace(/[.!?]+$/, "");
@@ -360,8 +362,8 @@ export class Runtime {
             );
         });
     }
-    await this.service.flagStuckWorkers().catch((error) =>
-      this.log.warn(`Stuck-worker check failed: ${errorMessage(error)}`),
+    await this.service.checkWorkers().catch((error) =>
+      this.log.warn(`Worker check failed: ${errorMessage(error)}`),
     );
     await this.service.pumpHandoverWriters().catch((error) =>
       this.log.warn(`Handover writer start failed: ${errorMessage(error)}`),

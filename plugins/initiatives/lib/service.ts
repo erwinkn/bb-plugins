@@ -23,7 +23,7 @@ import { isAcceptableAgentDecision } from "./decision-eligibility";
 import { messageCallerAdmitted, sendInitiativeMessage, type InitiativeMessage } from "./messaging";
 import { queueTargets } from "./not-delivered";
 import { opMarker, renderAssignment, renderCoordinatorSeed } from "./brief";
-import { briefBoundary, captureHandoverSnapshot, latestInput, messagesSince, emptySnapshot, fallbackBody, finalAgentMessage, fingerprintHolds, handoverFingerprint, handoverPacket, handoverPrompt, HANDOVER_MAX_AGE_MS, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, readHandoverState, readUserMark, withReason, type Destination, type HandoverState } from "./handover";
+import { briefBoundary, captureHandoverSnapshot, failureText, latestInput, messagesSince, emptySnapshot, fallbackBody, finalAgentMessage, fingerprintHolds, handoverFingerprint, handoverPacket, handoverPrompt, HANDOVER_MAX_AGE_MS, HANDOVER_PROFILE, HANDOVER_TIMEOUT_MS, latestTurn, readHandoverState, readUserMark, withReason, type Destination, type HandoverState } from "./handover";
 import { isOwnOrigin } from "./identity";
 import {
   chooseWorkProfile,
@@ -61,8 +61,11 @@ import {
 } from "./schema";
 import {
   assignmentRef,
+  closedOnThreadFailure,
   parseRef,
   taskRef,
+  THREAD_FAILED,
+  threadFailureKey,
   workerRef,
   type AssignmentRecord,
   type HandoverDraft,
@@ -5723,23 +5726,33 @@ export class ProjectsService {
   }
 
 
-  /** List rows of one BB project, matched by id; stops when all ids are found or the page/byte budget is spent. */
-  private async projectListRows(bbProjectId: string, ids: Set<string>, rotate = false) {
+  /**
+   * List rows of one BB project, matched by id; stops when all ids are found or the page/byte
+   * budget is spent. `onPage` gets each page's matched rows as they arrive, and a read of that
+   * same page again.
+   */
+  private async projectListRows(bbProjectId: string, ids: Set<string>, rotate = false,
+    onPage?: (rows: ThreadListRow[], again: () => Promise<ThreadListRow[]>) => Promise<void>) {
     const rows = new Map<string, ThreadListRow>();
     let bytes = 0;
     // `rotate`: start where the last rotating scan of this project stopped, so threads beyond
     // one scan's budget are reached by later ones.
     let offset = rotate ? (this.listCursors.get(bbProjectId) ?? 0) : 0;
-    try {
-      for (let read = 0; read < LIST_SCAN_BUDGET && rows.size < ids.size && bytes < HOLD_LIST_BYTES; read += LIST_PAGE) {
-        const page = await this.sdk.threads.list({ projectId: bbProjectId, includeHidden: true, limit: LIST_PAGE, offset });
-        bytes += JSON.stringify(page).length;
-        for (const row of page) if (ids.has(row.id)) rows.set(row.id, row);
-        offset = page.length < LIST_PAGE ? 0 : offset + LIST_PAGE;
-        if (offset === 0) break;
+    for (let read = 0; read < LIST_SCAN_BUDGET && rows.size < ids.size && bytes < HOLD_LIST_BYTES; read += LIST_PAGE) {
+      const query = { projectId: bbProjectId, includeHidden: true, limit: LIST_PAGE, offset };
+      let page: ThreadListRow[];
+      try {
+        page = await this.sdk.threads.list(query);
+      } catch {
+        // A failed page proves nothing; unmatched threads stay unknown. `onPage`'s own errors propagate.
+        break;
       }
-    } catch {
-      // A failed page proves nothing; unmatched threads stay unknown.
+      bytes += JSON.stringify(page).length;
+      const matched = page.filter(row => ids.has(row.id));
+      for (const row of matched) rows.set(row.id, row);
+      await onPage?.(matched, async () => this.sdk.threads.list(query));
+      offset = page.length < LIST_PAGE ? 0 : offset + LIST_PAGE;
+      if (offset === 0) break;
     }
     if (rotate) this.listCursors.set(bbProjectId, rows.size < ids.size ? offset : 0);
     return rows;
@@ -6401,7 +6414,7 @@ export class ProjectsService {
         "The worker context changed while recording its report.",
       );
     // Rejected assignments refuse late reports above (T92): the reviewed report stays frozen.
-    // Cancelled, failed and stopped assignments are terminal: a late report —
+    // Cancelled, failed (but see T150 below) and stopped assignments are terminal: a late report —
     // first or repeated — preserves evidence without ever reopening the
     // business state, clearing its stop reason, or making the task await
     // acceptance again. The terminal check re-runs after the awaits below.
@@ -6473,8 +6486,11 @@ export class ProjectsService {
       return { assignment: saved.ref, state: saved.state, notification: saved.reportNotice,
         note: `This report is already recorded on ${saved.ref} (${saved.state}).` };
     }
+    // T150: work closed on a thread failure, unlike a failed dispatch, takes a report from that
+    // thread, once retried, as usual.
+    const threadFailed = closedOnThreadFailure(assignment);
     const terminalNow =
-      ["cancelled", "failed", "stopped"].includes(assignment.state) ||
+      (["cancelled", "failed", "stopped"].includes(assignment.state) && !threadFailed) ||
       assignment.cancelRequested;
     const cancelled =
       assignment.state === "cancelled" || assignment.cancelRequested;
@@ -6620,8 +6636,10 @@ export class ProjectsService {
     }
     if (!turn || turn.status === "running") return;
     if (!turn.final) return;
-    const open = this.store.openAssignment(project.id, worker.num);
-    if (!open || !["running", "idle_no_report"].includes(open.state) || open.threadId !== thread.id ||
+    // T150: work closed on a thread failure still takes the report of that thread once retried.
+    const latest = this.store.latestAssignment(project.id, worker.num);
+    const open = this.store.openAssignment(project.id, worker.num) ?? (latest && closedOnThreadFailure(latest) ? latest : null);
+    if (!open || !["running", "idle_no_report", "failed"].includes(open.state) || open.threadId !== thread.id ||
         open.queuedMessageId || open.cancelRequested || open.report) return;
     const adopted = open.briefText === ADOPTED_BRIEF;
     if (!adopted && !open.briefDelivered) return;
@@ -6673,8 +6691,54 @@ export class ProjectsService {
     return { ...result, note: `${result.note ?? "Recorded."} The summary is ${input.summary.length} characters: the dashboard shows its first ${SUMMARY_LINE}, and the full text is kept with the report.` };
   }
 
-  /** When the stuck-worker check last ran; the sweep runs it every STUCK_CHECK_MS. */
-  private stuckCheckedAt = 0;
+  /** When checkWorkers last read every worker thread; it does so every STUCK_CHECK_MS. */
+  private scannedAt = -Infinity;
+  /**
+   * When this process first saw each worker thread failed on its open assignment `num` (T150); a
+   * close waits FAILED_GRACE_MS from there. A new failed event replaces it, so a new failure
+   * waits its own grace, and it is dropped once that assignment is no longer closable. `error` is
+   * the event's, replaced by the thread's history text once a close reads it.
+   */
+  private failedSeen = new Map<string, { num: number; at: number; error: string | null }>();
+  /** Refused failure notices already logged once by this process. */
+  private failureNoticeLogged = new Set<string>();
+
+  /** A thread.failed event on open assignment `num`: the following sweeps read that thread. */
+  noteThreadFailed(threadId: string, num: number, error: string | null) {
+    this.failedSeen.set(threadId, { num, at: this.now(), error });
+  }
+
+  /**
+   * The sweep's check of worker threads. Every STUCK_CHECK_MS one bounded scan per BB project
+   * reads every thread either check below needs, rotating on through the project's listing
+   * from one scan to the next; between scans only threads a failed event named are read. Open
+   * work on a failed thread closes page by page as the rows come in (T150); workers that stopped
+   * without reporting are flagged from the same rows (D417). Failure notices go out last.
+   */
+  async checkWorkers() {
+    const full = this.now() - this.scannedAt >= STUCK_CHECK_MS;
+    if (full) this.scannedAt = this.now();
+    if (full || this.failedSeen.size) {
+      const closable = this.store.failureClosable();
+      const failing = new Map(closable.map(a => [a.threadId!, a.num]));
+      for (const [threadId, seen] of this.failedSeen) if (failing.get(threadId) !== seen.num) this.failedSeen.delete(threadId);
+      const stuck = full
+        ? this.store.projects().filter(p => p.coordinatorThreadId)
+            .map(project => ({ project, workers: this.store.workers(project.id).filter(w => this.mayBeStuck(project.id, w, -Infinity)) }))
+        : [];
+      const reads = new Map<string, Set<string>>();
+      const read = (bbProjectId: string, threadId: string) => reads.set(bbProjectId, (reads.get(bbProjectId) ?? new Set()).add(threadId));
+      for (const a of closable) if (full || this.failedSeen.has(a.threadId!)) read(a.bbProjectId, a.threadId!);
+      for (const { workers } of stuck) for (const w of workers) read(w.bbProjectId, w.threadId!);
+      const rows = new Map<string, ThreadListRow>();
+      const byThread = new Map(closable.map(a => [a.threadId!, a]));
+      for (const [bbProjectId, ids] of reads)
+        for (const [id, row] of await this.projectListRows(bbProjectId, ids, full, (page, again) => this.closeFailedAssignments(byThread, page, again)))
+          rows.set(id, row);
+      for (const { project, workers } of stuck) await this.flagStuckWorkers(project, workers, rows, failing);
+    }
+    await this.sendFailureNotices();
+  }
 
   /**
    * D417: workers report explicitly, so one that stops without reporting would go unseen. The
@@ -6683,49 +6747,40 @@ export class ProjectsService {
    * has neither messaged the coordinator nor filed a report since its latest input. Everything is
    * checked again right before each send; the coordinator's inputs are read once per Initiative.
    */
-  async flagStuckWorkers() {
-    if (this.now() - this.stuckCheckedAt < STUCK_CHECK_MS) return;
-    this.stuckCheckedAt = this.now();
-    for (const project of this.store.projects()) {
-      const coordinator = project.coordinatorThreadId;
-      if (!coordinator) continue;
-      const byProject = new Map<string, WorkerRecord[]>();
-      for (const w of this.store.workers(project.id))
-        if (this.mayBeStuck(project.id, w, -Infinity)) byProject.set(w.bbProjectId, [...(byProject.get(w.bbProjectId) ?? []), w]);
-      const candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string }[] = [];
-      for (const [bbProjectId, group] of byProject) {
-        const rows = await this.projectListRows(bbProjectId, new Set(group.map(w => w.threadId!)), true);
-        for (const worker of group) {
-          const row = rows.get(worker.threadId!);
-          if (!row || row.archivedAt !== null || ProjectsService.rowQuiescence(row) !== "ended") continue;
-          const input = await latestInput(this.sdk, worker.threadId!).catch(() => null);
-          if (input && !this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) candidates.push({ worker, input, status: row.status });
-        }
-      }
-      if (!candidates.length) continue;
-      const heard = await messagesSince(this.sdk, coordinator, Math.min(...candidates.map(c => c.input.at)), this.now()).catch(() => null);
-      if (!heard) continue;
-      for (const { worker, input, status } of candidates) {
-        const threadId = worker.threadId!;
-        // Silence is proven only as far back as the read reached.
-        if (input.at < heard.reached || (heard.latest.get(threadId) ?? -Infinity) >= input.at) continue;
-        try {
-          const turn = await latestTurn(this.sdk, threadId);
-          const now = await latestInput(this.sdk, threadId);
-          // Re-validated with no await before the send: still stopped on the same input, still
-          // eligible, still unflagged, and the coordinator unchanged.
-          const current = this.store.worker(project.id, worker.num);
-          if (!turn || turn.status === "running" || now?.seq !== input.seq || !current || current.threadId !== threadId ||
-              !this.mayBeStuck(project.id, current, input.at) || this.store.project(project.id)?.coordinatorThreadId !== coordinator ||
-              this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
-          const text = turn.final?.text ?? "(none)";
-          const excerpt = text.length > STUCK_EXCERPT ? `${text.slice(0, STUCK_EXCERPT).trimEnd()}…` : text;
-          await this.sdk.threads.send({ threadId: coordinator, mode: "queue-if-active", input: textInput(
-            `Initiative · ${project.name} · ${worker.ref}\n\n${worker.ref} stopped (${status === "error" ? "error" : "idle"}) without reporting since its last input. Its last message:\n\n${excerpt}\n\nRead its thread (${threadId}).`) });
-          this.store.setFlag(stuckKey(project.id, worker.num, input.seq));
-        } catch (error) {
-          this.store.log(project.id, "report", `Could not check whether ${worker.ref} is stuck: ${errorMessage(error)}`);
-        }
+  private async flagStuckWorkers(project: ProjectRecord, workers: WorkerRecord[], rows: Map<string, ThreadListRow>, failing: Map<string, number>) {
+    const coordinator = project.coordinatorThreadId!;
+    const candidates: { worker: WorkerRecord; input: { seq: number; at: number }; status: string }[] = [];
+    for (const worker of workers) {
+      const row = rows.get(worker.threadId!);
+      if (!row || row.archivedAt !== null || ProjectsService.rowQuiescence(row) !== "ended") continue;
+      // T150: open work on a failed thread is closeFailedAssignments' to report, once.
+      if (row.status === "error" && failing.has(worker.threadId!)) continue;
+      const input = await latestInput(this.sdk, worker.threadId!).catch(() => null);
+      if (input && !this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) candidates.push({ worker, input, status: row.status });
+    }
+    if (!candidates.length) return;
+    const heard = await messagesSince(this.sdk, coordinator, Math.min(...candidates.map(c => c.input.at)), this.now()).catch(() => null);
+    if (!heard) return;
+    for (const { worker, input, status } of candidates) {
+      const threadId = worker.threadId!;
+      // Silence is proven only as far back as the read reached.
+      if (input.at < heard.reached || (heard.latest.get(threadId) ?? -Infinity) >= input.at) continue;
+      try {
+        const turn = await latestTurn(this.sdk, threadId);
+        const now = await latestInput(this.sdk, threadId);
+        // Re-validated with no await before the send: still stopped on the same input, still
+        // eligible, still unflagged, and the coordinator unchanged.
+        const current = this.store.worker(project.id, worker.num);
+        if (!turn || turn.status === "running" || now?.seq !== input.seq || !current || current.threadId !== threadId ||
+            !this.mayBeStuck(project.id, current, input.at) || this.store.project(project.id)?.coordinatorThreadId !== coordinator ||
+            this.store.hasFlag(stuckKey(project.id, worker.num, input.seq))) continue;
+        const text = turn.final?.text ?? "(none)";
+        const excerpt = text.length > STUCK_EXCERPT ? `${text.slice(0, STUCK_EXCERPT).trimEnd()}…` : text;
+        await this.sdk.threads.send({ threadId: coordinator, mode: "queue-if-active", input: textInput(
+          `Initiative · ${project.name} · ${worker.ref}\n\n${worker.ref} stopped (${status === "error" ? "error" : "idle"}) without reporting since its last input. Its last message:\n\n${excerpt}\n\nRead its thread (${threadId}).`) });
+        this.store.setFlag(stuckKey(project.id, worker.num, input.seq));
+      } catch (error) {
+        this.store.log(project.id, "report", `Could not check whether ${worker.ref} is stuck: ${errorMessage(error)}`);
       }
     }
   }
@@ -6736,6 +6791,99 @@ export class ProjectsService {
     const latest = this.store.latestAssignment(projectId, w.num);
     if (!latest?.briefDelivered || !["running", "idle_no_report", "reported"].includes(latest.state)) return false;
     return !latest.report || latest.report.captured === true || (latest.reportedAt ?? -Infinity) < since;
+  }
+
+  /**
+   * T150: open work whose worker thread ended in an error BB is not retrying becomes failed,
+   * with the error as its stop reason, and its tasks blocked. "Not retrying" is the thread's row
+   * staying in error with nothing queued or running for FAILED_GRACE_MS: BB's provider retry
+   * queues its next attempt right after the failure, and a queued attempt is queued work. The
+   * grace starts at the failed event, or at the first scan that finds this assignment's failure.
+   * One page of rows at a time: only the failures on it past their grace have their text read,
+   * then the page is read again, and its fresh rows, the observation and the ledger decide each
+   * close with no await in between.
+   */
+  private async closeFailedAssignments(closable: Map<string, AssignmentRecord>, page: ThreadListRow[], again: () => Promise<ThreadListRow[]>) {
+    const due = new Set<string>();
+    for (const row of page) {
+      const a = closable.get(row.id);
+      if (!a || !this.failedForGrace(a, row)) continue;
+      // The text joins the observation it was read for: a newer failure replacing that one
+      // during the read keeps its own error.
+      const seen = this.failedSeen.get(row.id)!;
+      seen.error = (await failureText(this.sdk, row.id).catch(() => null)) ?? seen.error;
+      due.add(row.id);
+    }
+    if (!due.size) return;
+    for (const row of await again().catch(() => [])) {
+      const threadId = row.id;
+      const a = closable.get(threadId);
+      if (!a || !due.has(threadId)) continue;
+      // A report, cancel or successor that landed during the reads wins.
+      const current = this.store.failureClosable({ projectId: a.projectId, num: a.num })[0];
+      if (!current || !this.failedForGrace(current, row)) continue;
+      const cause = (this.failedSeen.get(threadId)!.error ?? "unknown error").trim().replace(/[.!?]+$/, "");
+      const clipped = cause.length > FAILURE_TEXT_MAX ? `${cause.slice(0, FAILURE_TEXT_MAX - 1).trimEnd()}…` : cause;
+      const worker = workerRef(current.workerNum);
+      this.store.tx(() => {
+        this.store.updateAssignment(current.projectId, current.num, { state: "failed", stopReason: `${THREAD_FAILED}${clipped}.` });
+        for (const num of current.taskNums) {
+          const task = this.store.task(current.projectId, num);
+          if (task?.status === "in_progress")
+            this.store.updateTask(current.projectId, num, { status: "blocked", progress: `${worker}'s thread failed on ${current.ref} without a report` });
+        }
+        this.store.log(current.projectId, "worker", `${current.ref} failed: ${worker}'s thread ended in an error BB is not retrying (${clipped}); no report.`, { assignment: current.num });
+      });
+      this.failedSeen.delete(threadId);
+    }
+  }
+
+  /**
+   * Whether `row` shows the thread of open work `a` failed, with nothing queued or running, for
+   * FAILED_GRACE_MS. Its grace starts here unless it already runs for `a`, and ends when the
+   * row shows the thread runnable again. An archived or deleted thread settles through its own
+   * events.
+   */
+  private failedForGrace(a: AssignmentRecord, row: ThreadListRow) {
+    if (row.archivedAt !== null || row.deletedAt !== null) return false;
+    if (row.status !== "error" || ProjectsService.rowQuiescence(row) !== "ended") {
+      this.failedSeen.delete(row.id);
+      return false;
+    }
+    let seen = this.failedSeen.get(row.id);
+    if (seen?.num !== a.num) this.failedSeen.set(row.id, seen = { num: a.num, at: this.now(), error: null });
+    return this.now() - seen.at >= FAILED_GRACE_MS;
+  }
+
+  /**
+   * T150: the coordinator hears once of each thread failure closed above, each read again right
+   * before its send so one that a report reopened meanwhile stays unsent. A send BB refused goes
+   * out on a later sweep. One whose outcome is unknown counts as sent: BB's send has no
+   * idempotency key, and a duplicate notice is worse than a rare missing one; the failed
+   * assignment and its blocked task still show on the dashboard.
+   */
+  private async sendFailureNotices() {
+    for (const { projectId, num } of this.store.unnoticedThreadFailures()) {
+      const key = threadFailureKey(projectId, num);
+      const failed = this.store.assignment(projectId, num);
+      const project = this.store.project(projectId);
+      if (!failed || !closedOnThreadFailure(failed) || failed.report || this.store.hasFlag(key) ||
+          !project || project.archivedAt !== null || !project.coordinatorThreadId) continue;
+      const worker = workerRef(failed.workerNum);
+      try {
+        await this.sdk.threads.send({ threadId: project.coordinatorThreadId, mode: "queue-if-active", input: textInput(
+          `Initiative · ${project.name} · ${worker}\n\n${worker} ended without a report on ${failed.ref} (thread ${failed.threadId}). ${failed.stopReason}\n\nNo report; retire and respawn ${worker}, or retry its thread.`) });
+        this.store.setFlag(key);
+      } catch (error) {
+        if (!isDefiniteRejection(error)) {
+          this.store.setFlag(key);
+          this.store.log(project.id, "worker", `The coordinator may not have been told that ${failed.ref} failed (${errorMessage(error)}); it is not sent again.`, { assignment: failed.num });
+        } else if (!this.failureNoticeLogged.has(key)) {
+          this.failureNoticeLogged.add(key);
+          this.store.log(project.id, "worker", `Could not tell the coordinator that ${failed.ref} failed (${errorMessage(error)}); a later sweep tries again.`, { assignment: failed.num });
+        }
+      }
+    }
   }
 
   /** D417: a filed report goes to the coordinator once, as an ordinary message from the worker. */
@@ -6885,6 +7033,10 @@ export function summaryOf(text: string) {
 
 /** How often the sweep checks for workers that stopped without reporting (D417). */
 const STUCK_CHECK_MS = 3 * 60_000;
+/** How long a worker thread stays failed with nothing queued before its open assignment closes (T150). */
+const FAILED_GRACE_MS = 60_000;
+/** How much of a failure's error text the stop reason and notice keep. */
+const FAILURE_TEXT_MAX = 600;
 /** How much of a stuck worker's last message the coordinator's notice quotes. */
 const STUCK_EXCERPT = 1500;
 /** The flag recording that the coordinator was told this worker stopped on this input. */

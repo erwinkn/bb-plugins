@@ -533,6 +533,12 @@ export interface WorkerRecord {
 }
 
 export interface ReviewTargetRecord { task: string; assignment: string; revision: string; worker: string; profile: Profile }
+/** T150: the flag recording that the coordinator was told this assignment's thread failed. */
+export const threadFailureKey = (projectId: string, num: number) => `failed:${projectId}:${num}`;
+/** T150: how the stop reason of work closed on a thread failure starts; a failed dispatch's never does. */
+export const THREAD_FAILED = "Native thread failed, not retried: ";
+/** T150: closed because its thread failed, so a report from that thread still reopens it. */
+export const closedOnThreadFailure = (a: AssignmentRecord) => a.state === "failed" && !!a.stopReason?.startsWith(THREAD_FAILED);
 export interface NativeNotice { state: "pending" | "sent" | "queued" | "failed" | "uncertain"; coordinatorThreadId: string; queuedId?: string; detail?: string }
 const noticeSchema = z.object({ state: z.enum(["pending", "sent", "queued", "failed", "uncertain"]), coordinatorThreadId: z.string(), queuedId: z.string().optional(), detail: z.string().optional() }).strict();
 export interface CheckpointRecord { recordedBy: string; recordedAt: number; sourceThreadId: string }
@@ -2439,6 +2445,31 @@ export class Store {
       .prepare(`SELECT * FROM assignments WHERE project_id = ? AND worker_num = ? ORDER BY num DESC LIMIT 1`)
       .get(projectId, workerNum) as Row | undefined;
     return row ? toAssignment(row) : null;
+  }
+
+  /**
+   * T150: open work a non-retried failure of its worker's thread would close: delivered,
+   * unreported, nothing pending or cancelling on it, on its live worker's current thread, in an
+   * active Initiative. `only` narrows it to one assignment.
+   */
+  failureClosable(only?: { projectId: string; num: number }): AssignmentRecord[] {
+    return (
+      this.db
+        .prepare(`SELECT a.* FROM assignments a JOIN workers w ON w.project_id = a.project_id AND w.num = a.worker_num JOIN projects p ON p.id = a.project_id
+          WHERE a.state IN ('running', 'idle_no_report') AND a.brief_delivered = 1 AND a.report IS NULL AND a.queued_message_id IS NULL
+            AND a.cancel_requested = 0 AND a.op_state = 'done' AND a.thread_id = w.thread_id AND a.generation = w.generation
+            AND w.state != 'retired' AND p.archived_at IS NULL ${only ? "AND a.project_id = ? AND a.num = ?" : ""} ORDER BY a.project_id, a.num`)
+        .all(...(only ? [only.projectId, only.num] : [])) as Row[]
+    ).map(toAssignment);
+  }
+
+  /** T150: work closed on a thread failure, unreported, whose coordinator notice has not gone out (no threadFailureKey flag). */
+  unnoticedThreadFailures(): AssignmentRecord[] {
+    return (
+      this.db
+        .prepare(`SELECT * FROM assignments a WHERE state = 'failed' AND stop_reason LIKE ? AND report IS NULL AND NOT EXISTS (SELECT 1 FROM plugin_flags WHERE key = 'failed:' || a.project_id || ':' || a.num) ORDER BY project_id, num`)
+        .all(`${THREAD_FAILED}%`) as Row[]
+    ).map(toAssignment);
   }
 
   /** T136: a worker's latest assignment with a report, without scanning the whole ledger. */
