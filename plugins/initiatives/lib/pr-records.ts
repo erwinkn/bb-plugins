@@ -58,7 +58,7 @@ export function recordPrs(
       notes.append(projectId, key, { at, author: caller.author, kind: entry.kind ?? "note", text: entry.text, link: entry.link ?? caller.threadId }));
     for (const { n, text } of answered ?? [])
       if (!notes.answer(projectId, key, n, { at, by: caller.author, text: text ?? null }))
-        throw new ProjectError(`${key} has no question ${n}; initiative_read {view:"prs"} lists the open ones.`);
+        throw new ProjectError(`${key} has no question ${n}; initiative_read view prs with refs:["${key}"] lists its open ones.`);
     const receipt = {
       url: key,
       ...(noted.length ? { noted } : {}),

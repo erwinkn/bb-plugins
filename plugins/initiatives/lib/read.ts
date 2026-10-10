@@ -4,10 +4,12 @@ import { ProjectError } from "./bb";
 import { workerWork } from "./messaging";
 import { reportVersion } from "./write-holds";
 import { renderStandardHandoff } from "./handoffs";
+import { PR_STAGE_IDS } from "./pr-stages";
 
 export const READ_FIELDS = ["brief", "briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "handoff", "body", "payload", "answer", "resolution", "checkpoint", "reviewTargets", "reportNotice"] as const;
 export const readOptionsSchema = z.object({
-  refs: z.array(z.string().min(1).max(80)).min(1).max(30).optional(),
+  // 300: a PR URL as initiative_pr takes it, read back by view prs (T155).
+  refs: z.array(z.string().min(1).max(300)).min(1).max(30).optional(),
   offset: z.number().int().min(0).default(0),
   limit: z.number().int().min(1).max(30).default(20),
   detailed: z.boolean().default(false),
@@ -17,7 +19,9 @@ export const READ_VIEWS = ["tasks", "workers", "assignments", "reports", "decisi
 export type ReadView = (typeof READ_VIEWS)[number];
 export type ReadOptions = z.infer<typeof readOptionsSchema>;
 // "memory": an alias of Chat memory's memory_read for sessions built before T145 (A469).
-export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overview", "records", "context", "memory", "prs", ...READ_VIEWS]).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(30).optional(), detailed: z.boolean().optional() }).strict();
+// category and stage select a slice of view prs (T155).
+export const agentReadSchema = readOptionsSchema.extend({ view: z.enum(["overview", "records", "context", "memory", "prs", ...READ_VIEWS]).optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(30).optional(), detailed: z.boolean().optional(),
+  category: z.string().min(1).max(80).optional(), stage: z.enum(PR_STAGE_IDS).optional() }).strict();
 export const MAX_READ_BYTES = 65536;
 const refViews: Record<string, ReadView> = { T: "tasks", W: "workers", A: "assignments", D: "decisions", K: "decisions", U: "updates" };
 export const fieldsByView: Partial<Record<ReadView, readonly string[]>> = {
@@ -76,7 +80,8 @@ function summary(view: ReadView, row: Record<string, any>, listing = false) {
 }
 const rowsFor = (store: Store, projectId: string, view: ReadView): Record<string, any>[] => {
   if (view === "threads") throw new ProjectError("Native threads must be read through initiative_read view threads.");
-  if (view === "workers") return store.workers(projectId);
+  // T155: the live workers first, then the most recent: a page of a long Initiative shows who works now.
+  if (view === "workers") return store.workers(projectId).sort((a, b) => Number(a.state === "retired") - Number(b.state === "retired") || b.num - a.num);
   if (view === "usage") return store.projectUsage(projectId) as unknown as Record<string, any>[];
   if (view === "inbox" || view === "activity") return store[view](projectId, -1) as unknown as Record<string, any>[];
   if (view === "reports") return store.assignments(projectId).filter(a => a.report).sort((a, b) => (b.reportedAt ?? 0) - (a.reportedAt ?? 0)) as unknown as Record<string, any>[];

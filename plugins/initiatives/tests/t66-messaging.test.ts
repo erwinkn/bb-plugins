@@ -100,7 +100,7 @@ describe("T66 trusted thin native messaging", () => {
     const { f, project, caller } = await peers();
     const usage = vi.spyOn(f.store, "projectUsage"), assignments = vi.spyOn(f.store, "assignments");
     const r = readCollection(f.store, project.id, "workers", readOptionsSchema.parse({ limit: 1 }));
-    expect(r.items[0]).toMatchObject({ ref: "W1", assignments: [{ ref: "A1", tasks: ["T1"] }] });
+    expect(r.items[0]).toMatchObject({ ref: "W2", assignments: [{ ref: "A2", tasks: ["T2"] }] });
     expect(r.nextOffset).toBe(1); expect(usage).not.toHaveBeenCalled(); expect(assignments).not.toHaveBeenCalled();
     const before = f.harness.inspection.sdk.calls.length;
     const config = await f.harness.resolveAgentConfiguration(makePluginAgentConfigurationContext({ thread: f.threads.get(caller)! }));

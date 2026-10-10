@@ -43,9 +43,16 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   closes a question. Whatever you tell the user about a PR (caveats, questions, review
   comments) goes there too; open questions show as "?" on the dashboard. A worker's
   report lands on the PRs it names by itself, and workers may add notes to their own PRs.
-- `initiative_read {view:"prs"}` answers "which PR next": what the user can review now,
-  PRs by category and stage, the stacks, and where each PR stands with its open
-  questions and latest note.
+- `initiative_read {view:"prs"}` answers "which PR next": the first ten PRs the user can
+  review now, PRs by category and stage, the stacks, and where each PR needing action (an
+  open question, requested changes, a wait) stands; the others are only counted.
+  `offset` pages that `state`. `{view:"prs",category:"Security"}` or `{view:"prs",stage:"in-review"}`
+  lists one slice with every PR's state; `{view:"prs",refs:["#2273","infra#12"]}` reads
+  whole PRs with every question, change and recent note (`#12` matches every repository's
+  #12, `infra#12` every owner's infra; use the URL to be exact). Both page with `offset`
+  from `page.nextOffset`; `truncated` says what was left out. A PR too long to fit comes
+  back compact and marked `clipped:true` (e.g. 3 questions and "+22 more"); offset does
+  not expand it.
 - `initiative_batch` runs several actions in one call, in order, and reports each:
   `{actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"worker",action:"retire",worker:"W9"}]}`.
   Use it instead of chaining calls; one failure doesn't stop the rest.

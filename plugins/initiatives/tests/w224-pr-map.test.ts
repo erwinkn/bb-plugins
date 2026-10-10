@@ -81,7 +81,13 @@ describe("W224 PR categories", () => {
 
   it("initiative_read {view:prs} answers from the merge queue", async () => {
     const { f } = await projectFixture();
-    expect(await call(f, "initiative_read", { view: "prs" })).toEqual({ repos: [], open: 0, next: [], byCategory: {}, stacks: [], state: {} });
+    expect(await call(f, "initiative_read", { view: "prs" })).toEqual({
+      repos: [], open: 0, next: [], byCategory: {}, stacks: [], state: {}, page: { total: 0, offset: 0, nextOffset: null }, noAction: 0, reads: expect.stringMatching(/PRs needing action/),
+    });
+    await expect(call(f, "initiative_read", { view: "workers", stage: "working" })).rejects.toThrow(/category and stage select a slice of view prs/);
+    await expect(call(f, "initiative_read", { view: "prs", refs: ["#1"], category: "CI" })).rejects.toThrow(/without refs/);
+    expect(await call(f, "initiative_read", { view: "prs", refs: ["#1"] })).toEqual({ repos: [], open: 0, prs: {}, missingRefs: ["#1"], page: { total: 0, offset: 0, nextOffset: null } });
+    expect(await call(f, "initiative_read", { view: "prs", category: "CI" })).toMatchObject({ matching: 0, categories: [], state: {} });
   });
 });
 
@@ -166,7 +172,7 @@ describe("W224 where each PR stands (D438)", () => {
     ]);
     const queue: MergeQueue = { projectId: "p", login: null, repos: [], skipped: [], stages: PR_STAGES.map((s) => ({ ...s })), pullRequests: [one!] };
     expect(prSummary(queue).state).toEqual({ "#1": {
-      worker: "W188 · A382", waitingOn: "W188: move the lock to resume", questions: ["n2 coordinator: Redis TTL?"], notes: 2, latestNote: "coordinator question: Redis TTL?", changes: ["a", "b"],
+      stage: "working", worker: "W188 · A382", waitingOn: "W188: move the lock to resume", questions: ["n2 coordinator: Redis TTL?"], notes: 2, latestNote: "coordinator question: Redis TTL?", changes: ["a", "b"],
       decision: "Keep 5m (https://github.com/erwinkn/bb/pull/1#issuecomment-1)",
     } });
   });
@@ -297,6 +303,9 @@ describe("W224 grouped views", () => {
       },
       stacks: ["#1 → #2 → #3"],
       state: {},
+      page: { total: 0, offset: 0, nextOffset: null },
+      noAction: 5,
+      reads: expect.stringMatching(/PRs needing action/),
     });
     const guessed = prSummary({ ...queue, pullRequests: prs.map((p) => ({ ...p, stageSource: "github" as const })) });
     expect(guessed.note).toMatch(/guessed from GitHub/);

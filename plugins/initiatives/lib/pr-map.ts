@@ -252,55 +252,263 @@ export function laneLayout(
   return { stacks, singles: sorted.filter((pr) => !pr.stack) };
 }
 
+/** A slice of the queue and one page of it, for initiative_read {view:"prs"}. */
+export interface PrRead {
+  /** A category's name, case-insensitive; "Uncategorized" for the PRs without one. */
+  category?: string;
+  /** A stage id, exactly as PR_STAGE_IDS spells it. */
+  stage?: string;
+  offset: number;
+  limit: number;
+}
+
+/** The longest initiative_read {view:"prs"} answer, in characters: it must fit an agent's tool output. */
+export const PRS_READ_CHARS = 20_000;
 /**
- * initiative_read {view:"prs"}: the queue in a few lines, so the coordinator
- * answers "what's next" without the dashboard. Titles only in `next`; `state`
- * has where each PR stands (worker, waiting on, questions, changes, decision).
+ * What a page leaves an answer's lists (repositories, byCategory, stacks, …) at
+ * least; they get whatever more it leaves. The rest of an answer is short by
+ * construction, so a compact PR always fits.
  */
-export function prSummary(queue: MergeQueue) {
-  const multiRepo = new Set(queue.pullRequests.map((pr) => pr.repo.toLowerCase())).size > 1;
-  const ref = (pr: QueuedPullRequest) => (multiRepo ? `${pr.repo}#${pr.number}` : `#${pr.number}`);
-  const brief = (pr: QueuedPullRequest) => `${ref(pr)}${pr.stack ? ` (${stackLabel(pr.stack)})` : ""}`;
-  // fromEntries: free-form category names ("__proto__") become plain keys.
-  const byCategory = Object.fromEntries(groupPrs(queue.pullRequests, "category", queue.stages)
-    .map((group) => [group.label, Object.fromEntries(group.groups.map((g) => [g.key!, g.pullRequests.map(brief)]))]));
+const LISTS_CHARS = 8_000;
+/** How many "review next" PRs a read lists; the rest are counted. */
+const NEXT_SHOWN = 10;
+/** Per compact PR: the questions and changes listed, and each line's length. */
+const STATE_ITEMS = 3;
+const STATE_LINE = 160;
+
+/** Someone has to act: an open question, requested changes, or a wait on someone. */
+const needsAction = (pr: QueuedPullRequest) => !!pr.waitingOn || pr.notes.open.length > 0 || pr.changes.length > 0;
+
+/**
+ * initiative_read {view:"prs"}: what the user can review next and where the
+ * PRs stand, bounded so the coordinator reads it without the dashboard. Without
+ * a filter, `state` lists only the PRs needing action and counts the others; a
+ * category or stage lists every PR in it. `state` pages with offset/limit and
+ * its lines are clipped; prsByRef reads whole PRs. The answer fits
+ * PRS_READ_CHARS and says what it left out.
+ */
+export function prSummary(queue: MergeQueue, read: PrRead = { offset: 0, limit: 20 }) {
   const prs = queue.pullRequests;
+  const ref = prRef(prs);
+  const order = stackOrder(prs);
+  const filtered = read.category !== undefined || read.stage !== undefined;
+  const category = read.category?.toLowerCase();
+  const slice = prs.filter((pr) => (category === undefined || (pr.category ?? UNCATEGORIZED).toLowerCase() === category) && (read.stage === undefined || pr.stage === read.stage));
+  const listed = (filtered ? slice : slice.filter(needsAction)).sort(order);
+  const inSlice = new Set(slice);
+  const next = nextUp(prs).filter((pr) => inSlice.has(pr));
+  const brief = (pr: QueuedPullRequest) => `${ref(pr)}${pr.stack ? ` (${stackLabel(pr.stack)})` : ""}`;
   const stackTree = (pr: QueuedPullRequest): string => {
-    const up = prs.filter((p) => p.repo === pr.repo && p.stack?.on === pr.number).sort(stackOrder(prs));
+    const up = prs.filter((p) => p.repo === pr.repo && p.stack?.on === pr.number).sort(order);
     return up.length === 0 ? ref(pr) : up.length === 1 ? `${ref(pr)} → ${stackTree(up[0]!)}` : `${ref(pr)} → (${up.map(stackTree).join(" | ")})`;
   };
-  const state: Record<string, Record<string, unknown>> = {};
-  for (const pr of [...prs].sort(stackOrder(prs))) {
-    const entry = {
-      ...(pr.worker ? { worker: workerLabel(pr.worker) } : {}),
-      ...(pr.waitingOn ? { waitingOn: pr.waitingOn } : {}),
-      ...(pr.notes.open.length ? { questions: pr.notes.open.map((q) => `n${q.n} ${q.author}: ${clip(q.text, 200)}`) } : {}),
-      ...(pr.notes.count ? { notes: pr.notes.count, latestNote: noteLine(pr.notes.recent.at(-1)!) } : {}),
-      ...(pr.changes.length ? { changes: pr.changes } : {}),
-      ...(pr.decision ? { decision: pr.decision.link ? `${pr.decision.text} (${pr.decision.link})` : pr.decision.text } : {}),
-      ...(pr.discussionThreadId ? { discussion: pr.discussionThreadId } : {}),
+
+  const categories = filtered && !slice.length ? categoriesOf(prs).map((c) => c.label) : [];
+  const groups = groupPrs(slice, "category", queue.stages, prs);
+  const named = groups.map((group) => [group.label, Object.fromEntries(group.groups.map((g) => [g.key!, g.pullRequests.map(brief)]))] as const);
+  const counted = groups.map((group) => [group.label, Object.fromEntries(group.groups.map((g) => [g.key!, g.pullRequests.length]))] as const);
+  const roots = prs.filter((root) => root.stack?.level === 1 && (!filtered || slice.some((pr) => pr.repo === root.repo && pr.stack?.root === root.number)));
+  const trees = roots.sort(order).map(stackTree);
+
+  return fitPage(listed, read, (pr) => [ref(pr), prState(pr, false)], (state, page, cut, lists) => {
+    // The lists take their share in this order.
+    const head = queueHead(queue, lists);
+    const shownCategories = lists.take(categories, "category names");
+    const byNames = fitting(named, lists.left).n === named.length;
+    if (!byNames) lists.cuts.push("byCategory counts the PRs");
+    // fromEntries: free-form category names ("__proto__") become plain keys.
+    const byCategory = Object.fromEntries(lists.take<readonly [string, Record<string, string[] | number>]>(byNames ? named : counted, "categories"));
+    const stacks = lists.take(trees, "stacks");
+    const cuts = [...lists.cuts, ...(cut ? ["state ends at page.nextOffset, read on with offset"] : [])];
+    return {
+      ...head,
+      ...(filtered ? { matching: slice.length } : {}),
+      ...(filtered && !slice.length ? { categories: shownCategories } : {}),
+      next: next.slice(0, NEXT_SHOWN).map((pr) => ({
+        pr: ref(pr),
+        title: clip(pr.title, 90),
+        ...(pr.category ? { category: pr.category } : {}),
+        ...(pr.stack ? { stack: stackLabel(pr.stack) } : {}),
+      })),
+      ...(next.length > NEXT_SHOWN ? { moreNext: next.length - NEXT_SHOWN } : {}),
+      byCategory,
+      stacks,
+      state,
+      page,
+      ...(filtered ? {} : { noAction: slice.length - listed.length }),
+      ...(prs.some((pr) => pr.stageSource === "github") ? { note: "Stages without a coordinator record are guessed from GitHub." } : {}),
+      ...(cuts.length ? { truncated: `Cut to fit ${PRS_READ_CHARS} characters: ${cuts.join("; ")}. Narrow with category, stage or refs.` } : {}),
+      reads: filtered
+        ? 'state lists every PR in this slice; refs read whole PRs: initiative_read {view:"prs",refs:["#12"]}'
+        : 'state lists the PRs needing action (a question, changes, a wait); refs read whole PRs, category or stage lists a slice: initiative_read {view:"prs",category:"CI",stage:"in-review"}',
     };
-    if (Object.keys(entry).length) state[ref(pr)] = entry;
-  }
+  });
+}
+
+/**
+ * The PRs that initiative_read view prs names in refs, whole and in review
+ * order, paged by offset/limit like state. A PR too long to read whole is
+ * listed compact, as state lists it, and marked clipped.
+ */
+export function prsByRef(queue: MergeQueue, refs: readonly string[], read: { offset: number; limit: number } = { offset: 0, limit: 20 }) {
+  const prs = queue.pullRequests;
+  const ref = prRef(prs);
+  const matches = refs.map((text) => [text, prs.filter(matchesRef(text))] as const);
+  const found = [...new Set(matches.flatMap(([, m]) => m))].sort(stackOrder(prs));
+  const missing = matches.filter(([, m]) => !m.length).map(([text]) => text);
+  return fitPage(found, read, (pr, whole) => [ref(pr), prDetail(pr, whole)], (detail, page, cut, lists) => {
+    const missingRefs = lists.take(missing, "unmatched refs");
+    const head = queueHead(queue, lists);
+    const cuts = [...lists.cuts, ...(cut ? ["prs ends at page.nextOffset, read on with the same refs and offset; a PR marked clipped is too long to read whole"] : [])];
+    return {
+      ...head,
+      prs: detail,
+      // Present whenever a ref matched nothing, even if none fit: the empty answer measured carries it.
+      ...(missing.length ? { missingRefs } : {}),
+      page,
+      ...(cuts.length ? { truncated: `Cut to fit ${PRS_READ_CHARS} characters: ${cuts.join("; ")}.` } : {}),
+    };
+  });
+}
+
+/** The repositories, whether the first read still runs, and how many PRs are open. */
+function queueHead(queue: MergeQueue, lists: Budget) {
   const loading = queue.repos.filter((r) => r.fetchedAt === null && r.fetching).map((r) => r.repo);
+  const repos = queue.repos.map((r) => ({ repo: r.repo, fetchedAt: r.fetchedAt, ...(r.fetching ? { fetching: true } : {}), ...(r.error ? { error: clip(r.error, STATE_LINE) } : {}) }));
   return {
-    repos: queue.repos.map((r) => ({ repo: r.repo, fetchedAt: r.fetchedAt, ...(r.fetching ? { fetching: true } : {}), ...(r.error ? { error: r.error } : {}) })),
-    ...(loading.length ? { loading: `The first read of ${loading.join(", ")} from GitHub is running; read again in a few seconds.` } : {}),
-    open: prs.length,
-    next: nextUp(prs).map((pr) => ({
-      pr: ref(pr),
-      title: pr.title.length > 90 ? `${pr.title.slice(0, 89)}…` : pr.title,
-      ...(pr.category ? { category: pr.category } : {}),
-      ...(pr.stack ? { stack: stackLabel(pr.stack) } : {}),
-    })),
-    byCategory,
-    stacks: prs.filter((pr) => pr.stack?.level === 1).sort(stackOrder(prs)).map(stackTree),
-    state,
-    ...(prs.some((pr) => pr.stageSource === "github") ? { note: "Stages without a coordinator record are guessed from GitHub." } : {}),
+    repos: lists.take(repos, "repositories"),
+    ...(loading.length ? { loading: `The first read of ${clip(loading.join(", "), STATE_LINE)} from GitHub is running; read again in a few seconds.` } : {}),
+    open: queue.pullRequests.length,
+  };
+}
+
+/** How many of `items`, in order, fit in `chars` of JSON, and the characters they take. Each is serialized once. */
+function fitting(items: readonly unknown[], chars: number) {
+  let n = 0;
+  let used = 0;
+  for (const item of items) {
+    // An object entry [key, value] costs two characters more as an array than as "key":value: an upper bound.
+    const cost = JSON.stringify(item).length + 1;
+    if (used + cost > chars) break;
+    used += cost;
+    n++;
+  }
+  return { n, used };
+}
+
+type Budget = ReturnType<typeof budget>;
+/** Characters shared by lists: each takes its first items that fit, and `cuts` counts what it left out. */
+function budget(chars: number) {
+  const cuts: string[] = [];
+  let used = 0;
+  return {
+    cuts,
+    get left() {
+      return chars - used;
+    },
+    get used() {
+      return used;
+    },
+    take<T>(items: readonly T[], what: string): T[] {
+      const fit = fitting(items, chars - used);
+      used += fit.used;
+      if (fit.n < items.length) cuts.push(`${items.length - fit.n} ${what} left out`);
+      return items.slice(0, fit.n);
+    },
+  };
+}
+
+interface Page {
+  total: number;
+  offset: number;
+  nextOffset: number | null;
+}
+
+/**
+ * `answer(entries, page, cut, lists)` with the entries of `items` from
+ * read.offset that fit PRS_READ_CHARS: whole ones while they fit, and at least
+ * the first, compact, so reading on from nextOffset always advances. The page
+ * leaves the lists up to LISTS_CHARS, and they get whatever more it leaves.
+ * Entries are serialized once and list items a few times, so a read is linear
+ * in the queue. Every key `answer` writes must be present in the empty answer
+ * too: only entries and list items are counted on top of it.
+ */
+function fitPage<T, V, A>(
+  items: readonly T[],
+  read: { offset: number; limit: number },
+  entry: (item: T, whole: boolean) => readonly [string, V],
+  answer: (entries: Record<string, V>, page: Page, cut: boolean, lists: Budget) => A,
+): A {
+  const page = items.slice(read.offset, read.offset + read.limit);
+  const at = (n: number): Page => ({ total: items.length, offset: read.offset, nextOffset: read.offset + n < items.length ? read.offset + n : null });
+  // At its longest without entries or lists: cut, every list cut, and nextOffset whichever of null and a number is longer.
+  const longest = { ...at(0), nextOffset: String(items.length).length > 4 ? items.length : null };
+  const room = PRS_READ_CHARS - JSON.stringify(answer({}, longest, true, budget(0))).length;
+  const lists = budget(Infinity);
+  answer({}, longest, true, lists);
+  const whole = page.map((item) => entry(item, true));
+  const fit = fitting(whole, room - Math.min(lists.used, LISTS_CHARS));
+  const shown = fit.n || !page.length ? whole.slice(0, fit.n) : [entry(page[0]!, false)];
+  const spent = fit.n ? fit.used : fitting(shown, Infinity).used;
+  return answer(Object.fromEntries(shown), at(shown.length), shown.length < page.length || fit.n < shown.length, budget(room - spent));
+}
+
+/** "#12" in one repository; "infra#12" across several, with the owner only when two names clash. */
+function prRef(prs: readonly QueuedPullRequest[]) {
+  const repos = [...new Set(prs.map((pr) => pr.repo.toLowerCase()))];
+  const names = repos.map((repo) => repo.split("/")[1]);
+  const prefix = repos.length < 2 ? () => "" : new Set(names).size === names.length ? (pr: QueuedPullRequest) => pr.repo.split("/")[1] : (pr: QueuedPullRequest) => pr.repo;
+  return (pr: QueuedPullRequest) => `${prefix(pr)}#${pr.number}`;
+}
+
+/**
+ * "#12" or "12" (every repository's #12), "infra#12" (every owner's infra#12),
+ * "equisafe/infra#12" or the PR's URL.
+ */
+function matchesRef(text: string) {
+  const parts = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/i.exec(text) ?? /^\s*(?:([\w.\/-]+)?#)?(\d+)\s*$/.exec(text);
+  const repo = parts?.[1]?.toLowerCase();
+  return (pr: QueuedPullRequest) =>
+    !!parts && pr.number === Number(parts[2]) && (!repo || pr.repo.toLowerCase() === repo || pr.repo.toLowerCase().endsWith(`/${repo}`));
+}
+
+/** Where a PR stands. Unless `whole`: lines clipped, the first few questions and changes. */
+function prState(pr: QueuedPullRequest, whole: boolean) {
+  const line = (text: string) => (whole ? text : clip(text, STATE_LINE));
+  const lines = (texts: string[]) =>
+    whole || texts.length <= STATE_ITEMS ? texts.map(line) : [...texts.slice(0, STATE_ITEMS).map(line), `+${texts.length - STATE_ITEMS} more`];
+  return {
+    stage: pr.stage,
+    ...(pr.worker ? { worker: workerLabel(pr.worker) } : {}),
+    ...(pr.waitingOn ? { waitingOn: line(pr.waitingOn) } : {}),
+    ...(pr.notes.open.length ? { questions: lines(pr.notes.open.map((q) => `n${q.n} ${q.author}: ${q.text}`)) } : {}),
+    ...(pr.changes.length ? { changes: lines(pr.changes) } : {}),
+    ...(pr.notes.count
+      ? whole ? { notes: pr.notes.count, recentNotes: pr.notes.recent.map(noteLine) } : { notes: pr.notes.count, latestNote: line(noteLine(pr.notes.recent.at(-1)!)) }
+      : {}),
+    ...(pr.decision ? { decision: line(pr.decision.link ? `${pr.decision.text} (${pr.decision.link})` : pr.decision.text) } : {}),
+    ...(pr.discussionThreadId ? { discussion: pr.discussionThreadId } : {}),
+  };
+}
+
+/** A PR read by ref: its GitHub facts and its state; unless `whole`, compact like state and marked clipped. */
+function prDetail(pr: QueuedPullRequest, whole: boolean) {
+  const line = (text: string) => (whole ? text : clip(text, STATE_LINE));
+  return {
+    ...(whole ? {} : { clipped: true }),
+    title: line(pr.title),
+    url: pr.url,
+    ...(pr.category ? { category: pr.category } : {}),
+    ...(pr.stack ? { stack: stackLabel(pr.stack) } : {}),
+    ...(pr.available ? { available: true } : {}),
+    ...(pr.stageNote ? { stageNote: line(pr.stageNote) } : {}),
+    ...(pr.reasons.length ? { github: pr.reasons.join(", ") } : {}),
+    ...(pr.size ? { size: sizeDetail(pr.size) } : {}),
+    ...prState(pr, whole),
   };
 }
 
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
-/** "W12 (A301): Two findings; needs attention", clipped for initiative_read. */
+/** "W12 (A301): Two findings; needs attention". */
 const noteLine = (note: PrNote) =>
-  `${note.author}${note.link && /^A\d+$/.test(note.link) ? ` (${note.link})` : ""}${note.kind === "note" ? "" : ` ${note.kind}`}: ${clip(note.text, 200)}`;
+  `${note.author}${note.link && /^A\d+$/.test(note.link) ? ` (${note.link})` : ""}${note.kind === "note" ? "" : ` ${note.kind}`}: ${note.text}`;

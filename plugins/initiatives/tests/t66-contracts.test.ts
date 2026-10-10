@@ -110,7 +110,8 @@ describe("T66 bounded configuration/discovery/default migration", () => {
     f.store.tx(() => { for (let n = 0; n < 150; n++) f.store.createWorker({ projectId: project.id, label: `Worker ${n}`, role: "work", area: "Fixture", bbProjectId: "proj_a" }); });
     const usage = vi.spyOn(f.store, "projectUsage"), allAssignments = vi.spyOn(f.store, "assignments"), calls = f.harness.inspection.sdk.calls.length;
     const rows = readCollection(f.store, project.id, "workers", readOptionsSchema.parse({ limit: 8 }));
-    expect(rows.items).toHaveLength(8); expect(rows.total).toBe(151); expect(rows.items[0]).toMatchObject({ assignments: [{ ref: "A1", tasks: ["T1"] }] });
+    expect(rows.items).toHaveLength(8); expect(rows.total).toBe(151); expect(rows.items[0]).toMatchObject({ ref: "W151", assignments: [] });
+    expect(readCollection(f.store, project.id, "workers", readOptionsSchema.parse({ refs: ["W1"] })).items[0]).toMatchObject({ assignments: [{ ref: "A1", tasks: ["T1"] }] });
     expect(JSON.stringify(rows).length).toBeLessThan(5000); expect(usage).not.toHaveBeenCalled(); expect(allAssignments).not.toHaveBeenCalled(); expect(f.harness.inspection.sdk.calls).toHaveLength(calls);
   });
   it("defaults remain within the editable guidance bound", () => {

@@ -460,12 +460,32 @@ latest note below it with a toggle that opens the PR's whole notes log (the
 place for D439's "Discuss" action). The graph marks open questions with "?"
 and lists every part, and the last notes, in its hover card.
 
-`initiative_read {view:"prs"}` gives the coordinator the queue in a few lines:
-Next up with titles, PR numbers by category and stage with stack positions,
-each stack as `#1 → #2 → (#3 | #4)`, and `state`: each PR's worker, waiting
-on, open questions (`n3 coordinator: …`), note count and latest note, changes
-and decision. It reads the same cache as the dashboard, and says when a first
-fetch is still running.
+`initiative_read {view:"prs"}` gives the coordinator the queue in at most
+20,000 characters (T155): the first ten PRs to review next with titles (the
+rest counted), PR numbers by category and stage with stack positions, each
+stack as `#1 → #2 → (#3 | #4)`, and `state`: where each PR needing action (an
+open question, requested changes, a wait on someone) stands, with its worker,
+waiting on, open questions (`n3 coordinator: …`), note count and latest note,
+changes and decision. The other PRs are only counted (`noAction`). `state`
+pages with `offset`/`limit` and reports `page: {total, offset, nextOffset}`;
+its lines are clipped to 160 characters and it lists the first three
+questions and changes. `category:"CI"` (any case) and `stage:"in-review"`
+(the exact stage id) select a slice whose `state` lists every PR in it.
+`refs:["#2273","infra#12"]` reads whole PRs: title, URL, stage note, GitHub
+reasons, every open question and change and the last notes, paged the same
+way over the PRs the refs match. A ref is the PR URL, `owner/repo#12`,
+`repo#12` (that repository under every owner) or `#12` (every repository's
+#12). With several repositories a PR is named `infra#12`, with the owner
+only when two repositories share a name.
+
+Every answer fits the cap and still pages forward: the lists besides the
+page (repositories, byCategory, stacks, category names, unmatched refs)
+get 8,000 characters reserved while the page is chosen, then whatever room
+the page leaves, byCategory counts its PRs when their numbers would
+not fit, and each page holds at least one PR, compact and marked `clipped`
+when it is too long to read whole. `truncated` says what was left out and
+how to read on. It reads the same cache as the dashboard, and says when a
+first fetch is still running.
 `bb initiative pr '<json>' [initiative-id]` is the CLI
 form: from the coordinator thread, or from a terminal with the Initiative id.
 

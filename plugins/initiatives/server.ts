@@ -56,7 +56,7 @@ import { MergeQueueCache } from "./lib/merge-queue-server";
 import { canonicalPrUrl, prToolSchema } from "./lib/pr-stages";
 import { AssignedPrs, COORDINATOR, recordPrs, type PrCaller } from "./lib/pr-records";
 import { branchThreadId } from "./lib/merge-queue";
-import { prSummary } from "./lib/pr-map";
+import { prsByRef, prSummary } from "./lib/pr-map";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
 import { COMMAND_EXAMPLES, DESCRIBE_GROUPS, READ_EXAMPLES } from "./lib/examples";
 
@@ -949,7 +949,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   registerTool({
     name: "initiative_read",
-    description: 'Read the Initiative. {} is the overview; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: open PRs by category and stage, their stacks, what the user can review next. detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
+    description: 'Read the Initiative. {} is the overview; {refs:["W12","T40","A301"]} reads exact records (a W# with its latest report); {view:"workers"} and the other views list records, limit 1..30, offset to page; {view:"prs"}: what the user can review next, open PRs by category and stage, their stacks, and the state of those needing action (a question, changes, a wait), paged by offset; category:"CI" or stage:"in-review" lists a slice with every PR\'s state, refs:["#2273","infra#12"] reads whole PRs, paged the same way (a PR too long to fit comes back compact with clipped:true). detailed:true gives full records; fields picks parts, e.g. {refs:["W12","D4"],fields:["report","body"]}, each record the ones it has. Reading never wakes agents.',
     parameters: agentReadSchema,
     async execute(input, { threadId }) {
       if (!threadId) throw new ProjectError("Use initiative_read from an Initiative thread.");
@@ -960,8 +960,10 @@ export default function plugin(bb: BbPluginApi) {
         if (pending) return JSON.stringify(pending);
         throw new ProjectError("This thread does not belong to an Initiative.");
       }
-      const { view, ...rawOptions } = input;
+      const { view, category, stage, ...rawOptions } = input;
       const options = readOptionsSchema.parse(rawOptions);
+      if ((category !== undefined || stage !== undefined) && (view !== "prs" || options.refs))
+        throw new ProjectError('category and stage select a slice of view prs without refs, for example initiative_read {view:"prs",category:"CI"}.');
       if (view === "overview" && Object.keys(rawOptions).length)
         throw new ProjectError("overview has no refs/detail/pagination selectors. Omit view for refs, or select a collection such as workers or reports.");
       if (!view && !options.refs && Object.keys(rawOptions).length)
@@ -971,7 +973,11 @@ export default function plugin(bb: BbPluginApi) {
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
       if (view === "context") return JSON.stringify(readContext(store, m.project.id));
       if (view === "memory") return JSON.stringify(await chatMemory("read", { threadId }, z.object({ messages: z.number(), view: z.string(), note: z.string() })));
-      if (view === "prs") return JSON.stringify(prSummary(await mergeQueue.read(m.project.id)));
+      if (view === "prs") {
+        const queue = await mergeQueue.read(m.project.id);
+        const page = { offset: options.offset, limit: options.limit };
+        return JSON.stringify(options.refs ? prsByRef(queue, options.refs, page) : prSummary(queue, { category, stage, ...page }));
+      }
       return JSON.stringify(read(m.project.id, view, options));
     },
   });

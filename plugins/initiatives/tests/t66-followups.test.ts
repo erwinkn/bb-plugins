@@ -42,7 +42,7 @@ describe("A115 bounded summary work and native ordinary start paths", () => {
     const prep = vi.spyOn(f.store.db, "prepare");
     const summaries = () => prep.mock.calls.filter(([sql]) => sql.includes("SELECT num,state,task_nums,cancel_requested"));
     const paged = readCollection(f.store, project.id, "workers", readOptionsSchema.parse({ offset: 8, limit: 8 }));
-    expect(paged.items).toHaveLength(8); expect(paged.items[0]?.ref).toBe("W9"); expect(summaries()).toHaveLength(8);
+    expect(paged.items).toHaveLength(8); expect(paged.items[0]?.ref).toBe("W53"); expect(summaries()).toHaveLength(8);
     prep.mockClear();
     const refs = readRefs(f.store, project.id, readOptionsSchema.parse({ refs: ["W3", "W59", "W61"], offset: 1, limit: 1 }));
     expect(refs.items.map(x => x.ref)).toEqual(["W59"]); expect(summaries()).toHaveLength(1);

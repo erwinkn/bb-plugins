@@ -167,9 +167,10 @@ describe("D442 notes per PR", () => {
     const latest = { n: 3, at: 3, author: "W4", kind: "note" as const, text: "x".repeat(300), link: "A12", answered: null };
     const summary = prSummary(queue(linkStacks([pr(1, "a", "main", "in-review", { notes: { count: 3, recent: [question, latest], open: [question] } })])));
     expect(summary.state["#1"]).toEqual({
+      stage: "in-review",
       questions: ["n2 coordinator: Keep the 5m TTL?"],
       notes: 3,
-      latestNote: `W4 (A12): ${"x".repeat(199)}…`,
+      latestNote: `W4 (A12): ${"x".repeat(149)}…`,
     });
   });
 
