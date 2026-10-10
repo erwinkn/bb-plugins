@@ -55,6 +55,7 @@ import { LiveThreads, Recent } from "./lib/live-threads";
 import { MergeQueueCache } from "./lib/merge-queue-server";
 import { canonicalPrUrl, prToolSchema } from "./lib/pr-stages";
 import { AssignedPrs, COORDINATOR, recordPrs, type PrCaller } from "./lib/pr-records";
+import { readPrDetail } from "./lib/pr-detail";
 import { branchThreadId } from "./lib/merge-queue";
 import { prsByRef, prSummary } from "./lib/pr-map";
 import { notDeliveredMessages, queueTargets } from "./lib/not-delivered";
@@ -404,6 +405,12 @@ export default function plugin(bb: BbPluginApi) {
       const key = canonicalPrUrl(url);
       if (!key) throw new ProjectError("Expected a GitHub PR URL.");
       return service.prNotes.list(projectId, key);
+    },
+    prDetail: ({ projectId, url }) => {
+      service.requireProject(projectId);
+      const key = canonicalPrUrl(url);
+      if (!key) throw new ProjectError("Expected a GitHub PR URL.");
+      return readPrDetail(store, service.prNotes, projectId, key, mergeQueue.cachedPr(key)?.head ?? null);
     },
     resetSetting: async ({ field }) => {
       await preferences.handle.experimental_set({ [field]: null });

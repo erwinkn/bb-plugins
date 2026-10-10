@@ -59,7 +59,16 @@ export interface QueuedPullRequest extends PrState {
   available: boolean;
   /** Its notes log (D442): how many, the last few and the open questions. */
   notes: PrNotesSummary;
+  /** T156: the workers and assignments of every assignment naming it; search matches them. */
+  links: PrLinks;
 }
+
+/** Refs linked to a PR, each once: W3, A301. */
+export interface PrLinks {
+  workers: string[];
+  assignments: string[];
+}
+export const NO_LINKS: PrLinks = { workers: [], assignments: [] };
 
 export interface PrSize {
   additions: number;
@@ -281,6 +290,7 @@ export function parsePullRequests(repo: string, raw: string): QueuedPullRequest[
       stack: null,
       available: false,
       notes: NO_NOTES,
+      links: NO_LINKS,
     });
   }
   return pullRequests.map((pr) => ({ ...pr, stage: githubStage(pr) }));
@@ -369,6 +379,23 @@ export function attachNotes(
   return pullRequests.map((pr) => {
     const summary = notes.get(canonicalPrUrl(pr.url) ?? pr.url.toLowerCase());
     return summary ? { ...pr, notes: summary } : pr;
+  });
+}
+
+/**
+ * T156: each PR's linked refs, by canonical URL: the assignments naming it,
+ * and the one the coordinator recorded, with or without its worker.
+ */
+export function attachLinks(
+  pullRequests: readonly QueuedPullRequest[],
+  assigned: ReadonlyMap<string, { links: PrLinks }>,
+  records: ReadonlyMap<string, Pick<PrRecord, "assignment">>,
+): QueuedPullRequest[] {
+  return pullRequests.map((pr) => {
+    const key = canonicalPrUrl(pr.url) ?? pr.url.toLowerCase();
+    const links = assigned.get(key)?.links ?? NO_LINKS;
+    const recorded = records.get(key)?.assignment;
+    return { ...pr, links: recorded && !links.assignments.includes(recorded) ? { ...links, assignments: [...links.assignments, recorded] } : links };
   });
 }
 

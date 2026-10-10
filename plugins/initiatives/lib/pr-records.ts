@@ -3,6 +3,7 @@
 import { ProjectError } from "./bb";
 import type { Store } from "./store";
 import type { PrNotes } from "./pr-notes";
+import type { PrLinks } from "./merge-queue";
 import { PR_NOTE_MAX, blankPrRecord, canonicalPrUrl, categoryName, type PrToolInput } from "./pr-stages";
 
 /** Who calls initiative_pr: the coordinator, a worker (notes only) or the user's terminal. */
@@ -116,11 +117,12 @@ export function prsNamed(text: string): string[] {
   return [...new Set([...text.matchAll(PR_URL)].flatMap((match) => canonicalPrUrl(match[0]) ?? []))];
 }
 
-/** The latest assignment about a PR: who works on it, through which assignment, in which role. */
+/** The latest assignment about a PR: who works on it, through which assignment, in which role; and (T156) every assignment naming it. */
 export interface PrWork {
   worker: string;
   assignment: string;
   role: string;
+  links: PrLinks;
 }
 
 /**
@@ -138,14 +140,21 @@ export class AssignedPrs {
     const stamp = this.store.assignmentsStamp(projectId);
     const cached = this.cache.get(projectId);
     if (cached?.stamp === stamp) return cached;
-    const value = new Map<string, PrWork>();
+    const latest = new Map<string, Omit<PrWork, "links">>();
     const byWorker = new Map<number, Set<string>>();
+    // Sets while scanning: thousands of assignments can name one base PR.
+    const workers = new Map<string, Set<string>>();
+    const assignments = new Map<string, Set<string>>();
     for (const row of this.store.prMentions(projectId))
       // Both: a review's report rarely repeats the PR its brief gave it.
       for (const url of prsNamed(`${row.brief}\n${row.report ?? ""}`)) {
-        value.set(url, { worker: `W${row.workerNum}`, assignment: `A${row.num}`, role: row.role });
+        latest.set(url, { worker: `W${row.workerNum}`, assignment: `A${row.num}`, role: row.role });
         byWorker.set(row.workerNum, (byWorker.get(row.workerNum) ?? new Set()).add(url));
+        workers.set(url, (workers.get(url) ?? new Set<string>()).add(`W${row.workerNum}`));
+        assignments.set(url, (assignments.get(url) ?? new Set<string>()).add(`A${row.num}`));
       }
+    const value = new Map([...latest].map(([url, work]) =>
+      [url, { ...work, links: { workers: [...workers.get(url)!], assignments: [...assignments.get(url)!] } }]));
     const entry = { stamp, value, byWorker };
     this.cache.set(projectId, entry);
     return entry;

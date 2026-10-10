@@ -4,6 +4,7 @@ import { commandSchema } from "./commands";
 import { legacyThreadCreateSchema } from "./legacy";
 import type { MergeQueue } from "./merge-queue";
 import type { PrNote } from "./pr-notes";
+import type { PrDetail } from "./pr-detail";
 import type { Overview } from "./overview";
 import { projectSummarySchema, treeSchema } from "./tree-schema";
 import { readOptionsSchema, READ_VIEWS } from "./read";
@@ -94,6 +95,15 @@ export const projectsContract = defineRpcContract({
   prNotes: {
     input: z.object({ projectId: id, url: z.string().min(1).max(300) }),
     output: z.custom<PrNote[]>(),
+  },
+  /**
+   * T156: everything the Initiative knows about one PR (its record, notes, and
+   * the assignments, workers, decisions and updates tied to it), read
+   * from local state only, never GitHub. Long lists keep their newest entries.
+   */
+  prDetail: {
+    input: z.object({ projectId: id, url: z.string().min(1).max(300) }),
+    output: z.custom<PrDetail>(),
   },
   /**
    * A client's read timed out; logged as one warn line. `read` names the view

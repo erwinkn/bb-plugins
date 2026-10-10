@@ -917,6 +917,7 @@ export function Dashboard({
                 refreshing={!!ownQueueRefresh?.running}
                 onRefresh={() => void refreshQueue()}
                 loadNotes={(url) => api.call("prNotes", { projectId, url })}
+                loadDetail={(url) => api.call("prDetail", { projectId, url })}
               />
             ),
           }}

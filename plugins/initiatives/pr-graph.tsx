@@ -81,6 +81,76 @@ export function NoteMeta({ note }: { note: PrNote }) {
   );
 }
 
+// Drawn rather than typed: ✓ ✕ ◷ depend on the client's fonts.
+const CHECK_ICONS = {
+  pass: "M3.5 8.5l3 3 6-7",
+  fail: "M4.5 4.5l7 7M11.5 4.5l-7 7",
+  pending: "M8 2.75a5.25 5.25 0 1 0 0 10.5 5.25 5.25 0 1 0 0-10.5zM8 5.5V8l1.75 1.25",
+} as const;
+const CHECKS: Record<QueuedPullRequest["checks"]["state"], (c: QueuedPullRequest["checks"]) => [string, string]> = {
+  pass: (c) => ["good", `${c.passed}/${c.total} checks`],
+  fail: (c) => ["bad", `${c.failed} of ${c.total} failing`],
+  pending: (c) => ["wait", `${c.pending} of ${c.total} running`],
+  none: () => ["faint", "no checks"],
+};
+const REVIEW: Record<QueuedPullRequest["review"], [string, string] | null> = {
+  approved: ["good", "approved"],
+  changes_requested: ["bad", "changes requested"],
+  review_required: ["wait", "review required"],
+  none: null,
+};
+const MERGEABLE: Record<QueuedPullRequest["mergeable"], [string, string]> = {
+  mergeable: ["quiet", "mergeable"],
+  conflicting: ["bad", "conflicts"],
+  unknown: ["faint", "checking mergeability"],
+};
+
+
+/** Checks, review and mergeability, as tinted words ("12/12 checks · review required · mergeable"), then "draft". */
+export function Signals({ pr }: { pr: QueuedPullRequest }) {
+  const review = REVIEW[pr.review];
+  const icon = pr.checks.state === "none" ? null : CHECK_ICONS[pr.checks.state];
+  const signals = [CHECKS[pr.checks.state](pr.checks), ...(review ? [review] : []), MERGEABLE[pr.mergeable]];
+  return (
+    <>
+      {signals.map(([tone, text], index) => (
+        <span key={text} className="cr-mq-signal" data-tone={tone}>
+          {index === 0 && icon ? (
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+              <path d={icon} />
+            </svg>
+          ) : null}
+          {text}
+        </span>
+      ))}
+      {pr.draft ? <span className="cr-mq-signal" data-tone="faint">draft</span> : null}
+    </>
+  );
+}
+
+/** Notes, oldest first, each with its number, author, source and any answer. */
+export function NotesList({ notes }: { notes: readonly PrNote[] }) {
+  return (
+    <ol>
+      {notes.map((note) => (
+        <li key={note.n} data-kind={note.kind} data-open={note.kind === "question" && !note.answered ? true : undefined}>
+          <span className="cr-pr-notes-head">
+            <span className="cr-pr-note-n">{note.n}</span>
+            <NoteMeta note={note} />
+            {note.link && !/^A\d+$/.test(note.link) ? <SourceLink link={note.link} /> : null}
+          </span>
+          <p className="cr-pr-note-body">{note.text}</p>
+          {note.answered ? (
+            <p className="cr-pr-note-answer">
+              answered by {note.answered.by === "user" ? "you" : note.answered.by}{note.answered.text ? `: ${note.answered.text}` : ""}
+            </p>
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 /** "+908 −386", additions green and deletions red; `compact` abbreviates thousands. */
 export function SizeDelta({ size, compact = false }: { size: NonNullable<QueuedPullRequest["size"]>; compact?: boolean }) {
   const n = compact ? compactCount : String;
@@ -98,6 +168,19 @@ const REVIEWER_STATE: Record<QueuedPullRequest["reviewers"][number]["state"], st
 export const reviewerText = (r: QueuedPullRequest["reviewers"][number]) => `${r.login} ${REVIEWER_STATE[r.state]}`;
 
 export const numberIndex = (prs: readonly QueuedPullRequest[]) => new Map(prs.map((pr) => [`${pr.repo}#${pr.number}`, pr]));
+
+/** Opens a PR's detail panel: on each row and graph node. */
+export function DetailsButton({ pr, open, onOpen }: { pr: QueuedPullRequest; open: boolean; onOpen: (pr: QueuedPullRequest) => void }) {
+  return (
+    <button type="button" className="cr-iconbtn cr-pd-open" aria-label={`Details of #${pr.number}`} aria-pressed={open} title="Details"
+      onClick={() => onOpen(pr)}>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" aria-hidden="true" focusable="false">
+        <rect x="2" y="2.75" width="12" height="10.5" rx="2" />
+        <path d="M9.75 2.75v10.5" />
+      </svg>
+    </button>
+  );
+}
 
 /** A node's hover card: what the row would say, for a graph that only shows the number and title. */
 function Tip({ pr, stage, blocker }: { pr: QueuedPullRequest; stage: string; blocker: QueuedPullRequest | null }) {
@@ -139,10 +222,12 @@ function Tip({ pr, stage, blocker }: { pr: QueuedPullRequest; stage: string; blo
   );
 }
 
-function Node({ pr, col, label, blocker }: { pr: QueuedPullRequest; col: number; label: string; blocker: QueuedPullRequest | null }) {
+function Node({ pr, col, label, blocker, open, onOpen }: {
+  pr: QueuedPullRequest; col: number; label: string; blocker: QueuedPullRequest | null; open: boolean; onOpen?: (pr: QueuedPullRequest) => void;
+}) {
   const link = usePrLink(pr.url);
   return (
-    <li className="cr-pm-node" data-stage={pr.stage} data-available={pr.available || undefined} style={{ paddingLeft: col * INDENT }}>
+    <li className="cr-pm-node" data-stage={pr.stage} data-available={pr.available || undefined} data-open={open || undefined} style={{ paddingLeft: col * INDENT }}>
       <a {...link} aria-label={`#${pr.number} ${pr.title}, ${label}${pr.available ? ", review now" : ""}${pr.notes.open.length ? ", open questions" : ""}`}>
         <span className="cr-pm-dot" data-stage={pr.stage} aria-hidden="true" />
         <span className="cr-pm-num">#{pr.number}</span>
@@ -151,6 +236,8 @@ function Node({ pr, col, label, blocker }: { pr: QueuedPullRequest; col: number;
         {pr.size ? <SizeDelta size={pr.size} compact /> : null}
       </a>
       <Tip pr={pr} stage={label} blocker={blocker} />
+      {/* After the card: a focused link shows it as its next sibling. */}
+      {onOpen ? <DetailsButton pr={pr} open={open} onOpen={onOpen} /> : null}
     </li>
   );
 }
@@ -185,17 +272,20 @@ function Edges({ drawing }: { drawing: StackDrawing }) {
  * The graph: one lane per category, each stack drawn as a tree from its
  * bottom PR up, the unstacked PRs after them; nodes colored by stage.
  */
-export function PrGraph({ pullRequests, all, stages }: {
+export function PrGraph({ pullRequests, all, stages, open = null, onOpen }: {
   pullRequests: readonly QueuedPullRequest[];
   /** Every PR, for stack roots and blockers the filters hide. */
   all: readonly QueuedPullRequest[];
   stages: readonly StageDefinition[];
+  /** The PR whose detail panel is open, and how a node opens its own. */
+  open?: QueuedPullRequest | null;
+  onOpen?: (pr: QueuedPullRequest) => void;
 }) {
   const labels = new Map(stages.map((s) => [s.id, s.label]));
   const byNumber = numberIndex(all);
   const categorized = all.some((pr) => pr.category !== null);
   const node = (pr: QueuedPullRequest, col: number) => (
-    <Node key={pr.url} pr={pr} col={col} label={labels.get(pr.stage) ?? pr.stage} blocker={waitsOn(pr, byNumber)} />
+    <Node key={pr.url} pr={pr} col={col} label={labels.get(pr.stage) ?? pr.stage} blocker={waitsOn(pr, byNumber)} open={pr === open} onOpen={onOpen} />
   );
   return (
     <div className="cr-pm-graph">

@@ -903,6 +903,9 @@ export class StoreCorruptionError extends Error {
   override name = "StoreCorruptionError";
 }
 
+/** The knowledge rows that are decisions, removed ones included. */
+const DECISION = "kind='decision' AND status IN ('active','answered','superseded','closed','withdrawn','removed') AND (decision_owner IS NOT NULL OR (human_attention='needs-opinion' AND status IN ('active','closed','withdrawn')))";
+
 const rowKey = (row: Row) =>
   row.project_id !== undefined && row.num !== undefined
     ? `${String(row.project_id)}/${String(row.num)}`
@@ -2673,7 +2676,7 @@ export class Store {
 
   decisionItem(projectId: string, num: number): DecisionRecord | null {
     const row = this.db
-      .prepare(`SELECT * FROM knowledge WHERE project_id = ? AND num = ? AND kind='decision' AND status IN ('active','answered','superseded','closed','withdrawn','removed') AND (decision_owner IS NOT NULL OR (human_attention='needs-opinion' AND status IN ('active','closed','withdrawn')))`)
+      .prepare(`SELECT * FROM knowledge WHERE project_id = ? AND num = ? AND ${DECISION}`)
       .get(projectId, num) as Row | undefined;
     return row ? toDecision(row) : null;
   }
@@ -2713,7 +2716,7 @@ export class Store {
     return (
       this.db
         .prepare(
-          `SELECT * FROM knowledge WHERE project_id = ? AND kind='decision' AND status IN ('active','answered','superseded','closed','withdrawn','removed') AND (decision_owner IS NOT NULL OR (human_attention='needs-opinion' AND status IN ('active','closed','withdrawn'))) ${options.includeHistory ? "" : "AND status NOT IN ('superseded', 'rejected', 'removed')"} ORDER BY num`,
+          `SELECT * FROM knowledge WHERE project_id = ? AND ${DECISION} ${options.includeHistory ? "" : "AND status NOT IN ('superseded', 'rejected', 'removed')"} ORDER BY num`,
         )
         .all(projectId) as Row[]
     ).map(toDecision);
@@ -3007,6 +3010,46 @@ export class Store {
       .all(projectId) as Row[];
     return rows.map((row) => ({ num: row.num as number, workerNum: row.worker_num as number, role: row.role as string,
       brief: (row.brief_text as string | null) ?? "", report: (row.report as string | null) ?? null }));
+  }
+
+  /**
+   * T156: the rows whose text may name one PR, for its detail panel: the
+   * assignments (brief, report), decisions and updates whose text matches a
+   * LIKE pattern, and the assignments `assignmentNums` name.
+   * Callers confirm each match on the text. Assignments are projected, their
+   * reports left undecoded.
+   */
+  prDetailRows(projectId: string, patterns: string[], assignmentNums: number[]) {
+    const read = (sql: string, columns: string[], extra = "", more: number[] = []) => {
+      const like = patterns.flatMap(() => columns.map((c) => `${c} LIKE ?`)).join(" OR ") || "0";
+      return this.db.prepare(sql.replace("$match", `(${like}${extra})`))
+        .all(projectId, ...patterns.flatMap((p) => columns.map(() => p)), ...more) as Row[];
+    };
+    const named = assignmentNums.length ? ` OR num IN (${assignmentNums.map(() => "?").join(", ")})` : "";
+    return {
+      assignments: read("SELECT num, worker_num, brief_text, report FROM assignments WHERE project_id = ? AND $match",
+        ["brief_text", "report"], named, assignmentNums)
+        .map((row) => ({ num: Number(row.num), workerNum: Number(row.worker_num), brief: String(row.brief_text ?? ""), report: String(row.report ?? "") })),
+      decisions: read("SELECT num, title || ' ' || body AS text FROM knowledge WHERE project_id = ? AND kind = 'decision' AND $match", ["title", "body"])
+        .map((row) => ({ num: Number(row.num), text: String(row.text) })),
+      updates: read("SELECT num, summary, body, created_at FROM updates WHERE project_id = ? AND $match ORDER BY num DESC", ["summary", "body"])
+        .map((row) => ({ num: Number(row.num), ref: updateRef(Number(row.num)), summary: String(row.summary), text: `${row.summary}\n${row.body}`, createdAt: Number(row.created_at) })),
+    };
+  }
+
+  /** T156: of these numbers, the decisions a list shows (not removed), newest first. Reads no bodies. */
+  listedDecisions(projectId: string, nums: number[]): number[] {
+    return (this.db.prepare(`SELECT num FROM knowledge WHERE project_id = ? AND num IN (SELECT value FROM json_each(?))
+      AND ${DECISION} AND status != 'removed' ORDER BY num DESC`)
+      .all(projectId, JSON.stringify(nums)) as Row[]).map((row) => Number(row.num));
+  }
+
+  /** T156: the numbers of the decisions these assignments made (provenance). */
+  decisionsBy(projectId: string, assignmentNums: number[]): number[] {
+    if (!assignmentNums.length) return [];
+    return (this.db.prepare(`SELECT num FROM knowledge WHERE project_id = ? AND kind = 'decision'
+      AND json_extract(provenance, '$.assignment') IN (${assignmentNums.map(() => "?").join(", ")})`)
+      .all(projectId, ...assignmentNums) as Row[]).map((row) => Number(row.num));
   }
 
   usageTurns(threadId: string): UsageTurn[] {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { useRemembered } from "./ui-memory";
 import {
   type MergeQueue,
@@ -8,7 +8,9 @@ import {
 import type { PrNote } from "./lib/pr-notes";
 import { categoriesOf, filterPrs, groupPrs, nextUp, sizeDetail, stackLabel, stateItems, workerLabel, type GroupBy, type PrFilter } from "./lib/pr-map";
 import { compactAge } from "./control-room";
-import { NoteMeta, PrGraph, SizeDelta, SourceLink, StateLine, numberIndex, reviewerText, usePrLink, waitsOn, workerTitle } from "./pr-graph";
+import { pickPr, searchPrs } from "./lib/pr-search";
+import { DetailsButton, NoteMeta, NotesList, PrGraph, Signals, SizeDelta, StateLine, numberIndex, reviewerText, usePrLink, waitsOn, workerTitle } from "./pr-graph";
+import { PrDetailPanel, type LoadDetail } from "./pr-detail-view";
 import "./pr-map.css";
 
 function Age({ at, label }: { at: number; label: string }) {
@@ -32,30 +34,6 @@ function PullRequestGlyph({ group }: { group: QueueGroup }) {
     </svg>
   );
 }
-
-// Drawn rather than typed: ✓ ✕ ◷ depend on the client's fonts.
-const CHECK_ICONS = {
-  pass: "M3.5 8.5l3 3 6-7",
-  fail: "M4.5 4.5l7 7M11.5 4.5l-7 7",
-  pending: "M8 2.75a5.25 5.25 0 1 0 0 10.5 5.25 5.25 0 1 0 0-10.5zM8 5.5V8l1.75 1.25",
-} as const;
-const CHECKS: Record<QueuedPullRequest["checks"]["state"], (c: QueuedPullRequest["checks"]) => [string, string]> = {
-  pass: (c) => ["good", `${c.passed}/${c.total} checks`],
-  fail: (c) => ["bad", `${c.failed} of ${c.total} failing`],
-  pending: (c) => ["wait", `${c.pending} of ${c.total} running`],
-  none: () => ["faint", "no checks"],
-};
-const REVIEW: Record<QueuedPullRequest["review"], [string, string] | null> = {
-  approved: ["good", "approved"],
-  changes_requested: ["bad", "changes requested"],
-  review_required: ["wait", "review required"],
-  none: null,
-};
-const MERGEABLE: Record<QueuedPullRequest["mergeable"], [string, string]> = {
-  mergeable: ["quiet", "mergeable"],
-  conflicting: ["bad", "conflicts"],
-  unknown: ["faint", "checking mergeability"],
-};
 
 /** `bb-plugins` for the user's own repositories, `owner/repo` otherwise. */
 const repoLabel = (repo: string, login: string | null) =>
@@ -106,38 +84,20 @@ function NotesPanel({ pr, load }: { pr: QueuedPullRequest; load?: LoadNotes }) {
   const missing = pr.notes.count - notes.length;
   return (
     <section className="cr-pr-notes-panel" aria-label={`Notes on #${pr.number}`}>
-      <ol>
-        {notes.map((note) => (
-          <li key={note.n} data-kind={note.kind} data-open={note.kind === "question" && !note.answered ? true : undefined}>
-            <span className="cr-pr-notes-head">
-              <span className="cr-pr-note-n">{note.n}</span>
-              <NoteMeta note={note} />
-              {note.link && !/^A\d+$/.test(note.link) ? <SourceLink link={note.link} /> : null}
-            </span>
-            <p className="cr-pr-note-body">{note.text}</p>
-            {note.answered ? (
-              <p className="cr-pr-note-answer">
-                answered by {note.answered.by === "user" ? "you" : note.answered.by}{note.answered.text ? `: ${note.answered.text}` : ""}
-              </p>
-            ) : null}
-          </li>
-        ))}
-      </ol>
+      <NotesList notes={notes} />
       {current?.error ? <p className="cr-mq-note" role="status">Couldn't read the earlier notes: {current.error}</p>
         : missing > 0 ? <p className="cr-pr-notes-loading" role="status">Loading {missing} earlier note{missing === 1 ? "" : "s"}…</p> : null}
     </section>
   );
 }
 
-function Row({ pr, login, blocker, loadNotes }: { pr: QueuedPullRequest; login: string | null; blocker: QueuedPullRequest | null; loadNotes?: LoadNotes }) {
+function Row({ pr, login, blocker, loadNotes, open, onOpen }: {
+  pr: QueuedPullRequest; login: string | null; blocker: QueuedPullRequest | null; loadNotes?: LoadNotes;
+  open: boolean; onOpen: (pr: QueuedPullRequest) => void;
+}) {
   const link = usePrLink(pr.url);
-  const checks = CHECKS[pr.checks.state](pr.checks);
-  const review = REVIEW[pr.review];
-  const mergeable = MERGEABLE[pr.mergeable];
-  const icon = pr.checks.state === "none" ? null : CHECK_ICONS[pr.checks.state];
-  const signals = [checks, ...(review ? [review] : []), mergeable];
   return (
-    <li>
+    <li className="cr-mq-row" data-open={open || undefined}>
       <a className="cr-mq-pr" data-group={pr.group} {...link}
         title={pr.reasons.length ? `${pr.title}\n${pr.reasons.join(", ")}` : pr.title}>
         <PullRequestGlyph group={pr.group} />
@@ -162,17 +122,7 @@ function Row({ pr, login, blocker, loadNotes }: { pr: QueuedPullRequest; login: 
             <span className="cr-mq-opened">opened <Age at={pr.createdAt} label="Opened" /></span>
           </span>
           <span className="cr-mq-line cr-mq-signals">
-            {signals.map(([tone, text], index) => (
-              <span key={text} className="cr-mq-signal" data-tone={tone}>
-                {index === 0 && icon ? (
-                  <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-                    <path d={icon} />
-                  </svg>
-                ) : null}
-                {text}
-              </span>
-            ))}
-            {pr.draft ? <span className="cr-mq-signal" data-tone="faint">draft</span> : null}
+            <Signals pr={pr} />
             {pr.reviewers.length ? (
               <span className="cr-mq-reviewers" title={pr.reviewers.map(reviewerText).join("\n")}>
                 {pr.reviewers.slice(0, REVIEWERS_SHOWN).map((r) => <span key={r.login} data-state={r.state}>{r.login}</span>)}
@@ -193,6 +143,7 @@ function Row({ pr, login, blocker, loadNotes }: { pr: QueuedPullRequest; login: 
           ) : null}
         </span>
       </a>
+      <DetailsButton pr={pr} open={open} onOpen={onOpen} />
       <StateLine pr={pr} />
       <NotesLine pr={pr} loadNotes={loadNotes} />
     </li>
@@ -249,11 +200,14 @@ function NextItem({ pr, repo }: { pr: QueuedPullRequest; repo: string | null }) 
 
 const NO_FILTER: PrFilter = { stages: [], availableOnly: false };
 
-/** How the PRs tab is set up, remembered per Initiative. */
+/** How the PRs tab is set up, remembered per Initiative: views from before T156 have no search and no open PR. */
 interface PrView {
   mode: "list" | "graph";
   by: GroupBy;
   filter: PrFilter;
+  query?: string;
+  /** The URL of the PR whose detail panel is open. */
+  open?: string | null;
 }
 const DEFAULT_VIEW: PrView = { mode: "list", by: "category", filter: NO_FILTER };
 const isPrView = (v: unknown): v is PrView => {
@@ -261,29 +215,48 @@ const isPrView = (v: unknown): v is PrView => {
   return !!view && ["list", "graph"].includes(view.mode) && ["category", "stage"].includes(view.by) && !!view.filter
     && Array.isArray(view.filter.stages) && view.filter.stages.every((s) => typeof s === "string")
     && typeof view.filter.availableOnly === "boolean"
-    && (view.filter.category === undefined || view.filter.category === null || typeof view.filter.category === "string");
+    && (view.filter.category === undefined || view.filter.category === null || typeof view.filter.category === "string")
+    && (view.query === undefined || typeof view.query === "string")
+    && (view.open === undefined || view.open === null || typeof view.open === "string");
 };
 
-/** The toolbar (view, grouping, filters), Next up, and the list or the graph. */
-function PrMap({ queue, loadNotes }: { queue: MergeQueue; loadNotes?: LoadNotes }) {
+/** The toolbar (view, grouping, search, filters), Next up, the list or the graph, and the open PR's detail. */
+function PrMap({ queue, loadNotes, loadDetail }: { queue: MergeQueue; loadNotes?: LoadNotes; loadDetail?: LoadDetail }) {
   const [view, setView] = useRemembered<PrView>(`initiatives:prs:${queue.projectId}`, DEFAULT_VIEW, isPrView);
-  const { mode, by, filter } = view;
+  const { mode, by, filter, query = "" } = view;
   const setMode = (mode: PrView["mode"]) => setView({ ...view, mode });
   const setBy = (by: GroupBy) => setView({ ...view, by });
   const setFilter = (filter: PrFilter) => setView({ ...view, filter });
+  const setOpen = (pr: QueuedPullRequest | null) => setView({ ...view, open: pr?.url ?? null });
   const all = queue.pullRequests;
+  // A PR merged or closed since it was opened closes its panel.
+  const openPr = all.find((pr) => pr.url === view.open) ?? null;
   const categories = categoriesOf(all);
   const categorized = categories.some((c) => c.category !== null);
   // A category renamed or merged away since it was picked shows every category again.
   const category = categories.some((c) => c.category === filter.category) ? filter.category : undefined;
-  const inCategory = filterPrs(all, { ...NO_FILTER, category });
+  const found = searchPrs(all, query);
+  const inCategory = filterPrs(found, { ...NO_FILTER, category });
   const shown = filterPrs(inCategory, { ...filter, category: undefined });
+  const hidden = found.length - shown.length;
+  const pick = pickPr(all, shown, query);
   const byNumber = numberIndex(all);
   const stageCounts = new Map(queue.stages.map((s) => [s.id, inCategory.filter((pr) => pr.stage === s.id).length]));
   const toggleStage = (id: string) =>
     setFilter({ ...filter, stages: filter.stages.includes(id) ? filter.stages.filter((s) => s !== id) : [...filter.stages, id] });
   const filtered = category !== undefined || filter.stages.length > 0 || filter.availableOnly;
-  const row = (pr: QueuedPullRequest) => <Row key={pr.url} pr={pr} login={queue.login} blocker={waitsOn(pr, byNumber)} loadNotes={loadNotes} />;
+  const row = (pr: QueuedPullRequest) => (
+    <Row key={pr.url} pr={pr} login={queue.login} blocker={waitsOn(pr, byNumber)} loadNotes={loadNotes} open={pr === openPr} onOpen={setOpen} />
+  );
+  const onSearchKey = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      if (pick) setOpen(pick);
+    } else if (event.key === "Escape" && (openPr || query)) {
+      // The panel closes first, then the search clears.
+      event.preventDefault();
+      setView(openPr ? { ...view, open: null } : { ...view, query: "" });
+    }
+  };
   return (
     <>
       <div className="cr-pm-bar">
@@ -299,6 +272,8 @@ function PrMap({ queue, loadNotes }: { queue: MergeQueue; loadNotes?: LoadNotes 
             ))}
           </div>
         ) : null}
+        <input type="search" className="cr-pm-search" aria-label="Search pull requests" placeholder="#2251, title, branch, W12, A301…"
+          value={query} onChange={(event) => setView({ ...view, query: event.target.value })} onKeyDown={onSearchKey} />
         {categorized ? (
           <select className="cr-pm-select" aria-label="Category" value={category === undefined ? -1 : categories.findIndex((c) => c.category === category)}
             onChange={(event) => {
@@ -326,11 +301,22 @@ function PrMap({ queue, loadNotes }: { queue: MergeQueue; loadNotes?: LoadNotes 
         </button>
         {filtered ? <button type="button" className="cr-pm-clear" onClick={() => setFilter(NO_FILTER)}>Clear</button> : null}
       </div>
-      {filter.availableOnly ? null : <NextUp prs={nextUp(inCategory)} repoOf={(pr) => (queue.repos.length > 1 ? repoLabel(pr.repo, queue.login) : null)} />}
+      {query.trim() ? (
+        <p className="cr-pm-found" role="status">
+          {shown.length === 1 ? "1 match" : `${shown.length} matches`}
+          {hidden ? (
+            <> · {hidden} more behind the filters <button type="button" className="cr-pm-clear" onClick={() => setFilter(NO_FILTER)}>Show them</button></>
+          ) : null}
+          {pick ? <span className="cr-pm-hint"><kbd>Enter</kbd> opens #{pick.number}</span> : null}
+        </p>
+      ) : null}
+      <div className="cr-pm-body" data-open={openPr ? true : undefined}>
+      <div className="cr-pm-results">
+      {filter.availableOnly || query.trim() ? null : <NextUp prs={nextUp(inCategory)} repoOf={(pr) => (queue.repos.length > 1 ? repoLabel(pr.repo, queue.login) : null)} />}
       {!shown.length ? (
-        <p className="cr-empty">No pull requests match these filters.</p>
+        <p className="cr-empty">No pull requests match {query.trim() ? "this search" : "these filters"}.</p>
       ) : mode === "graph" ? (
-        <PrGraph pullRequests={shown} all={all} stages={queue.stages} />
+        <PrGraph pullRequests={shown} all={all} stages={queue.stages} open={openPr} onOpen={setOpen} />
       ) : (
         groupPrs(shown, categorized ? by : "stage", queue.stages, all).map((g) => (
           <section key={g.label} className="cr-mq-group" {...(categorized && by === "category" ? { "data-category": g.label } : { "data-stage": g.key! })} aria-label={g.label}>
@@ -351,6 +337,12 @@ function PrMap({ queue, loadNotes }: { queue: MergeQueue; loadNotes?: LoadNotes 
           </section>
         ))
       )}
+      </div>
+      {openPr ? (
+        <PrDetailPanel pr={openPr} all={all} stageLabel={queue.stages.find((s) => s.id === openPr.stage)?.label ?? openPr.stage}
+          login={queue.login} load={loadDetail} revision={queue} onOpen={setOpen} onClose={() => setOpen(null)} />
+      ) : null}
+      </div>
     </>
   );
 }
@@ -375,6 +367,7 @@ export function MergeQueueView({
   refreshing,
   onRefresh,
   loadNotes,
+  loadDetail,
 }: {
   queue: MergeQueue | null;
   /** The read itself failed (not a `gh` fetch, which comes back per repository). */
@@ -382,6 +375,7 @@ export function MergeQueueView({
   refreshing: boolean;
   onRefresh: () => void;
   loadNotes?: LoadNotes;
+  loadDetail?: LoadDetail;
 }) {
   const failed = queue?.repos.filter((r) => r.error) ?? [];
   const neverLoaded = !!queue && queue.repos.length > 0 && queue.repos.every((r) => r.fetchedAt === null);
@@ -429,7 +423,7 @@ export function MergeQueueView({
       ) : !queue.pullRequests.length ? (
         <p className="cr-empty">No open pull requests{queue.login ? ` by ${queue.login}` : ""}.</p>
       ) : (
-        <PrMap queue={queue} loadNotes={loadNotes} />
+        <PrMap queue={queue} loadNotes={loadNotes} loadDetail={loadDetail} />
       )}
       {queue && queue.repos.length ? (
         <p className="cr-mq-foot">

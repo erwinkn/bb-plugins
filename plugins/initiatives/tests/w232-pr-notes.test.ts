@@ -65,7 +65,7 @@ describe("W229 P2/P3 fixes", () => {
       { num: 1, workerNum: 1, role: "work", brief: "Implement", report: JSON.stringify({ summary: `Opened ${url(1)}` }) },
       { num: 2, workerNum: 2, role: "review", brief: `Review ${url(1)}`, report: JSON.stringify({ summary: "Two findings; needs attention" }) },
     ] });
-    expect(assigned.read("p").get(url(1))).toEqual({ worker: "W2", assignment: "A2", role: "review" });
+    expect(assigned.read("p").get(url(1))).toEqual({ worker: "W2", assignment: "A2", role: "review", links: { workers: ["W1", "W2"], assignments: ["A1", "A2"] } });
     expect([...assigned.ofWorker("p", 1)]).toEqual([url(1)]);
   });
 

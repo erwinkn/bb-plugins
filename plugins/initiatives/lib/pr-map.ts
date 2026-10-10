@@ -353,7 +353,10 @@ export function prSummary(queue: MergeQueue, read: PrRead = { offset: 0, limit: 
 export function prsByRef(queue: MergeQueue, refs: readonly string[], read: { offset: number; limit: number } = { offset: 0, limit: 20 }) {
   const prs = queue.pullRequests;
   const ref = prRef(prs);
-  const matches = refs.map((text) => [text, prs.filter(matchesRef(text))] as const);
+  const matches = refs.map((text) => {
+    const named = matchesRef(text);
+    return [text, named ? prs.filter(named) : []] as const;
+  });
   const found = [...new Set(matches.flatMap(([, m]) => m))].sort(stackOrder(prs));
   const missing = matches.filter(([, m]) => !m.length).map(([text]) => text);
   return fitPage(found, read, (pr, whole) => [ref(pr), prDetail(pr, whole)], (detail, page, cut, lists) => {
@@ -462,14 +465,15 @@ function prRef(prs: readonly QueuedPullRequest[]) {
 }
 
 /**
- * "#12" or "12" (every repository's #12), "infra#12" (every owner's infra#12),
- * "equisafe/infra#12" or the PR's URL.
+ * The PRs a ref names: "#12" or "12" (every repository's #12), "infra#12"
+ * (every owner's infra#12), "equisafe/infra#12" or the PR's URL; null when
+ * `text` is no ref.
  */
-function matchesRef(text: string) {
+export function matchesRef(text: string): ((pr: Pick<QueuedPullRequest, "repo" | "number">) => boolean) | null {
   const parts = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/i.exec(text) ?? /^\s*(?:([\w.\/-]+)?#)?(\d+)\s*$/.exec(text);
-  const repo = parts?.[1]?.toLowerCase();
-  return (pr: QueuedPullRequest) =>
-    !!parts && pr.number === Number(parts[2]) && (!repo || pr.repo.toLowerCase() === repo || pr.repo.toLowerCase().endsWith(`/${repo}`));
+  if (!parts) return null;
+  const repo = parts[1]?.toLowerCase();
+  return (pr) => pr.number === Number(parts[2]) && (!repo || pr.repo.toLowerCase() === repo || pr.repo.toLowerCase().endsWith(`/${repo}`));
 }
 
 /** Where a PR stands. Unless `whole`: lines clipped, the first few questions and changes. */

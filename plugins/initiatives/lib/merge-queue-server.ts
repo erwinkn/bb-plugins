@@ -4,6 +4,7 @@ import {
   GH_DETAILS_QUERY,
   GH_PR_FIELDS,
   attachDetails,
+  attachLinks,
   attachNotes,
   detailsSearch,
   parseDetailsPage,
@@ -126,14 +127,16 @@ export class MergeQueueCache {
     const skipped = members.filter((m) => !m.repo).map((m) => ({ project: m.name, reason: "no GitHub origin remote" }));
     for (const repo of repos) this.refresh(repo, display.get(repo)!, options.refresh === true);
     const workers = this.sources.workers(projectId);
-    const pullRequests = linkStacks(attachNotes(attachWorkers(
+    const records = this.sources.prRecords(projectId);
+    const assigned = this.sources.assignedPrs(projectId);
+    const pullRequests = linkStacks(attachLinks(attachNotes(attachWorkers(
       assignStages(repos.flatMap((repo) => {
         const entry = this.repos.get(repo)!;
         return attachDetails(entry.pullRequests ?? [], entry.details.data, { reviewers: entry.details.error === null });
-      }), this.sources.prRecords(projectId)),
+      }), records),
       workers,
-      this.sources.assignedPrs(projectId),
-    ), this.sources.notes(projectId)));
+      assigned,
+    ), this.sources.notes(projectId)), assigned, records));
     const stages = PR_STAGES.map((stage) => ({ ...stage }));
     return {
       projectId,

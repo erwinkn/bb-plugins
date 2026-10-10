@@ -134,8 +134,8 @@ describe("W224 where each PR stands (D438)", () => {
     const assigned = new AssignedPrs(store);
     // A3's brief keeps #7 after its report; A4's brief gives it #9, which A3's report opened.
     expect([...assigned.read("p")]).toEqual([
-      [url(7), { worker: "W2", assignment: "A3", role: "work" }],
-      [url(9), { worker: "W5", assignment: "A4", role: "review" }],
+      [url(7), { worker: "W2", assignment: "A3", role: "work", links: { workers: ["W2"], assignments: ["A3"] } }],
+      [url(9), { worker: "W5", assignment: "A4", role: "review", links: { workers: ["W2", "W5"], assignments: ["A3", "A4"] } }],
     ]);
     // Unchanged assignments: no rescan.
     assigned.read("p");

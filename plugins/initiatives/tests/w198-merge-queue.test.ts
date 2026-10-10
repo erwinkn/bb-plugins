@@ -84,6 +84,7 @@ describe("parsing gh pr list", () => {
       stack: null,
       available: false,
       notes: { count: 0, recent: [], open: [] },
+      links: { workers: [], assignments: [] },
     });
   });
 
