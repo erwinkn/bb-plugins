@@ -2,15 +2,15 @@ import { createHash, randomUUID } from "node:crypto";
 import { addAbortListener } from "node:events";
 import { z } from "zod";
 import { TreeBuilder, type BuilderStatus } from "./builder";
-import { readEvents, type ListEvents } from "./ingest";
-import { eventEntries, splitEntry, type EventRow, type LogEntry } from "./log";
+import { readTurns, type ListEvents } from "./ingest";
+import { UNAVAILABLE, turnEntries, type EventRow } from "./log";
 import { COMPACTION_PROMPT, messageText, stamp, turnMessage, turnSystem } from "./prompt";
 import { FairPermits } from "./permits";
 import type { Settings } from "./settings";
-import { MemoryStore, type Member, type MemoryMode, type Scope } from "./store";
+import { MemoryStore, type MemoryMode, type Scope } from "./store";
 import type { Summarizer } from "./summarizer";
 import { NodeCache, children, end, label, nodeAt, renderLine, start, viewBytes } from "./tree";
-import { turnView } from "./turn";
+import { WHOLE_BYTES, turnView } from "./turn";
 import type { NodeRef } from "./tree";
 
 export const PLUGIN_ID = "chat-memory";
@@ -21,31 +21,21 @@ export class MemoryError extends Error {
   override name = "MemoryError";
 }
 export const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+export const notFound = (error: unknown) => (error as { status?: number }).status === 404;
 
-/** Event pages one ingest reads per thread before yielding; the next kick goes on. */
+/** Event pages one copy reads per thread before yielding; the next pass goes on. */
 const INGEST_PAGES = 20;
-/** The sweep re-reads a quiet scope this often; idle and event signals come first. */
-const SWEEP_INGEST_MS = 5 * 60_000;
-/** Scopes one sweep starts reading, least recently read first, so first logs don't all start at once (W244). */
-const SWEEP_KICKS = 3;
 /** The memory's own progress (log and tree) reaches the UI at most this often; it also polls. */
 const PROGRESS_PUBLISH_MS = 30_000;
-const BUSY_STATUSES = new Set(["active", "starting", "stopping"]);
 
 /**
  * The hidden tool BB's Claude Code provider (Erwin's fork) calls before each new turn whose tools,
- * as BB resolves them for that turn, include it (FORK.md, "per-turn context from a hidden tool").
- * Protocol 4 decides by the turn's tools, on every path that starts one; any other provider refuses
- * a turn whose tools include it. Protocol 3 (the fork before T145) decided by the tools the session
- * was built with.
+ * as BB resolves them for that turn, include it (FORK.md, "per-turn context from a hidden tool",
+ * protocol 4); any other provider refuses a turn whose tools include it.
  */
 export const TURN_CONTEXT_TOOL = "claude_code_turn_context";
-/**
- * The provider's ask. Protocol 4 is {input, requestId, sessionId}; protocol 3 (the fork before
- * T145) adds outcome reports, which nothing reads any more (D458), so they are dropped here.
- */
 export const turnAskSchema = z.object({
-  protocol: z.union([z.literal(3), z.literal(4)]),
+  protocol: z.literal(4),
   /** The turn's own text. */
   input: z.string(),
   /** Its BB request (the client/turn/requested event's requestId). */
@@ -60,24 +50,17 @@ export type TurnAnswer =
   | Record<string, never>;
 
 /**
- * D458: how long an OptChat turn waits for its memory (its log caught up with it, every earlier
- * message summarized) before it fails. The fork's hook gives an answer 120 s (protocol 4); the
- * fork before T145 gave 20 s (protocol 3).
+ * D458: how long an OptChat turn waits for its memory (its own last turn logged, the summaries the
+ * view needs) before it fails. The fork's hook gives an answer 120 s.
  */
-export const TURN_WAIT_MS = { 3: 15_000, 4: 90_000 } as const;
-/** Failed reads of the thread's log a turn tries before it fails. */
+export const TURN_WAIT_MS = 90_000;
+/** Failed reads of the thread's last turn a turn tries before it fails. */
 export const TURN_READ_ATTEMPTS = 3;
-/** Between two reads of a log that has not reached a turn's request yet. */
-const CATCH_UP_PAUSE_MS = 250;
-/** Requests read while looking for a turn's own (newest first). */
-const REQUEST_PAGE = 100;
-const REQUEST_PAGES = 3;
-/** Between two looks for a thread its owner is adding to an OptChat memory. */
-const MEMBERSHIP_POLL_MS = 100;
+const RETRY_PAUSE_MS = 250;
 /**
- * The key in an owner plugin's thread metadata that names the scope the thread will join (D446): a
- * new Initiative coordinator is spawned with {memoryScope: <Initiative id>}, and its first turn may
- * ask before the owner's registration lands. A thread without it is not expected in any scope.
+ * The key in an owner plugin's metadata on a thread it spawns that names the scope the thread
+ * writes to (D446, D487): an Initiative's coordinators and discussions carry
+ * {memoryScope: <Initiative id>}. BB's fork shows it to configure as the origin's metadata.
  */
 export const MEMORY_SCOPE_KEY = "memoryScope";
 /** The scope an owner's metadata on a thread names (MEMORY_SCOPE_KEY), or null. */
@@ -85,34 +68,26 @@ const scopeNamed = (owner: string, metadata: Readonly<Record<string, unknown>>) 
   const key = metadata[MEMORY_SCOPE_KEY];
   return typeof key === "string" && key ? `${owner}:${key}` : null;
 };
+/** "<owner>:<key>" → owner. */
+const ownerOf = (scopeId: string) => scopeId.slice(0, scopeId.indexOf(":"));
 /** What the turn gate (BB's message.dispatch hook) answers. */
-export type DispatchDecision = { action: "proceed" } | { action: "wait"; reason: string; sendAt?: number } | { action: "reject"; message: string };
-/** A dispatch that waits on something passing (the turn hook coming free, a failed read) is tried again this often (BB re-attempts it at sendAt)... */
-const GATE_RETRY_MS = 5_000;
-/** ...this many times in all; the last is refused, its message kept (D458, D459). */
-export const GATE_TRIES = 3;
-
-const LEGACY_PROVIDER =
-  "BB's Claude Code provider here is older than protocol 4: a session built without the memory hook does not ask for its memory, so OptChat cannot run on every turn until BB restarts with the new provider.";
+export type DispatchDecision = { action: "proceed" } | { action: "reject"; message: string };
 
 /** What the memory needs to know about a BB thread. */
 export interface ThreadFacts {
   providerId: string;
   title: string | null;
   originPluginId: string | null;
-  parentThreadId: string | null;
+  archived: boolean;
 }
 /** What chat memory decides a session from, when BB builds it or resolves it for a turn. */
 export interface SessionFacts {
   threadId: string;
-  parentThreadId: string | null;
   originPluginId: string | null;
   /** The origin plugin's metadata on the thread (BB's fork gives it to every configure); undefined when BB does not. */
   originMetadata: Readonly<Record<string, unknown>> | undefined;
   providerId: string;
 }
-/** A thread's status now, or null once BB no longer has it. */
-export type ThreadStatus = (threadId: string) => Promise<string | null>;
 
 export interface MemoryStatus {
   scope: { id: string; owner: string };
@@ -120,14 +95,11 @@ export interface MemoryStatus {
   /** The compaction limit in effect (0: off), and the scope's own, if set. */
   compactTokens: number;
   compactTokensOverride: number | null;
+  /** The threads that write to it now. */
   threads: Array<{
     threadId: string;
     title: string | null;
     providerId: string | null;
-    state: Member["state"];
-    /** Its last turn that asked for its turn context, and the provider's protocol then. */
-    askedAt: number | null;
-    askedProtocol: number | null;
     compactedAt: number | null;
     /** Its last compaction failed, with this error; null once one succeeds. */
     compactError: string | null;
@@ -161,7 +133,7 @@ const treeSize = (n: number) => {
 
 interface Run {
   abort: AbortController;
-  /** Asked again while running: go on (or, once a stopped run settles, start over). */
+  /** Asked again while running: go on. */
   again: boolean;
   done: Promise<void>;
   /** The last pass's failure, if it failed. */
@@ -169,7 +141,8 @@ interface Run {
 }
 
 /**
- * D457: every scope's memory. A scope's log is read from BB's events of its threads; GPT-6 Luna
+ * D457: every scope's memory. A thread writes to at most one scope at a time (its row in the
+ * threads table, D491); its completed turns are copied into that scope's log, and GPT-6 Luna
  * builds the summary tree over it in the background in every mode (D447), so a switch between
  * modes is instant. The mode is one setting per scope, read at each turn:
  * - regular: the thread's session goes on, compacted past the regular limit (300k);
@@ -177,54 +150,37 @@ interface Run {
  *   back what compactions dropped;
  * - optchat: each turn is a fresh session over the memory view (turnContext); never compacted.
  *
- * Ingests and builds run detached and owned here: one of each per scope at a time, aborted by
- * dispose (the service signal disposes too) and, for builds, when the scope closes. Every scope's
- * summarizer calls share one limit, let in round-robin by scope (W244). An aborted run stays owned
- * until it settles, and writes nothing more; after dispose the store refuses every access.
+ * Copies run one per thread, builds one per scope, detached and owned here, aborted by dispose
+ * (the service signal disposes too). Every scope's summarizer calls share one limit, let in
+ * round-robin by scope (W244). After dispose nothing new starts and nothing more is written.
  */
 export class ChatMemory {
   readonly store: MemoryStore;
   readonly permits: FairPermits;
-  private disposed = false;
+  /** Aborted by dispose: what a sweep waits for gives up then, so it never writes after it. */
+  private life = new AbortController();
   private stopLink: Disposable | null = null;
   private ingests = new Map<string, Run>();
   private builds = new Map<string, Run>();
   private builders = new Map<string, TreeBuilder>();
-  private lastIngest = new Map<string, number>();
   private published = new Map<string, number>();
   /** By thread: the view lines its last OptChat turn froze into its system prompt. */
   private frozen = new Map<string, NodeRef[]>();
   private facts = new Map<string, Promise<ThreadFacts | null>>();
-  /** By thread: how many times the turn gate has held its message for something that may pass. */
-  private gateWaits = new Map<string, number>();
-  /**
-   * A turn asked with protocol 3: this BB's Claude Code provider is older than protocol 4, so a
-   * turn whose session was built without the hook does not ask, and OptChat cannot be enforced
-   * (A471). Only a BB restart changes the provider; a reload of this plugin forgets it until the
-   * next protocol 3 ask.
-   */
-  private legacyProvider = false;
-  /** The wait bounds (ms); tests shorten them. */
-  waits: { turn: Record<TurnAsk["protocol"], number> } = { turn: { ...TURN_WAIT_MS } };
+  /** The wait bound (ms); tests shorten it. */
+  waits = { turn: TURN_WAIT_MS };
 
   constructor(
     private readonly deps: {
       store: MemoryStore;
       list: ListEvents;
-      /** The thread's facts, or null once BB no longer has it (read once per thread). */
+      /** The thread's facts now, or null once BB no longer has it. */
       thread: (threadId: string) => Promise<ThreadFacts | null>;
-      /** An owner plugin's metadata on one of its threads (MEMORY_SCOPE_KEY names the scope it will join). */
-      ownerMetadata: (threadId: string, pluginId: string) => Promise<Record<string, unknown>>;
-      status: ThreadStatus;
       settings: () => Settings;
       summarizer: Summarizer;
       log: (message: string) => void;
       /** Something the UI shows for the scope changed. */
       changed?: (scopeId: string) => void;
-      /** Whether this plugin holds the turn hook's name; asking takes it once it is free (server.ts). */
-      hookOwned: () => boolean;
-      /** Something a held dispatch waits on changed: BB asks the turn gate again. */
-      recheck?: () => void;
     },
   ) {
     this.store = deps.store;
@@ -236,29 +192,31 @@ export class ChatMemory {
     this.deps.summarizer = summarizer;
   }
 
+  private get disposed() {
+    return this.life.signal.aborted;
+  }
+
   start(signal?: AbortSignal) {
-    this.disposed = false;
-    this.store.open();
+    if (this.disposed) this.life = new AbortController();
     this.stopLink?.[Symbol.dispose]();
     this.stopLink = signal ? addAbortListener(signal, () => this.dispose()) : null;
   }
-  /** Abort every ingest and build, give up every summary waiter, and close the store to them all. */
+  /** Abort the sweep, every copy and build, and give up every summary waiter. */
   dispose() {
-    this.disposed = true;
-    this.store.close();
+    this.life.abort();
     this.stopLink?.[Symbol.dispose]();
     this.stopLink = null;
     for (const run of [...this.ingests.values(), ...this.builds.values()]) run.abort.abort();
     for (const builder of this.builders.values()) builder.close();
     this.builders.clear();
   }
-  /** Resolves once no ingest or build this service started is running. */
+  /** Resolves once no copy or build this service started is running. */
   async settled() {
     while (this.ingests.size || this.builds.size)
       await Promise.all([...this.ingests.values(), ...this.builds.values()].map((run) => run.done));
   }
 
-  /** A thread's facts, read once per thread; null once BB no longer has it. */
+  /** A thread's facts, read once per thread (its title and provider; `archived` is read fresh where it matters); null once BB no longer has it. */
   threadFacts(threadId: string) {
     let facts = this.facts.get(threadId);
     if (!facts) {
@@ -270,124 +228,61 @@ export class ChatMemory {
     return facts;
   }
 
-  // Scopes -------------------------------------------------------------------------------
+  // Threads and scopes ---------------------------------------------------------------------
 
   /**
-   * An owner plugin's scope and its current threads, in order (D446: an Initiative's coordinator
-   * and its discussion threads). No threads closes it: its log and tree stop, and stay.
+   * D491: the thread writes to `scopeId` from its next completed turn on, or to none (null). What
+   * it logged stays where it is; what it has not is copied to the new scope. Returns the scope.
    */
-  setScope(owner: string, key: string, threadIds: readonly string[], hold?: boolean) {
-    const id = `${owner}:${key}`;
-    // Closing a scope that never existed (an Initiative archived before it had memory) leaves no trace.
-    if (!threadIds.length && !this.store.scope(id)) return id;
+  attach(threadId: string, scopeId: string | null) {
+    const before = this.store.thread(threadId)?.scope ?? null;
     this.store.transaction(() => {
-      this.store.ensureScope(id, owner);
-      if (hold !== undefined) this.store.setHold(id, hold);
-      this.store.setMembers(id, threadIds);
+      if (scopeId) this.store.ensureScope(scopeId, ownerOf(scopeId));
+      this.store.attach(threadId, scopeId);
     });
-    if (threadIds.length) this.kick(id);
-    else this.stopBuilding(id);
-    this.deps.changed?.(id);
-    this.deps.recheck?.();
-    return id;
+    for (const id of new Set([before, scopeId])) if (id) this.deps.changed?.(id);
+    if (scopeId) this.kick(threadId);
+    return scopeId;
   }
 
   // Sessions (D458, D460) ------------------------------------------------------------------
 
   /**
    * D447: the memory tools a session gets, when BB builds it and again whenever BB resolves a turn:
-   * a current thread of a scope, and a top-level thread of a plugin that owns scopes (its owner
-   * adds it right after the spawn, once the session is built). While this plugin holds the turn
-   * hook, a Claude Code thread gets it too, in every mode, so every turn asks how it runs. A thread
-   * on another provider gets it only in an OptChat scope, where it makes BB refuse every turn of
-   * it (FORK.md): OptChat runs on Claude Code only (D460, T146). A new thread its owner has not
-   * added yet counts as in the scope its owner's metadata names, unless it was in it and left
-   * (A473: a pending coordinator's Send now skips the gate, and its owner adds it only after this
-   * resolution); without that metadata it counts as in OptChat, so it is refused rather than run
-   * unchecked.
+   * every thread that writes to a scope, in every mode. D490: the turn hook only in OptChat, where a
+   * Claude Code thread asks for its view before each turn and BB refuses every turn of a thread on
+   * another provider (FORK.md): OptChat runs on Claude Code only (D460, T146). A thread chat memory
+   * meets for the first time with its owner's MEMORY_SCOPE_KEY is attached to that scope here, in
+   * the same synchronous call, so its first turn already has it (D487).
    */
   sessionTools(t: SessionFacts): string[] | null {
-    const scope = this.store.currentScopeOf(t.threadId);
-    const owner = !scope && t.parentThreadId === null && t.originPluginId && this.store.ownsScopes(t.originPluginId) ? t.originPluginId : null;
-    if (!scope && !owner) return null;
-    const mode = scope ? scope.mode : owner && this.expectedMode(t.threadId, owner, t.originMetadata);
-    const hook = this.deps.hookOwned() && (t.providerId === "claude-code" || mode === "optchat");
-    return ["memory_read", "memory_zoom", ...(hook ? [TURN_CONTEXT_TOOL] : [])];
-  }
-
-  /** The mode of the scope a new thread's owner will add it to, from the owner's metadata on it. */
-  private expectedMode(threadId: string, owner: string, metadata: SessionFacts["originMetadata"]): MemoryMode | null {
-    if (metadata === undefined) return "optchat";
-    return this.joining(threadId, scopeNamed(owner, metadata))?.mode ?? null;
+    const named = t.originPluginId && t.originMetadata ? scopeNamed(t.originPluginId, t.originMetadata) : null;
+    if (named && !this.store.thread(t.threadId)) {
+      this.store.transaction(() => {
+        this.store.ensureScope(named, ownerOf(named));
+        this.store.attachNew(t.threadId, named);
+      });
+    }
+    const scope = this.store.scopeOf(t.threadId);
+    if (!scope) return null;
+    return ["memory_read", "memory_zoom", ...(scope.mode === "optchat" ? [TURN_CONTEXT_TOOL] : [])];
   }
 
   /**
-   * D458, D459, D460: the turn gate, before BB sends a message on (its message.dispatch hook). It
-   * refuses, with the reason and its message kept, a turn of an OptChat thread that cannot run as
-   * OptChat: a thread on another provider (Codex, T146), a Claude Code provider older than protocol
-   * 4. What may pass (the turn hook not yet this plugin's, a failed read) holds it GATE_RETRY_MS at
-   * a time, GATE_TRIES times in all, then refuses it too. Every other dispatch, and every message
-   * that joins a running turn, goes on: the turn itself asks for its context (FORK.md), whichever
-   * path starts it, so the gate is not what enforces the mode, only what explains it early.
+   * D460: the turn gate, before BB sends a message on (its message.dispatch hook). It refuses, with
+   * the reason and its message kept, a new turn of an OptChat thread on another provider (Codex,
+   * T146). BB would refuse the turn anyway (the hook is in its tools); this only explains it early.
    */
-  async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn"; originPluginId: string | null; parentThreadId: string | null }): Promise<DispatchDecision> {
-    if (d.attempt === "join-turn") return { action: "proceed" };
-    const decision = await this.gate(d);
-    if (decision.action === "wait") {
-      const tries = (this.gateWaits.get(d.threadId) ?? 0) + 1;
-      if (tries < GATE_TRIES) {
-        this.gateWaits.set(d.threadId, tries);
-        return { ...decision, reason: `${decision.reason} Trying again shortly (${tries} of ${GATE_TRIES}).`, sendAt: this.store.now() + GATE_RETRY_MS };
-      }
-      this.gateWaits.delete(d.threadId);
-      return { action: "reject", message: `${decision.reason} This message was not sent after ${GATE_TRIES} tries; send it again.` };
-    }
-    this.gateWaits.delete(d.threadId);
-    return decision;
-  }
-
-  private async gate(d: { threadId: string; providerId: string; originPluginId: string | null; parentThreadId: string | null }): Promise<DispatchDecision> {
-    let scope = this.store.currentScopeOf(d.threadId);
-    if (!scope && d.providerId !== "claude-code" && d.parentThreadId === null && d.originPluginId && this.store.ownsScopes(d.originPluginId)) {
-      // A new thread its owner will add: no turn of it asks before it joins, so the gate stops it.
-      const expected = await this.expectedScope(d.threadId, d.originPluginId).then(
-        (id) => ({ id }),
-        (error: unknown) => ({ error: errorMessage(error) }),
-      );
-      if ("error" in expected) return { action: "wait", reason: `Chat memory could not read which memory this thread joins (${expected.error}).` };
-      scope = this.joining(d.threadId, expected.id);
-    }
-    if (scope?.mode !== "optchat") return { action: "proceed" };
+  async admit(d: { threadId: string; providerId: string; attempt: "start-turn" | "join-turn" }): Promise<DispatchDecision> {
+    if (d.attempt === "join-turn" || d.providerId === "claude-code" || this.store.scopeOf(d.threadId)?.mode !== "optchat") return { action: "proceed" };
     const name = await this.threadName(d.threadId);
-    const switchIt = "Switch its memory mode in the Memory pill to send it.";
-    if (d.providerId !== "claude-code") return { action: "reject", message: `OptChat runs on Claude Code only for now (T146): ${name} runs on ${d.providerId}, so this message was not sent. ${switchIt}` };
-    if (this.legacyProvider) return { action: "reject", message: `${LEGACY_PROVIDER} This message was not sent. ${switchIt}` };
-    if (!this.deps.hookOwned()) return { action: "wait", reason: "Chat memory is taking over its turn hook from the plugin that still holds it (Initiatives before T145): reload that plugin." };
-    return { action: "proceed" };
+    return { action: "reject", message: `OptChat runs on Claude Code only for now (T146): ${name} runs on ${d.providerId}, so this message was not sent. Switch its memory mode in the Memory pill to send it.` };
   }
 
   /** "Title" or the thread's id. */
   private async threadName(threadId: string) {
     const facts = await this.threadFacts(threadId).catch(() => null);
     return facts?.title ? `"${facts.title}"` : threadId;
-  }
-
-  /**
-   * The scope an owner plugin's top-level thread will join, from the owner's metadata on it
-   * (MEMORY_SCOPE_KEY), or null when it names none (a handover writer, an ad hoc thread).
-   */
-  private async expectedScope(threadId: string, owner: string) {
-    return scopeNamed(owner, await this.deps.ownerMetadata(threadId, owner));
-  }
-
-  /** The scope a thread is still to join: the one its owner named, unless it was in it and left (a former coordinator). */
-  private joining(threadId: string, scopeId: string | null) {
-    return scopeId && !this.store.member(scopeId, threadId) ? this.store.scope(scopeId) : null;
-  }
-
-  /** Whether the scope's tree builds: it has a current thread (D447: in every mode). */
-  building(scopeId: string) {
-    return this.store.members(scopeId).some((m) => m.state === "current");
   }
 
   /** The compaction limit of a scope's threads (0: off): its own, else the setting for its mode; OptChat sessions never grow. */
@@ -400,22 +295,20 @@ export class ChatMemory {
 
   /**
    * D452: the user's change, from the app only (the RPC refuses plugins; tools and the CLI never
-   * write). A thread outside every scope gets its own. D460 and D458: OptChat is refused unless
-   * every current thread runs on Claude Code, this plugin holds the turn hook and the provider asks
-   * on every turn (protocol 4), so the mode can never be set where it would not run.
+   * write). A thread that writes to no scope gets its own; enabled:false detaches a thread from its
+   * own. D460: OptChat is refused unless every thread of the scope runs on Claude Code.
    */
   async configure(threadId: string, patch: { mode?: MemoryMode; compactTokens?: number | null; enabled?: boolean }) {
-    let scope = this.store.currentScopeOf(threadId);
+    let scope = this.store.scopeOf(threadId);
     if (patch.enabled === false) {
       if (!scope) return null;
       if (scope.owner !== PLUGIN_ID) throw new MemoryError(`This thread's memory belongs to the ${scope.owner} plugin, which decides its threads.`);
-      this.setScope(PLUGIN_ID, threadId, []);
+      this.attach(threadId, null);
       return null;
     }
     if (!scope) {
       if (!(await this.threadFacts(threadId))) throw new MemoryError(`Unknown thread ${threadId}.`);
-      this.setScope(PLUGIN_ID, threadId, [threadId]);
-      scope = this.store.currentScopeOf(threadId)!;
+      scope = this.store.scope(this.attach(threadId, `${PLUGIN_ID}:${threadId}`)!)!;
     }
     const next = { mode: patch.mode ?? scope.mode, compactTokens: patch.compactTokens === undefined ? scope.compactTokens : patch.compactTokens };
     if (next.mode === "optchat" && scope.mode !== "optchat") {
@@ -426,25 +319,17 @@ export class ChatMemory {
       this.store.saveSettings(scope.id, next);
       this.deps.log(`${scope.id}: memory set to ${next.mode}${next.compactTokens === null ? "" : `, compaction past ${next.compactTokens} tokens`}, from the next turn`);
       this.deps.changed?.(scope.id);
-      // A message the turn gate held for OptChat may go now.
-      if (next.mode !== scope.mode) this.deps.recheck?.();
     }
     return this.status(scope.id);
   }
 
-  /**
-   * Why OptChat cannot run in every current thread of the scope, or null: a provider other than
-   * Claude Code, the turn hook not this plugin's yet, a Claude Code provider older than protocol 4.
-   */
+  /** Why OptChat cannot run in every thread of the scope (a provider other than Claude Code), or null. */
   private async optchatRefusal(scopeId: string) {
-    const current = await Promise.all(
-      this.store.members(scopeId).filter((m) => m.state === "current").map(async (m) => ({ m, facts: await this.threadFacts(m.threadId) })),
-    );
-    const name = ({ m, facts }: (typeof current)[number]) => (facts?.title ? `"${facts.title}"` : m.threadId);
-    const codex = current.find((t) => t.facts?.providerId !== "claude-code");
-    if (codex) return `OptChat runs on Claude Code only for now (T146): ${name(codex)} runs on ${codex.facts?.providerId ?? "an unknown provider"}.`;
-    if (!this.deps.hookOwned()) return "Chat memory's turn hook is still held by another plugin (Initiatives before T145): reload that plugin, then try again.";
-    if (this.legacyProvider) return LEGACY_PROVIDER;
+    for (const t of this.store.threadsOf(scopeId)) {
+      const facts = await this.threadFacts(t.threadId);
+      if (facts?.providerId !== "claude-code")
+        return `OptChat runs on Claude Code only for now (T146): ${facts?.title ? `"${facts.title}"` : t.threadId} runs on ${facts?.providerId ?? "an unknown provider"}.`;
+    }
     return null;
   }
 
@@ -456,12 +341,15 @@ export class ChatMemory {
     this.deps.changed?.(scopeId);
   }
 
-  // Ingest and build ---------------------------------------------------------------------
+  // Copy and build -----------------------------------------------------------------------
 
-  /** Bring the log up to date, then build. Detached; repeated kicks coalesce. Returns the run. */
-  kick(scopeId: string): Run | null {
+  /**
+   * Copy the thread's completed turns into the scope it writes to, then build that scope. Detached,
+   * one run per thread; a kick while it runs makes it read once more. Returns the run.
+   */
+  kick(threadId: string): Run | null {
     if (this.disposed) return null;
-    const running = this.ingests.get(scopeId);
+    const running = this.ingests.get(threadId);
     if (running) {
       running.again = true;
       return running;
@@ -475,86 +363,77 @@ export class ChatMemory {
         do {
           entry.again = false;
           entry.error = null;
-          this.lastIngest.set(scopeId, this.store.now());
-          const read = await this.ingest(scopeId, signal);
+          const copied = await this.ingest(threadId, signal);
           if (signal.aborted) break;
-          // A long first log is read in slices; the next one follows at once.
-          if (read.behind) entry.again = true;
-          if (read.appended) this.progressed(scopeId);
-          if (this.building(scopeId)) this.build(scopeId);
+          // A long history is read in slices; the next one follows at once.
+          if (copied.more) entry.again = true;
+          if (copied.scope) {
+            this.progressed(copied.scope);
+            this.build(copied.scope);
+          }
         } while (entry.again && !signal.aborted);
       } catch (error) {
         entry.error = error;
-        if (!signal.aborted) this.deps.log(`Memory log for ${scopeId} failed: ${errorMessage(error)}`);
+        if (!signal.aborted) this.deps.log(`Memory log of ${threadId} failed: ${errorMessage(error)}`);
       } finally {
-        this.ingests.delete(scopeId);
+        this.ingests.delete(threadId);
       }
     })();
-    this.ingests.set(scopeId, entry);
+    this.ingests.set(threadId, entry);
     return entry;
   }
 
-  /** The sweep's kick: the least recently read scopes not read for a while (a missed idle, a first log). */
-  sweep() {
-    const now = this.store.now();
-    const read = (scopeId: string) => this.lastIngest.get(scopeId) ?? -Infinity;
-    this.store
-      .readingScopes()
-      .filter((s) => !this.ingests.has(s.id) && now - read(s.id) >= SWEEP_INGEST_MS)
-      .sort((a, b) => read(a.id) - read(b.id))
-      .slice(0, SWEEP_KICKS)
-      .forEach((s) => this.kick(s.id));
+  /**
+   * D487: one read of the thread's events after its cursor, through its last completed turn,
+   * appended to the scope its row names when the append commits (store.append). A thread that
+   * writes to none is not read. A deleted thread (404) is forgotten. Any other failed read appends
+   * nothing: the next trigger reads again. Returns the scope appended to, if any.
+   */
+  async ingest(threadId: string, signal?: AbortSignal): Promise<{ scope: string | null; more: boolean }> {
+    const stopped = () => this.disposed || signal?.aborted === true;
+    const t = this.store.thread(threadId);
+    if (!t?.scope) return { scope: null, more: false };
+    try {
+      const read = await readTurns(this.deps.list, threadId, t.cursor, INGEST_PAGES, stopped);
+      if (read.through === t.cursor) return { scope: null, more: false };
+      const entries = turnEntries(read.rows, threadId, await this.logFacts(threadId, read.rows));
+      if (stopped()) return { scope: null, more: false };
+      const appended = this.store.append(threadId, entries, read.through);
+      return { scope: appended?.appended ? appended.scope : null, more: read.more && appended !== null };
+    } catch (error) {
+      if (stopped() || !notFound(error)) throw error;
+      this.store.forget(threadId);
+      return { scope: null, more: false };
+    }
   }
 
   /**
-   * One read of every thread the scope still reads, merged by time into the log in one append.
-   * A retired thread is read until it is quiet, its status first: once it is quiet, all its events
-   * are below the boundary of the reads that follow, so its log is then complete. A deleted thread
-   * (404) holds nothing more. Any other failed read appends nothing: the next kick reads again.
-   * Every write follows a check that the signal (or dispose) has not stopped the pass.
+   * D485: the safety net for turn ends BB never announced (its events are fire-and-forget): every
+   * attached thread whose last turn/completed is past its cursor is copied, then every scope with a
+   * thread builds (a failed line's retry comes due). The startup walk takes archived threads too;
+   * the recurring one skips them (`skipArchived`), as their archive was a final copy. Dispose ends
+   * it at once, even mid-read: it returns before touching the database again.
    */
-  async ingest(scopeId: string, signal?: AbortSignal) {
-    const stopped = () => this.disposed || signal?.aborted === true;
-    const reading = this.store.members(scopeId).filter((m) => m.state !== "done");
-    const runs: LogEntry[][] = [];
-    const through = new Map<string, number>();
-    const finished: string[] = [];
-    let behind = false;
-    for (const m of reading) {
-      if (stopped()) return { appended: 0, behind: false };
+  async sweep(skipArchived: boolean) {
+    const { signal } = this.life;
+    const threads = this.store.attachedThreads();
+    for (const t of threads) {
+      if (signal.aborted) return;
       try {
-        const quiet = m.state === "retired" ? !BUSY_STATUSES.has((await this.deps.status(m.threadId)) ?? "deleted") : false;
-        let after = m.lastSeq;
-        let more = true;
-        const entries: LogEntry[] = [];
-        for (let page = 0; more && page < INGEST_PAGES; page++) {
-          if (stopped()) return { appended: 0, behind: false };
-          const read = await readEvents(this.deps.list, m.threadId, after, stopped);
-          const facts = await this.logFacts(m.threadId, read.rows);
-          entries.push(...read.rows.flatMap((row) => eventEntries(row, m.threadId, facts)).flatMap(splitEntry));
-          more = read.more;
-          after = read.through;
-        }
-        runs.push(entries);
-        if (after > m.lastSeq) through.set(m.threadId, after);
-        if (more) behind = true;
-        else if (quiet) finished.push(m.threadId);
+        const [latest] = await abortable(this.deps.list({ threadId: t.threadId, types: ["turn/completed"], order: "desc", limit: "1" }), signal);
+        if (!latest || latest.seq <= t.cursor) continue;
+        if (skipArchived && (await abortable(this.deps.thread(t.threadId), signal))?.archived) continue;
+        this.kick(t.threadId);
       } catch (error) {
-        if (stopped()) return { appended: 0, behind: false };
-        if ((error as { status?: number }).status !== 404) throw error;
-        finished.push(m.threadId);
+        if (signal.aborted) return;
+        if (notFound(error)) this.store.forget(t.threadId);
+        else this.deps.log(`Memory sweep could not read ${t.threadId}: ${errorMessage(error)}`);
       }
     }
-    if (stopped()) return { appended: 0, behind: false };
-    const entries = mergeByTime(runs);
-    this.store.transaction(() => {
-      this.store.append(scopeId, entries, through);
-      for (const threadId of finished) this.store.finishMember(scopeId, threadId);
-    });
-    return { appended: entries.length, behind };
+    for (const scope of new Set(threads.map((t) => t.scope!))) this.build(scope);
   }
 
-  /** What eventEntries needs for a page of a thread's events: whether a plugin spawned the thread, and its senders' names. */
+  /** What turnEntries needs for a page of a thread's events: whether a plugin spawned the thread, and its senders' names. */
   private async logFacts(threadId: string, rows: readonly EventRow[]) {
     const facts = await this.threadFacts(threadId);
     const senders = [...new Set(rows.flatMap((r) => (typeof r.data?.senderThreadId === "string" ? [r.data.senderThreadId as string] : [])))];
@@ -585,19 +464,17 @@ export class ChatMemory {
   }
 
   /**
-   * Who the scope's summarizer calls are for, in the Pooler's ledger: its first current thread,
-   * and its Initiative, which the ledger keeps in a column of its own.
+   * Who the scope's summarizer calls are for, in the Pooler's ledger: its first thread, and its
+   * Initiative, which the ledger keeps in a column of its own.
    */
   private attribution(scopeId: string) {
-    const scope = this.store.scope(scopeId);
-    const first = this.store.members(scopeId).find((m) => m.state === "current")?.threadId ?? null;
-    const initiative = scope?.owner === "initiatives" ? scopeId.slice("initiatives:".length) : null;
-    return { initiative, thread: first, purpose: "memory-tree" };
+    const initiative = ownerOf(scopeId) === "initiatives" ? scopeId.slice("initiatives:".length) : null;
+    return { initiative, thread: this.store.threadsOf(scopeId)[0]?.threadId ?? null, purpose: "memory-tree" };
   }
 
-  /** Start (or extend) the background build. Behind a stopped run that is still settling, it starts once that one has. */
+  /** Start (or extend) the background build. */
   build(scopeId: string) {
-    if (this.disposed || !this.building(scopeId)) return;
+    if (this.disposed) return;
     const running = this.builds.get(scopeId);
     if (running) {
       running.again = true;
@@ -618,20 +495,9 @@ export class ChatMemory {
         if (!signal.aborted) this.deps.log(`Memory tree for ${scopeId} failed: ${errorMessage(error)}`);
       } finally {
         this.builds.delete(scopeId);
-        if (signal.aborted && entry.again && !this.disposed && this.building(scopeId)) this.build(scopeId);
       }
     })();
     this.builds.set(scopeId, entry);
-  }
-
-  /**
-   * Cancel the build; what is built stays, and a later build goes on from there with a fresh
-   * builder. The run stays owned until it settles; its summary waiters give up now.
-   */
-  stopBuilding(scopeId: string) {
-    this.builds.get(scopeId)?.abort.abort();
-    this.builders.get(scopeId)?.close();
-    this.builders.delete(scopeId);
   }
 
   // Reads ------------------------------------------------------------------------------
@@ -642,9 +508,9 @@ export class ChatMemory {
     return builder ? { nodes: builder.nodes, views: builder.views } : { nodes: new NodeCache((l, i) => this.store.node(scopeId, l, i)), views: this.store.views(scopeId) };
   }
 
-  /** The scope a tool or read from this thread uses: the one it is a current thread of. */
+  /** The scope a tool or read from this thread uses: the one it writes to. */
   scopeOf(threadId: string | undefined) {
-    const scope = threadId ? this.store.currentScopeOf(threadId) : null;
+    const scope = threadId ? this.store.scopeOf(threadId) : null;
     if (!scope) throw new MemoryError("This thread has no chat memory: turn it on in the thread's Memory panel.");
     return scope;
   }
@@ -657,31 +523,19 @@ export class ChatMemory {
     const totals = this.store.totals(scopeId);
     const builder = this.builders.get(scopeId);
     const threads = await Promise.all(
-      this.store.members(scopeId).map(async (m) => {
-        const facts = await this.threadFacts(m.threadId).catch(() => null);
-        return {
-          threadId: m.threadId,
-          title: facts?.title ?? null,
-          providerId: facts?.providerId ?? null,
-          state: m.state,
-          askedAt: m.askedAt,
-          askedProtocol: m.askedProtocol,
-          compactedAt: m.compactedAt,
-          compactError: m.compactError,
-        };
+      this.store.threadsOf(scopeId).map(async (t) => {
+        const facts = await this.threadFacts(t.threadId).catch(() => null);
+        return { threadId: t.threadId, title: facts?.title ?? null, providerId: facts?.providerId ?? null, compactedAt: t.compactedAt, compactError: t.compactError };
       }),
     );
     const problems: string[] = [];
-    const current = threads.filter((t) => t.state === "current");
     const name = (t: (typeof threads)[number]) => (t.title ? `"${t.title}"` : t.threadId);
     if (scope.mode === "optchat") {
-      for (const t of current) {
+      for (const t of threads) {
         if (t.providerId !== "claude-code") problems.push(`OptChat cannot run in ${name(t)} (${t.providerId ?? "unknown provider"}): its turns are refused until you switch the mode or replace it with a Claude Code thread.`);
       }
-      if (!this.deps.hookOwned()) problems.push("Chat memory's turn hook is still held by another plugin (Initiatives before T145): OptChat messages are held, then refused, until that plugin is reloaded.");
-      if (this.legacyProvider) problems.push(`${LEGACY_PROVIDER} OptChat turns are refused until then.`);
     }
-    for (const t of current) if (t.compactError !== null) problems.push(`Compacting ${name(t)} failed: ${t.compactError}. It is tried again after its next turns.`);
+    for (const t of threads) if (t.compactError !== null) problems.push(`Compacting ${name(t)} failed: ${t.compactError}. It is tried again after its next turns.`);
     const failed = builder?.failedLines() ?? [];
     if (failed.length)
       problems.push(`${failed.length} memory line${failed.length === 1 ? "" : "s"} could not be summarized (${failed[0]!.line}: ${failed[0]!.error}); tried again within 30 minutes. Until then, OptChat turns that need them fail.`);
@@ -755,35 +609,29 @@ export class ChatMemory {
    * How a thread's next turn runs, asked before each new turn (TURN_CONTEXT_TOOL). One path per
    * mode (D459): regular and hybrid answer no session, so the thread's own goes on; optchat answers
    * a fresh session whose system prompt ends with the view's older lines and whose first message
-   * holds its newest lines, the time and the message. An OptChat turn that cannot get its view
-   * throws (D458): the provider fails the turn visibly and keeps its input, never runs it in the
-   * old session. It waits at most TURN_WAIT_MS for its membership, for the log to catch up with it
-   * and for every earlier message to be summarized (gist §6), and tries a failed read at most
-   * TURN_READ_ATTEMPTS times. A turn stopped meanwhile (signal) stops waiting for its summaries.
+   * holds its newest lines, the time and the message.
+   *
+   * An OptChat turn first copies the thread's own completed turns (the previous one, and any whose
+   * idle a reload missed), then views the scope the thread writes to then: everything logged is
+   * history, since the log holds completed turns only and this one has not started. The newest
+   * messages without a summary are shown whole up to WHOLE_BYTES; it waits for the summaries of
+   * every message before those (D487). A turn that cannot get its view throws (D458): the provider
+   * fails it visibly and keeps its input. It waits at most TURN_WAIT_MS, tries a failed read at
+   * most TURN_READ_ATTEMPTS times, and stops waiting once the turn is stopped (signal).
    */
   async turnContext(threadId: string, ask: TurnAsk, signal?: AbortSignal): Promise<TurnAnswer> {
-    const deadline = this.store.now() + this.waits.turn[ask.protocol];
-    const fail = (why: string) => new MemoryError(`OptChat memory unavailable for this turn: ${why}. The message was not sent; send it again, or switch this thread's memory mode.`);
-    if (ask.protocol === 3) this.legacyProvider = true;
-    const scope = await this.scopeForTurn(threadId, deadline, fail);
-    if (!scope) return {};
-    // While a reload stops this instance the store is closed: the answer is the same.
-    if (!this.store.isClosed) this.store.asked(scope.id, threadId, ask.protocol);
-    if (scope.mode !== "optchat") return {};
-    if (ask.protocol === 3) throw fail("BB's Claude Code provider is older than protocol 4 (restart BB to run the new one)");
-    if (this.store.isClosed) throw fail("Chat memory is closed: the plugin stopped");
+    const deadline = this.store.now() + this.waits.turn;
+    const fail = (why: string) => new MemoryError(`${UNAVAILABLE}: ${why}. The message was not sent; send it again, or switch this thread's memory mode.`);
+    if (this.store.scopeOf(threadId)?.mode !== "optchat") return {};
     try {
-      const request = await this.attempts(() => this.findRequest(threadId, ask.requestId), deadline, fail, "the turn's request could not be read");
-      if (!request) throw fail(`its request ${ask.requestId} is not among the thread's last ${REQUEST_PAGE * REQUEST_PAGES} requests`);
-      // A retry re-submits a request that is logged already: the view ends before the original.
-      const originalId = typeof request.data?.retryOfRequestId === "string" ? request.data.retryOfRequestId : null;
-      const original = originalId === null ? null : await this.attempts(() => this.findRequest(threadId, originalId), deadline, fail, `the original of retried request ${ask.requestId} could not be read`);
-      if (originalId !== null && !original) throw fail(`the original ${originalId} of its retried request is not among the thread's last ${REQUEST_PAGE * REQUEST_PAGES} requests`);
-      await this.catchUp(scope.id, threadId, request.seq, deadline, fail);
-      const cut = this.store.firstFrom(scope.id, threadId, (original ?? request).seq) ?? this.store.count(scope.id);
-      await this.waitSummarized(scope.id, cut, deadline, fail, signal);
+      await this.attempts(() => this.caughtUp(threadId, fail), deadline, fail, signal, "its last turn could not be read");
+      // A move meanwhile (D491): the view is that of the scope it writes to now.
+      const scope = this.store.scopeOf(threadId);
+      if (scope?.mode !== "optchat") return {};
+      const cut = this.store.count(scope.id);
+      await this.waitSummarized(scope.id, this.store.tailStart(scope.id, cut, WHOLE_BYTES), deadline, fail, signal);
       const { nodes, views } = this.tree(scope.id);
-      const view = turnView({ chat: views.chat, fed: views.fed, nodes, cut, frozen: this.frozen.get(threadId) ?? null });
+      const view = turnView({ chat: views.chat, fed: views.fed, nodes, cut, frozen: this.frozen.get(threadId) ?? null, message: (i) => this.store.message(scope.id, i) });
       this.frozen.set(threadId, view.frozen);
       return { session: "fresh", sessionId: randomUUID(), systemPrompt: turnSystem(view.frozenLines), input: turnMessage(this.store.now(), ask.input, view.tailLines) };
     } catch (error) {
@@ -791,81 +639,37 @@ export class ChatMemory {
     }
   }
 
-  /**
-   * The scope a turn's thread is current in, or null when it is in none (D458: told apart from a
-   * membership still to come). An owner plugin's top-level thread whose metadata names a scope (a
-   * new Initiative coordinator) may ask before its owner's registration lands: in an OptChat scope
-   * it waits for it until the turn's deadline, then fails; in any other mode its session goes on.
-   * A thread that was in that scope and left it is in none. Failed reads are tried again, then fail.
-   */
-  private async scopeForTurn(threadId: string, deadline: number, fail: (why: string) => Error) {
-    const current = this.store.currentScopeOf(threadId);
-    if (current) return current;
-    const facts = await this.attempts(() => this.threadFacts(threadId), deadline, fail, "the thread could not be read");
-    if (!facts || facts.parentThreadId !== null || !facts.originPluginId || !this.store.ownsScopes(facts.originPluginId)) return null;
-    const origin = facts.originPluginId;
-    const expected = await this.attempts(() => this.expectedScope(threadId, origin), deadline, fail, `the ${origin} plugin's metadata on the thread could not be read`);
-    if (this.joining(threadId, expected)?.mode !== "optchat") return null;
-    while (this.store.now() < deadline && !this.disposed) {
-      await new Promise((resolve) => setTimeout(resolve, MEMBERSHIP_POLL_MS));
-      const joined = this.store.currentScopeOf(threadId);
-      if (joined) return joined;
-    }
-    throw fail(`the ${origin} plugin has not added it to its memory yet`);
+  /** One copy of the thread that started after this call, settled. */
+  private async caughtUp(threadId: string, fail: (why: string) => Error) {
+    const run = this.kick(threadId);
+    if (!run) throw fail("Chat memory is stopping");
+    await run.done;
+    if (run.error) throw run.error;
   }
 
-  ownsScopes(pluginId: string) {
-    return this.store.ownsScopes(pluginId);
-  }
-
-  /** `work`, tried again after a failure at most TURN_READ_ATTEMPTS times in all, before the deadline; then the turn fails, saying `what`. */
-  private async attempts<T>(work: () => Promise<T>, deadline: number, fail: (why: string) => Error, what: string): Promise<T> {
+  /** `work`, tried again after a failure at most TURN_READ_ATTEMPTS times in all, before the deadline and while the turn runs; then the turn fails, saying `what`. */
+  private async attempts(work: () => Promise<void>, deadline: number, fail: (why: string) => Error, signal: AbortSignal | undefined, what: string) {
     for (let attempt = 1; ; attempt++) {
       try {
-        const result = await within(work(), deadline - this.store.now());
+        const result = await within(work(), deadline - this.store.now(), signal);
+        if (result === "stopped") throw fail("the turn stopped");
         if (!result) throw fail(`${what} in time`);
-        return result.value;
+        return;
       } catch (error) {
-        if (error instanceof MemoryError || attempt >= TURN_READ_ATTEMPTS || this.store.now() + CATCH_UP_PAUSE_MS >= deadline) {
+        if (error instanceof MemoryError || attempt >= TURN_READ_ATTEMPTS || this.store.now() + RETRY_PAUSE_MS >= deadline) {
           throw error instanceof MemoryError ? error : fail(`${what} (${errorMessage(error)})`);
         }
-        await new Promise((resolve) => setTimeout(resolve, CATCH_UP_PAUSE_MS));
+        await new Promise((resolve) => setTimeout(resolve, RETRY_PAUSE_MS));
       }
     }
   }
 
-  /** The thread's client/turn/requested event for `requestId`, newest first, a few pages at most; null if not there. */
-  private async findRequest(threadId: string, requestId: string) {
-    let before: number | null = null;
-    for (let page = 0; page < REQUEST_PAGES; page++) {
-      const rows = await this.deps.list({ threadId, types: ["client/turn/requested"], order: "desc", limit: String(REQUEST_PAGE), ...(before === null ? {} : { beforeSeq: String(before) }) });
-      const request = rows.find((row) => row.data?.requestId === requestId);
-      if (request) return request;
-      if (rows.length < REQUEST_PAGE) return null;
-      before = Math.min(...rows.map((row) => row.seq));
-    }
-    return null;
-  }
-
-  /** Read the log through the turn's request (`seq`) before the deadline, retrying a failed read at most TURN_READ_ATTEMPTS times. */
-  private async catchUp(scopeId: string, threadId: string, seq: number, deadline: number, fail: (why: string) => Error) {
-    for (let failures = 0; ; ) {
-      if ((this.store.member(scopeId, threadId)?.lastSeq ?? -1) >= seq) return;
-      const run = this.kick(scopeId);
-      if (!run) throw fail("the memory is closed");
-      if (!(await within(run.done, deadline - this.store.now()))) throw fail("its log did not catch up with it in time");
-      if (run.error && ++failures >= TURN_READ_ATTEMPTS) throw fail(`reading the thread failed ${failures} times (${errorMessage(run.error)})`);
-      // BB has not served the request's events yet: read again shortly, not at once.
-      if ((this.store.member(scopeId, threadId)?.lastSeq ?? -1) < seq) await new Promise((resolve) => setTimeout(resolve, CATCH_UP_PAUSE_MS));
-    }
-  }
-
   /**
-   * Wait until messages 0..count-1 have their line, before the deadline (gist §6), unless the turn
-   * stops; their calls go first meanwhile (W315).
+   * Wait until messages 0..count-1 have their line, before the deadline, unless the turn stops;
+   * their calls go first meanwhile (W315).
    */
   private async waitSummarized(scopeId: string, count: number, deadline: number, fail: (why: string) => Error, signal?: AbortSignal) {
-    if (this.disposed || !this.building(scopeId)) throw fail("the memory is closed");
+    if (this.disposed) throw fail("Chat memory is stopping");
     if (signal?.aborted) throw fail("the turn stopped");
     this.build(scopeId);
     const builder = this.builder(scopeId);
@@ -879,9 +683,7 @@ export class ChatMemory {
     if (failure) throw failure;
     const release = builder.need(count, deadline);
     let unsubscribe = () => {};
-    let unlink: Disposable | undefined;
     const done = new Promise<boolean | Error>((resolve) => {
-      unlink = signal && addAbortListener(signal, () => resolve(fail("the turn stopped")));
       unsubscribe = builder.onBuilt(() => {
         if (builder.closed) resolve(false);
         else if (builder.summarized(count)) resolve(true);
@@ -891,24 +693,39 @@ export class ChatMemory {
         }
       });
     });
-    const settled = await within(done, deadline - this.store.now()).finally(() => (unsubscribe(), unlink?.[Symbol.dispose](), release()));
+    const settled = await within(done, deadline - this.store.now(), signal).finally(() => (unsubscribe(), release()));
+    if (settled === "stopped") throw fail("the turn stopped");
     if (settled?.value === true) return;
     if (settled?.value instanceof Error) throw settled.value;
-    if (settled?.value === false) throw fail("the memory closed");
+    if (settled?.value === false) throw fail("Chat memory is stopping");
     const status = builder.status;
     const why = status.state === "backoff" ? `the summarizer is rate-limited (${status.detail})` : status.state === "unavailable" ? `the summarizer is unavailable (${status.detail})` : "the summarizer is still writing them";
     throw fail(`${builder.unsummarized(count)} earlier messages have no summary yet: ${why}`);
   }
 }
 
-/** The promise's value once it settles, or null once `ms` have passed. */
-async function within<T>(promise: Promise<T>, ms: number): Promise<{ value: T } | null> {
+/** The promise's value once it settles; null once `ms` have passed; "stopped" once the signal aborts. */
+async function within<T>(promise: Promise<T>, ms: number, signal?: AbortSignal): Promise<{ value: T } | null | "stopped"> {
+  if (signal?.aborted) return "stopped";
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let unlink: Disposable | undefined;
   try {
-    return await Promise.race([promise.then((value) => ({ value })), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), Math.max(0, ms))))]);
+    return await Promise.race([
+      promise.then((value) => ({ value })),
+      new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), Math.max(0, ms)))),
+      new Promise<"stopped">((resolve) => (unlink = signal && addAbortListener(signal, () => resolve("stopped")))),
+    ]);
   } finally {
     clearTimeout(timer);
+    unlink?.[Symbol.dispose]();
   }
+}
+
+/** The promise's value, or a rejection once the signal aborts; the promise itself is left to settle. */
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  let unlink: Disposable | undefined;
+  const aborted = new Promise<never>((_, reject) => (unlink = addAbortListener(signal, () => reject(signal.reason))));
+  return Promise.race([promise, aborted]).finally(() => unlink?.[Symbol.dispose]());
 }
 
 /** A sending thread as "[name] …" shows it: its title, short, or its id. */
@@ -916,22 +733,6 @@ const senderName = (facts: ThreadFacts | null, id: string) => {
   const title = facts?.title?.trim();
   return title ? (title.length > 48 ? `${title.slice(0, 47)}…` : title) : id;
 };
-
-/** Several threads' entries, each in its own order, merged oldest first (ties keep thread order). */
-export function mergeByTime(runs: readonly LogEntry[][]): LogEntry[] {
-  if (runs.length <= 1) return runs[0] ?? [];
-  const at = runs.map(() => 0);
-  const merged: LogEntry[] = [];
-  for (;;) {
-    let best = -1;
-    for (let k = 0; k < runs.length; k++) {
-      const next = runs[k]![at[k]!];
-      if (next && (best < 0 || next.at < runs[best]![at[best]!]!.at)) best = k;
-    }
-    if (best < 0) return merged;
-    merged.push(runs[best]![at[best]!++]!);
-  }
-}
 
 /** A stable prompt-cache session per scope, shaped like the UUID Codex sends. */
 export function cacheKey(scopeId: string) {

@@ -23,11 +23,21 @@ export const MIGRATIONS = [
   `CREATE TABLE nodes (scope TEXT NOT NULL, l INTEGER NOT NULL, i INTEGER NOT NULL, text TEXT NOT NULL, how TEXT NOT NULL, tries INTEGER NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (scope, l, i))`,
   `CREATE TABLE trees (scope TEXT PRIMARY KEY, views TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0, tries INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, call_ms INTEGER NOT NULL DEFAULT 0, log_bytes INTEGER NOT NULL DEFAULT 0, nodes INTEGER NOT NULL DEFAULT 0, fallbacks INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)`,
   `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // T153 (D487, D491): one row per thread replaces members (no longer read) and hold (no longer
+  // read): the scope it writes to now (null: none) and the cursor of its BB events, plus its
+  // compaction bookkeeping. A thread keeps the scope it is current in, else its latest one; a
+  // personal memory the user turned off (not current) stays off. Its cursor is the furthest any of
+  // its memberships read, so nothing it logged anywhere is logged again.
+  `CREATE TABLE threads (thread_id TEXT PRIMARY KEY, scope TEXT, cursor INTEGER NOT NULL DEFAULT 0, compacted_seq INTEGER, compact_tries INTEGER NOT NULL DEFAULT 0, compact_tried_at INTEGER, compact_error TEXT, compacted_at INTEGER)`,
+  `CREATE INDEX threads_scope ON threads (scope)`,
+  `INSERT OR IGNORE INTO threads (thread_id, scope, cursor, compacted_seq, compact_tries, compact_tried_at, compact_error, compacted_at)
+     SELECT m.thread_id, CASE WHEN m.state = 'current' OR m.scope NOT LIKE 'chat-memory:%' THEN m.scope END,
+       (SELECT MAX(last_seq) FROM members WHERE thread_id = m.thread_id), m.compacted_seq, m.compact_tries, m.compact_tried_at, m.compact_error, m.compacted_at
+     FROM members m ORDER BY CASE m.state WHEN 'current' THEN 0 ELSE 1 END, m.joined_at DESC`,
 ];
 
 export const MEMORY_MODES = ["regular", "hybrid", "optchat"] as const;
 export type MemoryMode = (typeof MEMORY_MODES)[number];
-export type MemberState = "current" | "retired" | "done";
 
 export interface Scope {
   id: string;
@@ -35,17 +45,14 @@ export interface Scope {
   mode: MemoryMode;
   /** The scope's own compaction limit; null follows the setting for its mode. */
   compactTokens: number | null;
-  /** Its owner holds automatic compaction (a paused Initiative). */
-  hold: boolean;
 }
-export interface Member {
-  scope: string;
+/** A thread chat memory has met: the memory it writes to now, and how far its BB events are logged. */
+export interface MemoryThread {
   threadId: string;
-  state: MemberState;
-  lastSeq: number;
-  /** Its last turn that asked for its turn context, and the provider's protocol then. */
-  askedAt: number | null;
-  askedProtocol: number | null;
+  /** The scope its next completed turns go to; null once detached (its cursor stays). */
+  scope: string | null;
+  /** Its last BB event sequence logged: the end of its last completed turn copied. */
+  cursor: number;
   compactedSeq: number | null;
   compactTries: number;
   compactTriedAt: number | null;
@@ -82,15 +89,11 @@ const scope = (row: Row): Scope => ({
   owner: String(row.owner),
   mode: (MEMORY_MODES as readonly string[]).includes(String(row.mode)) ? (row.mode as MemoryMode) : "regular",
   compactTokens: row.compact_tokens == null ? null : Number(row.compact_tokens),
-  hold: Number(row.hold) === 1,
 });
-const member = (row: Row): Member => ({
-  scope: String(row.scope),
+const thread = (row: Row): MemoryThread => ({
   threadId: String(row.thread_id),
-  state: row.state as MemberState,
-  lastSeq: Number(row.last_seq),
-  askedAt: row.asked_at == null ? null : Number(row.asked_at),
-  askedProtocol: row.asked_protocol == null ? null : Number(row.asked_protocol),
+  scope: (row.scope as string | null) ?? null,
+  cursor: Number(row.cursor),
   compactedSeq: row.compacted_seq == null ? null : Number(row.compacted_seq),
   compactTries: Number(row.compact_tries ?? 0),
   compactTriedAt: row.compact_tried_at == null ? null : Number(row.compact_tried_at),
@@ -101,84 +104,26 @@ const member = (row: Row): Member => ({
 /** compacted_seq when reading the thread's context size failed: no snapshot is known. */
 export const READ_FAILED = -1;
 
-/**
- * The plugin's tables, on its one connection. The store is also the memory's lifetime: BB closes
- * the database when the plugin stops, so after close() every access throws here, before reaching
- * it. A background continuation that outlives its service fails like an abort.
- */
+/** The plugin's tables, on its one connection (BB closes it when the plugin stops). */
 export class MemoryStore {
-  private closed = false;
   private statements = new Map<string, Database.Statement>();
-  /** The current members as close() left them: what configure, the turn gate and the hook read while a reload disposes this instance. */
-  private lastCurrent: { scopes: Map<string, Scope>; members: Map<string, Member>; owners: Set<string> } | null = null;
   constructor(readonly handle: Database.Database, readonly now: () => number = Date.now) {}
 
-  close() {
-    if (!this.closed) {
-      try {
-        const rows = this.handle.prepare(`SELECT s.*, m.* FROM scopes s JOIN members m ON m.scope = s.id WHERE m.state = 'current'`).all() as Row[];
-        this.lastCurrent = {
-          scopes: new Map(rows.map((r) => [String(r.thread_id), scope(r)])),
-          members: new Map(rows.map((r) => [String(r.thread_id), member(r)])),
-          owners: new Set(this.handle.prepare(`SELECT DISTINCT owner FROM scopes`).pluck().all() as string[]),
-        };
-      } catch {
-        // BB closed the database first: reads throw like every other access.
-        this.lastCurrent = null;
-      }
-    }
-    this.closed = true;
-  }
-  open() {
-    this.closed = false;
-    this.lastCurrent = null;
-  }
-  get isClosed() {
-    return this.closed;
-  }
-  private get db() {
-    if (this.closed) throw new Error("Chat memory is closed: the plugin stopped.");
-    return this.handle;
-  }
   /** A prepared statement, prepared once. */
   private sql(sql: string) {
-    const db = this.db;
     let statement = this.statements.get(sql);
-    if (!statement) this.statements.set(sql, (statement = db.prepare(sql)));
+    if (!statement) this.statements.set(sql, (statement = this.handle.prepare(sql)));
     return statement;
   }
   transaction<T>(work: () => T): T {
-    return this.db.transaction(work)();
+    return this.handle.transaction(work)();
   }
 
-  meta(key: string) {
-    return (this.sql(`SELECT value FROM meta WHERE key = ?`).pluck().get(key) as string | undefined) ?? null;
-  }
-  setMeta(key: string, value: string) {
-    this.sql(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`).run(key, value);
-  }
-
-  // Scopes and members --------------------------------------------------------------------
+  // Scopes and threads --------------------------------------------------------------------
 
   scope(id: string): Scope | null {
     const row = this.sql(`SELECT * FROM scopes WHERE id = ?`).get(id) as Row | undefined;
     return row ? scope(row) : null;
-  }
-  /** Scopes with a current thread: the ones that log and build. */
-  openScopes(): Scope[] {
-    return (this.sql(`SELECT * FROM scopes WHERE id IN (SELECT scope FROM members WHERE state = 'current') ORDER BY created_at, id`).all() as Row[]).map(scope);
-  }
-  /** Scopes with a thread still to read: current ones, and retired ones not yet quiet. */
-  readingScopes(): Scope[] {
-    return (this.sql(`SELECT * FROM scopes WHERE id IN (SELECT scope FROM members WHERE state != 'done') ORDER BY created_at, id`).all() as Row[]).map(scope);
-  }
-  ownsScopes(owner: string) {
-    if (this.closed && this.lastCurrent) return this.lastCurrent.owners.has(owner);
-    return this.sql(`SELECT 1 FROM scopes WHERE owner = ? LIMIT 1`).get(owner) !== undefined;
-  }
-  /** The scopes still reading a thread: it is current there, or retired and not yet quiet. */
-  scopesReading(threadId: string): string[] {
-    return this.sql(`SELECT scope FROM members WHERE thread_id = ? AND state != 'done'`).pluck().all(threadId) as string[];
   }
   ensureScope(id: string, owner: string) {
     const now = this.now();
@@ -187,68 +132,57 @@ export class MemoryStore {
   saveSettings(id: string, settings: Pick<Scope, "mode" | "compactTokens">) {
     this.sql(`UPDATE scopes SET mode = ?, compact_tokens = ?, updated_at = ? WHERE id = ?`).run(settings.mode, settings.compactTokens, this.now(), id);
   }
-  setHold(id: string, hold: boolean) {
-    this.sql(`UPDATE scopes SET hold = ? WHERE id = ? AND hold != ?`).run(hold ? 1 : 0, id, hold ? 1 : 0);
+  thread(threadId: string): MemoryThread | null {
+    const row = this.sql(`SELECT * FROM threads WHERE thread_id = ?`).get(threadId) as Row | undefined;
+    return row ? thread(row) : null;
   }
-  /** The scope a thread is a current member of, if any (a thread is current in one scope at most). Once closed, as close() left it. */
-  currentScopeOf(threadId: string): Scope | null {
-    if (this.closed && this.lastCurrent) return this.lastCurrent.scopes.get(threadId) ?? null;
-    const row = this.sql(`SELECT s.* FROM scopes s JOIN members m ON m.scope = s.id WHERE m.thread_id = ? AND m.state = 'current'`).get(threadId) as Row | undefined;
+  /** The scope a thread writes to now, if any. */
+  scopeOf(threadId: string): Scope | null {
+    const row = this.sql(`SELECT s.* FROM scopes s JOIN threads t ON t.scope = s.id WHERE t.thread_id = ?`).get(threadId) as Row | undefined;
     return row ? scope(row) : null;
   }
-  members(scopeId: string): Member[] {
-    return (this.sql(`SELECT * FROM members WHERE scope = ? ORDER BY joined_at, rowid`).all(scopeId) as Row[]).map(member);
+  /** The threads that write to a scope, in the order they were first met. */
+  threadsOf(scopeId: string): MemoryThread[] {
+    return (this.sql(`SELECT * FROM threads WHERE scope = ? ORDER BY rowid`).all(scopeId) as Row[]).map(thread);
   }
-  member(scopeId: string, threadId: string): Member | null {
-    if (this.closed && this.lastCurrent) {
-      const m = this.lastCurrent.members.get(threadId);
-      return m?.scope === scopeId ? m : null;
-    }
-    const row = this.sql(`SELECT * FROM members WHERE scope = ? AND thread_id = ?`).get(scopeId, threadId) as Row | undefined;
-    return row ? member(row) : null;
+  /** Every thread that writes to a scope. */
+  attachedThreads(): MemoryThread[] {
+    return (this.sql(`SELECT * FROM threads WHERE scope IS NOT NULL ORDER BY rowid`).all() as Row[]).map(thread);
   }
   /**
-   * The owner's current threads, in order: each listed thread is current here (and retired from any
-   * other scope it was current in); a current thread no longer listed is retired. A thread joins
-   * with its log read from its start. Returns the threads that were not current here before.
+   * D491: the thread writes to `scopeId` from its next completed turn on (null: to none). One write;
+   * its cursor stays, so what it logged stays where it is and nothing is logged twice. A thread met
+   * for the first time starts from its first event.
    */
-  setMembers(scopeId: string, threadIds: readonly string[]): string[] {
-    return this.transaction(() => {
-      const now = this.now();
-      const before = new Set(this.sql(`SELECT thread_id FROM members WHERE scope = ? AND state = 'current'`).pluck().all(scopeId) as string[]);
-      this.sql(`UPDATE members SET state = 'retired' WHERE scope = ? AND state = 'current'`).run(scopeId);
-      for (const [k, threadId] of threadIds.entries()) {
-        this.sql(`UPDATE members SET state = 'retired' WHERE thread_id = ? AND scope != ? AND state = 'current'`).run(threadId, scopeId);
-        this.sql(`INSERT INTO members (scope, thread_id, state, joined_at) VALUES (?, ?, 'current', ?) ON CONFLICT (scope, thread_id) DO UPDATE SET state = 'current'`)
-          .run(scopeId, threadId, now + k);
-      }
-      return threadIds.filter((threadId) => !before.has(threadId));
-    });
+  attach(threadId: string, scopeId: string | null) {
+    this.sql(`INSERT INTO threads (thread_id, scope) VALUES (?, ?) ON CONFLICT (thread_id) DO UPDATE SET scope = excluded.scope`).run(threadId, scopeId);
   }
-  finishMember(scopeId: string, threadId: string) {
-    this.sql(`UPDATE members SET state = 'done' WHERE scope = ? AND thread_id = ? AND state = 'retired'`).run(scopeId, threadId);
+  /** attach, for a thread chat memory has never met: one it met keeps what it has (a detach stands). */
+  attachNew(threadId: string, scopeId: string) {
+    this.sql(`INSERT OR IGNORE INTO threads (thread_id, scope) VALUES (?, ?)`).run(threadId, scopeId);
   }
-  asked(scopeId: string, threadId: string, protocol: number) {
-    this.sql(`UPDATE members SET asked_at = ?, asked_protocol = ? WHERE scope = ? AND thread_id = ?`).run(this.now(), protocol, scopeId, threadId);
+  /** BB no longer has the thread. */
+  forget(threadId: string) {
+    this.sql(`DELETE FROM threads WHERE thread_id = ?`).run(threadId);
   }
   /** A compaction of snapshot `seq` starts: the first try of a new snapshot, or one more. */
-  compactTry(scopeId: string, threadId: string, seq: number) {
-    this.sql(`UPDATE members SET compact_tries = CASE WHEN compacted_seq = ? THEN compact_tries + 1 ELSE 1 END, compacted_seq = ?, compact_tried_at = ? WHERE scope = ? AND thread_id = ?`)
-      .run(seq, seq, this.now(), scopeId, threadId);
+  compactTry(threadId: string, seq: number) {
+    this.sql(`UPDATE threads SET compact_tries = CASE WHEN compacted_seq = ? THEN compact_tries + 1 ELSE 1 END, compacted_seq = ?, compact_tried_at = ? WHERE thread_id = ?`)
+      .run(seq, seq, this.now(), threadId);
   }
-  compactDone(scopeId: string, threadId: string) {
-    this.sql(`UPDATE members SET compacted_at = ?, compact_error = NULL WHERE scope = ? AND thread_id = ?`).run(this.now(), scopeId, threadId);
+  compactDone(threadId: string) {
+    this.sql(`UPDATE threads SET compacted_at = ?, compact_error = NULL WHERE thread_id = ?`).run(this.now(), threadId);
   }
-  compactFailed(scopeId: string, threadId: string, error: string) {
-    this.sql(`UPDATE members SET compact_error = ? WHERE scope = ? AND thread_id = ?`).run(error, scopeId, threadId);
+  compactFailed(threadId: string, error: string) {
+    this.sql(`UPDATE threads SET compact_error = ? WHERE thread_id = ?`).run(error, threadId);
   }
   /** Its context size was read again after reads failed: that failure is over. Whether it was. */
-  compactReadRecovered(scopeId: string, threadId: string) {
-    return this.sql(`UPDATE members SET compacted_seq = NULL, compact_tries = 0, compact_error = NULL WHERE scope = ? AND thread_id = ? AND compacted_seq = ?`).run(scopeId, threadId, READ_FAILED).changes > 0;
+  compactReadRecovered(threadId: string) {
+    return this.sql(`UPDATE threads SET compacted_seq = NULL, compact_tries = 0, compact_error = NULL WHERE thread_id = ? AND compacted_seq = ?`).run(threadId, READ_FAILED).changes > 0;
   }
-  /** Current members whose last compaction failed, fewer than `tries` times: the sweep tries them again (compaction decides when). */
-  compactFailures(tries: number): Array<{ scope: string; threadId: string }> {
-    return (this.sql(`SELECT scope, thread_id FROM members WHERE state = 'current' AND compact_error IS NOT NULL AND compact_tries < ?`).all(tries) as Row[]).map((r) => ({ scope: String(r.scope), threadId: String(r.thread_id) }));
+  /** Attached threads whose last compaction failed, fewer than `tries` times: the sweep tries them again (compaction decides when). */
+  compactFailures(tries: number): string[] {
+    return this.sql(`SELECT thread_id FROM threads WHERE scope IS NOT NULL AND compact_error IS NOT NULL AND compact_tries < ?`).pluck().all(tries) as string[];
   }
 
   // The log --------------------------------------------------------------------------
@@ -263,35 +197,41 @@ export class MemoryStore {
   messages(scopeId: string, from = 0, to = Number.MAX_SAFE_INTEGER): MemoryMessage[] {
     return (this.sql(`SELECT * FROM log WHERE scope = ? AND i >= ? AND i < ? ORDER BY i`).all(scopeId, from, to) as Row[]).map(message);
   }
-  /**
-   * The first of the log's last `within` messages logged from a thread's event `seq` or later:
-   * where a turn's new message begins (it is at the log's end, so the scan stays short).
-   */
-  firstFrom(scopeId: string, threadId: string, seq: number, within = 1000): number | null {
-    const from = Math.max(0, this.count(scopeId) - within);
-    const i = this.sql(`SELECT MIN(i) FROM log WHERE scope = ? AND i >= ? AND thread_id = ? AND seq >= ?`).pluck().get(scopeId, from, threadId, seq);
-    return i == null ? null : Number(i);
+  /** Where the messages before `cut` that fit in `budget` bytes together begin, counting back from `cut`. */
+  tailStart(scopeId: string, cut: number, budget: number) {
+    let start = cut;
+    let total = 0;
+    for (const row of this.sql(`SELECT i, size FROM log WHERE scope = ? AND i < ? ORDER BY i DESC`).iterate(scopeId, cut) as IterableIterator<Row>) {
+      total += Number(row.size);
+      if (total > budget) break;
+      start = Number(row.i);
+    }
+    return start;
   }
   /**
-   * Append one read of a scope's threads and move each thread's cursor, in one transaction: a
-   * message is logged exactly once.
+   * D487: append a thread's completed turns, read through event `through`, to the scope it writes
+   * to now, and move its cursor there, in one transaction. What the cursor has passed meanwhile is
+   * left out, so a message is logged exactly once. Null, and nothing moves, once it writes to none.
    */
-  append(scopeId: string, entries: readonly LogEntry[], through: ReadonlyMap<string, number>) {
-    this.transaction(() => {
-      let i = this.count(scopeId);
+  append(threadId: string, entries: readonly LogEntry[], through: number): { scope: string; appended: number } | null {
+    return this.transaction(() => {
+      const t = this.thread(threadId);
+      if (!t?.scope) return null;
+      let i = this.count(t.scope);
       let size = 0;
       const insert = this.sql(`INSERT INTO log (scope, i, kind, text, size, at, thread_id, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-      for (const entry of entries) {
+      const fresh = entries.filter((e) => (e.seq ?? 0) > t.cursor);
+      for (const entry of fresh) {
         const m = withSize(entry, i++);
-        insert.run(scopeId, m.i, m.kind, m.text, m.size, m.at, m.threadId, m.seq);
+        insert.run(t.scope, m.i, m.kind, m.text, m.size, m.at, m.threadId, m.seq);
         size += m.size;
       }
       if (size) {
-        this.ensureTree(scopeId);
-        this.sql(`UPDATE trees SET log_bytes = log_bytes + ? WHERE scope = ?`).run(size, scopeId);
+        this.ensureTree(t.scope);
+        this.sql(`UPDATE trees SET log_bytes = log_bytes + ? WHERE scope = ?`).run(size, t.scope);
       }
-      for (const [threadId, seq] of through)
-        this.sql(`UPDATE members SET last_seq = ? WHERE scope = ? AND thread_id = ? AND last_seq < ?`).run(seq, scopeId, threadId, seq);
+      this.sql(`UPDATE threads SET cursor = ? WHERE thread_id = ? AND cursor < ?`).run(through, threadId, through);
+      return { scope: t.scope, appended: fresh.length };
     });
   }
 

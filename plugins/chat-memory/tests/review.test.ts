@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { TreeBuilder, type NodeHow, type TreeStore } from "../lib/builder";
 import type { ListEvents } from "../lib/ingest";
-import { ChatMemory, mergeByTime } from "../lib/memory";
+import { ChatMemory } from "../lib/memory";
 import { DEFAULT_SETTINGS } from "../lib/settings";
 import { MIGRATIONS, MemoryStore } from "../lib/store";
 import type { Summarizer, SummarizerResult } from "../lib/summarizer";
@@ -21,6 +21,7 @@ const gate = () => {
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 type Event = Awaited<ReturnType<ListEvents>>[number];
 const turn = (seq: number, text: string): Event => ({ seq, type: "client/turn/requested", createdAt: seq, data: { initiator: "user", source: "tell", input: [{ type: "text", text }] } });
+const completed = (seq: number): Event => ({ seq, type: "turn/completed", createdAt: seq, data: { status: "completed" } });
 /** A list over fixed events per thread, as BB pages them: per type, after a sequence, up to the limit. */
 const listing = (threads: Record<string, Event[]>): ListEvents => async (a) =>
   (threads[a.threadId] ?? [])
@@ -47,7 +48,7 @@ function watched<T extends object>(target: T, watch: { closed: boolean; touched:
 }
 
 const SCOPE = "test:s";
-function setup(list: ListEvents, options: { summarizer?: Summarizer; status?: (threadId: string) => Promise<string | null> } = {}) {
+function setup(list: ListEvents, options: { summarizer?: Summarizer } = {}) {
   const watch = { closed: false, touched: [] as string[] };
   const db = watched(new Database(":memory:"), watch);
   for (const sql of MIGRATIONS) db.exec(sql);
@@ -55,10 +56,7 @@ function setup(list: ListEvents, options: { summarizer?: Summarizer; status?: (t
   const memory = new ChatMemory({
     store,
     list,
-    thread: async () => ({ providerId: "claude-code", title: null, originPluginId: null, parentThreadId: null }),
-    ownerMetadata: async () => ({}),
-    hookOwned: () => true,
-    status: options.status ?? (async () => "idle"),
+    thread: async () => ({ providerId: "claude-code", title: null, originPluginId: null, archived: false }),
     settings: () => DEFAULT_SETTINGS,
     summarizer: options.summarizer ?? (async () => ok("summary")),
     log: () => {},
@@ -72,8 +70,8 @@ function setup(list: ListEvents, options: { summarizer?: Summarizer; status?: (t
 }
 const withLog = (memory: ChatMemory, texts: string[]) => {
   memory.store.ensureScope(SCOPE, "test");
-  memory.store.setMembers(SCOPE, ["current"]);
-  memory.store.append(SCOPE, texts.map((text, k) => ({ kind: "user", text, at: 1, threadId: "current", seq: k + 1 })), new Map([["current", texts.length]]));
+  memory.store.attach("current", SCOPE);
+  memory.store.append("current", texts.map((text, k) => ({ kind: "user", text, at: 1, threadId: "current", seq: k + 1 })), texts.length);
 };
 
 /** A builder's store in memory, counting the node texts it reads. */
@@ -100,9 +98,9 @@ const options = (summarize: Summarizer, concurrency = 8) => ({ summarize, instru
 describe("W225 shutdown: no store access after dispose (P1)", () => {
   it("drops an ingest whose page read completes after dispose", async () => {
     const hold = gate();
-    const { db, memory, store, stop, watch } = setup(async (a) => (await hold.promise, a.order === "desc" || a.types[0] === "client/turn/requested" ? [turn(1, "late")] : []));
+    const { db, memory, store, stop, watch } = setup(async () => (await hold.promise, [turn(1, "late"), completed(2)]));
     withLog(memory, []);
-    memory.kick(SCOPE);
+    memory.kick("current");
     await tick();
     stop();
     hold.release();
@@ -110,24 +108,7 @@ describe("W225 shutdown: no store access after dispose (P1)", () => {
     expect(watch.touched).toEqual([]);
     memory.start();
     expect(store.count(SCOPE)).toBe(0);
-    expect(store.member(SCOPE, "current")!.lastSeq).toBe(0);
-    db.close();
-  });
-
-  it("finishes no retired thread whose status read completes after dispose", async () => {
-    const hold = gate();
-    const { db, memory, store, stop, watch } = setup(listing({ old: [turn(1, "old")] }), { status: async () => (await hold.promise, "idle") });
-    store.ensureScope(SCOPE, "test");
-    store.setMembers(SCOPE, ["old"]);
-    store.setMembers(SCOPE, ["current"]);
-    memory.kick(SCOPE);
-    await tick();
-    stop();
-    hold.release();
-    await memory.settled();
-    expect(watch.touched).toEqual([]);
-    memory.start();
-    expect(store.members(SCOPE).map((m) => m.state)).toEqual(["retired", "current"]);
+    expect(store.thread("current")!.cursor).toBe(0);
     db.close();
   });
 
@@ -140,10 +121,7 @@ describe("W225 shutdown: no store access after dispose (P1)", () => {
     stop();
     hold.release();
     await memory.settled();
-    // Neither the call's record, nor its node, nor the requeue's check reaches the database,
-    // and the store itself refuses whatever else would.
-    expect(watch.touched).toEqual([]);
-    expect(() => store.count(SCOPE)).toThrow(/closed/);
+    // Neither the call's record, nor its node, nor the requeue's check reaches the database.
     expect(watch.touched).toEqual([]);
     memory.start();
     expect(store.totals(SCOPE)).toMatchObject({ calls: 0, nodes: 0 });
@@ -151,18 +129,18 @@ describe("W225 shutdown: no store access after dispose (P1)", () => {
     db.close();
   });
 
-  it("reads no pages once disposed while the boundary read was pending (P2)", async () => {
+  it("reads no further page once disposed while a page read was pending (P2)", async () => {
     const hold = gate();
     const calls: string[] = [];
     let disposed = false;
-    const list = listing({ current: [turn(1, "late")] });
+    const list = listing({ current: Array.from({ length: 300 }, (_, k) => (k % 2 ? completed(k + 1) : turn(k + 1, `t${k}`))) });
     const { db, memory, stop } = setup(async (a) => {
-      if (disposed) calls.push(`${a.order} ${a.types.join(",")}`);
-      if (a.order === "desc") await hold.promise;
+      if (disposed) calls.push(`${a.order} ${a.afterSeq}`);
+      else await hold.promise;
       return list(a);
     });
     withLog(memory, []);
-    memory.kick(SCOPE);
+    memory.kick("current");
     await tick();
     stop();
     disposed = true;
@@ -213,42 +191,6 @@ describe("W225 a bounded tree in memory (P1)", () => {
     expect(status.tree).toMatchObject({ nodes: 2000, fallbacks: 20 });
     expect(status.log.bytes).toBe(store.messages(SCOPE).reduce((sum, m) => sum + m.size, 0));
     expect(reads).toBeLessThanOrEqual(4);
-    db.close();
-  });
-});
-
-describe("W225 closed scopes: runs stay owned until settled (P2)", () => {
-  it("settles only once a stopped run's call returns, and a reopened scope builds after it", async () => {
-    const hold = gate();
-    let live = 0;
-    let most = 0;
-    const { db, memory } = setup(listing({}), {
-      summarizer: async () => {
-        most = Math.max(most, ++live);
-        await hold.promise;
-        live--;
-        return ok("summary");
-      },
-    });
-    withLog(memory, ["x".repeat(700), "y".repeat(700)]);
-    memory.build(SCOPE);
-    await tick();
-    expect(live).toBe(2);
-    // The owner closes the scope (an archived Initiative): its build stops at once.
-    memory.setScope("test", "s", []);
-    let settled = false;
-    const settling = memory.settled().then(() => (settled = true));
-    await tick();
-    expect(settled).toBe(false);
-    // Reopened while the stopped run still holds its calls: the next run waits for it.
-    memory.setScope("test", "s", ["current"]);
-    await tick();
-    expect(live).toBe(2);
-    hold.release();
-    await settling;
-    expect(live).toBe(0);
-    expect(most).toBe(2);
-    expect((await memory.status(SCOPE)).tree).toMatchObject({ nodes: 3, summarized: 2, state: "idle" });
     db.close();
   });
 });
@@ -305,12 +247,5 @@ describe("W225 builder edges (P2)", () => {
     hold.release();
     await run;
     expect(b.unsummarized(3)).toBe(0);
-  });
-});
-
-describe("T145 several threads' runs merge by time", () => {
-  it("keeps each thread's order and puts the earlier message first", () => {
-    const e = (threadId: string, at: number, text: string) => ({ kind: "user" as const, text, at, threadId, seq: at });
-    expect(mergeByTime([[e("a", 1, "a1"), e("a", 5, "a2")], [e("b", 3, "b1"), e("b", 3, "b2")]]).map((x) => x.text)).toEqual(["a1", "b1", "b2", "a2"]);
   });
 });

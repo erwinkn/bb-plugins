@@ -45,7 +45,9 @@ export interface EventRow {
   data?: Record<string, any>;
 }
 /** The event types the log reads. */
-export const LOG_EVENT_TYPES = ["client/turn/requested", "item/completed", "provider/unhandled", "turn/completed"] as const;
+export const LOG_EVENT_TYPES = ["client/turn/requested", "item/completed", "provider/error", "provider/unhandled", "turn/completed"] as const;
+/** How an OptChat turn that could not get its memory fails (D458); BB records it in the turn's provider/error. */
+export const UNAVAILABLE = "OptChat memory unavailable for this turn";
 /** T143: a stopped turn's mark, after whatever it had said, so later views know its reply was cut off. */
 export const STOPPED = "[bb] (stopped) This turn was stopped before it finished.";
 
@@ -75,7 +77,7 @@ export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts
   const d = row.data ?? {};
   if (row.type === "client/turn/requested") {
     const text = inputText(d.input).trim();
-    // A retry re-submits a request that is logged already.
+    // A retry re-submits a request that is logged already, or says "Please continue." after it.
     if (!text || d.retryOfRequestId) return [];
     if (d.initiator === "agent") {
       const sender = typeof d.senderThreadId === "string" ? facts.sender(d.senderThreadId) : "thread";
@@ -125,4 +127,31 @@ export function eventEntries(row: EventRow, threadId: string, facts: ThreadFacts
       return entry("tool", clip(`${type} ${JSON.stringify(rest)}`));
     }
   }
+}
+
+/**
+ * A thread's completed turns (readTurns: its rows end with a turn/completed) as log entries, in
+ * order. D502: the requests of a turn that failed with UNAVAILABLE, before any output, are left
+ * out: the turn never reached the model, and BB keeps the text for the user to send again. Any
+ * other failed turn keeps its requests, so after BB's automatic "Please continue." the memory
+ * still holds the question.
+ */
+export function turnEntries(rows: readonly EventRow[], threadId: string, facts: ThreadFacts): LogEntry[] {
+  const entries: LogEntry[] = [];
+  let turn: Array<{ request: boolean; entries: LogEntry[] }> = [];
+  let unavailable = false;
+  for (const row of rows) {
+    const logged = eventEntries(row, threadId, facts);
+    if (row.type === "provider/error" && String(row.data?.detail ?? "").includes(UNAVAILABLE)) unavailable = true;
+    if (row.type !== "turn/completed") {
+      turn.push({ request: row.type === "client/turn/requested", entries: logged });
+      continue;
+    }
+    const unsent = unavailable && row.data?.status === "failed" && !turn.some((t) => !t.request && t.entries.length);
+    for (const t of turn) if (!(unsent && t.request)) entries.push(...t.entries);
+    entries.push(...logged);
+    turn = [];
+    unavailable = false;
+  }
+  return entries.flatMap(splitEntry);
 }

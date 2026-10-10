@@ -53,26 +53,24 @@ describe("W315 urgent calls go first", () => {
     };
     (f.memory as unknown as { deps: { settings: () => object } }).deps.settings = () => ({ regularCompactTokens: 0, hybridCompactTokens: 0, summarizerEffort: "high", summarizerConcurrency: 2 });
     // The coordinator's OptChat memory, up to date.
-    f.thread("a", { title: "Coordinator" });
-    await f.setScope("initiatives", "prj_1", ["a"]);
-    f.say("a", "hello");
-    await f.idle("a");
-    expect(await f.ask("a", f.say("a", "warm up"), "warm up")).toEqual({});
+    await f.attach("initiatives", "prj_1", f.thread("a", { title: "Coordinator" }));
+    f.turn("a", "hello");
     await f.idle("a");
     await f.configure("a", { mode: "optchat" });
     // Two other scopes' backlogs, 40 messages of 1 KB each: every permit taken, and calls waiting for one.
     for (const bg of ["bg1", "bg2"]) {
       const scope = `test:${bg}`;
       f.store.ensureScope(scope, "test");
-      f.store.setMembers(scope, [f.thread(bg)]);
-      f.store.append(scope, Array.from({ length: 40 }, (_, i) => ({ kind: "user" as const, text: `${i}: `.padEnd(1000, "x"), at: i, threadId: bg, seq: i + 1 })), new Map([[bg, 40]]));
+      f.store.attach(f.thread(bg), scope);
+      f.store.append(bg, Array.from({ length: 40 }, (_, i) => ({ kind: "user" as const, text: `${i}: `.padEnd(1000, "x"), at: i, threadId: bg, seq: i + 1 })), 40);
       f.memory.build(scope);
     }
     await ticks();
     expect(started).toEqual(["bg", "bg"]);
-    // The coordinator's last reply needs a summary before its next turn.
-    f.reply("a", "x".repeat(2000));
-    f.memory.waits.turn = { 3: 5_000, 4: 5_000 };
+    // The coordinator's last reply is more than 32 KB: its first part needs a summary before the next turn.
+    f.reply("a", "x".repeat(34_000));
+    f.done("a");
+    f.memory.waits.turn = 5_000;
     const turn = f.ask("a", f.say("a", "go on"), "go on");
     await ticks(60);
     // The first permit that frees goes to the turn's line, ahead of the backlog's queued calls.
@@ -356,15 +354,16 @@ describe("W315 a stopped call never starts", () => {
 describe("W315 a stopped turn stops waiting", () => {
   it("ends its wait for summaries when BB stops the turn, and lets go of its priority", async () => {
     const f = fixture();
-    f.thread("a");
-    await f.setScope("test", "a", ["a"]);
-    f.say("a", "hello");
+    await f.attach("test", "a", f.thread("a"));
+    f.turn("a", "hello");
     await f.idle("a");
     await f.configure("a", { mode: "optchat" });
     f.memory.useSummarizer(stuckLuna);
-    f.reply("a", "x".repeat(1000));
+    // More than 32 KB without a summary: the turn waits for one.
+    f.reply("a", "x".repeat(34_000));
+    f.done("a");
     const requestId = f.say("a", "continue");
-    f.memory.waits.turn = { 3: 5_000, 4: 5_000 };
+    f.memory.waits.turn = 5_000;
     const stop = new AbortController();
     const turn = f.harness.behavior.callAgentTool(TURN_CONTEXT_TOOL, { protocol: 4, input: "continue", requestId, sessionId: "s-a" }, { threadId: "a", signal: stop.signal });
     const outcome = turn.then(
@@ -387,13 +386,12 @@ describe("W324 a stopped turn lets go of its call's extension", () => {
   // One permit; Luna never answers, a turn waits 90 s for its line, and the call it waits for is past its 30 s bound.
   const extended = async (alsoNeeded: boolean) => {
     const f = fixture();
-    f.thread("a");
-    await f.setScope("test", "a", ["a"]);
-    f.say("a", "hello");
+    await f.attach("test", "a", f.thread("a"));
+    f.turn("a", "hello");
     await f.idle("a");
     await f.configure("a", { mode: "optchat" });
     (f.memory as unknown as { deps: { settings: () => object } }).deps.settings = () => ({ regularCompactTokens: 0, hybridCompactTokens: 0, summarizerEffort: "high", summarizerConcurrency: 1 });
-    f.memory.waits.turn = { 3: 90_000, 4: 90_000 };
+    f.memory.waits.turn = 90_000;
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     (f.store as unknown as { now: () => number }).now = () => Date.now();
     const t0 = Date.now();
@@ -401,7 +399,9 @@ describe("W324 a stopped turn lets go of its call's extension", () => {
     const hung = (_url: unknown, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => init!.signal!.addEventListener("abort", () => ((cutAt ??= Date.now() - t0), reject(new DOMException("aborted", "AbortError"))), { once: true }));
     f.memory.useSummarizer(responsesSummarizer({ fetch: hung as typeof fetch, url: () => "http://luna", headers: async () => ({}) }));
-    f.reply("a", "x".repeat(1000));
+    // More than 32 KB without a summary: the turn waits for one.
+    f.reply("a", "x".repeat(34_000));
+    f.done("a");
     const requestId = f.say("a", "continue");
     const stop = new AbortController();
     const outcome = f.harness.behavior.callAgentTool(TURN_CONTEXT_TOOL, { protocol: 4, input: "continue", requestId, sessionId: "s-a" }, { threadId: "a", signal: stop.signal }).then(

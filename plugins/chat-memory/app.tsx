@@ -152,8 +152,8 @@ function MemoryDetails({ status: m, configure }: { status: MemoryStatus; configu
   const write = useWrite();
   const tokens = Number(limit.replace(/k$/i, "")) * (/k$/i.test(limit) ? 1000 : 1);
   const t = m.tree;
-  const current = m.threads.filter((x) => x.state === "current");
   const own = m.scope.owner === "chat-memory";
+  const threads = m.threads;
   return (
     <div className="cm-details">
       <MemorySwitch mode={m.mode} choose={(mode) => configure({ mode })} />
@@ -165,11 +165,11 @@ function MemoryDetails({ status: m, configure }: { status: MemoryStatus; configu
       <div className="cm-grid">
         <span>Shared by</span>
         <span>
-          {own ? "this thread" : `${m.scope.owner === "initiatives" ? "the Initiative's" : `${m.scope.owner}'s`} ${current.length} thread${current.length === 1 ? "" : "s"}`}
-          {current.length > 1 || !own ? `: ${current.map((x) => x.title ?? x.threadId).join(", ")}` : ""}
+          {own ? "this thread" : `${m.scope.owner === "initiatives" ? "the Initiative's" : `${m.scope.owner}'s`} ${threads.length} thread${threads.length === 1 ? "" : "s"}`}
+          {threads.length > 1 || !own ? `: ${threads.map((x) => x.title ?? x.threadId).join(", ")}` : ""}
         </span>
         <span>Log</span>
-        <span>{m.log.messages.toLocaleString()} messages · {kilo(m.log.bytes)}B · {m.threads.length} thread{m.threads.length === 1 ? "" : "s"} over time</span>
+        <span>{m.log.messages.toLocaleString()} messages · {kilo(m.log.bytes)}B</span>
         <span>Tree</span>
         <span>
           {t.nodes.toLocaleString()} of {t.total.toLocaleString()} lines ({t.total ? Math.floor((100 * Math.min(t.nodes, t.total)) / t.total) : 100}%){t.fallbacks ? ` · ${t.fallbacks} cut after failures` : ""} · {treeState(t)}

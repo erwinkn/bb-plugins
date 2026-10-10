@@ -33,9 +33,8 @@ function heldLuna() {
 
 /** A scope with `n` logged messages of 1 KB, from a thread of its own. */
 async function seeded(f: ReturnType<typeof fixture>, key: string, n: number) {
-  f.thread(key);
-  const { scope } = await f.setScope("test", key, [key]);
-  f.store.append(scope, Array.from({ length: n }, (_, i) => ({ kind: "user" as const, text: `${i}: `.padEnd(1000, "x"), at: i, threadId: key, seq: i + 1 })), new Map([[key, n]]));
+  const scope = await f.attach("test", key, f.thread(key));
+  f.store.append(key, Array.from({ length: n }, (_, i) => ({ kind: "user" as const, text: `${i}: `.padEnd(1000, "x"), at: i, threadId: key, seq: i + 1 })), n);
   return scope;
 }
 
@@ -81,60 +80,30 @@ describe("W244 one Luna limit across every scope", () => {
     });
 });
 
-describe("W244 every scope gets its first tree", () => {
-  it("40 quiet scopes are all read within 14 sweeps", async () => {
+describe("W244 every thread gets read", () => {
+  it("one sweep copies the turns of 40 threads whose announcements were all missed, and builds every scope", async () => {
     const f = fixture();
-    let now = 1_900_000_000_000;
-    (f.store as unknown as { now: () => number }).now = () => now;
     f.memory.useSummarizer(async () => line);
-    const scopes: string[] = [];
     for (let n = 0; n < 40; n++) {
-      f.thread(`t${n}`);
-      f.say(`t${n}`, "short");
+      f.turn(f.thread(`t${n}`), "short");
       f.store.ensureScope(`test:q${n}`, "test");
-      f.store.setMembers(`test:q${n}`, [`t${n}`]);
-      scopes.push(`test:q${n}`);
+      f.store.attach(`t${n}`, `test:q${n}`);
     }
-    // ceil(40 / 3) sweeps, 30 s apart.
-    for (let pass = 0; pass < 14; pass++) {
-      f.memory.sweep();
-      await f.memory.settled();
-      now += 30_000;
-    }
+    await f.memory.sweep(true);
+    await f.memory.settled();
     const unread = [];
-    for (const s of scopes) if ((await f.memory.status(s)).log.messages === 0) unread.push(s);
+    for (let n = 0; n < 40; n++) {
+      const status = await f.memory.status(`test:q${n}`);
+      if (status.log.messages !== 2 || status.tree.summarized !== 2) unread.push(n);
+    }
     expect(unread).toEqual([]);
-  });
-});
-
-describe("W244 closing a scope stops its build at once", () => {
-  it("aborts the call in flight, starts no other, and a waiting turn fails visibly", async () => {
-    const f = fixture();
-    const { luna, summarize } = heldLuna();
-    f.memory.useSummarizer(summarize);
-    (f.memory as unknown as { deps: { settings: () => object } }).deps.settings = () => ({ regularCompactTokens: 0, hybridCompactTokens: 0, summarizerEffort: "high", summarizerConcurrency: 1 });
-    const scope = await seeded(f, "c", 4);
-    f.memory.build(scope);
-    await ticks();
-    expect(luna.active).toBe(1);
-    await f.setScope("test", "c", []);
-    expect(luna.active).toBe(0);
-    luna.release();
-    await f.memory.settled();
-    expect(luna.calls).toBe(1);
-    expect((await f.memory.status(scope)).tree.nodes).toBe(0);
-    // Nothing starts it again while it is closed.
-    f.memory.build(scope);
-    f.memory.sweep();
-    await f.memory.settled();
-    expect(luna.calls).toBe(1);
   });
 });
 
 describe("T143 stopped turns in the memory log", () => {
   it("marks a stopped turn after what it had said; a finished turn adds nothing", async () => {
     const f = fixture();
-    await f.setScope("test", "c", [f.thread("c")]);
+    await f.attach("test", "c", f.thread("c"));
     const push = (type: string, data: Record<string, unknown>) => f.history.push({ threadId: "c", type, seq: f.history.length + 1, createdAt: f.history.length + 1, data });
     push("client/turn/requested", { direction: "outbound", source: "tell", initiator: "user", input: [{ type: "text", text: "Plan T4" }] });
     push("item/completed", { item: { type: "agentMessage", id: "a1", text: "First, the" } });

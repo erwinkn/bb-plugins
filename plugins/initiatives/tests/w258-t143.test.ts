@@ -25,29 +25,28 @@ describe("T145 memory moved to the Chat memory plugin", () => {
     expect(config.instructions).not.toMatch(/memory/i);
   });
 
-  it("tells the Chat memory plugin each Initiative's threads: its coordinator, a coordinator being started, none once archived", async () => {
+  it("sends Chat memory no roster: only an adopted coordinator is attached, by its attach RPC (T153, D491)", async () => {
     const { f, project } = await projectFixture();
-    const sent = () => f.pluginRpc.mock.calls.map(([a]) => a).filter((a) => a.pluginId === "chat-memory");
-    // Any ledger change syncs (the fixture wrote this one directly); so does every sweep.
-    await f.memoryScopes.sync(project.id);
-    expect(sent().at(-1)).toMatchObject({ method: "setScope", input: { key: project.id, threads: ["coordinator"] } });
-    // Nothing changed: nothing is sent again.
-    const count = sent().length;
-    await f.memoryScopes.sync(project.id);
-    expect(sent()).toHaveLength(count);
-    // A replacement being started shares the memory before its start is confirmed.
-    f.store.db.prepare("INSERT INTO coordinator_starts (project_id, op_id, state, thread_id, created_at) VALUES (?, 'op_x', 'pending', 'next', 1) ON CONFLICT (project_id) DO UPDATE SET op_id = 'op_x', state = 'pending', thread_id = 'next'").run(project.id);
-    await f.memoryScopes.sync(project.id);
-    expect(sent().at(-1)).toMatchObject({ input: { key: project.id, threads: ["coordinator", "next"] } });
-    // A send that fails goes again at the next sync.
-    f.pluginRpc.mockRejectedValueOnce(new Error("plugin chat-memory is reloading"));
-    f.store.db.prepare("UPDATE coordinator_starts SET state = 'failed' WHERE project_id = ?").run(project.id);
-    await f.memoryScopes.sync(project.id);
-    await f.memoryScopes.sync(project.id);
-    expect(sent().at(-1)).toMatchObject({ input: { threads: ["coordinator"] } });
+    f.pluginRpc.mockClear();
+    f.service.setPaused(project.id, true);
     f.store.updateProject(project.id, { archivedAt: Date.now() });
-    await f.memoryScopes.sync(project.id);
-    expect(sent().at(-1)).toMatchObject({ input: { key: project.id, threads: [] } });
+    expect(f.pluginRpc.mock.calls.map(([a]) => a).filter((a) => a.pluginId === "chat-memory")).toEqual([]);
+    const g = fixture();
+    const created = await g.service.createProject({ name: "Search", objective: "Historical search", memberProjectIds: ["proj_a"], coordinator: { kind: "adopt", threadId: "coordinator" } });
+    expect(g.pluginRpc.mock.calls.map(([a]) => a).filter((a) => a.pluginId === "chat-memory")).toEqual([
+      expect.objectContaining({ method: "attach", input: { threadId: "coordinator", key: created.project.id } }),
+    ]);
+    expect(created.note).not.toMatch(/Chat memory/);
+  });
+
+  it("says so in the adoption's answer when Chat memory cannot attach the thread", async () => {
+    const f = fixture();
+    f.pluginRpc.mockImplementation(async (args) => {
+      if (args.pluginId === "chat-memory") throw new Error("plugin chat-memory is not loaded");
+      return { ok: true };
+    });
+    const created = await f.service.createProject({ name: "Search", objective: "Historical search", memberProjectIds: ["proj_a"], coordinator: { kind: "adopt", threadId: "coordinator" } });
+    expect(created.note).toMatch(/Chat memory could not attach it to the Initiative's memory \(plugin chat-memory is not loaded\)/);
   });
 });
 
@@ -58,52 +57,14 @@ describe("A469 retained sessions and the Chat memory plugin", () => {
     f.pluginRpc.mockImplementation(async (args) => (args.method === "read" ? view : args.method === "zoom" ? "2026-10-08 12:00Z 0+1|user: hi" : { ok: true }));
     expect(JSON.parse((await f.harness.callAgentTool("initiative_read", { view: "memory" }, { threadId: "coordinator" })) as string)).toEqual(view);
     expect(await f.harness.callAgentTool("initiative_zoom", { id: 0, n: 1 }, { threadId: "coordinator" })).toBe("2026-10-08 12:00Z 0+1|user: hi");
-    const calls = f.pluginRpc.mock.calls.map(([a]) => a).filter((a) => a.pluginId === "chat-memory" && a.method !== "setScope");
+    const calls = f.pluginRpc.mock.calls.map(([a]) => a).filter((a) => a.pluginId === "chat-memory" && a.method !== "attach");
     expect(calls).toEqual([
       expect.objectContaining({ method: "read", input: { threadId: "coordinator" } }),
       expect.objectContaining({ method: "zoom", input: { threadId: "coordinator", id: 0, n: 1 } }),
     ]);
   });
 
-  it("never leaves an in-flight membership as the last one sent when the ledger changed meanwhile (W286's race)", async () => {
-    const { f, project } = await projectFixture();
-    const sent: Array<{ threads: string[] }> = [];
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => (release = resolve));
-    f.pluginRpc.mockImplementation(async (args) => {
-      const input = args.input as { threads: string[] };
-      sent.push(input);
-      if (input.threads.includes("pending")) await held;
-      return { scope: `initiatives:${project.id}` };
-    });
-    await f.memoryScopes.sync(project.id);
-    f.store.db.prepare("INSERT INTO coordinator_starts (project_id, op_id, state, thread_id, created_at) VALUES (?, 'op_probe', 'pending', 'pending', 1) ON CONFLICT(project_id) DO UPDATE SET state = 'pending', thread_id = 'pending'").run(project.id);
-    const pending = f.memoryScopes.sync(project.id);
-    await Promise.resolve();
-    await Promise.resolve();
-    // The start fails while [coordinator, pending] is still on its way.
-    f.store.db.prepare("UPDATE coordinator_starts SET state = 'failed' WHERE project_id = ?").run(project.id);
-    const latest = f.memoryScopes.sync(project.id);
-    release();
-    await Promise.all([pending, latest]);
-    expect(f.memoryScopes.threads(project.id)).toEqual(["coordinator"]);
-    expect(sent.at(-1)!.threads).toEqual(["coordinator"]);
-  });
-
-  it("holds the Initiative's automatic compaction while it is paused (the pause guard, through the plugin boundary)", async () => {
-    const { f, project } = await projectFixture();
-    const last = () => f.pluginRpc.mock.calls.map(([a]) => a).filter((a) => a.method === "setScope").at(-1)?.input;
-    await f.memoryScopes.sync(project.id);
-    expect(last()).toEqual({ key: project.id, threads: ["coordinator"], hold: false });
-    f.service.setPaused(project.id, true);
-    await f.memoryScopes.sync(project.id);
-    expect(last()).toEqual({ key: project.id, threads: ["coordinator"], hold: true });
-    f.service.setPaused(project.id, false);
-    await f.memoryScopes.sync(project.id);
-    expect(last()).toMatchObject({ hold: false });
-  });
-
-  it("names the memory a new coordinator joins in its spawn metadata, for Chat memory to wait for its registration", async () => {
+  it("names the memory a new coordinator joins in its spawn metadata, which Chat memory reads at its first configure", async () => {
     const f = fixture();
     await f.service.createProject({ name: "Search", objective: "Historical search", memberProjectIds: ["proj_a"], coordinator: { kind: "new" } });
     const metadata = f.spawn.mock.calls[0]![0].pluginMetadata as Record<string, unknown>;

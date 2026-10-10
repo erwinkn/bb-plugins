@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TreeBuilder, type NodeHow, type TreeStore } from "../lib/builder";
 import { eventEntries, splitEntry, type MemoryKind } from "../lib/log";
-import { readEvents } from "../lib/ingest";
+import { readTurns } from "../lib/ingest";
 import { responsesSummarizer, usageCost, type Summarizer, type SummarizerRequest, type SummarizerResult } from "../lib/summarizer";
 import { LIMIT, VIEW_BYTES, bytes, emptyViews, feed, key, label, mergeOnce, viewBytes, type NodeRef, type Views } from "../lib/tree";
 
@@ -302,24 +302,55 @@ describe("W220 log entries from BB events", () => {
     expect(parts.map((p) => p.text.length)).toEqual([30_000, 30_000, 5_000]);
   });
 
-  it("pages each event type on its own and never skips a slower type", async () => {
+  it("reads one prefix per page through the last completed turn, also from a BB that counts the limit per type", async () => {
+    // A turn of 150 items ends at 312, the next one is still running (its request at 400).
     const rows = [
+      { seq: 9, type: "client/turn/requested" },
       ...Array.from({ length: 150 }, (_, k) => ({ seq: 10 + 2 * k, type: "item/completed" })),
-      { seq: 15, type: "client/turn/requested" },
+      { seq: 312, type: "turn/completed" },
       { seq: 400, type: "client/turn/requested" },
+      { seq: 401, type: "item/completed" },
     ];
-    const list = async (a: { types: readonly string[]; order: string; afterSeq?: string; limit: string }) =>
-      rows.filter((r) => a.types.includes(r.type) && r.seq > Number(a.afterSeq ?? 0)).sort((x, y) => (a.order === "desc" ? y.seq - x.seq : x.seq - y.seq)).slice(0, Number(a.limit));
-    const first = await readEvents(list, "t", 0);
-    // The item page ends at seq 208; the input at 400 waits for the next read.
-    expect(first.through).toBe(208);
-    expect(first.more).toBe(true);
-    expect(first.rows.map((r) => r.seq)).toContain(15);
-    expect(first.rows.map((r) => r.seq)).not.toContain(400);
-    const second = await readEvents(list, "t", first.through);
-    expect(second.more).toBe(false);
-    expect(second.rows.map((r) => r.seq)).toContain(400);
-    expect(second.through).toBe(400);
+    for (const perType of [true, false]) {
+      const pages: string[] = [];
+      const list = async (a: { types: readonly string[]; order: string; afterSeq?: string; limit: string }) => {
+        pages.push(a.order === "desc" ? "newest end" : a.afterSeq!);
+        const after = rows.filter((r) => a.types.includes(r.type) && r.seq > Number(a.afterSeq ?? 0)).sort((x, y) => (a.order === "desc" ? y.seq - x.seq : x.seq - y.seq));
+        return perType ? a.types.flatMap((t) => after.filter((r) => r.type === t).slice(0, Number(a.limit))) : after.slice(0, Number(a.limit));
+      };
+      const read = await readTurns(list, "t", 0, 20, () => false);
+      expect(read.through).toBe(312);
+      expect(read.more).toBe(false);
+      expect(read.rows.map((r) => r.seq)).toEqual(rows.slice(0, 152).map((r) => r.seq));
+      expect(pages).toEqual(["newest end", "0", "206"]);
+      // Nothing more until the running turn ends.
+      expect(await readTurns(list, "t", 312, 20, () => false)).toEqual({ rows: [], through: 312, more: false });
+    }
+  });
+
+  it("never pages into an unfinished turn, however long: it reads only up to the newest turn/completed", async () => {
+    // A finished turn (1-3), then a turn still running with 100,000 tool results of about 1 KB each.
+    const rows = [
+      { seq: 1, type: "client/turn/requested" },
+      { seq: 2, type: "item/completed" },
+      { seq: 3, type: "turn/completed" },
+      { seq: 4, type: "client/turn/requested" },
+      ...Array.from({ length: 100_000 }, (_, k) => ({ seq: 5 + k, type: "item/completed", data: { item: { type: "commandExecution", aggregatedOutput: "x".repeat(1_000) } } })),
+    ];
+    const calls: string[] = [];
+    const list = async (a: { types: readonly string[]; order: string; afterSeq?: string; limit: string }) => {
+      calls.push(a.order);
+      const after = rows.filter((r) => a.types.includes(r.type) && r.seq > Number(a.afterSeq ?? 0));
+      return (a.order === "desc" ? after.reverse() : after).slice(0, Number(a.limit));
+    };
+    const read = await readTurns(list, "t", 0, 20, () => false);
+    expect(read).toMatchObject({ through: 3, more: false });
+    expect(read.rows.map((r) => r.seq)).toEqual([1, 2, 3]);
+    expect(calls).toEqual(["desc", "asc"]);
+    // Caught up with the running turn: one look at its newest end, no page.
+    calls.length = 0;
+    expect(await readTurns(list, "t", 3, 20, () => false)).toEqual({ rows: [], through: 3, more: false });
+    expect(calls).toEqual(["desc"]);
   });
 });
 

@@ -80,7 +80,7 @@ import {
 import { DiscoveryMemory, DISCOVERY_PARENT_CAP } from "./discovery";
 import { receiptBlockReason, reportedRetryHint, unsettledReason } from "./receipts";
 import { createColdCacheGuard, type ColdCacheGuard } from "./cold-cache";
-import { MEMORY_SCOPE_KEY } from "./memory-scopes";
+import { MEMORY_SCOPE_KEY, attachMemory } from "./memory-scopes";
 
 export const METADATA_VERSION = 1;
 /** Unconfirmed creates and sends older than this are surfaced to the coordinator; they are never assumed failed. */
@@ -468,7 +468,8 @@ export class ProjectsService {
         projectId: project.id,
         [MEMORY_SCOPE_KEY]: project.id,
       });
-      const note = await this.reloadToolsIfIdle(thread);
+      const memory = await attachMemory(this.sdk, thread.id, project.id);
+      const note = [await this.reloadToolsIfIdle(thread), memory].filter(Boolean).join(" ") || null;
       return { project, note };
     }
     const project = this.store.tx(() => {
@@ -1523,7 +1524,8 @@ export class ProjectsService {
         );
       });
       await this.tagThread(thread.id, { role: "coordinator", projectId, [MEMORY_SCOPE_KEY]: projectId });
-      const note = await this.reloadToolsIfIdle(thread);
+      const memory = await attachMemory(this.sdk, thread.id, projectId);
+      const note = [await this.reloadToolsIfIdle(thread), memory].filter(Boolean).join(" ") || null;
       await this.convergeFormerCoordinators(projectId);
       return {
         threadId: thread.id,

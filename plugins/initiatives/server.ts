@@ -39,7 +39,7 @@ import { legacyReportSchema, LEGACY_TOOL_NAMES } from "./lib/legacy";
 import { reportSchema } from "./lib/schema";
 import { definePreferences } from "./lib/settings";
 import { WriteReceipts } from "./lib/write-receipts";
-import { CHAT_MEMORY_PLUGIN_ID, MemoryScopes } from "./lib/memory-scopes";
+import { CHAT_MEMORY_PLUGIN_ID } from "./lib/memory-scopes";
 import { Store, MIGRATIONS } from "./lib/store";
 import { ProjectsService } from "./lib/service";
 import { Runtime, SWEEP_INTERVAL_MS } from "./lib/runtime";
@@ -87,10 +87,7 @@ export default function plugin(bb: BbPluginApi) {
   const preferences = definePreferences(bb, { has: (key) => store.hasFlag(key), set: (key) => store.setFlag(key) });
   const service = new ProjectsService(bb, store, preferences);
   const runtime = new Runtime(service);
-  // T145: the Chat memory plugin learns each Initiative's threads from the ledger, after every change.
-  const memoryScopes = new MemoryScopes({ store, sdk: () => bb.sdk, log: (message) => bb.log.warn(message) });
   const changed = (projectId?: string) => {
-    void (projectId ? memoryScopes.sync(projectId) : memoryScopes.syncAll());
     const payload: Record<string, string> = projectId ? { projectId } : {};
     bb.realtime.publish("initiatives-changed", payload);
     // A plugin app only hears its own realtime signals: the Threads sidebar
@@ -600,8 +597,6 @@ export default function plugin(bb: BbPluginApi) {
             "UPDATE coordinator_starts SET thread_id=? WHERE project_id=? AND op_id=? AND state IN ('pending','uncertain') AND (thread_id IS NULL OR thread_id=?)",
           )
           .run(ctx.thread.id, meta.projectId, meta.op, ctx.thread.id);
-      // T145: the Initiative's memory takes the new coordinator in before its first turn asks for it.
-      void memoryScopes.sync(meta.projectId);
       return {
         tools: coordinatorTools,
         skills: ["initiative-coordinator"],
@@ -1245,8 +1240,6 @@ export default function plugin(bb: BbPluginApi) {
         await runtime.sweep(signal);
         if (signal.aborted) break;
         if (ledgerVersion() !== before) changed();
-        // T145: a send the Chat memory plugin missed (reloading, not yet installed) goes again.
-        else void memoryScopes.syncAll();
         await new Promise<void>((resolve) => {
           const done = () => {
             clearTimeout(timer);
@@ -1262,5 +1255,5 @@ export default function plugin(bb: BbPluginApi) {
   });
   // Tests drive commands as an entry point would, announcement included.
   const command = (...args: Parameters<typeof perform>) => announcing(() => perform(...args), () => args[0]);
-  return { service, store, runtime, perform: command, overview, tree, preferences, memoryScopes };
+  return { service, store, runtime, perform: command, overview, tree, preferences };
 }

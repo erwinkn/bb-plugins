@@ -27,15 +27,15 @@ describe("W256 summarizer calls carry their attribution", () => {
     expect(Object.keys(seen[2]!.headers as object).filter((name) => /^x-bb-(initiative|thread|purpose)$/u.test(name))).toEqual([]);
   });
 
-  it("a build names its scope's Initiative (an Initiatives scope), its first current thread and memory-tree", async () => {
+  it("a build names its scope's Initiative (an Initiatives scope), its first thread and memory-tree", async () => {
     const f = fixture();
     const calls: unknown[] = [];
     const summarize: Summarizer = async (r) => (calls.push({ ...r.attribution }), { ok: true, text: "summary".padEnd(300, "."), usage: { input: 1, cached: 0, output: 1, reasoning: 0 }, latencyMs: 0 });
     f.memory.useSummarizer(summarize);
-    await f.setScope("initiatives", "ini_a", [f.thread("thr_a"), f.thread("thr_talk")]);
+    await f.attach("initiatives", "ini_a", f.thread("thr_a"), f.thread("thr_talk"));
     await f.configure(f.thread("thr_plain"), {});
     for (const [scope, thread] of [["initiatives:ini_a", "thr_a"], ["chat-memory:thr_plain", "thr_plain"]] as const) {
-      f.store.append(scope, Array.from({ length: 2 }, (_, i) => ({ kind: "user" as const, text: `${i}: `.padEnd(1000, "x"), at: i, threadId: thread, seq: i + 1 })), new Map());
+      f.store.append(thread, Array.from({ length: 2 }, (_, i) => ({ kind: "user" as const, text: `${i}: `.padEnd(1000, "x"), at: i, threadId: thread, seq: i + 1 })), 2);
       f.memory.build(scope);
     }
     await ticks();

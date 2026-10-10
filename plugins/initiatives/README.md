@@ -940,18 +940,15 @@ Luna summary tree, the Regular / Hybrid / OptChat mode, compaction, the memory
 tools (`memory_read`, `memory_zoom`) and Claude Code's per-turn OptChat hook.
 Only the user switches it, from the coordinator's **Memory** pill (D452).
 
-This plugin only tells Chat memory which threads share an Initiative's memory:
-the scope `initiatives:<id>` holds its coordinator and a coordinator being
-started (its first turn may come before its start is confirmed); D446's
-discussion threads join it. Workers never do; an archived Initiative's scope is
-closed, and a paused one holds its automatic compaction (`hold`). The threads
-come from the ledger and are sent (`setScope`) after every ledger change and
-every sweep, when they differ from what Chat memory last accepted, so a send it
-missed while reloading goes again 30 s later. One send per Initiative runs at a
-time; a change made while one is under way is sent once it settles, so the
-latest state is always the last one sent. A coordinator this plugin spawns or
-adopts carries `memoryScope: <Initiative id>` in its metadata, so Chat memory
-waits for its registration if its first turn comes first.
+Chat memory keeps one row per thread: the scope it writes to now
+(`initiatives:<id>` for an Initiative) and how far its turns are logged (T153,
+D487, D491). This plugin sends no roster. A coordinator it spawns (a new one, a
+successor) carries `memoryScope: <Initiative id>` in its spawn metadata, and
+Chat memory attaches it at its first configure, before its first turn. A thread
+it adopts is attached with Chat memory's `attach` RPC; if that fails, the
+adoption's answer says so. Workers carry no `memoryScope` and never write to
+it. A former coordinator stays attached, so a later turn of it is logged there
+too. Archiving or pausing an Initiative changes nothing in its memory.
 
 The old `memory_*` tables stay in this plugin's database, unwritten, as the
 rollback for Chat memory's one-time copy. `{"action":"memory"}` is refused with

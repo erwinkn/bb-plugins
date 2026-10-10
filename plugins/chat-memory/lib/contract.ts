@@ -7,13 +7,13 @@ const id = z.string().min(1).max(200);
 
 export const chatMemoryContract = defineRpcContract({
   /**
-   * D446: an owner plugin's scope and its current threads, in order (an Initiative's coordinator
-   * and later its discussion threads). Plugins only: the caller is the scope's owner. An empty
-   * list closes the scope; its memory stays.
+   * D491: an owner plugin attaches a thread to one of its scopes, "<owner>:<key>" (Initiatives,
+   * when it adopts an existing thread): its next completed turns go there, what it logged stays
+   * where it is. Plugins only. A thread an owner spawns is attached from its spawn metadata instead
+   * (memoryScope), at its first configure.
    */
-  setScope: {
-    /** hold: the owner holds automatic compaction (a paused Initiative); omitted leaves it as it is. */
-    input: z.object({ key: id, threads: z.array(id).max(32), hold: z.boolean().optional() }).strict(),
+  attach: {
+    input: z.object({ threadId: id, key: id }).strict(),
     output: z.object({ scope: z.string() }),
   },
   /**
@@ -29,15 +29,15 @@ export const chatMemoryContract = defineRpcContract({
     input: z.object({ threadId: id, id: z.number().int().min(0), n: z.number().int().min(1) }).strict(),
     output: z.string(),
   },
-  /** The memory of the scope a thread is a current thread of, or null when it has none. */
+  /** The memory a thread writes to, or null when it has none. */
   status: {
     input: z.object({ threadId: id }).strict(),
     output: z.custom<MemoryStatus | null>(),
   },
   /**
    * D452: the user's switch, from this plugin's app only (plugins are refused; tools and the CLI
-   * never write). A thread outside every scope gets its own; enabled:false closes a thread's own
-   * scope. Refused with a reason when the mode could not run (D458, D460).
+   * never write). A thread that writes to no scope gets its own; enabled:false detaches it from its
+   * own. Refused with a reason when the mode could not run (D460).
    */
   configure: {
     input: z
