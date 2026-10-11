@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { MemoryMessage } from "./log";
 import { cleanLine, messageText, task, tooLong } from "./prompt";
-import { usageCost, type Attribution, type InputItem, type SummarizerRequest, type SummarizerResult, type Usage } from "./summarizer";
+import { usageCost, type Attribution, type InputItem, type ReplyShape, type SummarizerRequest, type SummarizerResult, type Usage } from "./summarizer";
 import { LIMIT, NodeCache, bytes, children, contextLines, end, feed, key, label, settleViews, type NodeRef, type Views } from "./tree";
 
 /** What the builder reads and writes; the plugin backs it with its database, tests with memory. */
@@ -98,6 +98,8 @@ export class TreeBuilder {
   private ready: NodeRef[] = [];
   private queued = new Set<string>();
   private failures = new Map<string, number>();
+  /** W371: what each empty reply of a line still failing was made of (metadata only), for the fallback's log. */
+  private empties = new Map<string, ReplyShape[]>();
   /** Lines whose calls failed FAILURES times: their last error, and when. */
   private failed = new Map<string, { node: NodeRef; error: string; at: number }>();
   private writers = new Map<string, Promise<void>>();
@@ -357,6 +359,7 @@ export class TreeBuilder {
     const k = key(...n);
     if (outcome.kind === "built") {
       this.failures.delete(k);
+      this.empties.delete(k);
       if (outcome.pause) this.pause(outcome.pause);
       else this.backoffMs = 0;
       return;
@@ -371,12 +374,14 @@ export class TreeBuilder {
     this.failures.set(k, failures);
     if (failures < FAILURES) return this.requeue(n);
     if (outcome.error === EMPTY_REPLY) {
-      this.options.log?.(`Memory line ${label(n)} built as a fallback (cut to fit) after ${failures} empty replies.`);
+      this.options.log?.(`Memory line ${label(n)} built as a fallback (cut to fit) after ${failures} empty replies: ${JSON.stringify(this.empties.get(k) ?? [])}`);
       this.failures.delete(k);
+      this.empties.delete(k);
       return this.build(n, this.fallbackText(n), "fallback", failures);
     }
     this.options.log?.(`Memory line ${label(n)} failed ${failures} times (${outcome.error}); it stays unsummarized, and is tried again in ${FAILED_RETRY_MS / 60_000} minutes.`);
     this.failures.delete(k);
+    this.empties.delete(k);
     this.failed.set(k, { node: n, error: outcome.error, at: this.now() });
     // Turns waiting for it learn at once that it will not come.
     this.notify();
@@ -442,7 +447,12 @@ export class TreeBuilder {
         }
         const line = cleanLine(r.text);
         if (!line) {
-          if (best === null) outcome = { kind: "failed", error: EMPTY_REPLY };
+          this.options.log?.(`Memory line ${label(node)} got an empty reply (attempt ${a + 1}, ${r.text.length} characters before cleaning): ${JSON.stringify(r.shape ?? null)}`);
+          if (best === null) {
+            const k = key(...node);
+            this.empties.set(k, [...(this.empties.get(k) ?? []), ...(r.shape ? [r.shape] : [])]);
+            outcome = { kind: "failed", error: EMPTY_REPLY };
+          }
           break;
         }
         if (best === null || bytes(line) < bytes(best)) best = line;

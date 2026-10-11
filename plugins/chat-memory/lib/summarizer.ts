@@ -48,8 +48,25 @@ export interface Usage {
   output: number;
   reasoning: number;
 }
+/**
+ * W371: what a final response was made of, kept to diagnose empty replies. Types, counts and
+ * reasons only: never the prompt, a reply's text, a refusal or reasoning content.
+ */
+export interface ReplyShape {
+  /** The stream's last event: response.completed or response.incomplete. */
+  event: string;
+  status: string | null;
+  /** incomplete_details.reason, e.g. max_output_tokens. */
+  incomplete: string | null;
+  /** The output items' types, in order: reasoning, message, ... */
+  items: string[];
+  /** The content blocks' types, in order: output_text, refusal, ... */
+  blocks: string[];
+  output: number;
+  reasoning: number;
+}
 export type SummarizerResult =
-  | { ok: true; text: string; usage: Usage; latencyMs: number }
+  | { ok: true; text: string; usage: Usage; latencyMs: number; shape?: ReplyShape }
   | {
       ok: false;
       error: string;
@@ -169,14 +186,17 @@ export function responsesSummarizer(deps: {
     }
     let started = false;
     let final: Record<string, any> | null = null;
+    let finalEvent = "";
     try {
       for await (const event of sse(res.body)) {
         if (!started) {
           started = true;
           onStart?.();
         }
-        if (event.type === "response.completed" || event.type === "response.incomplete") final = event.response;
-        else if (event.type === "response.failed" || event.type === "error") {
+        if (event.type === "response.completed" || event.type === "response.incomplete") {
+          final = event.response;
+          finalEvent = event.type;
+        } else if (event.type === "response.failed" || event.type === "error") {
           const error = JSON.stringify(event.response?.error ?? event.error ?? event).slice(0, 300);
           return { ok: false, reason: /rate|quota|limit/i.test(error) ? "rate-limited" : /overload|server_error|timeout/i.test(error) ? "transient" : "failed", error };
         }
@@ -199,7 +219,18 @@ export function responsesSummarizer(deps: {
       .filter((c: { type?: string }) => c.type === "output_text")
       .map((c: { text?: string }) => c.text ?? "")
       .join("");
-    return { ok: true, text, usage, latencyMs: Date.now() - t0 };
+    const types = (list: { type?: unknown }[]) => list.map((x) => String(x?.type ?? "?").slice(0, 40));
+    const items: { type?: unknown; content?: { type?: unknown }[] }[] = final.output ?? [];
+    const shape: ReplyShape = {
+      event: finalEvent,
+      status: typeof final.status === "string" ? final.status : null,
+      incomplete: typeof final.incomplete_details?.reason === "string" ? final.incomplete_details.reason : null,
+      items: types(items),
+      blocks: types(items.flatMap((o) => o.content ?? [])),
+      output: usage.output,
+      reasoning: usage.reasoning,
+    };
+    return { ok: true, text, usage, latencyMs: Date.now() - t0, shape };
   }
 }
 
