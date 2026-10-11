@@ -35,8 +35,6 @@ export interface PrState {
   /** Pending changes requested, one line each. */
   changes: string[];
   decision: PrDecision | null;
-  /** D439 hook: the PR's discussion thread, once "Discuss" exists; nothing writes it yet. */
-  discussionThreadId: string | null;
 }
 
 /** Everything the coordinator recorded for one PR. */
@@ -72,7 +70,7 @@ export interface PrStageChange {
 
 export const blankPrRecord = (url: string, at: number): PrRecord => ({
   url, stage: null, note: null, setAt: null, category: null, waitingOn: null, changes: [],
-  decision: null, discussionThreadId: null, worker: null, assignment: null, updatedAt: at,
+  decision: null, worker: null, assignment: null, updatedAt: at,
 });
 
 /**

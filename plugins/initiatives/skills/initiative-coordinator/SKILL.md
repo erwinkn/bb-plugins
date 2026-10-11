@@ -63,7 +63,8 @@ lib/guidance.ts) and arrive when your session starts. This skill only sums up th
   mode (the Chat memory plugin). `memory_read` lists its one-line summaries, `id+n|text`;
   `memory_zoom {id:64,n:32}` opens a line into its two halves (`n:1`: one message whole),
   each line starting with its time. Use them after a compaction, or whenever you need what
-  your context no longer holds.
+  your context no longer holds. The user's discussion threads share this memory: what was
+  said there is in it, and a discussion's message arrives as `From discussion "<title>"`.
 - `initiative_manage` handover replaces you with a fresh coordinator once your turn ends.
   GPT-6 Luna High writes its first message from recent activity.
 

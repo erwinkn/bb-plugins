@@ -286,7 +286,6 @@ export function parsePullRequests(repo: string, raw: string): QueuedPullRequest[
       waitingOn: null,
       changes: [],
       decision: null,
-      discussionThreadId: null,
       stack: null,
       available: false,
       notes: NO_NOTES,
@@ -428,8 +427,8 @@ export function assignStages(
     const worker = r.worker
       ? { ref: r.worker, threadId: null, assignment: r.assignment, role: null, source: "coordinator" as const }
       : pr.worker;
-    const { category, waitingOn, changes, decision, discussionThreadId } = r;
-    return { ...pr, ...stage, category, waitingOn, changes, decision, discussionThreadId, worker };
+    const { category, waitingOn, changes, decision } = r;
+    return { ...pr, ...stage, category, waitingOn, changes, decision, worker };
   });
 }
 

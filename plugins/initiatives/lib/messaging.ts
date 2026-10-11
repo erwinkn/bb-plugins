@@ -28,7 +28,8 @@ export function currentIdentity(store: Store, m: Membership) {
 
 function currentMember(store: Store, threadId: string) {
   const m = store.membership(threadId);
-  if (!m || m.former || m.kind === "adhoc") throw new ProjectError("Messages require current managed Initiative membership; former and user-owned threads cannot use this wrapper.");
+  // A discussion is the user's own thread that may message the coordinator (D480).
+  if (!m || m.former || m.kind === "adhoc" && !m.discussion) throw new ProjectError("Messages require current managed Initiative membership; former and user-owned threads cannot use this wrapper.");
   if (m.worker) {
     // T136: a worker stays reachable after it reports, until it is retired or stopped.
     const w = m.worker;
@@ -56,6 +57,7 @@ export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: stri
   const resolve = () => {
     const from = currentMember(store, caller);
     if (projectId && from.m.project.id !== projectId) throw new ProjectError("Cannot message another Initiative.");
+    if (from.m.discussion && input.target !== "coordinator") throw new ProjectError("A discussion messages the coordinator only; it asks the coordinator to direct workers.");
     const id = input.target === "coordinator" ? from.m.project.coordinatorThreadId : store.worker(from.m.project.id, Number(input.target.slice(1)))?.threadId;
     if (!id) throw new ProjectError("Target has no current native thread. Read workers and ask the coordinator.");
     if (id === caller) throw new ProjectError("Don't send yourself a message.");
@@ -73,7 +75,8 @@ export async function sendInitiativeMessage(store: Store, sdk: Sdk, caller: stri
     throw new ProjectError("Caller, target or assignment changed while checking native state; read current membership before a new message.");
   if (sender.id !== caller || target.id !== fresh.id) throw new ProjectError("Native lookup did not confirm caller/target identity; no message sent.");
   nativeAvailable(sender, fresh.from.m); nativeAvailable(target, fresh.to.m, input.mode === "queue");
-  const identity = fresh.from.m.worker ? `${fresh.from.m.worker.ref} (${fresh.from.m.worker.role})` : "coordinator";
+  const identity = fresh.from.m.worker ? `${fresh.from.m.worker.ref} (${fresh.from.m.worker.role})`
+    : fresh.from.m.discussion ? `discussion "${sender.title ?? caller}"` : "coordinator";
   try {
     const receipt = await sdk.threads.send({ threadId: fresh.id, senderThreadId: caller,
       mode: input.mode === "steer" ? "steer-if-active" : "queue-if-active",

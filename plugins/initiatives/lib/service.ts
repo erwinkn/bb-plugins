@@ -88,6 +88,8 @@ import { MEMORY_SCOPE_KEY, attachMemory } from "./memory-scopes";
 export const METADATA_VERSION = 1;
 /** Unconfirmed creates and sends older than this are surfaced to the coordinator; they are never assumed failed. */
 export const RECONCILE_GRACE_MS = 2 * 60_000;
+/** D483: the open discussions an Initiative may have when it starts one; nothing else is capped. */
+export const DISCUSSION_CAP = 62;
 const DESCENDANT_PAGE = 100;
 const DESCENDANT_BUDGET = 500;
 const LIST_PAGE = 200;
@@ -990,8 +992,85 @@ export class ProjectsService {
     });
   }
 
+  /**
+   * D446 (T149): start a discussion of the Initiative, the "+" of its thread tabs. It is a user
+   * thread where the coordinator runs (its checkout, provider, model, effort, permission mode and
+   * tier), under it in the tree, that shares the Initiative's memory: it is spawned with the
+   * memory's key, so Chat memory attaches it at its first configure, before its first turn. Its turn
+   * ends never wake the coordinator; it messages it instead. BB starts a thread only with a first
+   * message, so a hidden one asks for a one-line greeting. D483: the cap counts open discussions,
+   * here only: archived and deleted ones don't count, and restoring one is never refused.
+   *
+   * The native reads (the coordinator, its settings, BB's open threads) run before `serialize`,
+   * which never waits on them; only the count, from the ledger and those reads, and the spawn run
+   * inside it, so two creates at 61 open discussions start one. A coordinator replaced before the
+   * spawn is issued refuses the create, since the settings read are its predecessor's: handovers
+   * run outside `serialize`, so spawnUserThread checks at the spawn itself.
+   */
+  async createDiscussion(projectId: string, serialize: <T>(start: () => Promise<T>) => Promise<T>) {
+    const project = this.requireProject(projectId);
+    const coordinatorThreadId = project.coordinatorThreadId;
+    if (!coordinatorThreadId) throw new ProjectError("Start a coordinator before a discussion.");
+    // Discussions that already had a thread before the list below was read: it shows whether each is still open.
+    const settled = new Set(this.store.projectThreads(projectId).flatMap((t) => t.discussion && t.threadId ? [t.threadId] : []));
+    const [coordinator, options, open] = await Promise.all([
+      this.sdk.threads.get({ threadId: coordinatorThreadId }),
+      this.sdk.threads.defaultExecutionOptions({ threadId: coordinatorThreadId }),
+      this.openThreadIds(),
+    ]);
+    const environmentId = coordinator.environmentId;
+    if (!options || !environmentId)
+      throw new ProjectError("BB has not resolved where the coordinator runs yet (its checkout and model), so a discussion cannot start there. Try again after its first turn.");
+    return serialize(async () => {
+      const count = this.openDiscussions(projectId, settled, open);
+      if (count >= DISCUSSION_CAP)
+        throw new ProjectError(`${project.name} has ${count} open discussions, the most it starts. Archive one to start another; restoring an archived one is always allowed.`);
+      const n = this.store.projectThreads(projectId).filter((t) => t.discussion).length + 1;
+      return this.spawnUserThread(projectId, `Discussion ${n}`, {
+        projectId: coordinator.projectId,
+        environment: { type: "reuse", environmentId },
+        providerId: coordinator.providerId,
+        model: options.model,
+        reasoningLevel: options.reasoningLevel,
+        permissionMode: options.permissionMode,
+        serviceTier: options.serviceTier,
+        input: [{ type: "text", text: `This is a new discussion of the "${project.name}" Initiative. Greet the user in one short line, then wait for their first message.`, mentions: [], visibility: "agent-only" }],
+      }, { discussion: true, coordinatorThreadId });
+    });
+  }
+
+  /**
+   * D483: the discussions the cap counts, from the ledger: those still starting or uncertain,
+   * those `open` lists, and those that got their thread after `open` was read (`settled` lacks
+   * them). One that became the coordinator is no longer a discussion.
+   */
+  private openDiscussions(projectId: string, settled: Set<string>, open: Set<string>) {
+    return this.store.projectThreads(projectId).filter((t) =>
+      t.discussion && t.state !== "failed" &&
+      (!t.threadId || ((open.has(t.threadId) || !settled.has(t.threadId)) && !!this.store.membership(t.threadId, true)?.discussion))).length;
+  }
+
+  /**
+   * Every thread this plugin started that BB has neither archived nor deleted, in one paged list:
+   * its cost follows the open threads, never the archived history. A failed read fails the caller (D458).
+   */
+  private async openThreadIds() {
+    const ids = new Set<string>();
+    for (let offset = 0; ; offset += LIST_PAGE) {
+      const rows = await this.sdk.threads.list({ originPluginId: this.bb.pluginId, archived: false, includeHidden: true, limit: LIST_PAGE, offset });
+      for (const row of rows) ids.add(row.id);
+      if (rows.length < LIST_PAGE) return ids;
+    }
+  }
+
+  /**
+   * `coordinatorThreadId`: the coordinator the request was built from. A replacement that lands
+   * before the spawn is issued refuses it, checked after the last await (handovers run outside the
+   * writes queue); one that lands after finds the thread already under its predecessor, like any
+   * thread started before it.
+   */
   private async spawnUserThread(projectId: string, title: string | undefined,
-    request: Parameters<Sdk["threads"]["spawn"]>[0]) {
+    request: Parameters<Sdk["threads"]["spawn"]>[0], { discussion = false, coordinatorThreadId }: { discussion?: boolean; coordinatorThreadId?: string } = {}) {
     const project = this.requireProject(projectId);
     const bbProjectId = request.projectId;
     if (!project.memberProjectIds.includes(bbProjectId))
@@ -1014,6 +1093,9 @@ export class ProjectsService {
         // either lands or is refused, and the sweep repairs the tree later.
       }
     }
+    // From here to the spawn nothing awaits: what is checked here holds when it is issued.
+    if (coordinatorThreadId && this.requireProject(projectId).coordinatorThreadId !== coordinatorThreadId)
+      throw new ProjectError("The coordinator changed while the discussion was starting. Press + again to start it with the new coordinator.");
     if (!parentId) throw new ProjectError("Open a current coordinator before creating an Initiative thread.");
     const op = newOpId();
     const label = title?.trim() || "Thread";
@@ -1022,22 +1104,26 @@ export class ProjectsService {
       opId: op,
       label,
       bbProjectId,
+      discussion,
     });
     let thread: ThreadDto;
     try {
       this.parentOpBegin(project.id, parentId);
       try {
-        thread = await this.sdk.threads.spawn({
+        const args = {
           ...request,
-          title: `${project.name} · ${label}`.slice(0, 120),
+          // A discussion's tab shows its title: the Initiative is already in view.
+          title: (discussion ? label : `${project.name} · ${label}`).slice(0, 120),
           ...(parentId ? { parentThreadId: parentId } : {}),
           pluginMetadata: {
-            role: "adhoc",
+            role: discussion ? "discussion" : "adhoc",
             projectId: project.id,
             op,
             v: METADATA_VERSION,
+            ...(discussion ? { [MEMORY_SCOPE_KEY]: project.id } : {}),
           },
-        });
+        };
+        thread = discussion ? await this.spawnFinalReportsOnly(project.id, args) : await this.sdk.threads.spawn(args);
       } finally {
         this.parentOpEnd(project.id, parentId);
       }
@@ -1060,7 +1146,7 @@ export class ProjectsService {
     }
     this.store.tx(() => {
       this.store.confirmProjectThread(op, thread.id);
-      this.store.log(project.id, "thread", `You opened a thread: ${label}`, {
+      this.store.log(project.id, "thread", `You opened ${discussion ? "a discussion" : "a thread"}: ${label}`, {
         threadId: thread.id,
       });
     });
@@ -4587,7 +4673,7 @@ export class ProjectsService {
                   this.store.project(project.id)?.coordinatorThreadId ?? null;
                 this.parentOpBegin(project.id, parentId);
                 try {
-                  return await this.spawnWorker(project.id, {
+                  return await this.spawnFinalReportsOnly(project.id, {
                     projectId: bbProjectId,
                     environment: env.request as never,
                     providerId: profile.providerId,
@@ -5078,7 +5164,7 @@ export class ProjectsService {
           return remaining === 0;
         }
         const adhoc =
-          metadata.role === "adhoc"
+          metadata.role === "adhoc" || metadata.role === "discussion"
             ? pendingThreads.find(
                 (t) => t.opId === metadata.op && t.projectId === metadata.projectId,
               )
@@ -6267,6 +6353,9 @@ export class ProjectsService {
     const thread = await this.sdk.threads.get({ threadId: input.threadId });
     await this.assertAdoptionRole(thread, input.role);
     const existing = this.store.membership(thread.id, true);
+    // D480: a discussion shares the Initiative's memory, which no worker feeds.
+    if (existing?.discussion)
+      throw new ProjectError("Discussions can't become workers: spawn a worker instead.");
     // A lightweight adhoc claim on this project upgrades to the explicit
     // membership; every other existing membership still wins.
     if (
@@ -6957,11 +7046,11 @@ export class ProjectsService {
   private parentNoticesWarned = false;
 
   /**
-   * D417: a worker reports with initiative_report, so its turn ends never wake the coordinator
-   * (parent notices "explicit"). A server without our fork drops or refuses the field: the worker
-   * then runs with ordinary turn notices, as before.
+   * D417: a worker reports with initiative_report, and a discussion messages the coordinator
+   * (T149), so their turn ends never wake the coordinator (parent notices "explicit"). A server
+   * without our fork drops or refuses the field: the thread then runs with ordinary turn notices.
    */
-  private async spawnWorker(projectId: string, args: Parameters<Sdk["threads"]["spawn"]>[0]): Promise<ThreadDto> {
+  private async spawnFinalReportsOnly(projectId: string, args: Parameters<Sdk["threads"]["spawn"]>[0]): Promise<ThreadDto> {
     // A spread, so the SDK types before the fork (0.4.87) accept the extra field.
     const explicit = { parentNotices: "explicit" as const };
     let thread: ThreadDto;
@@ -6977,7 +7066,7 @@ export class ProjectsService {
       await this.sdk.threads.update({ threadId: thread.id, ...explicit });
     } catch (error) {
       if (!this.parentNoticesWarned)
-        this.store.log(projectId, "delegate", `BB did not accept final-reports-only notices (${errorMessage(error)}); workers get ordinary turn notices.`);
+        this.store.log(projectId, "delegate", `BB did not accept final-reports-only notices (${errorMessage(error)}); workers and discussions get ordinary turn notices.`);
       this.parentNoticesWarned = true;
     }
     return thread;

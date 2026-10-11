@@ -80,7 +80,6 @@ describe("parsing gh pr list", () => {
       waitingOn: null,
       changes: [],
       decision: null,
-      discussionThreadId: null,
       stack: null,
       available: false,
       notes: { count: 0, recent: [], open: [] },

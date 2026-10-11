@@ -6,12 +6,14 @@ import type { PrNotes } from "./pr-notes";
 import type { PrLinks } from "./merge-queue";
 import { PR_NOTE_MAX, blankPrRecord, canonicalPrUrl, categoryName, type PrToolInput } from "./pr-stages";
 
-/** Who calls initiative_pr: the coordinator, a worker (notes only) or the user's terminal. */
+/** Who calls initiative_pr: the coordinator, a worker (notes only), a discussion (notes and answers) or the user's terminal. */
 export interface PrCaller {
-  /** "coordinator", "user", or the worker's ref (W12). */
+  /** "coordinator", "user", "discussion", or the worker's ref (W12). */
   author: string;
   /** Set for a worker: it may only add notes, to the PRs `owns` admits. */
   worker: { ref: string; owns: (url: string) => boolean } | null;
+  /** D480: a discussion adds notes and closes questions, on any PR, and changes nothing else. */
+  discussion?: boolean;
   /** The caller's thread: a note's link when it gives none. */
   threadId: string | null;
 }
@@ -34,10 +36,15 @@ export function recordPrs(
   at: number,
   caller: PrCaller = COORDINATOR,
 ) {
+  // Workers and discussions only write notes; a discussion also answers questions (D480).
+  const own = caller.worker ? ["url", "notes"] : caller.discussion ? ["url", "notes", "answered"] : null;
+  if (own) {
+    const fields = [...new Set(input.rename ? ["rename"] : (input.prs ?? []).flatMap((pr) => Object.keys(pr).filter((k) => !own.includes(k))))];
+    const is = `${fields.join(", ")} ${fields.length === 1 ? "is" : "are"} the coordinator's to set`;
+    if (fields.length)
+      throw new ProjectError(caller.worker ? `Workers only add notes ({prs:[{url,notes}]}); ${is}.` : `A discussion only adds notes and answers questions ({prs:[{url,notes,answered}]}); ${is}: message it.`);
+  }
   if (caller.worker) {
-    const others = input.rename ? ["rename"] : (input.prs ?? []).flatMap((pr) => Object.keys(pr).filter((k) => k !== "url" && k !== "notes"));
-    const fields = [...new Set(others)];
-    if (fields.length) throw new ProjectError(`Workers only add notes ({prs:[{url,notes}]}); ${fields.join(", ")} ${fields.length === 1 ? "is" : "are"} the coordinator's to set.`);
     const foreign = (input.prs ?? []).filter((pr) => !caller.worker!.owns(canonicalPrUrl(pr.url)!)).map((pr) => pr.url);
     if (foreign.length)
       throw new ProjectError(`${caller.worker.ref} notes only PRs its assignments name or its branch opened, not ${foreign.join(", ")}. Tell the coordinator instead.`);
@@ -108,7 +115,7 @@ export function recordPrs(
       ...(updated.length ? { updated } : {}),
     };
   });
-  if (caller.worker) return { prs };
+  if (caller.worker || caller.discussion) return { prs };
   // A Map: category names are free-form, and "constructor" or "__proto__" must count like any other.
   const counts = new Map<string, number>();
   for (const r of records.values()) if (r.category) counts.set(r.category, (counts.get(r.category) ?? 0) + 1);

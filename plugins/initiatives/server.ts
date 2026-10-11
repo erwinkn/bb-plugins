@@ -5,6 +5,7 @@ import type {
 import { z } from "zod";
 import {
   projectsContract,
+  type InitiativeTabs,
   type ProjectSummary,
   type ProjectTree,
 } from "./lib/contract";
@@ -128,6 +129,23 @@ export default function plugin(bb: BbPluginApi) {
   // Native calls yield. Serialize mutations so concurrent requests cannot both
   // decide that a worker or shared workspace is available.
   let writes: Promise<unknown> = Promise.resolve();
+  const serialized = <T,>(run: () => Promise<T>): Promise<T> => {
+    const next = writes.then(run, run);
+    writes = next.catch(() => undefined);
+    return next;
+  };
+  /**
+   * D480: what a discussion may call, checked at the two doors every agent call comes through,
+   * its tools and `bb initiative`: reads, a message to the coordinator and PR notes, which check
+   * their callers again. Everything else is refused, whatever it writes and whenever it is added.
+   * A discussion stays one after its Initiative is archived; adopted as coordinator, it no longer is.
+   */
+  const DISCUSSION_TOOLS = ["initiative_read", "initiative_zoom", "initiative_message", "initiative_pr"];
+  const DISCUSSION_CLI = ["describe", "list", "overview", "read", "message"];
+  const refuseDiscussion = (threadId: string | null | undefined, allowed: boolean) => {
+    if (!allowed && threadId && store.membership(threadId, true)?.discussion)
+      throw new ProjectError('A discussion only messages the coordinator and keeps PR notes. Ask the coordinator: initiative_message {to:"coordinator",text:"…"}.');
+  };
   // W244, W248: a dashboard write sent again after its answer was lost runs once.
   const receipts = new WriteReceipts(db, ledgerVersion);
   const perform = (
@@ -143,9 +161,7 @@ export default function plugin(bb: BbPluginApi) {
       )
     )
       return run();
-    const next = writes.then(run, run);
-    writes = next.catch(() => undefined);
-    return next;
+    return serialized(run);
   };
   // Dashboard reads share native facts: lifecycle events keep them current,
   // and a stale fact is answered at once, then re-read in the background; a
@@ -376,13 +392,25 @@ export default function plugin(bb: BbPluginApi) {
           name: m.project.name,
           role:
             m.kind === "adhoc"
-              ? ("adhoc" as const)
+              ? m.discussion ? ("discussion" as const) : ("adhoc" as const)
               : m.workerNum === 0
                 ? ("coordinator" as const)
                 : m.worker!.role,
           former: m.former,
         }
       : null;
+  };
+  /**
+   * D446 (T149): the tabs of a current coordinator's or a discussion's header, from the ledger
+   * alone: the coordinator, then every discussion still one (not adopted as coordinator).
+   */
+  const tabsOf = (threadId: string): InitiativeTabs => {
+    const m = store.membership(threadId);
+    const coordinatorThreadId = m?.project.coordinatorThreadId;
+    if (!m || m.former || !coordinatorThreadId || !(m.kind === "coordinator" || m.discussion)) return null;
+    const discussionThreadIds = store.projectThreads(m.project.id).flatMap((t) =>
+      t.discussion && t.threadId && store.membership(t.threadId)?.discussion ? [t.threadId] : []);
+    return { coordinatorThreadId, discussionThreadIds };
   };
   const assignedPrs = new AssignedPrs(store);
   const mergeQueue = new MergeQueueCache({
@@ -433,17 +461,17 @@ export default function plugin(bb: BbPluginApi) {
       return {
         membership,
         summary: membership ? await overview(membership.projectId, "summary", { fresh: false }) : null,
+        tabs: tabsOf(threadId),
       };
     },
+    // Its native reads run before it joins the writes; only the cap count and the spawn wait their turn.
+    discussionCreate: ({ projectId }) => announcing(() => service.createDiscussion(projectId, serialized), () => projectId),
     read: async ({ projectId, view, ...options }) => view === "threads" ? readThreads(projectId, options) : read(projectId, view, options),
     command: ({ projectId, command, key }) => {
       const write = () => {
         if (command.action === "thread-create" && "prompt" in command) {
           if (!projectId) throw new ProjectError("Pass an Initiative ID.");
-          const run = () => service.createLegacyUserThread(projectId, command);
-          const next = writes.then(run, run);
-          writes = next.catch(() => undefined);
-          return announcing(() => next, () => projectId);
+          return announcing(() => serialized(() => service.createLegacyUserThread(projectId, command)), () => projectId);
         }
         return announcing(() => perform(projectId, command, "user", null), () => projectId);
       };
@@ -616,10 +644,10 @@ export default function plugin(bb: BbPluginApi) {
         ].join("\n\n"),
       };
     }
-    // A user thread can configure before the create RPC's own confirm lands.
+    // A user thread (a discussion too) can configure before the create RPC's own confirm lands.
     if (
       isOwnOrigin(bb.pluginId, ctx.origin.pluginId) &&
-      meta.role === "adhoc" &&
+      (meta.role === "adhoc" || meta.role === "discussion") &&
       typeof meta.projectId === "string" &&
       typeof meta.op === "string"
     ) {
@@ -628,6 +656,14 @@ export default function plugin(bb: BbPluginApi) {
         store.confirmProjectThread(meta.op, ctx.thread.id);
     }
     const m = store.membership(ctx.thread.id);
+    // D480: a discussion talks the work through with the user, shares the Initiative's memory (Chat
+    // memory gives its tools), messages the coordinator and keeps PR notes. It never directs workers.
+    if (m?.discussion)
+      return {
+        tools: ["initiative_read", "initiative_message", "initiative_pr"],
+        skills: [],
+        instructions: `This is a discussion of the "${m.project.name}" Initiative: the user talks its work through with you, across PRs and themes. You share the Initiative's memory with its coordinator: memory_read and memory_zoom show what was said and decided in either thread. Read the Initiative's state with initiative_read. Tell the coordinator what it should act on with initiative_message {to:"coordinator",text:"…"}, and keep PR notes and answer their questions with initiative_pr (notes and answered only). You never spawn, direct or message workers, record tasks or decisions, or change the repositories: ask the coordinator.`,
+      };
     if (m?.kind === "adhoc")
       // The user's own thread: project read access on its first turn, and an
       // explicit update only when they ask. Never a managed role or workflow.
@@ -684,7 +720,10 @@ export default function plugin(bb: BbPluginApi) {
   const UPFRONT = ["initiative_read", "initiative_message", "initiative_spawn", "initiative_batch"];
   const registerTool: typeof bb.agents.registerTool = (tool: Parameters<typeof bb.agents.registerTool>[0]) => {
     const schema = typeof (tool.parameters as { safeParse?: unknown }).safeParse === "function" ? tool.parameters as unknown as z.ZodType : null;
-    const run: ToolExecute = (input, context) => tool.execute(schema ? parseToolInput(schema, input, tool.name) : input, context);
+    const run: ToolExecute = (input, context) => {
+      refuseDiscussion(context.threadId, DISCUSSION_TOOLS.includes(tool.name));
+      return tool.execute(schema ? parseToolInput(schema, input, tool.name) : input, context);
+    };
     handlers.set(tool.name, run);
     const definition: typeof tool = {
       ...tool,
@@ -922,6 +961,8 @@ export default function plugin(bb: BbPluginApi) {
         const { project, worker } = service.workerOf(threadId);
         return receipt(setPrStages(project.id, raw, "initiative_pr", workerCaller(project.id, worker, threadId)));
       }
+      if (m?.discussion)
+        return receipt(setPrStages(m.project.id, raw, "initiative_pr", { author: "discussion", worker: null, discussion: true, threadId }));
       const p = await coordinatorProject(threadId);
       return receipt(setPrStages(p.id, raw, "initiative_pr", { ...COORDINATOR, threadId }));
     },
@@ -1109,6 +1150,7 @@ export default function plugin(bb: BbPluginApi) {
         const args = argv.filter((a) => a !== "--json");
         const [action, value, explicitId] = args;
         if (ctx.threadId) await ensureMember(ctx.threadId);
+        refuseDiscussion(ctx.threadId, !!action && DISCUSSION_CLI.includes(action));
         const member = ctx.threadId ? store.membership(ctx.threadId) : null;
         const id = explicitId ?? member?.project.id;
         let result: unknown;
@@ -1182,7 +1224,9 @@ export default function plugin(bb: BbPluginApi) {
         } else if (action === "reconcile" && args.length === 1) {
           result = await service.reconcile();
         } else if (action === "recreate-coordinators") {
-          if (member && (member.former || member.workerNum !== 0))
+          // Archived Initiatives included: their workers are no terminals either.
+          const caller = ctx.threadId ? store.membership(ctx.threadId, true) : null;
+          if (caller && (caller.former || caller.workerNum !== 0))
             throw new ProjectError("Run this from a terminal or from a coordinator thread.");
           const flags = args.slice(1);
           const ids = flags.filter(a => !a.startsWith("--"));

@@ -491,7 +491,6 @@ function prState(pr: QueuedPullRequest, whole: boolean) {
       ? whole ? { notes: pr.notes.count, recentNotes: pr.notes.recent.map(noteLine) } : { notes: pr.notes.count, latestNote: line(noteLine(pr.notes.recent.at(-1)!)) }
       : {}),
     ...(pr.decision ? { decision: line(pr.decision.link ? `${pr.decision.text} (${pr.decision.link})` : pr.decision.text) } : {}),
-    ...(pr.discussionThreadId ? { discussion: pr.discussionThreadId } : {}),
   };
 }
 

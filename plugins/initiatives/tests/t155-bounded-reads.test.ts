@@ -236,7 +236,7 @@ describe("T155 initiative_read {view:prs} is bounded", () => {
       title: long("Title ", 256), category: `${long("c", 38)}${i % 50}`, stageNote: long("note ", 200), available: true,
       waitingOn: long("wait ", 160), changes: Array.from({ length: 10 }, () => long("change ", 200)),
       decision: { text: long("decided ", 300), link: long("https://example.com/", 300), at: 1 },
-      worker: { ref: "W123456", assignment: "A123456", role: "review" } as QueuedPullRequest["worker"], discussionThreadId: "thr_abcdefghijklmnop",
+      worker: { ref: "W123456", assignment: "A123456", role: "review" } as QueuedPullRequest["worker"],
       notes: { count: 99, recent: notes(3), open: notes(10) },
     })));
     const longest = queue(worst, long("gh: failed ", 22_000));

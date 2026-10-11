@@ -399,8 +399,11 @@ export function fixture(settings?: Record<string, string | number | boolean>, op
                   // returns archived ones unless `archived` is passed. t87 routes
                   // discovery listings through that real behaviour.
                   t.archivedAt === null
-                : !args.originPluginId ||
-                  t.originPluginId === args.originPluginId,
+                : (!args.originPluginId ||
+                    t.originPluginId === args.originPluginId) &&
+                  // As BB's route: deleted threads are never listed; `archived` picks a side.
+                  !t.deletedAt &&
+                  (args.archived === undefined || (t.archivedAt != null) === args.archived),
             )
             .slice(args.offset ?? 0, (args.offset ?? 0) + (args.limit ?? 200))
             // The list DTO carries full native activity and queue evidence

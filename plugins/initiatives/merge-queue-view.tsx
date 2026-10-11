@@ -63,7 +63,7 @@ function NotesLine({ pr, loadNotes }: { pr: QueuedPullRequest; loadNotes?: LoadN
   );
 }
 
-/** Every note on a PR, oldest first: the PR's detail panel (and later its "Discuss" action). */
+/** Every note on a PR, oldest first: the PR's detail panel. */
 function NotesPanel({ pr, load }: { pr: QueuedPullRequest; load?: LoadNotes }) {
   const [read, setRead] = useState<{ url: string; count: number; notes: PrNote[] | null; error: string | null } | null>(null);
   // Notes are only ever appended, and a question answered once (it leaves `open`): these two say when the log changed.

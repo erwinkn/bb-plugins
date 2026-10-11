@@ -422,7 +422,7 @@ export const MIGRATIONS = [
   `CREATE TABLE memory_trees (project_id TEXT PRIMARY KEY, views TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0, tries INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, call_ms INTEGER NOT NULL DEFAULT 0, log_bytes INTEGER NOT NULL DEFAULT 0, nodes INTEGER NOT NULL DEFAULT 0, fallbacks INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)`,
   // W224 (D437, D438): one record per pull request (canonical URL): the stage of pr_stages,
   // plus category and where it stands. JSON columns: changes [text], decision {text,link,at}.
-  // discussion_thread_id is the D439 hook. Questions live in pr_notes (D442).
+  // discussion_thread_id was the D439 hook, dropped by T149. Questions live in pr_notes (D442).
   `CREATE TABLE pr_records (
     project_id TEXT NOT NULL,
     url TEXT NOT NULL,
@@ -466,6 +466,10 @@ export const MIGRATIONS = [
     note TEXT,
     PRIMARY KEY (project_id, url, n)
   )`,
+  // T149 (D446): a discussion is a user project thread that shares the Initiative's memory.
+  `ALTER TABLE project_threads ADD COLUMN discussion INTEGER NOT NULL DEFAULT 0`,
+  // T149 (D448): no per-PR "Discuss" thread; nothing ever wrote this column.
+  `ALTER TABLE pr_records DROP COLUMN discussion_thread_id`,
 ];
 
 /** Store.openReviewOf: the same expressions and predicate as the assignments_open_review index. */
@@ -1066,6 +1070,7 @@ function toProjectThread(row: Row): ProjectThreadRecord {
     label: String(row.label),
     bbProjectId: (row.bb_project_id as string | null) ?? null,
     state: row.state as ProjectThreadRecord["state"],
+    discussion: Number(row.discussion ?? 0) === 1,
     createdAt: Number(row.created_at),
     confirmedAt: (row.confirmed_at as number | null) ?? null,
   };
@@ -1323,6 +1328,8 @@ export interface Membership {
    */
   workerNum: number;
   kind: "coordinator" | "worker" | "adhoc";
+  /** T149 (D446): a user thread (adhoc) started as a discussion of the Initiative. */
+  discussion?: boolean;
   worker: WorkerRecord | null;
   /** True for a superseded coordinator or a superseded worker generation. */
   former: boolean;
@@ -1335,6 +1342,8 @@ export interface ProjectThreadRecord {
   label: string;
   bbProjectId: string | null;
   state: "pending" | "active" | "uncertain" | "failed";
+  /** T149 (D446): started as a discussion, which shares the Initiative's memory. */
+  discussion: boolean;
   createdAt: number;
   confirmedAt: number | null;
 }
@@ -1467,16 +1476,18 @@ export class Store {
     opId: string;
     label: string;
     bbProjectId: string | null;
+    discussion?: boolean;
   }) {
     this.db
       .prepare(
-        `INSERT INTO project_threads (project_id, op_id, label, bb_project_id, state, created_at) VALUES (?, ?, ?, ?, 'pending', ?)`,
+        `INSERT INTO project_threads (project_id, op_id, label, bb_project_id, state, discussion, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)`,
       )
       .run(
         record.projectId,
         record.opId,
         record.label,
         record.bbProjectId,
+        Number(record.discussion ?? false),
         this.now(),
       );
   }
@@ -1975,6 +1986,7 @@ export class Store {
           project,
           workerNum: -1,
           kind: "adhoc" as const,
+          discussion: adhoc.discussion === 1,
           worker: null,
           former: false,
         };
@@ -2980,7 +2992,6 @@ export class Store {
         decision: json<PrRecord["decision"]>(row.decision, null),
         worker: (row.worker as string | null) ?? null,
         assignment: (row.assignment as string | null) ?? null,
-        discussionThreadId: (row.discussion_thread_id as string | null) ?? null,
         updatedAt: row.updated_at as number,
       }];
     }));
@@ -2989,18 +3000,17 @@ export class Store {
   /** Writes one PR record whole; a record with nothing left in it is removed. */
   savePrRecord(projectId: string, r: PrRecord): void {
     const empty = !r.stage && !r.category && !r.waitingOn && !r.changes.length && !r.decision
-      && !r.worker && !r.assignment && !r.discussionThreadId;
+      && !r.worker && !r.assignment;
     if (empty) {
       this.db.prepare("DELETE FROM pr_records WHERE project_id = ? AND url = ?").run(projectId, r.url);
       return;
     }
     const list = <T,>(values: T[]) => (values.length ? JSON.stringify(values) : null);
     this.db.prepare(`INSERT OR REPLACE INTO pr_records (project_id, url, stage, note, stage_set_at, category, waiting_on,
-      changes, decision, worker, assignment, discussion_thread_id, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      changes, decision, worker, assignment, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(projectId, r.url, r.stage, r.stage ? r.note : null, r.stage ? r.setAt : null, r.category, r.waitingOn,
-        list(r.changes), r.decision ? JSON.stringify(r.decision) : null, r.worker, r.assignment,
-        r.discussionThreadId, r.updatedAt);
+        list(r.changes), r.decision ? JSON.stringify(r.decision) : null, r.worker, r.assignment, r.updatedAt);
   }
 
   /** T157: appends one change to a PR's stage history. */

@@ -10,7 +10,7 @@ describe("T119 one request per Initiative switch", () => {
     expect(panel.membership).toEqual(await f.harness.callRpc("membership", { threadId: "coordinator" }));
     expect(panel.summary.project.id).toBe(project.id);
     expect(panel.summary.historyLoaded).toBe(false);
-    expect(await f.harness.callRpc("panel", { threadId: "stranger" })).toEqual({ membership: null, summary: null });
+    expect(await f.harness.callRpc("panel", { threadId: "stranger" })).toEqual({ membership: null, summary: null, tabs: null });
   });
 
   it("the summary decodes only reports awaiting acceptance, yet keeps every report summary it shows and each worker's last handoff", async () => {
