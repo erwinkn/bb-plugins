@@ -5,6 +5,8 @@ import { workerWork } from "./messaging";
 import { reportVersion } from "./write-holds";
 import { renderStandardHandoff } from "./handoffs";
 import { PR_STAGE_IDS } from "./pr-stages";
+import { prsByRef } from "./pr-map";
+import type { MergeQueue } from "./merge-queue";
 
 export const READ_FIELDS = ["brief", "briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "handoff", "body", "payload", "answer", "resolution", "checkpoint", "reviewTargets", "reportNotice"] as const;
 export const readOptionsSchema = z.object({
@@ -29,6 +31,8 @@ export const fieldsByView: Partial<Record<ReadView, readonly string[]>> = {
   reports: ["briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "reportNotice"],
   decisions: ["answer", "resolution", "body"], updates: ["body"], inbox: ["payload"], activity: ["payload"],
 };
+/** A PR ref as view prs takes it, read without the view: "#12", "infra#12", "owner/infra#12" or the PR's URL. */
+export const isPrRef = (ref: string) => /^\s*[\w./-]*#\d+\s*$/.test(ref) || /github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/i.test(ref);
 const canonical = (ref: string) => ref.replace(/^K(?=\d+$)/, "D");
 export function viewForRef(ref: string): ReadView {
   const match = /^([TWADKU])\d+$/.exec(ref);
@@ -123,7 +127,7 @@ function projectRow(view: ReadView, row: Record<string, any>, options: ReadOptio
 }
 
 /** Page complete records, never slice serialized JSON. Oversized individual details need explicit field selection. */
-export function readRows(rows: { view: ReadView; row: Record<string, any> }[], options: ReadOptions, missingRefs: string[] = [], enrich: (view: ReadView, row: Record<string, any>) => Record<string, any> = (_view, row) => row) {
+export function readRows(rows: { view: ReadView; row: Record<string, any> }[], options: ReadOptions, missingRefs: string[] = [], enrich: (view: ReadView, row: Record<string, any>) => Record<string, any> = (_view, row) => row, reserve = 0) {
   if (options.refs) {
     const byRef = new Map(rows.map(entry => [rowRef(entry.view, entry.row), entry]));
     missingRefs = [...new Set([...missingRefs, ...options.refs.filter(ref => !byRef.has(canonical(ref)))])];
@@ -133,7 +137,7 @@ export function readRows(rows: { view: ReadView; row: Record<string, any> }[], o
   let byteLimited = false;
   for (const { view, row } of rows.slice(options.offset, options.offset + options.limit)) {
     const item = projectRow(view, enrich(view, row), options);
-    if (Buffer.byteLength(JSON.stringify({ items: [...items, item], missingRefs })) > MAX_READ_BYTES - 1000) {
+    if (Buffer.byteLength(JSON.stringify({ items: [...items, item], missingRefs })) > MAX_READ_BYTES - 1000 - reserve) {
       if (!items.length) throw new ProjectError(`${rowRef(view, row)} exceeds the ${MAX_READ_BYTES}-byte read budget. Select fewer/smaller fields with detailed:true, fields:[${(fieldsByView[view] ?? []).map(f => JSON.stringify(f)).join(",")}], and one ref. If a single field is too large, read its linked artifact instead.`);
       byteLimited = true; break;
     }
@@ -180,7 +184,8 @@ export function readCollection(store: Store, projectId: string, view: ReadView, 
   const selected = options.refs ? [...new Set(options.refs.map(canonical))].flatMap(ref => byRef.has(ref) ? [byRef.get(ref)!] : []) : rows;
   return readRows(selected.map(row => ({ view, row })), options, options.refs?.filter(ref => !byRef.has(canonical(ref))) ?? [], selectedWorker(store, projectId, options));
 }
-export function readRefs(store: Store, projectId: string, options: ReadOptions) {
+/** reserve: bytes of the cap already taken by PRs read alongside. */
+export function readRefs(store: Store, projectId: string, options: ReadOptions, reserve = 0) {
   if (!options.refs) throw new ProjectError("view records requires refs, for example refs:[\"A7\",\"T3\",\"D12\"].");
   const refs = options.refs;
   options = withImpliedDetail(options);
@@ -193,7 +198,18 @@ export function readRefs(store: Store, projectId: string, options: ReadOptions) 
     if (!row) return [];
     return [{ view, row }];
   });
-  return readRows(rows, options, [], selectedWorker(store, projectId, options));
+  return readRows(rows, options, [], selectedWorker(store, projectId, options), reserve);
+}
+
+/** Refs that include PR refs: the PRs as view prs reads them, the rest as records, in one response under one cap. */
+export function readMixedRefs(store: Store, projectId: string, options: ReadOptions, queue: MergeQueue) {
+  const refs = options.refs!, rest = refs.filter(ref => !isPrRef(ref));
+  const prs = prsByRef(queue, refs.filter(isPrRef), { offset: options.offset, limit: options.limit });
+  if (!rest.length) return prs;
+  const { missingRefs = [], ...pullRequests } = prs;
+  // The records take what the PRs leave of the cap.
+  const records = readRefs(store, projectId, { ...options, refs: rest }, JSON.stringify(pullRequests).length + 100);
+  return { ...records, missingRefs: [...records.missingRefs, ...missingRefs], pullRequests };
 }
 
 /** Agent overview (T136): live workers with their latest report, open tasks, and what waits on the user. No native calls. */

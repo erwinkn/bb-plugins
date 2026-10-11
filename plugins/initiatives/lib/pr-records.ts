@@ -73,7 +73,8 @@ export function recordPrs(
     const was = { stage: r.stage, note: r.note };
     if (stage !== undefined) {
       const set = stage === "clear" ? null : stage;
-      Object.assign(r, { stage: set, note: set ? note || null : null, setAt: set ? at : null });
+      const kept = set !== null && set === r.stage && (note || null) === r.note;
+      Object.assign(r, { stage: set, note: set ? note || null : null, setAt: set ? (kept ? r.setAt ?? at : at) : null });
     }
     if (category !== undefined) r.category = category ? categoryName(category, names) : null;
     if (r.category) names.add(r.category);

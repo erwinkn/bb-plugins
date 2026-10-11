@@ -89,3 +89,19 @@ describe("T157 PR stage history", () => {
     expect(detail.stages.items.at(-1)).toMatchObject({ at: 119, from: "ready-for-review", to: "in-review" });
   });
 });
+
+describe("T157 setAt", () => {
+  it("keeps when the stage was set across the same stage and note, and moves it with a change", () => {
+    const { record, store } = setup();
+    const setAt = () => store.prRecords("p").get(url(7))?.setAt ?? null;
+    record({ prs: [{ url: url(7), stage: "in-review", note: "W1" }] }, 1000);
+    record({ prs: [{ url: url(7), stage: "in-review", note: "W1" }] }, 2000);
+    expect(setAt()).toBe(1000);
+    record({ prs: [{ url: url(7), stage: "in-review", note: "W2" }] }, 3000);
+    expect(setAt()).toBe(3000);
+    record({ prs: [{ url: url(7), stage: "ready-for-erwin", note: "W2" }] }, 4000);
+    expect(setAt()).toBe(4000);
+    record({ prs: [{ url: url(7), stage: "clear" }] }, 5000);
+    expect(setAt()).toBeNull();
+  });
+});

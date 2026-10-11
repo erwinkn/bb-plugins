@@ -74,7 +74,7 @@ import { initiativesContext, membersContext, recordText, threadContext } from ".
 import { messageSchema, currentIdentity, workerWork } from "./lib/messaging";
 import {
   readCollection, readContext, readRefs, readRows, compactOverview, agentReadSchema, validateSelection, withImpliedDetail,
-  readOptionsSchema,
+  readOptionsSchema, isPrRef, readMixedRefs,
   READ_VIEWS,
   MAX_READ_BYTES,
   type ReadOptions,
@@ -975,6 +975,8 @@ export default function plugin(bb: BbPluginApi) {
         throw new ProjectError("overview has no refs/detail/pagination selectors. Omit view for refs, or select a collection such as workers or reports.");
       if (!view && !options.refs && Object.keys(rawOptions).length)
         throw new ProjectError("Specify view or refs for detail/pagination selectors, for example view:reports, limit:5.");
+      // PR refs (#12, infra#12, a URL) read like view prs refs, durable refs (T/W/A/D/U) as records.
+      if (!view && options.refs?.some(isPrRef)) return JSON.stringify(readMixedRefs(store, m.project.id, options, await mergeQueue.read(m.project.id)));
       if (!view && options.refs || view === "records") return JSON.stringify(readRefs(store, m.project.id, options));
       if (!view || view === "overview") return JSON.stringify(compactOverview(store, m.project.id));
       if (view === "threads") return JSON.stringify(await readThreads(m.project.id, options));
