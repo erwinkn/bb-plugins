@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { environmentSchema, FINAL_MESSAGE_MAX, profileSchema, workerKindSchema } from "./schema";
 import type { Command } from "./commands";
-import { ProjectError } from "./bb";
+import { ToolInputError } from "./tool-errors";
 
 /**
  * T136: the agent tool surface. Each tool is one flat object (Claude's bridge blanks union
@@ -102,7 +102,7 @@ export function advertisedSchema(schema: z.ZodType | Record<string, unknown>): R
 }
 
 const need = <T>(value: T | undefined, what: string): T => {
-  if (value === undefined) throw new ProjectError(`${what} is required.`);
+  if (value === undefined) throw new ToolInputError(`${what} is required.`);
   return value;
 };
 
@@ -126,10 +126,10 @@ export const spawnCommand = (i: z.infer<typeof spawnToolSchema>): Command => ({
 /** A message with tasks or work:true gives work (route continue); otherwise it is one plain message. */
 export function messageCommand(i: z.infer<typeof messageToolSchema>): Command {
   const to = i.to ?? i.target;
-  if (!to) throw new ProjectError('Name the recipient: to:"W4" or to:"coordinator".');
-  if (i.to && i.target && i.to !== i.target) throw new ProjectError("Give the recipient once, as to.");
+  if (!to) throw new ToolInputError('Name the recipient: to:"W4" or to:"coordinator".');
+  if (i.to && i.target && i.to !== i.target) throw new ToolInputError("Give the recipient once, as to.");
   if (i.tasks?.length || i.work) {
-    if (to === "coordinator") throw new ProjectError("Work goes to a worker (W#), not the coordinator.");
+    if (to === "coordinator") throw new ToolInputError("Work goes to a worker (W#), not the coordinator.");
     return { action: "delegate", route: "continue", role: "work", worker: to, note: i.text, ...(i.tasks ? { tasks: i.tasks } : {}), delivery: i.mode ?? "queue" };
   }
   return { action: "message", target: to as never, text: i.text, mode: i.mode ?? "queue" };

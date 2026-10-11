@@ -16,6 +16,7 @@ import {
 } from "./schema";
 import type { ProjectsService } from "./service";
 import { ProjectError } from "./bb";
+import { ToolInputError } from "./tool-errors";
 import { messageSchema } from "./messaging";
 import { DECISION_ACTIONS, decisionIssues, normalizeDecisionInput } from "./decision-input";
 import { settlementReceipt } from "./receipts";
@@ -347,9 +348,9 @@ export type DecisionCommand = z.infer<typeof decisionCommandSchema>;
 /** The one agent boundary for initiative_decision and its CLI: flat or legacy input, errors with an example. */
 export function parseDecisionCommand(raw: unknown): DecisionCommand {
   const normalized = normalizeDecisionInput(raw);
-  if (!normalized.ok) throw new ProjectError(normalized.message);
+  if (!normalized.ok) throw new ToolInputError(normalized.message);
   const parsed = decisionCommandSchema.safeParse(normalized.value);
-  if (!parsed.success) throw new ProjectError(decisionIssues(String(normalized.value.action), parsed.error, normalized.flat));
+  if (!parsed.success) throw new ToolInputError(decisionIssues(String(normalized.value.action), parsed.error, normalized.flat));
   return parsed.data;
 }
 /** T136: actions that no longer exist, with what replaces them. */
@@ -367,8 +368,8 @@ export function refuseRemoved(raw: unknown) {
   if (typeof raw !== "object" || raw === null) return;
   const { action, route } = raw as { action?: unknown; route?: unknown };
   const why = typeof action === "string" ? REMOVED_ACTIONS[action] : undefined;
-  if (why) throw new ProjectError(why);
-  if (action === "delegate" && route === "fork") throw new ProjectError(REMOVED_ACTIONS.fork!);
+  if (why) throw new ToolInputError(why);
+  if (action === "delegate" && route === "fork") throw new ToolInputError(REMOVED_ACTIONS.fork!);
 }
 /** CLI command input: decision-family actions go through the agent boundary; the rest are unchanged. */
 export const parseCommandInput = (raw: unknown): Command => {

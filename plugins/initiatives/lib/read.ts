@@ -7,6 +7,7 @@ import { renderStandardHandoff } from "./handoffs";
 import { PR_STAGE_IDS } from "./pr-stages";
 import { prsByRef } from "./pr-map";
 import type { MergeQueue } from "./merge-queue";
+import { ToolInputError, nearest } from "./tool-errors";
 
 export const READ_FIELDS = ["brief", "briefText", "report", "report.handoff", "report.evidence", "standardHandoff", "handoff", "body", "payload", "answer", "resolution", "checkpoint", "reviewTargets", "reportNotice"] as const;
 export const readOptionsSchema = z.object({
@@ -36,7 +37,7 @@ export const isPrRef = (ref: string) => /^\s*[\w./-]*#\d+\s*$/.test(ref) || /git
 const canonical = (ref: string) => ref.replace(/^K(?=\d+$)/, "D");
 export function viewForRef(ref: string): ReadView {
   const match = /^([TWADKU])\d+$/.exec(ref);
-  if (!match) throw new ProjectError(`Unknown durable ref ${ref}. Use T/W/A/D/U refs, or an explicit view for native thread IDs and numeric activity/inbox IDs.`);
+  if (!match) throw new ToolInputError(`Unknown durable ref ${ref}. Use T/W/A/D/U refs, or an explicit view for native thread IDs and numeric activity/inbox IDs.`);
   return refViews[match[1]]!;
 }
 
@@ -83,7 +84,7 @@ function summary(view: ReadView, row: Record<string, any>, listing = false) {
   return { ...item, ...(trimmed.length ? { truncatedFields: trimmed } : {}) };
 }
 const rowsFor = (store: Store, projectId: string, view: ReadView): Record<string, any>[] => {
-  if (view === "threads") throw new ProjectError("Native threads must be read through initiative_read view threads.");
+  if (view === "threads") throw new ToolInputError("Native threads must be read through initiative_read view threads.");
   // T155: the live workers first, then the most recent: a page of a long Initiative shows who works now.
   if (view === "workers") return store.workers(projectId).sort((a, b) => Number(a.state === "retired") - Number(b.state === "retired") || b.num - a.num);
   if (view === "usage") return store.projectUsage(projectId) as unknown as Record<string, any>[];
@@ -95,7 +96,7 @@ const rowsFor = (store: Store, projectId: string, view: ReadView): Record<string
 export function validateSelection(view: ReadView, options: ReadOptions) {
   for (const ref of options.refs ?? []) {
     if ((["tasks", "workers", "assignments", "decisions", "updates"].includes(view) || /^[TWADKU]\d+$/.test(ref)) && viewForRef(ref) !== view)
-      throw new ProjectError(`${ref} belongs to ${viewForRef(ref)}, not ${view}. Omit view to read mixed durable refs.`);
+      throw new ToolInputError(`${ref} belongs to ${viewForRef(ref)}, not ${view}. Omit view to read mixed durable refs.`);
   }
   validateFields([view], options);
 }
@@ -112,7 +113,8 @@ export function validateFields(views: ReadView[], options: ReadOptions) {
   const ref = options.refs?.find(r => /^[TWADKU]\d+$/.test(r) && viewForRef(r) === view);
   const example = valid.length ? JSON.stringify({ ...(ref ? { refs: [ref] } : { view }), fields: [valid[0]] }) : JSON.stringify(ref ? { refs: [ref], detailed: true } : { view, detailed: true });
   const choices = views.map(v => `${v}: ${fieldsByView[v]?.join(", ") || "none, omit fields"}`).join("; ");
-  throw new ProjectError(`${fields.join(", ")} ${fields.length > 1 ? "apply" : "applies"} to none of the records read. Valid fields by kind: ${choices}. For example: initiative_read ${example}.`);
+  const meant = fields.flatMap(field => views.map(v => nearest(field, fieldsByView[v] ?? [])).filter(Boolean).map(near => `${field} → ${near}`));
+  throw new ToolInputError(`${fields.join(", ")} ${fields.length > 1 ? "apply" : "applies"} to none of the records read${meant.length ? ` (did you mean ${[...new Set(meant)].join(", ")}?)` : ""}. Valid fields by kind: ${choices}. For example: initiative_read ${example}.`);
 }
 /** W188 (F5): selecting fields reads full records; detailed is implied. */
 export const withImpliedDetail = (options: ReadOptions): ReadOptions => (options.fields ? { ...options, detailed: true } : options);
@@ -186,7 +188,7 @@ export function readCollection(store: Store, projectId: string, view: ReadView, 
 }
 /** reserve: bytes of the cap already taken by PRs read alongside. */
 export function readRefs(store: Store, projectId: string, options: ReadOptions, reserve = 0) {
-  if (!options.refs) throw new ProjectError("view records requires refs, for example refs:[\"A7\",\"T3\",\"D12\"].");
+  if (!options.refs) throw new ToolInputError("view records requires refs, for example refs:[\"A7\",\"T3\",\"D12\"].");
   const refs = options.refs;
   options = withImpliedDetail(options);
   validateFields([...new Set(refs.map(viewForRef))], options);

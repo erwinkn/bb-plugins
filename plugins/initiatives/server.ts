@@ -54,6 +54,7 @@ import {
 import { LiveThreads, Recent } from "./lib/live-threads";
 import { MergeQueueCache } from "./lib/merge-queue-server";
 import { canonicalPrUrl, prToolSchema } from "./lib/pr-stages";
+import { MAX_ERROR_BYTES, ToolInputError, clipBytes, parseToolInput } from "./lib/tool-errors";
 import { AssignedPrs, COORDINATOR, recordPrs, type PrCaller } from "./lib/pr-records";
 import { readPrDetail } from "./lib/pr-detail";
 import { branchThreadId } from "./lib/merge-queue";
@@ -683,7 +684,7 @@ export default function plugin(bb: BbPluginApi) {
   const UPFRONT = ["initiative_read", "initiative_message", "initiative_spawn", "initiative_batch"];
   const registerTool: typeof bb.agents.registerTool = (tool: Parameters<typeof bb.agents.registerTool>[0]) => {
     const schema = typeof (tool.parameters as { safeParse?: unknown }).safeParse === "function" ? tool.parameters as unknown as z.ZodType : null;
-    const run: ToolExecute = (input, context) => tool.execute(schema ? parsed(schema, input, tool.name) : input, context);
+    const run: ToolExecute = (input, context) => tool.execute(schema ? parseToolInput(schema, input, tool.name) : input, context);
     handlers.set(tool.name, run);
     const definition: typeof tool = {
       ...tool,
@@ -761,11 +762,6 @@ export default function plugin(bb: BbPluginApi) {
     await ensureMember(threadId);
     return service.coordinatorOf(threadId);
   };
-  const parsed = <T,>(schema: z.ZodType<T>, raw: unknown, tool: string): T => {
-    const result = schema.safeParse(raw);
-    if (!result.success) throw new ProjectError(`Invalid arguments for ${tool}: ${result.error.issues.map(issue => `${issue.path.join(".") || "(input)"}: ${issue.message}`).join("; ")}`);
-    return result.data;
-  };
   /** An older session's payload for a reused tool name: run it as the command it always was. */
   const legacyCommand = async (raw: unknown, threadId: string, actions: readonly string[]) => {
     const action = (raw as { action?: unknown } | null)?.action;
@@ -777,7 +773,7 @@ export default function plugin(bb: BbPluginApi) {
   /** initiative_message and `bb initiative message`: a plain message, or more work for a worker. */
   const sendMessage = async (raw: unknown, threadId: string) => {
     await ensureMember(threadId);
-    const command = messageCommand(parsed(messageToolSchema, raw, "initiative_message"));
+    const command = messageCommand(parseToolInput(messageToolSchema, raw, "initiative_message"));
     if (command.action === "message") return service.message(threadId, command);
     // Work for a reviewer is refused: each review round gets a fresh reviewer (W239).
     return perform(service.coordinatorOf(threadId).id, command, "coordinator", threadId);
@@ -791,7 +787,7 @@ export default function plugin(bb: BbPluginApi) {
     description: 'Give work to a new worker: {label:"Search index",purpose:"search ranking",text:"<the brief>",tasks:["T40"]}. A review: {role:"review",reviews:"W12",label,purpose,text:"what to check"}. The result lists warnings, such as another writer in the same checkout.',
     async execute(raw, { threadId }) {
       const p = await coordinatorProject(threadId);
-      return receipt(await perform(p.id, spawnCommand(parsed(spawnToolSchema, raw, "initiative_spawn")), "coordinator", threadId!));
+      return receipt(await perform(p.id, spawnCommand(parseToolInput(spawnToolSchema, raw, "initiative_spawn")), "coordinator", threadId!));
     },
   });
   registerTool({
@@ -811,7 +807,7 @@ export default function plugin(bb: BbPluginApi) {
       const legacy = await legacyCommand(raw, threadId!, ["task-create", "task-update", "task-cancel", "task-reopen", "assignment-stop", "assignment-settle", ...Object.keys(REMOVED_ACTIONS)]);
       if (legacy) return legacy;
       const p = await coordinatorProject(threadId);
-      return receipt(await perform(p.id, taskCommand(parsed(taskToolSchema, raw, "initiative_task")), "coordinator", threadId!));
+      return receipt(await perform(p.id, taskCommand(parseToolInput(taskToolSchema, raw, "initiative_task")), "coordinator", threadId!));
     },
   });
   registerTool({
@@ -828,7 +824,7 @@ export default function plugin(bb: BbPluginApi) {
         return JSON.stringify(await perform(p.id, parseCommandInput(raw), "coordinator", threadId!));
       }
       const p = await coordinatorProject(threadId);
-      const command = workerCommand(parsed(workerToolSchema, raw, "initiative_worker"));
+      const command = workerCommand(parseToolInput(workerToolSchema, raw, "initiative_worker"));
       if (command.action === "worker-stop") {
         const worker = service.requireWorker(p, command.worker);
         const open = store.openAssignment(p.id, worker.num);
@@ -852,7 +848,7 @@ export default function plugin(bb: BbPluginApi) {
         return JSON.stringify(await perform(p.id, { action: "pause", paused: (raw as { paused: boolean }).paused }, "coordinator", threadId!));
       }
       const p = await coordinatorProject(threadId);
-      return JSON.stringify(await perform(p.id, manageCommand(parsed(manageToolSchema, raw, "initiative_manage")), "coordinator", threadId!));
+      return JSON.stringify(await perform(p.id, manageCommand(parseToolInput(manageToolSchema, raw, "initiative_manage")), "coordinator", threadId!));
     },
   });
   // Older sessions only: their constructed allowlists still name these.
@@ -863,7 +859,7 @@ export default function plugin(bb: BbPluginApi) {
     async execute(raw, { threadId }) {
       refuseRemoved({ action: "delegate", ...(raw as object) });
       const p = await coordinatorProject(threadId);
-      return JSON.stringify(await perform(p.id, parsed(delegateSchema, { action: "delegate", ...(raw as object) }, "initiative_delegate"), "coordinator", threadId!));
+      return JSON.stringify(await perform(p.id, parseToolInput(delegateSchema, { action: "delegate", ...(raw as object) }, "initiative_delegate"), "coordinator", threadId!));
     },
   });
   registerTool({
@@ -897,7 +893,7 @@ export default function plugin(bb: BbPluginApi) {
   });
   /** initiative_pr and `bb initiative pr`: record PR stages, categories and notes, in one transaction. */
   const setPrStages = (projectId: string, raw: unknown, tool: string, caller: PrCaller) => {
-    const input = parsed(prToolSchema, raw, tool);
+    const input = parseToolInput(prToolSchema, raw, tool);
     service.requireProject(projectId);
     return store.db.transaction(() => recordPrs(store, service.prNotes, projectId, input, Date.now(), caller))();
   };
@@ -943,11 +939,11 @@ export default function plugin(bb: BbPluginApi) {
         throw new ProjectError(
           "Publish updates from the coordinator or the user's own initiative thread.",
         );
-      const input = parsed(updateToolSchema, raw, "initiative_update");
+      const input = parseToolInput(updateToolSchema, raw, "initiative_update");
       return receipt(
         await perform(
           m.project.id,
-          parsed(updateSchema, { action: "update", ...input }, "initiative_update"),
+          parseToolInput(updateSchema, { action: "update", ...input }, "initiative_update"),
           m.workerNum === 0 ? "coordinator" : "user",
           threadId,
         ),
@@ -968,13 +964,13 @@ export default function plugin(bb: BbPluginApi) {
         throw new ProjectError("This thread does not belong to an Initiative.");
       }
       const { view, category, stage, ...rawOptions } = input;
-      const options = readOptionsSchema.parse(rawOptions);
+      const options = parseToolInput(readOptionsSchema, rawOptions, "initiative_read");
       if ((category !== undefined || stage !== undefined) && (view !== "prs" || options.refs))
-        throw new ProjectError('category and stage select a slice of view prs without refs, for example initiative_read {view:"prs",category:"CI"}.');
+        throw new ToolInputError('category and stage select a slice of view prs without refs, for example initiative_read {view:"prs",category:"CI"}.');
       if (view === "overview" && Object.keys(rawOptions).length)
-        throw new ProjectError("overview has no refs/detail/pagination selectors. Omit view for refs, or select a collection such as workers or reports.");
+        throw new ToolInputError(`overview has no ${Object.keys(rawOptions).join(", ")} selectors. Omit view for refs, or select a collection such as workers or reports.`);
       if (!view && !options.refs && Object.keys(rawOptions).length)
-        throw new ProjectError("Specify view or refs for detail/pagination selectors, for example view:reports, limit:5.");
+        throw new ToolInputError(`Selectors (${Object.keys(rawOptions).join(", ")}) need a view or refs, and this call has neither. Add view (${READ_VIEWS.join(", ")}) or refs.`);
       // PR refs (#12, infra#12, a URL) read like view prs refs, durable refs (T/W/A/D/U) as records.
       if (!view && options.refs?.some(isPrRef)) return JSON.stringify(readMixedRefs(store, m.project.id, options, await mergeQueue.read(m.project.id)));
       if (!view && options.refs || view === "records") return JSON.stringify(readRefs(store, m.project.id, options));
@@ -999,11 +995,11 @@ export default function plugin(bb: BbPluginApi) {
     description: 'Several Initiative actions in one call, run in order; one failing never stops the rest. Each is {tool, ...that tool\'s arguments}: {actions:[{tool:"task",action:"close",task:"T4",outcome:"done"},{tool:"message",to:"W12",text:"…"}]}. Returns one result per action. Coordinator only.',
     async execute(raw, context) {
       await coordinatorProject(context.threadId);
-      const { actions } = parsed(batchSchema, raw, "initiative_batch");
+      const { actions } = parseToolInput(batchSchema, raw, "initiative_batch");
       type Result = { tool: string; ok: boolean; result?: unknown; error?: string; omitted?: true; reason?: string; [key: string]: unknown };
       // Every action runs first; the response is built afterwards.
       const full: Result[] = [];
-      for (const { tool, ...args } of actions) {
+      for (const [index, { tool, ...args }] of actions.entries()) {
         try {
           const out = await handlers.get(`initiative_${tool}`)!(args, context);
           let result: unknown = out;
@@ -1013,14 +1009,16 @@ export default function plugin(bb: BbPluginApi) {
           const flat = tool !== "read" && !!result && typeof result === "object" && !Array.isArray(result) && !("tool" in result) && !("ok" in result);
           full.push(flat ? { tool, ok: true, ...(result as Record<string, unknown>) } : { tool, ok: true, result });
         } catch (error) {
-          full.push({ tool, ok: false, error: errorMessage(error) });
+          // T147: an argument error keeps its message, led by the action it belongs to.
+          full.push({ tool, ok: false, error: `${error instanceof ToolInputError ? `actions[${index}]: ` : ""}${errorMessage(error)}` });
         }
       }
-      // One budget for the complete serialized response, the size of a single read:
-      // start from a placeholder per action and admit each full entry, in order, only
-      // when the whole response (envelope, note, separators) still fits.
-      const capped = (entry: Result): Result => ({ tool: entry.tool, ok: entry.ok, omitted: true, reason: `${entry.ok ? "result" : "error"} left out: the batch response is capped at ${MAX_READ_BYTES / 1024} KiB` });
-      const shown = full.map(capped);
+      // One budget for the complete serialized response, the size of a single read. Every error is
+      // admitted first, clipped to a fixed size, so a failure is never left out for a payload; the
+      // successful results then take what remains, in order, each only when the whole response
+      // (envelope, note, separators) still fits.
+      const capped = (entry: Result): Result => ({ tool: entry.tool, ok: true, omitted: true, reason: `result left out: the batch response is capped at ${MAX_READ_BYTES / 1024} KiB` });
+      const shown = full.map(entry => entry.ok ? capped(entry) : { ...entry, error: clipBytes(entry.error!, MAX_ERROR_BYTES) });
       const render = () => {
         const omitted = shown.filter(r => r.omitted).length;
         return JSON.stringify({
@@ -1031,6 +1029,7 @@ export default function plugin(bb: BbPluginApi) {
         });
       };
       for (const [index, entry] of full.entries()) {
+        if (!entry.ok) continue;
         shown[index] = entry;
         if (Buffer.byteLength(render()) > MAX_READ_BYTES) shown[index] = capped(entry);
       }
@@ -1046,9 +1045,9 @@ export default function plugin(bb: BbPluginApi) {
       await ensureMember(threadId);
       // An older session's full structured report still records as it always did.
       if (typeof raw === "object" && raw !== null && "handoff" in raw)
-        return JSON.stringify(await service.report(threadId, parsed(reportSchema.safeExtend({ assignment: z.string().optional() }), raw, "initiative_report")));
-      const input = parsed(reportToolSchema, raw, "initiative_report");
-      if (input.outcome === "blocked" && !input.question) throw new ProjectError("A blocked report needs the question you need answered.");
+        return JSON.stringify(await service.report(threadId, parseToolInput(reportSchema.safeExtend({ assignment: z.string().optional() }), raw, "initiative_report")));
+      const input = parseToolInput(reportToolSchema, raw, "initiative_report");
+      if (input.outcome === "blocked" && !input.question) throw new ToolInputError("A blocked report needs the question you need answered.");
       return JSON.stringify(await service.shortReport(threadId, input));
     },
   });

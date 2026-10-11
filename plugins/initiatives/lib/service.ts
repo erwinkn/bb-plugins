@@ -3420,7 +3420,7 @@ export class ProjectsService {
   ) {
     const project = this.requireProject(projectId);
     const previous = input.supersedes ? this.requireDecision(project, input.supersedes) : null;
-    if (previous && previous.status !== "active") throw new ProjectError(`${previous.ref} is ${previous.status}; only active decisions can be superseded.`);
+    if (previous && previous.status !== "active") throw new ProjectError(this.inactiveAdvice(project, previous, input.decision.madeBy, provenance));
     if (previous?.madeBy === null) throw new ProjectError(`${previous.ref} is an open question for the user, not a decision to supersede. Only the user's explicit answer closes it: initiative_decision {"action":"answer","ref":"${previous.ref}","choice":"<the user's option>"}. Otherwise record your decision without supersedes; ${previous.ref} stays open for the user.`);
     const madeBy = input.decision.madeBy;
     if (previous?.madeBy === "user" && madeBy !== "user")
@@ -3440,6 +3440,34 @@ export class ProjectsService {
       this.store.log(projectId, "decision", `${item.ref} ${item.madeBy === "user" ? "Your decision" : "Agent decision"}: ${item.description}`);
       return item;
     });
+  }
+
+  /**
+   * T147: why a decision cannot be superseded and what to do. A replaced decision is followed to
+   * the choice now standing; that is named as the one to supersede only when this caller may
+   * replace it (the rules recordDecision applies below), otherwise the caller reads it first.
+   */
+  private inactiveAdvice(project: ProjectRecord, previous: DecisionRecord, madeBy: "user" | "agent", provenance: Provenance) {
+    const why = `${previous.ref} is ${previous.status}, and only an active decision can be superseded.`;
+    if (previous.status !== "superseded")
+      return `${why} Record the new choice as its own decision and name ${previous.ref} in the description.`;
+    let current = previous;
+    const seen = new Set([previous.num]);
+    while (current.status === "superseded") {
+      const next = this.store.refStatuses(project.id, [current.num])[0]?.supersededBy;
+      const item = next && !seen.has(next) ? this.store.decisionItem(project.id, next) : null;
+      if (!item) break;
+      seen.add(item.num);
+      current = item;
+    }
+    const blocker = current.status !== "active" ? `${current.ref} is ${current.status}`
+      : current.madeBy === null ? `${current.ref} is an open question for the user`
+      : current.madeBy === "user" && madeBy !== "user" ? `${current.ref} is the user's explicit choice, which an agent decision cannot replace`
+      : provenance.author === "worker" && (current.provenance.author !== "worker" || current.provenance.threadId !== provenance.threadId) ? `${current.ref} is not yours, and workers revise only their own recorded choices`
+      : null;
+    if (current === previous) return `${why} Read its record to find what replaced it.`;
+    if (blocker) return `${why} Read what replaced it first: ${current.ref} (${blocker}).`;
+    return `${why} It was replaced, and ${current.ref} now stands. To change it, supersede ${current.ref}.`;
   }
 
   recordQuestion(projectId: string, input: unknown, provenance: Provenance) {
