@@ -86,7 +86,7 @@ type Outcome =
  * pauses for 10 minutes. A call that does not answer within its bound fails. A line whose call
  * fails 3 times stays unbuilt and failed (never cut to fit: a turn must not read part of a message
  * as its summary), and is tried again 30 minutes later; except one that answered empty 3 times,
- * which a retry would not change: it is built at once as a fallback, its input cut to 512 bytes with " [cut]".
+ * which a retry would not change (an error or timeout among the tries rules this out): it is built at once as a fallback, its input cut to 512 bytes with " [cut]".
  *
  * W315: a turn that waits for its earlier messages' lines (need) makes their calls go before every
  * other scope's for a permit. The build starts them first anyway (oldest first), and no more at
@@ -102,6 +102,8 @@ export class TreeBuilder {
   private failures = new Map<string, number>();
   /** W371: what each empty reply of a line still failing was made of (metadata only), for the fallback's log. */
   private empties = new Map<string, ReplyShape[]>();
+  /** T158: the last error or timeout among a line's failed tries; its presence rules out the empty-reply fallback. */
+  private errors = new Map<string, string>();
   /** Lines whose calls failed FAILURES times: their last error, and when. */
   private failed = new Map<string, { node: NodeRef; error: string; at: number }>();
   private writers = new Map<string, Promise<void>>();
@@ -357,6 +359,7 @@ export class TreeBuilder {
     if (outcome.kind === "built") {
       this.failures.delete(k);
       this.empties.delete(k);
+      this.errors.delete(k);
       if (outcome.pause) this.pause(outcome.pause);
       else this.backoffMs = 0;
       return;
@@ -369,17 +372,20 @@ export class TreeBuilder {
     }
     const failures = (this.failures.get(k) ?? 0) + 1;
     this.failures.set(k, failures);
+    if (outcome.error !== EMPTY_REPLY) this.errors.set(k, outcome.error);
     if (failures < FAILURES) return this.requeue(n);
-    if (outcome.error === EMPTY_REPLY) {
+    const error = this.errors.get(k);
+    if (error === undefined) {
       this.options.log?.(`Memory line ${label(n)} built as a fallback (cut to fit) after ${failures} empty replies: ${JSON.stringify(this.empties.get(k) ?? [])}`);
       this.failures.delete(k);
       this.empties.delete(k);
       return this.build(n, this.fallbackText(n), "fallback", failures);
     }
-    this.options.log?.(`Memory line ${label(n)} failed ${failures} times (${outcome.error}); it stays unsummarized, and is tried again in ${FAILED_RETRY_MS / 60_000} minutes.`);
+    this.options.log?.(`Memory line ${label(n)} failed ${failures} times (${error}); it stays unsummarized, and is tried again in ${FAILED_RETRY_MS / 60_000} minutes.`);
     this.failures.delete(k);
     this.empties.delete(k);
-    this.failed.set(k, { node: n, error: outcome.error, at: this.now() });
+    this.errors.delete(k);
+    this.failed.set(k, { node: n, error, at: this.now() });
     // Turns waiting for it learn at once that it will not come.
     this.notify();
   }
